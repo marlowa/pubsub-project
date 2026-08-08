@@ -4,6 +4,7 @@ add_executable(pubsub_itc_fw_tests
     ApplicationAnnouncerTest.cpp
     ApplicationThreadTest.cpp
     BumpAllocatorTest.cpp
+    CpuLayoutTest.cpp
     CpuPinningTest.cpp
     CpuRegistryTest.cpp
     ExternalWalSubscriberRegistryTest.cpp

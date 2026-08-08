@@ -9,10 +9,10 @@
 #                 python3 coverage_baseline.py --update
 # Commit the result alongside the change that moved it.
 
-COMMIT 10f4578
-GENERATED 2026-08-07T21:35:41Z
+COMMIT 8c89483
+GENERATED 2026-08-08T05:02:39Z
 TRACEFILE build-coverage/coverage.info
-TOTALS lines 5643/6865 functions 1293/1445
+TOTALS lines 5699/6865 functions 1302/1445
 
 FILE libraries/fix_codec/FixChecksum.hpp lines 15/15 functions 2/2
 FILE libraries/fix_codec/FixField.hpp lines 91/93 functions 15/15
@@ -79,15 +79,7 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ConfigurationException.hpp li
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ConnectionID.hpp lines 15/15 functions 9/9
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CounterHandle.hpp lines 6/6 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CounterInterface.hpp lines 1/1 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CpuLayout.hpp lines 0/14 functions 0/8
-  UNCOVERED pubsub_itc_fw::CpuLayout::CpuLayout()
-  UNCOVERED pubsub_itc_fw::CpuLayout::background_cores() const
-  UNCOVERED pubsub_itc_fw::CpuLayout::demotion_reason[abi:cxx11]() const
-  UNCOVERED pubsub_itc_fw::CpuLayout::hot_path_cores() const
-  UNCOVERED pubsub_itc_fw::CpuLayout::is_admitted() const
-  UNCOVERED pubsub_itc_fw::CpuLayout::machine_name[abi:cxx11]() const
-  UNCOVERED pubsub_itc_fw::CpuLayout::quill_backend_core() const
-  UNCOVERED pubsub_itc_fw::CpuLayout::~CpuLayout()
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CpuLayout.hpp lines 14/14 functions 8/8
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CpuPinning.hpp lines 116/182 functions 9/13
   UNCOVERED auto pubsub_itc_fw::get_available_cpu_ids(bool, pubsub_itc_fw::SharedCoreRegistryLayout const&)::{lambda(auto:1 const&, auto:2 const&)#1}::operator()<std::filesystem::__cxx11::path, std::filesystem::__cxx11::path>(std::filesystem::__cxx11::path const&, std::filesystem::__cxx11::path const&) const
   UNCOVERED pubsub_itc_fw::apply_process_affinity_mask(std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
@@ -242,9 +234,8 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WrappedInteger.hpp lines 17/1
   UNCOVERED std::ostream& pubsub_itc_fw::operator<< <pubsub_itc_fw::TimerIDTag, int>(std::ostream&, pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::TimerIDTag, int> const&)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/utils/SimpleSpan.hpp lines 8/8 functions 8/8
 FILE libraries/pubsub_itc_fw/src/ApplicationThread.cpp lines 269/332 functions 30/30
-FILE libraries/pubsub_itc_fw/src/CpuLayout.cpp lines 0/86 functions 0/6
+FILE libraries/pubsub_itc_fw/src/CpuLayout.cpp lines 39/86 functions 1/6
   UNCOVERED pubsub_itc_fw::(anonymous namespace)::join_core_ids(std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
-  UNCOVERED pubsub_itc_fw::CpuLayout::load(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
   UNCOVERED pubsub_itc_fw::CpuLayout::verify_cores_present[abi:cxx11]() const
   UNCOVERED pubsub_itc_fw::CpuLayout::verify_cores_present[abi:cxx11]() const::{lambda(pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>)#1}::operator()(pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>) const
   UNCOVERED pubsub_itc_fw::CpuLayout::verify_cores_present[abi:cxx11]() const::{lambda(pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>)#1}::operator()(pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>) const::{lambda(pubsub_itc_fw::CpuAssignment const&)#1}::operator()(pubsub_itc_fw::CpuAssignment const&) const
@@ -278,7 +269,7 @@ FILE libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp lines 96/108 functions 1
   UNCOVERED pubsub_itc_fw::PrometheusEndpoint::register_histogram(char const*, char const*, char const*, std::vector<double, std::allocator<double> > const&)
 FILE libraries/pubsub_itc_fw/src/QuillLogger.cpp lines 109/111 functions 17/17
 FILE libraries/pubsub_itc_fw/src/RawBytesProtocolHandler.cpp lines 84/99 functions 9/9
-FILE libraries/pubsub_itc_fw/src/Reactor.cpp lines 486/700 functions 42/43
+FILE libraries/pubsub_itc_fw/src/Reactor.cpp lines 485/700 functions 42/43
   UNCOVERED pubsub_itc_fw::Reactor::verify_hot_path_thread_count[abi:cxx11](unsigned long) const
 FILE libraries/pubsub_itc_fw/src/SlabAllocator.cpp lines 67/71 functions 15/16
   UNCOVERED pubsub_itc_fw::SlabAllocator::is_current() const
@@ -286,11 +277,11 @@ FILE libraries/pubsub_itc_fw/src/StringUtils.cpp lines 43/45 functions 7/7
 FILE libraries/pubsub_itc_fw/src/TcpAcceptor.cpp lines 36/41 functions 12/12
 FILE libraries/pubsub_itc_fw/src/TcpConnector.cpp lines 63/70 functions 18/18
 FILE libraries/pubsub_itc_fw/src/TcpSocket.cpp lines 157/193 functions 33/33
-FILE libraries/pubsub_itc_fw/src/TimerHandler.cpp lines 36/54 functions 3/3
+FILE libraries/pubsub_itc_fw/src/TimerHandler.cpp lines 37/54 functions 3/3
 FILE libraries/pubsub_itc_fw/src/TlsContext.cpp lines 59/65 functions 6/6
 FILE libraries/pubsub_itc_fw/src/TlsRawBytesProtocolHandler.cpp lines 126/165 functions 12/12
 FILE libraries/pubsub_itc_fw/src/TlsState.cpp lines 44/44 functions 3/3
-FILE libraries/pubsub_itc_fw/src/TomlConfiguration.cpp lines 326/364 functions 53/54
+FILE libraries/pubsub_itc_fw/src/TomlConfiguration.cpp lines 329/364 functions 53/54
   UNCOVERED pubsub_itc_fw::TomlConfiguration::get_required_except(std::basic_string_view<char, std::char_traits<char> >, std::vector<double, std::allocator<double> >&) const
 FILE libraries/pubsub_itc_fw/src/Wal.cpp lines 109/113 functions 10/10
 FILE libraries/pubsub_itc_fw/src/WalCursor.cpp lines 79/93 functions 6/6
