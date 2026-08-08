@@ -70,6 +70,13 @@ struct Options {
     int orders_per_burst{1000};
     int bursts{0};            // 0 means take bursts from stdin, as f8test does
     int orders_per_second{0}; // per session; 0 means send as fast as the socket accepts
+    // First ClOrdID suffix this run will use, so that consecutive runs against a venue
+    // that is still holding the previous run's orders do not collide. The matching engine
+    // rejects a duplicate ClOrdID per session comp id, and a rejected order never reaches
+    // the book and produces no round-trip observation -- so a colliding run looks like it
+    // delivered load while measuring nothing. A trading-day profile restarts this client
+    // once per phase, which is exactly that case.
+    int64_t first_cl_ord_id{0};
     int underlyings{3};       // NoUnderlyings instances per order
     int parties{1};           // NoPartyIDs instances per order
     int party_sub_ids{1};     // NoPartySubIDs instances per party
@@ -100,6 +107,8 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.bursts = std::stoi(argv[++index]);
         } else if (argument == "--rate" && has_value) {
             options.orders_per_second = std::stoi(argv[++index]);
+        } else if (argument == "--first-cl-ord-id" && has_value) {
+            options.first_cl_ord_id = std::stoll(argv[++index]);
         } else if (argument == "--underlyings" && has_value) {
             options.underlyings = std::stoi(argv[++index]);
         } else if (argument == "--parties" && has_value) {
@@ -110,7 +119,8 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.minimal_order = true;
         } else {
             fmt::print("usage: {} [--host H] [--port P] [--comp-id-prefix ID] [--symbol SYM]\n", argv[0]);
-            fmt::print("          [--sessions N] [--orders-per-burst N] [--bursts N] [--rate N]\n\n");
+            fmt::print("          [--sessions N] [--orders-per-burst N] [--bursts N] [--rate N]\n");
+            fmt::print("          [--first-cl-ord-id N]\n\n");
             fmt::print("  --password          SCRAM password for every session (default stubpassword)\n");
             fmt::print("  --target-comp-id    the venue name to send; must match the gateway\n");
             fmt::print("  --sessions          concurrent logged-on sessions, each with its own comp id\n");
@@ -199,8 +209,12 @@ class LoadSession {
         }
     }
 
-    LoadSession(std::string comp_id, std::string password, std::string target_comp_id, std::string symbol)
-        : comp_id_(std::move(comp_id)), password_(std::move(password)), target_comp_id_(std::move(target_comp_id)), symbol_(std::move(symbol)) {}
+    LoadSession(std::string comp_id, std::string password, std::string target_comp_id, std::string symbol, int64_t first_cl_ord_id = 0)
+        : comp_id_(std::move(comp_id))
+        , password_(std::move(password))
+        , target_comp_id_(std::move(target_comp_id))
+        , symbol_(std::move(symbol))
+        , order_counter_(first_cl_ord_id) {}
 
     LoadSession(const LoadSession&) = delete;
     LoadSession& operator=(const LoadSession&) = delete;
@@ -563,7 +577,7 @@ int main(int argc, char** argv) {
     sessions.reserve(static_cast<size_t>(options.session_count));
     for (int index = 0; index < options.session_count; ++index) {
         const std::string comp_id = options.session_count == 1 ? options.comp_id_prefix : options.comp_id_prefix + "-" + std::to_string(index + 1);
-        sessions.push_back(std::make_unique<LoadSession>(comp_id, options.password, options.target_comp_id, options.symbol));
+        sessions.push_back(std::make_unique<LoadSession>(comp_id, options.password, options.target_comp_id, options.symbol, options.first_cl_ord_id));
         OrderShape shape;
         shape.underlyings = options.underlyings;
         shape.parties = options.parties;

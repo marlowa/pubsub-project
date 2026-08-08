@@ -568,6 +568,52 @@ running before step 3.
 
 ---
 
+## First run, 2026-08-08: what it found
+
+Seven phases, 82 minutes, 9.56M orders offered through the binary gateway at up to 3,850/s.
+**The run found a framework requirement on its first outing**, which is what it was built for.
+
+### A hash rehash stalls the hot path for over a second
+
+The matching engine's order book is a `tsl::robin_map`. It grows by doubling, and each doubling
+rehashes the whole table **on the matching engine's callback thread**. The framework's own reactor
+watchdog caught it (`Reactor.cpp:913`, "callback not finished yet"), which is what made it
+diagnosable at all — it fired 281 times over the run.
+
+The stalls land on exact powers of two, and roughly double each time:
+
+| book size | when | p99 |
+|---|---|---|
+| 2^21 = 2,097,152 | 12:16:34 | **96 ms** |
+| 2^22 = 4,194,304 | 12:34:43 | **733 ms** |
+| 2^23 = 8,388,608 | 13:14:18 | over 1s; the pipeline did not recover |
+
+At 2^23 the load client gave up: the last two phases overran and exited non-zero, and 1,167,392 of
+the 9,556,000 offered orders were never accepted. Memory was never short — 16 GB free on a 31 GB
+machine — so this is a latency failure, not exhaustion.
+
+**On the band chart, p50 and p90 do not move through any of it.** That is the tail-excursion
+signature exactly: a handful of orders delayed catastrophically while the bulk are untouched, and
+the reason the chart reports percentiles rather than a mean. A one-second mean over the 12:35
+interval would have shown a modest bump and explained nothing.
+
+### Triage: this is a framework requirement, not an application bug
+
+By the rule above, the tempting reading is that the matching engine picked the wrong container and
+should call `reserve()`. That would remove the symptom from this stub and teach nothing.
+
+The finding is category 3. **The framework offers slab and pool allocators for messages in
+flight, and nothing at all for long-lived hot-path state that grows.** Every application built on
+`pubsub_itc_fw` that keeps state — an order book, a session table, a subscription registry — will
+grow a container on a reactor callback thread and will eventually stall it. The framework should
+offer a growable structure that rehashes incrementally, or in the background, or at least a way to
+be told the growth is coming.
+
+Recorded in the roadmap. `reserve()` in the matching engine would be a workaround for the stub,
+not the answer.
+
+---
+
 ## Prerequisites
 
 - `metrics_enabled = true` — dev only today, which is where this runs.

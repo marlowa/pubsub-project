@@ -812,12 +812,19 @@ def validate_profile(profile: dict, sessions: int) -> tuple[dict, list[dict]]:
 
 
 def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: int,
-                      port: int, manifest: list[dict]) -> None:
+                      port: int, manifest: list[dict], first_cl_ord_id: int) -> int:
     """Run one phase, appending its actual timings to the manifest.
 
     One binary_load_client invocation per phase. That means a logon at each phase
     boundary, which is visible on the chart and recorded here so it is not misread as
     part of the phase's own behaviour -- the client has no way to change rate in flight.
+
+    Each phase is given a ClOrdID offset past every id the run has used so far, and
+    returns the new high-water mark. Without it every phase starts numbering at 1, the
+    matching engine rejects the repeats as duplicates, and a rejected order produces NO
+    round-trip observation -- so the phases look like they delivered load while measuring
+    nothing at all. That cost a whole 83-minute run: 5,256,000 of 8,632,000 orders were
+    rejected and four of seven phases recorded no latency whatever.
     """
     per_session = phase["per_session_rate"]
     bursts = max(1, int(round(per_session * phase["seconds"] / ORDERS_PER_BURST)))
@@ -837,6 +844,7 @@ def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: in
         "--orders-per-burst", str(ORDERS_PER_BURST),
         "--bursts", str(bursts),
         "--rate", str(per_session),
+        "--first-cl-ord-id", str(first_cl_ord_id),
     ]
 
     started = time.time()
@@ -869,13 +877,16 @@ def run_profile_phase(bin_dir: Path, output_dir: Path, phase: dict, sessions: in
     write_manifest(output_dir, manifest)
 
     elapsed = finished - started
-    log(f"    took {elapsed:.0f}s (planned {phase['seconds']:.0f}s), exit {returncode}")
+    log(f"    took {elapsed:.0f}s (planned {phase['seconds']:.0f}s), exit {returncode}, "
+        f"ClOrdIDs {first_cl_ord_id + 1}..{first_cl_ord_id + bursts * ORDERS_PER_BURST}")
     if elapsed > phase["seconds"] * 1.25:
         log(f"    NOTE: overran by {elapsed - phase['seconds']:.0f}s -- the venue did not "
             f"keep up with the offered rate. That is a finding, not a harness fault.")
     if returncode != 0:
         log(f"    WARNING: load client exited {returncode}; continuing so later phases "
             f"still run. The manifest records it.")
+    # Per SESSION, because each session numbers its own ClOrdIDs independently.
+    return first_cl_ord_id + bursts * ORDERS_PER_BURST
 
 
 def write_manifest(output_dir: Path, manifest: list[dict]) -> None:
@@ -899,8 +910,10 @@ def run_trading_day(bin_dir: Path, output_dir: Path, profile_path: Path, session
 
     log(f"=== Trading day: {len(phases)} phases from {profile_path.name} ===")
     manifest: list[dict] = []
+    next_cl_ord_id = 0
     for phase in phases:
-        run_profile_phase(bin_dir, output_dir, phase, sessions, port, manifest)
+        next_cl_ord_id = run_profile_phase(bin_dir, output_dir, phase, sessions, port,
+                                           manifest, next_cl_ord_id)
 
     total = sum(entry["actual_seconds"] for entry in manifest)
     log(f"=== Trading day complete: {total / 60.0:.1f} minutes across {len(manifest)} phases ===")
