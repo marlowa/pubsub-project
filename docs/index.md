@@ -4,6 +4,7 @@
 
 - **[Architecture](architecture.md)** — component overview, topology, data flow
 - **[Building](building.md)** — build flavours, why cleaning between them is unnecessary, and where instrumented artefacts go
+- **[Testing and Code Coverage](testing.md)** — why coverage is reported and never gated, why function coverage is trusted and line coverage is not, and when to write the test rather than exclude the line
 - **[Roadmap](roadmap.md)** — slicing plan, what is done, what comes next
 
 ## Design

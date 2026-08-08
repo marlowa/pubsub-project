@@ -227,22 +227,13 @@ python3 coverage_baseline.py --update   # record where we are now
 ```
 
 `coverage_baseline.txt` is committed: per file, hit/total for lines and functions, and the
-signatures of the functions with no observations. It **reports and never gates**. There is no
-threshold, and the exit status is 0 whether coverage rose or fell — the cheapest way past a
-coverage gate is a test that executes the hard path and asserts nothing, which passes the check
-and leaves behind a test that can never fail.
+signatures of the functions with no observations. Update it in the same commit as the change that
+moved it, while the reason is still known.
 
-Counts rather than percentages, because a percentage moves when the denominator moves: deleting
-fifty well-tested lines lowers it although nothing got worse.
-
-**Function movement is the signal; line movement is weather.** Measured across four clean runs of
-the whole suite at one commit: function coverage was identical every time — same count, same set
-— while the line count came out 5634, 5644, 5643, 5649. The variation is a few shutdown-race
-lines, covered only when an event happens to arrive while a thread is winding down. So the tool
-headlines function changes and files line changes as informational.
-
-Update the baseline in the same commit as the change that moved it, while the reason is still
-known.
+It **reports and never gates**, it records counts rather than percentages, and it treats function
+movement as the signal and line movement as weather. Each of those is a deliberate choice with a
+measurement or an argument behind it — see **[Testing and Code Coverage](testing.md)**, which is
+where the policy lives. This page covers only how to run it.
 
 ### Orphaned build directories are removed first
 
