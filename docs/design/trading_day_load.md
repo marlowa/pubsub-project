@@ -1,0 +1,568 @@
+# Compressed Trading Day Load Profile
+
+**Status: DRAFT, decisions taken 2026-08-08. Nothing built.**
+
+A load run shaped like a trading day — quiet periods, steady activity, short bursts of varying
+intensity, sustained elevated periods and cancels — paired with the latency band chart so the run
+produces a *reading* rather than a number.
+
+## This is happy-path testing
+
+Heavy load, bursty traffic and members pulling their books are what a **normal day** looks like.
+Nothing here is a failure scenario: no component is killed, no fault is injected, no failover is
+provoked. High availability needs its own test approach and has one; mixing the two would make
+every result ambiguous about which thing was being tested.
+
+If something breaks under this profile, that is a **finding**, not a scenario.
+
+## Decisions taken
+
+| | |
+|---|---|
+| Gateway | **Binary only** to begin with — the client is ours, so rate and cancel behaviour can be extended where needed. FIX has no rate control. |
+| Failover | **Excluded.** Separate concern, separate test. |
+| Cancels | **Included**, up to and including pulling 50–100 outstanding orders for one comp id. |
+| Duration | **At least one hour.** |
+| Where it lives | **An extension of `perf_run.py`**, not a new script. |
+
+---
+
+## The framework is the subject; the applications are the instrument
+
+The gateways do almost no order validation and **the matching engine does no matching** — it emits
+only `New`, `Canceled` and `Rejected`, never `Filled`. That is deliberate. These applications exist
+to exercise `pubsub_itc_fw` and to flush out its requirements, not to be an exchange.
+
+This decides how the run should be read. A trading-day shape is worth building **because it puts
+the framework through load transitions that a steady rate never produces** — queues filling and
+draining, slab allocators growing under burst, the reactor scheduling across a tenfold change in
+arrival rate, the WAL absorbing a sustained hour. What the run finds are **framework** findings.
+
+Two practical consequences:
+
+- **Orders never fill, so everything sent rests until cancelled.** The runner's outstanding-order
+  bookkeeping is therefore trivial: the outstanding set is everything sent, minus everything
+  cancelled. No fill notifications to reconcile.
+- **Venue realism is a means, not the goal.** Where a choice arises between a more faithful venue
+  behaviour and a load shape that stresses the framework harder, prefer the latter and say so.
+
+---
+
+## Why, beyond "more load"
+
+Every measurement taken so far has been either saturating or trivially small. `perf_run.py`
+without `--rate` deliberately offers load faster than the pipeline drains, so its figures are
+queueing-dominated: a 20,000-order run gave p50 123ms and p99 247ms, which bear no relation to the
+119/356/528µs recorded on rate-limited runs. Meanwhile `order_round_trip_nanoseconds`, its bucket
+bounds, the percentile band chart and the ceiling breach counter were all designed against
+synthetic demo data.
+
+**So the venue has never been observed under a realistic load profile, and the metrics have never
+had a realistic input.** This closes both gaps at once.
+
+It also asks the question a steady load cannot: what happens at the *transitions*. Does latency
+return to baseline after a burst or ratchet upward? Does queue depth recover? Is the open
+distinguishable from midday?
+
+---
+
+## A sustained burst is not a long short burst
+
+This is the design's central claim, and it decides the shape of everything below.
+
+| | tests | finds |
+|---|---|---|
+| **1–3 minutes** | absorption | queue growth and drain, spike-and-recover |
+| **~1 hour** | accumulation | WAL growth, slab allocators that expand and never return memory, log volume, disk, and above all **monotonic degradation** — anything that fails to reach a steady state |
+
+A short burst structurally cannot find the second kind. Both belong in the profile.
+
+### Consequence: compress the quiet, preserve the bursts
+
+Uniform compression breaks on this ratio. Real bursts of 1–3 minutes against a 60-minute one is a
+20–60× spread; compress the day 6× and the short bursts fall to 30 seconds — two samples at a 15s
+step, no shape — while the long one is unaffected.
+
+So **compression applies only to phases marked compressible**, which means the quiet periods. They
+need only enough duration to establish a baseline and show volume falling. Bursts keep their real
+durations, because they are the subject.
+
+Total run time is then roughly the sum of the bursts plus short gaps: around 90 minutes with one
+genuine hour-long phase, which is nothing for an unattended run.
+
+### What compressing a sustained phase would and would not preserve
+
+Worth choosing knowingly if it is ever compressed. Much of what accumulates is a function of
+**total orders**, not elapsed time — WAL bytes, slab growth, book size — so 60 minutes at rate R
+resembles 15 minutes at 4R for those. But not for anything time-based: log rotation, session
+heartbeats, TCP keepalive, disk fill racing background retention. And raising the rate changes the
+regime into an overload test, which is a different question.
+
+**Recommendation: keep at least one phase at genuine duration.** It is the only way the
+accumulation question gets asked at all.
+
+---
+
+## Calibrate first: the probe run
+
+Absolute rates are a property of the machine, not of the profile. A figure that saturates a
+20-core work machine may barely warm a 32-core workstation, and a profile written in absolute
+orders/second silently means something different on each.
+
+So the runner gains a **probe mode**: ramp the offered rate until latency departs from baseline,
+and report the rate at which it did. That figure is the machine's **ceiling**, and every phase rate
+in the profile is then written as a fraction of it.
+
+```toml
+[run]
+ceiling_orders_per_second = 3500   # from the probe, recorded in the manifest
+```
+
+Two things this buys:
+
+- **The same profile is meaningful on a different machine.** "The open runs at 100% of ceiling, the
+  lull at 1%" transfers; "the open runs at 3,500/s" does not.
+- **The starting figures in this document stop being guesses.** They are a plausible first
+  calibration for one workstation and nothing more. The rate-limited measurements available
+  (119/356/528µs at 4/20/40 sessions) are round-trip *latencies*, not throughput, and the
+  saturating runs establish only that saturation was reached. Neither yields a ceiling.
+
+The probe should be short — ten minutes is ample — and its result recorded in the manifest, so a
+run always says which ceiling it was calibrated against.
+
+---
+
+## The resolution floor
+
+The band chart wants `--step` at several times the 5s scrape interval, so ~15s is the practical
+floor, and a phase needs several samples to show shape rather than a dot.
+
+**`min_phase_seconds` is therefore a hard input, not a guideline.** The runner computes it from the
+chart step and a minimum sample count, and **refuses to start** if any phase — after compression —
+falls below it, naming the phase and what it would have to become. Failing loudly beats producing
+a run nobody can read, which is the same rule the breach counter follows when no bucket bound sits
+on the ceiling.
+
+---
+
+## The three patterns, and why they matter more than the load
+
+The profile must be able to produce, deliberately, each of the patterns that all raise a
+short-window arithmetic mean by a similar amount and which a mean cannot tell apart:
+
+| pattern | what the chart should show | how the profile produces it |
+|---|---|---|
+| **steady** | flat tracks, steady volume | constant offered rate |
+| **uniform slowdown** | all tracks lift together, volume unchanged | raise the offered rate toward saturation |
+| **tail excursion** | p50 and p90 flat, p99 climbs, volume unchanged | short sub-second micro-bursts inside an otherwise steady interval, so most orders are normal and a few queue behind each other |
+| **volume collapse** | nothing moves, volume falls | drop the rate sharply, without reaching zero |
+
+All four are reachable with rate control alone — no venue modification, no fault injection.
+
+**This is the strongest reason to build it.** The band chart is currently a chart we believe. Once
+it has distinguished four constructed inputs whose ground truth we chose, it is a chart that has
+been *shown* to work — a real negative control, of the kind whose absence let something through in
+the gateway HA work.
+
+It also answers the original question directly: if the venue can produce all three and the chart
+tells them apart, then the same reading applied to a real system says which one is happening, and
+what evidence would settle it.
+
+---
+
+## Shape of the profile
+
+A TOML file, matching the project's configuration convention. Sketch, not final:
+
+```toml
+[run]
+gateway            = "binary"   # see "Rate control is binary-only", below
+compression        = 6          # applied ONLY to phases with compressible = true
+ceiling_orders_per_second = 3500 # from the probe run; all phase rates are fractions of it
+minimum_samples    = 6          # per phase, at the chart step -- sets min_phase_seconds
+ceiling            = "2.5ms"    # must be a configured bucket bound, or breaches are refused
+
+[[phase]]
+name         = "pre-open"
+pattern      = "steady"
+duration     = "20m"
+compressible = true
+rate         = 0.015
+
+[[phase]]
+name         = "open auction"
+pattern      = "uniform_slowdown"
+duration     = "3m"
+compressible = false
+rate         = 1.15   # deliberately above ceiling: this is a stress phase
+
+[[phase]]
+name         = "sustained elevated"   # the event of interest -- REAL duration, never compressed
+pattern      = "uniform_slowdown"
+duration     = "60m"
+compressible = false
+rate         = 0.35
+
+[[phase]]
+name         = "tail excursion"
+pattern      = "tail"
+duration     = "5m"
+compressible = false
+rate         = 0.12
+micro_burst  = { every = "10s", orders = 40 }
+
+[[phase]]
+name         = "midday lull"
+pattern      = "volume_collapse"
+duration     = "30m"
+compressible = true
+rate         = 0.006
+# No cancels here, deliberately: cancels are invisible to the chart's volume line,
+# so they would be indistinguishable from the collapse this phase exists to produce.
+
+[[phase]]
+name          = "cancel storm"
+pattern       = "uniform_slowdown"
+duration      = "4m"
+compressible  = false
+rate          = 1.0          # NOT a lull: cancels arrive when everything else is busy too
+cancel_ratio  = 0.25         # sustained cancel stream, as a fraction of this phase's order rate
+cancel_sweeps = { comp_id = "BINCLIENT1", orders = 80, rate = 200, count = 8 }
+```
+
+`rate` is a fraction of `ceiling_orders_per_second` from the probe run, so the profile means the
+same thing on a different machine.
+
+Rates are **aggregate offered orders per second**; the driver decides how to achieve them.
+
+A `cancel_sweep` cancels that many of the comp id's resting orders, at its own defined rate, as
+individual requests — the venue has no mass-cancel message. It runs *alongside* the phase's
+new-order flow rather than instead of it, which is the realistic shape and the one that loads
+ingress, the ME's book lookup and egress at the same time. `cancel_sweep.rate` is the parameter to
+push between runs.
+
+---
+
+## Cancels
+
+A member pulling its book is ordinary behaviour and belongs in a normal day. The profile must
+include cancels, up to and including cancelling **50–100 outstanding orders for one comp id**.
+
+### There is no mass-cancel message in this venue
+
+`OrderMassCancelRequest` (msgtype `q`) and `OrderMassCancelReport` (`r`) exist in the stock
+`FIX50SP2.xml` dictionary, but **not** in `applications/fix_orders.dd.xml`, which generates only
+NewOrderSingle, OrderCancelRequest and ExecutionReport. The binary client offers `--cancel` with
+`--cl-ord-id`, which cancels one order.
+
+So "cancel everything for this comp id" means **50–100 individual cancel requests**, not one
+message. That is worth being explicit about, because it is a different test:
+
+- what it exercises is a **burst of individual cancels** — the gateway's `drain_pending_cancels`
+  path, already known to account for around 11.3% of gateway CPU, and the ME's book lookup once
+  per order;
+- what it does **not** exercise is mass-cancel semantics — one request, one report, the ME walking
+  its own book.
+
+Implementing `q`/`r` is a separate feature and a sibling of the Order Mass Status Request already
+on the candidate list. Stock FIX50SP2 permits both, so the data dictionary rule is satisfied if it
+is ever picked up. **Not in scope here.**
+
+### Cancels are invisible to the latency chart, and that is a confound
+
+`order_round_trip_nanoseconds` observes **only `OrdStatus=New`** — every ER for an order carries
+the same ingress stamp, so counting a later Canceled one would record a round trip as long as the
+order rested on the book. The band chart's volume line comes from that same histogram's `_count`.
+
+The consequence is sharp: **a cancel-heavy phase shows falling volume on the chart while the venue
+is busier than ever.** That looks exactly like the volume-collapse pattern, which is one of the
+three the chart exists to tell apart.
+
+Two responses, both **decided**:
+
+1. **Never overlap a cancel-heavy phase with the volume-collapse phase.** A design rule for the
+   profile, free, and it protects the negative-control argument. Note this does *not* forbid
+   overlapping cancels with a **burst** — see below, where it is required.
+2. **Plot `rate(framework_pdu_messages_total)` beside the new-order volume.** That counter already
+   exists per thread and counts every PDU, cancels included, so the *divergence* between the two
+   lines is the cancel activity. No new instrumentation.
+
+Considered and **not** taken for now: a cancel round-trip histogram. Honest and useful, but new
+instrumentation and a scope decision of its own.
+
+The manifest records cancels offered per phase regardless, so the reading can always be corrected.
+
+### A cancel storm is an intensity event, not a quiet one
+
+Observed in production: **when a lot of cancels are going on, the traffic at that moment is
+extremely intense.** That is not incidental, and the profile must reflect it rather than testing
+cancels in a calm phase.
+
+Three reasons it compounds:
+
+- **Every cancel is two messages, not one.** N cancel requests in, N Canceled reports out, *on top
+  of* the ongoing new-order flow and its reports. The egress path takes the worst of it.
+- **Whatever made the member pull its book is affecting everyone else too.** A price move or a news
+  event produces the cancels *and* a surge of new orders. Cancels arriving during a lull is the
+  unrealistic case.
+- **`drain_pending_cancels` is already about 11.3% of gateway CPU**, and it is a hot spot that only
+  becomes significant under exactly this condition. A cancel phase run at a polite rate would never
+  reveal it.
+
+So the cancel sweep is layered **on top of an elevated order rate**, and it is a natural candidate
+for one of the phases meant to stress the venue to its limits — more realistic than simply cranking
+the new-order rate, because it loads ingress, the ME's book lookup and egress simultaneously.
+
+### Two different things: a cancel stream and a cancel sweep
+
+Easily conflated, and they need separate parameters because they are separate phenomena.
+
+- **The stream** — sustained cancel traffic, many members churning their quotes. This is what makes
+  the storm a *phase* rather than an instant, and it is expressed as `cancel_ratio`, a fraction of
+  the phase's order rate.
+- **The sweep** — one member pulling its whole book: a bounded burst of N cancels for one comp id.
+  This is the panic event, and several of them are spread across the phase.
+
+**A single 80-order sweep is invisible at chart resolution.** At 40 cancels/s it lasts two seconds;
+at a 15s step it cannot appear as anything but a contribution to one interval's p99. That is not a
+reason to drop it — the tail is exactly what it should affect — but it is a reason not to expect a
+sweep to show up as a feature of its own, and a reason to run several.
+
+### Why the stream is a ratio, not an absolute
+
+**You can only cancel what is resting.** The ME never fills, so the outstanding book grows only
+from new orders and shrinks only from cancels:
+
+| cancel rate versus order rate | outcome |
+|---|---|
+| below | book grows; sustainable indefinitely |
+| about equal | book flat — the **sustained ceiling**, and the interesting endpoint: double the message work for zero net book change |
+| above | possible only in bursts, drawing down the accumulated book; self-terminating |
+
+Expressing it as a fraction makes the impossible case unrepresentable, and rescales automatically
+when the phase's order rate is tuned.
+
+### What the framework actually sees is messages per second
+
+Orders and cancels are both just PDUs to the reactor and its queues. At 3,500 orders/s with
+`cancel_ratio = 0.25`:
+
+```
+in    3,500 NOS      +  875 cancels        = 4,375 msg/s
+out   3,500 New ERs  +  875 Canceled ERs   = 4,375 msg/s
+                                           ≈ 8,750 msg/s through the gateway
+```
+
+That is the figure to reason about, and it is why a cancel storm loads the framework harder than
+simply cranking the order rate: the same throughput increase arrives split across two ingress paths
+and two egress paths.
+
+Suggested starting point, to be superseded by the probe run below: `cancel_ratio = 0.25`, pushed
+across runs to 0.5, 0.75 and 1.0.
+
+### The harness must track its own outstanding orders
+
+Mechanically new, and easy to miss. You can only cancel what is resting, and the binary client
+cancels by `--cl-ord-id`, so the runner has to maintain **its own book of outstanding ClOrdIDs per
+comp id** — which orders it sent, and which are still open. `perf_run.py` today fires and forgets.
+
+Two things the implementation must establish first: whether the ME ever fills a resting order in
+this configuration (if it does not, everything sent stays outstanding and the bookkeeping is
+trivial), and that a cancel-heavy phase is preceded by enough order flow to have 50–100 resting
+orders to sweep.
+
+---
+
+## Rate control is binary-only, and that is the first decision
+
+`perf_run.py:881` rejects `--rate` for the FIX gateway, because f8test has no rate control. So:
+
+1. **Binary gateway first.** Full shaping immediately, no new client. Recommended for the first
+   version — it makes every pattern above reachable today.
+2. **FIX by session waves.** Start and stop f8test sessions to vary *aggregate* load. No
+   per-session control and coarse, but it produces genuine bursts and quiet periods through the
+   real FIX stack.
+3. **A rate-controlled FIX load client.** Most faithful, most work, and replacing f8test was
+   already judged disproportionate once.
+
+The profile format above is agnostic; only the driver differs.
+
+---
+
+## The manifest
+
+Written incrementally so a run that dies still has one, alongside the existing `perf_run` output:
+
+```
+run_id, gateway, instance, ceiling, chart step
+per phase: name, pattern, planned duration, actual start/end epoch seconds,
+           orders offered, orders acknowledged
+```
+
+Without it, reading the chart is guesswork — *was that bump the second burst or the failover?*
+With it the chart becomes evidential, and `pubsub_metrics.py` can later shade the phases behind
+the percentile tracks.
+
+---
+
+## Assertions — what the run actually verdicts
+
+Reported, and only some of them fatal. Consistent with `docs/testing.md`: a number that needs
+judgement is reported, a process failure is fatal.
+
+**Fatal:**
+
+- **No loss.** Every NOS acknowledged by an ER. `perf_run.py` already derives this ground truth
+  from `GW-NOS-RECV` / `GW-ER-SENT`, and already knows to distinguish *the venue lost it* from *the
+  harness never sent it* — a lesson worth inheriting, since it once reported 5,000 phantom losses.
+- **Every component still alive at the end**, and no component restarted mid-run.
+- **The harness offered what it promised.** Achieved rate within tolerance of offered, per phase.
+  A run whose load generator quietly under-delivered is not evidence of anything.
+
+**Reported, never fatal:**
+
+- **Recovery.** After each burst ends, how long until p99 returns within tolerance of the
+  pre-burst baseline. The headline number for a short burst.
+- **Monotonic degradation across the sustained phase.** Compare p99 and volume in the first third
+  against the last third. *This is the point of the hour-long phase* — a rising trend within a
+  phase of constant offered rate is accumulation, and is the finding the whole design exists to
+  surface.
+- **Breach count per phase.** Exact, from the bucket bound at the ceiling. `1,412 orders exceeded
+  2.5ms during burst 4` is a better overload verdict than any percentile, because a p99 under the
+  ceiling still permits one order in a hundred above it.
+- **Framework resource accumulation at phase boundaries.** Latency is the symptom; these are the
+  cause, and they are the framework observables the whole run exists to produce:
+  - **Slab and pool allocator growth** — `ExpandableSlabAllocator` and `ExpandablePoolAllocator`
+    expand on demand. Whether they plateau or climb across a sustained hour is a framework
+    question, and one no short burst can ask.
+  - **Queue depth behaviour** — `LockFreeMessageQueue` already keeps an atomic size for its
+    watermark handlers. Whether watermarks fire, and whether depth returns to baseline after each
+    burst, is the backpressure story.
+  - **WAL bytes written and retained**, against the sustained phase's duration.
+  - **RSS per component**, as the coarse catch-all for anything the above misses.
+
+---
+
+## Finding causes, not just symptoms
+
+The run exists to flush out **framework** bottlenecks — unpinned hot threads, allocation on the hot
+path, computations that cost more than they look. The metrics say *when* the framework struggled;
+these say *why*.
+
+### Two run modes, and their figures are never comparable
+
+- **Measured** — metrics only, nothing attached. Produces the latency figures and the assertions.
+- **Profiled** — `perf` or callgrind attached. Produces attribution.
+
+`perf record --call-graph dwarf` attached to the ME and a gateway measurably inflates round-trip
+figures; a previous run's p50 of 123ms was taken with it attached and is not a service-time number.
+**A profiled run's latencies must never be compared with a measured run's, or quoted as venue
+performance.** The runner should record the mode in the manifest so the two cannot be confused
+later.
+
+### The manifest makes profiling phase-aligned
+
+This is what turns the manifest from a convenience into a requirement. With each phase's start and
+end epoch seconds recorded, a `perf` capture can be **sliced per phase** — profile the cancel storm
+separately from the lull, and attribute cost to load *shape* rather than averaging it across an
+hour in which the venue did four different things. Averaged over a whole run, a cost that only
+appears during bursts disappears.
+
+### The specific bottleneck classes, and what detects each
+
+| looking for | detector |
+|---|---|
+| **Unpinned hot threads** | `cpu_audit.py` checks every running thread's real mask in `/proc` against the declared layout and exits non-zero on a mismatch. **Run it after the load as well as before** — a thread created lazily under load escapes a start-up-only audit entirely, which is exactly the case worth catching. |
+| **Allocation on the hot path** | The `deploy.py`-generated wrapper already exists as a `perf`/`valgrind` interposition point; a malloc-counting interposer over a phase shows whether the hot path reaches the heap at all. The framework has slab and pool allocators precisely so it should not. |
+| **Costly computations** | `perf record` sliced by phase, per the manifest. |
+
+### Triage: which findings are in scope
+
+A load run produces a list of hot spots, and without a rule the temptation is to optimise whatever
+looks biggest. That would mean tuning application code, which is not what this is for. **A finding
+is in scope only if it says something about the framework.** Three ways it can:
+
+1. **A framework bottleneck.** Cost inside `pubsub_itc_fw` itself. Fix it there.
+2. **The application using the framework sub-optimally.** The framework offers the right facility
+   and the application is not using it, or is using it badly. Fix the application — and ask whether
+   the framework made the wrong thing easy, because that is the more valuable half of the finding.
+3. **The framework not providing something that would be beneficial.** The application does
+   something awkward because it has no better option. **This is a framework requirement**, and it
+   is the most valuable outcome the run can produce — flushing these out is what the applications
+   are for. It belongs in the roadmap, not in a patch to the application.
+
+**Out of scope: an application inefficiency that implies nothing about the framework.** Note it and
+move on. The matching engine does no matching and the gateways barely validate; making their stub
+logic faster proves nothing about `pubsub_itc_fw` and costs time that the framework should have had.
+
+### Known suspects, and how they triage
+
+Worth checking against rather than rediscovering. Earlier profiling found the **Quill logging
+backend at about 27%** and **`drain_pending_cancels` at about 11.3%**, dwarfing FIX parsing at
+roughly 8%. They land in different categories, which makes them a good worked example:
+
+- **The logging backend** is a category 1 or 2 finding depending on what the run shows. If the cost
+  is inherent to how the framework wraps Quill, that is the framework's to answer. If the
+  applications are simply logging too much on the hot path, that is category 2 — and the follow-up
+  question is whether the framework should make over-logging harder to do by accident. A sustained
+  hour is the first real test of whether its share holds steady or grows.
+- **`drain_pending_cancels`** is gateway application code, so it is only in scope if the run shows
+  it is awkward *because* the framework lacks a suitable queue or batching facility — category 3,
+  and a genuine requirement. If it is merely an inefficient loop in a stub, it is out of scope.
+  The cancel storm phase targets it directly, which is what makes the distinction answerable.
+
+---
+
+## Prerequisites
+
+- `metrics_enabled = true` — dev only today, which is where this runs.
+- Prometheus running, on the background cores, so the collector does not perturb what it collects.
+- **The hot-path cores quietened first.** Until irqbalance is restricted and IRQs steered off
+  cores 1–14, the tail of the distribution during a burst is partly measuring interrupt noise —
+  and the tail is the entire point. The last audit found 51 IRQs pinned to hot cores, up from 15.
+- `cpu_audit.py` green, so the run is measuring the declared layout.
+
+---
+
+## Built as an extension of `perf_run.py`
+
+Not a new script. `perf_run.py` already holds the parts that are easy to get wrong and were got
+wrong once already:
+
+- `wait_for_fix_logons()` — verifying every session is logged on before load starts. It replaced a
+  `time.sleep(3.0)`, and the gap it left meant one client silently contributed nothing.
+- Loss accounting from `GW-NOS-RECV` / `GW-ER-SENT`, which knows to distinguish *the venue lost it*
+  from *the harness never sent it*. Getting that backwards once produced a report of 5,000 phantom
+  losses.
+- Client-log capture off by default, because making the load generator write ~5 MB per client
+  during a timed run perturbs the very rate being offered.
+
+A trading-day profile that reimplemented these would reproduce their bugs. The new work is the
+phase scheduler, the profile file, the manifest and the assertions.
+
+---
+
+## Settled
+
+- **The sustained phase runs at its real duration**, never compressed. Accumulation is what it
+  exists to find, and there is no shortcut to an hour of elapsed time.
+- **The ME never fills.** `MatchingEngineThread.cpp` emits only `New`, `Canceled` and `Rejected`,
+  so orders rest until cancelled and the outstanding-order bookkeeping is everything sent minus
+  everything cancelled.
+- **Cancel load is a ratio, not an absolute**, bounded above by the order rate. Stream and sweeps
+  are separate parameters.
+- **Every phase rate is a fraction of a probed ceiling**, so the profile transfers between machines.
+
+## First run
+
+The figures in the sketch above are a plausible first calibration for one 32-core workstation and
+nothing more — they may well be too high. That is what the probe run is for, and why nothing in the
+profile is written as an absolute. Expect the first real run to move them.
+
+---
+
+## See Also
+
+- [Testing and Code Coverage](../testing.md) — the report-not-gate principle these assertions follow
+- [Metrics](metrics.md) — `order_round_trip_nanoseconds` and its bucket bounds
+- [CPU Core Layout](cpu_pinning_anti_affinity.md) — why the cores must be quiet first, and cpu_audit.py

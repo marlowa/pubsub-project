@@ -19,6 +19,7 @@
 - [Write-Ahead Log](design/wal.md)
 - [WAL and High Availability](design/wal_and_ha.md)
 - [Pub/Sub](design/pubsub.md)
+- [Compressed Trading Day Load Profile](design/trading_day_load.md) — DRAFT: bursty happy-path load to flush out framework bottlenecks, read through the latency band chart
 - [Serialisation DSL](design/serialisation_dsl.md)
 - [FIX Codec](design/fix_codec.md)
 - [Metrics and Prometheus](design/metrics.md)
