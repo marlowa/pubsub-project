@@ -660,6 +660,76 @@ are unchanged — the effect being looked for would have been far larger than th
 Run 4 also carried two unrelated changes (a metrics-loader fix and a counter read), neither
 of which touches the order path.
 
+### Third run, with cancels: the OOM was a test artefact
+
+Same profile, cancels added at a ratio of 0.7-0.9 depending on phase. **Every phase completed
+on schedule, every order was accepted, and nothing was OOM-killed.**
+
+| | run 4, no cancels | run 5, with cancels |
+|---|---|---|
+| orders accepted | 8,388,608 of 9,556,000 | **9,556,000 of 9,556,000** |
+| resting after the sustained hour | 6,928,000 | **1,385,600** |
+| peak matching-engine RSS | **9.9 GB, OOM-killed** | **1.45 GB** |
+| lowest MemAvailable | exhausted | 7.21 GB |
+| afternoon burst | overran 142s, exit 1 | 180s of 180s, exit 0 |
+| close | overran 30s, exit 1 | 240s of 240s, exit 0 |
+| largest p99 spike | 733 ms | ~60 ms |
+
+The memory profile is the interesting part, because it **plateaus**:
+
+```
+21:35   330 MB     22:12  1486 MB
+21:47   550 MB     22:25  1486 MB
+22:00   862 MB     22:37  1486 MB
+22:12   862 MB     22:50  1486 MB
+```
+
+The steps are the doublings; between them it is flat. That answers the accumulation question
+the sustained hour exists to ask: with a realistic cancel flow the book reaches a working
+size and stays there, rather than climbing monotonically until the kernel intervenes.
+
+**So the OOM was an artefact of the test, not a defect in the venue.** Nothing removed an
+order -- the matching engine does no matching, and until this the load client could not
+cancel -- so the book was a pure accumulator. A real book is bounded by open interest, not
+by daily volume.
+
+### What that does NOT excuse
+
+Three findings survive a passing run, and they are recorded in [Bug List](../bug_list.md):
+
+- **The venue accepts orders indefinitely with no matching engine**, at INFO, once per
+  order, telling nobody. Run 4 accepted and acknowledged 924,000 orders that nothing could
+  process.
+- **HA fails over into a condition both nodes share.** Detection, arbitration, promotion and
+  reconciliation were all correct and fast; the promoted secondary then died of the same
+  memory exhaustion two minutes later.
+- **The rehash still stalls the reactor callback thread.** A smaller book gives smaller
+  stalls -- 60 ms here against 733 ms -- but the mechanism is untouched, and it scales with
+  whatever the book grows to.
+
+The run passing means those are no longer *masked* by a test artefact. It does not mean they
+are fixed.
+
+### Two honesty notes on this comparison
+
+**Watchdog firings are not comparable between runs.** The "callback not finished yet" line is
+INFO, and a profile run raises the matching engine to `warning`, so run 5 shows zero firings
+because they were suppressed rather than absent. The p99 spikes on the chart are the evidence
+that stalls still occurred.
+
+**The breach count rose** -- 179,463 over the 2.5 ms ceiling, against 133,421 in run 4. That
+is not a regression: run 5 completed 9.56M orders where run 4 managed 8.39M and then stopped
+producing reports entirely. More orders completed means more of them counted.
+
+### The new instrumentation earned its place
+
+`GrowthReportingAllocator` logged four warnings, one per doubling -- 156, 312, 624 and
+1248 MB. In run 4 the equivalent growth to 9.9 GB produced **no memory warning at all**.
+`resource_usage.csv` recorded every component's RSS every five seconds alongside the
+machine's MemAvailable, so the plateau above is measured rather than inferred.
+
+Chart: `docs/measurements/trading_day_with_cancels.png`.
+
 ### Triage: this is a framework requirement, not an application bug
 
 By the rule above, the tempting reading is that the matching engine picked the wrong container and
