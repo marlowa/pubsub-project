@@ -111,6 +111,16 @@ Near-term tasks not tied to a specific slice.
   the sequencer as the shared authority and so is a cross-component protocol change. Pinning makes
   it smaller — two instances to check rather than N — but does not solve it.
 
+- **Framework-level replay** — raised 2026-08-06 as a conversation, not a task. Notes toward a
+  design in [Replay](design/replay.md), written up 2026-08-08 so the conclusions are not
+  rediscovered. In short: decide between *state reconstruction* (largely already working, and the
+  remaining work is access rather than determinism) and *faithful re-execution* (hard, probably not
+  worth it). The framework is well placed for the first — the clock is injected, the matching
+  engine is told the time rather than reading it, and the sequencer resolves ordering before the WAL
+  is written, so replay never has to reproduce thread interleaving. Timers are handled by replaying
+  their *consequences* through the sequencer rather than the timers themselves. Two traps are
+  recorded there, including one audit to do before building anything.
+
 - **Transport encryption on the binary order gateway and the internal PDU paths** — undecided, awaiting
   a security specialist. The binary order gateway authenticates with SCRAM but has no TLS listener, so
   it is not equivalent to the FIX gateway on this point. The wider question is whether order-flow
@@ -180,11 +190,9 @@ account of each is in `pubsub_itc_fw_summary.md` under the same item number.
 
 ### Known Issues
 
-- **Shutdown timeout errors** — after the timer SEGV fix, "did not stop within shutdown_timeout" and "failed to join within shutdown_timeout" errors still appear in timer test logs. Root cause not yet identified.
-
-- **OGT `process_message` exit-path audit** — potential false-stuck detection if any exit path from `process_message` skips updating `time_event_finished_`. Not yet audited.
-
-- **ResendRequest / SequenceReset-GapFill** — implemented, compiled, not yet tested under load.
+Moved to **[Bug List](bug_list.md)**, which records for each defect the date it was found and how
+it was found. Keeping defects here mixed them with planned work, and one of them was overlooked for
+four days as a result.
 
 ---
 

@@ -1,0 +1,181 @@
+# Bug List
+
+Defects found and not yet fixed, and defects fixed recently enough to be worth remembering.
+
+**Why this file exists.** The metrics-inside-CPU-pinning defect below was found on 2026-08-04,
+judged not worth fixing at that moment, and then forgotten — it survived only in a working note
+nobody else could see, and had to be rediscovered on 2026-08-08 before anything was done about it.
+A defect that is known and invisible is worse than one nobody has found: the project carries the
+risk without carrying the knowledge.
+
+**Every entry records the date it was found and how it was found.** The second is the more useful
+half. "Found by the trading-day load run" tells you which activity is worth repeating; "found by
+reading the code" tells you the tests would not have caught it.
+
+Fixed entries are kept for one release cycle and then deleted — the commit is the permanent record.
+
+---
+
+## Open
+
+### Environment placeholders are missing outside dev
+
+| | |
+|---|---|
+| Found | 2026-07 (exact date not recorded) |
+| How | Reading `deploy.py` against the environment files while working on config templating |
+| Impact | `deploy.py` exits on preprod, prod and test-1 |
+
+`environments/preprod.toml`, `prod.toml` and `test-1.toml` each lack 10–12 of the placeholder
+values their component templates require. Only `dev.toml` is complete, so only dev can be deployed.
+
+**Deliberately not fixed**: the missing values are real hostnames, ports and certificate paths for
+environments that do not exist yet. Inventing them would produce a file that deploys and then
+fails at run time, which is worse than one that refuses to deploy.
+
+### A growing hash map stalls the reactor callback thread for over a second
+
+| | |
+|---|---|
+| Found | 2026-08-08 |
+| How | The first clean compressed-trading-day load run — the reactor's own watchdog logged it, and the profile confirmed the cause |
+| Impact | p99 of 733 ms at 4.2M orders, over 1 s at 8.4M, after which the pipeline did not recover and 1,167,392 of 9,556,000 orders were never accepted |
+
+The matching engine's order book is a `tsl::robin_map` with `power_of_two_growth_policy<2ul>`. It
+doubles, and each doubling rehashes the whole table **on the callback thread**. Stalls land only on
+exact powers of two — all five stalls of 200 ms or more did, and none occurred elsewhere.
+
+**This is a framework requirement, not an application bug.** Calling `reserve()` in the matching
+engine would remove the symptom from a stub and teach nothing. `pubsub_itc_fw` offers slab and pool
+allocators for messages *in flight* and nothing at all for long-lived hot-path state that *grows* —
+so every application that keeps state (an order book, a session table, a subscription registry)
+will grow a container on a reactor callback thread and eventually stall it.
+
+See [Compressed Trading Day Load Profile](design/trading_day_load.md).
+
+### `cmake --install` re-lays config templates unexpanded
+
+| | |
+|---|---|
+| Found | 2026-08-08 |
+| How | A trading-day run failed to start immediately after a rebuild |
+| Impact | `devenv.py` refuses to start until `deploy.py` is re-run |
+
+Every build re-installs the `${placeholder}` templates over the deployed, expanded configs, so
+**`deploy.py` must be re-run after every build**. `devenv.py` does detect it and says so clearly,
+which is why this is a trap rather than a fault — but it is easy to hit when iterating on a
+component and then starting the venue.
+
+### Shutdown timeout errors in timer tests
+
+| | |
+|---|---|
+| Found | before 2026-07 (carried over from the roadmap's Known Issues) |
+| How | Timer test logs |
+| Impact | Unknown — the errors appear but nothing is known to misbehave |
+
+After the timer SEGV fix, "did not stop within shutdown_timeout" and "failed to join within
+shutdown_timeout" still appear in timer test logs. **Root cause not identified.** Worth noting that
+`ThreadWithJoinTimeout` exists precisely because a raw `std::thread` terminates on an early return
+before join, so a join that times out is not obviously benign.
+
+### OGT `process_message` exit paths not audited
+
+| | |
+|---|---|
+| Found | before 2026-07 (carried over from the roadmap's Known Issues) |
+| How | Code reading |
+| Impact | Possible false stuck-thread detection |
+
+If any exit path from `process_message` skips updating `time_event_finished_`, the watchdog would
+report a thread as stuck when it is not. Not yet audited. Given that the reactor watchdog is what
+made the rehash stall diagnosable, false positives from it would be costly.
+
+### Doxygen 1.8.14 turns `\ref` labels into bare directory links
+
+| | |
+|---|---|
+| Found | 2026-07 (exact date not recorded) |
+| How | Building the docs on RHEL8, where 1.8.14 is the newest packaged release |
+| Impact | Documentation only; the architecture map's cross-links break |
+
+An unresolved `\ref` collapses to `href="../../"`, which a browser opens as a directory listing —
+or, on Windows, a file chooser. 1.8.14 does **not** fail the build on an unresolved reference, so
+this is silent. `docs/architecture_map_howto.dox` proposes a post-build check; not written.
+
+### ResendRequest under load
+
+| | |
+|---|---|
+| Found | before 2026-08 (carried over from the roadmap's Known Issues) |
+| How | Noted when the feature was written |
+| Impact | Unknown |
+
+Partly overtaken by the 0.3.0 work, which replaced the blanket `SequenceReset-GapFill` with real
+resends carrying `PossDupFlag`. The original concern — never exercised under load — still stands,
+and the trading-day profile is a natural place to exercise it once it drives the FIX gateway.
+
+### fix-test-client reports a dead gateway poorly
+
+| | |
+|---|---|
+| Found | 2026-07 (exact date not recorded) |
+| How | Manual testing of the logon page |
+| Impact | The UI misleads about connection state |
+
+Two undecided items: `lastError` is left empty, and `connected` stays true after the gateway dies.
+FIX produces no disconnect message, so there is nothing to display without inferring it.
+
+---
+
+## Fixed
+
+### Metrics silently disabled when CPU pinning is off
+
+| | |
+|---|---|
+| Found | 2026-08-04 |
+| How | Reading the configuration loaders while adding the Prometheus metrics |
+| Fixed | 2026-08-08 |
+
+`config.metrics_configuration = MetricsConfigurationLoader::load(toml)` sat **inside** the
+`if (config.cpu_pinning_enabled)` block in the matching engine and both gateway loaders. A
+component with pinning turned off exposed no metrics at all — no error, no warning, just an
+endpoint that never appeared.
+
+Left alone when first found because nothing depended on it. It became urgent when the test
+harnesses moved their ground truth onto those counters, at which point a silent disable would make
+them pass while verifying nothing. **This is exactly the defect that motivated this file.**
+
+### Orphaned build directories break coverage capture
+
+| | |
+|---|---|
+| Found | 2026-08-08 |
+| How | Every incremental coverage build was failing; the error named standard-library headers and pointed nowhere near the cause |
+| Fixed | `10f4578` |
+
+`applications/binary_gateway/` was renamed on 2026-08-01 and CMake never removed the old target
+tree. gcovr searches the whole build tree *before* the report-level excludes apply, found `.gcno`
+files with no `.gcda`, could not resolve their compilation directory, searched upward and aborted
+at `/`.
+
+### Trading-day phases reused ClOrdIDs
+
+| | |
+|---|---|
+| Found | 2026-08-08 |
+| How | The first trading-day run; `perf_run.py`'s own loss accounting reported the mismatch |
+| Fixed | `d47112e` |
+
+The phase scheduler restarts the load client per phase and every invocation numbered its orders
+from 1, so 5,256,000 of 8,632,000 orders were rejected as duplicates and four of seven phases
+recorded no latency at all. Quiet in the worst way: rejected orders still travel through the
+gateway and sequencer, so the load looked real while measuring nothing.
+
+---
+
+## See Also
+
+- [Roadmap](roadmap.md) — planned work, as distinct from defects
+- [Testing and Code Coverage](testing.md)

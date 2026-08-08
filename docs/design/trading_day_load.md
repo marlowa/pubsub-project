@@ -597,6 +597,69 @@ signature exactly: a handful of orders delayed catastrophically while the bulk a
 the reason the chart reports percentiles rather than a mean. A one-second mean over the 12:35
 interval would have shown a modest bump and explained nothing.
 
+### Second run, same day: what per-order logging actually costs
+
+A controlled pair. Same profile, same machine, same 9.56M orders offered; the only change
+that touches the hot path is whether the matching engine emits one `Info` line per accepted
+order.
+
+| | logging on | logging off |
+|---|---|---|
+| ME log | **1.95 GB**, 8,388,985 lines | **0.076 MB**, 394 lines |
+| p99 spike at the 2^21 doubling | 96 ms | 96 ms |
+| p99 spike at the 2^22 doubling | 733 ms | ~790 ms |
+| p50 / p90 baseline | unchanged | unchanged |
+| sustained hour | 3,598s of 3,600s | 3,598s of 3,600s |
+| orders over the 2.5 ms ceiling | 118,776 | 133,421 |
+
+**Removing 8.4 million log lines saved 1.95 GB and did not measurably change latency.**
+
+The two charts are kept for comparison — the spikes are the same features in both:
+
+- `docs/measurements/trading_day_logging_on.png`
+- `docs/measurements/trading_day_logging_off.png`
+
+The profile said so in advance. Quill splits the work: the calling thread serialises raw
+arguments into a lock-free ring buffer, and a backend thread formats them. On the matching
+engine's own thread the frontend accounted for **0.06%** of samples —
+`Codec<string_view>::encode`, `_reserve_queue_space`, `_encode_header`,
+`_commit_log_statement`. The formatting, which is the expensive half, showed up on the
+**QuillBackend** thread at 78.76% of the process's samples — and that thread is pinned to a
+**background core**, not a hot-path one.
+
+#### The condition this result depends on
+
+The backend being pinned away from the hot path is **load-bearing, not incidental**. The
+78.76% is real CPU; it simply is not competing with the thread that matters. On a machine
+where the logging backend can be scheduled onto a hot-path core, the same experiment would
+not be expected to give the same answer.
+
+So the claim this run supports is narrow and specific: *with a deferred-formatting logger
+whose backend is pinned to a non-hot-path core, a log line per order costs the hot path
+almost nothing.* It does not support "logging is free".
+
+#### What it does cost
+
+- **Disk.** 1.95 GB over 83 minutes here. At 30–40 million orders a day that is 7–10 GB
+  from one statement, before any other component logs anything.
+- **Headroom.** Nothing hit it in these runs, but if the backend ever fails to drain, the
+  frontend queue fills and the cost stops being 0.06% very abruptly.
+- **Argument size, not format cost.** The frontend copies the arguments; it does not format
+  them. `Codec<string_view>::encode` was the largest frontend entry because it copies the
+  string's bytes. Fewer and smaller arguments on the hot path; an expensive *format* is
+  free to the caller.
+
+#### Honest limits of the comparison
+
+One machine, one configuration, two runs. The runs are not identical in every respect: the
+breach count differed by 12% and the closing phases overran by different amounts, so
+run-to-run variation at that scale is real. What is solid is that **the two large p99 spikes
+appear in both runs at the same points and the same magnitudes**, and the p50/p90 baselines
+are unchanged — the effect being looked for would have been far larger than the noise.
+
+Run 4 also carried two unrelated changes (a metrics-loader fix and a counter read), neither
+of which touches the order path.
+
 ### Triage: this is a framework requirement, not an application bug
 
 By the rule above, the tempting reading is that the matching engine picked the wrong container and

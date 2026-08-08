@@ -86,6 +86,12 @@ BINARY_LOAD_COMP_ID_PREFIX = "LOADCLIENT"
 BINARY_LOAD_PASSWORD       = "loadclientpassword"
 SHUTDOWN_TIMEOUT = 5.0   # seconds to wait for each app to exit after SIGTERM
 MAX_ORDER_TIMEOUT = 120.0  # hard cap on order/ER completion wait (2 minutes)
+# How long the ME's accepted-order counter may stand still before it is called a
+# stall. Long enough not to fire on a rehash pause -- one measured over a second.
+ORDER_STALL_SECONDS = 10.0
+# What a --profile run lowers the matching engine to. Warning, not error: a
+# genuine problem during a load run must still reach the log.
+LOAD_RUN_APPLOG_LEVEL = "warning"
 
 # The gateway logs one of these per ER it discards because the target client
 # session already disconnected. Such ERs are "accounted for" but never delivered.
@@ -463,30 +469,40 @@ def _wait_for_log_pattern(log_path: Path, label: str, target: int,
     return False
 
 
-def wait_for_order_completion(me_log: Path, total_orders: int, timeout: float) -> bool:
-    """Phase 1: wait for the ME to accept all NOS orders."""
-    target_str      = f"ME-ORD-{total_orders}"
-    target_pattern  = re.compile(re.escape(target_str) + r"(?!\d)")
-    any_ord_pattern = re.compile(r"ME-ORD-(\d+)")
-    # Wrap the generic loop: we need the highest-seen counter rather than a
-    # simple running count, so we use a closure that resets on each chunk.
-    highest_seen = [0]
+def wait_for_order_completion(metrics_port: int, total_orders: int, timeout: float) -> bool:
+    """Phase 1: wait for the matching engine to accept every order.
 
-    def count_nos(chunk: str) -> int:
-        if target_pattern.search(chunk):
-            highest_seen[0] = total_orders
-            return total_orders - highest_seen[0] + 1  # signal completion
-        matches = any_ord_pattern.findall(chunk)
-        if matches:
-            h = max(int(m) for m in matches)
-            if h > highest_seen[0]:
-                delta = h - highest_seen[0]
-                highest_seen[0] = h
-                return delta
-        return 0
+    Reads orders_processed_total from the ME's own metrics endpoint rather than counting
+    "accepted NOS OrderID=ME-ORD-" lines in its log. That line is now Debug -- it cost
+    226 bytes per order -- and a counter is exact where a regex over a multi-gigabyte
+    file is merely usually right.
 
-    return _wait_for_log_pattern(me_log, "ME-ORD", total_orders, count_nos, timeout,
-                                  stall_is_warning=False)
+    A stall is reported as such rather than silently waiting out the timeout, because a
+    pipeline that has stopped and a pipeline that is slow need different responses.
+    """
+    deadline = time.time() + timeout
+    highest = 0.0
+    last_progress = time.time()
+    while time.time() < deadline:
+        seen = read_counter(metrics_port, "orders_processed_total")
+        if seen is None:
+            log(f"  ME metrics endpoint on port {metrics_port} is not answering -- "
+                f"is the matching engine up, and metrics enabled?")
+            time.sleep(1.0)
+            continue
+        if seen > highest:
+            highest, last_progress = seen, time.time()
+        if seen >= total_orders:
+            log(f"  ME accepted {int(seen):,} / {total_orders:,} orders")
+            return True
+        if time.time() - last_progress > ORDER_STALL_SECONDS:
+            log(f"  ME-ORD stalled at {int(highest):,} / {total_orders:,} for "
+                f"{ORDER_STALL_SECONDS:.0f}s")
+            last_progress = time.time()
+        time.sleep(0.2)
+
+    log(f"  TIMEOUT: ME accepted {int(highest):,} / {total_orders:,}")
+    return False
 
 
 def wait_for_er_completion(gw_log: Path, total_orders: int, timeout: float, clients: int) -> bool:
@@ -702,6 +718,40 @@ def run_binary_load_session(bin_dir: Path, output_dir: Path, burst: int, clients
         die(f"binary_load_client reported failure (exit {result.returncode}) -- "
             f"not every order was acknowledged")
     log("  binary_load_client completed: every order acknowledged")
+
+
+
+# ── Log level for load runs ───────────────────────────────────────────────────
+
+def set_applog_level(config: Path, level: str) -> str | None:
+    """Rewrite a component's applog_level, returning the previous value.
+
+    A load run does not want the matching engine's per-order Info line: it is 226 bytes
+    an order, which is 1.95 GB over an 83-minute profile and would be 9.5 GB a day at a
+    real venue's 40 million orders.
+
+    The level is changed HERE rather than in the source because the line is a test
+    contract. ha_test.py reads it to assert HA properties -- "no ME-ORD gap or reset" is
+    a statement about ME-ORD-N, the ME's own order_id_counter_, which advances during WAL
+    reconciliation where orders_processed_total deliberately does not. The two diverge
+    after a failover, so the counter cannot replace the log there. ha_test's scenarios
+    are a few thousand orders, where the volume does not matter; a load run is millions,
+    where it does. Per-run configuration separates the two without weakening either.
+
+    Returns None when the file has no applog_level to change, so the caller can tell
+    "restored nothing" from "restored to info".
+    """
+    if not config.is_file():
+        return None
+    text = config.read_text()
+    match = re.search(r'^(\s*applog_level\s*=\s*)"([^"]*)"', text, re.M)
+    if match is None:
+        return None
+    previous = match.group(2)
+    if previous == level:
+        return previous
+    config.write_text(text[:match.start()] + f'{match.group(1)}"{level}"' + text[match.end():])
+    return previous
 
 
 # ── Trading-day profile ───────────────────────────────────────────────────────
@@ -921,6 +971,70 @@ def run_trading_day(bin_dir: Path, output_dir: Path, profile_path: Path, session
     return manifest
 
 
+
+# ── Ground truth from the metrics endpoint, not the log ───────────────────────
+#
+# Every component serves its own /metrics on a port in its deployed config, so this
+# needs no Prometheus -- just an HTTP GET at the component.
+#
+# This replaces counting "accepted NOS OrderID=ME-ORD-" lines in the matching engine
+# log. That line is now Debug, because one line per order is 226 bytes and a real
+# venue's 30-40 million orders a day would make 7-10 GB of it. orders_processed_total
+# is incremented at exactly the same point in the code -- after the book emplace,
+# deliberately excluding the replay path, the follower path and duplicate rejections --
+# so this is the same fact, counted rather than parsed.
+
+def component_metrics_port(prefix: Path, directory: str, component: str) -> int:
+    """Read a component's metrics listen port from its deployed configuration.
+
+    The [metrics] section's listen_port, not the first listen_port in the file: the
+    network listener comes earlier and picking it up silently queries the wrong port.
+    """
+    config = prefix / "etc" / directory / f"{component}.toml"
+    if not config.is_file():
+        die(f"{component} config not found: {config}")
+    in_metrics = False
+    for line in config.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_metrics = stripped.startswith("[metrics]")
+            continue
+        if in_metrics:
+            match = re.match(r"listen_port\s*=\s*(\d+)", stripped)
+            if match:
+                return int(match.group(1))
+    die(f"no [metrics] listen_port in {config}")
+    return 0  # unreachable; die() exits
+
+
+def read_counter(port: int, metric: str, timeout: float = 2.0):
+    """Return a component's counter value, or None if it cannot be read.
+
+    None rather than 0 on failure, deliberately: a component that is down and a
+    component that has processed nothing are different findings, and a caller waiting
+    for a count to rise must not mistake the first for the second.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, OSError):
+        return None
+    total = None
+    for line in body.splitlines():
+        if line.startswith("#") or not line.startswith(metric):
+            continue
+        # metric{labels} value  -- sum across label sets, which is what the log count did.
+        parts = line.rsplit(" ", 1)
+        if len(parts) == 2:
+            try:
+                total = (total or 0.0) + float(parts[1])
+            except ValueError:
+                continue
+    return total
+
 _LOGON_ESTABLISHED_MARKER = "FIX session established"
 
 
@@ -1032,7 +1146,9 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_
         # Phase 1: ME intake.  This is a progress indicator only — the ME processes
         # NOS in pipeline order and its log may lag the ER log.  A stall here does
         # not mean orders are lost; GW-ER-SENT is the authoritative end-to-end signal.
-        nos_ok = wait_for_order_completion(me_log, total_orders, timeout)
+        me_metrics_port = component_metrics_port(prefix, "matching_engine",
+                                                "matching_engine_primary")
+        nos_ok = wait_for_order_completion(me_metrics_port, total_orders, timeout)
         if not nos_ok:
             log(f"  ME-ORD live count did not reach {total_orders:,} — "
                 f"pipeline still draining; proceeding to ER phase (authoritative)")
@@ -1170,6 +1286,17 @@ def main() -> None:
         ensure_fix8_credentials(creds_file, fix8_comp_ids(args.clients), FIX8_PASSWORD, args.logon_mode)
 
     # -- launch applications in dependency order (mirrors dev.toml startup_order)
+    # A profile run raises the matching engine's log level before anything starts: its
+    # per-order Info line dominates the log and is worth 1.95 GB over one profile. Restored
+    # in the shutdown path so a config edited for one run does not silently persist.
+    me_config = etc_dir / "matching_engine" / "matching_engine_primary.toml"
+    previous_me_level = None
+    if args.profile:
+        previous_me_level = set_applog_level(me_config, LOAD_RUN_APPLOG_LEVEL)
+        if previous_me_level is not None:
+            log(f"  matching engine applog_level {previous_me_level} -> "
+                f"{LOAD_RUN_APPLOG_LEVEL} for this load run (restored afterwards)")
+
     # Each tuple: (name, binary, config, optional_workdir).
     # auth services must start first; gateway connects to them on startup.
     steps = [
@@ -1199,6 +1326,9 @@ def main() -> None:
 
     def full_shutdown() -> None:
         shutdown_processes(app_procs)
+        if previous_me_level is not None:
+            set_applog_level(me_config, previous_me_level)
+            log(f"  matching engine applog_level restored to {previous_me_level}")
         stop_perf_procs(perf_procs)
         if app_procs:
             generate_reports([n for n, _ in app_procs], perf_dir)
@@ -1242,6 +1372,14 @@ def main() -> None:
         log(f"Waiting {POST_ORDER_WAIT:.0f}s for pipeline to drain ...")
         time.sleep(POST_ORDER_WAIT)
 
+        # Read the ME's accepted-order counter BEFORE shutting anything down. The counter
+        # lives in the process, so unlike the log it does not survive SIGTERM -- and the
+        # log line it replaces is now Debug. Taken after the drain wait so it counts
+        # everything the pipeline had in flight.
+        me_accepted_total = read_counter(
+            component_metrics_port(prefix, "matching_engine", "matching_engine_primary"),
+            "orders_processed_total")
+
         full_shutdown()
 
     except KeyboardInterrupt:
@@ -1259,6 +1397,13 @@ def main() -> None:
         stop_perf_procs(perf_procs)
         raise
     finally:
+        # In `finally` because the failure path above does not call full_shutdown(), and a
+        # run that died must not leave the matching engine's log level altered for the next
+        # one -- a silently quiet component is exactly the kind of thing nobody notices
+        # until a test that needed the log fails for no visible reason.
+        # set_applog_level is idempotent, so running twice on the clean path is harmless.
+        if previous_me_level is not None:
+            set_applog_level(me_config, previous_me_level)
         if args.capture:
             set_fix_capture_enabled(gw_config, False)
             log("FIX capture disabled in fix_order_gateway config")
@@ -1273,9 +1418,10 @@ def main() -> None:
         except FileNotFoundError:
             return 0
 
-    # Count the ME order-acceptance line only ("accepted NOS OrderID=ME-ORD-N").
-    # A bare "ME-ORD" substring also matches the cancel-ER lines, double-counting.
-    me_final      = count_in_log(me_log,  "accepted NOS")
+    # From the counter captured before shutdown, not from the log: the per-order line is
+    # Debug now. None means the endpoint could not be read, which is a different failure
+    # from "accepted nothing" and must not be reported as a count of zero.
+    me_final = -1 if me_accepted_total is None else int(me_accepted_total)
 
     if args.gateway == "binary":
         # The binary gateway logs no line per execution report, deliberately: doing so
@@ -1284,8 +1430,12 @@ def main() -> None:
         # already failed the run if they did not match, so the ME count is the only
         # independent check worth making here.
         log("=== Post-shutdown ground-truth counts ===")
-        log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  "
-            f"{'OK' if me_final == total_orders else 'MISMATCH'}")
+        if me_final < 0:
+            log("  ME-ORD        : COULD NOT READ the matching engine's metrics endpoint.")
+            log("                  Is metrics_enabled true for this environment?")
+        else:
+            log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  "
+                f"{'OK' if me_final == total_orders else 'MISMATCH'}")
         log("  ER delivery   : verified by binary_load_client (it exits non-zero on any shortfall)")
         if me_final != total_orders:
             log("=== FAIL — the matching engine did not accept every order ===")

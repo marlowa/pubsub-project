@@ -548,7 +548,18 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     send_er_to_sequencer(er, sequence_number);
-    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
+    // and the test breaks, silently and elsewhere.
+    //
+    // Kept at Info deliberately, having been tried at Debug and reverted. It costs 226
+    // bytes per order -- 9.5 GB a day at 40 million orders -- but that volume only arises
+    // under load, and ha_test's scenarios are a few thousand orders. Its HA assertions
+    // read ME-ORD-N, the ME's own order_id_counter_, which advances during WAL
+    // reconciliation where orders_processed_total deliberately does not; the two diverge
+    // after a failover, so the counter cannot express "no ME-ORD gap or reset".
+    //
+    // A LOAD RUN raises this component's applog_level instead, which is per-component
+    // configuration and needs no code change. See perf_run.py --profile.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
                exec_id, view.cl_ord_id, order_book_.size());
 }

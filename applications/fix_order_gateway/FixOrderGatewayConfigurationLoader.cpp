@@ -142,9 +142,15 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
             toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
             toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
             toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
-
-            config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
         }
+
+        // Deliberately OUTSIDE the cpu_pinning_enabled block above. It was inside, which
+        // meant a component with pinning turned off silently exposed no metrics at all --
+        // no error, no warning, just an endpoint that never appeared. Metrics and CPU
+        // pinning are unrelated concerns, and the test harnesses now read their ground
+        // truth from these counters, so a silent disable would make them pass while
+        // verifying nothing.
+        config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
         // Only when metrics are on: a disabled endpoint registers nothing, so requiring the
         // bounds would make turning metrics off mean filling in a value never read -- the
         // same rule metrics.listen_host follows.
