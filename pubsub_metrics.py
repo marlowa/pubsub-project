@@ -514,6 +514,66 @@ def parse_range_values(results):
     return pairs
 
 
+def parse_moment_to_epoch_seconds(text, now_epoch_seconds=None):
+    """Turn a --from/--to value into an epoch second.
+
+    Accepts, in the order tried: a bare epoch second; a clock time meaning today; a date and
+    time; a date alone, meaning its midnight. Times are LOCAL, because the reader is looking
+    at a chart whose axis is local and reasoning about when something happened to them, not
+    about UTC.
+
+    A date alone is accepted for --from and --to alike even though "--to 2026-08-09" means
+    that midnight rather than the end of the day. Guessing the end of the day for one and the
+    start for the other would make the same text mean two things.
+    """
+    import time as time_module
+    from datetime import datetime
+
+    candidate = text.strip()
+    if candidate.isdigit() and len(candidate) >= 9:
+        return int(candidate)
+
+    reference = datetime.fromtimestamp(now_epoch_seconds if now_epoch_seconds is not None
+                                       else time_module.time())
+    formats = (
+        ("%Y-%m-%d %H:%M:%S", None),
+        ("%Y-%m-%dT%H:%M:%S", None),
+        ("%Y-%m-%d %H:%M", None),
+        ("%Y-%m-%dT%H:%M", None),
+        ("%Y-%m-%d", None),
+        ("%H:%M:%S", "today"),
+        ("%H:%M", "today"),
+    )
+    for layout, relative in formats:
+        try:
+            parsed = datetime.strptime(candidate, layout)
+        except ValueError:
+            continue
+        if relative == "today":
+            parsed = parsed.replace(year=reference.year, month=reference.month,
+                                    day=reference.day)
+        return int(parsed.timestamp())
+
+    raise ValueError(f"cannot read '{text}' as a time. Use HH:MM for today, "
+                     f"'YYYY-MM-DD HH:MM', a date alone, or an epoch second")
+
+
+def resolve_band_window(band_options):
+    """Return (start, end) epoch seconds for the band chart's window.
+
+    An explicit --from/--to pair wins; otherwise the window is --since minutes back from now.
+    """
+    import time as time_module
+
+    if band_options.get("window_start") is not None:
+        start = band_options["window_start"]
+        end = band_options.get("window_end")
+        return start, int(time_module.time()) if end is None else end
+
+    end = int(time_module.time())
+    return end - band_options["since_minutes"] * 60, end
+
+
 def align_to_step_grid(pairs, start_epoch_seconds, end_epoch_seconds, step_seconds):
     """Place fetched points on every step of the window, with None where there is no data.
 
@@ -738,11 +798,8 @@ BAND_QUANTILES = [(0.50, "p50"), (0.90, "p90"), (0.99, "p99")]
 
 def fetch_band_series(spec, labels, prom_url, band_options, hist_filter, data):
     """Fetch the percentile-over-time tracks for every histogram a component exposes."""
-    import time  # lazy: only the fetch path needs it
-
     step_seconds = band_options["step_seconds"]
-    end_epoch_seconds = int(time.time())
-    start_epoch_seconds = end_epoch_seconds - band_options["since_minutes"] * 60
+    start_epoch_seconds, end_epoch_seconds = resolve_band_window(band_options)
     ceiling_ns = band_options["ceiling_ns"]
 
     for histogram in spec["histograms"]:
@@ -1939,7 +1996,16 @@ def parse_arguments(argv=None):
                              "sitting on the same value, or the count is refused rather than "
                              "estimated")
     parser.add_argument("--since", type=int, default=60, metavar="MINUTES",
-                        help="how far back the band chart reaches (default: 60)")
+                        help="how far back the band chart reaches (default: 60). Ignored "
+                             "when --from is given")
+    parser.add_argument("--from", dest="window_start", metavar="WHEN",
+                        help="start of the band chart window: HH:MM for today, "
+                             "'YYYY-MM-DD HH:MM', a date alone, or an epoch second. Local "
+                             "time. Scopes a chart to one run or one incident, which --since "
+                             "can only do by arithmetic against the current time")
+    parser.add_argument("--to", dest="window_end", metavar="WHEN",
+                        help="end of the band chart window (default: now). Same formats as "
+                             "--from")
     parser.add_argument("--step", type=int, default=30, metavar="SECONDS",
                         help="band chart resolution (default: 30). Below the scrape interval "
                              "the extra points carry no extra information; much above 60 and a "
@@ -1962,6 +2028,18 @@ def parse_arguments(argv=None):
         parser.error("--step must be at least 1 second")
     if arguments.since < 1:
         parser.error("--since must be at least 1 minute")
+    if arguments.window_end is not None and arguments.window_start is None:
+        parser.error("--to requires --from")
+    for flag, value in (("--from", arguments.window_start), ("--to", arguments.window_end)):
+        if value is None:
+            continue
+        try:
+            parse_moment_to_epoch_seconds(value)
+        except ValueError as error:
+            parser.error(f"{flag}: {error}")
+    if arguments.window_start is not None and arguments.window_end is not None:
+        if parse_moment_to_epoch_seconds(arguments.window_end) <= parse_moment_to_epoch_seconds(arguments.window_start):
+            parser.error("--to must be after --from")
     if arguments.ceiling is not None:
         try:
             parse_duration_ns(arguments.ceiling)
@@ -2055,6 +2133,10 @@ def main(argv=None):
             metrics_requested, arguments.hist, arguments.window, config,
             band_options={
                 "since_minutes": arguments.since,
+                "window_start": (None if arguments.window_start is None
+                                 else parse_moment_to_epoch_seconds(arguments.window_start)),
+                "window_end": (None if arguments.window_end is None
+                               else parse_moment_to_epoch_seconds(arguments.window_end)),
                 "step_seconds": arguments.step,
                 "ceiling_ns": (None if arguments.ceiling is None
                                else parse_duration_ns(arguments.ceiling)),

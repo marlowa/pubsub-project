@@ -375,11 +375,11 @@ observation counts are fetched by separate queries and indexed as parallel lists
 present in one and missing from another shifted a track against its own breach bars. All three
 now share one grid.
 
-**Still worth doing, not done:** `--since MINUTES` is the only window selector, so a chart cannot
-be scoped to one run without arithmetic against the current time. A `--from` / `--to` pair would
-let a reader frame a single run or a single incident, which is what anyone reading one of these
-actually wants — and would make the breach total describe one thing rather than everything in
-the window.
+**`--from` / `--to` added at the same time**, because `--since MINUTES` could only frame a run by
+arithmetic against the current time, and the breach total then described everything in view
+rather than one run. Both accept `HH:MM` for today, `YYYY-MM-DD HH:MM`, a date alone, or an
+epoch second, in local time — the axis is local and so is the reader. Scoped to run 8 alone the
+count reads 831,554 orders over the 2.5 ms ceiling, which is a statement about a run.
 
 ### The slab allocator had a hard message ceiling, below the performance target
 
