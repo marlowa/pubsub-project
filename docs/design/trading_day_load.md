@@ -827,6 +827,86 @@ thread, but it is a latency improvement rather than a defence against the OOM ki
 
 ---
 
+## Run 10, 2026-08-09: what a member actually experienced
+
+The first run on the recycled-slot allocator and the extended bucket bounds together. It
+reached the same state as runs 8 and 9 -- the primary matching engine OOM-killed at the 2^23
+rehash, 18:39:54, and the secondary promoted 60 seconds later -- and completed the day.
+
+### The allocator question, answered completely
+
+Run 6 killed the gateway with a false tripwire when its reactor thread was descheduled for
+over a second **while the machine was exhausted**. Run 7 reproduced the deschedule without the
+exhaustion; run 8 reproduced the exhaustion without the deschedule. **Run 10 had both at
+once**: the gateway's own reactor stalled 2,877 ms on a machine that was simultaneously
+OOM-killing another process, and the allocator did not throw. No tripwire, no stale-handle
+rejection, no registry exhaustion, in any component.
+
+### The bucket bounds, answered too
+
+The `+Inf` bucket was **empty**, where run 9 put 223,824 orders in it. The failover population
+now lands in the new bounds, with the mass where the `_sum` arithmetic predicted:
+
+| bound | orders |
+|---|---|
+| 5s | 4,860 |
+| 10s | 9,712 |
+| 25s | 29,864 |
+| 50s | 45,559 |
+| 250s | 97,521 |
+| +Inf | **0** |
+
+### But HA was not transparent, and this is the number that matters
+
+The mechanism worked and the venue recovered fully. A member would still have noticed, and
+the run says exactly how much. Phase 4 carried the whole outage:
+
+| | phase 4 | every other phase |
+|---|---|---|
+| p50 | 530 us | 477 us - 1.4 ms |
+| **p99** | **45.2 seconds** | 1.5 - 3.4 ms |
+| p99.9 | 99.4 seconds | 3.8 - 33 ms |
+| worst | **104.7 seconds** | 6 - 173 ms |
+| orders unacknowledged | **36,536** | none |
+| result | **FAIL** | PASS |
+
+**What a member saw was silence, then extreme lateness.** No session was disconnected, no
+order was rejected, nothing was reported as dropped -- the gateway stayed up throughout. One
+order in a hundred waited over 45 seconds for its acknowledgement and the worst waited nearly
+two minutes, and 36,536 never got one inside the client's window at all.
+
+Those orders were WAL-committed and would have been replayed into the promoted engine, so the
+venue very likely processed them; what failed is that the reports did not reach the client in
+time. That is a distinction worth keeping: *probably arrived later* is not *acknowledged*.
+
+**Recovery was complete and immediate.** Phases 5, 6 and 7 all passed on the promoted
+secondary, with p99 back to 1.9 ms -- latency returned to its previous shape rather than
+settling somewhere worse. The cost of this failover was bounded and paid once.
+
+### The whole run, in one line
+
+| | |
+|---|---|
+| orders sent | **13,016,000** |
+| cancels sent | 1,299,576 |
+| messages sent | 14,315,576 |
+| reports received | 14,275,388 |
+| **orders acknowledged** | **12,979,464 -- 99.719%** |
+| orders not acknowledged | 36,536 -- 0.281% |
+
+Six of the seven phases reconciled exactly: orders plus cancels equals reports, nothing
+outstanding. The entire shortfall of 40,188 reports sits in the one phase that contained the
+failover.
+
+Thirteen million orders through a venue that exhausted a 32 GB machine, lost its matching
+engine and failed over, with 99.719% acknowledged and every loss confined to a two-minute
+window.
+
+Logs and phase artefacts kept outside the tree, since `installed/` does not survive a
+rebuild: `pubsub-run-archives/run10-20260809/`.
+
+---
+
 ## Prerequisites
 
 - `metrics_enabled = true` — dev only today, which is where this runs.
