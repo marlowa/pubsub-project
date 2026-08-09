@@ -18,6 +18,27 @@ Fixed entries are kept for one release cycle and then deleted — the commit is 
 
 ## Open
 
+### The band chart draws a flat line across periods with no data
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | First run of `--metrics bands` against a live Prometheus, over a window spanning two load runs and the three idle hours between them |
+| Impact | A gap where nothing was running reads as three hours of healthy, fast latency |
+
+`pubsub_metrics.py --metrics bands` interpolates between samples, so a window covering a
+period when no venue existed is drawn as a straight p99 line at whatever the last value was.
+On the chart of runs 8 and 9 that is a flat ~1 ms from 11:48 to 14:43 — the most reassuring
+part of the picture, and the part with no data behind it at all.
+
+The breach count inherits the fault: "744,352 orders over 2.5 ms in this window" covered two
+separate runs and the dead time between, so it describes nothing.
+
+**Fix**: break the line where the gap between consecutive samples exceeds a small multiple of
+`--step`, and scope the breach count to the segments that have data. A window selector
+(`--from` / `--to`, rather than only `--since MINUTES`) would also let a chart be scoped to
+one run, which is what anyone reading it actually wants.
+
 ### Environment placeholders are missing outside dev
 
 | | |
