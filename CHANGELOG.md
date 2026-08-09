@@ -191,6 +191,12 @@ change in any release.
   stage that caused it passed; the damage surfaced in the two stages that ran afterwards.
   `devsetup.py` now resolves the staging directory once and passes it to `deploy.py`. On the
   development host it resolves to `installed`, so nothing there changes.
+- **The release check asks whether the system can start before spending ten minutes proving it
+  cannot.** A new `runnable` stage runs `ldd` over every installed binary, under the same library
+  path `devenv.py` launches components with, and reports the unresolved names. Without it, a tree
+  of binaries from the wrong platform surfaced as `ha` reporting 0 of 23 scenarios failed — which
+  reads as a catastrophic regression in the high-availability code, and was every component
+  dying at startup with exit 127. The stage takes 0.2 seconds.
 - **A release artefact now says which platform it was built for.** The name carried no platform
   tag, so the container's tarball sat in the shared `release/` directory indistinguishable from a
   host build — and both scripts that deploy one picked "the newest", which after a release check

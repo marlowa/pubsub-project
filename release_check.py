@@ -378,6 +378,73 @@ def stage_perf(args) -> tuple[bool, str]:
     return True, "\n".join(details)
 
 
+def stage_runnable(_args) -> tuple[bool, str]:
+    """Every installed binary can resolve its shared libraries.
+
+    Asks the cheapest possible question -- can the thing about to be tested start at
+    all -- before the stages that take ten minutes to answer it badly. On 2026-08-09 the
+    Rocky container deployed its gcc-8.5 binaries over the host's install tree; ha then
+    reported 0 of 23 scenarios failed, which reads as a catastrophic regression in the
+    high-availability code and was nothing of the kind. Every component had died at
+    startup with exit 127 because its libraries were absent. This stage names that in
+    under a second, and names it as what it is.
+
+    The environment matches devenv.py's, including lib64 as well as lib, so that a
+    library found only via LD_LIBRARY_PATH at launch is not reported as missing here.
+
+    Scanning bin/ covers more than the venue launches, which is deliberate: the failure
+    being guarded against is a whole tree from the wrong platform, and a superset costs
+    nothing. Anything ldd rejects as not a dynamic executable is skipped, so scripts and
+    static binaries in the same directory do not register as failures.
+    """
+    import build  # noqa: PLC0415  -- deferred: only needed to resolve the platform name
+    install_dir = PROJECT_ROOT / ("installed" + build.platform_suffix())
+    bin_dir = install_dir / "bin"
+    if not bin_dir.is_dir():
+        return False, (f"no install tree at {bin_dir}\n"
+                       "Nothing has been built and deployed, so the stages after this "
+                       "one have nothing to run.")
+
+    library_dirs = [str(d) for d in (install_dir / "lib64", install_dir / "lib") if d.is_dir()]
+    child_env = os.environ.copy()
+    existing = child_env.get("LD_LIBRARY_PATH", "")
+    joined = ":".join(library_dirs)
+    child_env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined
+
+    unresolved: dict[str, list[str]] = {}
+    checked = 0
+    for binary in sorted(bin_dir.iterdir()):
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            continue
+        result = subprocess.run(["ldd", str(binary)], env=child_env,
+                                capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            continue
+        checked += 1
+        missing = [line.split("=>")[0].strip()
+                   for line in result.stdout.splitlines() if "not found" in line]
+        if missing:
+            unresolved[binary.name] = missing
+
+    if unresolved:
+        details = [f"{len(unresolved)} of {checked} binaries cannot resolve their libraries:"]
+        for name, missing in sorted(unresolved.items()):
+            details.append(f"  {name}: {', '.join(sorted(set(missing)))}")
+        details += [
+            "",
+            f"install tree : {install_dir}",
+            f"library path : {joined or '(none)'}",
+            "",
+            "Most likely a tree built for another platform has been installed here.",
+            "Check with: readelf -d <binary> | grep -i rpath",
+        ]
+        return False, "\n".join(details)
+
+    if checked == 0:
+        return False, f"no dynamic executables found in {bin_dir}"
+    return True, f"{checked} binaries resolve every shared library"
+
+
 STAGES = [
     ("git-clean", stage_git_clean, "working tree has no uncommitted tracked changes"),
     ("version", stage_version_consistency, "CMakeLists, README x2 and CHANGELOG agree"),
@@ -386,6 +453,7 @@ STAGES = [
     ("coverage", stage_coverage, "coverage analysis; fails only if the baseline is stale"),
     ("rocky", stage_rocky, "build and test under RHEL8's gcc 8.5 in the Rocky container"),
     ("deploy", stage_deploy, "deployment scripts present and runnable"),
+    ("runnable", stage_runnable, "installed binaries resolve their shared libraries"),
     ("ha", stage_ha, "every ha_test scenario"),
     ("perf", stage_perf, "performance smoke run"),
 ]

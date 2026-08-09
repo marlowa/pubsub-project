@@ -449,10 +449,17 @@ before replacing it.
 The name is unchanged on the development host, whose tag is empty; only a cross-compiled
 artefact is qualified, exactly as the staging directory works.
 
-One related exposure remains open and needs a decision:
+The third part, also fixed the same day: nothing verified that what a stage was about to test
+could start. `release_check.py` gained a `runnable` stage, between `deploy` and `ha`, which runs
+`ldd` over every installed binary with the same library path `devenv.py` launches components
+under, and fails with the offending names and the `readelf -d` command to confirm the cause. It
+takes 0.2s and guards `perf` as well, since that follows `ha`.
 
-- No stage verifies that what it is about to test can actually start. A one-line `ldd` check
-  for unresolved libraries before `ha` would have named this in seconds rather than an hour.
+Checked in both directions before being trusted: it passes on the repaired tree, and pointed at
+`installed-rocky8/` — the actual gcc-8.5 binaries that caused this entry, unmodified — it fails
+20 of 23. That is what makes it worth having: `ha` answered the same question by reporting 0 of
+23 scenarios failed, which reads as a catastrophic regression in the high-availability code and
+was nothing of the kind.
 
 ### `pubsub_metrics.py` built query labels from a module global, and fell back to a table describing the wrong venue
 
