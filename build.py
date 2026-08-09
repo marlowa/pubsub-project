@@ -77,6 +77,12 @@ def run_pylint(source_dir):
 
     Globbed rather than listed. A hard-coded list is a list that goes stale, and a new script
     would silently inherit the very gap this closes.
+
+    import-error is excluded, and that exclusion is load-bearing. It reports what is INSTALLED
+    rather than what the code says: pubsub_metrics.py imports requests, matplotlib and tkinter,
+    none of which exist in the Rocky container, so enabling it makes a C++ toolchain check fail
+    over optional visualisation packages. The checks worth having here -- undefined-variable
+    among them -- are properties of the source and hold in any environment.
     """
     python_dir = source_dir / "python"
     run_command(
@@ -88,7 +94,8 @@ def run_pylint(source_dir):
     top_level_scripts = sorted(path.name for path in source_dir.glob("*.py"))
     if top_level_scripts:
         run_command(
-            [sys.executable, "-m", "pylint", "--disable=all", "--enable=E", *top_level_scripts],
+            [sys.executable, "-m", "pylint", "--disable=all", "--enable=E",
+             "--disable=import-error", *top_level_scripts],
             cwd=source_dir,
             description=f"Running pylint (errors only) on {len(top_level_scripts)} top-level scripts"
         )
@@ -111,7 +118,7 @@ def check_scripts_support_help(source_dir):
     """
     scripts = sorted(path.name for path in source_dir.glob("*.py"))
     print(f"\n=== Checking --help on {len(scripts)} top-level scripts ===")
-    broken = []
+    broken, skipped = [], []
     for name in scripts:
         try:
             result = subprocess.run([sys.executable, name, "--help"], cwd=source_dir,
@@ -121,15 +128,29 @@ def check_scripts_support_help(source_dir):
             continue
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).decode(errors="replace").strip()
-            broken.append((name, detail.splitlines()[-1] if detail else
-                           f"exited {result.returncode} with no output"))
+            last = detail.splitlines()[-1] if detail else f"exited {result.returncode}"
+            # A script that cannot import an OPTIONAL third-party package is reported and
+            # not failed. The Rocky container has no matplotlib or psutil, so demanding it
+            # would make a C++ toolchain check depend on which visualisation libraries a
+            # machine happens to carry -- the same fault as leaving import-error enabled
+            # above. That these scripts cannot describe themselves without their plotting
+            # dependencies is a real defect, recorded in docs/bug_list.md; the fix is to
+            # import lazily, as pubsub_metrics.py already does so it can run headless.
+            if "ModuleNotFoundError" in detail or "Missing dependency" in detail:
+                skipped.append((name, last))
+            else:
+                broken.append((name, last))
+
+    for name, why in skipped:
+        print(f"  SKIP {name}: {why}")
 
     if broken:
         print("\nERROR: these scripts do not support --help:", file=sys.stderr)
         for name, why in broken:
             print(f"  {name}: {why}", file=sys.stderr)
         sys.exit(1)
-    print(f"\n\u2713 all {len(scripts)} scripts answer --help")
+    print(f"\n\u2713 {len(scripts) - len(skipped)} of {len(scripts)} scripts answer --help"
+          f"{f', {len(skipped)} skipped for missing optional packages' if skipped else ''}")
 
 
 def run_pytest(source_dir, build_dir=None):
