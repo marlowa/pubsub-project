@@ -425,24 +425,62 @@ The client authenticated successfully and was left hanging anyway. From the logs
 `complete_session_establishment()` sends the Logon reply only once the session's sequence state
 is settled, which the gateway learns by asking the sequencer. That request is a PDU, and at that
 instant there was no sequencer to send it to, so it was dropped with a warning and nothing
-retried it when the links came up a moment later. `awaiting_sequence_state` stays true, the reply
-is never sent, and the member waits on a session the gateway believes it is still setting up.
+retried it when the links came up 40ms later.
+
+**The session is not lost.** `sequence_state_timeout` is 5 seconds; when it fires the gateway
+warns and calls `complete_session_establishment()` regardless, so the member gets its Logon after
+five seconds instead of two milliseconds. `ha_test.py` waits three (`FIX8_LOGON_WAIT = 3.0`) and
+gives up two seconds before the gateway would have recovered — which is the whole reason the
+scenario reports a failure.
+
+Confirmed by experiment: raising that constant to 9.0 makes scenario 23 pass. The change was
+reverted, not kept — 3s versus a 5s fallback is a real defect in the test, but making the test
+wait longer would only make it bless the degraded path.
+
+Two separate things need deciding, and this is the reason the entry stays open:
+
+- **The test cannot pass when this path is taken.** Its budget is shorter than the recovery it is
+  waiting for, so the outcome is decided before the venue has finished trying.
+- **The recovery path is degraded, by its own account.** The warning it emits reads: *"opening
+  the session at {} anyway; a member expecting a higher number will see a low sequence and
+  disconnect."* So the fallback is not a fix — it opens a session with numbering the sequencer
+  never confirmed, and the code itself says that can cost the member its connection. The window
+  wants closing at the source: retry the sequence-state request when a sequencer connection is
+  established, or refuse logons until the gateway can service them.
 
 The gateway had already announced the session and armed cancel-on-disconnect before discovering
-it could not finish, so its own view of the session is further along than the member's.
+it could not finish, so its own view of the session ran ahead of the member's.
 
 Same family as the venue accepting orders with no matching engine and telling nobody: a PDU
 dropped on an absent link, a warning in a log nobody is reading, and no retry.
 
+**Where the delay comes from.** The gateway's outbound sequencer connections are retried on a
+cadence — `ReactorConfiguration::connect_retry_interval_`, default 2 seconds — and its first
+attempts fail because the sequencer is not accepting until leader election completes. From the
+run at 23:07:
+
+| time | event |
+|---|---|
+| `23:07:37.481` | gateway begins dialling both sequencers |
+| `23:07:40.0`, `23:07:40.9` | sequencer ER *inbound* connections arrive (sequencer → gateway) |
+| `23:07:42.384` | logon → *primary sequencer not connected -- PDU not sent* |
+| `23:07:42.452` | primary and secondary sequencer connections established, **68ms later** |
+
+Just under five seconds from first dial to success: the initial attempt plus two retries. The
+client logged on 68ms before the last one landed.
+
+So the gateway holds its FIX listener open while its upstream link is down, and a member that
+logs on during a retry gap has its sequence-state request dropped. That the ER inbound
+connections were already up at 23:07:40 makes it worse — the gateway looks connected to a
+sequencer, in the direction that does not serve this request.
+
 Not yet understood: it passed twice earlier the same evening under `--scenario all`, then failed
 under `--scenario all` and three times standalone. A clean rebuild happened in between, but the
 deployed configs were checked and contain no unexpanded placeholders, so that is not the
-difference. Whatever shifted the timing, the window itself is real and is what needs closing --
-either by retrying the sequence-state request when a sequencer connection is established, or by
-refusing logons until the gateway can service them.
+difference. The window is a race, so what matters is that it exists at all; but what moved the
+timing enough to change the outcome consistently is not established.
 
-The 3s logon wait in `ha_test.py` is worth revisiting separately, but it is not the cause: the
-gateway had gone quiet 2ms after the request and stayed quiet for the full three seconds.
+**Picked up from here:** deferred the evening of Sunday 2026-08-09 for Monday 2026-08-10.
 
 ---
 
