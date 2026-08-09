@@ -18,27 +18,6 @@ Fixed entries are kept for one release cycle and then deleted — the commit is 
 
 ## Open
 
-### The band chart draws a flat line across periods with no data
-
-| | |
-|---|---|
-| Found | 2026-08-09 |
-| How | First run of `--metrics bands` against a live Prometheus, over a window spanning two load runs and the three idle hours between them |
-| Impact | A gap where nothing was running reads as three hours of healthy, fast latency |
-
-`pubsub_metrics.py --metrics bands` interpolates between samples, so a window covering a
-period when no venue existed is drawn as a straight p99 line at whatever the last value was.
-On the chart of runs 8 and 9 that is a flat ~1 ms from 11:48 to 14:43 — the most reassuring
-part of the picture, and the part with no data behind it at all.
-
-The breach count inherits the fault: "744,352 orders over 2.5 ms in this window" covered two
-separate runs and the dead time between, so it describes nothing.
-
-**Fix**: break the line where the gap between consecutive samples exceeds a small multiple of
-`--step`, and scope the breach count to the segments that have data. A window selector
-(`--from` / `--to`, rather than only `--since MINUTES`) would also let a chart be scoped to
-one run, which is what anyone reading it actually wants.
-
 ### Environment placeholders are missing outside dev
 
 | | |
@@ -367,6 +346,40 @@ when a connection is genuinely lost.
 ---
 
 ## Fixed
+
+### The band chart drew a flat line across periods with no data
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | First run of `--metrics bands` against a live Prometheus, over a window spanning two load runs and the three idle hours between them |
+| Fixed | 2026-08-09 |
+
+Those three idle hours — when no venue existed at all — were drawn as a steady p99 at about
+1 ms: the most reassuring part of the chart, describing the interval with no data behind it.
+
+**The cause was not interpolation between known points.** Prometheus omits empty regions from a
+range query rather than returning them as null, so the percentile query returned *no series at
+all* across the gap. The fetched timestamps jumped straight from 11:48 to 14:43, and those two
+points are adjacent samples as far as the plot is concerned — the line between them is what
+`step()` draws between any two neighbours. The renderer already broke lines on `None`; there
+were simply no `None` values to break on.
+
+Fixed by `align_to_step_grid()`, which places every fetched series on the full step grid of the
+requested window and marks absent steps `None`. The rule is then exact — a step with no sample
+is a hole — rather than a heuristic about which gaps look suspicious. The existing `None`
+handling in `draw_latency_bands()` does the rest.
+
+It also fixes a latent misalignment: the percentile tracks, the breach counts and the
+observation counts are fetched by separate queries and indexed as parallel lists, so a point
+present in one and missing from another shifted a track against its own breach bars. All three
+now share one grid.
+
+**Still worth doing, not done:** `--since MINUTES` is the only window selector, so a chart cannot
+be scoped to one run without arithmetic against the current time. A `--from` / `--to` pair would
+let a reader frame a single run or a single incident, which is what anyone reading one of these
+actually wants — and would make the breach total describe one thing rather than everything in
+the window.
 
 ### The slab allocator had a hard message ceiling, below the performance target
 

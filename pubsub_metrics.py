@@ -514,6 +514,29 @@ def parse_range_values(results):
     return pairs
 
 
+def align_to_step_grid(pairs, start_epoch_seconds, end_epoch_seconds, step_seconds):
+    """Place fetched points on every step of the window, with None where there is no data.
+
+    Prometheus omits empty regions from a range query rather than returning them as null,
+    so a window in which the venue was not running comes back as points either side of the
+    gap and nothing between. Plotted directly, two points three hours apart are adjacent
+    samples, and the line drawn between them reads as steady latency throughout -- the most
+    reassuring part of the chart, describing the interval with no data at all.
+
+    Rebuilding the series on the full grid turns that into an explicit absence, which the
+    renderer already knows how to break a line on. Doing it here rather than by guessing at
+    suspicious gaps means the rule is exact: a step with no sample is a hole, whatever its
+    neighbours look like.
+    """
+    by_timestamp = {int(timestamp): value for timestamp, value in pairs}
+    grid = []
+    moment = start_epoch_seconds
+    while moment <= end_epoch_seconds:
+        grid.append((moment, by_timestamp.get(moment)))
+        moment += step_seconds
+    return grid
+
+
 def get_percentile_range(metric, scope, labels, quantile, start_epoch_seconds,
                          end_epoch_seconds, step_seconds, prom_url):
     """Fetch one percentile of a histogram, evaluated at every step across the window.
@@ -729,19 +752,26 @@ def fetch_band_series(spec, labels, prom_url, band_options, hist_filter, data):
         series_labels = histogram.get("labels", labels)
         metric, scope = histogram["metric"], histogram["scope"]
 
+        # Every series is placed on the same grid rather than each carrying its own
+        # timestamps, so the parallel lists the renderer indexes really are parallel. They
+        # are fetched by separate queries and a point missing from one but present in
+        # another would otherwise shift a track against its own breach counts.
         tracks, times = [], []
         for quantile, label in BAND_QUANTILES:
-            pairs = get_percentile_range(metric, scope, series_labels, quantile,
-                                         start_epoch_seconds, end_epoch_seconds,
-                                         step_seconds, prom_url)
+            pairs = align_to_step_grid(
+                get_percentile_range(metric, scope, series_labels, quantile,
+                                     start_epoch_seconds, end_epoch_seconds,
+                                     step_seconds, prom_url),
+                start_epoch_seconds, end_epoch_seconds, step_seconds)
             if not times:
                 times = [timestamp for timestamp, _ in pairs]
             tracks.append((label, [value for _, value in pairs]))
 
-        observations = [value for _, value in
-                        get_observation_range(metric, scope, series_labels,
-                                              start_epoch_seconds, end_epoch_seconds,
-                                              step_seconds, prom_url)]
+        observations = [value for _, value in align_to_step_grid(
+            get_observation_range(metric, scope, series_labels,
+                                  start_epoch_seconds, end_epoch_seconds,
+                                  step_seconds, prom_url),
+            start_epoch_seconds, end_epoch_seconds, step_seconds)]
 
         breaches = None
         if ceiling_ns is not None and times:
@@ -756,10 +786,11 @@ def fetch_band_series(spec, labels, prom_url, band_options, hist_filter, data):
                       f"({describe_nearest_bounds(metric, scope, series_labels, ceiling_ns, prom_url)}). "
                       f"The ceiling line is still drawn.", file=sys.stderr)
             else:
-                breaches = [value for _, value in
-                            get_breach_range(metric, scope, series_labels, bound_label,
-                                             start_epoch_seconds, end_epoch_seconds,
-                                             step_seconds, prom_url)]
+                breaches = [value for _, value in align_to_step_grid(
+                    get_breach_range(metric, scope, series_labels, bound_label,
+                                     start_epoch_seconds, end_epoch_seconds,
+                                     step_seconds, prom_url),
+                    start_epoch_seconds, end_epoch_seconds, step_seconds)]
 
         add_latency_bands(data, name, times, tracks, ceiling_ns, breaches, observations)
 
