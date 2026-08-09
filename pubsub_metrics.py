@@ -1855,6 +1855,10 @@ def build_figure(data, overlay=False):
         )
 
     # --- band charts, full width, percentiles above their breach counts ---
+    # The percentile axes are kept on the figure so an interactive session can attach a
+    # cursor readout to them. A saved figure ignores this; it is a list of axes, not a
+    # behaviour, so nothing about the static render changes.
+    figure.band_percentile_axes = []
     if chart_band is not None:
         chart_grid = outer[chart_band].subgridspec(len(bands), 1, hspace=0.45)
         for index, band in enumerate(bands):
@@ -1863,6 +1867,7 @@ def build_figure(data, overlay=False):
             breach_axis = figure.add_subplot(pair[1, 0], sharex=percentile_axis)
             percentile_axis.tick_params(axis="x", labelbottom=False)
             draw_latency_bands(percentile_axis, breach_axis, band)
+            figure.band_percentile_axes.append((percentile_axis, band))
 
     # --- histograms, in a grid beneath ---
     if histogram_band is None:
@@ -1902,6 +1907,80 @@ def save_dashboard(data, path, overlay=False):
     print(f"wrote {path}")
 
 
+def band_step_has_data(band, moment):
+    """Whether the band chart has any observation at the step nearest ``moment``.
+
+    The series are evaluated onto the full step grid with None where Prometheus returned
+    nothing, so an interval in which the venue was not running is present on the x axis as
+    a gap rather than absent from it. A pointer over that gap has a perfectly good x and y,
+    and reporting the y as a latency would state a value for a period that was never
+    measured -- the same fault as drawing a line across it.
+    """
+    times = band["times"]
+    if not times:
+        return False
+    nearest = min(range(len(times)), key=lambda index: abs(times[index] - moment))
+    return any(values[nearest] is not None for _, values in band["tracks"])
+
+
+def attach_band_cursor_readout(figure):
+    """Track the pointer over each band chart and report what is under it.
+
+    A strip along the top of each band chart, above the legend, showing the time of day and
+    the latency at the cursor. It answers the question the chart otherwise cannot: a log
+    axis labels decades, so a peak between two gridlines has no value a reader can name --
+    which is how a p99 of 5s was read as 1s off this very chart.
+
+    Interactive only. A saved figure has no pointer, so nothing calls this and the static
+    render is unchanged. That matters because the venue host may have no display at all,
+    which is why --save-figure exists.
+
+    Only the percentile axes are live. The breach axis beneath shares their x, so a reading
+    taken there would be a latency the pointer is not over.
+    """
+    if not getattr(figure, "band_percentile_axes", None):
+        return
+
+    idle_text = "move the pointer over the chart to read a value"
+    readouts = {}
+    for axis, band in figure.band_percentile_axes:
+        # Above the axes rather than inside it: the legend already occupies the top-left
+        # inside, and a readout that moves under the legend is unreadable exactly when the
+        # pointer is in the busiest part of the chart. The title is pushed up to make room.
+        axis.set_title(axis.get_title(), fontsize=10, fontweight="bold", pad=18)
+        label = axis.text(
+            0.0, 1.012, idle_text, transform=axis.transAxes, ha="left", va="bottom",
+            fontsize=9, color="0.35", family="monospace",
+        )
+        readouts[axis] = (label, band)
+
+    def on_move(event):
+        changed = False
+        for axis, (label, band) in readouts.items():
+            if event.inaxes is not axis or event.xdata is None or event.ydata is None:
+                text, colour = idle_text, "0.35"
+            elif not band_step_has_data(band, event.xdata):
+                # Says which instant, and that nothing was observed there. Silence would be
+                # read as the readout having failed rather than as an absence of data.
+                text = f"{format_clock_time(event.xdata)}    no data at this time"
+                colour = "0.45"
+            else:
+                text = (f"{format_clock_time(event.xdata)}    "
+                        f"{format_latency_ns(event.ydata)}")
+                colour = "0.15"
+            if label.get_text() != text:
+                label.set_text(text)
+                label.set_color(colour)
+                changed = True
+        # Redrawn only when the text actually differs. The pointer generates events far
+        # faster than the figure can be redrawn, and repainting on every one of them makes
+        # the window lag behind the mouse.
+        if changed:
+            figure.canvas.draw_idle()
+
+    figure.canvas.mpl_connect("motion_notify_event", on_move)
+
+
 def show_dashboard(data, overlay=False):
     """Render ``data`` in a scrollable tkinter window."""
     import signal
@@ -1936,6 +2015,9 @@ def show_dashboard(data, overlay=False):
     scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     figure_canvas = FigureCanvasTkAgg(figure, master=scroll_canvas)
+    # After the canvas exists -- the readout connects to it -- and before the first draw,
+    # so the strip is present in the initial paint rather than appearing on first movement.
+    attach_band_cursor_readout(figure)
     figure_canvas.draw()
     figure_widget = figure_canvas.get_tk_widget()
     figure_widget.configure(width=width_px, height=height_px)
