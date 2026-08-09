@@ -231,11 +231,14 @@ int Reactor::run() {
     try {
         event_loop();
     } catch (const std::exception& ex) {
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "Reactor::run: unhandled exception in event loop: {}", ex.what());
+        // "escaped", not "unhandled": it is caught right here, logged, and followed by an
+        // orderly shutdown. Calling it unhandled says std::terminate ran, which sends a
+        // reader looking for a crash that did not happen.
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "Reactor::run: exception escaped the event loop; shutting down: {}", ex.what());
         shutdown(fmt::format("reactor event loop terminated due to exception: {}", ex.what()));
         exception_caught = true;
     } catch (...) {
-        PUBSUB_LOG_STR(logger_, FwLogLevel::Error, "Reactor::run: unknown exception in event loop");
+        PUBSUB_LOG_STR(logger_, FwLogLevel::Error, "Reactor::run: exception not derived from std::exception escaped the event loop; shutting down");
         shutdown("reactor event loop terminated due to unknown exception");
         exception_caught = true;
     }

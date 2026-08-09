@@ -9,10 +9,22 @@
 #include <tuple>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 
 namespace pubsub_itc_fw {
+
+namespace {
+// Far above any honest drain -- that is bounded by the live slab count, single digits in
+// practice -- and far below a real spin, which reaches millions within the budget.
+constexpr int64_t minimum_spin_iterations_before_tripwire = 1000;
+} // namespaces
+
+bool drain_loop_has_stalled(int64_t loop_iterations, bool deadline_exceeded) {
+    return deadline_exceeded && loop_iterations > minimum_spin_iterations_before_tripwire;
+}
 
 ExpandableSlabAllocator::ExpandableSlabAllocator(size_t slab_size) : slab_size_{slab_size} {
     if (slab_size_ == 0) {
@@ -150,6 +162,13 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
     // hundreds of thousands of iterations. One second is a generous budget
     // that allows any legitimate preemption to be resolved by the kernel
     // scheduler.
+    //
+    // Wall-clock time alone does not describe progress, so the tripwire requires both a
+    // spent budget and a loop that has actually spun. The two states are separable by
+    // iteration count: a self-loop or stuck producer runs millions of iterations inside
+    // the budget, while a thread the scheduler has not run manages one. See
+    // drain_loop_has_stalled.
+    //
     int64_t loop_iterations = 0;
     int64_t retry_count = 0;
     int64_t got_item_count = 0;
@@ -159,15 +178,22 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
 
     for (;;) {
         ++loop_iterations;
-        if (std::chrono::steady_clock::now() > tripwire_deadline) {
-            throw PubSubItcException("ExpandableSlabAllocator::drain_empty_slab_queue: "
-                                     "tripwire exceeded; queue is not making progress for over one second. "
-                                     "Likely a corrupted lock-free queue state (self-loop or stuck producer). "
-                                     "Diagnostics: got_item=" +
-                                     std::to_string(got_item_count) + " retry=" + std::to_string(retry_count) +
-                                     " iterations=" + std::to_string(loop_iterations) + " last_slab_id=" + std::to_string(last_got_slab_id) +
-                                     " same_id_repeats=" + std::to_string(same_id_repeats) + " live_slabs=" + std::to_string(slab_slot_count_) +
-                                     " ids_to_reclaim.size=" + std::to_string(ids_to_reclaim.size()));
+        // The clock is read every iteration and the result passed in, rather than being
+        // short-circuited away by the cheaper test. That read yields the few tens of
+        // nanoseconds a mid-enqueue producer needs to finish, which keeps a Retry spin from
+        // starving the producer it is waiting on and slowing slab reclamation.
+        const bool deadline_exceeded = std::chrono::steady_clock::now() > tripwire_deadline;
+        if (drain_loop_has_stalled(loop_iterations, deadline_exceeded)) {
+            // Facts first, conclusion last. The previous wording opened with
+            // "likely a corrupted lock-free queue state" while its own diagnostics
+            // said the queue was empty and no id had repeated, and it sent a reader
+            // hunting a lock-free bug that did not exist.
+            throw PubSubItcException(fmt::format("ExpandableSlabAllocator::drain_empty_slab_queue: spun {} iterations in over one second without "
+                                                 "draining the queue. got_item={} retry={} last_slab_id={} same_id_repeats={} live_slabs={} "
+                                                 "ids_to_reclaim.size={}. A self-loop or a stuck producer would give a high retry or "
+                                                 "same_id_repeats count against few or no items taken.",
+                                                 loop_iterations, got_item_count, retry_count, last_got_slab_id, same_id_repeats, slab_slot_count_,
+                                                 ids_to_reclaim.size()));
         }
 
         int slab_id = -1;

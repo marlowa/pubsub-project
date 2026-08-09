@@ -1122,3 +1122,35 @@ TEST_F(ExpandableSlabAllocatorTest, CrossThreadDeallocationsWithExpansion) {
 }
 
 } // namespaces
+
+// Tests for drain_loop_has_stalled.
+//
+// A stalled drain and a descheduled thread look identical on a clock and differ entirely in
+// iteration count: a self-loop or stuck producer spins millions of times inside the budget,
+// a thread that has not been scheduled spins once. These pin both halves of that.
+//
+// The predicate is a free function so this is testable at all: the interesting case needs
+// more than a second to pass between two adjacent statements, which cannot be arranged by
+// calling drain_empty_slab_queue().
+
+TEST(DrainLoopHasStalledTest, DoesNotFireOnASingleIterationHoweverLongItTook) {
+    // Budget spent, loop never spun. A thread that has not run has made no progress, which
+    // is a different thing from a queue that will not drain.
+    EXPECT_FALSE(pubsub_itc_fw::drain_loop_has_stalled(1, true));
+}
+
+TEST(DrainLoopHasStalledTest, FiresOnAGenuineSpin) {
+    EXPECT_TRUE(pubsub_itc_fw::drain_loop_has_stalled(2000000, true));
+}
+
+TEST(DrainLoopHasStalledTest, DoesNotFireWhileTheBudgetRemains) {
+    // Iterations alone are not a fault: a busy drain inside its budget is working.
+    EXPECT_FALSE(pubsub_itc_fw::drain_loop_has_stalled(2000000, false));
+}
+
+TEST(DrainLoopHasStalledTest, RequiresMoreThanAHandfulOfIterations) {
+    // An honest drain is bounded by the live slab count, single digits in practice.
+    EXPECT_FALSE(pubsub_itc_fw::drain_loop_has_stalled(5, true));
+    EXPECT_FALSE(pubsub_itc_fw::drain_loop_has_stalled(1000, true));
+    EXPECT_TRUE(pubsub_itc_fw::drain_loop_has_stalled(1001, true));
+}

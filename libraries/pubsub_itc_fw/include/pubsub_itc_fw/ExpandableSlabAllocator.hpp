@@ -95,6 +95,25 @@ namespace pubsub_itc_fw {
  *
  * See the THREADING CONTRACT block comment above for full concurrency semantics.
  */
+/**
+ * @brief Whether the empty-slab drain loop has genuinely failed to make progress.
+ *
+ * Both conditions are required. Elapsed time on its own does not describe progress: a
+ * thread the scheduler has not run has made none, and that is a different condition from a
+ * queue that will not drain. The two are separable by iteration count -- a self-loop or a
+ * stuck producer reaches millions of iterations well inside the budget, a descheduled
+ * thread reaches one.
+ *
+ * A free function, and public, because this decision is the part worth testing on its own:
+ * the interesting case requires more than a second to elapse between two adjacent
+ * statements, which cannot be arranged by calling drain_empty_slab_queue().
+ *
+ * @param[in] loop_iterations   Times round the drain loop so far.
+ * @param[in] deadline_exceeded Whether the wall-clock budget has been spent.
+ * @return True only when the budget is spent AND the loop has actually spun.
+ */
+[[nodiscard]] bool drain_loop_has_stalled(int64_t loop_iterations, bool deadline_exceeded);
+
 class ExpandableSlabAllocator {
   public:
     /**

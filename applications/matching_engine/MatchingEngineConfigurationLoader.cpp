@@ -140,12 +140,9 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
         }
 
-        // Deliberately OUTSIDE the cpu_pinning_enabled block above. It was inside, which
-        // meant a component with pinning turned off silently exposed no metrics at all --
-        // no error, no warning, just an endpoint that never appeared. Metrics and CPU
-        // pinning are unrelated concerns, and the test harnesses now read their ground
-        // truth from these counters, so a silent disable would make them pass while
-        // verifying nothing.
+        // Outside the cpu_pinning_enabled block above: metrics and CPU pinning are unrelated
+        // concerns, and the test harnesses read their ground truth from these counters, so a
+        // component must expose them whether or not it is pinned.
         config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

@@ -25,11 +25,8 @@ namespace pubsub_itc_fw {
  * std::allocator, which means they go straight to the OS heap and are invisible to every
  * instrument the framework provides.
  *
- * That gap was found the expensive way. A matching engine holding an order book in a
- * `tsl::robin_map` on `std::allocator` grew to 9.9 GB and was killed by the OOM killer,
- * having logged **no** pool-exhaustion warning of any kind -- correctly, since the book
- * never touched a pool. The only quantity tracking the approach to death was the book size,
- * and it appeared solely in a per-order log line.
+ * Left uninstrumented, such a structure can become the largest consumer of memory in a
+ * process while every memory instrument the framework offers reports nothing.
  *
  * This allocator closes that gap without changing anyone's allocation strategy. It
  * delegates to std::allocator and simply reports allocations above a threshold, matching

@@ -243,12 +243,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Primary:   live orders currently on the book.
     // Secondary: replica of the primary's book, maintained via BookUpdate PDUs.
     //
-    // On GrowthReportingAllocator rather than std::allocator so that the book's growth is
-    // VISIBLE. The framework's pool and slab allocators instrument objects with a message
-    // lifecycle and every component registers handler_for_pool_exhausted for them -- but
-    // the book is neither pooled nor slab-allocated, so it went straight to the OS heap
-    // and no instrument in the venue could see it. It reached 9.9 GB and the matching
-    // engine was OOM-killed having logged no memory warning of any kind.
+    // On GrowthReportingAllocator rather than std::allocator so the book's growth is
+    // visible. The framework's pool and slab allocators instrument objects with a message
+    // lifetime; the book is long-lived state that grows, so without this it reaches the OS
+    // heap directly and no memory instrument in the venue can see the venue's largest
+    // consumer of memory.
     //
     // robin_map allocates its whole bucket array in one call and reallocates on each
     // doubling, so the callback fires once per doubling and never per order.
