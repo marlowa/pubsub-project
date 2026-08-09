@@ -408,6 +408,45 @@ when a connection is genuinely lost.
 
 ## Fixed
 
+### The Rocky container deployed its gcc-8.5 binaries over the host's install tree
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | A full `release_check.py` run in which `ha` scored 0/23 and `perf` died, immediately after the `rocky` stage passed for the first time |
+| Fixed | 2026-08-09 |
+
+`devsetup.py` runs build, release, stop and deploy. The first three qualify their directory by
+target platform, so a Rocky build stages to `installed-rocky8/` and cannot overwrite the host's
+gcc-13 tree. The fourth did not: `deploy.py` takes its destination from the env TOML, where
+`install_dir = "installed"` is unqualified — and correct, because a real target host deploys to
+that name whatever compiler built the artefact. Right for `deploy.py` alone, wrong as the last
+step of a sequence whose other three had agreed on a different directory.
+
+The Rocky stage bind-mounts the repository, so the container's deploy wrote gcc-8.5 binaries
+into the host's `installed/`. They carry `RPATH=/opt/deps/...`, a path that exists only inside
+the container, so every one of them failed to start with exit 127.
+
+Two things hid it. The stage that caused the damage **passed** — it did its own job correctly
+and corrupted a tree it was not testing — and the failures appeared in `ha` and `perf`, which
+had passed an hour earlier and contain nothing to do with containers. The reason it had never
+been seen is that the Rocky stage had never before run to completion: it had been failing early
+on a permissions error, and the corrupting step came after that.
+
+`devsetup.py` now resolves the staging directory once, from `build.platform_tag()`, and passes
+it to `deploy.py` as `--install-dir`. On the development host it resolves to `installed`, so
+nothing there changes.
+
+Two related exposures were left alone deliberately, and both need a decision:
+
+- The release artefact name is `pubsub-<version>-<hash>-<mode>.tar.gz` with **no platform tag**,
+  so the container writes a tarball into the bind-mounted `release/` that cannot be told from a
+  host build. Deploying "the newest artefact" by hand can therefore install gcc-8.5 binaries on
+  the development host. Changing the artefact name changes what is shipped, so it is not a
+  change to make unasked.
+- No stage verifies that what it is about to test can actually start. A one-line `ldd` check
+  for unresolved libraries before `ha` would have named this in seconds rather than an hour.
+
 ### `pubsub_metrics.py` built query labels from a module global, and fell back to a table describing the wrong venue
 
 | | |

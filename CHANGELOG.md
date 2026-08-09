@@ -181,6 +181,16 @@ change in any release.
 
 ### Fixed
 
+- **The Rocky container deployed its gcc-8.5 binaries over the development host's install tree.**
+  `devsetup.py`'s build, release and stop steps qualify their directory by target platform;
+  its deploy step took the destination from the env TOML, where `install_dir = "installed"` is
+  unqualified — correct for a real target host, wrong as the last step of a sequence whose other
+  three had agreed on `installed-rocky8/`. Because the release check bind-mounts the repository
+  into the container, the deploy overwrote the host's binaries with ones whose `RPATH` points at
+  a path that exists only inside the container, and they then failed to start with exit 127. The
+  stage that caused it passed; the damage surfaced in the two stages that ran afterwards.
+  `devsetup.py` now resolves the staging directory once and passes it to `deploy.py`. On the
+  development host it resolves to `installed`, so nothing there changes.
 - **`perf_run.py --gateway fix` could never have run.** `run_fix8_session()` referenced
   `prefix`, which is a local of `main()` and was never passed in, so the FIX performance path
   died with `NameError` the moment it reached the matching engine's metrics port. Found by
