@@ -18,6 +18,26 @@ Fixed entries are kept for one release cycle and then deleted — the commit is 
 
 ## Open
 
+### `pubsub_metrics.py` still builds query labels from a module global
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | Fixing `--application`, which had the same shape and was silently inert |
+| Impact | Latent. `--application` is now required, so there is no wrong default to fall back to |
+
+`APPLICATION` is a module-level global that `main()` reassigns, and the label builders read it
+rather than being given the value. That is the pattern that made `--application` inert: a
+default bound at import, a global mutated afterwards, and a query that never saw either.
+
+Requiring the flag removes the way it could be silently wrong today, but the shape remains, and
+it will mislead again the moment something reads the global before `main()` sets it — a module
+imported for its functions rather than run, for instance, which is how the tests exercise it.
+
+**Fix**: thread the application through the label builders and delete the global. Deferred only
+because it touches every query construction and the flag being required makes it harmless in
+the meantime.
+
 ### Environment placeholders are missing outside dev
 
 | | |
