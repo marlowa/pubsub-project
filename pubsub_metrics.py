@@ -6,22 +6,22 @@ box running the venue, render wherever there is a display.
 
   1. Fetch and view in one step:
 
-         python3 pubsub_metrics.py --component fix_order_gateway_a --graphic
+         python3 pubsub_metrics.py --application pubsub --component fix_order_gateway_a --graphic
 
   2. Compare every order gateway on one figure -- the question
      order_round_trip_nanoseconds exists to answer:
 
-         python3 pubsub_metrics.py --component gateways --graphic
+         python3 pubsub_metrics.py --application pubsub --component gateways --graphic
 
   3. Fetch on the venue host, save, and render elsewhere:
 
-         python3 pubsub_metrics.py --component gateways --output gateways.dash
+         python3 pubsub_metrics.py --application pubsub --component gateways --output gateways.dash
          python3 pubsub_metrics.py --input gateways.dash --graphic
 
   4. Track the round trip through the session against a ceiling it must not exceed,
      with the orders that did exceed it counted underneath:
 
-         python3 pubsub_metrics.py --component fix_order_gateway_a \
+         python3 pubsub_metrics.py --application pubsub --component fix_order_gateway_a \
                  --metrics bands --ceiling 2.5ms --since 480 --graphic
 
      The band chart needs no new instrumentation -- it is the existing histogram read
@@ -1965,9 +1965,9 @@ def parse_arguments(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Compare every order gateway:\n"
-            "  pubsub_metrics.py --component gateways --graphic\n"
+            "  pubsub_metrics.py --application pubsub --component gateways --graphic\n"
             "Fetch + save on the venue host:\n"
-            "  pubsub_metrics.py --component gateways --output gateways.dash\n"
+            "  pubsub_metrics.py --application pubsub --component gateways --output gateways.dash\n"
             "View a saved snapshot elsewhere:\n"
             "  pubsub_metrics.py --input gateways.dash --graphic\n"
         ),
@@ -1993,8 +1993,12 @@ def parse_arguments(argv=None):
                              "Prometheus currently has, not what this script was written knowing")
     parser.add_argument("--list", action="store_true",
                         help="list the components and metrics available, then exit")
-    parser.add_argument("--application", default=APPLICATION,
-                        help=f"application label to discover (default: {APPLICATION})")
+    parser.add_argument("--application",
+                        help="application label to discover. REQUIRED when reading from "
+                             "Prometheus, and deliberately without a default: one script "
+                             "serves more than one system, and a default that is right for "
+                             "one of them silently produces a confident answer about the "
+                             "wrong one. Not needed with --input or --demo")
     parser.add_argument("--sample", type=int, default=5,
                         help="lookback window in minutes for --window rate (default: 5)")
     parser.add_argument("--window", choices=["instant", "rate"], default="instant",
@@ -2061,6 +2065,8 @@ def parse_arguments(argv=None):
             parse_duration_ns(arguments.ceiling)
         except ValueError as error:
             parser.error(str(error))
+    if arguments.list and not arguments.application:
+        parser.error("--application is required for --list, which asks Prometheus what exists")
     if arguments.list:
         return arguments
     if not arguments.graphic and not arguments.output and not arguments.save_figure:
@@ -2068,6 +2074,8 @@ def parse_arguments(argv=None):
     fetching_live = not arguments.input and not arguments.demo
     if fetching_live and not arguments.component:
         parser.error("--component is required when fetching from Prometheus")
+    if fetching_live and not arguments.application:
+        parser.error("--application is required when fetching from Prometheus")
 
     return arguments
 
@@ -2118,7 +2126,8 @@ def main(argv=None):
     metrics_requested = resolve_metrics(arguments.metrics)
 
     global APPLICATION  # pylint: disable=global-statement
-    APPLICATION = arguments.application
+    if arguments.application:
+        APPLICATION = arguments.application
 
     # What is available to plot. Prometheus is asked whenever it will be consulted at
     # all -- for --list and for a live fetch -- so the component names come from the

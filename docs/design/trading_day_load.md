@@ -529,7 +529,7 @@ curl -s http://localhost:9090/-/healthy
 python3 perf_run.py --gateway binary --clients 4 --profile profiles/trading_day.toml
 
 # 4. Read it, against the phases in the manifest.
-python3 pubsub_metrics.py --component binary_order_gateway_a --metrics bands \
+python3 pubsub_metrics.py --application pubsub --component binary_order_gateway_a --metrics bands \
         --ceiling 2.5ms --since 120 --step 30 --graphic
 ```
 
