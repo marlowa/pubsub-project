@@ -100,6 +100,38 @@ that refuses them.**
 Related: the HA entry below, since the deferral policy assumes a promotion that will
 succeed.
 
+#### The gateway's own health line reads green throughout, 2026-08-09
+
+Seen from the gateway's side in run 10, and worse than the sequencer half because this is
+the line an operator would actually watch. `GW-PROGRESS` reports accounted, sent, dropped
+and orders received. Across the failover it stopped being emitted at all for **2 minutes
+19 seconds**, then caught up in a burst of three reports inside 0.2 seconds:
+
+```
+18:39:36  accounted=10,247,000  sent=10,247,000  dropped=0  nos_received=9,315,468
+          <- no progress report for 2m19s
+18:41:55  accounted=10,261,000  sent=10,261,000  dropped=0  nos_received=9,546,040
+18:41:55  accounted=10,275,000  ...
+18:41:55  accounted=10,289,000  ...
+```
+
+**230,572 orders arrived during that window and 14,000 were accounted for.** `dropped`
+stayed at zero the whole way through, and it was not lying: nothing was dropped. The orders
+were accepted, acknowledged to the member, and queued behind a matching engine that no
+longer existed.
+
+Two distinct faults, and the second is the awkward one:
+
+- **The health line goes silent exactly when it is most wanted.** It is emitted per N
+  orders accounted, so when accounting stalls the reporting stalls with it. A line driven
+  by progress cannot report an absence of progress. It needs a time-based emission as well,
+  or a reader watching a terminal sees the last healthy line and nothing after it.
+- **`dropped=0` is true and misleading together.** An operator watching for trouble watches
+  that counter, and a venue can accept a quarter of a million orders it cannot process
+  without moving it. Whatever replaces this needs to distinguish *accepted and processed*
+  from *accepted and queued behind nothing* — the gap between `nos_received` and
+  `accounted` already carries that information and nothing reports it.
+
 ### HA fails over into a condition both nodes share
 
 | | |
