@@ -33,6 +33,11 @@ values their component templates require. Only `dev.toml` is complete, so only d
 environments that do not exist yet. Inventing them would produce a file that deploys and then
 fails at run time, which is worse than one that refuses to deploy.
 
+**The gap widened by 60 on 2026-08-09**, when the reactor queue pools became templated (see the
+fixed entry below). Unlike the hostnames, these are safe to fill in from `dev.toml` whenever those
+environments are built, because a queue depth is a capacity decision rather than a fact about a
+host that has to be looked up — so the count is larger but the difficulty is unchanged.
+
 ### A growing hash map stalls the reactor callback thread for over a second
 
 | | |
@@ -137,6 +142,35 @@ Note this run's book growth was itself an artefact: the ME does no matching and 
 client cannot yet cancel, so nothing removed orders. The **failover behaviour** is the
 finding here, not the growth.
 
+#### Revised 2026-08-09: the outcome is not always this bad, and the reason is worth keeping
+
+Run 8 reached the same state — machine exhausted, MemAvailable 0.42 GB, primary matching
+engine OOM-killed at 12.9 GB while rehashing — and **failover succeeded**. The venue
+completed the trading day:
+
+```
+11:17:52  primary OOM-killed (anon-rss 12.9 GB, mid-rehash at 2^23)
+11:18:07  ArbitrationDecision (group=matching_engine leader=2 follower=1 epoch=1)
+11:19:23  secondary adopts LEADER (91s after the kill)
+          phases 5, 6 and 7 all PASS -- every order acknowledged
+11:48:51  clean shutdown, every component
+```
+
+The secondary went on to reach 14.88 GB — **larger than the primary ever was** — and
+survived, because killing the primary freed 7.6 GB.
+
+**When the shared condition is memory, the OOM killer's victim selection is load shedding.**
+Removing the largest consumer relieves the survivor, so the systemic condition is not
+uniformly fatal the way the original entry implies. That does not make HA a defence against
+systemic failure — it made no difference to the *cause*, and phase 4 still failed with a p99
+of 107 seconds — but the failure mode is "may or may not survive, depending on which process
+the kernel picks and how much its death releases", not "will die too".
+
+This sharpens the open questions above rather than answering them. A promoted node checking
+its own headroom would, in run 8, have **wrongly declined** a promotion it went on to
+complete successfully, because the headroom it needed did not exist until the moment the
+primary died.
+
 ### `cmake --install` re-lays config templates unexpanded
 
 | | |
@@ -149,6 +183,57 @@ Every build re-installs the `${placeholder}` templates over the deployed, expand
 **`deploy.py` must be re-run after every build**. `devenv.py` does detect it and says so clearly,
 which is why this is a trap rather than a fault — but it is easy to hit when iterating on a
 component and then starting the venue.
+
+See also the entry below, which is the converse and the more dangerous half.
+
+### `deploy.py` silently ignores a change to an environment file
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | Raising the binary gateway's open-order pool in `environments/dev.toml` before a load run; the deployed config still held the old value after `deploy.py` reported success |
+| Impact | A run can execute a whole profile against the *old* configuration while every command in the runbook appears to have succeeded |
+
+`deploy.py` substitutes `${placeholder}` values into the deployed configs; it does not re-copy the
+templates. Once a config has been expanded it contains no placeholder, so a later edit to
+`environments/dev.toml` has no effect: `deploy.py` reports `0 template(s) expanded` and exits
+zero. Nothing warns, and the venue starts happily on the previous values.
+
+The working sequence is a re-install first, so there is something left to expand:
+
+```bash
+cmake --install build                     # re-lay the templates, unexpanded
+python3 deploy.py --skip-db --skip-certs  # expand them from environments/dev.toml
+```
+
+**Worth fixing rather than documenting**, because the failure is silent and the cost is a whole
+run. Either re-copy a template when it or the environment file is newer than the deployed config,
+or refuse to report success when a deployment expanded nothing — `0 template(s) expanded` is
+almost never what the caller intended, and it is the one case that currently looks identical to
+success.
+
+### `start_fix_seq_system.py` launches from configs that no longer exist
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | Tracing what still referenced `matching_engine.toml` before deleting it |
+| Impact | The script cannot start a venue; it fails at the sequencer, and nothing says why until you read it |
+
+`start_fix_seq_system.py` in the repository root starts the sequencer from
+`etc/sequencer/sequencer.toml` and the matching engine from `etc/matching_engine/matching_engine.toml`.
+Neither file exists. They are pre-rename names: `arbiter.toml` and `sequencer.toml` were removed
+when the HA `_primary`/`_secondary` pair replaced them, and `matching_engine.toml` was deleted on
+2026-08-09 as the last of that family. `ha_test.py` already carries a comment noting these three
+are "orphaned and rejected by today's binaries".
+
+It is not obviously dead code — 10 KB, executable, in the root — so the next person to reach for
+it will spend time on it before finding out.
+
+**Fix is a choice, not a lookup.** Either repoint it at `sequencer_primary.toml` and
+`matching_engine_primary.toml`, the way `ha_test.py` does for its single-ME topology, or delete
+it as superseded by `devenv.py` and `perf_run.py`. That question was deliberately left open rather
+than answered in passing.
 
 ### Shutdown timeout errors in timer tests
 
@@ -228,9 +313,119 @@ from the documentation would not know the allocator can terminate a component.
 Worth adding when the allocator documentation is next touched, together with the rule that
 the condition needs both a spent budget and a spun loop.
 
+### The idle-connection reaper tears down the pre-warmed failover link
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | The trading-day load run — the sequencer logged `connection lost` at WARNING every ten minutes while both matching engines were healthy |
+| Impact | The secondary's order connection is absent for part of every ten-minute cycle, so failover latency depends on when the failure lands |
+
+`MatchingEngine.cpp` registers the order listener on both roles, and says why: *"Pre-warming
+this listener means the sequencer's connection is already established when the secondary is
+promoted, so WAL reconciliation can begin without a connect delay."* On the secondary that
+connection carries no data — the engine discards sequenced orders while in FOLLOWER mode — so
+`InboundConnectionManager::check_for_inactive_connections()` closes it after
+`socket_maximum_inactivity_interval_`, 600s. **Being idle is precisely what a standby link
+does**, so the reaper defeats the pre-warming it exists to provide.
+
+Twelve teardowns in the first 26 minutes of run 7 — two cycles of six connections, at 08:26:20
+and 08:36:23, exactly 600s after start and 600s after each other. All on
+`matching_engine_secondary`; none on the primary, whose connections carry orders and so never
+idle out. It recurs for the whole life of the process.
+
+The framework already has the mechanism: `register_inbound_listener()` takes an
+`IdleTimeoutFlag`, and `matching_engine_publisher` and `fix_order_gateway` already pass
+`BypassIdleTimeout` for their quiet infrastructure links. The matching engine's two listeners
+take the `UseIdleTimeout` default instead.
+
+**Second-order cost, and the more insidious one.** A WARNING that fires every ten minutes in a
+healthy system teaches a reader to skim past `connection lost` — which is the line that matters
+when a connection is genuinely lost.
+
 ---
 
 ## Fixed
+
+### The slab allocator had a hard message ceiling, below the performance target
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | Writing a drain-loop test that forced continuous slab rotation; it failed on a limit nobody was looking for, and a follow-up measurement quantified it |
+| Fixed | 2026-08-09 |
+
+`ExpandableSlabAllocator` issued registry slots monotonically and never reused them. The slot
+indexes a fixed two-level directory — fixed because deallocating threads read it without a lock
+and it must never reallocate under them — so `1024 pages × 256 slots` was a hard ceiling on slab
+**rotations for the lifetime of the process**, and therefore on the bytes it could ever receive:
+**16 GiB at the then-default 64 KB slab.** Run 8 put ~14.3M messages through one gateway in 113
+minutes, close enough that the next failure could have been `allocate()` throwing.
+
+Consumption was throughput, not concurrency: `allocate()` resets the current slab in place only
+when it is completely idle at that instant, and under sustained load a PDU is always in flight,
+so every slab-full cost a slot.
+
+**Fixed by a generation-tagged handle.** `SlabHandle` packs the slot in the low 32 bits and a
+generation in the high 32. Slots are recycled through an **intrusive** free list threaded via the
+slots themselves — no allocation, and no synchronisation, because both ends are reactor-only.
+Releasing a slot bumps its generation, so a handle outliving its slab is rejected rather than
+freeing into the slab that now owns the slot.
+
+Measured, at a 64 KB slab and 1 KB PDUs:
+
+| in-flight depth | slots for 200,000 messages, before | after |
+|---|---|---|
+| 1 | 3,125 | **3** |
+| 8 | 3,125 | **3** |
+| 64 | 3,125 | **3** |
+| 256 | 3,125 | **6** |
+
+Consumption now scales with in-flight depth rather than throughput, and
+`SlabSlotsAreRecycledSoConsumptionIsBoundedByInFlightDepth` pins the property that matters:
+**100,000 messages and 1,000,000 messages both cost 3 slots.** The registry now bounds how many
+slabs may be live at once, not how many a process may handle.
+
+`SlabHandle` is an `enum class`, not a `using` alias, and that was not cosmetic: as an alias it
+converted implicitly to `int`, and the first cut of this change compiled cleanly with the
+generation being silently truncated at four stages between `PduParser` and `deallocate()` — under
+`-Wall -Wextra -pedantic -Werror`. It would have indexed the right slot and then been rejected as
+stale the moment a slot was recycled. A distinct type makes each of those a compile error.
+
+**Also raised `inbound_slab_size` from 64 KB to 256 KB** (`ReactorConfiguration`), which was the
+interim mitigation and remains a better default: a slab stays mapped while any one of its chunks
+is outstanding, so worst-case retention rises with slab size, and 256 KB keeps that four times
+lower than 1 MB.
+
+### Reactor queue pool sizes were not configurable in any environment
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | `mep_primary.log` filled with `MepCommandPool exhausted: chaining new pool slab (1024 objects)` during a load run |
+| Fixed | 2026-08-09 — awaiting a `cmake --install` + `deploy.py` to verify, which cannot run until the trading-day run in flight finishes |
+
+Every application template carried its `[event_queue_pool]` and `[command_queue_pool]` sizes as
+**literals**, so no environment could tune them. Only `open_order_pool` was ever templated. The
+publisher was the component that made this visible because it was left at the framework default
+of 1024 while its peers had been raised by hand — the sequencer to 81,920/1,500,000, the FIX
+gateway to 80,000/1,000,000 — which is exactly the drift that having no single place to set them
+produces.
+
+All sixteen templates now take `${placeholder}` values seeded from what they held, so the change
+is behaviour-neutral: 60 values unchanged, verified by comparing each placeholder's value against
+the literal it replaced in `git HEAD`.
+
+**Four values changed deliberately**, both publisher instances:
+
+| | was | now | matched to |
+|---|---|---|---|
+| `event_queue_pool.objects_per_slab` | 1,024 | 81,920 | the sequencer that feeds it |
+| `command_queue_pool.objects_per_slab` | 1,024 | 500,000 | the matching engine that feeds it |
+
+**Still open, and worth a look when someone is next in there:** `binary_order_gateway_*` has a
+command pool of 4,096 where `fix_order_gateway_*` has 1,000,000. The two gateways do the same job
+over different protocols, so one of those two numbers is wrong, and 4,096 is the suspicious one.
 
 ### Metrics silently disabled when CPU pinning is off
 

@@ -553,11 +553,19 @@ happily follows components it did not start.
 absence of an error:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/query?query=sum(rate(order_round_trip_nanoseconds_count[1m]))'
+curl -s -G 'http://localhost:9090/api/v1/query' \
+     --data-urlencode 'query=sum(rate(order_round_trip_nanoseconds_count[1m]))'
 ```
 
-It should report roughly the first phase's aggregate rate. Zero means the venue is not receiving
-orders, whatever the console says.
+The query **must** be URL-encoded. The `[` and `]` of the range selector are not legal in a query
+string, and an unencoded one returns an empty body rather than an error — which reads as no load
+and invites killing a run that is perfectly healthy. `-G --data-urlencode` encodes it; a bare
+`?query=` does not.
+
+It should report roughly the first phase's aggregate rate. An empty `result` array means the venue
+is not receiving orders, whatever the console says. Cross-check against the counter itself,
+`sum(order_round_trip_nanoseconds_count)`, which needs no range selector and so cannot fail this
+way: if it is climbing, load is flowing.
 
 ### On RHEL8
 
@@ -712,10 +720,17 @@ are fixed.
 
 ### Two honesty notes on this comparison
 
-**Watchdog firings are not comparable between runs.** The "callback not finished yet" line is
-INFO, and a profile run raises the matching engine to `warning`, so run 5 shows zero firings
-because they were suppressed rather than absent. The p99 spikes on the chart are the evidence
-that stalls still occurred.
+**Watchdog firings are suppressed on the primary matching engine, and only there.** The
+"callback not finished yet" line is INFO, and `perf_run.py` raises `applog_level` to `warning`
+for the duration of a profile run — but it does that to `me_config` alone, which is the
+**primary**. So a zero firing count on `matching_engine_primary` is suppression rather than
+absence, and the p99 spikes on the chart are the evidence that stalls still occurred.
+
+**Every other component's watchdog output survives, and those counts are comparable between
+runs.** `matching_engine_secondary`, `sequencer_primary`, `sequencer_secondary` and the gateways
+all stay at `info`. The secondary replicates the same book, so its stalls stand in well for the
+primary's: run 8 recorded 79 firings on the secondary peaking at 1,229 ms while the primary
+reported none at all.
 
 **The breach count rose** -- 179,463 over the 2.5 ms ceiling, against 133,421 in run 4. That
 is not a regression: run 5 completed 9.56M orders where run 4 managed 8.39M and then stopped
@@ -744,6 +759,71 @@ be told the growth is coming.
 
 Recorded in the roadmap. `reserve()` in the matching engine would be a workaround for the stub,
 not the answer.
+
+---
+
+## Runs 7 and 8, 2026-08-09: confirming the allocator tripwire fix
+
+Run 6 killed the binary gateway with a **false** allocator tripwire: the machine was exhausted,
+the reactor thread was descheduled between computing the deadline and the first check, and
+`drain_empty_slab_queue()` threw on iteration one against an empty queue, blaming lock-free
+corruption. Fixed in `a47da86`, which requires both a spent budget and a loop that has actually
+spun. Two runs were needed to confirm it, because each reproduced a different half of the
+original conditions.
+
+### Run 7 — the deschedule, without exhaustion
+
+`cancel_ratio 0.48`, 83 minutes. All seven phases PASS, **9,556,000 of 9,556,000 orders
+acknowledged**, nothing died, MemAvailable floor 3.48 GB.
+
+The gateway's reactor callback thread nevertheless exceeded the tripwire's one-second budget
+**seven times, peaking at 1,822 ms**, all at the sustained/lull phase boundary — and nothing
+threw. That is the tripwire's precondition reproduced without the memory pressure.
+
+### Run 8 — the exhaustion, without the deschedule
+
+`cancel_ratio 0.10` and a 90-minute sustained phase, chosen to reach the next order-book growth
+step. Peak RSS summed to **37.20 GB on a 32 GB machine**, so the venue genuinely demanded more
+memory than exists. The book crossed 2^23 at the predicted minute:
+
+```
+11:17:49  order book storage growing -- allocating 9984 MB (largest so far 9984 MB)
+11:17:52  Out of memory: Killed process (matching_engine) anon-rss 12,935,836 kB
+11:19:39  MemAvailable floor 0.42 GB          (run 6 bottomed at 0.48 GB)
+```
+
+The 15.9 GB `total-vm` in the kill record is 4,992 + 9,984 MB: the engine was holding the old
+table and the new one at once. **No tripwire, no `bad_alloc`, no exception in any component.**
+The gateway logged zero callback stalls over a second and ran on for 31 minutes to a clean
+`Reactor::run has finished`.
+
+### What this does and does not establish
+
+Neither run is the whole of run 6, which had both halves at once. Between them both halves have
+now been reproduced without a false trip, and the decision itself is pinned by unit tests on
+`drain_loop_has_stalled()` — including `(1, true)`, which is the production failure. That is
+corroboration plus a test, rather than two independent proofs, and it is worth being clear about
+which is which.
+
+### The growth curve, and why `initial_capacity` cannot fix it
+
+The engine's memory is a step function of the resting-order count, and the steps are exact powers
+of two. Measured across runs 6, 7 and 8, each doubling allocates a new table while the old one is
+still live:
+
+| resting orders | engine RSS |
+|---|---|
+| 2^20 | 1.45 GB |
+| 2^21 | 2.80 GB |
+| 2^22 | 5.36 GB |
+| 2^23 | 12.9 GB at the moment of the kill (old + new) |
+
+Raising `order_book.initial_capacity` moves the sequence up but does not change its shape: the
+fatal allocation is always the last doubling, which needs three times the settled size of the
+table before it. Only a reservation at or above the peak book avoids it — about 10 GB per engine
+at this profile's 9.3M resting orders, and there are two engines. Raising it is still worth doing
+to remove the *early* doublings, each of which is a multi-second stall on the reactor callback
+thread, but it is a latency improvement rather than a defence against the OOM killer.
 
 ---
 
