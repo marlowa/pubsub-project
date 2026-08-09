@@ -404,6 +404,46 @@ take the `UseIdleTimeout` default instead.
 healthy system teaches a reader to skim past `connection lost` — which is the line that matters
 when a connection is genuinely lost.
 
+### A FIX logon arriving before the gateway's sequencer links are up never completes
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | `release_check.py`'s ha stage: scenario 23 (`inflight_gateway_death`) failed with "FIX logon timed out after 3s" |
+| Status | **OPEN.** Not introduced by the release-tooling work committed the same evening, none of which touches C++ |
+
+The client authenticated successfully and was left hanging anyway. From the logs of one run:
+
+- `23:01:57.324` the gateway receives the authentication request
+- `23:01:57.326` the authentication service answers `Granted`, and the gateway announces the
+  session and arms cancel-on-disconnect
+- `23:01:57.326` two warnings, together: *primary sequencer not connected -- PDU not sent*, and
+  the same for the secondary
+- `23:01:57.367` both sequencer connections come up, 40ms later
+- `23:02:00` the test gives up and tears the venue down
+
+`complete_session_establishment()` sends the Logon reply only once the session's sequence state
+is settled, which the gateway learns by asking the sequencer. That request is a PDU, and at that
+instant there was no sequencer to send it to, so it was dropped with a warning and nothing
+retried it when the links came up a moment later. `awaiting_sequence_state` stays true, the reply
+is never sent, and the member waits on a session the gateway believes it is still setting up.
+
+The gateway had already announced the session and armed cancel-on-disconnect before discovering
+it could not finish, so its own view of the session is further along than the member's.
+
+Same family as the venue accepting orders with no matching engine and telling nobody: a PDU
+dropped on an absent link, a warning in a log nobody is reading, and no retry.
+
+Not yet understood: it passed twice earlier the same evening under `--scenario all`, then failed
+under `--scenario all` and three times standalone. A clean rebuild happened in between, but the
+deployed configs were checked and contain no unexpanded placeholders, so that is not the
+difference. Whatever shifted the timing, the window itself is real and is what needs closing --
+either by retrying the sequence-state request when a sequencer connection is established, or by
+refusing logons until the gateway can service them.
+
+The 3s logon wait in `ha_test.py` is worth revisiting separately, but it is not the cause: the
+gateway had gone quiet 2ms after the request and stayed quiet for the full three seconds.
+
 ---
 
 ## Fixed
