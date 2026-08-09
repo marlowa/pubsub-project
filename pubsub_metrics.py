@@ -1379,12 +1379,21 @@ def read_dataset(path):
 # =========================================================================== #
 
 def format_latency_ns(value_ns):
-    """Render a nanosecond value with the unit that suits its magnitude."""
+    """Render a nanosecond value with the unit that suits its magnitude.
+
+    Seconds once the value reaches one, rather than carrying milliseconds upward without
+    limit. A log axis labels its decades, so stopping at ms leaves the region above 1000ms
+    labelled 10000ms and 100000ms -- and a peak between two such labels has no landmark to
+    read it against. A reader then takes the highest labelled gridline for the highest
+    value, which is how a spike at 5s came to be read as 1s.
+    """
     if value_ns < 1000:
         return f"{value_ns:g}ns"
     if value_ns < 1_000_000:
         return f"{value_ns / 1000:g}us"
-    return f"{value_ns / 1_000_000:g}ms"
+    if value_ns < 1_000_000_000:
+        return f"{value_ns / 1_000_000:g}ms"
+    return f"{value_ns / 1_000_000_000:g}s"
 
 
 def format_value(value):
