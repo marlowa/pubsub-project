@@ -11,6 +11,34 @@ change in any release.
 
 ### Added
 
+- **A trading-day load profile.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped
+  day -- pre-open, an opening auction at the ceiling, steady morning, a sustained elevated hour,
+  a midday lull, an afternoon burst and a close above the ceiling -- with a cancel stream so the
+  book reaches a working size instead of only growing. Phase rates are fractions of a measured
+  ceiling, so the same profile means the same thing on a different machine. It is the reason
+  almost everything else in this release was found: nine runs of up to two hours each, exercising
+  the framework through load transitions no steady rate produces.
+- **The order round-trip histogram is charted as percentile bands over time**, against a stated
+  ceiling, with an exact count of the orders that exceeded it -- refused rather than estimated
+  when no bucket bound sits on the ceiling value.
+  - `--from` / `--to` scope a chart to one run or one incident. `--since MINUTES` could only frame
+    a window by arithmetic against the current time, and a chart spanning two runs made its own
+    breach total meaningless.
+  - Under `--graphic`, a strip along the top of each band chart reports the time and latency
+    under the pointer, and says `no data at this time` over an interval where nothing was
+    observed rather than reading a value off the cursor's height.
+- **Bucket bounds now cover a third regime: an order caught across a failover.** A trading-day run
+  put 223,824 orders (1.87%) past the old 5s top bound, where the histogram could say only "more
+  than five seconds" -- the `_sum` series puts their mean at 62s or more. Bounds extend to 250s,
+  deliberately coarse above a minute, so the overflow bucket returns to meaning "beyond anything
+  anticipated".
+- **The order book's growth is visible.** `GrowthReportingAllocator` warns as the book's storage
+  doubles; previously it reached 9.9 GB and was OOM-killed having logged no memory warning at all.
+  A resource monitor samples every component's RSS to `resource_usage.csv` for the length of a run.
+- **A coverage baseline**, reported and never gated. `coverage_baseline.py` with a committed
+  baseline, a release stage that fails on a stale baseline rather than on a number, and the
+  policy written down in `docs/testing.md`.
+
 - **A reconnecting member is sent the execution reports it missed.** A ResendRequest is now
   answered with the real reports, carrying `PossDupFlag=Y` and `OrigSendingTime`, and only the
   administrative remainder is gap-filled -- the split FIX actually prescribes. Previously every
@@ -112,6 +140,19 @@ change in any release.
 
 ### Changed
 
+- **Reactor queue pool sizes are configurable per environment.** Every application carried
+  `[event_queue_pool]` and `[command_queue_pool]` as literals, so no environment could tune them,
+  and the values had drifted apart by three orders of magnitude between components doing the same
+  job. Behaviour is unchanged except for the matching engine publisher, whose queues were still at
+  the framework default of 1,024 and exhausted repeatedly under load.
+- **The reactor's inbound slab is 256 KB, up from 64 KB.** A slab stays mapped while any one of its
+  chunks is outstanding, so worst-case retention rises with slab size; 256 KB keeps that four times
+  lower than 1 MB while giving four times the headroom of 64 KB.
+- **`pubsub_metrics.py --application` is required wherever Prometheus is consulted**, and there is
+  no longer a fallback to a built-in component table. The table describes this venue, so offering
+  it when an application returned no series answered a question about pubsub that the caller did
+  not ask -- listing component names that do not exist for them.
+
 - **`perf_run.py --clients N` now gives each FIX client its own comp id**, credential and
   generated session config, as the binary load client already did. N clients under one comp id
   are one session to the venue, and f8test numbers its ClOrdIDs from one in every process, so
@@ -133,6 +174,33 @@ change in any release.
   namespaces, class names, config files, component names, deployed paths and docs.
 
 ### Fixed
+
+- **The slab allocator had a hard limit on how much a process could ever receive.** Registry slots
+  were issued monotonically and never reused, and the slot indexes a fixed directory -- fixed
+  because deallocating threads read it without a lock -- so 262,144 slab rotations was a ceiling on
+  the bytes a process could handle in its lifetime: **16 GiB at the then-default slab size**. A
+  gateway put roughly 14.3M messages through in 113 minutes. Slots are now recycled through an
+  intrusive free list, and `SlabHandle` carries a generation so a handle outliving its slab is
+  rejected rather than freeing into the slab that replaced it. Measured: 100,000 messages and
+  1,000,000 messages now cost the same three slots.
+- **The empty-slab drain tripwire fired on elapsed time alone.** A machine under memory pressure
+  descheduled the gateway's reactor thread, and the tripwire threw on its first iteration against
+  an empty queue -- blaming "a corrupted lock-free queue state" while its own diagnostics reported
+  nothing of the sort. The gateway died and its order-entry port with it. The condition now
+  requires both a spent budget and a loop that has actually spun.
+- **The idle-connection reaper tore down the pre-warmed failover link.** The matching engine's
+  order listener is pre-warmed so a promoted secondary can reconcile without a connect delay, but
+  on the secondary it carries no data, so the reaper closed it every 600 seconds -- destroying the
+  pre-warming it exists to provide, and logging a WARNING every ten minutes in a healthy venue.
+- **The band chart drew a line through intervals with no data.** Prometheus omits empty regions
+  from a range query, so two samples three hours apart were adjacent points and the line between
+  them read as steady latency across a period when no venue was running.
+- **`--application` never reached metric discovery.** Its default bound at import, so the flag set
+  a global, was reported faithfully in every message, and never reached the query.
+- **The band chart's breach count could be hidden by its own bars**, reading 20,354 where the
+  value was 720,354 -- an order of magnitude, to a glancing reader.
+- **A build directory left behind by a renamed target broke coverage capture**, with an error that
+  named standard-library headers and pointed nowhere near the cause.
 
 - **`ha_test.py` scenario 17 opened its fresh session under the baseline comp id.** Since the
   matching engine keys an order on `(comp id, protocol, ClOrdID)`, and f8test numbers its

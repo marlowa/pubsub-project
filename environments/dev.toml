@@ -414,15 +414,36 @@ metrics_application = "pubsub"
 #   measured a mean of 101ms, and against bounds topping out at 100ms fully 59% of
 #   observations landed in the overflow bucket, leaving no usable percentile at all.
 #
-# Covering both costs five extra series per gateway, which is nothing, and the alternative
-# are bucket bounds that are useless in whichever regime is not being run that day.
+#   Outage -- an order caught across a failover. The sequencer defers orders while no
+#   matching engine is connected and the promoted one replays them, so the round trip is
+#   the length of the outage, not a latency at all. A trading-day run put 223,824 orders
+#   (1.87%) past the old 5s top bound, and the histogram's _sum -- which counts the
+#   overflow even though the buckets do not -- puts their MEAN at 62s or more. Against
+#   bounds topping out at 5s the whole population was unmeasurable, and the p99 read as a
+#   flat 5000ms clamp: histogram_quantile returns the highest finite bound when the
+#   quantile falls in the overflow, so the chart reported the largest number it could
+#   express rather than what happened.
+#
+# Resolution above a minute is deliberately coarse. By then the question is no longer how
+# slow but whether an order was caught in an outage, and 50s-250s is one bucket because
+# the difference between 90s and 200s changes no decision.
+#
+# The top bound matters for a second reason: an overflow bucket should be rare enough that
+# reaching it is itself the finding. At 5s it held 1.87% of an ordinary run, which makes it
+# a bucket rather than an overflow, and nothing about a value landing there was remarkable.
+#
+# Covering all three costs nine extra series per gateway, which is nothing, and the
+# alternative are bucket bounds that are useless in whichever regime is not being run
+# that day.
 metrics_order_round_trip_buckets = [
     10000, 25000, 50000, 100000,          # 10us 25us 50us 100us   -- service time
     250000, 500000, 1000000, 2500000,     # 250us 500us 1ms 2.5ms
     5000000, 10000000, 25000000,          # 5ms 10ms 25ms
     50000000, 100000000, 250000000,       # 50ms 100ms 250ms       -- queueing
     500000000, 1000000000, 2500000000,    # 500ms 1s 2.5s
-    5000000000 ]                          # 5s                     -- a genuine stall
+    5000000000,                           # 5s                     -- a genuine stall
+    10000000000, 25000000000,             # 10s 25s                -- outage, not latency
+    50000000000, 250000000000 ]           # 50s 250s               -- caught across a failover
 reactor_cpu_pinning_reserve_cpu0   = true
 # The CPU registry file and its lock live under install_dir/run/ and are set
 # by deploy.py, which is the single place that knows the install layout.  They

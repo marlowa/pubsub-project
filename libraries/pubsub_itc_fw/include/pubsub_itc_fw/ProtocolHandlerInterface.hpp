@@ -4,9 +4,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
-#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <string>
 #include <tuple>
+
+#include <pubsub_itc_fw/SlabHandle.hpp>
 
 namespace pubsub_itc_fw {
 
