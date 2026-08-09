@@ -1590,9 +1590,16 @@ def draw_latency_bands(axis, breach_axis, band):
 
     if ceiling_ns is not None:
         axis.axhline(ceiling_ns, color=BAND_CEILING_COLOUR, linestyle="--", linewidth=1.6)
+        # Anchored to the right-hand end of the line and given a background. Sitting at the
+        # left end it overprinted whatever the percentiles were doing at the start of the
+        # window, and a chart that opens with its p99 near the ceiling -- which is the case
+        # worth looking at -- is exactly the one where the label became unreadable.
         axis.annotate(f"ceiling {format_latency_ns(ceiling_ns)}",
-                      xy=(times[0], ceiling_ns), xytext=(4, 3), textcoords="offset points",
-                      color=BAND_CEILING_COLOUR, fontsize=8, fontweight="bold")
+                      xy=(times[-1], ceiling_ns), xytext=(-4, 4), textcoords="offset points",
+                      ha="right", va="bottom",
+                      color=BAND_CEILING_COLOUR, fontsize=8, fontweight="bold",
+                      bbox={"facecolor": "white", "edgecolor": "none",
+                            "boxstyle": "round,pad=0.2", "alpha": 0.75})
 
     axis.set_xlim(times[0], times[-1])
     axis.set_ylabel("latency (log scale)")
@@ -1631,10 +1638,16 @@ def draw_breach_counts(axis, times, breaches, ceiling_ns, observations):
         axis.set_ylabel("over ceiling", fontsize=8, color=BAND_CEILING_COLOUR)
         axis.tick_params(axis="y", labelcolor=BAND_CEILING_COLOUR)
         axis.grid(True, axis="y", linestyle=":", alpha=0.3)
+        # Backed by an opaque box. The bars it describes are drawn in the same axes, and a
+        # breach spike tall enough to reach this line hid the leading digits -- turning
+        # 720,354 into a legible and entirely wrong 20,354. A count that misreports itself
+        # by an order of magnitude to a glancing reader is worse than no count.
         axis.annotate(
             f"{sum(heights):,.0f} orders over {format_latency_ns(ceiling_ns)} in this window",
             xy=(0.995, 0.92), xycoords="axes fraction", ha="right", va="top",
-            fontsize=8, color=BAND_CEILING_COLOUR, fontweight="bold")
+            fontsize=8, color=BAND_CEILING_COLOUR, fontweight="bold", zorder=5,
+            bbox={"facecolor": "white", "edgecolor": "0.85",
+                  "boxstyle": "round,pad=0.25", "alpha": 0.95})
     else:
         # No ceiling means no breach question was asked; say so rather than showing an
         # empty axis that reads as a measured zero.
