@@ -212,6 +212,24 @@ FIX produces no disconnect message, so there is nothing to display without infer
 
 ---
 
+### Slab allocator design notes do not mention the tripwire
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | Noticed while fixing the tripwire |
+| Impact | Documentation only |
+
+`drain_empty_slab_queue()` carries a safety tripwire that throws and takes the reactor down
+with it. That is a significant behaviour of the allocator and it appears nowhere in the
+design notes -- only in a comment inside the function. Anyone reasoning about failure modes
+from the documentation would not know the allocator can terminate a component.
+
+Worth adding when the allocator documentation is next touched, together with the rule that
+the condition needs both a spent budget and a spun loop.
+
+---
+
 ## Fixed
 
 ### Metrics silently disabled when CPU pinning is off
