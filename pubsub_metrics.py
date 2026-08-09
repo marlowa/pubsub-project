@@ -1549,7 +1549,9 @@ def draw_latency_bands(axis, breach_axis, band):
     breaches = band["breaches"]
 
     axis.set_yscale("log")
-    axis.set_title(band["name"], fontsize=10, fontweight="bold")
+    # Padded off the frame: the title sits directly above the plot area, and with no gap it
+    # reads as part of the chart's border rather than as a label for it.
+    axis.set_title(band["name"], fontsize=10, fontweight="bold", pad=10)
 
     if not times or not any(any(value is not None for value in values) for _, values in tracks):
         axis.text(0.5, 0.5, "no observations recorded", transform=axis.transAxes,
@@ -1843,7 +1845,12 @@ def build_figure(data, overlay=False):
     # Room for the suptitle reserved in INCHES, not as a fraction of the figure. A fraction
     # that suits a four-panel figure leaves a bands-only one with its title sitting on top
     # of the first panel's, because the two differ in height by a factor of four.
-    outer.update(top=1.0 - 0.45 / sum(band_heights))
+    #
+    # A band chart needs more of it than the others. Its own axes title sits beneath the
+    # suptitle, so that strip has to hold two lines of bold text rather than one, and 0.45in
+    # left the second printing on the top of the plot frame.
+    title_reserve_inches = 0.8 if bands else 0.45
+    outer.update(top=1.0 - title_reserve_inches / sum(band_heights))
 
     # --- summary tables, across the full width ---
     if table_band is not None:
