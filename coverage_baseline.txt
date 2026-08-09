@@ -9,11 +9,11 @@
 #                 python3 coverage_baseline.py --update
 # Commit the result alongside the change that moved it.
 
-COMMIT ba814ee
+COMMIT 2174fb6
 PLATFORM linuxmint22.2-gcc13.3.0
-GENERATED 2026-08-08T06:50:33Z
+GENERATED 2026-08-09T18:59:04Z
 TRACEFILE build-coverage/coverage.info
-TOTALS lines 5700/6865 functions 1302/1445
+TOTALS lines 5741/6923 functions 1309/1461
 
 FILE libraries/fix_codec/FixChecksum.hpp lines 15/15 functions 2/2
 FILE libraries/fix_codec/FixField.hpp lines 91/93 functions 15/15
@@ -89,7 +89,7 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/CpuPinning.hpp lines 116/182 
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/DeliverLostEventFlag.hpp lines 5/5 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventHandler.hpp lines 2/2 functions 2/2
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventMessage.hpp lines 7/7 functions 4/4
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventType.hpp lines 23/39 functions 6/6
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/EventType.hpp lines 26/39 functions 6/6
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp lines 148/159 functions 53/77
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::ExpandablePoolAllocator(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, int, int, int, std::function<void (void*, int)>, std::function<void (void*, void*)>, std::function<void (void*)>, pubsub_itc_fw::UseHugePagesFlag)
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>::add_pool_to_chain()
@@ -115,7 +115,7 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp l
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::LockFreeMessageQueue<pubsub_itc_fw::ReactorControlCommand>::Node>::add_pool_to_chain()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject>::add_pool_to_chain()::{lambda(void*, unsigned long)#1}::operator()(void*, unsigned long) const
   UNCOVERED pubsub_itc_fw::ExpandablePoolAllocator<pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject>::~ExpandablePoolAllocator()::{lambda(pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject*, bool)#1}::operator()(pubsub_itc_fw::tests::NumaAwarePoolAllocatorTest::TestObject*, bool) const
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandableSlabAllocator.hpp lines 4/4 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandableSlabAllocator.hpp lines 8/8 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp lines 31/32 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FileLock.hpp lines 25/27 functions 5/5
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FileOpenMode.hpp lines 5/5 functions 3/3
@@ -159,6 +159,15 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FixedSizeMemoryPool.hpp lines
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FwLogLevel.hpp lines 53/53 functions 11/11
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GaugeHandle.hpp lines 5/5 functions 2/2
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GaugeInterface.hpp lines 1/1 functions 1/1
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GrowthReportingAllocator.hpp lines 0/17 functions 0/8
+  UNCOVERED bool pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::operator==<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >(pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> > const&) const
+  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::GrowthReportingAllocator(pubsub_itc_fw::AllocationGrowthReporter*)
+  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >(pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> > const&)
+  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::reporter() const
+  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >(pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> > const&)
+  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::allocate(unsigned long)
+  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::deallocate(tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true>*, unsigned long)
+  UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::reporter() const
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramHandle.hpp lines 5/6 functions 2/3
   UNCOVERED pubsub_itc_fw::HistogramHandle::HistogramHandle()
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramInterface.hpp lines 1/1 functions 1/1
@@ -201,6 +210,8 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorConfiguration.hpp line
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReactorControlCommand.hpp lines 22/24 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/RollingLogfileConfiguration.hpp lines 10/13 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ServiceRegistry.hpp lines 44/44 functions 13/13
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/SlabHandle.hpp lines 6/8 functions 3/4
+  UNCOVERED pubsub_itc_fw::format_as(pubsub_itc_fw::SlabHandle)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ThreadLifecycleState.hpp lines 20/23 functions 3/4
   UNCOVERED pubsub_itc_fw::ThreadLifecycleState::as_string[abi:cxx11]() const
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/ThreadLookupInterface.hpp lines 1/1 functions 1/1
@@ -234,7 +245,7 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/WrappedInteger.hpp lines 17/1
   UNCOVERED std::ostream& pubsub_itc_fw::operator<< <pubsub_itc_fw::ServiceIDTag, int>(std::ostream&, pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::ServiceIDTag, int> const&)
   UNCOVERED std::ostream& pubsub_itc_fw::operator<< <pubsub_itc_fw::TimerIDTag, int>(std::ostream&, pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::TimerIDTag, int> const&)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/utils/SimpleSpan.hpp lines 8/8 functions 8/8
-FILE libraries/pubsub_itc_fw/src/ApplicationThread.cpp lines 269/332 functions 30/30
+FILE libraries/pubsub_itc_fw/src/ApplicationThread.cpp lines 271/332 functions 30/30
 FILE libraries/pubsub_itc_fw/src/CpuLayout.cpp lines 39/86 functions 1/6
   UNCOVERED pubsub_itc_fw::(anonymous namespace)::join_core_ids(std::vector<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int>, std::allocator<pubsub_itc_fw::WrappedInteger<pubsub_itc_fw::CpuIdTag, int> > > const&)
   UNCOVERED pubsub_itc_fw::CpuLayout::verify_cores_present[abi:cxx11]() const
@@ -246,7 +257,7 @@ FILE libraries/pubsub_itc_fw/src/CpuRegistry.cpp lines 81/104 functions 6/7
 FILE libraries/pubsub_itc_fw/src/Crc32.cpp lines 20/20 functions 4/4
 FILE libraries/pubsub_itc_fw/src/EmptySlabQueue.cpp lines 20/20 functions 3/3
 FILE libraries/pubsub_itc_fw/src/EventMessage.cpp lines 68/75 functions 20/20
-FILE libraries/pubsub_itc_fw/src/ExpandableSlabAllocator.cpp lines 114/117 functions 9/9
+FILE libraries/pubsub_itc_fw/src/ExpandableSlabAllocator.cpp lines 140/146 functions 13/13
 FILE libraries/pubsub_itc_fw/src/FileSystemUtils.cpp lines 18/20 functions 1/1
 FILE libraries/pubsub_itc_fw/src/HighResolutionClock.cpp lines 4/4 functions 1/1
 FILE libraries/pubsub_itc_fw/src/InboundConnection.cpp lines 17/19 functions 3/3
