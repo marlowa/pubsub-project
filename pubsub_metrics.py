@@ -175,7 +175,11 @@ def add_gauge(data, name, value):
 # one figure -- the whole reason order_round_trip_nanoseconds is a single metric
 # distinguished by label rather than one metric per protocol.
 
-APPLICATION = "pubsub"
+# Stands in for the application label when the demo table is built without one. Not a real
+# application name on purpose: were it ever to reach a query, Prometheus returns nothing and
+# the message names it, which is diagnosable. A plausible default here is what made
+# --application inert.
+UNSET_APPLICATION = "unset"
 
 # The gateways are identical in what they expose, so their entries are generated
 # rather than repeated four times. Written out, the differences would be one word
@@ -193,13 +197,13 @@ _MATCHING_ENGINE_INSTANCES = [
 ]
 
 
-def _labels_for(component):
-    return f'application="{APPLICATION}", component="{component}"'
+def _labels_for(component, application):
+    return f'application="{application}", component="{component}"'
 
 
-def _gateway_spec(component):
+def _gateway_spec(component, application):
     return {
-        "labels": _labels_for(component),
+        "labels": _labels_for(component, application),
         "histograms": [
             {
                 "metric": "order_round_trip_nanoseconds_bucket",
@@ -212,9 +216,9 @@ def _gateway_spec(component):
     }
 
 
-def _matching_engine_spec(component):
+def _matching_engine_spec(component, application):
     return {
-        "labels": _labels_for(component),
+        "labels": _labels_for(component, application),
         # The matching engine has no histogram: the round trip is measured at the
         # gateway, which is where both ends of it are observable.
         "histograms": [],
@@ -223,29 +227,41 @@ def _matching_engine_spec(component):
     }
 
 
-COMPONENT_CONFIG = {component: _gateway_spec(component) for component in _GATEWAY_INSTANCES}
-COMPONENT_CONFIG.update(
-    {component: _matching_engine_spec(component) for component in _MATCHING_ENGINE_INSTANCES}
-)
+def build_demo_component_config(application):
+    """The component table used by --demo, built for a named application.
 
-# The comparison view. One figure holding every gateway's round-trip histogram, which
-# is the question the metric exists to answer: how does the ASCII FIX gateway compare
-# with the binary one, on identical bucket bounds. An idle gateway contributes an
-# empty histogram, which is honest -- it observed nothing.
-COMPONENT_CONFIG["gateways"] = {
-    "labels": f'application="{APPLICATION}"',
-    "histograms": [
-        {
-            "metric": "order_round_trip_nanoseconds_bucket",
-            "scope": "gateway_thread",
-            "name": component,
-            "labels": _labels_for(component),
-        }
-        for component in _GATEWAY_INSTANCES
-    ],
-    "counters": [],
-    "gauges": [],
-}
+    A function rather than a module-level dict so the application is a parameter rather than
+    a global read at import. The global version is how --application came to be inert: the
+    value was baked in before the flag had been parsed.
+
+    Only --demo uses this. Anything that queries Prometheus gets its components from
+    discovery, because a built-in table describes THIS venue and would answer a question
+    about pubsub when the caller asked about another application.
+    """
+    config = {component: _gateway_spec(component, application)
+              for component in _GATEWAY_INSTANCES}
+    config.update({component: _matching_engine_spec(component, application)
+                   for component in _MATCHING_ENGINE_INSTANCES})
+
+    # The comparison view. One figure holding every gateway's round-trip histogram, which
+    # is the question the metric exists to answer: how does the ASCII FIX gateway compare
+    # with the binary one, on identical bucket bounds. An idle gateway contributes an
+    # empty histogram, which is honest -- it observed nothing.
+    config["gateways"] = {
+        "labels": f'application="{application}"',
+        "histograms": [
+            {
+                "metric": "order_round_trip_nanoseconds_bucket",
+                "scope": "gateway_thread",
+                "name": component,
+                "labels": _labels_for(component, application),
+            }
+            for component in _GATEWAY_INSTANCES
+        ],
+        "counters": [],
+        "gauges": [],
+    }
+    return config
 
 
 
@@ -304,19 +320,11 @@ def _base_metric_name(metric_name):
     return metric_name
 
 
-def discover_component_config(prom_url, application=None):
-    """Build a COMPONENT_CONFIG by asking Prometheus what this application exposes.
+def discover_component_config(prom_url, application):
+    """Build a component config by asking Prometheus what this application exposes.
 
-    Returns {} if nothing is found, so the caller can fall back to the static table
-    and say why.
-
-    The application is resolved when the function runs, not when it is defined. A default
-    of APPLICATION would bind at import to whatever the module-level value was, so
-    --application would set the global, be reported correctly in every message, and never
-    reach the query -- discovery would silently describe the wrong application.
+    Returns {} if nothing is found, so the caller can say so and stop.
     """
-    if application is None:
-        application = APPLICATION
     series = query_series(f'{{application="{application}"}}', prom_url)
     if not series:
         return {}
@@ -349,7 +357,7 @@ def discover_component_config(prom_url, application=None):
     config = {}
     for component, entry in sorted(found.items()):
         config[component] = {
-            "labels": _labels_for(component),
+            "labels": _labels_for(component, application),
             "histograms": [
                 {"metric": metric, "scope": scope, "name": display_name}
                 for (metric, scope), display_name in sorted(entry["histograms"].items())
@@ -387,7 +395,7 @@ def _add_comparison_views(config, application):
                     "metric": metric,
                     "scope": scope,
                     "name": component,
-                    "labels": _labels_for(component),
+                    "labels": _labels_for(component, application),
                 }
                 for component in sorted(components)
             ],
@@ -396,31 +404,41 @@ def _add_comparison_views(config, application):
         }
 
 
-def resolve_component_config(prom_url, use_live, application=None):
-    """Return (config, source) -- discovered from Prometheus, or the static fallback."""
-    if application is None:
-        application = APPLICATION
+def resolve_component_config(prom_url, use_live, application):
+    """Return (config, source): discovered from Prometheus, or the demo table offline.
+
+    Discovery is the only source for anything that will be queried, and a failure is an
+    error rather than a fallback. The built-in table describes THIS venue, so offering it
+    when an application returns no series answers a question about pubsub that the caller
+    did not ask -- in the tool's own voice, listing component names that do not exist for
+    them. It also buys nothing: if Prometheus cannot be reached for discovery, the queries
+    that follow cannot reach it either.
+    """
     if not use_live:
-        return COMPONENT_CONFIG, "static table"
+        return build_demo_component_config(application or UNSET_APPLICATION), "demo table"
+
     import requests  # lazy: only the live path needs it
 
     try:
         discovered = discover_component_config(prom_url, application)
     except (requests.RequestException, ValueError, KeyError) as error:
-        # Failure to reach Prometheus, or a response that is not the shape expected, falls
-        # back rather than aborting: the static table still describes this venue, and saying
-        # so is more useful than a stack trace about a connection.
-        #
         # Deliberately not `except Exception`. A defect in the discovery code raises here
         # too, and catching everything reported a NameError as "could not discover from
         # http://localhost:9090" -- a programming error wearing a connection failure's
         # clothes, which is the most expensive kind of message to read.
-        print(f"note: could not discover from {prom_url} ({error}); using the static table")
-        return COMPONENT_CONFIG, "static table"
+        raise SystemExit(
+            f"error: could not reach Prometheus at {prom_url} ({error}).\n"
+            f"       Discovery is the only source of component names, so there is nothing "
+            f"to plot. Use --demo for synthetic data, or --input to replay a snapshot."
+        ) from error
+
     if not discovered:
-        print(f"note: {prom_url} returned no series for application={application}; "
-              "using the static table")
-        return COMPONENT_CONFIG, "static table"
+        raise SystemExit(
+            f'error: {prom_url} has no series for application="{application}".\n'
+            f"       Check the label spelling, or that the application has been scraped "
+            f"within the retention window."
+        )
+
     return discovered, f"discovered from {prom_url}"
 
 
@@ -871,7 +889,7 @@ def fetch_band_series(spec, labels, prom_url, band_options, hist_filter, data):
 def fetch_from_prometheus(component, sample, prom_url, metrics_requested, hist_filter, window,
                           config=None, band_options=None):
     """Query Prometheus for one component and return a populated DashboardData."""
-    spec = (config or COMPONENT_CONFIG)[component]
+    spec = config[component]
     labels = spec["labels"]
 
     data = DashboardData()
@@ -1098,7 +1116,7 @@ def _build_demo_for_component(component, metrics_requested, hist_filter, config=
 
     if metrics_requested is None:
         metrics_requested = {"histogram", "bands", "counter", "gauge"}
-    spec = (config or COMPONENT_CONFIG)[component]
+    spec = (config or build_demo_component_config(UNSET_APPLICATION))[component]
     # Seed from the component name so each component looks distinct but stable.
     rng = random.Random(42 + sum(ord(char) for char in component))
 
@@ -2124,10 +2142,6 @@ def parse_duration_ns(text):
 def main(argv=None):
     arguments = parse_arguments(argv)
     metrics_requested = resolve_metrics(arguments.metrics)
-
-    global APPLICATION  # pylint: disable=global-statement
-    if arguments.application:
-        APPLICATION = arguments.application
 
     # What is available to plot. Prometheus is asked whenever it will be consulted at
     # all -- for --list and for a live fetch -- so the component names come from the
