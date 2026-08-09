@@ -121,11 +121,11 @@ connect_retry_warning_interval = "15m"
 [event_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # 20 slabs × 4096 = 81,920 objects; never exhausted.
-objects_per_slab = 81920
-initial_slabs    = 1
+objects_per_slab = ${sequencer_secondary_event_queue_pool_objects_per_slab}
+initial_slabs    = ${sequencer_secondary_event_queue_pool_initial_slabs}
 
 [command_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # 130 slabs × 4096 = 532,480 objects; never exhausted.
-objects_per_slab = 532480
-initial_slabs    = 1
+objects_per_slab = ${sequencer_secondary_command_queue_pool_objects_per_slab}
+initial_slabs    = ${sequencer_secondary_command_queue_pool_initial_slabs}

@@ -47,9 +47,9 @@ cpu_layout_component = "${component_name}"
 connect_retry_warning_interval = "15m"
 
 [event_queue_pool]
-objects_per_slab = 64
-initial_slabs    = 1
+objects_per_slab = ${auth_service_b_event_queue_pool_objects_per_slab}
+initial_slabs    = ${auth_service_b_event_queue_pool_initial_slabs}
 
 [command_queue_pool]
-objects_per_slab = 64
-initial_slabs    = 1
+objects_per_slab = ${auth_service_b_command_queue_pool_objects_per_slab}
+initial_slabs    = ${auth_service_b_command_queue_pool_initial_slabs}

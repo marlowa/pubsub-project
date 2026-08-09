@@ -69,8 +69,8 @@ cpu_layout_component = "${component_name}"
 connect_retry_warning_interval = "15m"
 
 [event_queue_pool]
-objects_per_slab = 10240
-initial_slabs    = 1
+objects_per_slab = ${matching_engine_secondary_event_queue_pool_objects_per_slab}
+initial_slabs    = ${matching_engine_secondary_event_queue_pool_initial_slabs}
 
 [order_book]
 initial_capacity = 262144
@@ -82,5 +82,5 @@ initial_capacity = 262144
 growth_report_threshold_bytes = 67108864
 
 [command_queue_pool]
-objects_per_slab = 500000
-initial_slabs    = 1
+objects_per_slab = ${matching_engine_secondary_command_queue_pool_objects_per_slab}
+initial_slabs    = ${matching_engine_secondary_command_queue_pool_initial_slabs}

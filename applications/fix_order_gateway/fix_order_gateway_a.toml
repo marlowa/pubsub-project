@@ -115,15 +115,15 @@ connect_retry_warning_interval = "15m"
 # Previous peak 21,504; still exhausted at 22,528 once full pipeline active.
 # Doubled to 45,056 for headroom.
 # A heavy perf test of a million orders caused this to be increased again, to xxxxx
-objects_per_slab = 80000
-initial_slabs    = 1
+objects_per_slab = ${fix_order_gateway_a_event_queue_pool_objects_per_slab}
+initial_slabs    = ${fix_order_gateway_a_event_queue_pool_initial_slabs}
 
 [command_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # 62 slabs × 1024 base + 253 exhaustion chains × 1024 = 322,560; rounded to 327,680.
 # A heavy perf test of a million orders caused this to be increased again, to 1,000,000
-objects_per_slab = 1000000
-initial_slabs    = 1
+objects_per_slab = ${fix_order_gateway_a_command_queue_pool_objects_per_slab}
+initial_slabs    = ${fix_order_gateway_a_command_queue_pool_initial_slabs}
 
 [fix_tls]
 # Set enabled=true to require TLS on the inbound FIX listener.

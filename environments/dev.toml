@@ -434,6 +434,10 @@ metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9200
 network_listen_host = "127.0.0.1"
 network_listen_port = 11100
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 16
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 16
 
 [arbiter_primary]
 metrics_listen_host = "127.0.0.1"
@@ -446,6 +450,10 @@ peer_host            = "127.0.0.1"
 peer_port            = 11204
 witness_host         = "127.0.0.1"
 witness_port         = 11100
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 64
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 64
 
 [arbiter_secondary]
 metrics_listen_host = "127.0.0.1"
@@ -458,6 +466,10 @@ peer_host            = "127.0.0.1"
 peer_port            = 11203
 witness_host         = "127.0.0.1"
 witness_port         = 11100
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 64
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 64
 
 [auth_service_a]
 metrics_listen_host = "127.0.0.1"
@@ -465,6 +477,10 @@ metrics_listen_port = 9203
 network_listen_host  = "127.0.0.1"
 network_listen_port  = 11070
 admin_listen_port    = 11072
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 64
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 64
 
 [auth_service_b]
 metrics_listen_host = "127.0.0.1"
@@ -472,6 +488,10 @@ metrics_listen_port = 9204
 network_listen_host  = "127.0.0.1"
 network_listen_port  = 11071
 admin_listen_port    = 11073
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 64
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 64
 
 [matching_engine]
 metrics_listen_host = "127.0.0.1"
@@ -491,6 +511,10 @@ arbiter_primary_host          = "127.0.0.1"
 arbiter_primary_port          = 11200
 arbiter_secondary_host        = "127.0.0.1"
 arbiter_secondary_port        = 11201
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 500000
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 10240
 
 [matching_engine_secondary]
 metrics_listen_host = "127.0.0.1"
@@ -511,6 +535,10 @@ arbiter_primary_host          = "127.0.0.1"
 arbiter_primary_port          = 11200
 arbiter_secondary_host        = "127.0.0.1"
 arbiter_secondary_port        = 11201
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 500000
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 10240
 
 [fix_order_gateway_a]
 metrics_listen_host = "127.0.0.1"
@@ -538,8 +566,15 @@ fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
 fix_limits_max_symbol_length          = 32
 fix_limits_max_order_qty_length       = 24
-open_order_pool_objects_per_pool      = 4096
+# One slot costs 192 bytes: Slot<OpenOrderEntry> is 184 (an atomic flag, a canary and
+# the 168-byte entry) and the free list holds a pointer to each. These two instances
+# carry no load in dev, so they reserve a small slab and chain if that ever changes.
+open_order_pool_objects_per_pool      = 65536
 open_order_pool_initial_pools         = 1
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 1000000
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 80000
 
 [fix_order_gateway_b]
 metrics_listen_host = "127.0.0.1"
@@ -567,8 +602,15 @@ fix_capture_file                      = "fix_capture.bin"
 fix_capture_ring_bytes                = 67108864
 fix_limits_max_symbol_length          = 32
 fix_limits_max_order_qty_length       = 24
-open_order_pool_objects_per_pool      = 4096
+# One slot costs 192 bytes: Slot<OpenOrderEntry> is 184 (an atomic flag, a canary and
+# the 168-byte entry) and the free list holds a pointer to each. These two instances
+# carry no load in dev, so they reserve a small slab and chain if that ever changes.
+open_order_pool_objects_per_pool      = 65536
 open_order_pool_initial_pools         = 1
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 1000000
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 80000
 
 [binary_order_gateway_a]
 metrics_listen_host = "127.0.0.1"
@@ -588,8 +630,22 @@ sequencer_primary_host   = "127.0.0.1"
 sequencer_primary_port   = 11001
 sequencer_secondary_host = "127.0.0.1"
 sequencer_secondary_port = 11002
-open_order_pool_objects_per_pool = 4096
-open_order_pool_initial_pools    = 1
+# This is the instance the load harness drives, so it reserves a day's open interest up
+# front rather than chaining a slab at a time on the hot path. One slot costs 192 bytes:
+# Slot<OpenOrderEntry> is 184 (an atomic flag, a canary and the 168-byte entry) and the
+# free list holds a pointer to each. 21 x 2^20 slots is 22.0M open orders for 3.94 GB.
+#
+# The ceiling here is the 32 GB of a typical developer machine, not what a production
+# environment would need: the two matching engines want roughly 21 GB between them at the
+# book size this profile reaches, so a larger reservation would starve the thing the run
+# exists to measure. Sized for the real target -- tens of millions of orders a day, mostly
+# resting -- this pool needs about 7.7 GB, and the engine pair an order of magnitude more.
+open_order_pool_objects_per_pool = 1048576
+open_order_pool_initial_pools    = 21
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 4096
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 80000
 
 [binary_order_gateway_b]
 metrics_listen_host = "127.0.0.1"
@@ -609,8 +665,13 @@ sequencer_primary_host   = "127.0.0.1"
 sequencer_primary_port   = 11001
 sequencer_secondary_host = "127.0.0.1"
 sequencer_secondary_port = 11002
-open_order_pool_objects_per_pool = 4096
+# Carries no load in dev, so it reserves a small slab and chains if that ever changes.
+open_order_pool_objects_per_pool = 65536
 open_order_pool_initial_pools    = 1
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 4096
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 80000
 
 [sequencer_primary]
 metrics_listen_host = "127.0.0.1"
@@ -648,6 +709,10 @@ peer_port                  = 11004
 wal_directory              = "var/sequencer_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11030
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 1500000
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 81920
 
 [sequencer_secondary]
 metrics_listen_host = "127.0.0.1"
@@ -685,6 +750,10 @@ peer_port                  = 11003
 wal_directory              = "var/sequencer_secondary_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11031
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 532480
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 81920
 
 [matching_engine_publisher_primary]
 metrics_listen_host = "127.0.0.1"
@@ -705,6 +774,10 @@ ha_peer_listen_host                  = "127.0.0.1"
 ha_peer_listen_port                  = 11044
 ha_peer_host                         = "127.0.0.1"
 ha_peer_port                         = 11045
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 500000
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 81920
 
 [matching_engine_publisher_secondary]
 metrics_listen_host = "127.0.0.1"
@@ -729,6 +802,10 @@ ha_peer_port                         = 11044
 # ── Fix test client ────────────────────────────────────────────────────────────
 # fix_gateway_port must match fix_order_gateway_a.network_listen_port above, and
 # binary_order_gateway_port must match binary_order_gateway_a.network_listen_port.
+command_queue_pool_initial_slabs            = 1
+command_queue_pool_objects_per_slab         = 500000
+event_queue_pool_initial_slabs              = 1
+event_queue_pool_objects_per_slab           = 81920
 
 [fix_test_client]
 server_port      = 8081
