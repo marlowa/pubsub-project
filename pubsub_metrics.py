@@ -1944,13 +1944,22 @@ def attach_band_cursor_readout(figure):
     idle_text = "move the pointer over the chart to read a value"
     readouts = {}
     for axis, band in figure.band_percentile_axes:
-        # Above the axes rather than inside it: the legend already occupies the top-left
-        # inside, and a readout that moves under the legend is unreadable exactly when the
-        # pointer is in the busiest part of the chart. The title is pushed up to make room.
-        axis.set_title(axis.get_title(), fontsize=10, fontweight="bold", pad=18)
+        # Inside the axes, at the very top, with the legend moved down to sit beneath it.
+        # Putting the strip in the margin above the axes instead requires padding the axes
+        # title out of its way, and that pushes the title into the figure's suptitle -- two
+        # bold lines overprinting each other.
+        legend = axis.get_legend()
+        if legend is not None:
+            legend.set_bbox_to_anchor((0.0, 0.88), transform=axis.transAxes)
+
+        # A background box, because the strip sits over the plot area and the tallest
+        # spikes reach the top of it. Without one the text and a peak overprint each other
+        # at the moment the reader is trying to identify that peak.
         label = axis.text(
-            0.0, 1.012, idle_text, transform=axis.transAxes, ha="left", va="bottom",
+            0.008, 0.985, idle_text, transform=axis.transAxes, ha="left", va="top",
             fontsize=9, color="0.35", family="monospace",
+            bbox={"facecolor": "white", "edgecolor": "0.8", "boxstyle": "round,pad=0.3",
+                  "alpha": 0.9},
         )
         readouts[axis] = (label, band)
 
