@@ -347,6 +347,34 @@ when a connection is genuinely lost.
 
 ## Fixed
 
+### `--application` never reached metric discovery
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | The user challenged a claim that the metric registry was pubsub-specific; checking it showed discovery was correct and the flag feeding it was not |
+| Fixed | 2026-08-09 |
+
+`discover_component_config(prom_url, application=APPLICATION)` bound its default **when the
+module was imported**, so it was always `"pubsub"`. `--application` set the global, was
+reported faithfully in every message, and never reached the query. Passing
+`--application nosuchapp` discovered pubsub's components and listed them.
+
+The failure was invisible in the one place someone would look: the "returned no series for
+application=X" message read the global and named the application the caller asked for, while
+the query had used a different one.
+
+Fixed by resolving the application when the function runs rather than when it is defined, and
+threading it explicitly from `main()` through `resolve_component_config()` and
+`_add_comparison_views()` instead of letting them read a global that `--application` mutates
+after import.
+
+**Also narrowed the fallback's `except Exception`.** It reported a `NameError` introduced while
+making this very fix as "could not discover from http://localhost:9090" — a defect in the
+discovery code wearing a connection failure's clothes. It now catches `RequestException`,
+`ValueError` and `KeyError`, so an unreachable Prometheus or a malformed response still falls
+back to the static table while a programming error surfaces as itself.
+
 ### The band chart drew a flat line across periods with no data
 
 | | |

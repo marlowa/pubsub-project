@@ -304,12 +304,19 @@ def _base_metric_name(metric_name):
     return metric_name
 
 
-def discover_component_config(prom_url, application=APPLICATION):
+def discover_component_config(prom_url, application=None):
     """Build a COMPONENT_CONFIG by asking Prometheus what this application exposes.
 
     Returns {} if nothing is found, so the caller can fall back to the static table
     and say why.
+
+    The application is resolved when the function runs, not when it is defined. A default
+    of APPLICATION would bind at import to whatever the module-level value was, so
+    --application would set the global, be reported correctly in every message, and never
+    reach the query -- discovery would silently describe the wrong application.
     """
+    if application is None:
+        application = APPLICATION
     series = query_series(f'{{application="{application}"}}', prom_url)
     if not series:
         return {}
@@ -351,11 +358,11 @@ def discover_component_config(prom_url, application=APPLICATION):
             "gauges": sorted(entry["gauges"]),
         }
 
-    _add_comparison_views(config)
+    _add_comparison_views(config, application)
     return config
 
 
-def _add_comparison_views(config):
+def _add_comparison_views(config, application):
     """Add a pseudo-component per histogram shared by two or more components.
 
     A histogram exposed by several components is, by construction, one meant to be
@@ -374,7 +381,7 @@ def _add_comparison_views(config):
             continue
         view_name = "compare:" + _base_metric_name(metric)
         config[view_name] = {
-            "labels": f'application="{APPLICATION}"',
+            "labels": f'application="{application}"',
             "histograms": [
                 {
                     "metric": metric,
@@ -389,20 +396,29 @@ def _add_comparison_views(config):
         }
 
 
-def resolve_component_config(prom_url, use_live):
+def resolve_component_config(prom_url, use_live, application=None):
     """Return (config, source) -- discovered from Prometheus, or the static fallback."""
+    if application is None:
+        application = APPLICATION
     if not use_live:
         return COMPONENT_CONFIG, "static table"
+    import requests  # lazy: only the live path needs it
+
     try:
-        discovered = discover_component_config(prom_url)
-    except Exception as error:  # pylint: disable=broad-except
-        # Any failure to reach Prometheus falls back rather than aborting: the static
-        # table still describes this venue, and saying so is more useful than a stack
-        # trace about a connection.
+        discovered = discover_component_config(prom_url, application)
+    except (requests.RequestException, ValueError, KeyError) as error:
+        # Failure to reach Prometheus, or a response that is not the shape expected, falls
+        # back rather than aborting: the static table still describes this venue, and saying
+        # so is more useful than a stack trace about a connection.
+        #
+        # Deliberately not `except Exception`. A defect in the discovery code raises here
+        # too, and catching everything reported a NameError as "could not discover from
+        # http://localhost:9090" -- a programming error wearing a connection failure's
+        # clothes, which is the most expensive kind of message to read.
         print(f"note: could not discover from {prom_url} ({error}); using the static table")
         return COMPONENT_CONFIG, "static table"
     if not discovered:
-        print(f"note: {prom_url} returned no series for application={APPLICATION}; "
+        print(f"note: {prom_url} returned no series for application={application}; "
               "using the static table")
         return COMPONENT_CONFIG, "static table"
     return discovered, f"discovered from {prom_url}"
@@ -2108,7 +2124,8 @@ def main(argv=None):
     # all -- for --list and for a live fetch -- so the component names come from the
     # venue rather than from this file. Replaying a snapshot needs no such lookup.
     consult_prometheus = arguments.list or not (arguments.input or arguments.demo)
-    config, source = resolve_component_config(arguments.prom_url, consult_prometheus)
+    config, source = resolve_component_config(arguments.prom_url, consult_prometheus,
+                                              arguments.application)
 
     if arguments.list:
         print_discovered(config, source)
