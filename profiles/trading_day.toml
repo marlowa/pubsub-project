@@ -7,6 +7,13 @@
 # Compression applies ONLY to phases with compressible = true -- the quiet ones. Bursts
 # keep their real durations because their durations are what is being tested, and the
 # sustained phase is never compressed because accumulation needs real elapsed time.
+#
+# cancel_ratio is a MEMORY DIAL, not an attempt at a realistic cancel-to-order ratio.
+# It sets what fraction of orders leave the book, so the resting count -- and therefore
+# the venue's memory -- is offered x (1 - cancel_ratio). The low value here exists to
+# reach the next growth step of the order book within one run. A ratio resembling a real
+# venue's leaves the book too small to rehash again, and the rehash is the thing under
+# test. A run that is about latency rather than memory should raise it.
 
 [run]
 ceiling_orders_per_second = 3500   # PROVISIONAL -- calibrate on this machine
@@ -20,7 +27,7 @@ pattern      = "steady"
 duration     = "20m"               # 200s after 6x compression
 compressible = true
 rate         = 0.05
-cancel_ratio = 0.48
+cancel_ratio = 0.10
 
 [[phase]]
 name         = "open auction"
@@ -28,7 +35,7 @@ pattern      = "uniform_slowdown"
 duration     = "4m"
 compressible = false
 rate         = 1.0
-cancel_ratio = 0.48                 # at the ceiling: the venue should be working hard
+cancel_ratio = 0.10                 # at the ceiling: the venue should be working hard
 
 [[phase]]
 name         = "morning steady"
@@ -36,18 +43,26 @@ pattern      = "steady"
 duration     = "20m"
 compressible = true
 rate         = 0.30
-cancel_ratio = 0.48
+cancel_ratio = 0.10
 
-# The event of interest, and the reason this run takes an hour. Never compressed:
-# accumulation -- slab growth, WAL, monotonic degradation -- cannot be measured in
-# less elapsed time than it takes to accumulate.
+# The event of interest, and the reason this run takes an hour and a half. Never
+# compressed: accumulation -- slab growth, WAL, monotonic degradation -- cannot be
+# measured in less elapsed time than it takes to accumulate.
+#
+# The duration is set by where the order book's growth steps fall. The book is a
+# power-of-two-growth hash table, so its cost is a step function of the resting order
+# count, and the steps are the only moments that test anything: each one rehashes the
+# whole table on the reactor callback thread while holding the old table and the new
+# one at once. Ninety minutes here leaves 10.3M orders resting, which crosses the
+# 2^23 step about seventy minutes in -- with the rest of the run still to come, so the
+# recovery is observable rather than coinciding with the closing bell.
 [[phase]]
 name         = "sustained elevated"
 pattern      = "uniform_slowdown"
-duration     = "60m"
+duration     = "90m"
 compressible = false
 rate         = 0.55
-cancel_ratio = 0.48
+cancel_ratio = 0.10
 
 [[phase]]
 name         = "midday lull"
@@ -62,7 +77,7 @@ pattern      = "uniform_slowdown"
 duration     = "3m"
 compressible = false
 rate         = 0.95
-cancel_ratio = 0.48
+cancel_ratio = 0.10
 
 [[phase]]
 name         = "close"
@@ -70,4 +85,4 @@ pattern      = "uniform_slowdown"
 duration     = "4m"
 compressible = false
 rate         = 1.1
-cancel_ratio = 0.48                 # deliberately above ceiling: a stress phase
+cancel_ratio = 0.10                 # deliberately above ceiling: a stress phase
