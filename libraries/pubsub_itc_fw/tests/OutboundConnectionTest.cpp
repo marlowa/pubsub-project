@@ -434,11 +434,11 @@ TEST_F(OutboundConnectionPreconditionTest, SetAndClearPendingSend) {
     EXPECT_FALSE(conn->has_pending_send());
 
     char dummy_chunk[64]{};
-    conn->set_pending_send(allocator_.get(), 0, dummy_chunk, sizeof(dummy_chunk));
+    conn->set_pending_send(allocator_.get(), make_slab_handle(0, 0), dummy_chunk, sizeof(dummy_chunk));
 
     EXPECT_TRUE(conn->has_pending_send());
     EXPECT_EQ(conn->current_allocator(), allocator_.get());
-    EXPECT_EQ(conn->current_slab_id(), 0);
+    EXPECT_EQ(conn->current_slab_id(), make_slab_handle(0, 0));
     EXPECT_EQ(conn->current_chunk_ptr(), static_cast<void*>(dummy_chunk));
     EXPECT_EQ(conn->current_total_bytes(), static_cast<uint32_t>(sizeof(dummy_chunk)));
 
@@ -446,7 +446,7 @@ TEST_F(OutboundConnectionPreconditionTest, SetAndClearPendingSend) {
 
     EXPECT_FALSE(conn->has_pending_send());
     EXPECT_EQ(conn->current_allocator(), nullptr);
-    EXPECT_EQ(conn->current_slab_id(), -1);
+    EXPECT_EQ(conn->current_slab_id(), invalid_slab_handle);
     EXPECT_EQ(conn->current_chunk_ptr(), nullptr);
     EXPECT_EQ(conn->current_total_bytes(), 0u);
 }
@@ -454,12 +454,12 @@ TEST_F(OutboundConnectionPreconditionTest, SetAndClearPendingSend) {
 TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullAllocator) {
     auto conn = make_connection();
     char dummy_chunk[64]{};
-    EXPECT_THROW(conn->set_pending_send(nullptr, 0, dummy_chunk, sizeof(dummy_chunk)), PreconditionAssertion);
+    EXPECT_THROW(conn->set_pending_send(nullptr, make_slab_handle(0, 0), dummy_chunk, sizeof(dummy_chunk)), PreconditionAssertion);
 }
 
 TEST_F(OutboundConnectionPreconditionTest, SetPendingSendRejectsNullChunkPtr) {
     auto conn = make_connection();
-    EXPECT_THROW(conn->set_pending_send(allocator_.get(), 0, nullptr, 64), PreconditionAssertion);
+    EXPECT_THROW(conn->set_pending_send(allocator_.get(), make_slab_handle(0, 0), nullptr, 64), PreconditionAssertion);
 }
 
 // Fixture for OutboundConnectionManager pending-send path tests.
@@ -548,7 +548,7 @@ class OutboundConnectionManagerTest : public ::testing::Test {
 
     // Build a pre-assembled PDU frame in the outbound allocator.
     struct Frame {
-        int slab_id;
+        SlabHandle slab_id;
         void* chunk;
         uint32_t total_bytes;
     };

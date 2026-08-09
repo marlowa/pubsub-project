@@ -93,7 +93,8 @@ bool RawBytesProtocolHandler::commit_bytes(int64_t bytes) {
     return false;
 }
 
-std::tuple<bool, std::string> RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) {
+std::tuple<bool, std::string> RawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr,
+                                                                     uint32_t total_bytes) {
     if (allocator == nullptr) {
         throw PreconditionAssertion("RawBytesProtocolHandler::send_prebuilt: allocator must not be nullptr", __FILE__, __LINE__);
     }
@@ -163,7 +164,7 @@ void RawBytesProtocolHandler::release_pending_send() {
     if (current_allocator_ != nullptr) {
         current_allocator_->deallocate(current_slab_id_, current_chunk_ptr_);
         current_allocator_ = nullptr;
-        current_slab_id_ = -1;
+        current_slab_id_ = invalid_slab_handle;
         current_chunk_ptr_ = nullptr;
         current_total_bytes_ = 0;
     }

@@ -225,7 +225,7 @@ std::tuple<bool, std::string> TlsRawBytesProtocolHandler::flush_wbio() {
     return {true, ""};
 }
 
-std::tuple<bool, std::string> TlsRawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr,
+std::tuple<bool, std::string> TlsRawBytesProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr,
                                                                         uint32_t total_bytes) {
     if (allocator == nullptr) {
         throw PreconditionAssertion("TlsRawBytesProtocolHandler::send_prebuilt: allocator must not be nullptr", __FILE__, __LINE__);

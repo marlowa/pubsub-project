@@ -30,6 +30,7 @@
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
@@ -835,7 +836,7 @@ class ApplicationThread {
     // Non-template helper for send_pdu. Defined in ApplicationThread.cpp where
     // Reactor is fully defined, avoiding incomplete-type errors in translation
     // units that include ApplicationThread.hpp with only a forward-declared Reactor.
-    void enqueue_send_pdu_command(const ConnectionID& conn_id, int slab_id, void* chunk, uint32_t payload_bytes);
+    void enqueue_send_pdu_command(const ConnectionID& conn_id, SlabHandle slab_id, void* chunk, uint32_t payload_bytes);
 
     std::string thread_name_;
     ThreadID thread_id_;

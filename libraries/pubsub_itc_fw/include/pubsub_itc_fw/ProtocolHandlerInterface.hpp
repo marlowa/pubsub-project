@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <string>
 #include <tuple>
 
@@ -91,7 +92,7 @@ class ProtocolHandlerInterface {
      *         unrecoverable send failure; the implementation will have already
      *         released the slab chunk in that case.
      */
-    [[nodiscard]] virtual std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr,
+    [[nodiscard]] virtual std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr,
                                                                       uint32_t total_bytes) = 0;
 
     /**

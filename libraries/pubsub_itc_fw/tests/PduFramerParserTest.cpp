@@ -482,7 +482,7 @@ TEST_F(PduFramerParserTest, ParseSingleCompletePdu) {
     EXPECT_EQ(msg->type().as_tag(), EventType::FrameworkPdu);
     EXPECT_EQ(msg->payload_size(), static_cast<int>(sizeof(payload)));
     EXPECT_EQ(std::memcmp(msg->payload(), payload, sizeof(payload)), 0);
-    EXPECT_GE(msg->slab_id(), 0);
+    EXPECT_NE(msg->slab_id(), invalid_slab_handle);
     slab_allocator_.deallocate(msg->slab_id(), const_cast<uint8_t*>(msg->payload()));
 }
 
@@ -609,7 +609,7 @@ TEST_F(PduFramerParserTest, RoundTripFramerToParser) {
     EXPECT_EQ(msg->type().as_tag(), EventType::FrameworkPdu);
     EXPECT_EQ(msg->payload_size(), static_cast<int>(sizeof(payload)));
     EXPECT_EQ(std::memcmp(msg->payload(), payload, sizeof(payload)), 0);
-    EXPECT_GE(msg->slab_id(), 0);
+    EXPECT_NE(msg->slab_id(), invalid_slab_handle);
     slab_allocator_.deallocate(msg->slab_id(), const_cast<uint8_t*>(msg->payload()));
 }
 

@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <deque>
 #include <future>
+#include <iostream>
 #include <mutex>
 #include <thread>
 #include <tuple>
@@ -65,7 +66,7 @@ TEST_F(ExpandableSlabAllocatorTest, AllocateReturnsNonNullPointer) {
     ExpandableSlabAllocator alloc{large_slab};
     auto [slab_id, ptr] = alloc.allocate(64);
     EXPECT_NE(ptr, nullptr);
-    EXPECT_GE(slab_id, 0);
+    EXPECT_GE(slab_handle_slot(slab_id), 0);
     alloc.deallocate(slab_id, ptr);
 }
 
@@ -89,7 +90,7 @@ TEST_F(ExpandableSlabAllocatorTest, AllocateExactSlabSizeSucceeds) {
 TEST_F(ExpandableSlabAllocatorTest, MultipleAllocationsReturnDistinctPointers) {
     ExpandableSlabAllocator alloc{large_slab};
 
-    std::vector<std::pair<int, void*>> allocations;
+    std::vector<std::pair<SlabHandle, void*>> allocations;
     for (int i = 0; i < 16; ++i) {
         auto [slab_id, ptr] = alloc.allocate(64);
         ASSERT_NE(ptr, nullptr);
@@ -142,7 +143,7 @@ TEST_F(ExpandableSlabAllocatorTest, SlabChainsWhenCurrentIsFull) {
     auto [slab_id_1, ptr_1] = alloc.allocate(small_slab);
     EXPECT_NE(ptr_1, nullptr);
     EXPECT_EQ(alloc.slab_count(), 2);
-    EXPECT_NE(slab_id_0, slab_id_1);
+    EXPECT_NE(slab_handle_slot(slab_id_0), slab_handle_slot(slab_id_1));
 
     alloc.deallocate(slab_id_0, ptr_0);
     alloc.deallocate(slab_id_1, ptr_1);
@@ -153,7 +154,7 @@ TEST_F(ExpandableSlabAllocatorTest, SlabCountMonotonicallyIncreasesUnderLoad) {
 
     // Force many slab chains by filling each slab completely.
     // Keep all allocations live so no reclamation occurs.
-    std::vector<std::pair<int, void*>> allocations;
+    std::vector<std::pair<SlabHandle, void*>> allocations;
     for (int i = 0; i < 8; ++i) {
         auto [slab_id, ptr] = alloc.allocate(small_slab);
         ASSERT_NE(ptr, nullptr);
@@ -175,7 +176,7 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
     // (it is still the current slab at that point since no chaining occurred).
     ExpandableSlabAllocator alloc{small_slab};
 
-    std::vector<std::pair<int, void*>> allocations;
+    std::vector<std::pair<SlabHandle, void*>> allocations;
 
     // Fill with small chunks until the slab is exhausted and a new one chains.
     // We use a chunk size that divides evenly into small_slab.
@@ -190,7 +191,7 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
 
     // All chunks are from slab 0.
     for (auto [slab_id, ptr] : allocations) {
-        EXPECT_EQ(slab_id, 0);
+        EXPECT_EQ(slab_handle_slot(slab_id), 0);
     }
 
     // Free all chunks -- slab 0 will be enqueued in the empty slab queue.
@@ -202,7 +203,7 @@ TEST_F(ExpandableSlabAllocatorTest, CurrentSlabIsResetWhenAllChunksFreed) {
     // Since slab 0 is still the current slab, it should be reused (not destroyed).
     auto [slab_id_new, ptr_new] = alloc.allocate(chunk_size);
     EXPECT_NE(ptr_new, nullptr);
-    EXPECT_EQ(slab_id_new, 0);        // reused, not a new slab
+    EXPECT_EQ(slab_handle_slot(slab_id_new), 0); // reused, not a new slab
     EXPECT_EQ(alloc.slab_count(), 1); // no extra slab created
 
     alloc.deallocate(slab_id_new, ptr_new);
@@ -222,13 +223,13 @@ TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
     // Allocate from slab 0 (fills it).
     auto [slab_id_0, ptr_0] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_0, nullptr);
-    EXPECT_EQ(slab_id_0, 0);
+    EXPECT_EQ(slab_handle_slot(slab_id_0), 0);
 
     // Allocate again -- chains slab 1; slab 0 cleared is_current_ but its
     // count is still 1, so no enqueue yet.
     auto [slab_id_1, ptr_1] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_1, nullptr);
-    EXPECT_EQ(slab_id_1, 1);
+    EXPECT_EQ(slab_handle_slot(slab_id_1), 1);
     EXPECT_EQ(alloc.slab_count(), 2);
 
     // Free slab-0's chunk -- slab 0's count -> 0, slab 0 is enqueued.
@@ -238,7 +239,7 @@ TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
     // sentinel (not yet destroyed). The allocate then chains slab 2.
     auto [slab_id_2, ptr_2] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_2, nullptr);
-    EXPECT_EQ(slab_id_2, 2);
+    EXPECT_EQ(slab_handle_slot(slab_id_2), 2);
     EXPECT_EQ(alloc.slab_count(), 3);
 
     // Free slab-1's chunk -- slab 1 enqueues.
@@ -250,11 +251,21 @@ TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
     auto [slab_id_3, ptr_3] = alloc.allocate(slab_and_chunk);
     ASSERT_NE(ptr_3, nullptr);
 
-    // Slab count is at least 4 (more if reclamation has not yet been
-    // reflected; the destroyed slot is still counted but is nullptr).
-    EXPECT_GE(alloc.slab_count(), 4);
+    // The drain in that allocate destroyed slab 0 and returned its slot to the free list, and
+    // the chaining that followed took the slot straight back. So the fourth slab occupies
+    // slot 0 and the registry's high-water mark stays at three: slots bound how many slabs
+    // are live at once, not how many a process may rotate through.
+    EXPECT_EQ(slab_handle_slot(slab_id_3), 0);
+    EXPECT_EQ(alloc.slab_count(), 3);
 
-    // Slab 0 is now destroyed (nullptr in registry).
+    // Same slot, different slab, so the handles must differ -- the generation is what
+    // separates them.
+    EXPECT_NE(slab_id_3, slab_id_0);
+    EXPECT_EQ(slab_handle_generation(slab_id_3), slab_handle_generation(slab_id_0) + 1);
+
+    // And the handle to the slab that used to live there is rejected rather than freeing into
+    // its replacement. Without the generation this call would have found a live slab in slot 0
+    // and corrupted its outstanding count.
     EXPECT_THROW(alloc.deallocate(slab_id_0, ptr_0), PreconditionAssertion);
 
     alloc.deallocate(slab_id_2, ptr_2);
@@ -265,20 +276,20 @@ TEST_F(ExpandableSlabAllocatorTest, OldSlabIsDestroyedAfterChaining) {
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateNullPtrThrows) {
     ExpandableSlabAllocator alloc{large_slab};
-    EXPECT_THROW(alloc.deallocate(0, nullptr), PreconditionAssertion);
+    EXPECT_THROW(alloc.deallocate(make_slab_handle(0, 0), nullptr), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateNegativeSlabIdThrows) {
     ExpandableSlabAllocator alloc{large_slab};
     auto [slab_id, ptr] = alloc.allocate(64);
-    EXPECT_THROW(alloc.deallocate(-1, ptr), PreconditionAssertion);
+    EXPECT_THROW(alloc.deallocate(make_slab_handle(-1, 0), ptr), PreconditionAssertion);
     alloc.deallocate(slab_id, ptr);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, DeallocateOutOfRangeSlabIdThrows) {
     ExpandableSlabAllocator alloc{large_slab};
     auto [slab_id, ptr] = alloc.allocate(64);
-    EXPECT_THROW(alloc.deallocate(999, ptr), PreconditionAssertion);
+    EXPECT_THROW(alloc.deallocate(make_slab_handle(999, 0), ptr), PreconditionAssertion);
     alloc.deallocate(slab_id, ptr);
 }
 
@@ -327,7 +338,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsAreSafe) {
     constexpr int chunk_sizeSize = 64;
     constexpr int chunk_count = 128;
 
-    std::vector<std::pair<int, void*>> allocations;
+    std::vector<std::pair<SlabHandle, void*>> allocations;
     allocations.reserve(chunk_count);
 
     for (int i = 0; i < chunk_count; ++i) {
@@ -374,7 +385,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocationsFromManySlabs) {
     ExpandableSlabAllocator alloc{small_slab};
 
     constexpr int slab_count = 4;
-    std::vector<std::pair<int, void*>> allocations;
+    std::vector<std::pair<SlabHandle, void*>> allocations;
     allocations.reserve(slab_count);
 
     for (int i = 0; i < slab_count; ++i) {
@@ -417,7 +428,7 @@ TEST_F(ExpandableSlabAllocatorTest, StressAllocateDeallocateCycle) {
     const int chunks_per_slab = static_cast<int>(small_slab / chunk_size);
 
     for (int cycle = 0; cycle < cycle_count; ++cycle) {
-        std::vector<std::pair<int, void*>> allocations;
+        std::vector<std::pair<SlabHandle, void*>> allocations;
         allocations.reserve(chunks_per_slab);
 
         for (int i = 0; i < chunks_per_slab; ++i) {
@@ -482,7 +493,7 @@ TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlab
         // deallocator thread. The reactor publishes a fresh allocation; the
         // deallocator picks it up and frees it. nullptr means "slot empty".
         std::atomic<void*> slot{nullptr};
-        std::atomic<int> slot_slab_id{-1};
+        std::atomic<SlabHandle> slot_slab_id{invalid_slab_handle};
         std::atomic<bool> stop{false};
 
         std::thread deallocator([&]() {
@@ -490,13 +501,13 @@ TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlab
                 void* ptr = slot.exchange(nullptr, std::memory_order_acq_rel);
                 if (ptr == nullptr)
                     continue;
-                const int slab_id = slot_slab_id.load(std::memory_order_acquire);
+                const SlabHandle slab_id = slot_slab_id.load(std::memory_order_acquire);
                 alloc.deallocate(slab_id, ptr);
             }
             // Drain any final outstanding allocation.
             void* ptr = slot.exchange(nullptr, std::memory_order_acq_rel);
             if (ptr != nullptr) {
-                const int slab_id = slot_slab_id.load(std::memory_order_acquire);
+                const SlabHandle slab_id = slot_slab_id.load(std::memory_order_acquire);
                 alloc.deallocate(slab_id, ptr);
             }
         });
@@ -563,7 +574,7 @@ TEST_F(ExpandableSlabAllocatorTest, RepeatedSingleChunkAllocDeallocOfCurrentSlab
 namespace {
 
 struct WorkItem {
-    int slab_id{-1};
+    SlabHandle slab_id{invalid_slab_handle};
     void* ptr{nullptr};
 };
 
@@ -817,12 +828,12 @@ TEST_F(ExpandableSlabAllocatorTest, DestroyedSlabIdThrowsOnDeallocateCrossThread
 
     // Allocate from slab 0 (fills it).
     auto [id0, ptr0] = allocator.allocate(slab_and_chunk);
-    ASSERT_EQ(id0, 0);
+    ASSERT_EQ(slab_handle_slot(id0), 0);
     ASSERT_NE(ptr0, nullptr);
 
     // Allocate again -- chains slab 1.
     auto [id1, ptr1] = allocator.allocate(slab_and_chunk);
-    ASSERT_EQ(id1, 1);
+    ASSERT_EQ(slab_handle_slot(id1), 1);
     ASSERT_NE(ptr1, nullptr);
 
     // Free slab 0 chunk from a background thread to exercise the cross-thread
@@ -844,7 +855,7 @@ TEST_F(ExpandableSlabAllocatorTest, DestroyedSlabIdThrowsOnDeallocateCrossThread
     // Slab 0 is now destroyed (nullptr in registry). Attempting to deallocate
     // with slab_id 0 must throw.
     int dummy = 0;
-    EXPECT_THROW(allocator.deallocate(0, &dummy), PreconditionAssertion);
+    EXPECT_THROW(allocator.deallocate(make_slab_handle(0, 0), &dummy), PreconditionAssertion);
 
     allocator.deallocate(id2, ptr2);
     allocator.deallocate(id3, ptr3);
@@ -857,11 +868,11 @@ TEST_F(ExpandableSlabAllocatorTest, ExactSlabSizeAllocationForcesExpansion) {
     ExpandableSlabAllocator allocator(adv_slab_size);
 
     auto [id0, ptr0] = allocator.allocate(adv_slab_size);
-    EXPECT_EQ(id0, 0);
+    EXPECT_EQ(slab_handle_slot(id0), 0);
     EXPECT_NE(ptr0, nullptr);
 
     auto [id1, ptr1] = allocator.allocate(adv_chunk_size);
-    EXPECT_EQ(id1, 1);
+    EXPECT_EQ(slab_handle_slot(id1), 1);
     EXPECT_NE(ptr1, nullptr);
 
     allocator.deallocate(id0, ptr0);
@@ -883,7 +894,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocWhileReactorAllocates) {
 
     for (int round = 0; round < num_rounds; ++round) {
         // Phase 1: reactor allocates a batch.
-        std::vector<std::pair<int, void*>> allocations;
+        std::vector<std::pair<SlabHandle, void*>> allocations;
         allocations.reserve(chunks_per_round);
 
         for (int i = 0; i < chunks_per_round; ++i) {
@@ -905,7 +916,7 @@ TEST_F(ExpandableSlabAllocatorTest, ConcurrentDeallocWhileReactorAllocates) {
         }
 
         // Phase 3: reactor allocates again to trigger reclamation of the freed slabs.
-        std::vector<std::pair<int, void*>> extra;
+        std::vector<std::pair<SlabHandle, void*>> extra;
         for (int i = 0; i < 4; ++i) {
             auto [id, ptr] = allocator.allocate(adv_chunk_size);
             ASSERT_NE(ptr, nullptr);
@@ -938,7 +949,7 @@ TEST_F(ExpandableSlabAllocatorTest, NoStarvationUnderSustainedLoad) {
 
     for (int round = 0; round < rounds; ++round) {
         // Reactor allocates one chunk per worker thread.
-        std::vector<std::pair<int, void*>> allocations;
+        std::vector<std::pair<SlabHandle, void*>> allocations;
         allocations.reserve(chunks_per_round);
 
         for (int i = 0; i < chunks_per_round; ++i) {
@@ -978,7 +989,7 @@ TEST_F(ExpandableSlabAllocatorTest, BasicAllocation) {
     ExpandableSlabAllocator allocator(large_slab);
     auto [slab_id, ptr] = allocator.allocate(64);
     EXPECT_NE(ptr, nullptr);
-    EXPECT_EQ(slab_id, 0);
+    EXPECT_EQ(slab_handle_slot(slab_id), 0);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, AllocationAndDeallocation) {
@@ -994,12 +1005,12 @@ TEST_F(ExpandableSlabAllocatorTest, SlabExpansionOnFull) {
     // Fill the first slab
     auto [id1, ptr1] = allocator.allocate(128);
     EXPECT_NE(ptr1, nullptr);
-    EXPECT_EQ(id1, 0);
+    EXPECT_EQ(slab_handle_slot(id1), 0);
 
     // This should trigger expansion
     auto [id2, ptr2] = allocator.allocate(64);
     EXPECT_NE(ptr2, nullptr);
-    EXPECT_EQ(id2, 1);
+    EXPECT_EQ(slab_handle_slot(id2), 1);
 
     allocator.deallocate(id1, ptr1);
     allocator.deallocate(id2, ptr2);
@@ -1009,7 +1020,7 @@ TEST_F(ExpandableSlabAllocatorTest, ReclaimedCurrentSlabIsReset) {
     ExpandableSlabAllocator allocator(large_slab);
 
     auto [slab_id, ptr] = allocator.allocate(64);
-    EXPECT_EQ(slab_id, 0);
+    EXPECT_EQ(slab_handle_slot(slab_id), 0);
 
     allocator.deallocate(slab_id, ptr);
 
@@ -1018,7 +1029,7 @@ TEST_F(ExpandableSlabAllocatorTest, ReclaimedCurrentSlabIsReset) {
     // and then allocates from it again.
     auto [slab_id2, ptr2] = allocator.allocate(64);
     EXPECT_NE(ptr2, nullptr);
-    EXPECT_EQ(slab_id2, 0);
+    EXPECT_EQ(slab_handle_slot(slab_id2), 0);
 
     allocator.deallocate(slab_id2, ptr2);
 }
@@ -1027,11 +1038,11 @@ TEST_F(ExpandableSlabAllocatorTest, OldEmptySlabIsDestroyed) {
     ExpandableSlabAllocator allocator(128);
 
     auto [id0, ptr0] = allocator.allocate(128);
-    EXPECT_EQ(id0, 0);
+    EXPECT_EQ(slab_handle_slot(id0), 0);
 
     // Force expansion to slab 1
     auto [id1, ptr1] = allocator.allocate(64);
-    EXPECT_EQ(id1, 1);
+    EXPECT_EQ(slab_handle_slot(id1), 1);
     EXPECT_EQ(allocator.slab_count(), 2);
 
     // Free the only chunk in slab 0 -- notification enqueued
@@ -1061,7 +1072,7 @@ TEST_F(ExpandableSlabAllocatorTest, AllocateZeroSizeThrows) {
 TEST_F(ExpandableSlabAllocatorTest, DeallocateInvalidSlabIdThrows) {
     ExpandableSlabAllocator allocator(large_slab);
     int dummy = 0;
-    EXPECT_THROW(allocator.deallocate(999, &dummy), PreconditionAssertion);
+    EXPECT_THROW(allocator.deallocate(make_slab_handle(999, 0), &dummy), PreconditionAssertion);
 }
 
 TEST_F(ExpandableSlabAllocatorTest, SlabSizeAccessor) {
@@ -1072,13 +1083,13 @@ TEST_F(ExpandableSlabAllocatorTest, SlabSizeAccessor) {
 TEST_F(ExpandableSlabAllocatorTest, MultipleAllocationsFromSameSlab) {
     ExpandableSlabAllocator allocator(large_slab);
     constexpr int count = 8;
-    std::vector<std::pair<int, void*>> allocations;
+    std::vector<std::pair<SlabHandle, void*>> allocations;
     allocations.reserve(count);
 
     for (int i = 0; i < count; ++i) {
         auto [slab_id, ptr] = allocator.allocate(64);
         EXPECT_NE(ptr, nullptr);
-        EXPECT_EQ(slab_id, 0);
+        EXPECT_EQ(slab_handle_slot(slab_id), 0);
         allocations.emplace_back(slab_id, ptr);
     }
 
@@ -1095,7 +1106,7 @@ TEST_F(ExpandableSlabAllocatorTest, CrossThreadDeallocationsWithExpansion) {
 
     ExpandableSlabAllocator allocator(small_slab);
 
-    std::vector<std::pair<int, void*>> allocations;
+    std::vector<std::pair<SlabHandle, void*>> allocations;
     allocations.reserve(num_threads * chunks_per_thread);
 
     for (int i = 0; i < num_threads * chunks_per_thread; ++i) {
@@ -1119,6 +1130,148 @@ TEST_F(ExpandableSlabAllocatorTest, CrossThreadDeallocationsWithExpansion) {
     for (auto& thread : threads) {
         thread.join();
     }
+}
+
+// Slab ids are issued monotonically and never reused, so the directory that maps them --
+// max_pages x page_size slots -- is a bound on the number of slab ROTATIONS a process may
+// perform in its lifetime, not on the memory it may hold. Exceeding it throws from
+// allocate() and takes the reactor down.
+//
+// Registry slots are recycled, so what a process may allocate over its lifetime is unbounded
+// and the registry instead bounds how many slabs may be live AT ONCE.
+//
+// The distinction is the whole point of the generation-tagged handle. Slots were once issued
+// monotonically and never reused, which made the fixed directory -- fixed because it must be
+// lock-free and must never reallocate under readers -- a ceiling on the bytes a process could
+// ever receive: one slot per slab-full, 262,144 slots, so 16 GiB at a 64 KB slab. A gateway
+// reached 14.3M messages in a two-hour load run, close enough to that ceiling for the next
+// failure to have been allocate() throwing rather than anything on the wire.
+//
+// Two properties are asserted here, and the second is the one that matters:
+//   - consumption scales with in-flight depth, since that is what decides how many slabs are
+//     live simultaneously;
+//   - consumption does NOT scale with the number of messages, which is what says there is no
+//     lifetime bound left to reach.
+TEST_F(ExpandableSlabAllocatorTest, SlabSlotsAreRecycledSoConsumptionIsBoundedByInFlightDepth) {
+    constexpr size_t reactor_default_slab_size = 65536;
+    constexpr size_t typical_pdu_size = 1024;
+    constexpr int chunks_per_slab = static_cast<int>(reactor_default_slab_size / typical_pdu_size);
+
+    struct Measurement {
+        int in_flight_depth;
+        int allocations;
+        int slots_used;
+        int slots_free;
+    };
+
+    const auto measure = [](int in_flight_depth, int allocations) {
+        ExpandableSlabAllocator allocator(reactor_default_slab_size);
+        std::deque<WorkItem> in_flight;
+        for (int i = 0; i < allocations; ++i) {
+            auto [handle, ptr] = allocator.allocate(typical_pdu_size);
+            in_flight.push_back({handle, ptr});
+            if (static_cast<int>(in_flight.size()) > in_flight_depth) {
+                allocator.deallocate(in_flight.front().slab_id, in_flight.front().ptr);
+                in_flight.pop_front();
+            }
+        }
+        for (const auto& item : in_flight) {
+            allocator.deallocate(item.slab_id, item.ptr);
+        }
+
+        // Reclamation is demand-driven -- slabs freed above sit in the empty-slab queue until
+        // an allocate() drains it -- so the free list is only observable after one more call.
+        auto [final_handle, final_ptr] = allocator.allocate(typical_pdu_size);
+        const int slots_free = allocator.free_slot_count();
+        allocator.deallocate(final_handle, final_ptr);
+
+        return Measurement{in_flight_depth, allocations, allocator.slab_count(), slots_free};
+    };
+
+    std::vector<Measurement> measurements;
+    for (int depth : {1, 8, 64, 256}) {
+        measurements.push_back(measure(depth, 200000));
+    }
+    for (const auto& m : measurements) {
+        std::cout << "  in-flight depth " << m.in_flight_depth << ": " << m.slots_used << " slots for " << m.allocations << " messages (" << m.slots_free
+                  << " free for reuse)\n";
+    }
+
+    // Without recycling this was one slot per slab-full: 3,125 for this workload.
+    const int slots_without_recycling = 200000 / chunks_per_slab;
+    for (const auto& m : measurements) {
+        EXPECT_LT(m.slots_used, slots_without_recycling / 10) << "Slots must be recycled, not issued once per slab-full: " << m.slots_used
+                                                              << " used where the old scheme would have taken " << slots_without_recycling << ".";
+    }
+
+    // Slots are returned to the free list rather than merely left unused.
+    EXPECT_GT(measurements.back().slots_free, 0) << "Released slots must reach the free list, or reuse is accidental rather than by design.";
+
+    // The property that says the lifetime bound is gone: ten times the messages, through the
+    // same in-flight window, must not cost more slots.
+    const Measurement short_run = measure(64, 100000);
+    const Measurement long_run = measure(64, 1000000);
+    std::cout << "  100k messages: " << short_run.slots_used << " slots;  1M messages: " << long_run.slots_used << " slots\n";
+    EXPECT_EQ(long_run.slots_used, short_run.slots_used) << "Slot consumption must not grow with the number of messages -- if it does, the registry is "
+                                                            "still a ceiling on what a process may handle in its lifetime.";
+}
+
+// A drain that legitimately has thousands of ids to collect must not be mistaken for one
+// that cannot make progress. Batching is what makes that reachable: the reactor allocates a
+// batch, the workers empty every slab in it concurrently, and the reactor's next allocate()
+// then dequeues the whole batch in a single pass -- past the 1000-iteration threshold that
+// drain_loop_has_stalled starts caring about, while remaining honest work.
+//
+// Batched rather than free-running because slab ids are finite (see the test above): a
+// five-second free run at one chunk per slab exhausts the whole id space in under a second
+// and fails for that reason instead of the one under test.
+TEST_F(ExpandableSlabAllocatorTest, DeepDrainOfThousandsOfSlabsDoesNotTripTheDrainLoop) {
+    constexpr size_t slab_size = 256;
+    constexpr size_t chunk_size = 64; // four chunks per slab
+    constexpr int chunks_per_batch = 4096;
+    constexpr int number_of_batches = 40;
+    constexpr int number_of_workers = 8;
+    constexpr int minimum_ids_per_drain = 1000;
+
+    ExpandableSlabAllocator allocator(slab_size);
+
+    for (int batch = 0; batch < number_of_batches; ++batch) {
+        std::vector<WorkItem> batch_items;
+        batch_items.reserve(chunks_per_batch);
+        for (int i = 0; i < chunks_per_batch; ++i) {
+            auto [slab_id, ptr] = allocator.allocate(chunk_size);
+            batch_items.push_back({slab_id, ptr});
+        }
+
+        // Free the whole batch from several threads at once, so the queue accumulates the
+        // batch's slabs before the reactor next drains and the enqueues genuinely contend.
+        std::vector<std::thread> workers;
+        workers.reserve(number_of_workers);
+        const int items_per_worker = chunks_per_batch / number_of_workers;
+        for (int worker_index = 0; worker_index < number_of_workers; ++worker_index) {
+            const int first = worker_index * items_per_worker;
+            const int last = (worker_index == number_of_workers - 1) ? chunks_per_batch : first + items_per_worker;
+            workers.emplace_back([&allocator, &batch_items, first, last]() {
+                for (int i = first; i < last; ++i) {
+                    allocator.deallocate(batch_items[i].slab_id, batch_items[i].ptr);
+                }
+            });
+        }
+        for (auto& worker : workers) {
+            worker.join();
+        }
+
+        // Drains the batch's slabs in one pass. Throwing here is the failure this test exists
+        // to catch: a deep queue is a busy drain, not a stalled one.
+        auto [slab_id, ptr] = allocator.allocate(chunk_size);
+        allocator.deallocate(slab_id, ptr);
+    }
+
+    // Guards against the batch being too small to have driven the loop past a handful of
+    // iterations: with four chunks per slab, each batch queues chunks_per_batch / 4 ids.
+    EXPECT_GT(chunks_per_batch / static_cast<int>(slab_size / chunk_size), minimum_ids_per_drain)
+        << "The batch must queue more ids than the drain loop's iteration threshold, or the "
+           "deep-drain case is never reached.";
 }
 
 } // namespaces

@@ -57,23 +57,36 @@
  * SLAB REGISTRY
  * ==========================================================================
  *
- * Slab IDs are monotonically increasing integers starting from 0. The slab
- * registry is a std::vector<unique_ptr<SlabAllocator>> indexed directly by
- * slab ID, giving O(1) lookup in deallocate(). Destroyed slabs leave a
- * nullptr entry in the vector. Attempting to deallocate() with a slab_id
- * whose entry is nullptr throws PreconditionAssertion.
+ * Slabs live in registry SLOTS, indexed directly for O(1) lookup in deallocate(). The
+ * registry is a two-level directory of fixed size -- it must be readable without a lock by
+ * any deallocating thread, and must never reallocate under those readers, which rules out a
+ * growable container.
+ *
+ * SLOTS ARE RECYCLED. When a slab is destroyed its slot is returned to an intrusive free
+ * list threaded through the slots themselves, and the next slab to be chained takes it back.
+ * The free list needs no synchronisation because both ends are reactor-thread-only: slots are
+ * released in drain_empty_slab_queue() and claimed in append_new_slab().
+ *
+ * That is what keeps a fixed directory from becoming a limit on process lifetime. Issuing
+ * slots monotonically instead would make the directory a ceiling on the number of slab
+ * rotations, and therefore on the total bytes a process could ever receive -- roughly 16 GiB
+ * at a 64 KB slab, which sustained load reaches inside hours.
  *
  * ==========================================================================
  * RETURN TYPE
  * ==========================================================================
  *
- * allocate() returns std::tuple<int, void*> for use with structured bindings:
+ * allocate() returns std::tuple<SlabHandle, void*> for use with structured bindings:
  *
- *   auto [slab_id, ptr] = allocator.allocate(size);
+ *   auto [handle, ptr] = allocator.allocate(size);
  *
- * The slab_id must be passed back to deallocate() alongside the pointer.
- * This avoids pointer arithmetic and hidden metadata, and makes ownership
- * explicit at every call site.
+ * The handle must be passed back to deallocate() alongside the pointer. This avoids pointer
+ * arithmetic and hidden metadata, and makes ownership explicit at every call site.
+ *
+ * A handle is a slot plus the generation that slot was in when the handle was issued, not a
+ * bare slot number, because slots are reused. Releasing a slot bumps its generation, so a
+ * handle that outlives its slab no longer matches and deallocate() rejects it instead of
+ * freeing into whichever slab now occupies the slot. See SlabHandle.hpp.
  */
 
 #include <atomic>
@@ -82,6 +95,7 @@
 
 #include <pubsub_itc_fw/EmptySlabQueue.hpp>
 #include <pubsub_itc_fw/SlabAllocator.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -148,10 +162,10 @@ class ExpandableSlabAllocator {
      * that have become empty since the last call. If the current slab is full,
      * appends a new slab and allocates from it.
      *
-     * Returns the slab ID alongside the pointer so the caller can pass both
+     * Returns a slab handle alongside the pointer so the caller can pass both
      * back to deallocate() without any pointer arithmetic or hidden metadata:
      *
-     *   auto [slab_id, ptr] = allocator.allocate(payload_size);
+     *   auto [handle, ptr] = allocator.allocate(payload_size);
      *
      * This function always returns a valid, non-null pointer. If the current
      * slab is full, a new slab is chained automatically. If allocation still
@@ -159,10 +173,10 @@ class ExpandableSlabAllocator {
      *
      * @param[in] size Number of bytes to allocate. Must be greater than zero
      *                 and must not exceed slab_size.
-     * @return A tuple of { slab_id, ptr }. ptr is guaranteed non-null.
+     * @return A tuple of { handle, ptr }. ptr is guaranteed non-null.
      * @pre size > 0 and size <= slab_size. Violating either throws PreconditionAssertion.
      */
-    [[nodiscard]] std::tuple<int, void*> allocate(size_t size);
+    [[nodiscard]] std::tuple<SlabHandle, void*> allocate(size_t size);
 
     /**
      * @brief Frees a chunk previously returned by allocate().
@@ -177,22 +191,32 @@ class ExpandableSlabAllocator {
      * so the reactor can reclaim it at the next allocate() call. The calling
      * thread never resets or destroys the slab itself.
      *
-     * @param[in] slab_id The slab ID returned by the corresponding allocate().
-     * @param[in] ptr     The pointer returned by the corresponding allocate().
-     *                    Must not be nullptr.
-     * @pre slab_id must be in range, the slab must not have been destroyed,
-     *      and ptr must not be nullptr. Violating any of these throws PreconditionAssertion.
+     * @param[in] handle The handle returned by the corresponding allocate().
+     * @param[in] ptr    The pointer returned by the corresponding allocate().
+     *                   Must not be nullptr.
+     * @pre The handle's slot must be in range, the slab must not have been destroyed, the
+     *      handle's generation must match the slot's current one, and ptr must not be
+     *      nullptr. Violating any of these throws PreconditionAssertion.
      */
-    void deallocate(int slab_id, void* ptr);
+    void deallocate(SlabHandle handle, void* ptr);
 
     /**
-     * @brief Returns the number of slab registry slots (including destroyed slots).
+     * @brief Returns the number of registry slots ever brought into use.
      *
-     * This value is monotonically increasing. Destroyed slabs leave nullptr
-     * entries in the registry, so slab_count() may exceed the number of live
-     * slabs.
+     * This is the high-water mark of slots, not a count of slabs created: recycled slots are
+     * counted once. It therefore stops growing once the process reaches its steady-state
+     * number of concurrently live slabs, which is what makes the registry a bound on
+     * concurrency rather than on lifetime.
      */
     [[nodiscard]] int slab_count() const;
+
+    /**
+     * @brief Returns how many registry slots are on the free list awaiting reuse.
+     *
+     * Diagnostic, reactor-thread-only. Present so tests can assert that slots are genuinely
+     * recycled rather than merely not exhausted.
+     */
+    [[nodiscard]] int free_slot_count() const;
 
     /**
      * @brief Returns the configured slab size in bytes.
@@ -228,27 +252,51 @@ class ExpandableSlabAllocator {
 
     struct Page {
         std::atomic<SlabAllocator*> slots[page_size];
+
+        // Incremented every time a slot is handed to a new slab, so a handle issued against
+        // the slot's previous occupant no longer matches. Atomic because deallocate() reads
+        // it from any thread; the reactor is the only writer.
+        std::atomic<uint32_t> generations[page_size];
+
+        // Intrusive free list of released slots: next_free[slot] is the next free slot, or
+        // -1 at the end. Deliberately a plain int array rather than a container -- a vector
+        // would reallocate as it grew, which is the one thing this registry may never do
+        // while readers are live. Needs no synchronisation: slots are released in
+        // drain_empty_slab_queue() and claimed in append_new_slab(), both reactor-only.
+        int next_free[page_size];
+
         Page() {
             for (auto& s : slots) {
                 s.store(nullptr, std::memory_order_relaxed);
+            }
+            for (auto& g : generations) {
+                g.store(0, std::memory_order_relaxed);
+            }
+            for (auto& n : next_free) {
+                n = -1;
             }
         }
     };
 
     void drain_empty_slab_queue();
     SlabAllocator* append_new_slab();
-    [[nodiscard]] SlabAllocator* load_slab_reactor(int slab_id) const; // reactor thread only
+    [[nodiscard]] SlabAllocator* load_slab_reactor(int slot) const; // reactor thread only
+    [[nodiscard]] Page* page_for_slot(int slot) const;              // reactor thread only
+    void release_slot(int slot);                                    // reactor thread only
 
     size_t slab_size_;
-    int current_slab_id_{-1};
+    int current_slab_slot_{-1};
+    uint32_t current_slab_generation_{0};
     EmptySlabQueue empty_slab_queue_;
-    int slab_slot_count_{0};              // total slab IDs ever issued (monotonically increasing)
+    int slab_slot_count_{0};              // high-water mark of slots in use; recycled slots counted once
+    int free_slot_head_{-1};              // head of the intrusive free list, -1 when empty
+    int free_slot_count_{0};              // diagnostic only
     std::atomic<Page*> pages_[max_pages]; // directory; initialised to nullptr in constructor
 
     // Vyukov sentinel reclamation: the most-recently-popped slab is kept alive
     // until the next drain confirms head_ has moved past it.
     // -1 means no slab is currently deferred.
-    int deferred_reclaim_slab_id_{-1};
+    int deferred_reclaim_slot_{-1};
 };
 
 } // namespaces

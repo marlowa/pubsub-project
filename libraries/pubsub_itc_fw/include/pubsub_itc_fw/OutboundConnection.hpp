@@ -15,6 +15,7 @@
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ServiceEndpoints.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/TcpConnector.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -342,7 +343,7 @@ class OutboundConnection {
      * @param[in] chunk_ptr   Pointer to the start of the PDU frame in the slab chunk.
      * @param[in] total_bytes Total frame size in bytes (sizeof(PduHeader) + payload).
      */
-    void set_pending_send(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes);
+    void set_pending_send(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr, uint32_t total_bytes);
 
     /**
      * @brief Clears the partial send state after a send completes.
@@ -367,7 +368,7 @@ class OutboundConnection {
      *
      * Valid only when `has_pending_send()` returns true.
      */
-    [[nodiscard]] int current_slab_id() const {
+    [[nodiscard]] SlabHandle current_slab_id() const {
         return current_slab_id_;
     }
 
@@ -427,7 +428,7 @@ class OutboundConnection {
     // know which thread initiated the send. ExpandableSlabAllocator::deallocate()
     // is thread-safe so the reactor may call it from the reactor thread.
     ExpandableSlabAllocator* current_allocator_{nullptr};
-    int current_slab_id_{-1};
+    SlabHandle current_slab_id_{invalid_slab_handle};
     void* current_chunk_ptr_{nullptr};
     uint32_t current_total_bytes_{0};
 

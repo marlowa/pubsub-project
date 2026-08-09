@@ -8,6 +8,7 @@
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventType.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 
@@ -71,7 +72,7 @@ class EventMessage {
     int itc_message_type_{-1};
     int16_t pdu_id_{-1};
     int64_t seq_no_{0};
-    int slab_id_{-1}; ///< Slab ID for FrameworkPdu messages. -1 means not slab-allocated.
+    SlabHandle slab_id_{invalid_slab_handle}; ///< Owning slab for FrameworkPdu messages; invalid_slab_handle when not slab-allocated.
     // Keeps the MirroredBuffer alive for RawSocketCommunication events so that
     // payload_ remains a valid pointer even if the originating connection's
     // handler has been destroyed. Empty (nullptr) for every other event type.
@@ -232,7 +233,7 @@ class EventMessage {
      *                           or 0 if the PDU has not yet been stamped by the sequencer.
      * @return EventMessage instance.
      */
-    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, int slab_id, const ConnectionID& connection_id,
+    [[nodiscard]] static EventMessage create_framework_pdu_message(const uint8_t* data, int size, SlabHandle slab_id, const ConnectionID& connection_id,
                                                                    int16_t pdu_id, int64_t seq_no);
 
     /**
@@ -346,7 +347,7 @@ class EventMessage {
      *
      * @return The slab ID, or -1 if not a slab-allocated payload.
      */
-    [[nodiscard]] int slab_id() const;
+    [[nodiscard]] SlabHandle slab_id() const;
 
     /**
      * @brief Gets read-only access to the payload data.

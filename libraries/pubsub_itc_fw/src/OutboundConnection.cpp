@@ -84,7 +84,7 @@ int OutboundConnection::get_fd() const {
     return -1;
 }
 
-void OutboundConnection::set_pending_send(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) {
+void OutboundConnection::set_pending_send(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr, uint32_t total_bytes) {
     if (allocator == nullptr) {
         throw PreconditionAssertion("OutboundConnection::set_pending_send: allocator must not be null", __FILE__, __LINE__);
     }
@@ -99,7 +99,7 @@ void OutboundConnection::set_pending_send(ExpandableSlabAllocator* allocator, in
 
 void OutboundConnection::clear_pending_send() {
     current_allocator_ = nullptr;
-    current_slab_id_ = -1;
+    current_slab_id_ = invalid_slab_handle;
     current_chunk_ptr_ = nullptr;
     current_total_bytes_ = 0;
 }

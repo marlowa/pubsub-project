@@ -57,6 +57,7 @@
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -141,7 +142,7 @@ class PduParser {
 
   private:
     [[nodiscard]] bool has_complete_header() const;
-    void dispatch_pdu(int slab_id, void* payload_chunk);
+    void dispatch_pdu(SlabHandle slab_id, void* payload_chunk);
     void reset_header();
 
     ByteStreamInterface& stream_;
@@ -162,7 +163,7 @@ class PduParser {
     // Slab chunk allocated for the current in-progress payload.
     // Non-null only while a payload is being received.
     void* payload_chunk_{nullptr};
-    int payload_slab_id_{-1};
+    SlabHandle payload_slab_id_{invalid_slab_handle};
     size_t payload_bytes_received_{0};
 
     InlinePduHandler inline_handler_;

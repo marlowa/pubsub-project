@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/ServiceID.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
@@ -180,7 +181,7 @@ class ReactorControlCommand {
      * Passed to allocator_->deallocate() alongside the chunk pointer after
      * the frame has been fully transmitted.
      */
-    int slab_id_{-1};
+    SlabHandle slab_id_{invalid_slab_handle};
 
     /**
      * @brief Pointer to the start of the PDU frame in the slab chunk.

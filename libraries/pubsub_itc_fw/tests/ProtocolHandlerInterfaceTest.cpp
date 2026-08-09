@@ -22,7 +22,7 @@ class StubProtocolHandler : public ProtocolHandlerInterface {
         return {true, "", false};
     }
 
-    std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator*, int, void*, uint32_t) override {
+    std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator*, SlabHandle, void*, uint32_t) override {
         return {true, ""};
     }
 

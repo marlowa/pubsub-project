@@ -15,6 +15,7 @@
 #include <pubsub_itc_fw/PduParser.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 
 namespace pubsub_itc_fw {
@@ -106,7 +107,8 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
      *         error_string} if the underlying send failed unrecoverably. The
      *         slab chunk is released before returning on failure.
      */
-    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
+    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr,
+                                                              uint32_t total_bytes) override;
 
     /**
      * @brief Returns true if a partial outbound PDU send is in progress.
@@ -159,7 +161,7 @@ class PduProtocolHandler : public ProtocolHandlerInterface {
     std::unique_ptr<PduFramer> framer_;
 
     ExpandableSlabAllocator* current_allocator_{nullptr};
-    int current_slab_id_{-1};
+    SlabHandle current_slab_id_{invalid_slab_handle};
     void* current_chunk_ptr_{nullptr};
     uint32_t current_total_bytes_{0};
 };

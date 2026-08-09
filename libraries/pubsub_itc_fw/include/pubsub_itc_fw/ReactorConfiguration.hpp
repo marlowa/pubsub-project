@@ -160,9 +160,19 @@ struct ReactorConfiguration {
      * slab-allocated chunks (zero-copy). This is a hard upper bound on the size of
      * any single inbound PDU payload.
      *
-     * Default: 65536 bytes (64 KB).
+     * It also sets how much payload this process may receive in its lifetime, because
+     * the allocator issues a slab id per slab and never reuses one: the id directory
+     * holds 262,144 entries, so the budget is that many slabs' worth of bytes. At 64 KB
+     * it was 16 GiB, which a gateway can consume inside one trading day.
+     *
+     * 256 KB rather than something larger because a slab stays mapped while even one of
+     * its chunks is outstanding, so the worst-case retention -- one live chunk holding a
+     * whole slab -- rises with this value. 256 KB keeps that four times lower than 1 MB
+     * while giving four times the budget of 64 KB.
+     *
+     * Default: 262144 bytes (256 KB).
      */
-    size_t inbound_slab_size{65536};
+    size_t inbound_slab_size{262144};
 
     /**
      * @brief Size in bytes of the SO_SNDBUF socket option applied to each

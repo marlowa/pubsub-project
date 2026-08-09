@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/MirroredBuffer.hpp>
 #include <pubsub_itc_fw/ProtocolHandlerInterface.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/TlsContext.hpp>
 #include <pubsub_itc_fw/TlsState.hpp>
@@ -101,7 +102,8 @@ class TlsRawBytesProtocolHandler : public ProtocolHandlerInterface {
      *
      * @return {true, ""} on success or partial send; {false, error_description} on failure.
      */
-    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) override;
+    [[nodiscard]] std::tuple<bool, std::string> send_prebuilt(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr,
+                                                              uint32_t total_bytes) override;
 
     /**
      * @brief Returns true if unsent ciphertext bytes are waiting in pending_outbound.

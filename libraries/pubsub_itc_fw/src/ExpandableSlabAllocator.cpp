@@ -51,14 +51,34 @@ ExpandableSlabAllocator::~ExpandableSlabAllocator() {
     }
 }
 
-SlabAllocator* ExpandableSlabAllocator::load_slab_reactor(int slab_id) const {
-    const int page_idx = slab_id >> page_bits;
-    const int slot_idx = slab_id & (page_size - 1);
+SlabAllocator* ExpandableSlabAllocator::load_slab_reactor(int slot) const {
+    const int page_idx = slot >> page_bits;
+    const int slot_idx = slot & (page_size - 1);
     Page* page = pages_[page_idx].load(std::memory_order_relaxed);
     return page->slots[slot_idx].load(std::memory_order_relaxed);
 }
 
-std::tuple<int, void*> ExpandableSlabAllocator::allocate(size_t size) {
+ExpandableSlabAllocator::Page* ExpandableSlabAllocator::page_for_slot(int slot) const {
+    return pages_[slot >> page_bits].load(std::memory_order_relaxed);
+}
+
+void ExpandableSlabAllocator::release_slot(int slot) {
+    // Pushes the slot onto the intrusive free list for reuse. Called only after the slab
+    // occupying it has been destroyed, so nothing can still reach it through the registry.
+    //
+    // The generation is bumped here rather than on reuse so that the window in which a slot
+    // is free is already a different generation from the one handles were issued against.
+    // A handle outliving its slab is a caller bug either way; this makes deallocate() reject
+    // it from the moment the slab dies, instead of only once the slot is handed out again.
+    Page* page = page_for_slot(slot);
+    const int slot_idx = slot & (page_size - 1);
+    page->generations[slot_idx].fetch_add(1, std::memory_order_release);
+    page->next_free[slot_idx] = free_slot_head_;
+    free_slot_head_ = slot;
+    ++free_slot_count_;
+}
+
+std::tuple<SlabHandle, void*> ExpandableSlabAllocator::allocate(size_t size) {
     if (size == 0) {
         throw PreconditionAssertion("ExpandableSlabAllocator::allocate: size must be greater than zero", __FILE__, __LINE__);
     }
@@ -69,7 +89,7 @@ std::tuple<int, void*> ExpandableSlabAllocator::allocate(size_t size) {
 
     drain_empty_slab_queue();
 
-    SlabAllocator* current = load_slab_reactor(current_slab_id_);
+    SlabAllocator* current = load_slab_reactor(current_slab_slot_);
 
     // Opportunistic self-reclaim of the current slab. The current slab is
     // never reclaimed via the empty-slab queue (only non-current slabs are),
@@ -97,25 +117,27 @@ std::tuple<int, void*> ExpandableSlabAllocator::allocate(size_t size) {
                                  "this should not happen; mmap may have failed during slab construction");
     }
 
-    return {current_slab_id_, ptr};
+    return {make_slab_handle(current_slab_slot_, current_slab_generation_), ptr};
 }
 
-void ExpandableSlabAllocator::deallocate(int slab_id, void* ptr) {
+void ExpandableSlabAllocator::deallocate(SlabHandle handle, void* ptr) {
     if (ptr == nullptr) {
         throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: ptr must not be nullptr", __FILE__, __LINE__);
     }
 
-    if (slab_id < 0 || slab_id >= max_pages * page_size) {
-        throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: slab_id out of range", __FILE__, __LINE__);
+    const int slot = slab_handle_slot(handle);
+
+    if (slot < 0 || slot >= max_pages * page_size) {
+        throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: handle slot out of range", __FILE__, __LINE__);
     }
 
-    const int page_idx = slab_id >> page_bits;
-    const int slot_idx = slab_id & (page_size - 1);
+    const int page_idx = slot >> page_bits;
+    const int slot_idx = slot & (page_size - 1);
 
     // Acquire page pointer published by the reactor with release.
     Page* page = pages_[page_idx].load(std::memory_order_acquire);
     if (page == nullptr) {
-        throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: slab_id refers to an unallocated page", __FILE__, __LINE__);
+        throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: handle refers to an unallocated page", __FILE__, __LINE__);
     }
 
     // Acquire slab pointer. The reactor stores with release on slab creation and
@@ -125,11 +147,26 @@ void ExpandableSlabAllocator::deallocate(int slab_id, void* ptr) {
         throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: slab has already been destroyed", __FILE__, __LINE__);
     }
 
+    // Read after the slab pointer, and compared last. The reactor bumps the generation
+    // before publishing a new slab into the slot, both with release, so a thread that has
+    // seen the new slab pointer must also see the new generation -- and a handle from the
+    // slot's previous occupant is rejected here rather than freeing into the new slab.
+    const uint32_t current_generation = page->generations[slot_idx].load(std::memory_order_acquire);
+    if (current_generation != slab_handle_generation(handle)) {
+        throw PreconditionAssertion("ExpandableSlabAllocator::deallocate: handle is stale -- its slab has been destroyed "
+                                    "and the registry slot reused",
+                                    __FILE__, __LINE__);
+    }
+
     slab->deallocate(ptr);
 }
 
 int ExpandableSlabAllocator::slab_count() const {
     return slab_slot_count_;
+}
+
+int ExpandableSlabAllocator::free_slot_count() const {
+    return free_slot_count_;
 }
 
 size_t ExpandableSlabAllocator::slab_size() const {
@@ -246,10 +283,10 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
     if (!ids_to_reclaim.empty()) {
         const int new_deferred = ids_to_reclaim.back();
         ids_to_reclaim.pop_back();
-        if (deferred_reclaim_slab_id_ >= 0) {
-            ids_to_reclaim.push_back(deferred_reclaim_slab_id_);
+        if (deferred_reclaim_slot_ >= 0) {
+            ids_to_reclaim.push_back(deferred_reclaim_slot_);
         }
-        deferred_reclaim_slab_id_ = new_deferred;
+        deferred_reclaim_slot_ = new_deferred;
     }
 
     // Under the current design no slab on the queue is the current slab
@@ -257,7 +294,7 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
     // and ExpandableSlabAllocator::append_new_slab). All reclaimed slabs are
     // therefore destroyed, not reset.
     for (int id : ids_to_reclaim) {
-        if (id == current_slab_id_) {
+        if (id == current_slab_slot_) {
             throw PubSubItcException("ExpandableSlabAllocator::drain_empty_slab_queue: "
                                      "current slab appeared in the empty-slab queue. "
                                      "This is a design invariant violation: the current slab must "
@@ -270,6 +307,12 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
         // Release-store so workers that load with acquire see nullptr for this slot.
         page->slots[slot_idx].store(nullptr, std::memory_order_release);
         delete slab;
+
+        // Returned only now, at the point of destruction, rather than when the slab was
+        // dequeued. The Vyukov deferral holds the most recently popped slab over to the next
+        // drain precisely because a producer may still hold its node, and recycling the slot
+        // any earlier would hand it to a new slab while that is still true.
+        release_slot(id);
     }
 }
 
@@ -282,8 +325,8 @@ SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
     // Either way, the try_claim_enqueue CAS ensures exactly one path performs
     // the enqueue (the deallocator that brought the count to zero, OR the
     // owner here).
-    if (current_slab_id_ >= 0) {
-        SlabAllocator* old_current = load_slab_reactor(current_slab_id_);
+    if (current_slab_slot_ >= 0) {
+        SlabAllocator* old_current = load_slab_reactor(current_slab_slot_);
         if (old_current != nullptr) {
             old_current->clear_is_current();
 
@@ -296,16 +339,23 @@ SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
         }
     }
 
-    if (slab_slot_count_ >= max_pages * page_size) {
-        throw PubSubItcException("ExpandableSlabAllocator::append_new_slab: slab slot capacity exhausted "
-                                 "(max " +
-                                 std::to_string(max_pages * page_size) +
-                                 " slab IDs). "
-                                 "This indicates an extraordinary number of slab rotations; "
-                                 "check for runaway allocation or insufficient slab reclamation.");
+    // A released slot is preferred over a fresh one, which is what keeps the registry a bound
+    // on concurrently live slabs rather than on the number a process may ever rotate through.
+    int new_id = -1;
+    if (free_slot_head_ >= 0) {
+        new_id = free_slot_head_;
+        free_slot_head_ = page_for_slot(new_id)->next_free[new_id & (page_size - 1)];
+        --free_slot_count_;
+    } else {
+        if (slab_slot_count_ >= max_pages * page_size) {
+            throw PubSubItcException("ExpandableSlabAllocator::append_new_slab: registry capacity exhausted (max " + std::to_string(max_pages * page_size) +
+                                     " concurrently live slabs). Released slots are reused, so reaching this means that many slabs "
+                                     "are live at once: chunks are being held rather than leaked slot ids. Look for allocations that "
+                                     "are never freed, or an application thread that has stopped consuming.");
+        }
+        new_id = slab_slot_count_++;
     }
 
-    const int new_id = slab_slot_count_++;
     const int page_idx = new_id >> page_bits;
     const int slot_idx = new_id & (page_size - 1);
 
@@ -318,9 +368,14 @@ SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
 
     auto* new_slab = new SlabAllocator(slab_size_, new_id, empty_slab_queue_);
     // Release-store so workers that load with acquire see the fully constructed slab.
-    pages_[page_idx].load(std::memory_order_relaxed)->slots[slot_idx].store(new_slab, std::memory_order_release);
+    Page* page = pages_[page_idx].load(std::memory_order_relaxed);
+    page->slots[slot_idx].store(new_slab, std::memory_order_release);
 
-    current_slab_id_ = new_id;
+    current_slab_slot_ = new_id;
+    // The generation every handle issued against this slab will carry. Read after the slab is
+    // published, which is safe because only this thread writes it: release_slot() bumped it
+    // when the slot was freed, so a reused slot is already on a value no live handle holds.
+    current_slab_generation_ = page->generations[slot_idx].load(std::memory_order_relaxed);
     return new_slab;
 }
 

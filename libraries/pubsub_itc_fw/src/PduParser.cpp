@@ -128,7 +128,7 @@ std::tuple<bool, std::string> PduParser::receive() {
             if (bytes_read == 0 && error.empty()) {
                 slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);
                 payload_chunk_ = nullptr;
-                payload_slab_id_ = -1;
+                payload_slab_id_ = invalid_slab_handle;
                 if (disconnect_handler_ != nullptr) {
                     disconnect_handler_();
                 }
@@ -141,7 +141,7 @@ std::tuple<bool, std::string> PduParser::receive() {
                 }
                 slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);
                 payload_chunk_ = nullptr;
-                payload_slab_id_ = -1;
+                payload_slab_id_ = invalid_slab_handle;
                 return {false, error};
             }
 
@@ -156,7 +156,7 @@ std::tuple<bool, std::string> PduParser::receive() {
         dispatch_pdu(payload_slab_id_, payload_chunk_);
 
         payload_chunk_ = nullptr;
-        payload_slab_id_ = -1;
+        payload_slab_id_ = invalid_slab_handle;
         payload_bytes_received_ = 0;
         reset_header();
     }
@@ -166,7 +166,7 @@ bool PduParser::has_complete_header() const {
     return header_bytes_ >= sizeof(PduHeader);
 }
 
-void PduParser::dispatch_pdu(int slab_id, void* payload_chunk) {
+void PduParser::dispatch_pdu(SlabHandle slab_id, void* payload_chunk) {
     const auto* payload = static_cast<const uint8_t*>(payload_chunk);
     const int payload_size = static_cast<int>(current_payload_size_);
 

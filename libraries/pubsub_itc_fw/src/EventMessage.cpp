@@ -54,7 +54,7 @@ EventMessage EventMessage::create_raw_socket_message(const ConnectionID& connect
     return msg;
 }
 
-EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size, int slab_id, const ConnectionID& connection_id, int16_t pdu_id,
+EventMessage EventMessage::create_framework_pdu_message(const uint8_t* data, int size, SlabHandle slab_id, const ConnectionID& connection_id, int16_t pdu_id,
                                                         int64_t seq_no) {
     EventMessage msg(EventType(EventType::FrameworkPdu), data, size);
     msg.slab_id_ = slab_id;
@@ -114,7 +114,7 @@ const ConnectionID& EventMessage::connection_id() const {
     return header_.connection_id;
 }
 
-int EventMessage::slab_id() const {
+SlabHandle EventMessage::slab_id() const {
     return slab_id_;
 }
 

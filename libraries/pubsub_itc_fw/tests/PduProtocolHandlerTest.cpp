@@ -160,7 +160,7 @@ class PduProtocolHandlerTest : public ::testing::Test {
     // and prepends a valid PduHeader so the bytes look like a real frame.
     // Returns the slab_id, the chunk pointer, and the total frame size.
     struct PrebuiltFrame {
-        int slab_id;
+        SlabHandle slab_id;
         void* chunk;
         uint32_t total_bytes;
     };

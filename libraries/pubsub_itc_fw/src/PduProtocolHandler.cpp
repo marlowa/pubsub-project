@@ -27,7 +27,7 @@ std::tuple<bool, std::string, bool> PduProtocolHandler::on_data_ready() {
     return {ok, error, false};
 }
 
-std::tuple<bool, std::string> PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, int slab_id, void* chunk_ptr, uint32_t total_bytes) {
+std::tuple<bool, std::string> PduProtocolHandler::send_prebuilt(ExpandableSlabAllocator* allocator, SlabHandle slab_id, void* chunk_ptr, uint32_t total_bytes) {
     if (allocator == nullptr) {
         throw PreconditionAssertion("PduProtocolHandler::send_prebuilt: allocator must not be nullptr", __FILE__, __LINE__);
     }
@@ -83,7 +83,7 @@ void PduProtocolHandler::release_pending_send() {
     if (current_allocator_ != nullptr) {
         current_allocator_->deallocate(current_slab_id_, current_chunk_ptr_);
         current_allocator_ = nullptr;
-        current_slab_id_ = -1;
+        current_slab_id_ = invalid_slab_handle;
         current_chunk_ptr_ = nullptr;
         current_total_bytes_ = 0;
     }
