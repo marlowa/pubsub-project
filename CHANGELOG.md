@@ -191,6 +191,14 @@ change in any release.
   stage that caused it passed; the damage surfaced in the two stages that ran afterwards.
   `devsetup.py` now resolves the staging directory once and passes it to `deploy.py`. On the
   development host it resolves to `installed`, so nothing there changes.
+- **A release artefact now says which platform it was built for.** The name carried no platform
+  tag, so the container's tarball sat in the shared `release/` directory indistinguishable from a
+  host build — and both scripts that deploy one picked "the newest", which after a release check
+  is the container's. `release.py` appends the platform tag, and `devsetup.py` and
+  `build-release-deploy.py` select by platform rather than by date. `build-release-deploy.py`
+  additionally deleted the unqualified `installed/` before building, so in the container it would
+  have removed the host's tree outright. Names on the development host are unchanged: only a
+  cross-compiled artefact is qualified, as with the staging directory.
 - **`perf_run.py --gateway fix` could never have run.** `run_fix8_session()` referenced
   `prefix`, which is a local of `main()` and was never passed in, so the FIX performance path
   died with `NameError` the moment it reached the matching engine's metrics port. Found by

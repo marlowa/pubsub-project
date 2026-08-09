@@ -44,6 +44,44 @@ def platform_tag():
     return None
 
 
+# Every value platform_tag() can return. Needed to recognise another platform's
+# artefact by name, which the ordinary dev host cannot do from its own tag alone
+# because its tag is None.
+known_platform_tags = ('rhel8', 'rocky8')
+
+
+def platform_suffix():
+    """The suffix that distinguishes this platform's build products from another's.
+
+    Empty on the ordinary dev host, so its names are unchanged and only a
+    cross-compiled build is qualified -- the same rule the staging directory follows,
+    where the host keeps installed/ and Rocky gets installed-rocky8/.
+    """
+    tag = platform_tag()
+    return f"-{tag}" if tag else ""
+
+
+def artefact_belongs_to_this_platform(artefact_name):
+    """Whether a release tarball was built for the platform running this code.
+
+    A release artefact is not portable between them: a gcc-8.5 tree links against an
+    older glibc and carries an RPATH naming the build machine's third-party tree.
+    Deploying the wrong one produces binaries that die at startup with exit 127.
+
+    Selecting "the newest tarball" cannot tell them apart, because the release
+    directory is shared -- the Rocky container writes into a bind mount of the same
+    repository, so its artefact lands beside the host's and is usually newer.
+
+    @param[in] artefact_name File name, with or without the .tar.gz suffix.
+    @return True if this artefact is for the current platform.
+    """
+    stem = artefact_name[:-len('.tar.gz')] if artefact_name.endswith('.tar.gz') else artefact_name
+    tag = platform_tag()
+    if tag:
+        return stem.endswith(f"-{tag}")
+    return not any(stem.endswith(f"-{other}") for other in known_platform_tags)
+
+
 def run_check_standards(source_dir):
     """Run check_standards.py and abort the build if any violations are found."""
     script = source_dir / "check_standards.py"

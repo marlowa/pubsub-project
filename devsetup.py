@@ -63,14 +63,23 @@ def _run(command: list[str], step: str) -> None:
 
 
 def _find_tarball() -> Path:
+    """The newest release tarball built for this platform.
+
+    Filtered by platform, not just newest: release/ is shared with the Rocky container
+    through a bind mount, so a gcc-8.5 artefact lands beside the host's and is often the
+    newer of the two. Deploying it puts binaries on the host that die at startup.
+    """
+    import build  # noqa: PLC0415  -- deferred: matches _staging_dir() above
     release_dir = _SCRIPT_DIR / "release"
     tarballs = sorted(
-        release_dir.glob("pubsub-*.tar.gz"),
+        (p for p in release_dir.glob("pubsub-*.tar.gz")
+         if build.artefact_belongs_to_this_platform(p.name)),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
     if not tarballs:
-        sys.exit(f"error: no tarball found in {release_dir} after release step")
+        sys.exit(f"error: no tarball for this platform found in {release_dir} "
+                 f"after release step")
     return tarballs[0]
 
 

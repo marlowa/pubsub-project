@@ -47,8 +47,14 @@ def main() -> int:
     if args.valgrind and (args.asan or args.tsan):
         sys.exit("error: --valgrind cannot be combined with --asan or --tsan")
 
+    import build  # noqa: PLC0415  -- deferred: only needed to resolve platform names
+
     script_dir = Path(__file__).resolve().parent
-    install_dir = script_dir / "installed"
+    # Platform-qualified, matching build.py and release.py. Unqualified is wrong here
+    # twice over: this script deletes the directory before building, so run in the Rocky
+    # container -- which bind-mounts the repository -- it would remove the host's tree,
+    # then deploy gcc-8.5 binaries in its place.
+    install_dir = script_dir / ("installed" + build.platform_suffix())
     release_dir = script_dir / "release"
 
     # ── Clean ──────────────────────────────────────────────────────────────────
@@ -85,15 +91,21 @@ def main() -> int:
         release_args += ["--sanitizer", sanitizer]
     run(release_args, "RELEASE")
 
-    tarballs = sorted(release_dir.glob("pubsub-*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # Filtered by platform, not just newest: release/ is shared with the Rocky container
+    # through a bind mount, so a gcc-8.5 artefact lands beside the host's and is often
+    # the newer of the two.
+    tarballs = sorted((p for p in release_dir.glob("pubsub-*.tar.gz")
+                       if build.artefact_belongs_to_this_platform(p.name)),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
     if not tarballs:
-        print(f"ERROR: no release tarball found in {release_dir}", file=sys.stderr)
+        print(f"ERROR: no release tarball for this platform found in {release_dir}", file=sys.stderr)
         return 1
     tarball = tarballs[0]
     print(f"  tarball: {tarball}")
 
     # ── Deploy ─────────────────────────────────────────────────────────────────
-    deploy_args = [sys.executable, str(script_dir / "deploy.py"), "--artefact", str(tarball)]
+    deploy_args = [sys.executable, str(script_dir / "deploy.py"), "--artefact", str(tarball),
+                   "--install-dir", str(install_dir)]
     if args.skip_db:
         deploy_args.append("--skip-db")
     if args.drop_db:

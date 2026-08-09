@@ -22,6 +22,11 @@ Artefact name:  pubsub-<version>-<git-short-hash>-<mode>.tar.gz
                 pubsub-<version>-<git-short-hash>-<mode>-<sanitizer>.tar.gz
                 pubsub-<version>-<mode>.tar.gz  (with --no-git-hash)
 
+A build for a platform other than the development host appends its tag, so a
+Rocky/RHEL8 artefact is pubsub-<version>-<hash>-<mode>-rocky8.tar.gz. The name has to
+carry it: a release tree is not portable between the two, and the release directory is
+shared with the Rocky container through a bind mount, so both land side by side.
+
 Usage:
   ./release.py [options]
 """
@@ -344,6 +349,8 @@ def main() -> None:
     with open(env_path, "rb") as file_handle:
         env = tomllib.load(file_handle)
 
+    import build  # noqa: PLC0415  -- deferred: matches _default_install_dir() above
+
     version  = args.version or read_cmake_version(_CMAKE_LISTS)
     git_hash = None if args.no_git_hash else git_short_hash()
     if git_hash is None and not args.no_git_hash:
@@ -354,6 +361,10 @@ def main() -> None:
     artefact_name += f"-{args.mode}"
     if args.sanitizer != "none":
         artefact_name += f"-{args.sanitizer}"
+    # Last, so the platform reads as the outermost qualifier and the name sorts with
+    # its own platform's builds. Empty on the dev host, which keeps its names as they
+    # were; only a cross-compiled artefact is qualified.
+    artefact_name += build.platform_suffix()
 
     binaries = deployment_binaries(env)
     jar_paths = deployment_jar_paths(env)

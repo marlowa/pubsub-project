@@ -237,6 +237,12 @@ python3 release.py
 
 Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `build/installed/`. Outputs `build/release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, and a `release.json` manifest.
 
+A build for a platform other than the development host appends its tag, giving
+`pubsub-<version>-<hash>-<mode>-rocky8.tar.gz`. A release tree is not portable between the two —
+a gcc-8.5 build links against an older glibc and names its own third-party tree in the RPATH —
+and the release directory is shared with the Rocky container, so both artefacts land side by
+side and the name is the only thing telling them apart.
+
 Options: `--install-dir` (staging dir, default: `build/installed`), `--env`, `--version`, `--output-dir`, `--no-git-hash`.
 
 ## Deployment (`deploy.py`)

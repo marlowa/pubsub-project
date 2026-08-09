@@ -437,13 +437,20 @@ on a permissions error, and the corrupting step came after that.
 it to `deploy.py` as `--install-dir`. On the development host it resolves to `installed`, so
 nothing there changes.
 
-Two related exposures were left alone deliberately, and both need a decision:
+The same fault had a second half, fixed the same day at the user's instruction. The release
+artefact name carried **no platform tag**, so the container wrote a tarball into the bind-mounted
+`release/` that could not be told from a host build — and both `devsetup.py` and
+`build-release-deploy.py` chose "the newest tarball", which after a release check is the
+container's. `release.py` now appends the platform tag, and both selectors filter by it rather
+than by date. `build-release-deploy.py` was worse than its sibling: it hardcoded `installed` and
+`rmtree`s it before building, so run in the container it would have deleted the host's tree
+before replacing it.
 
-- The release artefact name is `pubsub-<version>-<hash>-<mode>.tar.gz` with **no platform tag**,
-  so the container writes a tarball into the bind-mounted `release/` that cannot be told from a
-  host build. Deploying "the newest artefact" by hand can therefore install gcc-8.5 binaries on
-  the development host. Changing the artefact name changes what is shipped, so it is not a
-  change to make unasked.
+The name is unchanged on the development host, whose tag is empty; only a cross-compiled
+artefact is qualified, exactly as the staging directory works.
+
+One related exposure remains open and needs a decision:
+
 - No stage verifies that what it is about to test can actually start. A one-line `ldd` check
   for unresolved libraries before `ha` would have named this in seconds rather than an hour.
 
