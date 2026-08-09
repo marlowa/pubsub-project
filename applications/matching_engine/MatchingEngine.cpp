@@ -15,6 +15,7 @@
 #include <pubsub_itc_fw/FileOpenMode.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/HotPathThreadCount.hpp>
+#include <pubsub_itc_fw/IdleTimeoutFlag.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
@@ -53,13 +54,23 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
     // mode and only begins processing once promoted (Slice C+D). Pre-warming this
     // listener means the sequencer's connection is already established when the
     // secondary is promoted, so WAL reconciliation can begin without a connect delay.
+    //
+    // BypassIdleTimeout because being idle is what this connection does. On the secondary the
+    // sequencer's connection carries no orders at all until promotion, so the inactivity
+    // reaper would close it on schedule and undo the pre-warming above -- leaving the link to
+    // be established at the one moment it is needed. On the primary the same listener is busy,
+    // so the flag costs nothing there.
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
-                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+                                        pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
+                                        pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
     if (is_secondary) {
-        // Secondary: additionally listen for book-update PDUs from ME-primary.
+        // Secondary: additionally listen for book-update PDUs from ME-primary. Also exempt:
+        // replication is silent whenever the book is not changing, and a quiet market must not
+        // cost the secondary its replication link.
         reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.replication_listen_host, config_.replication_listen_port},
-                                            pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
+                                            pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
+                                            pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
     }
 
     matching_engine_thread_ = pubsub_itc_fw::ApplicationThread::create<MatchingEngineThread>(*logger_, *reactor_, config_);
