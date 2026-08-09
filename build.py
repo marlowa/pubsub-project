@@ -60,14 +60,76 @@ def run_check_standards(source_dir):
 
 
 def run_pylint(source_dir):
-    """Run pylint on the Python DSL and FIX dictionary generator source."""
+    """Run pylint on the Python DSL, the FIX dictionary generator, and the top-level scripts.
+
+    Two invocations, at two standards, deliberately.
+
+    The DSL and dictionary generator are held at 10.00/10, style included: they are library
+    code, they are read as much as run, and they are small enough for that to be free.
+
+    The top-level scripts are checked for ERRORS ONLY. They were checked for nothing at all
+    until 2026-08-09, because the invocation above names two package directories and every
+    script in the repository root falls outside them -- which is how an undefined variable
+    lived in perf_run.py's FIX path long enough for a release check to find it. These are the
+    scripts that deploy the venue and run the tests, so a defect that stops one of them
+    outright matters far more than its line lengths, and errors-only is the bar they can pass
+    today. Raising it means fixing the style first, which is worth doing and is not urgent.
+
+    Globbed rather than listed. A hard-coded list is a list that goes stale, and a new script
+    would silently inherit the very gap this closes.
+    """
     python_dir = source_dir / "python"
     run_command(
         [sys.executable, "-m", "pylint", "dsl", "fix_dictionary"],
         cwd=python_dir,
         description="Running pylint on Python DSL and FIX dictionary source"
     )
+
+    top_level_scripts = sorted(path.name for path in source_dir.glob("*.py"))
+    if top_level_scripts:
+        run_command(
+            [sys.executable, "-m", "pylint", "--disable=all", "--enable=E", *top_level_scripts],
+            cwd=source_dir,
+            description=f"Running pylint (errors only) on {len(top_level_scripts)} top-level scripts"
+        )
+
     print("\n✓ pylint passed")
+
+
+def check_scripts_support_help(source_dir):
+    """Every top-level script must answer --help without failing.
+
+    Cheap, and it catches two things nothing else does. A script whose argparse setup throws
+    only discovers it when someone runs it, which for release.py or deploy.py means at the
+    worst possible moment. And --help is where a module docstring surfaces: perf_run.py
+    carried its whole usage block in a triple-quoted string that was not the docstring at
+    all, because a `from __future__` import preceded it, so `description=__doc__` passed
+    None and --help showed nothing. Eleven scripts had the same fault.
+
+    Running each one is safe only because --help exits before any of them does work. A script
+    that acts at import time would be exercised by this check, which is itself worth knowing.
+    """
+    scripts = sorted(path.name for path in source_dir.glob("*.py"))
+    print(f"\n=== Checking --help on {len(scripts)} top-level scripts ===")
+    broken = []
+    for name in scripts:
+        try:
+            result = subprocess.run([sys.executable, name, "--help"], cwd=source_dir,
+                                    capture_output=True, timeout=60, check=False)
+        except subprocess.TimeoutExpired:
+            broken.append((name, "timed out -- does it do work before parsing arguments?"))
+            continue
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).decode(errors="replace").strip()
+            broken.append((name, detail.splitlines()[-1] if detail else
+                           f"exited {result.returncode} with no output"))
+
+    if broken:
+        print("\nERROR: these scripts do not support --help:", file=sys.stderr)
+        for name, why in broken:
+            print(f"  {name}: {why}", file=sys.stderr)
+        sys.exit(1)
+    print(f"\n\u2713 all {len(scripts)} scripts answer --help")
 
 
 def run_pytest(source_dir, build_dir=None):
@@ -1018,6 +1080,7 @@ Examples:
         # Python DSL checks run before the (much slower) C++ build begins.
         if not args.no_pylint:
             run_pylint(source_dir)
+            check_scripts_support_help(source_dir)
         else:
             print("NOTE: --no-pylint is set; skipping pylint")
         if not skip_pytest:

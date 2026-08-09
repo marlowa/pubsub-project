@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 devenv.py — manage the pubsub developer sandbox.
 
@@ -30,6 +29,7 @@ defines a 'config' key in the env TOML.  C++ components are launched with
 as before.
 """
 
+from __future__ import annotations
 import argparse
 import os
 import re

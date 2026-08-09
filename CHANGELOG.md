@@ -11,6 +11,12 @@ change in any release.
 
 ### Added
 
+- **The build checks the top-level scripts.** `pylint` ran against two package directories,
+  so every script in the repository root — the ones that deploy the venue and run the tests —
+  was checked by nothing at all. They are now linted for **errors**, and each must answer
+  `--help` without failing. Both gates are green as added; the style warnings are recorded in
+  `docs/bug_list.md` rather than fixed, and raising the bar to include them is the stated
+  resolution there.
 - **A trading-day load profile.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped
   day -- pre-open, an opening auction at the ceiling, steady morning, a sustained elevated hour,
   a midday lull, an afternoon burst and a close above the ceiling -- with a cancel stream so the
@@ -175,6 +181,15 @@ change in any release.
 
 ### Fixed
 
+- **`perf_run.py --gateway fix` could never have run.** `run_fix8_session()` referenced
+  `prefix`, which is a local of `main()` and was never passed in, so the FIX performance path
+  died with `NameError` the moment it reached the matching engine's metrics port. Found by
+  `release_check.py`, which is the only thing that runs it.
+- **Eleven scripts had a usage block that was not their docstring**, including `deploy.py`,
+  `devenv.py`, `ha_test.py` and `release.py`. A `from __future__ import annotations` preceding
+  the triple-quoted block demotes it to an ordinary string expression, so `__doc__` was `None`
+  — and eight of those scripts pass `__doc__` to argparse as the description. Their `--help`
+  printed usage and options with no explanation of what the script was for.
 - **The slab allocator had a hard limit on how much a process could ever receive.** Registry slots
   were issued monotonically and never reused, and the slot indexes a fixed directory -- fixed
   because deallocating threads read it without a lock -- so 262,144 slab rotations was a ceiling on

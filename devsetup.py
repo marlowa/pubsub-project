@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 devsetup.py — build, package, stop, and deploy in one step for the developer sandbox.
 
@@ -21,6 +20,7 @@ Usage:
   ./devsetup.py [options]
 """
 
+from __future__ import annotations
 import argparse
 import subprocess
 import sys

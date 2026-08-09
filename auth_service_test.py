@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 auth_service_test.py — Integration tests for the authentication service.
 
@@ -48,6 +47,7 @@ Options:
     --reply-timeout S   Max seconds to wait for each PDU reply (default: 5)
 """
 
+from __future__ import annotations
 import argparse
 import hashlib
 import hmac as hmac_module

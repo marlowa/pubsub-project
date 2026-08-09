@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 perf_run.py — start the full FIX sequencer system under perf, fire NOS orders
               via fix8, SIGTERM all processes, and produce per-process perf
@@ -26,6 +25,8 @@ Output directory:
         <name>.jpg           flamegraph JPG (requires ImageMagick convert)
         report.txt           combined perf report (--stdio, flat)
 """
+
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -119,10 +120,12 @@ FLAMEGRAPH = Path("/home/marlowa/mystuff/FlameGraph")
 
 
 def log(msg: str) -> None:
+    """Print a timestamped progress line, flushed so a piped run stays readable."""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def die(msg: str) -> None:
+    """Report a fatal problem and stop. Nothing here is recoverable enough to continue."""
     log(f"ERROR: {msg}")
     sys.exit(1)
 
@@ -324,6 +327,11 @@ def set_fix_capture_enabled(config_path: Path, enabled: bool) -> None:
 
 
 def resolve_prefix(raw: str) -> Path:
+    """Turn the install prefix argument into an absolute directory, or stop.
+
+    Resolved rather than used as given, because everything downstream builds paths from it
+    and a relative one would resolve against whatever directory a component was started in.
+    """
     p = Path(raw).resolve()
     if not p.is_dir():
         die(f"install prefix '{raw}' does not exist or is not a directory")
@@ -331,6 +339,11 @@ def resolve_prefix(raw: str) -> Path:
 
 
 def preflight(prefix: Path) -> None:
+    """Check the tools and binaries a run needs before anything is started.
+
+    Run before the venue rather than after, so a missing perf or an unbuilt component is
+    reported in seconds instead of after a venue has been brought up and torn down.
+    """
     if not FIX8_BIN.is_file() or not os.access(FIX8_BIN, os.X_OK):
         die(f"f8test not found or not executable: {FIX8_BIN}")
     if subprocess.call(["which", "perf"],
@@ -345,6 +358,11 @@ def preflight(prefix: Path) -> None:
 def launch_app(name: str, bin_name: str, config: Path,
                bin_dir: Path, log_dir: Path,
                workdir: Path | None = None) -> subprocess.Popen:
+    """Start one component with its stdout and stderr captured to the log directory.
+
+    The working directory matters: a component resolves its certificates and data files
+    relative to its own etc/ directory, so it is started there rather than here.
+    """
     if not config.is_file():
         die(f"config not found: {config}")
     log_file = log_dir / f"{name}.log"
@@ -362,6 +380,11 @@ def launch_app(name: str, bin_name: str, config: Path,
 
 
 def attach_perf(name: str, pid: int, perf_dir: Path) -> subprocess.Popen:
+    """Attach perf record to a running component, writing its samples to the run directory.
+
+    Only the components under measurement are profiled: perf's own overhead lands on the
+    machine being measured, so profiling everything would change what is being observed.
+    """
     data_file  = perf_dir / f"{name}.perf.data"
     stderr_file = perf_dir / f"{name}.perf.stderr"
     call_graph_arg = f"{CALLGRAPH},{DWARF_STACK_SIZE}" if CALLGRAPH == "dwarf" else CALLGRAPH
@@ -571,6 +594,11 @@ def terminate_clients(procs: list[subprocess.Popen], clients: int) -> None:
 
 
 def shutdown_processes(named_procs: list[tuple[str, subprocess.Popen]]) -> None:
+    """Stop every component with SIGTERM, then SIGKILL whatever has not gone.
+
+    SIGTERM first because a component that shuts down cleanly flushes its WAL and its log;
+    a run killed outright leaves both truncated and the evidence unreadable.
+    """
     log("Sending SIGTERM to all applications ...")
     for name, proc in named_procs:
         if proc.poll() is None:
@@ -586,6 +614,11 @@ def shutdown_processes(named_procs: list[tuple[str, subprocess.Popen]]) -> None:
 
 
 def stop_perf_procs(perf_procs: list[tuple[str, subprocess.Popen]]) -> None:
+    """Wait for each perf record to flush and close its data file.
+
+    perf exits by itself once the process it follows dies, so this only waits. Not waiting
+    leaves a truncated perf.data that reports fewer samples rather than failing to open.
+    """
     log("Waiting for perf to finish writing data ...")
     # perf record exits automatically once the monitored process dies;
     # we just need to wait for it to flush and close the data file.
@@ -599,6 +632,11 @@ def stop_perf_procs(perf_procs: list[tuple[str, subprocess.Popen]]) -> None:
 
 
 def generate_reports(app_names: list[str], perf_dir: Path) -> None:
+    """Turn each captured perf.data into a text report and a flamegraph.
+
+    Done after the venue has stopped: report generation is CPU-hungry and would otherwise
+    compete with the run it is describing.
+    """
     report_path = perf_dir / "report.txt"
     log(f"Generating perf reports → {perf_dir}")
 
@@ -1171,8 +1209,9 @@ def wait_for_fix_logons(gw_log: Path, expected: int, timeout: float) -> int:
     return seen
 
 
-def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_configs: list[str],
-                     client_log_dir: Path, capture_client_logs: bool) -> None:
+def run_fix8_session(prefix: Path, me_log: Path, gw_log: Path, burst: int, clients: int,
+                     fix8_configs: list[str], client_log_dir: Path,
+                     capture_client_logs: bool) -> None:
     """
     Start `clients` concurrent f8test processes, wait for the gateway to confirm every
     FIX session is established, then send `burst` 'T' commands to each (each T = 1000 NOS).
@@ -1276,6 +1315,7 @@ def run_fix8_session(me_log: Path, gw_log: Path, burst: int, clients: int, fix8_
 
 
 def main() -> None:
+    """Parse the arguments, run the venue and the load, and report what happened."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("prefix", nargs="?", default="installed",
@@ -1477,7 +1517,7 @@ def main() -> None:
             run_binary_load_session(bin_dir, perf_dir, args.burst, args.clients, args.rate,
                                     gateway_listen_port(prefix, "binary", args.gateway_instance))
         else:
-            run_fix8_session(me_log, gw_log, args.burst, args.clients,
+            run_fix8_session(prefix, me_log, gw_log, args.burst, args.clients,
                              [fix8_config_for_client(prefix, args.gateway_instance, comp_id)
                               for comp_id in fix8_comp_ids(args.clients)], log_dir,
                              args.client_logs)

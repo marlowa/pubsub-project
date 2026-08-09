@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """Convenience wrapper: build (no tests) -> release -> deploy.
 
 Aborts on the first failure; each stage is announced so it is clear
 where a failure occurred.
 """
 
+from __future__ import annotations
 import argparse
 import subprocess
 import sys

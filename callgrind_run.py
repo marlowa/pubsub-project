@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 callgrind_run.py — start the full FIX sequencer system under valgrind callgrind,
                    fire NOS orders via fix8, then SIGTERM the profiled processes
@@ -40,6 +39,7 @@ Visualise:
     kcachegrind <prefix>/callgrind/<ts>/fix_order_gateway.callgrind.out.<pid>
 """
 
+from __future__ import annotations
 import argparse
 import hashlib
 import hmac as _hmac

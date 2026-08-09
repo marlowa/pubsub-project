@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 check_standards.py -- Check C++ source files for coding-standard violations.
 
@@ -34,6 +33,7 @@ Checks implemented:
   26. printf family (printf/sprintf/snprintf/fprintf and v- variants); use fmt
 """
 
+from __future__ import annotations
 import argparse
 import bisect
 import re

@@ -18,6 +18,35 @@ Fixed entries are kept for one release cycle and then deleted — the commit is 
 
 ## Open
 
+### Python style warnings across the top-level scripts, and a lint gate that ignores them
+
+| | |
+|---|---|
+| Found | 2026-08-09 |
+| How | Adding the top-level scripts to the pylint gate after a release check found an undefined variable in `perf_run.py` |
+| Impact | Style only today. The errors that matter are now gated; the warnings are not |
+
+The pylint gate ran `pylint dsl fix_dictionary` — two package directories — so every script in
+the repository root was checked by nothing. That is how `NameError: name 'prefix' is not
+defined` survived in `perf_run.py`'s FIX path until `release_check.py` ran it.
+
+The gate now also runs the top-level scripts, but **errors only**, because that is the bar they
+can pass today. `perf_run.py` scores 9.15/10 on style: 26 lines over the limit, imports out of
+position, several functions with too many locals or arguments, `subprocess.run` without an
+explicit `check=`, and files opened without an encoding.
+
+**The resolution is to fix those warnings and then make the gate fail on them**, so the
+top-level scripts are held to the same standard as the DSL. Two of the warning classes are
+worth more than tidiness:
+
+- `W1514` unspecified-encoding — a file opened without one takes the locale's default, and
+  these scripts read and write config and log files.
+- `W1510` `subprocess.run` without `check` — silently ignoring a non-zero exit is how a
+  deployment step appears to succeed.
+
+Not urgent, but it should not sit indefinitely: the gate as it stands protects against the
+class of defect that stops a script dead, and nothing else.
+
 ### Environment placeholders are missing outside dev
 
 | | |

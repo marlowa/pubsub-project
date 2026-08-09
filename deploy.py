@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 deploy.py — deploy a pubsub release artefact.
 
@@ -30,6 +29,7 @@ Usage:
   ./deploy.py [options]
 """
 
+from __future__ import annotations
 try:
     import tomllib
 except ImportError:

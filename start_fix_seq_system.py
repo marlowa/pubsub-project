@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 start_fix_seq_system.py
 
@@ -26,6 +25,7 @@ Usage with valgrind:
   ./start_fix_seq_system.py installed --valgrind --valgrind_command "vg"
 """
 
+from __future__ import annotations
 import argparse
 import os
 import signal

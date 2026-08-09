@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 Script to perform static code analysis on C++ source using clang-tidy.
 This is in preference to using the clang-tidy integration in cmake.
@@ -12,6 +11,8 @@ command line options every time. The include directories to search is given by a
 config file on the command line. The variation is just in the list of source filenames
 and their associated directory.
 """
+
+from __future__ import annotations
 import sys
 import os
 import argparse
