@@ -219,9 +219,11 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: primary sequencer connection {} ({}) established", id.get_value(),
                    id.service_name());
+        retry_pending_session_binds(id);
     } else if (id.service_name() == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: secondary sequencer connection {} established", id.get_value());
+        retry_pending_session_binds(id);
     } else if (id.service_name() == er_inbound_svc_) {
         // Inbound FrameworkPdu connection from a sequencer on the ER listener.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: sequencer ER inbound connection {} established", id.get_value());
@@ -750,6 +752,7 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
         }
         if (timer_id == session.sequence_state_timeout_timer_id) {
             if (session.awaiting_sequence_state) {
+                // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "FixOrderGatewayThread: connection {} comp_id='{}' the sequencer did not report this session's numbering within {}s -- "
                            "opening the session at {} anyway; a member expecting a higher number will see a low sequence and disconnect",
@@ -1964,6 +1967,25 @@ void FixOrderGatewayThread::announce_session_bound(const FixSession& session) {
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",
                session.client_comp_id, config_.instance_id, session.conn_id.get_value());
+}
+
+void FixOrderGatewayThread::retry_pending_session_binds(pubsub_itc_fw::ConnectionID sequencer_conn_id) {
+    for (auto& [conn_id, session] : sessions_) {
+        // Only a session whose numbering is still unsettled is owed anything. One that was
+        // acked already, or that never got as far as an identity, has nothing to re-ask.
+        if (!session.awaiting_sequence_state || session.client_comp_id.empty()) {
+            continue;
+        }
+        pubsub_itc_fw_app::SessionBound bound{};
+        bound.comp_id = session.client_comp_id;
+        bound.gateway_protocol_id = gateway_ids::fix_order_gateway;
+        bound.gateway_instance_id = config_.instance_id;
+        bound.gateway_session_conn_id = session.conn_id.get_value();
+        send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionBound::message_pdu_id, 0, bound);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: sequencer connection {} came up with comp_id='{}' still awaiting its numbering -- re-announcing the binding",
+                   sequencer_conn_id.get_value(), session.client_comp_id);
+    }
 }
 
 void FixOrderGatewayThread::announce_session_unbound(const FixSession& session) {

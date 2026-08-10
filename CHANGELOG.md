@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the major version is `0`, the public API is not yet considered stable and may
 change in any release.
 
-## [0.3.0] - unreleased
+## [0.3.0] - 2026-08-10
 
 ### Added
 
@@ -181,6 +181,34 @@ change in any release.
 
 ### Fixed
 
+- **A FIX logon arriving before the gateway's sequencer links were up waited five seconds for a
+  session the venue had already granted.** The gateway sends the Logon reply only once it knows
+  where the session's numbering stands, which it learns by announcing the binding to the
+  sequencer. That announcement is a PDU, and a member logging on while the gateway was between
+  outbound connect retries had it dropped for want of anywhere to send it — with nothing to ask
+  again when the links came up milliseconds later. The session was not lost: a five-second
+  timeout opened it regardless. But it opened it on numbering the sequencer never confirmed, and
+  the gateway's own warning says what that costs — *a member expecting a higher number will see a
+  low sequence and disconnect*. The gateway now re-announces every session still awaiting its
+  numbering as each sequencer link is established, down the link that has just come up. The
+  five-second path remains as a backstop and is no longer the ordinary way out of the race.
+  Measured against a reproduction that starts the venue with no sequencer at all: the retry goes
+  out 14µs after the link comes up and the session establishes 756µs later, where the fallback
+  would not have fired for another second.
+  - The re-announcement is deliberately not sent to both sequencers. One arriving at a leader
+    that already holds the binding is read as the previous session having died, which raises the
+    resume figure by the reports since the last one plus an allowance — right for a real
+    failover, wrong for a retry.
+  - **`ha_test.py` could not have caught this even with a longer wait.** Its logon budget was
+    three seconds against that five-second fallback, so the scenario was failed two seconds
+    before the venue had finished trying, and reported as a timeout — which points at the
+    gateway or the authentication service rather than at what happened. Raising the budget alone
+    would only have taught the test to bless the degraded path, so both halves were done
+    together: the budget is now eight seconds and documented as an upper bound rather than an
+    expectation, and a session that establishes only because the fallback fired is now reported
+    as its own outcome and fails the scenario. A session opened on unconfirmed numbering was
+    previously indistinguishable from a healthy one at the instant of logon; the two diverged
+    later, on the member's side, where no test was looking.
 - **The Rocky container deployed its gcc-8.5 binaries over the development host's install tree.**
   `devsetup.py`'s build, release and stop steps qualify their directory by target platform;
   its deploy step took the destination from the env TOML, where `install_dir = "installed"` is

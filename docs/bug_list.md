@@ -404,13 +404,13 @@ take the `UseIdleTimeout` default instead.
 healthy system teaches a reader to skim past `connection lost` — which is the line that matters
 when a connection is genuinely lost.
 
-### A FIX logon arriving before the gateway's sequencer links are up never completes
+### A FIX logon arriving before the gateway's sequencer links are up is delayed five seconds
 
 | | |
 |---|---|
 | Found | 2026-08-09 |
 | How | `release_check.py`'s ha stage: scenario 23 (`inflight_gateway_death`) failed with "FIX logon timed out after 3s" |
-| Status | **OPEN.** Not introduced by the release-tooling work committed the same evening, none of which touches C++ |
+| Status | **FIXED 2026-08-10.** `on_connection_established()` re-announces every session still awaiting its numbering down the link that has just come up |
 
 The client authenticated successfully and was left hanging anyway. From the logs of one run:
 
@@ -437,7 +437,7 @@ Confirmed by experiment: raising that constant to 9.0 makes scenario 23 pass. Th
 reverted, not kept — 3s versus a 5s fallback is a real defect in the test, but making the test
 wait longer would only make it bless the degraded path.
 
-Two separate things need deciding, and this is the reason the entry stays open:
+Two separate things needed deciding, and they were the reason the entry stayed open:
 
 - **The test cannot pass when this path is taken.** Its budget is shorter than the recovery it is
   waiting for, so the outcome is decided before the venue has finished trying.
@@ -480,7 +480,62 @@ deployed configs were checked and contain no unexpanded placeholders, so that is
 difference. The window is a race, so what matters is that it exists at all; but what moved the
 timing enough to change the outcome consistently is not established.
 
-**Picked up from here:** deferred the evening of Sunday 2026-08-09 for Monday 2026-08-10.
+**The fix, 2026-08-10.** `retry_pending_session_binds()` is called from
+`on_connection_established()` for each sequencer link as it comes up, and re-sends `SessionBound`
+for every session whose `awaiting_sequence_state` is still true. The first of the two options
+above; refusing logons was not taken, because holding the FIX listener open and serving the
+session a moment later costs the member nothing, whereas a rejection costs it a reconnect.
+
+It re-sends down the one link that has just come up, deliberately, rather than to both
+sequencers. A `SessionBound` arriving at a leader that already holds the binding is read as the
+previous session having died, and the resume figure is then raised by `ers_since_report` plus the
+admin allowance — right for a real failover, wrong for a retry. A link that already took the
+announcement must therefore not be sent it twice.
+
+Proved by A/B against a deterministic reproduction (the venue started with no sequencer at all, a
+member logged on into the gap, the sequencers started 1.5s later), same venue and same script,
+only the binary differing:
+
+| | pre-fix binary | with the fix |
+|---|---|---|
+| re-announce on connect | never | 14µs after the link came up |
+| 5s degraded fallback | ran — *"opening the session at 1 anyway"* | never ran |
+| session established | ~5s after logon, on numbering the venue never confirmed | 756µs after the link came up |
+
+Scenarios 1, 22 and 23 pass, as do the 30 `fix_order_gateway_tests`. Scenario 1 is the one worth
+naming: it fails a sequencer over, so a link comes back up long after the sessions on it were
+settled, and the retry correctly finds nothing to do.
+
+**The test's budget, fixed the same day.** `FIX8_LOGON_WAIT` was 3.0 against a 5s fallback, so a
+logon that took the fallback was failed two seconds before the venue had finished trying — and
+reported as a timeout, which points at the gateway or the auth service rather than at what
+actually happened.
+
+Raising the constant was rejected on 2026-08-09 for a good reason: on its own it only teaches the
+test to bless the degraded path. So both halves were done together.
+
+- `FIX8_LOGON_WAIT` is now 8.0, and is documented as an upper bound rather than an expectation.
+  It costs a passing run nothing — `wait_for_fix_logon()` returns the moment it sees an outcome,
+  so scenario 23 still completes in about 31 seconds.
+- `wait_for_fix_logon()` gained a fourth outcome, `degraded`, set when
+  `_GW_SEQ_STATE_FALLBACK` appears before the session is established. The scenario now dies
+  naming the fallback instead of passing quietly.
+
+That last part is the point of the change. Before it, a session opened on unconfirmed numbering
+was indistinguishable from a healthy one at the instant of logon: the run looked clean, and the
+two diverged only later, when the member saw a sequence below the one it expected and dropped the
+session. The test could not have caught the original bug even with a longer wait; now the longer
+wait is safe, because taking the fallback is itself the failure.
+
+The gateway warning it keys on carries a `TEST CONTRACT` comment, like the other lines `ha_test.py`
+matches.
+
+Detection proved against synthetic logs rather than a real venue, the degraded path not being
+something that can be produced on demand: a clean logon reads `ok`; the fallback warning followed
+by establishment reads `degraded`, including when the two land in separate reads of a log still
+being written; and a previous session's fallback sitting before `from_byte` is correctly ignored.
+Both marker strings were checked to appear verbatim in `FixOrderGatewayThread.cpp`, so a reworded
+log line fails the check rather than silently ceasing to match.
 
 ---
 

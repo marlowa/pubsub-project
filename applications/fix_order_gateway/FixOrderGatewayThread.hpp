@@ -335,6 +335,19 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void announce_session_bound(const FixSession& session);
     void announce_session_unbound(const FixSession& session);
 
+    // Re-announce, down a sequencer link that has just come up, every session still waiting
+    // for its numbering. A member that logs on while the gateway is between connect retries
+    // has its SessionBound dropped for want of anywhere to send it, and nothing else would
+    // ever ask again -- the session then hangs until `sequence_state_timeout` opens it on
+    // numbering the venue never confirmed. See docs/bug_list.md.
+    //
+    // Sent down the one link named, NOT to both sequencers: a SessionBound that arrives at a
+    // leader which already holds this binding is read as the previous session having died,
+    // which deliberately raises the resume figure. That is the right answer for a real
+    // failover and the wrong one for a retry, so a link that already took the announcement
+    // must not be sent it twice.
+    void retry_pending_session_binds(pubsub_itc_fw::ConnectionID sequencer_conn_id);
+
     // The venue's reply to a binding: what it remembers of this session's sequence numbers,
     // so the member's numbering continues across a reconnect instead of restarting at 1.
     void handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message);

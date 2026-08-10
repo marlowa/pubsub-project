@@ -214,7 +214,13 @@ from typing import NamedTuple
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY          = 1.0   # seconds between app launches
-FIX8_LOGON_WAIT        = 3.0   # seconds for f8test to establish a FIX session
+# Upper bound on how long a logon may take, not an expectation of how long it does take:
+# wait_for_fix_logon returns the moment it sees an outcome, so raising this costs a passing
+# run nothing. It must exceed the gateway's 5s sequence_state_timeout, or a logon that takes
+# the fallback is failed here two seconds before the venue would have finished trying --
+# reported as a timeout, which points at the wrong thing entirely. Taking that fallback is
+# still a failure, but it is detected by _GW_SEQ_STATE_FALLBACK and named as itself.
+FIX8_LOGON_WAIT        = 8.0   # seconds for f8test to establish a FIX session
 LOG_POLL_INTERVAL      = 0.05  # seconds between log-file polls
 SHUTDOWN_TIMEOUT       = 5.0   # seconds per-process for SIGTERM grace period
 SETTLE_AFTER_FAILOVER  = 2.0   # seconds after failover confirmed (let conns stabilise)
@@ -289,6 +295,12 @@ FIX8_RECOVERY_CFG     = "myfix_gateway_client_recovery.xml"
 _GW_LOGON_OK       = "authentication succeeded -- FIX session established"
 _GW_LOGON_FAIL     = "authentication failed"
 _GW_SIG_MISMATCH   = "ServerSignature mismatch"
+# The gateway gave up waiting for the sequencer to report the session's numbering and opened
+# the session anyway, at a number the venue never confirmed. The session does establish, so
+# without this marker the run looks clean; the gateway's own warning says a member expecting a
+# higher number will see a low sequence and disconnect. Treated as a failed logon, because a
+# session opened on unconfirmed numbering is not the thing the scenario meant to set up.
+_GW_SEQ_STATE_FALLBACK = "did not report this session's numbering within"
 
 # Substrings that appear together on adopt_role() log lines:
 #   "SequencerThread: role transition {from} -> {to} (epoch={n})"
@@ -1639,11 +1651,19 @@ def wait_for_fix_logon(gw_log: Path, from_byte: int,
                        timeout: float) -> str:
     """
     Poll the gateway log for the outcome of a FIX logon attempt.
-    Returns 'ok', 'auth_failed', 'sig_mismatch', or 'timeout'.
+    Returns 'ok', 'degraded', 'auth_failed', 'sig_mismatch', or 'timeout'.
     Only bytes beyond from_byte are examined so pre-existing content is skipped.
+
+    'degraded' is a session that established only because the gateway stopped waiting for the
+    sequencer to report its numbering. It is reported separately from 'ok' because the two are
+    indistinguishable from the member's side at this instant and diverge later, when the
+    member sees a sequence number below the one it expects and drops the session.
     """
     deadline = time.monotonic() + timeout
     pos = from_byte
+    # Set on the warning, which the gateway emits just before opening the session, so it is
+    # already known by the time the establishment line arrives.
+    fell_back = False
     while time.monotonic() < deadline:
         if gw_log.is_file():
             with open(gw_log, "r", errors="replace") as fh:
@@ -1651,8 +1671,10 @@ def wait_for_fix_logon(gw_log: Path, from_byte: int,
                 chunk = fh.read()
                 pos   = fh.tell()
             for line in chunk.splitlines():
+                if _GW_SEQ_STATE_FALLBACK in line:
+                    fell_back = True
                 if _GW_LOGON_OK in line:
-                    return "ok"
+                    return "degraded" if fell_back else "ok"
                 if _GW_LOGON_FAIL in line:
                     return "auth_failed"
                 if _GW_SIG_MISMATCH in line:
@@ -1955,6 +1977,11 @@ def send_burst(count: int, gw_log: Path, config: str = FIX8_CFG,
     if outcome == "sig_mismatch":
         stop_f8test(proc)
         die("FIX logon failed: ServerSignature mismatch — auth service identity could not be verified")
+    if outcome == "degraded":
+        stop_f8test(proc)
+        die("FIX logon completed only via the gateway's sequence-state fallback — the session was opened "
+            "at a number the sequencer never confirmed. The logon raced the gateway's sequencer links "
+            "and the retry on connect did not close the window; see docs/bug_list.md")
     if outcome == "timeout":
         stop_f8test(proc)
         die(f"FIX logon timed out after {FIX8_LOGON_WAIT:.0f}s — gateway or auth service may not be ready")
