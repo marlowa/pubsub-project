@@ -209,6 +209,15 @@ change in any release.
     as its own outcome and fails the scenario. A session opened on unconfirmed numbering was
     previously indistinguishable from a healthy one at the instant of logon; the two diverged
     later, on the member's side, where no test was looking.
+- **The coverage baseline named the directory the project used to live in.** `coverage_baseline.py`
+  trimmed the checkout's path prefix off each file by searching for the literal
+  `pubsub-project-10-copilot/`. Once the project was moved out of that directory the marker
+  matched nothing, every path stayed absolute, and all 302 files read as new — so the release
+  check reported a stale baseline and said not to tag, when coverage had not moved at all
+  (function coverage identical, four lines' difference across two files the tool already
+  describes as run-to-run variance). The prefix is now taken from the script's own location, and
+  both sides are resolved through symlinks so a checkout reached by one still matches. A named
+  directory was only ever going to be right until the project was moved.
 - **The Rocky container deployed its gcc-8.5 binaries over the development host's install tree.**
   `devsetup.py`'s build, release and stop steps qualify their directory by target platform;
   its deploy step took the destination from the env TOML, where `install_dir = "installed"` is

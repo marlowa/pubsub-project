@@ -44,9 +44,16 @@ from pathlib import Path
 DEFAULT_TRACEFILE = Path("build-coverage/coverage.info")
 DEFAULT_BASELINE = Path("coverage_baseline.txt")
 
-# Everything below this path component is the project; the prefix varies by checkout and
-# must not reach the committed file, or the baseline only matches the machine that wrote it.
-ROOT_MARKER = "pubsub-project-10-copilot/"
+# A tracefile records the absolute paths of the machine that built it. The prefix varies by
+# checkout and must not reach the committed file, or the baseline only matches the machine
+# that wrote it.
+#
+# Taken from this script's own location rather than named as a string. A named directory is
+# only ever right until the project is moved: this held "pubsub-project-10-copilot/" from
+# 2026-08-07 until the move out of that directory, after which it matched nothing, every path
+# stayed absolute, and all 302 files read as new. The baseline was not stale and coverage had
+# not moved -- but the release check reported a stale baseline and said not to tag.
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # =========================================================================== #
@@ -67,11 +74,7 @@ def read_tracefile(path):
         for raw_line in handle:
             line = raw_line.strip()
             if line.startswith("SF:"):
-                name = line[3:]
-                index = name.find(ROOT_MARKER)
-                if index >= 0:
-                    name = name[index + len(ROOT_MARKER):]
-                current = files.setdefault(name, {"lines": {}, "functions": {}})
+                current = files.setdefault(strip_project_root(line[3:]), {"lines": {}, "functions": {}})
             elif line.startswith("DA:") and current:
                 number, _, remainder = line[3:].partition(",")
                 current["lines"][int(number)] = int(remainder.split(",")[0])
@@ -137,6 +140,21 @@ def platform_identifier():
 # =========================================================================== #
 # THE BASELINE FILE
 # =========================================================================== #
+
+def strip_project_root(name):
+    """A tracefile path with the checkout's own prefix removed, so it names the same file
+    whoever built it. A path from outside the project -- a system or third-party header --
+    has no such prefix and is left as it stands, which is what keeps it recognisable.
+
+    resolve() is applied to both sides so that a checkout reached through a symlink still
+    matches: /home/marlowa/mystuff is a link to /mnt/sda1/marlowa-extra/mystuff, and a
+    textual comparison of the two would agree on nothing.
+    """
+    try:
+        return str(Path(name).resolve().relative_to(PROJECT_ROOT))
+    except ValueError:
+        return name
+
 
 def relative_if_possible(path):
     """Path relative to the working directory, or its bare name if it lies outside."""
