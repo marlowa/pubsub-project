@@ -1898,3 +1898,97 @@ engagements total, all with matching releases). Releases came one connection at 
 | ResendRequest / SequenceReset-GapFill fix | Compiled, NOT TESTED |
 | OGT idle-thread false-stuck risk (Gemini concern) | Needs process_message exit-path audit |
 | ME-ORD perf monitoring unreliable (Quill flush ordering) | Known; low-priority tooling issue |
+
+---
+
+## Session 2026-08-11 — RHEL8 install fixes, IncrementalRehashMap, scripts relocated
+
+Prompted by installing the 0.3.0 release tarball on the RHEL8 host at work, which failed
+five ways. All five were properties of that machine rather than of the source, which is why
+`release_check.py`'s `rocky` stage passed: it reproduces gcc 8.5 and nothing else about a
+target host — not its Python toolchain, its filesystem, its third-party layout, its database,
+or the condition of having started from a tarball with no `.git`.
+
+### Commits
+
+| Commit | What |
+|---|---|
+| `242e93f` | The five RHEL8 failures, the port plumbing, the `db_url` consistency check |
+| `14b987a` | `IncrementalRehashMap` + tests, `AllocationGrowthReporter` split, `GrowthReportingAllocator` modernised and tested |
+| `d823d61` | Coverage gaps closed, baseline refreshed |
+| `63b5cf3` | "hand waving" and near-synonyms banned in `coding-rules-for-ai-chatbots.txt` |
+| `ee8675e` | Two dead `tsl::robin_map` links dropped |
+| `b9caab8` | Every script moved to `scripts/` |
+| `5187d31` | `get-for-copilot.sh` removed |
+| `bea531d` | `--db-port` through the whole deploy chain |
+
+### The five RHEL8 failures
+
+1. **pylint failed the build on `R0022 useless-option-value`** — a complaint about the message
+   filter, which the message filter cannot suppress — raised by a newer pylint over two stale
+   `bad-whitespace` disables in `sca.py`. Fixed at both ends: the disables are gone, and
+   `run_command` takes `tolerated_exit_bits` so an errors-only gate is no longer failed by
+   pylint's warning, refactor and convention exit bits. Three machines run three pylints: 3.0.3
+   here, whatever `pip3 install pylint` resolved to on Python 3.8 in the Rocky image, and a
+   newer one at work.
+2. **22 DSL tests failed on NFS during cleanup, after passing.** A dlopen'ed `.so` is
+   silly-renamed to `.nfsXXXX` rather than unlinked, so the `rmdir` fails with ENOTEMPTY. The
+   scratch build lives inside the project tree because RHEL8 mounts `/tmp` noexec; at work the
+   project tree is the NFS one. Cleanup can no longer fail a test.
+3. **prometheus-cpp not found** — that tree holds it directly under `THIRDPARTY_DIR` under a
+   different name. Both prefixes are now offered.
+4. **The PostgreSQL port was hardcoded** in `perf_run.py`, `callgrind_run.py`, three `psql`
+   calls in `ha_test.py` and `liquibase.properties`. See below.
+5. **A failed `--sudo-postgres` reported an exit code and nothing else.** The database-exists
+   probe captures output and its handler printed only the status; `devsetup.py` exited bare.
+
+### The port, which took two passes to get right
+
+`PGHOST`/`PGPORT` defaults in `create_db.py` and `export_credentials.py` cover the scripts with
+no environment file to read. They do **not** cover a deploy: `deploy.py` and `devenv.py` pass
+`[db].port` explicitly and an explicit argument beats an environment default, so exporting
+`PGPORT` would have changed nothing about the credential export that broke. `--db-port` is now
+a flag on both, forwarded by `devsetup.py` and `build-release-deploy.py`, applied to the parsed
+environment so that `create_db.py`, `export_credentials.py`, the `${db_port}` placeholder and
+the admin service's JDBC URL all move together.
+
+### IncrementalRehashMap
+
+The framework half of the "growing hash map stalls the reactor callback thread" bug. Allocates
+the second table and moves entries eight slots per mutating operation, searching both while the
+move is in flight; worst case for one operation is a probe plus eight moves whatever the size
+of the map. Rehashing on a background thread was rejected — two threads on one table means a
+lock on the hot path or a lock-free open-addressed table with tombstones. Thread confinement is
+checked under `PUBSUB_ITC_FW_THREAD_CHECKS` (Debug, ASan and coverage builds).
+
+Deliberately **not** on the std allocator model: no `Allocator` parameter, no
+`allocator_traits`. It owns its storage from `::operator new` and holds an
+`AllocationGrowthReporter*` directly, reporting a whole table per event.
+
+51 tests across the two suites, 291/292 lines covered — the one uncovered line is the
+`find_slot` probe bound, unreachable while the load factor holds, and documented as such.
+Clean under ASan and under the C++23 dialect.
+
+### The C++23 experiment
+
+The whole project builds under `-std=c++23`: 38 targets, **0 errors, 0 warnings**, 772 tests
+passing. Worth wiring in as an advisory, non-gating stage — never under `-Werror`, since gcc
+8.5 and C++17 are what ships.
+
+### Scripts relocated
+
+39 scripts moved from the repository root to `scripts/`. The moves were the easy half; what
+breaks is every path a script derives from its own location. Two kinds: root-relative only
+(variable renamed as well as re-pointed) and both (now carrying `_SCRIPT_DIR` and
+`_PROJECT_ROOT`). `build.py`'s two gate globs are load-bearing — a miss would leave both gates
+checking nothing while reporting success.
+
+### Outstanding
+
+| Item | Status |
+|---|---|
+| Order book on `IncrementalRehashMap` | **Next.** Deferred deliberately; the container is proved correct, not the stall cured |
+| Trading-day perf run | **Required** to close the bug entry: compare p99 at 2^21 / 2^22 / 2^23 against run 5's 96 ms / 733 ms / >1 s |
+| C++23 advisory stage in `build.py` / `release_check.py` | Agreed, not built |
+| `.gitattributes` `export-subst` for the git hash | Offered, not built. A GitHub ZIP has no `.git`, so `release.py` warns and omits the hash |
+| Non-dev environment files still missing placeholders | Unchanged, deliberate |
