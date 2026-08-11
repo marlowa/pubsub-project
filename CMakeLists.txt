@@ -85,6 +85,15 @@ if(ENABLE_ASAN)
     add_link_options(-fsanitize=address)
 endif()
 
+# Thread-confinement checking for the framework's thread-confined containers. Debug, ASan and
+# coverage builds only: the check is a thread-local read on every operation, and a release hot
+# path should not pay it to verify what the threading design already guarantees. Coverage is
+# included so that the check's own failure path is exercised and measured.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR ENABLE_ASAN OR ENABLE_COVERAGE)
+    message(STATUS "Thread-confinement checks enabled")
+    add_compile_definitions(PUBSUB_ITC_FW_THREAD_CHECKS)
+endif()
+
 if(ENABLE_TSAN)
     message(STATUS "ThreadSanitizer enabled")
     add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)

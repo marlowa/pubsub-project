@@ -9,6 +9,33 @@ change in any release.
 
 ## [Unreleased]
 
+### Added
+
+- **`IncrementalRehashMap`, a hash map that grows without ever rehashing the whole table in one
+  operation.** The framework offered pool and slab allocators for objects with a message lifecycle
+  and nothing for long-lived state that grows, so every application keeping state -- an order book,
+  a session table, a subscription registry -- eventually stalls a reactor callback thread on a
+  doubling. The matching engine's book stalled 96 ms at 2^21 entries, 733 ms at 2^22 and over a
+  second at 2^23. This moves entries a few slots at a time, spread over the operations that follow,
+  searching both tables while the move is in flight; the worst case for one operation is a probe
+  plus eight moves, whatever the size of the map. Thread-confined by design and now by check: under
+  `PUBSUB_ITC_FW_THREAD_CHECKS`, set for Debug, ASan and coverage builds, it records the thread that
+  first touches it and throws `PreconditionAssertion` if another one does. The order book itself is
+  not yet on it -- that change waits on a trading-day load run.
+- **`GrowthReportingAllocator` has unit tests**, where it had none: thresholds, the high-water mark
+  not going backwards, a null reporter, and the reporter surviving a container's rebind, which is
+  the path every real use of it takes.
+
+### Changed
+
+- **`AllocationGrowthReporter` moved to its own header.** It is what a growing structure reports
+  through; whether it does so via an allocator is a separate question, and `IncrementalRehashMap`
+  holds one directly. `GrowthReportingAllocator.hpp` includes it, so nothing downstream changes.
+- **`GrowthReportingAllocator` no longer declares a nested `rebind` struct.** That is the C++98
+  spelling, deprecated on `std::allocator` in C++17 and removed in C++20; `std::allocator_traits`
+  synthesises the rebound type by substituting the first template argument, and every consumer --
+  `tsl::robin_hash` included -- goes through the traits.
+
 ### Fixed
 
 - **0.3.0 would not build or run on the work RHEL8 host**, in five separate ways, none of which

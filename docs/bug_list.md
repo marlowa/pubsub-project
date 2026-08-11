@@ -87,6 +87,34 @@ will grow a container on a reactor callback thread and eventually stall it.
 
 See [Compressed Trading Day Load Profile](design/trading_day_load.md).
 
+**The framework half is done, 2026-08-11.** `IncrementalRehashMap` is the growable structure the
+design note asked for: when the table must grow it allocates a second one and moves the entries
+eight slots per mutating operation, searching both while the move is in flight. The worst case for
+any one operation is a probe plus eight moves, whatever the size of the map -- where the old cost
+was O(capacity) in the operation that crossed the threshold, and the capacity is what kept
+doubling. Rehashing on a background thread was the alternative and was rejected: it puts two
+threads on one table, which means a lock on the hot path or a lock-free open-addressed table with
+tombstones. Migrating a few slots at a time keeps the structure thread-confined, as the container
+it replaces already was -- and confinement is now checked rather than assumed, under
+`PUBSUB_ITC_FW_THREAD_CHECKS`.
+
+What remains O(capacity) is clearing the new table's state array: one byte per slot, a memset of
+about 8 MB at the size that stalled for over a second, which measures under a millisecond. That is
+recorded in the header rather than glossed over.
+
+47 unit tests, counting the ones added for `GrowthReportingAllocator` alongside it: differential
+testing against `std::unordered_map` over three seeds and three workload shapes, the migration
+boundaries driven one step at a time through a template parameter, adversarial hashes that put
+every key in one probe chain, lifetime accounting proving every construction is matched by a
+destruction, and -- the property the class exists for -- a bound on entries moved per operation
+that is **counted rather than timed**, so a loaded machine cannot make it flaky and a return to
+one-pass rehashing fails it immediately. Clean under ASan, and under the C++23 dialect.
+
+**Still open, and deliberately so.** The order book is still a `tsl::robin_map`. Swapping it over is
+a separate change, and the evidence that closes this entry is a trading-day run showing the p99
+spikes at 2^21, 2^22 and 2^23 gone. Unit tests prove the container correct; they do not prove the
+stall cured.
+
 ### The venue accepts orders indefinitely with no matching engine, and tells nobody
 
 | | |

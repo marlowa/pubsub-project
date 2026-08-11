@@ -3,11 +3,10 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <atomic>
 #include <cstddef>
-#include <functional>
 #include <memory>
-#include <new>
+
+#include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -53,38 +52,21 @@ namespace pubsub_itc_fw {
  *       GrowthReportingAllocator<std::pair<Key, Value>>{&book_growth_reporter}};
  * @endcode
  *
- * The Reporter is owned by the application and must outlive the container. The allocator
+ * The reporter is owned by the application and must outlive the container. The allocator
  * holds a non-owning pointer to it, because an allocator is copied and rebound freely and
  * every copy must report to the same place.
- */
-/**
- * @brief Shared reporting state, owned by the application, not by any allocator.
  *
- * At namespace scope rather than nested in the allocator template, and that is a
- * correctness requirement rather than a style choice. A nested type would make
- * GrowthReportingAllocator<T>::Reporter and GrowthReportingAllocator<U>::Reporter
- * DIFFERENT types, so a rebound allocator could not carry the pointer across -- and a
- * container always rebinds, so the class would fail to compile the first time anyone
- * used it for its intended purpose.
+ * There is no nested rebind struct. std::allocator_traits synthesises the rebound type by
+ * substituting the first template argument, which is all this allocator needs, and the nested
+ * member it replaced is the C++98 spelling -- deprecated on std::allocator in C++17 and
+ * removed in C++20. Every consumer here goes through allocator_traits, tsl::robin_hash
+ * included; the converting constructor below is what actually carries the reporter across.
  *
- * Also separate from the allocator by value because allocator_traits copies allocators
- * freely: a std::function held by value would be copied on every rebind, and a count held
- * by value would be reset by one.
+ * A container that owns its storage outright does not need an allocator to report growth at
+ * all: it can hold an AllocationGrowthReporter and report its own allocations, which is what
+ * IncrementalRehashMap does. This class is for the containers whose storage is not ours --
+ * a std::vector, a tsl::robin_map.
  */
-struct AllocationGrowthReporter {
-    /// Invoked when a single allocation is at least report_threshold_bytes.
-    /// Arguments: bytes for this allocation, and the largest seen so far.
-    std::function<void(size_t, size_t)> on_large_allocation;
-
-    /// Allocations below this are not reported. Default is deliberately generous:
-    /// this exists to notice a structure becoming large, not to trace ordinary work.
-    size_t report_threshold_bytes{64UL * 1024 * 1024};
-
-    /// Largest single allocation seen. Atomic because a container may be grown from a
-    /// different thread than the one that reads this for a metric or a shutdown report.
-    std::atomic<size_t> largest_allocation_bytes{0};
-};
-
 template <typename T> class GrowthReportingAllocator {
   public:
     using value_type = T;
@@ -138,10 +120,6 @@ template <typename T> class GrowthReportingAllocator {
     void deallocate(T* pointer, size_t element_count) {
         std::allocator<T>{}.deallocate(pointer, element_count);
     }
-
-    template <typename U> struct rebind {
-        using other = GrowthReportingAllocator<U>;
-    };
 
     template <typename U> bool operator==(const GrowthReportingAllocator<U>& other) const {
         return reporter_ == other.reporter();

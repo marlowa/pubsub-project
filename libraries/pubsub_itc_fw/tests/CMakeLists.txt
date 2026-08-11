@@ -18,7 +18,9 @@ add_executable(pubsub_itc_fw_tests
     FileLockTest.cpp
     FixedSizeMemoryPoolTest.cpp
     FwLogLevelTest.cpp
+    GrowthReportingAllocatorTest.cpp
     HighResolutionClockTest.cpp
+    IncrementalRehashMapTest.cpp
     InetAddressTest.cpp
     LockFreeMessageQueueTest.cpp
     LoggingConfigurationLoaderTest.cpp

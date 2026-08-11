@@ -13,6 +13,7 @@
 
 #include <tsl/robin_map.h>
 
+#include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CounterHandle.hpp>
