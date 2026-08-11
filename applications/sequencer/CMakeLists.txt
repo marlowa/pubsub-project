@@ -51,7 +51,6 @@ target_include_directories(sequencer_tests PRIVATE
 
 target_link_libraries(sequencer_tests PRIVATE
         pubsub_itc_fw
-        tsl::robin_map
         GTest::gtest_main
 )
 

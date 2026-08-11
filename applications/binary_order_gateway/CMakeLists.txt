@@ -100,7 +100,6 @@ target_include_directories(binary_order_gateway_tests PRIVATE
 
 target_link_libraries(binary_order_gateway_tests PRIVATE
         pubsub_itc_fw
-        tsl::robin_map
         GTest::gtest_main
 )
 
