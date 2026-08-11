@@ -142,6 +142,9 @@ def main() -> None:
         help="regenerate TLS certificates even if they already exist")
     deploy_group.add_argument("--drop-db", action="store_true",
         help="drop and recreate the database before applying changesets (destructive)")
+    deploy_group.add_argument("--db-port", type=int, metavar="PORT",
+        help="PostgreSQL port, overriding the [db] section of the environment file "
+             "(forwarded to deploy.py, which also rewrites the admin service's JDBC URL)")
     deploy_group.add_argument("--sudo-postgres", action="store_true",
         help="prefix psql commands with 'sudo -u postgres'")
 
@@ -203,6 +206,8 @@ def main() -> None:
         deploy_cmd.append("--force-certs")
     if args.drop_db:
         deploy_cmd.append("--drop-db")
+    if args.db_port is not None:
+        deploy_cmd.extend(["--db-port", str(args.db_port)])
     if args.sudo_postgres:
         deploy_cmd.append("--sudo-postgres")
     _run(deploy_cmd, "Step 4/4: deploy")

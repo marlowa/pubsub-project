@@ -611,6 +611,26 @@ def run_create_db(
         )
 
 
+def override_db_port(env: dict, port: int) -> None:
+    """Replace the environment file's PostgreSQL port, in both places that carry it.
+
+    @param[in,out] env  Parsed environment, modified in place.
+    @param[in] port     Port to use instead of the one the file names.
+
+    Applied to the parsed environment rather than passed down the call chain, so that
+    everything downstream sees one consistent value: create_db.py, export_credentials.py, the
+    ${db_port} placeholder in any component template, and the JDBC URL baked into the admin
+    service's properties. Overriding only the psql calls would leave the Java service pointed
+    at a port with nothing on it, which is a worse failure than not being able to override at
+    all -- it deploys clean and fails later.
+    """
+    env["db"]["port"] = port
+    admin = env.get("admin_service", {})
+    url = admin.get("db_url", "")
+    if url:
+        admin["db_url"] = re.sub(r"(jdbc:postgresql://[^:/]+:)\d+", rf"\g<1>{port}", url)
+
+
 def check_admin_service_db_url(env: dict) -> None:
     """Fail when [admin_service] db_url disagrees with the [db] section.
 
@@ -696,6 +716,13 @@ def parse_args() -> argparse.Namespace:
         help="drop and recreate the database before applying Liquibase changesets (destructive)",
     )
     parser.add_argument(
+        "--db-port", type=int, default=None, metavar="PORT",
+        help="PostgreSQL port, overriding the [db] section of the environment file. For a host "
+             "whose cluster is not on the port the environment file names -- the RHEL8 machine "
+             "at work among them. The [admin_service] db_url is rewritten to match, so the Java "
+             "service is deployed against the same database as everything else.",
+    )
+    parser.add_argument(
         "--sudo-postgres", action="store_true",
         help="prefix psql commands with 'sudo -u postgres' (passed to create_db.py)",
     )
@@ -717,6 +744,8 @@ def main() -> None:
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     env = load_env(env_path)
+    if args.db_port is not None:
+        override_db_port(env, args.db_port)
     check_admin_service_db_url(env)
 
     if args.install_dir is not None:

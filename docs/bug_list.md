@@ -616,8 +616,18 @@ third layout.
 `[db].port` from the environment file, which is why this looked plumbed. `perf_run.py`,
 `callgrind_run.py` and three `psql` calls in `ha_test.py` passed the literal `"5432"`, and
 `db/liquibase.properties` a literal URL. `create_db.py` and `export_credentials.py` now take
-their defaults from libpq's own `PGHOST`/`PGPORT`, so one exported variable covers every
-script, and an explicit `--db-port` still wins. The liquibase properties file cannot honour an
+their defaults from libpq's own `PGHOST`/`PGPORT`, which covers every script that has no
+environment file to read.
+
+**`PGPORT` does not cover a deploy, and that is the case that failed.** `deploy.py` and
+`devenv.py` pass `[db].port` from the environment file explicitly, and an explicit argument
+beats an environment default -- so exporting `PGPORT` would have changed nothing about the
+credential export that broke on RHEL8. Both now take `--db-port`, forwarded by `devsetup.py`
+and `build-release-deploy.py` so that the flag survives a build+release+deploy run, which is
+how the venue is actually deployed. It is applied to the parsed environment before anything
+reads it, so `create_db.py`, `export_credentials.py`, the `${db_port}` placeholder and the
+admin service's JDBC URL all move together. Overriding only the psql calls would have left the
+Java service pointed at a port with nothing on it: a deploy that succeeds and fails later. The liquibase properties file cannot honour an
 environment default -- liquibase substitutes `${env.VAR}` but has no syntax for a fallback --
 so it says so in a comment instead.
 

@@ -629,6 +629,13 @@ def parse_args() -> argparse.Namespace:
         help=f"environment TOML file (default: {_DEFAULT_ENV_FILE})",
     )
     parser.add_argument(
+        "--db-port", type=int, default=None, metavar="PORT",
+        help="PostgreSQL port, overriding the [db] section of the environment file. Used when "
+             "re-exporting credentials before the auth service starts, and matching deploy.py's "
+             "flag of the same name so a host with a non-default cluster names it the same way "
+             "at deploy time and at start time.",
+    )
+    parser.add_argument(
         "--no-ha", action="store_true",
         help="skip components marked ha_only = true",
     )
@@ -677,6 +684,8 @@ def main() -> None:
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     env = load_env(env_path)
+    if args.db_port is not None:
+        env["db"]["port"] = args.db_port
 
     ha_from_toml = env.get("ha", {}).get("enabled", True)
     ha_enabled   = ha_from_toml and not args.no_ha

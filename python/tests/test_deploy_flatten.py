@@ -109,3 +109,47 @@ def test_the_bucket_bounds_agree_across_environments(deploy):
     }
     assert len(set(bounds_by_environment.values())) == 1, \
         f"bucket bounds differ between environments: {bounds_by_environment}"
+
+
+def test_overriding_the_port_moves_every_consumer_together(deploy):
+    """--db-port must reach the JDBC URL as well as the [db] section.
+
+    The RHEL8 host at work runs its cluster on a port the environment file does not name, and
+    a deploy there failed exporting credentials. Overriding only the psql calls would fix that
+    one symptom and leave the Java admin service deployed against a port with nothing on it --
+    a clean deploy that fails later, which is worse than the failure it replaced.
+    """
+    environment = deploy.load_env(_REPOSITORY_ROOT / "environments" / "dev.toml")
+    deploy.override_db_port(environment, 6543)
+
+    assert environment["db"]["port"] == 6543
+    assert environment["admin_service"]["db_url"] == "jdbc:postgresql://localhost:6543/pubsub"
+
+    # The component templates expand these, so an override that stopped here would be silently
+    # undone by the next deploy.
+    flat = deploy.flatten_toml(environment)
+    assert flat["db_port"] == "6543"
+    assert "6543" in flat["admin_service_db_url"]
+
+
+def test_the_override_leaves_the_two_sources_agreeing(deploy):
+    environment = deploy.load_env(_REPOSITORY_ROOT / "environments" / "dev.toml")
+    deploy.override_db_port(environment, 6543)
+    # Raises SystemExit if the [db] section and the JDBC URL disagree.
+    deploy.check_admin_service_db_url(environment)
+
+
+def test_a_disagreeing_url_is_refused(deploy):
+    """The check exists because a comment was the only thing holding the two together."""
+    environment = deploy.load_env(_REPOSITORY_ROOT / "environments" / "dev.toml")
+    environment["db"]["port"] = 6543
+    with pytest.raises(SystemExit):
+        deploy.check_admin_service_db_url(environment)
+
+
+def test_an_environment_without_an_admin_service_is_left_alone(deploy):
+    """Overriding must not invent a section. Not every environment deploys the Java service."""
+    environment = {"db": {"port": 5432}}
+    deploy.override_db_port(environment, 6543)
+    assert environment["db"]["port"] == 6543
+    assert "admin_service" not in environment

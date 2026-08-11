@@ -28,6 +28,13 @@ change in any release.
 
 ### Changed
 
+- **`deploy.py` and `devenv.py` take `--db-port`**, forwarded by `devsetup.py` and
+  `build-release-deploy.py` so that a build+release+deploy run can name the port. The RHEL8 host
+  at work runs its cluster somewhere other than 5432, and the credential export failed there;
+  `PGPORT` could not help, because both scripts pass the environment file's port explicitly and
+  an explicit argument beats an environment default. The override is applied to the parsed
+  environment, so `create_db.py`, `export_credentials.py`, the `${db_port}` placeholder and the
+  admin service's JDBC URL all follow it together.
 - **`AllocationGrowthReporter` moved to its own header.** It is what a growing structure reports
   through; whether it does so via an allocator is a separate question, and `IncrementalRehashMap`
   holds one directly. `GrowthReportingAllocator.hpp` includes it, so nothing downstream changes.

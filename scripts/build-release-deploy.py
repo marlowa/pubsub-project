@@ -32,6 +32,9 @@ def main() -> int:
     )
     parser.add_argument("--skip-db",       action="store_true", help="Pass --skip-db to deploy.py")
     parser.add_argument("--drop-db",       action="store_true", help="Pass --drop-db to deploy.py (drop and recreate DB)")
+    parser.add_argument("--db-port", type=int, metavar="PORT",
+                        help="PostgreSQL port, overriding the [db] section of the environment file "
+                             "(passed to deploy.py)")
     parser.add_argument("--sudo-postgres", action="store_true", help="Pass --sudo-postgres to deploy.py")
     parser.add_argument("--debug",         action="store_true", help="Pass --debug to build.py (Debug build type)")
     parser.add_argument("--asan",          action="store_true", help="Pass --asan to build.py")
@@ -113,6 +116,8 @@ def main() -> int:
         deploy_args.append("--skip-db")
     if args.drop_db:
         deploy_args.append("--drop-db")
+    if args.db_port is not None:
+        deploy_args.extend(["--db-port", str(args.db_port)])
     if args.sudo_postgres:
         deploy_args.append("--sudo-postgres")
     run(deploy_args, "DEPLOY")
