@@ -140,12 +140,19 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETE
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/prometheus-cpp/${PROMETHEUS_VERSION}")
+# Second candidate prefix for the same package. The RHEL8 third-party tree at work holds it
+# directly under THIRDPARTY_DIR and names the directory after the metric system rather than
+# after the C++ client, so the prefix above does not exist there and 0.3.0 would not configure.
+# Offering both costs a directory that is not searched; requiring one costs a platform.
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/prometheus/${PROMETHEUS_VERSION}")
 
 # Each package prefix is on CMAKE_PREFIX_PATH above, and that is the whole mechanism.
 # find_package(... REQUIRED CONFIG) already searches lib64, lib and share beneath a prefix and
 # accepts either the <name>Config.cmake or the <name>-config.cmake spelling, so a third-party
 # tree that is missing, is the wrong version, or was built for a different platform fails here
 # at configure time, with CMake's own report of every path it tried for the named package.
+# A package installed somewhere else again needs no change here: cmake reads <name>_DIR from the
+# environment, so prometheus-cpp_DIR=/some/path/lib64/cmake/prometheus-cpp is enough.
 find_package(fmt REQUIRED CONFIG)
 find_package(quill REQUIRED CONFIG)
 find_package(argparse REQUIRED CONFIG)

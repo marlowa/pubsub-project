@@ -1,4 +1,5 @@
 import os
+import shutil
 import uuid
 import subprocess
 import tempfile
@@ -35,14 +36,48 @@ _MODULE_BUILD_ROOT = Path(
 ) / "pybind11_test_modules"
 
 
+def _discard_scratch_dir(path: Path) -> None:
+    """Remove a scratch build directory, and do not fail the test if it cannot be.
+
+    The .so built in here is dlopen'ed and still mapped when the directory is removed. On a
+    local filesystem that is unremarkable -- the inode outlives the name. On NFS it is not:
+    unlinking a file another process still holds open makes the server rename it to .nfsXXXX
+    in the same directory, so the rmdir that follows fails with ENOTEMPTY. On the RHEL8 target
+    at work, where the build tree is NFS-mounted, that failed 22 tests of 0.3.0 that had in
+    fact all passed -- the OSError came out of TemporaryDirectory's cleanup, after the
+    assertions were done.
+
+    Nothing is leaked by leaving it: the silly-rename file disappears when this process exits
+    and drops the mapping, and the empty directory is reaped by the purge below on the next
+    run.
+    """
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _purge_stale_scratch_dirs() -> None:
+    """Reap the scratch directories that an earlier run could not remove.
+
+    Safe because the suite runs serially -- build.py invokes plain "pytest -q" -- so no other
+    worker owns a directory here while this module is being imported.
+    """
+    if not _MODULE_BUILD_ROOT.is_dir():
+        return
+    for stale in _MODULE_BUILD_ROOT.glob("dslgen_*"):
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+_purge_stale_scratch_dirs()
+
+
 def compile_and_load(dsl_text: str, namespace: str = "ns"):
     """
     Parse, validate, generate C++ + pybind11 bindings, compile, and return
     the loaded extension module.
 
-    Uses a TemporaryDirectory that is kept alive until the function returns.
-    The .so is loaded before the directory is cleaned up, which is safe because
-    the OS keeps the file mapped after dlopen() even after the path is deleted.
+    Builds in a scratch directory that is discarded once the module is loaded. The .so is
+    loaded before the directory goes, which is safe because the file stays mapped after
+    dlopen() whatever happens to the path -- see _discard_scratch_dir for why removing it
+    is nonetheless allowed to fail.
     """
     ast = Parser(dsl_text).parse()
     Validator(ast).validate()
@@ -56,7 +91,8 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
     bindings_code = pyb_gen.emit(ast)
 
     _MODULE_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="dslgen_", dir=_MODULE_BUILD_ROOT) as tmpdir:
+    tmpdir = tempfile.mkdtemp(prefix="dslgen_", dir=_MODULE_BUILD_ROOT)
+    try:
         tmp = Path(tmpdir)
 
         (tmp / "generated.hpp").write_text(header_code)
@@ -103,6 +139,8 @@ def compile_and_load(dsl_text: str, namespace: str = "ns"):
             )
 
         return _load_extension(so_files[0], module_name)
+    finally:
+        _discard_scratch_dir(Path(tmpdir))
 
 
 def _cmakelists() -> str:

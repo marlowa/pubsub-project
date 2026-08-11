@@ -224,6 +224,13 @@ FIX8_LOGON_WAIT        = 8.0   # seconds for f8test to establish a FIX session
 LOG_POLL_INTERVAL      = 0.05  # seconds between log-file polls
 SHUTDOWN_TIMEOUT       = 5.0   # seconds per-process for SIGTERM grace period
 SETTLE_AFTER_FAILOVER  = 2.0   # seconds after failover confirmed (let conns stabilise)
+# The venue's database, for the provisioning statements below. Host and port are passed to
+# psql explicitly rather than left to libpq, because omitting --host selects the unix socket
+# and peer authentication, which the pubsub_app role cannot use. Taken from PGHOST/PGPORT so
+# that a host whose cluster is not on 5432 needs no edit here -- 5432 was hardcoded until
+# 2026-08-11, when the RHEL8 install found it.
+DB_HOST = os.environ.get("PGHOST", "localhost")
+DB_PORT = os.environ.get("PGPORT", "5432")
 # Cancel-on-disconnect grace scenario. The hold marker appears as soon as the socket
 # closes, so its timeout is short. The quiet period must be comfortably under the
 # deployed grace_period (30s) or the window would expire mid-test and the scenario
@@ -1458,7 +1465,7 @@ def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> N
         f"WHERE comp_id = '{comp_id}'"
     )
     result = subprocess.run(
-        ["psql", "--host", "localhost", "--port", "5432",
+        ["psql", "--host", DB_HOST, "--port", DB_PORT,
          "--username", "pubsub_app", "--dbname", "pubsub",
          "--quiet", "--command", statement],
         capture_output=True, text=True, check=False,
@@ -1516,7 +1523,7 @@ def provision_gateway_pinning(comp_id: str, primary_instance: int,
         f"WHERE comp_id = '{comp_id}'"
     )
     result = subprocess.run(
-        ["psql", "--host", "localhost", "--port", "5432",
+        ["psql", "--host", DB_HOST, "--port", DB_PORT,
          "--username", "pubsub_app", "--dbname", "pubsub",
          "--quiet", "--command", statement],
         capture_output=True, text=True, check=False,
@@ -1543,7 +1550,7 @@ def unprovision_gateway_pinning(comp_id: str) -> None:
         f"WHERE comp_id = '{comp_id}'"
     )
     result = subprocess.run(
-        ["psql", "--host", "localhost", "--port", "5432",
+        ["psql", "--host", DB_HOST, "--port", DB_PORT,
          "--username", "pubsub_app", "--dbname", "pubsub",
          "--quiet", "--command", statement],
         capture_output=True, text=True, check=False,

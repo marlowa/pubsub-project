@@ -97,6 +97,11 @@ def run_check_standards(source_dir):
     print("\n✓ Coding standards check passed")
 
 
+# pylint's exit status is a bitmask of the categories it found, not a pass/fail: 1 fatal,
+# 2 error, 4 warning, 8 refactor, 16 convention, 32 usage error.
+PYLINT_NON_ERROR_EXIT_BITS = 4 | 8 | 16
+
+
 def run_pylint(source_dir):
     """Run pylint on the Python DSL, the FIX dictionary generator, and the top-level scripts.
 
@@ -121,6 +126,14 @@ def run_pylint(source_dir):
     none of which exist in the Rocky container, so enabling it makes a C++ toolchain check fail
     over optional visualisation packages. The checks worth having here -- undefined-variable
     among them -- are properties of the source and hold in any environment.
+
+    The errors-only run tolerates a non-error exit status, because asking for errors does not
+    guarantee that only errors are reported. A stale entry in an inline disable comment is
+    reported as useless-option-value (R0022) whatever the message filter says, since it is the
+    filter itself that is being complained about -- and that stopped the RHEL8 build of 0.3.0
+    on a newer pylint than the one the code was written against, over two disables naming
+    bad-whitespace, a check removed from pylint years ago. An error still fails the gate; a
+    check retired by a future pylint no longer does.
     """
     python_dir = source_dir / "python"
     run_command(
@@ -135,7 +148,8 @@ def run_pylint(source_dir):
             [sys.executable, "-m", "pylint", "--disable=all", "--enable=E",
              "--disable=import-error", *top_level_scripts],
             cwd=source_dir,
-            description=f"Running pylint (errors only) on {len(top_level_scripts)} top-level scripts"
+            description=f"Running pylint (errors only) on {len(top_level_scripts)} top-level scripts",
+            tolerated_exit_bits=PYLINT_NON_ERROR_EXIT_BITS
         )
 
     print("\n✓ pylint passed")
@@ -439,7 +453,8 @@ def generate_coverage_report(build_dir, source_dir):
     print("\n✓ Coverage report generated:")
     print(f"  {html_dir}/index.html")
 
-def run_command(cmd, cwd=None, description=None, env=None, quiet=False, stdin_text=None):
+def run_command(cmd, cwd=None, description=None, env=None, quiet=False, stdin_text=None,
+                tolerated_exit_bits=0):
     """Run a shell command, streaming output in real time while capturing it.
 
     On failure, prints the captured output (quiet mode) or the last 30 lines
@@ -448,6 +463,9 @@ def run_command(cmd, cwd=None, description=None, env=None, quiet=False, stdin_te
 
     @param[in] stdin_text Text piped to the command's stdin, for tools configured that
                           way (doxygen reads its configuration from stdin as "doxygen -").
+    @param[in] tolerated_exit_bits Bits that do not count as failure, for a tool whose exit
+                          code is a bitmask of finding categories rather than a pass/fail.
+                          A non-zero status made up only of these bits is a pass.
     """
     if description:
         print(f"\n{'='*60}")
@@ -481,7 +499,10 @@ def run_command(cmd, cwd=None, description=None, env=None, quiet=False, stdin_te
         lines.append(line)
     process.wait()
 
-    if process.returncode != 0:
+    tolerated = (process.returncode > 0 and tolerated_exit_bits != 0
+                 and (process.returncode & ~tolerated_exit_bits) == 0)
+
+    if process.returncode != 0 and not tolerated:
         sys.stdout.flush()
         step = description or (cmd[0] if isinstance(cmd, list) else str(cmd))
         print(f"\n{'='*60}", file=sys.stderr)
@@ -973,7 +994,7 @@ Examples:
   %(prog)s --no-tests                         # Build without running any tests
   %(prog)s --no-cpp-tests                     # Skip C++ tests only
   %(prog)s --no-java-tests                    # Skip Java tests only
-  %(prog)s --no-pylint                        # Skip pylint on the Python DSL
+  %(prog)s --no-pylint                        # Skip pylint on all project Python
   %(prog)s --valgrind                         # C++ build with Valgrind compatibility
   %(prog)s --doxygen                          # Build and generate Doxygen docs
   %(prog)s --doxygen-only                     # Only generate documentation
@@ -1022,7 +1043,7 @@ Examples:
     )
 
     parser.add_argument('--no-pylint', action='store_true',
-        help='Skip pylint on the Python DSL source'
+        help='Skip pylint: the Python DSL and FIX dictionary source, and the top-level scripts'
     )
 
     parser.add_argument('--jobs', '-j', type=int, metavar='N',

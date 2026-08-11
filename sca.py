@@ -68,10 +68,10 @@ class MyException(Exception):
 def get_process_priority(batch_size):
     """Return process priority to use for running clang-tidy"""
     #ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
-    BELOW_NORMAL_PRIORITY_CLASS  = 0x00004000 # pylint: disable=invalid-name,bad-whitespace
-    #HIGH_PRIORITY_CLASS         = 0x00000080
-    #IDLE_PRIORITY_CLASS         = 0x00000040
-    NORMAL_PRIORITY_CLASS        = 0x00000020 # pylint: disable=invalid-name,bad-whitespace
+    BELOW_NORMAL_PRIORITY_CLASS = 0x00004000 # pylint: disable=invalid-name
+    #HIGH_PRIORITY_CLASS = 0x00000080
+    #IDLE_PRIORITY_CLASS = 0x00000040
+    NORMAL_PRIORITY_CLASS = 0x00000020 # pylint: disable=invalid-name
     #REALTIME_PRIORITY_CLASS     = 0x00000100
 
     pri = 0

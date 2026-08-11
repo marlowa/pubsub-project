@@ -34,8 +34,11 @@ import sys
 from pathlib import Path
 
 DEFAULT_DB_NAME      = "pubsub"
-DEFAULT_DB_HOST      = "localhost"
-DEFAULT_DB_PORT      = 5432
+# libpq's own environment variables supply the default, so a host whose cluster is not on
+# 5432 needs PGHOST/PGPORT exported and nothing else. An explicit --db-host/--db-port still
+# wins, and that is what deploy.py and devenv.py pass from the [db] section of the env TOML.
+DEFAULT_DB_HOST      = os.environ.get("PGHOST", "localhost")
+DEFAULT_DB_PORT      = int(os.environ.get("PGPORT", "5432"))
 DEFAULT_DB_USER      = "pubsub_app"
 DEFAULT_APP_PASS_ENV = "PUBSUB_APP_DB_PASSWORD"
 DEFAULT_DEV_PASSWORD = "pubsub_dev"

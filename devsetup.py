@@ -59,6 +59,11 @@ def _run(command: list[str], step: str) -> None:
     sys.stdout.flush()
     result = subprocess.run(command)
     if result.returncode != 0:
+        # Which of the four steps died, and what was run. The bare exit that stood here left a
+        # failed deploy looking like a failed build: the banner above is the last thing printed
+        # before the shell prompt returns, and it names the step that was starting, not ending.
+        print(f"\nerror: {step} failed with exit code {result.returncode}", file=sys.stderr)
+        print(f"  $ {' '.join(str(part) for part in command)}", file=sys.stderr)
         sys.exit(result.returncode)
 
 
@@ -110,7 +115,7 @@ def main() -> None:
     build_group.add_argument("--no-doxygen", action="store_true",
         help="skip Doxygen documentation generation")
     build_group.add_argument("--no-pylint", action="store_true",
-        help="skip pylint on the Python DSL source")
+        help="skip pylint: the Python DSL and FIX dictionary source, and the top-level scripts")
     build_group.add_argument("--no-pytest", action="store_true",
         help="skip Python DSL tests (pytest)")
     build_group.add_argument("--jobs", "-j", type=int, metavar="N",

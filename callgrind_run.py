@@ -778,10 +778,10 @@ def main() -> None:
     creds_file   = etc_dir / "authentication_service" / "credentials.toml"
     export_script = script_dir / "db" / "export_credentials.py"
     result = subprocess.run(
+        # Host and port are left to export_credentials.py, which resolves them from
+        # PGHOST/PGPORT. Naming them here hardcoded 5432 for every run of this script.
         [sys.executable, str(export_script),
          "--credentials-file", str(creds_file),
-         "--db-host", "localhost",
-         "--db-port", "5432",
          "--db-name", "pubsub",
          "--db-user", "pubsub_app"],
         capture_output=True, text=True, check=False,

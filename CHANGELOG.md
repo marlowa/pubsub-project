@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the major version is `0`, the public API is not yet considered stable and may
 change in any release.
 
+## [Unreleased]
+
+### Fixed
+
+- **0.3.0 would not build or run on the work RHEL8 host**, in five separate ways, none of which
+  the `rocky` release stage could have caught: it reproduces the gcc 8.5 compiler and nothing
+  else about that machine. The pylint gate failed on `R0022 useless-option-value` -- a complaint
+  about the message filter, which the message filter cannot suppress -- raised by a newer pylint
+  over two stale `bad-whitespace` disables in `sca.py`. Twenty-two DSL tests failed on NFS during
+  scratch-directory cleanup, *after* passing, because a dlopen'ed `.so` is silly-renamed to
+  `.nfsXXXX` rather than unlinked. `prometheus-cpp` was not found, that tree naming and placing it
+  differently. The PostgreSQL port was hardcoded as `"5432"` in `perf_run.py`, `callgrind_run.py`,
+  three `psql` calls in `ha_test.py` and `db/liquibase.properties`. And a failed `--sudo-postgres`
+  reported an exit code with no detail. See `docs/bug_list.md` for each.
+- **An errors-only pylint gate is no longer failed by a non-error.** `run_command` takes
+  `tolerated_exit_bits`; pylint's exit status is a bitmask of finding categories, so a gate that
+  asked for errors now fails on errors alone. A check retired by some future pylint stops the
+  build no longer.
+- **`create_db.py` and `export_credentials.py` take their default host and port from libpq's own
+  `PGHOST`/`PGPORT`**, so a cluster that is not on localhost:5432 needs one exported variable
+  rather than an edit per script. An explicit `--db-port` still wins, and `deploy.py` and
+  `devenv.py` go on passing `[db].port` from the environment file.
+- **`deploy.py` checks `[admin_service] db_url` against the `[db]` section** and refuses to deploy
+  when they disagree. The two name one database and were held together by a comment; missing one
+  gives a deploy that succeeds while the Java admin service alone cannot connect.
+- **A failing step says what failed.** `create_db.py` repeats the command and its captured stderr,
+  `devsetup.py` names the step that failed rather than exiting bare on its status, and `devenv.py`
+  says that a refused database connection used the details in the environment file.
+
+### Changed
+
+- **`--no-pylint` describes what it now skips** -- all project Python, not just the DSL -- in both
+  `build.py` and `devsetup.py`. The gate widened in 0.3.0 and the help text did not follow.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added

@@ -608,6 +608,33 @@ def run_create_db(
         )
 
 
+def check_admin_service_db_url(env: dict) -> None:
+    """Fail when [admin_service] db_url disagrees with the [db] section.
+
+    Two keys name one database: the Python tooling connects with [db], the Java admin service
+    with a JDBC URL that repeats the same host, port and name. A comment in each environment
+    file was the only thing holding them together, and a host whose cluster is not on 5432 has
+    to change both -- so the failure mode is a deploy that succeeds while the admin service
+    alone cannot connect, reported as a refused connection nobody traces back to this file.
+    """
+    url = env.get("admin_service", {}).get("db_url", "")
+    if not url:
+        return
+    match = re.match(r"jdbc:postgresql://([^:/]+):(\d+)/([^?]+)", url)
+    if match is None:
+        sys.exit(f"error: [admin_service] db_url is not jdbc:postgresql://host:port/name: {url}")
+
+    db = env["db"]
+    expected = (str(db["host"]), str(db["port"]), str(db["name"]))
+    if match.groups() != expected:
+        sys.exit(
+            f"error: [admin_service] db_url disagrees with the [db] section\n"
+            f"  db_url : {match.group(1)}:{match.group(2)}/{match.group(3)}\n"
+            f"  [db]   : {expected[0]}:{expected[1]}/{expected[2]}\n"
+            f"  both name the same database; change them together"
+        )
+
+
 def run_export_credentials(env: dict, install_dir: Path) -> None:
     db         = env["db"]
     script     = _SCRIPT_DIR / "db" / "export_credentials.py"
@@ -687,6 +714,7 @@ def main() -> None:
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     env = load_env(env_path)
+    check_admin_service_db_url(env)
 
     if args.install_dir is not None:
         install_dir = args.install_dir.resolve()

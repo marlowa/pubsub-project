@@ -541,6 +541,71 @@ log line fails the check rather than silently ceasing to match.
 
 ## Fixed
 
+### Five ways 0.3.0 would not build or run on the work RHEL8 host
+
+| | |
+|---|---|
+| Found | 2026-08-11 |
+| How | Installing the 0.3.0 release tarball on the RHEL8 host at work -- the first time a published artefact was built anywhere other than this machine or the Rocky container |
+| Fixed | 2026-08-11 |
+
+Every one of them is a property of that host rather than of the source, which is why the
+`rocky` stage of `release_check.py` passed and none of them showed up before. That stage
+reproduces the **compiler** -- gcc 8.5 -- and nothing else. It does not reproduce the host's
+Python toolchain, its filesystem, its third-party tree layout, its database, or the condition
+of having started from a release tarball rather than a git checkout. `release_check.py`'s own
+docstring says as much for the Python half, having been written after 0.2.0 failed the same
+way; it said it about pylint versions and pytest, and it was right both times.
+
+**1. The pylint gate failed on a message it had not asked for.** The errors-only invocation
+(`--disable=all --enable=E`) reported `R0022 useless-option-value` for two inline disables in
+`sca.py` naming `bad-whitespace`, a check pylint removed years ago. A message filter cannot
+suppress a complaint about the filter itself, so the gate stopped a build over two stale words
+in a comment. Fixed at both ends: the stale disables are gone, and `run_command` grew
+`tolerated_exit_bits` so a gate that asked for errors is no longer failed by pylint's
+warning, refactor and convention exit bits. pylint's exit status is a bitmask, not a verdict.
+
+The versions are the mechanism: this machine has pylint 3.0.3 on Python 3.12, the Rocky image
+installs whatever `pip3 install pylint` resolved to at image build time on Python 3.8, and the
+work host has a newer one again. Three machines, three linters.
+
+**2. Twenty-two DSL tests failed on NFS, having passed.** `compile_and_load()` builds a `.so`,
+dlopens it, and lets `TemporaryDirectory` clean up -- unlinking a file that is still mapped.
+On a local filesystem the inode outlives the name and nothing notices. On NFS the server
+silly-renames it to `.nfsXXXX` in the same directory, so the following `rmdir` fails with
+ENOTEMPTY and the error surfaces from the `with` block **after every assertion has passed**.
+The scratch build sits inside the project tree because RHEL8 mounts `/tmp` noexec; at work,
+the project tree is the NFS one. Cleanup is now allowed to fail without failing a test, and
+leftovers are reaped on the next run.
+
+**3. prometheus-cpp was not found.** The work third-party tree holds it directly under
+`THIRDPARTY_DIR` and names the directory after the metric system rather than after the C++
+client, so the single prefix `CMakeLists.txt` offered did not exist there. Both prefixes are
+now offered, and the comment records that `prometheus-cpp_DIR` in the environment covers any
+third layout.
+
+**4. The PostgreSQL port was hardcoded in four places.** `deploy.py` and `devenv.py` pass
+`[db].port` from the environment file, which is why this looked plumbed. `perf_run.py`,
+`callgrind_run.py` and three `psql` calls in `ha_test.py` passed the literal `"5432"`, and
+`db/liquibase.properties` a literal URL. `create_db.py` and `export_credentials.py` now take
+their defaults from libpq's own `PGHOST`/`PGPORT`, so one exported variable covers every
+script, and an explicit `--db-port` still wins. The liquibase properties file cannot honour an
+environment default -- liquibase substitutes `${env.VAR}` but has no syntax for a fallback --
+so it says so in a comment instead.
+
+Found while fixing it: `[admin_service] db_url` repeats the host, port and database name from
+the `[db]` section, held together by nothing but a comment in each environment file. On a host
+that is not on 5432 both must change, and missing one gives a deploy that succeeds while the
+Java admin service alone cannot connect. `deploy.py` now checks them and refuses to deploy on
+a mismatch.
+
+**5. A failing step reported an exit code and nothing else.** `--sudo-postgres` failed with no
+detail, because `create_db.py`'s database-exists probe captures output and its handler printed
+only the status, and because `devsetup.py` exited bare -- so the last thing on screen was the
+banner of the step that was *starting*. Both now name the command and repeat what it said.
+`devenv.py` additionally names where the connection details came from, since psql reports the
+host and port it could not reach but not that they came from the environment file.
+
 ### The Rocky container deployed its gcc-8.5 binaries over the host's install tree
 
 | | |

@@ -406,6 +406,12 @@ def export_credentials(install_dir: Path, env: dict) -> None:
     if result.returncode != 0:
         print("error: export_credentials.py failed:", file=sys.stderr)
         print(result.stderr.strip(), file=sys.stderr)
+        # psql names the host and port it could not reach but not where they came from, which
+        # sends the reader looking for a hardcoded default that does not exist. Both are the
+        # environment file's, and a refused connection means no server there at all.
+        print(f"  connection details are the [db] section of the environment file: "
+              f"{db['host']}:{db['port']}/{db['name']} as user {db['user']}",
+              file=sys.stderr)
         sys.exit(1)
     print("  credentials exported")
 

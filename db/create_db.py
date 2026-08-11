@@ -55,8 +55,11 @@ DEFAULT_DB_NAME      = "pubsub"
 DEFAULT_APP_USER     = "pubsub_app"
 DEFAULT_APP_PASS_ENV = "PUBSUB_APP_DB_PASSWORD"
 DEFAULT_DEV_PASSWORD = "pubsub_dev"
-DEFAULT_PG_HOST      = "localhost"
-DEFAULT_PG_PORT      = 5432
+# libpq's own environment variables supply the default, so a host whose cluster is not on
+# 5432 needs PGHOST/PGPORT exported and nothing else. An explicit --pg-host/--pg-port still
+# wins, and that is what deploy.py passes from the [db] section of the env TOML.
+DEFAULT_PG_HOST      = os.environ.get("PGHOST", "localhost")
+DEFAULT_PG_PORT      = int(os.environ.get("PGPORT", "5432"))
 DEFAULT_PG_SUPERUSER = "postgres"
 
 
@@ -267,5 +270,12 @@ if __name__ == "__main__":
     try:
         main()
     except subprocess.CalledProcessError as exc:
+        # Name the command and repeat its stderr. Most steps here run with the child's output
+        # inherited, so psql has already said what went wrong -- but the database-exists probe
+        # captures instead, and reported nothing but an exit code when it failed on RHEL8.
+        command = " ".join(str(part) for part in exc.cmd) if isinstance(exc.cmd, list) else str(exc.cmd)
         print(f"\nerror: command failed with exit code {exc.returncode}", file=sys.stderr)
+        print(f"  $ {command}", file=sys.stderr)
+        if exc.stderr:
+            print(exc.stderr.strip(), file=sys.stderr)
         sys.exit(exc.returncode)
