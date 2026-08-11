@@ -28,6 +28,9 @@ import sys
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
+# The tree above scripts/. Sibling scripts are reached through the script directory;
+# everything the project owns -- environments/, db/, installed/ -- hangs off here.
+_PROJECT_ROOT = _SCRIPT_DIR.parent
 
 
 def _staging_dir() -> Path:
@@ -49,7 +52,7 @@ def _staging_dir() -> Path:
     """
     import build  # noqa: PLC0415  -- deferred: only needed to resolve the default
     tag = build.platform_tag()
-    return _SCRIPT_DIR / (f"installed-{tag}" if tag else "installed")
+    return _PROJECT_ROOT / (f"installed-{tag}" if tag else "installed")
 
 
 def _run(command: list[str], step: str) -> None:
@@ -75,7 +78,7 @@ def _find_tarball() -> Path:
     newer of the two. Deploying it puts binaries on the host that die at startup.
     """
     import build  # noqa: PLC0415  -- deferred: matches _staging_dir() above
-    release_dir = _SCRIPT_DIR / "release"
+    release_dir = _PROJECT_ROOT / "release"
     tarballs = sorted(
         (p for p in release_dir.glob("pubsub-*.tar.gz")
          if build.artefact_belongs_to_this_platform(p.name)),
@@ -125,7 +128,7 @@ def main() -> None:
     deploy_group = parser.add_argument_group("deploy options")
     deploy_group.add_argument(
         "--env", type=Path,
-        default=_SCRIPT_DIR / "environments" / "dev.toml",
+        default=_PROJECT_ROOT / "environments" / "dev.toml",
         metavar="PATH",
         help="environment TOML for deploy (default: environments/dev.toml)",
     )

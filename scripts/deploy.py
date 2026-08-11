@@ -60,7 +60,10 @@ import cpu_layout
 _PLACEHOLDER_RE = re.compile(r'\$\{([_a-zA-Z][_a-zA-Z0-9]*)\}')
 
 _SCRIPT_DIR       = Path(__file__).resolve().parent
-_DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
+# The tree above scripts/. Sibling scripts are reached through _SCRIPT_DIR;
+# everything the project owns -- environments/, db/, installed/ -- hangs off here.
+_PROJECT_ROOT = _SCRIPT_DIR.parent
+_DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
 
 
 # ── TOML helpers ──────────────────────────────────────────────────────────────
@@ -585,7 +588,7 @@ def run_create_db(
     liquibase_contexts: str,
 ) -> None:
     db      = env["db"]
-    script  = _SCRIPT_DIR / "db" / "create_db.py"
+    script  = _PROJECT_ROOT / "db" / "create_db.py"
     command = [
         sys.executable, str(script),
         "--db-name",  db["name"],
@@ -637,7 +640,7 @@ def check_admin_service_db_url(env: dict) -> None:
 
 def run_export_credentials(env: dict, install_dir: Path) -> None:
     db         = env["db"]
-    script     = _SCRIPT_DIR / "db" / "export_credentials.py"
+    script     = _PROJECT_ROOT / "db" / "export_credentials.py"
     creds_file = install_dir / "etc" / "authentication_service" / "credentials.toml"
 
     result = subprocess.run([
@@ -709,7 +712,7 @@ def main() -> None:
     env_path = (
         args.env.resolve()
         if args.env.is_absolute()
-        else (_SCRIPT_DIR / args.env).resolve()
+        else (_PROJECT_ROOT / args.env).resolve()
     )
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
@@ -719,7 +722,7 @@ def main() -> None:
     if args.install_dir is not None:
         install_dir = args.install_dir.resolve()
     else:
-        install_dir = (_SCRIPT_DIR / env["paths"]["install_dir"]).resolve()
+        install_dir = (_PROJECT_ROOT / env["paths"]["install_dir"]).resolve()
 
     print("=== deploy.py ===")
     print(f"  env         : {env_path}")

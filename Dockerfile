@@ -68,7 +68,7 @@ RUN dnf install -y --enablerepo=powertools doxygen graphviz \
 # Configure git to allow /workspace
 RUN git config --global --add safe.directory /workspace
 
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR /workspace

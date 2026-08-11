@@ -257,8 +257,8 @@ adds to every order's round trip.
 `cpu_audit.py` reports this, classified separately from unavoidable per-CPU kernel threads:
 
 ```bash
-python3 cpu_audit.py            # reports occupancy; passes if the layout is consistent
-python3 cpu_audit.py --strict   # also fails when unrelated userspace threads may run there
+python3 scripts/cpu_audit.py            # reports occupancy; passes if the layout is consistent
+python3 scripts/cpu_audit.py --strict   # also fails when unrelated userspace threads may run there
 ```
 
 Or directly:

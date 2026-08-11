@@ -292,7 +292,7 @@ The working sequence is a re-install first, so there is something left to expand
 
 ```bash
 cmake --install build                     # re-lay the templates, unexpanded
-python3 deploy.py --skip-db --skip-certs  # expand them from environments/dev.toml
+python3 scripts/deploy.py --skip-db --skip-certs  # expand them from environments/dev.toml
 ```
 
 **Worth fixing rather than documenting**, because the failure is silent and the cost is a whole

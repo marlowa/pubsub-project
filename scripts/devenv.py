@@ -49,7 +49,10 @@ except ImportError:
         sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
 
 _SCRIPT_DIR       = Path(__file__).resolve().parent
-_DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
+# The tree above scripts/. Sibling scripts are reached through the script directory;
+# everything the project owns -- environments/, db/, installed/ -- hangs off here.
+_PROJECT_ROOT     = _SCRIPT_DIR.parent
+_DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
 _STARTUP_DELAY    = 1.0   # seconds between component starts
 _SHUTDOWN_TIMEOUT = 10.0  # seconds to wait after SIGTERM before SIGKILL
 
@@ -64,9 +67,9 @@ def load_env(path: Path) -> dict:
 
 def resolve_paths(env: dict) -> tuple[Path, Path, Path]:
     """Return (install_dir, log_dir, run_dir) as absolute Paths."""
-    install_dir = (_SCRIPT_DIR / env["paths"]["install_dir"]).resolve()
-    log_dir     = (_SCRIPT_DIR / env["paths"]["log_dir"]).resolve()
-    run_dir     = (_SCRIPT_DIR / env["paths"]["run_dir"]).resolve()
+    install_dir = (_PROJECT_ROOT / env["paths"]["install_dir"]).resolve()
+    log_dir     = (_PROJECT_ROOT / env["paths"]["log_dir"]).resolve()
+    run_dir     = (_PROJECT_ROOT / env["paths"]["run_dir"]).resolve()
     return install_dir, log_dir, run_dir
 
 
@@ -391,7 +394,7 @@ def export_credentials(install_dir: Path, env: dict) -> None:
     Calls db/export_credentials.py using the database settings from the env
     TOML.  Exits the process if the script fails.
     """
-    script      = _SCRIPT_DIR / "db" / "export_credentials.py"
+    script      = _PROJECT_ROOT / "db" / "export_credentials.py"
     db          = env["db"]
     creds_file  = install_dir / "etc" / "authentication_service" / "credentials.toml"
     result = subprocess.run(
@@ -670,7 +673,7 @@ def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
     args = parse_args()
 
-    env_path = args.env.resolve() if args.env.is_absolute() else (_SCRIPT_DIR / args.env).resolve()
+    env_path = args.env.resolve() if args.env.is_absolute() else (_PROJECT_ROOT / args.env).resolve()
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     env = load_env(env_path)

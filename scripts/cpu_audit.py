@@ -44,8 +44,8 @@ from pathlib import Path
 
 import cpu_layout
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
 
 
 def read_thread_affinity(pid: int, tid: int) -> list[int] | None:
@@ -330,7 +330,7 @@ def main() -> None:
     """Read the layout, audit the running components, exit non-zero on a mismatch."""
     args = parse_args()
 
-    env_path = args.env if args.env.is_absolute() else (_SCRIPT_DIR / args.env).resolve()
+    env_path = args.env if args.env.is_absolute() else (_PROJECT_ROOT / args.env).resolve()
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     with open(env_path, "rb") as handle:
@@ -339,7 +339,7 @@ def main() -> None:
     if args.install_dir is not None:
         install_dir = args.install_dir.resolve()
     else:
-        install_dir = (_SCRIPT_DIR / env["paths"]["install_dir"]).resolve()
+        install_dir = (_PROJECT_ROOT / env["paths"]["install_dir"]).resolve()
 
     run_dir = install_dir / "run"
     layout_path = run_dir / "cpu_layout.toml"

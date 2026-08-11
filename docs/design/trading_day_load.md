@@ -517,19 +517,19 @@ roughly 8%. They land in different categories, which makes them a good worked ex
 
 ```bash
 # 1. Deploy, if the installed configs still hold ${placeholders}.
-python3 deploy.py --skip-db --skip-certs
+python3 scripts/deploy.py --skip-db --skip-certs
 grep -c '\${' installed/etc/binary_order_gateway/binary_order_gateway_a.toml   # expect 0
 
 # 2. Make sure NO venue is running, then start Prometheus ON ITS OWN.
-python3 devenv.py stop
-python3 devenv.py start prometheus
+python3 scripts/devenv.py stop
+python3 scripts/devenv.py start prometheus
 curl -s http://localhost:9090/-/healthy
 
 # 3. Run the profile. perf_run.py starts and stops the venue itself.
-python3 perf_run.py --gateway binary --clients 4 --profile profiles/trading_day.toml
+python3 scripts/perf_run.py --gateway binary --clients 4 --profile profiles/trading_day.toml
 
 # 4. Read it, against the phases in the manifest.
-python3 pubsub_metrics.py --application pubsub --component binary_order_gateway_a --metrics bands \
+python3 scripts/pubsub_metrics.py --application pubsub --component binary_order_gateway_a --metrics bands \
         --ceiling 2.5ms --since 120 --step 30 --graphic
 ```
 

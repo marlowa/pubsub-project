@@ -42,6 +42,12 @@ def href_is_broken(href):
 
 
 def main(argv):
+    # Answering --help is required of every script under scripts/, and is checked by
+    # build.py. No argparse here: one optional positional does not earn it.
+    if any(argument in ("-h", "--help") for argument in argv[1:]):
+        print(__doc__)
+        return 0
+
     html_dir = find_html_dir(argv)
     if not html_dir.is_dir():
         print(f"check_architecture_map: HTML directory not found: {html_dir}",

@@ -130,7 +130,7 @@ Once the baseline is current, the stage prints the review a human reads: what mo
 previous release tag.
 
 ```bash
-python3 coverage_baseline.py --since v0.2.0
+python3 scripts/coverage_baseline.py --since v0.2.0
 ```
 
 This needs no stored history. The baseline is a committed file, so `git show

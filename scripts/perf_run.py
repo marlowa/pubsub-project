@@ -1369,8 +1369,8 @@ def main() -> None:
     if args.capture and args.gateway != "fix":
         parser.error("--capture is FIX wire capture and applies only to --gateway fix")
 
-    script_dir = Path(__file__).resolve().parent
-    prefix     = resolve_prefix(str(script_dir / args.prefix)
+    project_root = Path(__file__).resolve().parent.parent
+    prefix     = resolve_prefix(str(project_root / args.prefix)
                                 if not Path(args.prefix).is_absolute()
                                 else args.prefix)
     bin_dir    = prefix / "bin"
@@ -1415,7 +1415,7 @@ def main() -> None:
     # -- export SCRAM credentials from the database before starting the auth service
     log("Exporting credentials ...")
     creds_file   = etc_dir / "authentication_service" / "credentials.toml"
-    export_script = script_dir / "db" / "export_credentials.py"
+    export_script = project_root / "db" / "export_credentials.py"
     result = subprocess.run(
         # Host and port are left to export_credentials.py, which resolves them from
         # PGHOST/PGPORT. Naming them here hardcoded 5432 for every run of this script.

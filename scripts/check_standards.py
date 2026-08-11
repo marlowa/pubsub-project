@@ -1027,7 +1027,7 @@ def main() -> int:
              'Default: scan from the project root (directory of this script).',
     )
     parser.add_argument(
-        '--root', type=Path, default=Path(__file__).resolve().parent,
+        '--root', type=Path, default=Path(__file__).resolve().parent.parent,
         help='Project root used when no explicit paths are given.',
     )
     args = parser.parse_args()

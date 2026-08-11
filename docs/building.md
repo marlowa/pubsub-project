@@ -5,13 +5,13 @@ platform and then calls `build.py`, which does the work: configure, compile, run
 generate coverage or Doxygen if asked, and install into a staging directory.
 
 ```bash
-./build.sh                       # normal build, all tests, install into installed/
-./build.sh --no-java             # skip the Maven build
-./build.sh --no-tests            # compile and install only
-./build.sh --coverage --coverage-report
-./build.sh --asan
-./build.sh --tsan
-./build.sh --valgrind
+./scripts/build.sh                       # normal build, all tests, install into installed/
+./scripts/build.sh --no-java             # skip the Maven build
+./scripts/build.sh --no-tests            # compile and install only
+./scripts/build.sh --coverage --coverage-report
+./scripts/build.sh --asan
+./scripts/build.sh --tsan
+./scripts/build.sh --valgrind
 ```
 
 ---
@@ -109,8 +109,8 @@ To run the system deliberately instrumented, name the prefix -- both `start_fix_
 `perf_run.py` take it as their first positional argument:
 
 ```bash
-./build.sh --asan
-./start_fix_seq_system.py installed-asan
+./scripts/build.sh --asan
+./scripts/start_fix_seq_system.py installed-asan
 ```
 
 ---
@@ -211,7 +211,7 @@ does not exist in 1.8.14.
 ## Coverage reports
 
 ```bash
-./build.sh --coverage --coverage-report
+./scripts/build.sh --coverage --coverage-report
 ```
 
 Output lands in `<build-dir>/coverage_html/index.html`. `gcovr` captures, the tracefile is
@@ -221,9 +221,9 @@ rewritten, and `genhtml` renders. Application code, tests, third-party code and 
 ### The coverage baseline
 
 ```bash
-./build.sh --coverage --coverage-report
-python3 coverage_baseline.py            # what has moved since the baseline
-python3 coverage_baseline.py --update   # record where we are now
+./scripts/build.sh --coverage --coverage-report
+python3 scripts/coverage_baseline.py            # what has moved since the baseline
+python3 scripts/coverage_baseline.py --update   # record where we are now
 ```
 
 `coverage_baseline.txt` is committed: per file, hit/total for lines and functions, and the

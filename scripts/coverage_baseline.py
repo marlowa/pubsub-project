@@ -53,7 +53,7 @@ DEFAULT_BASELINE = Path("coverage_baseline.txt")
 # 2026-08-07 until the move out of that directory, after which it matched nothing, every path
 # stayed absolute, and all 302 files read as new. The baseline was not stale and coverage had
 # not moved -- but the release check reported a stale baseline and said not to tag.
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # =========================================================================== #

@@ -1149,11 +1149,11 @@ def main() -> None:
         else [n for n in all_scenario_numbers if n not in _TLS_ADMIN_SCENARIOS]
     )
 
-    script_dir  = Path(__file__).resolve().parent
+    project_root  = Path(__file__).resolve().parent.parent
     raw_prefix  = args.prefix
     prefix_path = Path(raw_prefix)
     if not prefix_path.is_absolute():
-        prefix_path = (script_dir / prefix_path).resolve()
+        prefix_path = (project_root / prefix_path).resolve()
 
     if not prefix_path.is_dir():
         print(f"error: install prefix '{prefix_path}' does not exist",

@@ -1477,14 +1477,14 @@ def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> N
     log(f"  {comp_id}: cancel-on-disconnect grace period set to {grace_period_seconds}s")
 
 
-def export_credentials(script_dir: Path, creds_file: Path) -> None:
+def export_credentials(project_root: Path, creds_file: Path) -> None:
     """Regenerate credentials.toml from the database, then re-apply the fix8 credential.
 
     A function rather than inline setup because scenario 20 re-provisions a comp id
     mid-run and has to push the change down the same path the venue used at startup.
     """
     export_result = subprocess.run(
-        [sys.executable, str(script_dir / "db" / "export_credentials.py"),
+        [sys.executable, str(project_root / "db" / "export_credentials.py"),
          "--credentials-file", str(creds_file)],
         capture_output=True, text=True,
     )
@@ -2159,10 +2159,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
     Run one scenario end-to-end.  Returns True on PASS, False on FAIL.
     Always prints a RESULT: PASS / RESULT: FAIL summary block.
     """
-    script_dir = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parent.parent
     raw_prefix = args.prefix
     prefix = resolve_prefix(
-        str(script_dir / raw_prefix)
+        str(project_root / raw_prefix)
         if not Path(raw_prefix).is_absolute()
         else raw_prefix
     )
@@ -2368,7 +2368,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         log("=== Exporting credentials ===")
         creds_file = etc_dir / "authentication_service" / "credentials.toml"
-        export_credentials(script_dir, creds_file)
+        export_credentials(project_root, creds_file)
         log("")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
@@ -3015,7 +3015,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    the venue does not do.
             log("=== Re-provisioning the comp id onto a different gateway instance ===")
             provision_gateway_pinning(FIX8_COMP_ID, _ELSEWHERE_PRIMARY_INSTANCE, None)
-            export_credentials(script_dir, etc_dir / "authentication_service" / "credentials.toml")
+            export_credentials(project_root, etc_dir / "authentication_service" / "credentials.toml")
 
             # Taken before the restart, not after: the gateway can reconnect faster than the
             # next statement runs, and a position sampled afterwards would skip the very line
@@ -3294,10 +3294,10 @@ def main() -> None:
     if args.orders_during < 0:
         parser.error("--orders-during must be >= 0")
 
-    script_dir = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parent.parent
     raw_prefix = args.prefix
     prefix = resolve_prefix(
-        str(script_dir / raw_prefix)
+        str(project_root / raw_prefix)
         if not Path(raw_prefix).is_absolute()
         else raw_prefix
     )

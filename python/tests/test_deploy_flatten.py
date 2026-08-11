@@ -1,7 +1,7 @@
 """Tests for deploy.py's flattening of environment TOML into placeholder values.
 
-deploy.py lives at the repository root rather than under python/, so it is loaded by path
-here. It has no package to import and no side effects at import time.
+deploy.py lives in scripts/ rather than under python/, so it is loaded by path here. It
+has no package to import and no side effects at import time.
 
 The array support these cover exists so a value several components must agree on -- the
 order round-trip histogram's bucket bounds -- can be declared once in an environment file
@@ -16,14 +16,15 @@ from pathlib import Path
 import pytest
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-_DEPLOY_PATH = _REPOSITORY_ROOT / "deploy.py"
+_SCRIPTS_DIR = _REPOSITORY_ROOT / "scripts"
+_DEPLOY_PATH = _SCRIPTS_DIR / "deploy.py"
 
 
 def _load_deploy():
-    # deploy.py imports cpu_layout, a sibling module at the repository root, so that has to
-    # be importable before the module body runs.
-    if str(_REPOSITORY_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPOSITORY_ROOT))
+    # deploy.py imports cpu_layout, a sibling module in scripts/, so that has to be
+    # importable before the module body runs.
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
     spec = importlib.util.spec_from_file_location("deploy_under_test", _DEPLOY_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -84,7 +85,7 @@ def test_every_environment_file_defines_the_shared_bucket_placeholder(deploy):
     An undefined placeholder makes deploy.py exit, so a missing entry here would stop a
     deployment rather than merely losing a metric.
     """
-    environments_dir = _DEPLOY_PATH.parent / "environments"
+    environments_dir = _REPOSITORY_ROOT / "environments"
     environment_files = sorted(environments_dir.glob("*.toml"))
     assert environment_files, "no environment files found"
 
@@ -101,7 +102,7 @@ def test_the_bucket_bounds_agree_across_environments(deploy):
     A histogram is only comparable against another with the same bounds, so dev and preprod
     diverging would mean a latency figure measured in one could not be checked in the other.
     """
-    environments_dir = _DEPLOY_PATH.parent / "environments"
+    environments_dir = _REPOSITORY_ROOT / "environments"
     bounds_by_environment = {
         environment_file.name: deploy.flatten_toml(deploy.load_env(environment_file))["shared_metrics_order_round_trip_buckets"]
         for environment_file in sorted(environments_dir.glob("*.toml"))

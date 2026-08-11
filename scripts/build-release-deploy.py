@@ -50,12 +50,15 @@ def main() -> int:
     import build  # noqa: PLC0415  -- deferred: only needed to resolve platform names
 
     script_dir = Path(__file__).resolve().parent
+    # The tree above scripts/. Sibling scripts are reached through script_dir;
+    # everything the project owns -- release/, installed/ -- hangs off project_root.
+    project_root = script_dir.parent
     # Platform-qualified, matching build.py and release.py. Unqualified is wrong here
     # twice over: this script deletes the directory before building, so run in the Rocky
     # container -- which bind-mounts the repository -- it would remove the host's tree,
     # then deploy gcc-8.5 binaries in its place.
-    install_dir = script_dir / ("installed" + build.platform_suffix())
-    release_dir = script_dir / "release"
+    install_dir = project_root / ("installed" + build.platform_suffix())
+    release_dir = project_root / "release"
 
     # ── Clean ──────────────────────────────────────────────────────────────────
     if args.no_cpp:

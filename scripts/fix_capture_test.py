@@ -620,10 +620,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    script_dir  = Path(__file__).resolve().parent
+    project_root  = Path(__file__).resolve().parent.parent
     prefix_path = Path(args.prefix)
     if not prefix_path.is_absolute():
-        prefix_path = (script_dir / prefix_path).resolve()
+        prefix_path = (project_root / prefix_path).resolve()
 
     lib_dir  = str(prefix_path / "lib")
     existing = os.environ.get("LD_LIBRARY_PATH", "")

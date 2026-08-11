@@ -55,7 +55,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Mount point for the third-party tree inside the Rocky container, matching the
 # invocation documented in the README.
@@ -142,7 +142,7 @@ def stage_version_consistency(_args) -> tuple[bool, str]:
 
 def stage_standards(_args) -> tuple[bool, str]:
     """The project's own C++ coding-standard checks."""
-    code, out = run([sys.executable, "check_standards.py"])
+    code, out = run([sys.executable, "scripts/check_standards.py"])
     return code == 0, tail(out, 20)
 
 
@@ -193,7 +193,7 @@ def stage_coverage(args) -> tuple[bool, str]:
         return False, "coverage build failed:\n" + tail(out, 30)
 
     fresh = PROJECT_ROOT / "build-coverage" / "coverage_baseline_fresh.txt"
-    code, out = run([sys.executable, "coverage_baseline.py", "--update", "--baseline", str(fresh)])
+    code, out = run([sys.executable, "scripts/coverage_baseline.py", "--update", "--baseline", str(fresh)])
     if code != 0:
         return False, "could not generate a baseline from the coverage run:\n" + tail(out, 20)
 
@@ -201,21 +201,21 @@ def stage_coverage(args) -> tuple[bool, str]:
     if not committed.exists():
         return False, ("no committed coverage_baseline.txt. Generate one and commit it:\n"
                        "    ./build.sh --coverage --coverage-report\n"
-                       "    python3 coverage_baseline.py --update")
+                       "    python3 scripts/coverage_baseline.py --update")
 
     stale = _baseline_function_coverage_differs(committed, fresh)
     if stale:
         return False, ("the committed baseline is out of date, so this release's coverage has\n"
                        "not been reviewed by anyone. Regenerate and commit it, then look at what\n"
                        "changed:\n"
-                       "    python3 coverage_baseline.py --update\n\n" + stale)
+                       "    python3 scripts/coverage_baseline.py --update\n\n" + stale)
 
     # The baseline is current, so the stage passes. What follows is for a human to read:
     # movement since the last release, which is the question a release actually asks.
     tag = previous_release_tag()
     if tag is None:
         return True, "baseline current. No previous tag to compare against."
-    code, out = run([sys.executable, "coverage_baseline.py", "--since", tag])
+    code, out = run([sys.executable, "scripts/coverage_baseline.py", "--since", tag])
     if code != 0:
         return True, f"baseline current. Could not compare against {tag}:\n" + tail(out, 10)
     return True, f"baseline current.\n\n{out}"
@@ -329,7 +329,7 @@ def stage_rocky(args) -> tuple[bool, str]:
         # bind-mounted, so building into ./build would leave gcc-8.5 objects where the host
         # build expects its own. build-rocky/ is covered by the build-*/ gitignore rule.
         f"cd {CONTAINER_WORKSPACE} && {environment} "
-        f"python3 devsetup.py --clean --skip-db --skip-certs --no-java "
+        f"python3 scripts/devsetup.py --clean --skip-db --skip-certs --no-java "
         f"-j{args.jobs} --build-dir build-rocky",
     ]
     code, out = run(command, timeout=args.build_timeout)
@@ -338,7 +338,7 @@ def stage_rocky(args) -> tuple[bool, str]:
 
 def stage_deploy(_args) -> tuple[bool, str]:
     """Deploy the built artefacts, proving the install and config paths work."""
-    code, out = run([sys.executable, "deploy.py", "--help"])
+    code, out = run([sys.executable, "scripts/deploy.py", "--help"])
     if code != 0:
         return False, "deploy.py not runnable:\n" + tail(out)
     return True, ("deploy.py present; run the deployment by hand for a release "
@@ -347,7 +347,7 @@ def stage_deploy(_args) -> tuple[bool, str]:
 
 def stage_ha(args) -> tuple[bool, str]:
     """Every high-availability scenario, end to end."""
-    code, out = run([sys.executable, "ha_test.py", "--scenario", "all"],
+    code, out = run([sys.executable, "scripts/ha_test.py", "--scenario", "all"],
                     timeout=args.test_timeout)
     return code == 0, tail(out, 30)
 
@@ -369,7 +369,7 @@ def stage_perf(args) -> tuple[bool, str]:
     """
     details = []
     for gateway in ("fix", "binary"):
-        code, out = run([sys.executable, "perf_run.py", "--gateway", gateway,
+        code, out = run([sys.executable, "scripts/perf_run.py", "--gateway", gateway,
                          "--burst", "1", "--clients", "1"],
                         timeout=args.test_timeout)
         if code != 0:
@@ -448,7 +448,7 @@ def stage_runnable(_args) -> tuple[bool, str]:
 STAGES = [
     ("git-clean", stage_git_clean, "working tree has no uncommitted tracked changes"),
     ("version", stage_version_consistency, "CMakeLists, README x2 and CHANGELOG agree"),
-    ("standards", stage_standards, "check_standards.py"),
+    ("standards", stage_standards, "scripts/check_standards.py"),
     ("build-local", stage_build_local, "full clean build, nothing skipped"),
     ("coverage", stage_coverage, "coverage analysis; fails only if the baseline is stale"),
     ("rocky", stage_rocky, "build and test under RHEL8's gcc 8.5 in the Rocky container"),

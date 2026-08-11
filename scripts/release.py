@@ -53,6 +53,9 @@ import tempfile
 from pathlib import Path
 
 _SCRIPT_DIR       = Path(__file__).resolve().parent
+# The tree above scripts/. Sibling scripts are reached through the script directory;
+# everything the project owns -- environments/, db/, installed/ -- hangs off here.
+_PROJECT_ROOT     = _SCRIPT_DIR.parent
 
 
 def _default_install_dir() -> Path:
@@ -68,13 +71,13 @@ def _default_install_dir() -> Path:
     """
     import build  # noqa: PLC0415  -- deferred: only needed to resolve the default
     tag = build.platform_tag()
-    return _SCRIPT_DIR / (f"installed-{tag}" if tag else "installed")
+    return _PROJECT_ROOT / (f"installed-{tag}" if tag else "installed")
 
 
 _DEFAULT_INSTALL  = _default_install_dir()
-_DEFAULT_ENV_FILE = _SCRIPT_DIR / "environments" / "dev.toml"
-_DEFAULT_OUTPUT   = _SCRIPT_DIR / "release"
-_CMAKE_LISTS      = _SCRIPT_DIR / "CMakeLists.txt"
+_DEFAULT_ENV_FILE = _PROJECT_ROOT / "environments" / "dev.toml"
+_DEFAULT_OUTPUT   = _PROJECT_ROOT / "release"
+_CMAKE_LISTS      = _PROJECT_ROOT / "CMakeLists.txt"
 
 # Files under etc/ that are generated at deploy/start time and must not be
 # bundled into the release artefact.
@@ -113,7 +116,7 @@ def git_short_hash() -> str | None:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, check=True,
-            cwd=str(_SCRIPT_DIR),
+            cwd=str(_PROJECT_ROOT),
         )
         return result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -192,7 +195,7 @@ def stage_etc(stage: Path) -> None:
     Only .toml files are copied; C++ sources, CMakeLists, and generated files
     (credentials.toml) are excluded.
     """
-    source_apps   = _SCRIPT_DIR / "applications"
+    source_apps   = _PROJECT_ROOT / "applications"
     stage_etc_dir = stage / "etc"
     stage_etc_dir.mkdir()
     copied  = 0
@@ -219,7 +222,7 @@ def stage_java_configs(stage: Path) -> None:
     All files found under each config/ directory are copied verbatim; no
     exclusion or template substitution is applied.
     """
-    java_dir      = _SCRIPT_DIR / "java"
+    java_dir      = _PROJECT_ROOT / "java"
     stage_etc_dir = stage / "etc"
     copied = 0
     for service_dir in sorted(java_dir.iterdir()):
@@ -237,7 +240,7 @@ def stage_java_configs(stage: Path) -> None:
 
 
 def stage_db(stage: Path) -> None:
-    source_db = _SCRIPT_DIR / "db"
+    source_db = _PROJECT_ROOT / "db"
     stage_db_dir = stage / "db"
     shutil.copytree(
         source_db, stage_db_dir,
@@ -248,7 +251,7 @@ def stage_db(stage: Path) -> None:
 
 
 def stage_environments(stage: Path) -> None:
-    source_env_dir = _SCRIPT_DIR / "environments"
+    source_env_dir = _PROJECT_ROOT / "environments"
     if not source_env_dir.is_dir():
         print("  environments/  (directory not found — skipping)")
         return
@@ -343,7 +346,7 @@ def main() -> None:
     if not install_dir.is_dir():
         sys.exit(f"error: install dir not found: {install_dir}")
 
-    env_path = args.env.resolve() if args.env.is_absolute() else (_SCRIPT_DIR / args.env).resolve()
+    env_path = args.env.resolve() if args.env.is_absolute() else (_PROJECT_ROOT / args.env).resolve()
     if not env_path.is_file():
         sys.exit(f"error: env file not found: {env_path}")
     with open(env_path, "rb") as file_handle:

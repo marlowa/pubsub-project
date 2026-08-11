@@ -117,7 +117,7 @@ message(STATUS "Python3: ${Python3_EXECUTABLE}")
 # into CMake here is what guarantees an IDE or direct cmake build cannot bypass
 # the checks -- which is how over-length lines had slipped into the tree.
 add_custom_target(check_standards ALL
-    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/check_standards.py"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/check_standards.py"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Checking C++ coding standards (check_standards.py)"
     VERBATIM

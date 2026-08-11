@@ -84,7 +84,7 @@ def artefact_belongs_to_this_platform(artefact_name):
 
 def run_check_standards(source_dir):
     """Run check_standards.py and abort the build if any violations are found."""
-    script = source_dir / "check_standards.py"
+    script = source_dir / "scripts" / "check_standards.py"
     result = subprocess.run(
         [sys.executable, str(script)],
         cwd=source_dir,
@@ -142,7 +142,8 @@ def run_pylint(source_dir):
         description="Running pylint on Python DSL and FIX dictionary source"
     )
 
-    top_level_scripts = sorted(path.name for path in source_dir.glob("*.py"))
+    scripts_dir = source_dir / "scripts"
+    top_level_scripts = sorted(str(path.relative_to(source_dir)) for path in scripts_dir.glob("*.py"))
     if top_level_scripts:
         run_command(
             [sys.executable, "-m", "pylint", "--disable=all", "--enable=E",
@@ -168,7 +169,8 @@ def check_scripts_support_help(source_dir):
     Running each one is safe only because --help exits before any of them does work. A script
     that acts at import time would be exercised by this check, which is itself worth knowing.
     """
-    scripts = sorted(path.name for path in source_dir.glob("*.py"))
+    scripts_dir = source_dir / "scripts"
+    scripts = sorted(str(path.relative_to(source_dir)) for path in scripts_dir.glob("*.py"))
     print(f"\n=== Checking --help on {len(scripts)} top-level scripts ===")
     broken, skipped = [], []
     for name in scripts:
@@ -1108,7 +1110,8 @@ Examples:
     skip_pytest     = args.no_tests or args.no_pytest
 
     # Get source directory (parent of this script)
-    source_dir = Path(__file__).parent.resolve()
+    # The tree above scripts/, which is what every path below is relative to.
+    source_dir = Path(__file__).parent.parent.resolve()
     # An explicit --build-dir wins; otherwise the flavour names it, so that forgetting the
     # flag cannot drop instrumented objects into the plain build's directory.
     build_dir = source_dir / (args.build_dir if args.build_dir is not None

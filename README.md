@@ -8,6 +8,20 @@
 
 A low-latency, multi-threaded, event-driven application framework for C++17, built around the **reactor pattern**. It provides inter-thread communication, inter-process communication, pub/sub messaging, timers, high availability, and a binary serialisation DSL — all designed for environments where heap allocation on the hot path is not acceptable.
 
+## Repository layout
+
+| Directory | Contents |
+|---|---|
+| `libraries/pubsub_itc_fw/` | The framework: headers, sources and unit tests |
+| `applications/` | The venue built on it — gateways, sequencer, matching engine, arbiter, auth service |
+| `scripts/` | **Every script.** Build, release and deploy tooling, test harnesses, performance and profiling runners, and the shell wrappers that set the third-party environment |
+| `db/` | Schema, liquibase changelogs, and the two database scripts the deploy tooling calls |
+| `environments/` | One TOML per environment; the source of truth for a deployment's hosts, ports and paths |
+| `docs/` | Design notes, the bug list, the roadmap; `docs/index.md` is the way in |
+| `python/` | The serialisation DSL and its test suite |
+
+Scripts are run from the repository root — `python3 scripts/deploy.py`, `./scripts/build.sh` — and each resolves the project root from its own location, so the working directory does not matter.
+
 ## Features
 
 - **Inter-thread communication (ITC)** via lock-free MPSC queues
@@ -80,17 +94,17 @@ Supported field types include `i8`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, 
 The fastest path from source to a running sandbox is the convenience wrapper, which runs all three steps — build, release, deploy — in sequence:
 
 ```bash
-./devsetup.sh                        # first time (creates DB)
-./devsetup.sh --skip-create-db       # subsequent runs (DB already exists)
+./scripts/devsetup.sh                        # first time (creates DB)
+./scripts/devsetup.sh --skip-create-db       # subsequent runs (DB already exists)
 ```
 
 Once setup completes, start the stack:
 
 ```bash
-python3 devenv.py start
+python3 scripts/devenv.py start
 ```
 
-`devsetup.sh` sets the required environment variables (third-party library paths and versions) and forwards all arguments to `devsetup.py`. Any flag accepted by the build or deploy steps can be passed through — see `./devsetup.sh --help`.
+`devsetup.sh` sets the required environment variables (third-party library paths and versions) and forwards all arguments to `devsetup.py`. Any flag accepted by the build or deploy steps can be passed through — see `./scripts/devsetup.sh --help`.
 
 ## Code formatting (clang-format)
 
@@ -110,7 +124,7 @@ git clang-format --staged && git add -u
 ## Building (`build.py` / `build.sh`)
 
 ```bash
-./build.sh
+./scripts/build.sh
 ```
 
 Builds both the C++ components and the Java admin service, runs all tests, and stages the result into `build/installed/`. This staging directory is what `release.py` reads from — it is not the runtime location.
@@ -191,7 +205,7 @@ The container entrypoint initialises the PostgreSQL cluster (first run only) and
 ### Step 5 — Set up the database (first time inside the container)
 
 ```bash
-./build-release-deploy.sh --no-java --no-pylint --sudo-postgres
+./scripts/build-release-deploy.sh --no-java --no-pylint --sudo-postgres
 ```
 
 `--sudo-postgres` causes `create_db.py` to run `psql` as the `postgres` Unix user, which is required for peer authentication. `--no-java` is needed because the image does not include Java or Maven.
@@ -201,7 +215,7 @@ The container entrypoint initialises the PostgreSQL cluster (first run only) and
 Start a new shell the same way as Step 4. The database already exists on the volume, so pass `--skip-db`:
 
 ```bash
-./build-release-deploy.sh --no-java --no-pylint --skip-db
+./scripts/build-release-deploy.sh --no-java --no-pylint --skip-db
 ```
 
 ### Build and test only (no deploy, no database needed)
@@ -218,7 +232,7 @@ docker run -it --rm \
 Then inside the container:
 
 ```bash
-./build.sh --no-java --no-pylint
+./scripts/build.sh --no-java --no-pylint
 ```
 
 ### Notes
@@ -232,7 +246,7 @@ Then inside the container:
 Assembles a versioned deployment artefact from the build staging area:
 
 ```bash
-python3 release.py
+python3 scripts/release.py
 ```
 
 Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `build/installed/`. Outputs `build/release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, and a `release.json` manifest.
@@ -250,7 +264,7 @@ Options: `--install-dir` (staging dir, default: `build/installed`), `--env`, `--
 Unpacks a release artefact and prepares it for launch:
 
 ```bash
-python3 deploy.py --env environments/prod.toml \
+python3 scripts/deploy.py --env environments/prod.toml \
                   --artefact pubsub-<version>-<hash>.tar.gz \
                   --install-dir /opt/pubsub \
                   --skip-certs
@@ -279,7 +293,7 @@ Options: `--skip-certs`, `--force-certs`, `--skip-db`, `--skip-create-db`, `--dr
 **Starting everything:**
 
 ```bash
-python3 devenv.py start
+python3 scripts/devenv.py start
 ```
 
 Components are started in the order defined in `[startup_order]` in the env TOML, with a 1-second delay between each. Logs go to `installed/log/<name>.log` (application log) and `installed/log/<name>.stdout` (stdout/stderr). PID files go to `/var/tmp/pubsub/run/<name>.pid`.
@@ -287,13 +301,13 @@ Components are started in the order defined in `[startup_order]` in the env TOML
 **Checking status:**
 
 ```bash
-python3 devenv.py status
+python3 scripts/devenv.py status
 ```
 
 **Stopping everything:**
 
 ```bash
-python3 devenv.py stop
+python3 scripts/devenv.py stop
 ```
 
 Components are stopped in reverse startup order. Stale PID files are cleaned up automatically.
@@ -301,20 +315,20 @@ Components are stopped in reverse startup order. Stale PID files are cleaned up 
 **Restarting a single component** (useful during development iteration):
 
 ```bash
-python3 devenv.py restart sequencer
-python3 devenv.py restart               # restarts everything
+python3 scripts/devenv.py restart sequencer
+python3 scripts/devenv.py restart               # restarts everything
 ```
 
 **Skipping HA components** (run without arbiters, witness, and secondary instances):
 
 ```bash
-python3 devenv.py --no-ha start
+python3 scripts/devenv.py --no-ha start
 ```
 
 **Using a different environment:**
 
 ```bash
-python3 devenv.py --env environments/test-1.toml start
+python3 scripts/devenv.py --env environments/test-1.toml start
 ```
 
 **Options summary:**
@@ -350,7 +364,7 @@ Start at **[docs/index.md](docs/index.md)**. From there:
 - [Admin Service](docs/applications/admin_service.md)
 - [FIX Test Client](docs/applications/fix_test_client.md)
 
-**API reference** — run `./build.sh --doxygen` then open `build/doxygen/html/index.html`
+**API reference** — run `./scripts/build.sh --doxygen` then open `build/doxygen/html/index.html`
 
 ## Namespace
 
