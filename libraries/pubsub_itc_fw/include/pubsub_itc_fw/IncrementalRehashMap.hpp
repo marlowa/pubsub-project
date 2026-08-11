@@ -600,6 +600,11 @@ class IncrementalRehashMap {
             }
             slot = (slot + 1) & table.mask;
         }
+        // Not reachable while the load factor holds: a table never exceeds half full counting
+        // tombstones, so some slot is always Empty and the loop always leaves through the
+        // return above. It is a bound rather than a `while (true)`, so that a future change
+        // which broke that invariant would give a failed lookup rather than a hung thread.
+        // It shows as the one uncovered line in this file, and no test can honestly reach it.
         return table.capacity;
     }
 

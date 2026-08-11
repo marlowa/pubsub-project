@@ -9,11 +9,11 @@
 #                 python3 coverage_baseline.py --update
 # Commit the result alongside the change that moved it.
 
-COMMIT 2174fb6
+COMMIT 14b987a
 PLATFORM linuxmint22.2-gcc13.3.0
-GENERATED 2026-08-09T18:59:04Z
+GENERATED 2026-08-11T19:06:35Z
 TRACEFILE build-coverage/coverage.info
-TOTALS lines 5741/6923 functions 1309/1461
+TOTALS lines 6054/7217 functions 1552/1724
 
 FILE libraries/fix_codec/FixChecksum.hpp lines 15/15 functions 2/2
 FILE libraries/fix_codec/FixField.hpp lines 91/93 functions 15/15
@@ -159,7 +159,7 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FixedSizeMemoryPool.hpp lines
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/FwLogLevel.hpp lines 53/53 functions 11/11
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GaugeHandle.hpp lines 5/5 functions 2/2
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GaugeInterface.hpp lines 1/1 functions 1/1
-FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GrowthReportingAllocator.hpp lines 0/17 functions 0/8
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/GrowthReportingAllocator.hpp lines 19/19 functions 18/26
   UNCOVERED bool pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >::operator==<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >(pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> > const&) const
   UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::GrowthReportingAllocator(pubsub_itc_fw::AllocationGrowthReporter*)
   UNCOVERED pubsub_itc_fw::GrowthReportingAllocator<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry> >::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> >(pubsub_itc_fw::GrowthReportingAllocator<tsl::detail_robin_hash::bucket_entry<std::pair<matching_engine::OrderKey, matching_engine::MatchingEngineThread::OrderEntry>, true> > const&)
@@ -176,6 +176,27 @@ FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/HotPathThreadCount.hpp lines 
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/IdleTimeoutFlag.hpp lines 5/5 functions 3/3
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InboundConnection.hpp lines 13/13 functions 7/7
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InboundConnectionManager.hpp lines 3/3 functions 2/2
+FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/IncrementalRehashMap.hpp lines 291/292 functions 225/245
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::ConstantHash, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::ConstantHash, std::equal_to<int>, 8ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::ConstantHash, std::equal_to<int>, 8ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 8ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, pubsub_itc_fw::tests::(anonymous namespace)::NarrowHash, std::equal_to<int>, 8ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, std::hash<int>, std::equal_to<int>, 1ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, std::hash<int>, std::equal_to<int>, 1ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, int, std::hash<int>, std::equal_to<int>, 8ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::erase(pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::ConstIterator const&)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::mutable_table_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 1ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 8ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, pubsub_itc_fw::tests::(anonymous namespace)::CountedValue, std::hash<int>, std::equal_to<int>, 8ul>::reserve(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::hash<int>, std::equal_to<int>, 8ul>::capacity_for(unsigned long)
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::hash<int>, std::equal_to<int>, 8ul>::complete_migration()
+  UNCOVERED pubsub_itc_fw::IncrementalRehashMap<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::hash<int>, std::equal_to<int>, 8ul>::reserve(unsigned long)
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/InetAddress.hpp lines 1/1 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/IpAddressInterface.hpp lines 1/1 functions 1/1
 FILE libraries/pubsub_itc_fw/include/pubsub_itc_fw/LockFreeMessageQueue.hpp lines 87/88 functions 38/38
@@ -280,7 +301,7 @@ FILE libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp lines 96/108 functions 1
   UNCOVERED pubsub_itc_fw::PrometheusEndpoint::register_gauge(char const*, char const*, char const*)
   UNCOVERED pubsub_itc_fw::PrometheusEndpoint::register_histogram(char const*, char const*, char const*, std::vector<double, std::allocator<double> > const&)
 FILE libraries/pubsub_itc_fw/src/QuillLogger.cpp lines 109/111 functions 17/17
-FILE libraries/pubsub_itc_fw/src/RawBytesProtocolHandler.cpp lines 84/99 functions 9/9
+FILE libraries/pubsub_itc_fw/src/RawBytesProtocolHandler.cpp lines 86/99 functions 9/9
 FILE libraries/pubsub_itc_fw/src/Reactor.cpp lines 486/700 functions 42/43
   UNCOVERED pubsub_itc_fw::Reactor::verify_hot_path_thread_count[abi:cxx11](unsigned long) const
 FILE libraries/pubsub_itc_fw/src/SlabAllocator.cpp lines 67/71 functions 15/16
@@ -289,7 +310,7 @@ FILE libraries/pubsub_itc_fw/src/StringUtils.cpp lines 43/45 functions 7/7
 FILE libraries/pubsub_itc_fw/src/TcpAcceptor.cpp lines 36/41 functions 12/12
 FILE libraries/pubsub_itc_fw/src/TcpConnector.cpp lines 63/70 functions 18/18
 FILE libraries/pubsub_itc_fw/src/TcpSocket.cpp lines 157/193 functions 33/33
-FILE libraries/pubsub_itc_fw/src/TimerHandler.cpp lines 37/54 functions 3/3
+FILE libraries/pubsub_itc_fw/src/TimerHandler.cpp lines 38/54 functions 3/3
 FILE libraries/pubsub_itc_fw/src/TlsContext.cpp lines 59/65 functions 6/6
 FILE libraries/pubsub_itc_fw/src/TlsRawBytesProtocolHandler.cpp lines 126/165 functions 12/12
 FILE libraries/pubsub_itc_fw/src/TlsState.cpp lines 44/44 functions 3/3

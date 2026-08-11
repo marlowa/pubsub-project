@@ -108,6 +108,12 @@ using SteppedCountedMap = IncrementalRehashMap<int, CountedValue, std::hash<int>
 using ConstantHashMap = IncrementalRehashMap<int, int, ConstantHash>;
 using NarrowHashMap = IncrementalRehashMap<int, int, NarrowHash>;
 
+/// Move-assigns through a function, so that a self-move in a test is not visible to the
+/// compiler as one -- gcc diagnoses a literal `x = std::move(x)` and the build is -Werror.
+template <typename MapType> void move_assign(MapType& target, MapType& source) {
+    target = std::move(source);
+}
+
 /// Fills a map until a migration is in flight, returning the number of entries inserted.
 template <typename MapType> int fill_until_migrating(MapType& map) {
     int key = 0;
@@ -340,6 +346,67 @@ TEST_F(IncrementalRehashMapTest, MoveAssignmentReleasesWhatTheTargetHeld) {
     EXPECT_EQ(target.size(), 100u);
     EXPECT_EQ(target.find(50)->second, 50);
     EXPECT_EQ(target.find(1000), target.end());
+}
+
+TEST_F(IncrementalRehashMapTest, ConstructionWithAnInitialCapacityAllocatesUpFront) {
+    // The construction site the matching engine uses: size the book once, at startup, and take
+    // no migration at all on the way to that size.
+    IntMap map(1000);
+    EXPECT_GE(map.capacity(), 2000u);
+    EXPECT_FALSE(map.is_migrating());
+    EXPECT_EQ(map.size(), 0u);
+
+    for (int key = 0; key < 1000; ++key) {
+        map.emplace(key, key);
+    }
+    EXPECT_FALSE(map.is_migrating());
+    EXPECT_EQ(map.size(), 1000u);
+}
+
+TEST_F(IncrementalRehashMapTest, SelfMoveAssignmentLeavesTheMapIntact) {
+    IntMap map;
+    for (int key = 0; key < 100; ++key) {
+        map.emplace(key, key);
+    }
+    // Through a function so the compiler cannot see the self-move and warn about it. The guard
+    // being tested is what stops the map releasing its own tables and then adopting them.
+    move_assign(map, map);
+    EXPECT_EQ(map.size(), 100u);
+    EXPECT_EQ(map.find(50)->second, 50);
+}
+
+TEST_F(IncrementalRehashMapTest, FindValueMidMigrationFindsEntriesInEitherTable) {
+    SteppedMap map;
+    const int inserted = fill_until_migrating(map);
+    ASSERT_TRUE(map.is_migrating());
+
+    const size_t half = map.migration_slots_remaining() / 2;
+    for (size_t step = 0; step < half; ++step) {
+        map.erase(-1);
+    }
+    ASSERT_TRUE(map.is_migrating());
+
+    for (int key = 0; key < inserted; ++key) {
+        int* value = map.find_value(key);
+        ASSERT_NE(value, nullptr) << "entry " << key << " not reachable through find_value mid-migration";
+        EXPECT_EQ(*value, key);
+        *value = key + 1;
+    }
+    for (int key = 0; key < inserted; ++key) {
+        EXPECT_EQ(map.find(key)->second, key + 1) << "the modification through find_value did not stick";
+    }
+    EXPECT_EQ(map.find_value(inserted + 1000), nullptr);
+}
+
+TEST_F(IncrementalRehashMapTest, ClearOnAMapThatNeverAllocatedIsHarmless) {
+    IntMap map;
+    map.clear();
+    EXPECT_EQ(map.size(), 0u);
+    EXPECT_EQ(map.capacity(), 0u);
+    EXPECT_EQ(map.begin(), map.end());
+
+    map.emplace(1, 1);
+    EXPECT_EQ(map.find(1)->second, 1);
 }
 
 TEST_F(IncrementalRehashMapTest, GrowthStartsAMigrationRatherThanRehashingInOneGo) {
