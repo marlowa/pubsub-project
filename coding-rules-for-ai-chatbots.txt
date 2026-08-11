@@ -1,6 +1,12 @@
 Coding rules for AI chatbots
 
 British spelling, not American. And never employ the word "leverage", say "use" instead.
+Never use the phrase "hand waving", and do not substitute a near-synonym for it either --
+"arm waving", "waffling", "vague gesturing", "glossing over". The ban is on expressing the
+idea that way, not on the exact letters. This applies to prose written to me as well as to
+comments in the code. Where the point is that something was verified rather than assumed,
+say what was actually done: "I checked robin_hash.h" tells the reader something, and the
+disclaimed alternative does not.
 Dont have comments that refer to previous conversations
 Don't have comments that refer to previous AI chatbot corrections or changes.
 
