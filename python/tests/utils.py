@@ -42,10 +42,9 @@ def _discard_scratch_dir(path: Path) -> None:
     The .so built in here is dlopen'ed and still mapped when the directory is removed. On a
     local filesystem that is unremarkable -- the inode outlives the name. On NFS it is not:
     unlinking a file another process still holds open makes the server rename it to .nfsXXXX
-    in the same directory, so the rmdir that follows fails with ENOTEMPTY. On the RHEL8 target
-    at work, where the build tree is NFS-mounted, that failed 22 tests of 0.3.0 that had in
-    fact all passed -- the OSError came out of TemporaryDirectory's cleanup, after the
-    assertions were done.
+    in the same directory, so the rmdir that follows fails with ENOTEMPTY. On an RHEL8 target
+    whose build tree is NFS-mounted, that failed 22 tests of 0.3.0 that had in fact all passed
+    -- the OSError came out of TemporaryDirectory's cleanup, after the assertions were done.
 
     Nothing is leaked by leaving it: the silly-rename file disappears when this process exits
     and drops the mapping, and the empty directory is reaped by the purge below on the next

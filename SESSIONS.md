@@ -1903,7 +1903,7 @@ engagements total, all with matching releases). Releases came one connection at 
 
 ## Session 2026-08-11 — RHEL8 install fixes, IncrementalRehashMap, scripts relocated
 
-Prompted by installing the 0.3.0 release tarball on the RHEL8 host at work, which failed
+Prompted by installing the 0.3.0 release tarball on an RHEL8 target host, which failed
 five ways. All five were properties of that machine rather than of the source, which is why
 `release_check.py`'s `rocky` stage passed: it reproduces gcc 8.5 and nothing else about a
 target host — not its Python toolchain, its filesystem, its third-party layout, its database,
@@ -1930,11 +1930,11 @@ or the condition of having started from a tarball with no `.git`.
    `run_command` takes `tolerated_exit_bits` so an errors-only gate is no longer failed by
    pylint's warning, refactor and convention exit bits. Three machines run three pylints: 3.0.3
    here, whatever `pip3 install pylint` resolved to on Python 3.8 in the Rocky image, and a
-   newer one at work.
+   newer one on the RHEL8 target.
 2. **22 DSL tests failed on NFS during cleanup, after passing.** A dlopen'ed `.so` is
    silly-renamed to `.nfsXXXX` rather than unlinked, so the `rmdir` fails with ENOTEMPTY. The
-   scratch build lives inside the project tree because RHEL8 mounts `/tmp` noexec; at work the
-   project tree is the NFS one. Cleanup can no longer fail a test.
+   scratch build lives inside the project tree because RHEL8 mounts `/tmp` noexec; on such a
+   host the project tree is itself NFS-mounted. Cleanup can no longer fail a test.
 3. **prometheus-cpp not found** — that tree holds it directly under `THIRDPARTY_DIR` under a
    different name. Both prefixes are now offered.
 4. **The PostgreSQL port was hardcoded** in `perf_run.py`, `callgrind_run.py`, three `psql`

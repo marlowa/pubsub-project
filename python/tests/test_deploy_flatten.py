@@ -114,7 +114,7 @@ def test_the_bucket_bounds_agree_across_environments(deploy):
 def test_overriding_the_port_moves_every_consumer_together(deploy):
     """--db-port must reach the JDBC URL as well as the [db] section.
 
-    The RHEL8 host at work runs its cluster on a port the environment file does not name, and
+    An RHEL8 target host runs its cluster on a port the environment file does not name, and
     a deploy there failed exporting credentials. Overriding only the psql calls would fix that
     one symptom and leave the Java admin service deployed against a port with nothing on it --
     a clean deploy that fails later, which is worse than the failure it replaced.

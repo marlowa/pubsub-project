@@ -718,8 +718,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--db-port", type=int, default=None, metavar="PORT",
         help="PostgreSQL port, overriding the [db] section of the environment file. For a host "
-             "whose cluster is not on the port the environment file names -- the RHEL8 machine "
-             "at work among them. The [admin_service] db_url is rewritten to match, so the Java "
+             "whose cluster is not on the port the environment file names -- an RHEL8 target host "
+             "among them. The [admin_service] db_url is rewritten to match, so the Java "
              "service is deployed against the same database as everything else.",
     )
     parser.add_argument(

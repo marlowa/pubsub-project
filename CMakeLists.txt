@@ -149,7 +149,7 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETE
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/prometheus-cpp/${PROMETHEUS_VERSION}")
-# Second candidate prefix for the same package. The RHEL8 third-party tree at work holds it
+# Second candidate prefix for the same package. An RHEL8 target's third-party tree holds it
 # directly under THIRDPARTY_DIR and names the directory after the metric system rather than
 # after the C++ client, so the prefix above does not exist there and 0.3.0 would not configure.
 # Offering both costs a directory that is not searched; requiring one costs a platform.

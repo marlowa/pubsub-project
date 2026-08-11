@@ -30,7 +30,7 @@ change in any release.
 
 - **`deploy.py` and `devenv.py` take `--db-port`**, forwarded by `devsetup.py` and
   `build-release-deploy.py` so that a build+release+deploy run can name the port. The RHEL8 host
-  at work runs its cluster somewhere other than 5432, and the credential export failed there;
+  target host runs its cluster somewhere other than 5432, and the credential export failed there;
   `PGPORT` could not help, because both scripts pass the environment file's port explicitly and
   an explicit argument beats an environment default. The override is applied to the parsed
   environment, so `create_db.py`, `export_credentials.py`, the `${db_port}` placeholder and the
@@ -45,7 +45,7 @@ change in any release.
 
 ### Fixed
 
-- **0.3.0 would not build or run on the work RHEL8 host**, in five separate ways, none of which
+- **0.3.0 would not build or run on an RHEL8 target host**, in five separate ways, none of which
   the `rocky` release stage could have caught: it reproduces the gcc 8.5 compiler and nothing
   else about that machine. The pylint gate failed on `R0022 useless-option-value` -- a complaint
   about the message filter, which the message filter cannot suppress -- raised by a newer pylint

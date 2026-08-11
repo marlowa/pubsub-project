@@ -569,12 +569,12 @@ log line fails the check rather than silently ceasing to match.
 
 ## Fixed
 
-### Five ways 0.3.0 would not build or run on the work RHEL8 host
+### Five ways 0.3.0 would not build or run on an RHEL8 target host
 
 | | |
 |---|---|
 | Found | 2026-08-11 |
-| How | Installing the 0.3.0 release tarball on the RHEL8 host at work -- the first time a published artefact was built anywhere other than this machine or the Rocky container |
+| How | Installing the 0.3.0 release tarball on an RHEL8 target host -- the first time a published artefact was built anywhere other than this machine or the Rocky container |
 | Fixed | 2026-08-11 |
 
 Every one of them is a property of that host rather than of the source, which is why the
@@ -602,8 +602,8 @@ dlopens it, and lets `TemporaryDirectory` clean up -- unlinking a file that is s
 On a local filesystem the inode outlives the name and nothing notices. On NFS the server
 silly-renames it to `.nfsXXXX` in the same directory, so the following `rmdir` fails with
 ENOTEMPTY and the error surfaces from the `with` block **after every assertion has passed**.
-The scratch build sits inside the project tree because RHEL8 mounts `/tmp` noexec; at work,
-the project tree is the NFS one. Cleanup is now allowed to fail without failing a test, and
+The scratch build sits inside the project tree because RHEL8 mounts `/tmp` noexec; on such a host
+the project tree is itself the NFS one. Cleanup is now allowed to fail without failing a test, and
 leftovers are reaped on the next run.
 
 **3. prometheus-cpp was not found.** The work third-party tree holds it directly under
