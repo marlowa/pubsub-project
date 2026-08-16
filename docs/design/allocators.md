@@ -40,6 +40,19 @@ counter will differ, so Thread A's stale CAS fails. Because `Slot<T>` objects ar
 during the pool's lifetime (only the entire `mmap` region is freed at destruction), there is
 no additional ABA risk from address reuse across pools.
 
+**Why LIFO.** The stack order is not incidental. `deallocate()` pushes and `allocate()` pops
+the same end, so a slot handed out is usually the one most recently returned — still hot in
+L1/L2, and often still in the same cache line set. A FIFO free list would hand back the
+coldest slot every time, which is the worst possible choice for a hot path.
+
+This is the answer to the standard objection that a linked free list defeats the hardware
+prefetcher. It is not wrong, but it applies to the *steady state after sustained churn*, not
+to the common case: under bursty allocate/free of a working set smaller than the pool, LIFO
+reuse keeps the same few slots resident and the prefetcher is barely involved. Where locality
+does decay — many threads, long runs, high slot turnover — the decay is bounded by the fact
+that every slot lives inside one contiguous `mmap` region, so the TLB footprint stays fixed
+however scrambled the pointer order becomes.
+
 ### 128-Bit CAS: Compiler Flag Requirement
 
 The 128-bit CAS maps to the x86-64 `CMPXCHG16B` instruction. Three things are required:
@@ -49,6 +62,80 @@ The 128-bit CAS maps to the x86-64 `CMPXCHG16B` instruction. Three things are re
 | **`-mcx16` compiler flag** | Tells the compiler that `CMPXCHG16B` is available. Without it, the `static_assert` in the constructor fires: *"Hardware 128-bit atomics not supported. Add -mcx16 to compiler flags."* Safe on all x86-64 CPUs manufactured after ~2006. In CMake: `target_compile_options(your_target PRIVATE -mcx16)` |
 | **16-byte alignment** | The head structure is `alignas(16)`. `CMPXCHG16B` requires its operand to be 16-byte-aligned; misalignment causes a general protection fault. |
 | **`unsigned __int128`** | Used as the underlying storage type rather than `std::atomic<struct>`. `std::atomic<struct>` may link against `libatomic` and `is_lock_free()` can return false even when hardware supports it. `unsigned __int128` with GCC's `__atomic_compare_exchange` intrinsic bypasses `libatomic` entirely and compiles directly to `CMPXCHG16B`. The `#pragma GCC diagnostic ignored "-Wpedantic"` suppression is required because `unsigned __int128` is a GNU extension. |
+
+### Why Not a 64-Bit Packed Index?
+
+The table above justifies `unsigned __int128` over `std::atomic<HeadPtr>` — but both are
+128-bit. The prior question is why the head is 128 bits at all.
+
+The alternative is standard: because slots are a contiguous array, the head does not need a
+*pointer*. A 32-bit slot index plus a 32-bit counter packs into one ordinary 64-bit atomic,
+and `CMPXCHG16B` never enters the picture. That would remove, in one stroke, every
+complication in the table above — the `-mcx16` flag, the `alignas(16)` requirement, the
+`unsigned __int128` GNU extension, and the `-Wpedantic` suppression — and would make the
+free list portable to platforms with no double-width CAS.
+
+Two things argue the other way, and only one of them is decisive:
+
+| | Packed 64-bit index | 128-bit tagged pointer (chosen) |
+|---|---|---|
+| Pop path | index → address arithmetic on every pop | pointer dereferenced directly |
+| ABA counter | 32 bits | 64 bits |
+| Capacity ceiling | 2^32 slots | none |
+
+**The capacity ceiling is not a real argument.** `objects_per_pool` is an `int`, so a pool is
+already capped near 2^31 slots. A 32-bit index cannot be the binding constraint.
+
+**The counter width is.** The ABA counter must not wrap while a pre-empted thread holds a
+stale head. A 32-bit counter wraps after 2^32 successful CAS operations — at 10M
+allocations/sec, about seven minutes. For a process expected to run for days, that is not a
+theoretical bound but a routinely-reached one. A wrap is only *exploitable* if it coincides
+with a pre-empted thread's window, so the practical failure rate is far below one per wrap —
+but it is a real probability that grows with uptime, and it buys a failure mode that is
+silent, rare, and corrupts the free list. A 64-bit counter at the same rate wraps after
+roughly 58,000 years, which retires the question rather than shrinking it.
+
+The address arithmetic is a genuine but minor saving, and is not on its own a reason to
+prefer 128 bits.
+
+**So the trade is: four build-system complications, all of them one-time and already paid,
+against an uptime-dependent correctness risk.** That is why the head is 128 bits. If this
+allocator is ever ported to a platform without double-width CAS, the packed index is the
+right fallback — but it should carry a 48-bit counter and a 16-bit index, or an explicit
+argument about why a 32-bit counter is safe at that platform's allocation rate.
+
+### Why Not Hazard Pointers?
+
+Hazard pointers are the other standard answer to unsafe lock-free stacks, and they get
+proposed here often enough to be worth settling.
+
+**First, the usual reason for rejecting them does not apply.** Hazard pointers do not need a
+background reclamation thread. Each thread pushes retired nodes onto a thread-local list and,
+once that list crosses a threshold, scans the published hazard array *itself* and frees
+whatever no thread has claimed. Reclamation happens inline, on the retiring thread, in
+bounded work. There is no reclaimer to fall behind and nothing to starve. That objection
+belongs to epoch-based reclamation and RCU-style schemes, where a grace period really can be
+held open indefinitely by a stalled participant.
+
+**The reason that does apply is that they solve a problem this pool does not have.** Hazard
+pointers answer one question: *is it safe to free this node yet?* `FixedSizeMemoryPool` never
+frees an individual node. Every slot is constructed during pool construction and stays valid
+until the entire `mmap` region is unmapped at destruction — see the *Safety of Treiber Stack
+in Non-GC Environments* section in `FixedSizeMemoryPool.hpp` for the full argument. A slot
+popped by one thread while another holds a stale pointer to it is not freed memory; it is
+live, mapped, correctly-typed storage that simply belongs to someone else now.
+
+So there is no use-after-free window to protect, and hazard pointers would buy nothing while
+charging a store-plus-fence to publish a hazard on every single access to the head. The only
+residual risk is *logical* ABA — a slot legitimately recycled through the free list — and
+that is exactly what the tagged counter handles, at the cost of an increment already folded
+into a CAS the code must perform regardless.
+
+The general rule this is an instance of: **hazard pointers are a memory-reclamation
+technique, not an ABA technique.** They are the right tool when a lock-free structure hands
+memory back to the allocator, and the wrong tool when its nodes are immortal by construction.
+Reach for them here only if the pool ever gains the ability to release slots individually,
+which would invalidate the whole argument above.
 
 ### Build Paths
 

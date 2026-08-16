@@ -86,6 +86,14 @@ locking is needed on the append path and `seq_no` is trivially monotonic and gap
 that writer *is* can change (a follower is promoted; a publisher gains leadership), but at
 any instant there is one, and the log never has two.
 
+**`seq_no` continues across a change of writer; it does not restart.** A promoted follower
+recovers `next_sequence_number` from its own WAL and raises it to the peer's if the peer is
+ahead, so the sequence spans the failover unbroken. This is what makes `seq_no` alone the
+total order over the log's whole life, and it is why the leader epoch is *not* stored in the
+record: epoch fences who may append (see [wal_and_ha.md](wal_and_ha.md)), but it is not part
+of the order key. A record is located by `seq_no` and nothing else. Restarting the numbering
+on promotion — or ordering by `(epoch, seq_no)` — would both break this.
+
 **No `fsync` per record.** Forcing each append to physical disk would cost tens to hundreds
 of microseconds and is not how durability is achieved here. Disk flushing is out-of-band
 (segment rotation, snapshotting, a periodic flusher). Where stronger durability is required
@@ -145,6 +153,22 @@ a separate catalog lookup. The DSL-encoded PDU follows. A reader that only wants
 record needs nothing but the WAL frame's `length`; a reader that wants to *route* it reads
 this header. The sequencer uses its own payload layout for order records. The WAL frame
 (magic/length/seq_no/checksum) is common to both; the payload interior is not.
+
+### `wall_time_ns` is data, never an ordering key
+
+The timestamp in that payload header records *when* the writer stamped the record. It says
+nothing about **order** — that is `seq_no`'s job, and only `seq_no`'s.
+
+The distinction matters because `wall_time_ns` comes from `WallClock`, which in production is
+`std::chrono::system_clock`. That clock is not monotonic: NTP can step it backwards, so two
+records can carry timestamps that disagree with the order in which they were appended.
+Sorting or comparing records by `wall_time_ns` is therefore always wrong, however sensible it
+looks in a debugger. Downstream code treats the stamp as an opaque value to carry (FIX
+`TransactTime`, a subscriber page's publish time) and never as something to order by.
+
+The related rule for consumers of the stamp is in [replay.md](replay.md): any
+`now() - recorded_timestamp` is meaningless under replay, because the recorded side may be
+hours stale.
 
 ---
 
