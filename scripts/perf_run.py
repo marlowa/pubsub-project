@@ -1368,6 +1368,21 @@ def main() -> None:
         parser.error("--rate applies only to --gateway binary; f8test has no rate control")
     if args.capture and args.gateway != "fix":
         parser.error("--capture is FIX wire capture and applies only to --gateway fix")
+    if args.profile and args.capture:
+        parser.error("--capture is FIX wire capture; a profile run drives the binary gateway")
+
+    # A profile run drives binary_load_client against the binary gateway unconditionally --
+    # run_trading_day() asks for the binary listen port and nothing consults --gateway on the
+    # way there. Everything *else* keyed off --gateway therefore has to be told, or it
+    # configures the run for a client that never logs on: credentials are provisioned for
+    # f8test's comp id while binary_load_client logs on as LOADCLIENT and is refused, perf
+    # attaches to the idle FIX gateway, and the post-shutdown ground-truth check takes the
+    # wrong branch. That combination cost a run: every phase exited 1 in zero seconds with
+    # "logon refused (AuthenticationFailed)", which reads like a broken venue rather than a
+    # flag that was never passed. The coupling is a fact about the harness, so state it here
+    # rather than making each caller remember it.
+    if args.profile and args.gateway != "binary":
+        args.gateway = "binary"
 
     project_root = Path(__file__).resolve().parent.parent
     prefix     = resolve_prefix(str(project_root / args.prefix)
@@ -1406,7 +1421,8 @@ def main() -> None:
                     + gateway_component(args.gateway, args.gateway_instance))
     log(f"  call-graph     : {cg_desc}  (freq={FREQ} Hz, mmap={PERF_MMAP_SIZE})")
     log(f"  perf targets   : {targets_desc}")
-    log(f"  gateway        : {args.gateway}")
+    log(f"  gateway        : {args.gateway}"
+        f"{'  (implied by --profile)' if args.profile else ''}")
     log(f"  clients        : {args.clients}")
     log(f"  burst          : {args.burst}  ({args.clients * args.burst * 1000} orders total)")
     log(f"  FIX capture    : {'enabled' if args.capture else 'disabled'}")
