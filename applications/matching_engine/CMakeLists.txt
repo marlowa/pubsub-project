@@ -12,7 +12,6 @@ target_include_directories(matching_engine PRIVATE
 
 target_link_libraries(matching_engine PRIVATE
         pubsub_itc_fw
-        tsl::robin_map
 )
 
 add_dependencies(matching_engine fix_orders_generated matching_engine_replication_generated leader_follower_generated)

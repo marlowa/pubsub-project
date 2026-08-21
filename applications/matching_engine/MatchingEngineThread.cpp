@@ -148,15 +148,17 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
     , sequencer_er_conn_id_{}
     , sequencer_er_secondary_conn_id_{}
-    , order_book_(0, OrderKeyHash{}, std::equal_to<OrderKey>{}, OrderBookAllocator{&book_growth_reporter_}) {
+    , order_book_(0, OrderKeyHash{}, std::equal_to<OrderKey>{}, &book_growth_reporter_) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
     // completely uninstrumented: the pool and slab allocators cover objects with a message
     // lifecycle, and the book is neither, so it grew to 9.9 GB on the OS heap and the
     // process was OOM-killed having logged no memory warning at all.
     //
-    // robin_map allocates its bucket array in one call and reallocates on each doubling,
-    // so this fires roughly two dozen times over the life of a process, never per order.
+    // IncrementalRehashMap allocates a whole table at a time, so this fires roughly two dozen
+    // times over the life of a process, never per order. Note that during a migration the map
+    // holds two tables at once, so peak resident size is larger than the reported figure for
+    // the new table alone -- the reporter names what was just allocated, not the total.
     book_growth_reporter_.report_threshold_bytes = static_cast<size_t>(config_.order_book_growth_report_threshold_bytes);
     book_growth_reporter_.on_large_allocation = [&logger](size_t bytes, size_t largest) {
         PUBSUB_LOG(logger, pubsub_itc_fw::FwLogLevel::Warning,

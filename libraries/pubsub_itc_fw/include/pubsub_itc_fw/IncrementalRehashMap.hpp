@@ -37,11 +37,16 @@ namespace pubsub_itc_fw {
  * to cross the threshold, so the cost of growth is paid by one message while every other
  * message waits behind it.
  *
- * That is not a theoretical concern. The matching engine's order book, a `tsl::robin_map`,
- * stalled its callback thread for 96 ms at 2^21 entries, 733 ms at 2^22 and over a second at
- * 2^23, at which point the pipeline did not recover and 1,167,392 of 9,556,000 orders were
- * never accepted. Memory was never short: 16 GB free on a 31 GB machine. The stalls landed on
- * exact powers of two and nowhere else. See docs/design/trading_day_load.md.
+ * That is not a theoretical concern. The matching engine's order book was a `tsl::robin_map`,
+ * and it stalled its callback thread for 96 ms at 2^21 entries, 733 ms at 2^22 and over a
+ * second at 2^23, at which point the pipeline did not recover and 1,167,392 of 9,556,000 orders
+ * were never accepted. Memory was never short: 16 GB free on a 31 GB machine. The stalls landed
+ * on exact powers of two and nowhere else. See docs/design/trading_day_load.md.
+ *
+ * The book has since been moved onto this container, so that account is history rather than a
+ * description of the venue as it stands. It is kept because it is the measurement this class
+ * exists to answer, and because the shape of the failure -- a tail excursion on exact powers of
+ * two, with p50 and p90 untouched throughout -- is what to look for if it ever returns.
  *
  * ## What this does instead
  *

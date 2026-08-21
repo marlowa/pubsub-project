@@ -11,14 +11,12 @@
 #include <unordered_set>
 #include <vector>
 
-#include <tsl/robin_map.h>
-
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
-#include <pubsub_itc_fw/GrowthReportingAllocator.hpp>
+#include <pubsub_itc_fw/IncrementalRehashMap.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
@@ -244,17 +242,21 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Primary:   live orders currently on the book.
     // Secondary: replica of the primary's book, maintained via BookUpdate PDUs.
     //
-    // On GrowthReportingAllocator rather than std::allocator so the book's growth is
-    // visible. The framework's pool and slab allocators instrument objects with a message
-    // lifetime; the book is long-lived state that grows, so without this it reaches the OS
-    // heap directly and no memory instrument in the venue can see the venue's largest
-    // consumer of memory.
+    // On IncrementalRehashMap rather than a std-style map because growth must not stall the
+    // reactor callback thread. A conventional hash map rehashes its whole table inside the
+    // one insert that crosses the load factor: at 2^23 orders that was measured at over a
+    // second, during which this thread matches nothing. IncrementalRehashMap spreads the
+    // same work across the following operations, a fixed few slots at a time, so the cost is
+    // paid in bounded instalments by many orders instead of in full by one.
     //
-    // robin_map allocates its whole bucket array in one call and reallocates on each
-    // doubling, so the callback fires once per doubling and never per order.
-    using OrderBookAllocator = pubsub_itc_fw::GrowthReportingAllocator<std::pair<OrderKey, OrderEntry>>;
+    // The map reports growth directly to book_growth_reporter_ rather than through an
+    // allocator: it owns its tables outright and knows each one's size at the point it
+    // allocates it, so the reporter is told the truth without an allocator in between. The
+    // instrumentation matters because the framework's pool and slab allocators cover objects
+    // with a message lifetime, and the book is long-lived state that grows -- uninstrumented,
+    // it reached 9.9 GB and the process was OOM-killed having logged no memory warning.
     pubsub_itc_fw::AllocationGrowthReporter book_growth_reporter_;
-    tsl::robin_map<OrderKey, OrderEntry, OrderKeyHash, std::equal_to<OrderKey>, OrderBookAllocator> order_book_;
+    pubsub_itc_fw::IncrementalRehashMap<OrderKey, OrderEntry, OrderKeyHash> order_book_;
 
     // Monotonic counters for generated OrderID and ExecID values (primary only).
     int64_t order_id_counter_{0};
