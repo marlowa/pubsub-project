@@ -1988,7 +1988,136 @@ checking nothing while reporting success.
 | Item | Status |
 |---|---|
 | Order book on `IncrementalRehashMap` | **Next.** Deferred deliberately; the container is proved correct, not the stall cured |
-| Trading-day perf run | **Required** to close the bug entry: compare p99 at 2^21 / 2^22 / 2^23 against run 5's 96 ms / 733 ms / >1 s |
+| Trading-day perf run | **Required** to close the bug entry: compare p99 at 2^21 / 2^22 / 2^23 against the **first run, 2026-08-08** — 96 ms / 733 ms / >1 s ([trading_day_load.md](docs/design/trading_day_load.md#a-hash-rehash-stalls-the-hot-path-for-over-a-second)). Previously cited here as run 5's, which is wrong: run 5 is the cancels run and its largest spike was ~60 ms. The first run is the right baseline because its 2^23 failure was pure latency — 16 GB free on a 31 GB machine — whereas runs 8/9/10 were OOM-killed at that step and measured exhaustion instead |
 | C++23 advisory stage in `build.py` / `release_check.py` | Agreed, not built |
 | `.gitattributes` `export-subst` for the git hash | Offered, not built. A GitHub ZIP has no `.git`, so `release.py` warns and omits the hash |
 | Non-dev environment files still missing placeholders | Unchanged, deliberate |
+
+---
+
+## Session 2026-08-16 — Order book moved onto IncrementalRehashMap, and a run that proved nothing
+
+The order book was swapped from `tsl::robin_map` to `IncrementalRehashMap` and a trading-day
+run was made to see whether the growth stall was cured. The conclusion recorded at the time --
+"the swap does NOT cure the stall" -- was **wrong**, and for a reason that had nothing to do
+with the container. See the 2026-08-21 entry: the run exercised the previous binary.
+
+What does stand from the session: the swap itself, the ME-HA failover scenario passing on the
+new container, `perf_run.py` learning that `--profile` implies `--gateway binary`, and the
+`OpenOrderMap` suspect being written down. Nothing was committed.
+
+---
+
+## Session 2026-08-21 — The stall is cured, measured; memory is the new limit
+
+### The 2026-08-16 run measured the wrong binary
+
+Checking `sizeof(OrderEntry)` to sanity-check a memory figure turned up an inconsistency that
+unravelled the previous session's conclusion. Three independent confirmations:
+
+1. **Symbols.** `installed/bin/matching_engine`, dated 2026-08-11, carried 13 `robin_map`
+   symbols and no `IncrementalRehashMap` symbol. The 2026-08-16 build in `build/` was the
+   reverse. `perf_run.py` takes an install prefix and runs what is already deployed -- it
+   neither builds nor deploys, and nobody had deployed.
+2. **The log line number.** Every growth report named `MatchingEngineThread.cpp:162`, which is
+   where the `PUBSUB_LOG` sits in the committed source. The swap moves it to 164.
+3. **Bytes per slot.** 4992 MiB over 2^24 buckets is exactly 312 bytes each: 304 for
+   `std::pair<OrderKey, OrderEntry>` plus robin_map's 8-byte distance word.
+   `IncrementalRehashMap` reports one extra byte per slot for its state array and would have
+   logged 5008 MB.
+
+A figure the bug list carried was wrong with it: the table cost **312 bytes per bucket**, not
+624. The "2^21 / 2^22 / 2^23" labels were counting entries rather than buckets, which is
+consistent, but any sizing argument built on 624 was out by a factor of two.
+
+### The re-run
+
+Deployed first, then ran the **documented** invocation, which the previous run had also not
+used: `--gateway binary --clients 4 --profile profiles/trading_day.toml`. Four concurrent
+sessions matter here because the gateway's per-session `OpenOrderMap` was itself a suspect; at
+one session it holds every resting order in the run and its stalls would be indistinguishable
+from the book's in an end-to-end p99.
+
+Prometheus started first and alone, and load was confirmed reaching it within 20 seconds.
+
+### The result
+
+Peak p99 in a window spanning each growth step, against the two `robin_map` runs:
+
+| buckets | table | this run | robin 2026-08-16 | first run 2026-08-08 |
+|---|---|---|---|---|
+| 2^20 | 305 MB | 2.50 ms | -- | -- |
+| 2^21 | 610 MB | 1.78 ms | -- | -- |
+| 2^22 | 1220 MB | **2.43 ms** | 84.94 ms | 96 ms |
+| 2^23 | 2440 MB | **4.27 ms** | 378.32 ms | 733 ms |
+| 2^24 | 4880 MB | **2.44 ms** | 997.20 ms | over 1 s, pipeline collapsed |
+| 2^25 | 9760 MB | **2.43 ms** | never reached | never reached |
+
+Flat across a 32-fold range of table size, with median p99 in every window at 0.98-0.99 ms --
+the tail excursion is gone rather than reduced. `step_migration()` shows at 0.44% of the
+reactor thread's CPU, `find()` at 0.52%, `insert_entry()` at 0.41%: the migration is real,
+visible and cheap. Delivery was 12,735,099 of 13,016,000 orders, a 2.16% shortfall entirely
+inside the OOM window below; the first run lost 12.22% to the stall.
+
+**The allocation hypothesis is refuted.** `robin_map` allocated 4992 MB in one `::operator new`
+at its worst step and stalled for a second; this allocated 4880 MB and stalled 2.44 ms.
+`operator new` reads 0.02% in the profile and `memset` 0.00%, and kernel memory-stall pressure
+was 0.000 at every step but the last, where it was 0.001. The cost was always the rehash. The
+`allocate_table` timing experiment the bug list proposed is not needed.
+
+### Memory is now the limit, and the secondary doubles it
+
+Both engines allocated 9760 MB tables at 18:54:17 -- every memory calculation in the bug list
+had been per-engine, and the venue runs two. At 19:08:41 the kernel took the primary
+(`anon-rss 10340720 kB`, zero available). Failover worked: after the deliberate 15 s promotion
+timeout, arbitration completed in **3 ms**, and the promoted secondary took over a ~10 GB book
+and returned to 1926 orders/s. Six of seven phases exited 0; only the one containing the kill
+did not.
+
+Growing into a 2^25 table by doubling costs 14.6 GB transient per engine, 29.2 GB for the pair
+on a 31 GB machine. Reserving it up front is 9760 MB steady each. `[order_book] initial_capacity`
+already exists and is set to 262144 -- four minutes' worth. Raising it removes the growth steps
+altogether and *lowers* peak memory; `IncrementalRehashMap` then covers a wrong estimate rather
+than being the only line of defence. Agreed in principle, not yet changed.
+
+### The gateway's 4.3 GB is reservation, not accumulation
+
+Noticed in `htop` and worth recording because it reads as a leak and is not one.
+`binary_order_gateway_a` held 4184 MB at its first sample, 16 seconds after startup and before
+load, and grew only 163 MB over the next 21 minutes. It is `[open_order_pool]`:
+`initial_pools = 21` of `objects_per_pool = 1048576` at `sizeof(OpenOrderEntry)` = 168 bytes =
+3.45 GB. It is fully resident immediately because building the pool's LIFO free list writes a
+next pointer into every slot, touching every page.
+
+### The OpenOrderMap suspect is settled -- it is not a problem
+
+`robin_hash::rehash_impl` on the gateway thread: **0.06%**. `OpenOrderMap` is
+`robin_map<string_view, OpenOrderEntry*>`, so its buckets are ~32 bytes and a doubling moves
+almost nothing. The structural resemblance to the order book does not survive measurement.
+
+### Pool statistics are not published anywhere
+
+`ExpandablePoolAllocator` computes `get_pool_statistics()` and `get_behaviour_statistics()` and
+records them nowhere -- deliberately, so a hot-path structure carries no dependency on a metrics
+system. But nothing calls them either: `log_statistics()` has zero call sites in the tree, and
+the only metrics a venue process registers are `framework_pdu_messages_total`, the ME's
+`orders_processed` and the gateways' `order_round_trip_nanoseconds`. So the gateway's 4.3 GB is
+knowable at any instant through one API call, and nothing makes that call.
+
+`PoolMetricsReporter` (`applications/fix_common/`) closes that, in the applications rather than
+the framework: thirteen gauges per pool, the pool named by the `scope` label rather than baked
+into the metric name, so three pools cost 39 series but still 13 families and a fourth costs a
+label value. The scope is the TOML section that sizes the pool, so an alert on
+`pool_expansion_events > 0` names the section to widen. Written and passing
+`check_standards.py`; the gateway wiring and the two queue pools are not done.
+
+### Outstanding
+
+| Item | Status |
+|---|---|
+| Order book on `IncrementalRehashMap` | **Proven.** Uncommitted |
+| `[order_book] initial_capacity` raised to remove growth steps | Agreed, not changed |
+| `PoolMetricsReporter` wired into the gateways | Header written; wiring not done |
+| Event and command queue pool statistics | Need a `LockFreeMessageQueue` accessor |
+| C++23 advisory stage in `build.py` / `release_check.py` | Agreed, not built |
+| `.gitattributes` `export-subst` for the git hash | Offered, not built |

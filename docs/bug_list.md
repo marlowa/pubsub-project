@@ -110,10 +110,210 @@ destruction, and -- the property the class exists for -- a bound on entries move
 that is **counted rather than timed**, so a loaded machine cannot make it flaky and a return to
 one-pass rehashing fails it immediately. Clean under ASan, and under the C++23 dialect.
 
-**Still open, and deliberately so.** The order book is still a `tsl::robin_map`. Swapping it over is
-a separate change, and the evidence that closes this entry is a trading-day run showing the p99
-spikes at 2^21, 2^22 and 2^23 gone. Unit tests prove the container correct; they do not prove the
-stall cured.
+**Cured, and measured — see "The measurement that closes this entry" below.** The order book is
+on `IncrementalRehashMap`, and a trading-day run on 2026-08-21 shows peak p99 flat at 1.78–4.27 ms
+across six growth steps from 305 MB to 9760 MB, against 96 ms, 733 ms and over a second for the
+same steps under `tsl::robin_map`.
+
+**This entry stays under Open only because the change is uncommitted.** It moves to Fixed when the
+order-book swap lands. Nothing else is outstanding on it.
+
+What the container does *not* do is reduce peak memory — it holds two tables for *longer*, across
+the whole migration rather than one operation. That is now the binding constraint rather than
+latency, and it has its own entry below.
+
+### The 2026-08-16 run measured the old book, not the swap
+
+A trading-day run was made on 2026-08-16 intending to measure the order book on
+`IncrementalRehashMap`. It did not: the binary it exercised was the `tsl::robin_map` build
+installed on 2026-08-11. The swap was compiled into `build/` at 16:59 that day and never
+deployed, and `perf_run.py` takes an install prefix and runs what is already there -- it neither
+builds nor deploys. So the run is a second `tsl::robin_map` measurement, and says nothing about
+the container it was meant to test.
+
+Three independent confirmations, recorded so this is not re-argued:
+
+1. **Symbols.** `installed/bin/matching_engine`, dated 2026-08-11 20:29, carries 13 `robin_map`
+   symbols and no `IncrementalRehashMap` symbol. `build/applications/matching_engine/matching_engine`,
+   dated 2026-08-16 16:59, is the reverse: no `robin_map`, 7 `IncrementalRehashMap`.
+2. **The log line number.** Every growth report in `matching_engine_primary.log` names
+   `MatchingEngineThread.cpp:162`. That is where the `PUBSUB_LOG` sits in the committed source;
+   the swap adds comment lines above it and moves it to 164.
+3. **Bytes per slot.** The reports are 156, 312, 624, 1248, 2496 and 4992 MB, and 4992 MiB over
+   2^24 buckets is exactly 312 bytes each. `sizeof(std::pair<OrderKey, OrderEntry>)` is 304
+   (`OrderKey` 134, `OrderEntry` 168), and robin_map adds an 8-byte distance-and-hash word per
+   bucket: 312. `IncrementalRehashMap` reports `state_bytes + entry_bytes`, one extra byte per
+   slot, which would have logged 5008 MB rather than 4992.
+
+**Correcting a figure this entry carried.** The table did not cost 624 bytes per slot. It cost
+**312 bytes per bucket**, and the six growth reports correspond to bucket arrays of 2^19 through
+2^24 -- reached, at robin_map's half-full growth policy, somewhere around 2^18 to 2^23 live
+orders. The earlier "2^21 / 2^22 / 2^23" labels were counting entries rather than buckets, which
+is consistent, but the per-slot figure was double the truth and any sizing argument built on it
+was wrong by a factor of two.
+
+**What the run does establish**, all of it about `tsl::robin_map`:
+
+| allocation | buckets | growth step at | p99 then | first run, 2026-08-08 |
+|---|---|---|---|---|
+| 1248 MB | 2^22 | 18:38:32 | **84.94 ms** | 96 ms |
+| 2496 MB | 2^23 | 18:48:37 | **378.32 ms** | 733 ms |
+| 4992 MB | 2^24 | 19:08:47 | **997.20 ms** | over 1 s |
+
+Median p99 in each window was ~0.9 ms, so the tail-excursion signature reproduces: the bulk of
+orders are untouched and a few are delayed catastrophically. The spread against the first run --
+733 ms against 378 ms at the same step, on the same container -- is run-to-run variation, and is
+itself worth knowing, because it sets how large a difference the re-run must show before it means
+anything.
+
+**The profile is off-CPU.** `perf record` on `matching_engine_primary` across all six growth steps
+gives a flat profile for the reactor thread: the top symbol is `handle_new_order_single` at 0.66%,
+and no allocation or rehash symbol appears near the top. A one-second *CPU* stall would be
+impossible to miss at that sampling rate, so the thread is blocked rather than spinning, and
+cycle-based sampling cannot attribute it. This holds for the robin_map book and is the most useful
+thing the run produced.
+
+**The allocation hypothesis is untested, not supported.** The idea that the stall is the single
+large `::operator new` for the entry array was framed around `allocate_table`, which is
+`IncrementalRehashMap`'s function and was not in the binary. robin_map's own bucket-array
+reallocation is the same shape and the off-CPU evidence is compatible with it, but nothing here
+distinguishes it from any other blocking cause. If the re-run with the swap deployed still shows
+spikes that grow with table size, timing the two `::operator new` calls in `allocate_table`
+directly -- logged at Warning, so it survives the load run's log level -- settles it cheaply.
+
+**Status: superseded.** The re-run was made on 2026-08-21, deployed first and with the documented
+`--clients 4`. See the next section.
+
+### The measurement that closes this entry, 2026-08-21
+
+Trading-day run with the order book on `IncrementalRehashMap`, deployed first this time, and with
+the documented `--gateway binary --clients 4`. Prometheus started on its own beforehand and load
+confirmed reaching it within 20 seconds. p99 is the worst 15-second sample in a window of -90s to
++240s around each growth step, taken from `order_round_trip_nanoseconds_bucket` on
+`binary_order_gateway_a`; step times come from the growth-report lines in
+`matching_engine_primary.log`.
+
+| buckets | table | peak p99 | median p99 | robin_map 2026-08-16 | first run 2026-08-08 |
+|---|---|---|---|---|---|
+| 2^20 | 305 MB | 2.50 ms | 1.25 ms | -- | -- |
+| 2^21 | 610 MB | 1.78 ms | 0.99 ms | -- | -- |
+| 2^22 | 1220 MB | **2.43 ms** | 0.99 ms | 84.94 ms | 96 ms |
+| 2^23 | 2440 MB | **4.27 ms** | 2.34 ms | 378.32 ms | 733 ms |
+| 2^24 | 4880 MB | **2.44 ms** | 0.98 ms | 997.20 ms | over 1 s, pipeline collapsed |
+| 2^25 | 9760 MB | **2.43 ms** | 0.99 ms | never reached | never reached |
+
+**Flat across a 32-fold range of table size.** That is the property the container exists for, and
+it is the part that could not be argued from unit tests. The failure signature was a tail
+excursion -- median p99 around 0.9 ms while the peak went to 85 ms and then to a second -- and the
+median is unchanged at 0.98-0.99 ms while the peak now sits beside it. The excursion is gone
+rather than reduced. The 4.27 ms at 2^23 is not the start of a trend: the next doubling came back
+to 2.44 ms.
+
+Delivery was 12,735,099 of 13,016,000 orders offered, a 2.16% shortfall entirely inside the OOM
+window described in the entry below. The first run lost 12.22% to the stall itself.
+
+**The profile shows the migration doing its work.** `step_migration()` at **0.44%** of the reactor
+thread, `find()` at 0.52%, `insert_entry()` at 0.41%. Compare the 2026-08-16 profile, where the
+whole thread was flat at 0.66% top symbol because it was blocked rather than working.
+
+### The allocation hypothesis was wrong
+
+Recorded because it was the leading theory for a fortnight and the refutation is one comparison:
+
+| | allocation in one `::operator new` | stall |
+|---|---|---|
+| `tsl::robin_map` at its worst step | 4992 MB | ~1 s |
+| `IncrementalRehashMap` at the same step | 4880 MB | 2.44 ms |
+
+Same machine, same profile, near-identical request size. `operator new` reads 0.02% in the profile
+and `memset` 0.00%, and `node_pressure_memory_stalled_seconds_total` was 0.000 at every step but
+the last, where it reached 0.001 with the machine nearly full. The cost was always the rehash.
+
+Two things follow. The `allocate_table` timing experiment proposed above is not needed. And the
+reasoning that the table's bytes-per-slot was the thing to attack was chasing the wrong quantity --
+the size of the allocation was never what stalled the thread.
+
+### Dismissed: the gateway's per-session `OpenOrderMap` is not the shape the order book was
+
+| | |
+|---|---|
+| Found | 2026-08-16 |
+| How | Swept for other instances of the growing-hash-map pattern after moving the order book off `tsl::robin_map` |
+| Impact | **None. Measured 2026-08-21 and dismissed** -- see the closing paragraph |
+
+`open_orders::OpenOrderMap` (`applications/fix_common/OpenOrderEntry.hpp`) is a `tsl::robin_map`
+held per session (`FixSession::open_orders`) and mutated on the gateway's reactor callback thread
+— `insert_or_assign` on each non-terminal ER, `erase` on each terminal one. That is the same
+structure, on the same kind of thread, with the same power-of-two growth policy as the order book
+that stalled for over a second.
+
+**Why it is weaker than the order book was.** It is scoped per session rather than venue-wide, and
+entries leave on terminal ERs rather than resting indefinitely. A venue with many small sessions
+never grows any one map large enough to matter.
+
+**Why it is not dismissible.** The bound is the number of orders one session leaves resting, and
+nothing caps that. Under the trading-day profile it is worse than the general case, not better:
+the load client runs a single session, so one `OpenOrderMap` accumulates every resting order in
+the run — the same millions the order book holds, in the same growth steps, on the gateway's
+callback thread instead of the engine's. A member that rests a large book behaves the same way.
+
+**Settled 2026-08-21: it is not a problem, and the resemblance was superficial.**
+`robin_hash::rehash_impl` on the gateway's callback thread reads **0.06%** of a trading-day
+profile. The reason is in the type, which the sweep that raised this had not looked at closely
+enough: `OpenOrderMap` is `robin_map<std::string_view, OpenOrderEntry*>`, so a bucket is about 32
+bytes and the entries live in a pool. The order book stored `OrderEntry` inline at 304 bytes a
+slot. A doubling here copies pointers; a doubling there copied the book. Nothing needs doing.
+
+Worth keeping rather than deleting, for two reasons. It records that the pattern was looked for
+elsewhere and where it was found, so the sweep is not repeated. And it is a reminder that "same
+container, same thread, same growth policy" is not enough to make two structures behave alike --
+what mattered was what each bucket held.
+
+### Growing the order book by doubling needs more memory than the machine has
+
+| | |
+|---|---|
+| Found | 2026-08-21 |
+| How | The trading-day run that proved the stall cured -- it reached a table size no earlier run survived to |
+| Impact | `matching_engine_primary` OOM-killed at 19:08:41 with 10.3 GB resident; 280,901 of 13,016,000 orders lost across the outage |
+
+With latency no longer the limit, memory is. At 18:54:17 both engines allocated 2^25-bucket
+tables of 9760 MB. At 19:08:41 the kernel took the primary: `anon-rss 10340720 kB`, zero memory
+available on a 31 GB machine.
+
+**The arithmetic was always going to end here, and two things had been left out of it.**
+
+First, **the venue runs two order books, not one.** The secondary maintains a full replica via
+BookUpdate PDUs, so every figure in this entry -- and every figure in the memory reasoning that
+preceded it -- doubles. Growing into a 2^25 table by doubling costs 14.6 GB transient per engine
+while both tables are held: 29.2 GB for the pair.
+
+Second, **the binary gateway reserves 4.3 GB before the first order arrives.** `[open_order_pool]`
+is `initial_pools = 21` of `objects_per_pool = 1048576` at `sizeof(OpenOrderEntry)` = 168 bytes =
+3.45 GB, and it is resident immediately because building the pool's free list writes a next
+pointer into every slot. It reads like a leak in `htop` and is not one, but it is 4.3 GB the
+engines cannot have.
+
+**The fix is to reserve rather than to grow.** `[order_book] initial_capacity` already exists and
+is set to 262144 -- about four minutes of this profile. Sized to the expected book it removes the
+growth steps altogether, and it *lowers* peak memory rather than raising it:
+
+| | peak per engine |
+|---|---|
+| grow into a 2^25 table by doubling | 14.6 GB transient |
+| reserve 2^25 at startup | 9760 MB steady |
+
+That is the difference between 29.2 GB for the pair and 19.5 GB, which is the difference between
+being killed and not. `allocate_table()` memsets only the state array -- one byte per slot -- and
+leaves entry storage to be faulted in as the book fills, so the reservation costs address space
+and one allocation at startup rather than resident memory up front.
+
+This does not make `IncrementalRehashMap` redundant. Sized right, the map never migrates; sized
+wrong, it is what makes the mistake survivable instead of a second-long stall. Reservation handles
+the expected case, the container handles being wrong about it.
+
+**Not yet changed.** The number to use should come from the book size the venue is meant to
+support, not from this profile.
 
 ### The venue accepts orders indefinitely with no matching engine, and tells nobody
 
@@ -189,12 +389,89 @@ Two distinct faults, and the second is the awkward one:
   from *accepted and queued behind nothing* — the gap between `nos_received` and
   `accounted` already carries that information and nothing reports it.
 
+### A process death on the same host takes the machine-death path
+
+| | |
+|---|---|
+| Found | 2026-08-21 |
+| How | The trading-day run that proved the order-book stall cured -- the primary was OOM-killed and the venue stopped trading for 16 seconds |
+| Impact | 16 s outage against a design target of under 50 ms for this class of failure. ~280,000 orders lost across it |
+
+`design-notes-for-ha.md` separates two recovery paths and gives them very different targets:
+
+| | Local (process) recovery | Network (machine) failover |
+|---|---|---|
+| Recovery target | **under 50 ms** | 100 ms to seconds |
+| Trigger | the process died; hardware and kernel are healthy | total silence from a node |
+
+**What happened on 2026-08-21 was the first kind and was handled as the second.** The kernel
+killed one process on a healthy machine and closed its sockets; the follower saw the
+replication connection close within a second. It then took the outer loop:
+
+```
+19:08:41  primary OOM-killed
+19:08:42  follower sees the socket close, arms a 15 s timer
+19:08:57  timer fires, asks the arbiter
+19:08:57  ArbitrationDecision received -- 3 ms later
+19:11     back to 1926 orders/s
+```
+
+Fifteen of the sixteen seconds are `ha_timing.heartbeat_timeout_seconds`, armed at
+`MatchingEngineThread.cpp:289` on connection loss. The arbitration it was waiting to perform
+took 3 ms.
+
+**The wait bought nothing.** The arbiter decides from live connection state -- `peer_connected`
+at `ArbiterThread.cpp:553`, backed by a map erased on disconnect at line 102 -- not from
+heartbeat recency. Its own connection to the dead primary closed at the same instant the
+follower's did, so it would have returned the same decision at 19:08:42 as it did at 19:08:57.
+The follower detected the death immediately, discarded that signal, and waited for a timer
+sized for a node that has gone silent.
+
+**Why the timer is not simply wrong.** It is the correct trigger for the outer loop, where the
+question is whether a node that has stopped answering is dead or merely unreachable. What is
+missing is the distinction: a socket closed by the kernel because the peer process no longer
+exists is not silence, it is evidence. The design already draws that line and the code does
+not act on it.
+
+**What this does not depend on.** Promotion safety here rests on the arbiter, not on a race
+being avoided by waiting -- see `design-notes-for-ha.md` section 10, which records that STONITH
+is not implemented and that arbiter-mediated leadership plus epoch fencing stands in its place.
+A follower asking sooner is refused just as surely if the peer is alive and still connected to
+the arbiter, because leadership goes to the lower instance id when both are connected, and the
+primary's id is always the lower one. Asking earlier changes when the answer arrives, not what
+it is.
+
+**Possible fixes**, cheapest first. None is done.
+
+1. **Treat a peer-initiated close as evidence, and ask the arbiter at once.** The follower
+   already distinguishes the two cases -- it logs "replication connection lost" with a reason.
+   A close delivered by the kernel because the peer is gone should go straight to arbitration;
+   the timer stays for the case it was designed for, a peer that has stopped answering without
+   closing. This is the whole 15 s, and the arbiter's answer is unchanged either way. A few
+   lines around `MatchingEngineThread.cpp:289`.
+2. **Give the promotion delay its own setting.** It currently borrows
+   `ha_timing.heartbeat_timeout_seconds`, which is a different quantity measured for a
+   different purpose. Even keeping the outer-loop behaviour, one number serving two meanings
+   cannot be tuned for either.
+3. **Build the inner loop the design describes.** Section 7 of `design-notes-for-ha.md` calls
+   for local process recovery -- SHM journal, restart in place -- with a sub-50 ms target, and
+   it does not exist. Fix 1 shortens the outage to about a second by promoting the peer
+   faster; this is what would meet the stated target, by not needing a promotion at all for a
+   process that can simply be restarted. Much the largest piece of work of the three, and the
+   only one that addresses the design gap rather than the symptom.
+
+**Not investigated:** what a restarted primary does when it rejoins after the secondary has
+been promoted. `decide_and_broadcast` recomputes leadership rather than consulting
+`leadership_state_`, and the reconnect path at `ArbiterThread.cpp:509` looks the stored state
+up under the connecting instance's own key. Whether that yields a clean failback or a
+disagreement was not traced, and is a separate question from this entry.
+
 ### HA fails over into a condition both nodes share
 
 | | |
 |---|---|
 | Found | 2026-08-08 |
-| How | The first clean trading-day load run — the primary matching engine was OOM-killed and the promoted secondary died 2 minutes later |
+| How | The first clean trading-day load run — the primary was OOM-killed and the promoted secondary died 2 minutes later. Recurred 2026-08-21 |
 | Impact | Failover postponed an outage by about 4 minutes instead of preventing it |
 
 The HA mechanism itself performed correctly and quickly:
@@ -215,6 +492,28 @@ that had just killed a process for holding 9.9 GB.
 both nodes share** — memory exhaustion, a poison message, a bug reached by the same input,
 a shared dependency. Failing over into it converts an outage into a slightly later outage
 and burns the standby doing it.
+
+**2026-08-21: the same failure, and this time the standby survived it.** The primary was
+OOM-killed again, at a larger book still, and the promoted secondary kept trading:
+
+```
+19:08:41  primary OOM-killed (anon-rss 10.3 GB, 2^25-bucket table)
+19:08:42  secondary arms the 15s promotion timeout
+19:08:57  timeout fires, arbitration requested -- decision received 3 ms later
+19:09:04  duplicate ArbitrationDecision correctly ignored
+19:11     back to 1926 orders/s, and stayed there for the remaining three phases
+```
+
+The difference is not that HA improved. It is that killing the primary **freed 10 GB**, so the
+condition the two nodes shared stopped being true the moment one of them died. Memory available
+went from zero to 12.9 GB. That is luck rather than design -- had the survivor needed to grow its
+own table again it would have gone the same way -- but it is worth recording that the mechanism
+recovers cleanly when the shared condition lifts, and that arbitration itself took 3 ms under
+genuine exhaustion with a ~10 GB book to take over.
+
+It also sharpens the point above. The systemic condition here is the growth policy, and the entry
+on it is *Growing the order book by doubling needs more memory than the machine has*. Reserving
+the table instead of growing into it removes the condition rather than surviving it.
 
 Worth designing for explicitly. Open questions rather than a plan:
 
