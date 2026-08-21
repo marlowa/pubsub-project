@@ -175,7 +175,7 @@ TEST(PoolMetricsReporterTest, ReportsReservedAndInUseSeparately) {
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_bytes_in_use"), 3000000.0 * 168.0);
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_objects_allocated"), 3000000.0);
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_objects_available"), 19020096.0);
-    EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_chain_length"), 21.0);
+    EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_segments"), 21.0);
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_chain_full"), 2.0);
     EXPECT_DOUBLE_EQ(rendered_value(exposition, "pool_object_size_bytes"), 168.0);
 }

@@ -73,8 +73,13 @@ namespace fix_common {
  *
  * ## Two names that deliberately avoid `_count`
  *
- * The number of pools is `pool_chain_length` and the number of full ones is
- * `pool_chain_full`, rather than the obvious `pool_count` and `pool_full_count`. Prometheus
+ * The number of pools is `pool_segments` and the number of full ones is
+ * `pool_chain_full`, rather than the obvious `pool_count` and `pool_full_count`.
+ *
+ * `pool_segments` deliberately does not say "chain". It is very largely the configured
+ * `initial_pools` -- 21 for the binary gateway -- and a reader who sees a number that size
+ * next to the word "chain" concludes the pool has been chaining, which it has not. Chaining
+ * is `pool_expansion_events`, and that is the number to read for it. Prometheus
  * reserves `<name>_count` as a histogram's or summary's count series, so a gauge ending that
  * way is read by convention-following tooling as part of a family that does not exist. The
  * first spelling was tried and `scripts/pubsub_metrics.py` -- which discovers what is there
@@ -111,7 +116,7 @@ class PoolMetricsReporter {
         objects_allocated_ = endpoint.register_gauge(pool_name, "pool_objects_allocated", "Objects currently allocated from this pool chain");
         objects_available_ = endpoint.register_gauge(pool_name, "pool_objects_available", "Objects available for allocation across this pool chain");
         objects_per_pool_ = endpoint.register_gauge(pool_name, "pool_objects_per_pool", "Objects each pool in the chain can hold");
-        pool_count_ = endpoint.register_gauge(pool_name, "pool_chain_length", "Pools currently in the chain");
+        pool_count_ = endpoint.register_gauge(pool_name, "pool_segments", "Memory segments this pool comprises, mostly the configured initial_pools");
         full_pool_count_ = endpoint.register_gauge(pool_name, "pool_chain_full", "Pools in the chain with no free slot left");
         object_size_bytes_ = endpoint.register_gauge(pool_name, "pool_object_size_bytes", "Size of one pooled object in bytes");
         bytes_reserved_ = endpoint.register_gauge(pool_name, "pool_bytes_reserved", "Bytes claimed by the whole pool chain, live or not");
