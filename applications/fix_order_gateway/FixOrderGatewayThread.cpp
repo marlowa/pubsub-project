@@ -194,6 +194,13 @@ void FixOrderGatewayThread::on_app_ready_event() {
         /*handler_for_invalid_free=*/nullptr,
         /*handler_for_huge_pages_error=*/nullptr, pubsub_itc_fw::UseHugePagesFlag{pubsub_itc_fw::UseHugePagesFlag::DoNotUseHugePages});
 
+    // Sampled from a timer because PrometheusEndpoint is push-style: a gauge holds whatever
+    // was last set into it and there is no scrape-time callback. Safe on this thread because
+    // the pool is touched only here, and cheap because the snapshot reads counters the
+    // allocator maintains as it goes rather than traversing a free list.
+    open_order_pool_metrics_.register_metrics(get_reactor().metrics(), gateway_metrics::open_order_pool_metrics_scope);
+    pool_metrics_timer_id_ = start_recurring_timer(gateway_metrics::pool_metrics_sample_interval);
+
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
         connect_to_service("authentication_service_secondary");
@@ -738,6 +745,13 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
     if (timer_id == sequence_report_timer_id_) {
         report_session_sequence_numbers();
         sequence_report_timer_id_ = start_one_off_timer(sequence_report_interval);
+        return;
+    }
+
+    if (timer_id == pool_metrics_timer_id_) {
+        if (open_order_pool_ != nullptr) {
+            open_order_pool_metrics_.update(open_order_pool_->get_pool_statistics(), open_order_pool_->get_behaviour_statistics());
+        }
         return;
     }
 

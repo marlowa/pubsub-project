@@ -56,6 +56,7 @@ add_executable(fix_order_gateway_tests
         tests/FixSerialiserTest.cpp
         tests/FixErEncoderTest.cpp
         tests/GatewayMetricsTest.cpp
+        tests/PoolMetricsReporterTest.cpp
         FixCapture.cpp
         FixParser.cpp
         FixSerialiser.cpp

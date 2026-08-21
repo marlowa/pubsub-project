@@ -27,6 +27,7 @@
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
 #include "GatewayIds.hpp"
+#include "PoolMetricsReporter.hpp"
 
 // authentication.hpp must be included before fix_orders.hpp because only
 // authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
@@ -472,6 +473,13 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // metrics scope. See applications/fix_common/GatewayMetrics.hpp for why the bucket
     // bounds are shared with the binary gateway rather than chosen here.
     pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
+
+    // Publishes the open-order pool's statistics. Deliberately identical to the binary
+    // gateway's -- same metric family, same scope, same sample interval -- since a
+    // difference in any of them would make a comparison between the two protocols measure
+    // the instrumentation. See applications/fix_common/GatewayMetrics.hpp.
+    fix_common::PoolMetricsReporter open_order_pool_metrics_;
+    pubsub_itc_fw::TimerID pool_metrics_timer_id_{};
 
     // Running totals behind the GW-PROGRESS line. Per-order logging was moved to Debug
     // because it cost roughly a third of this gateway's CPU under load; these keep the

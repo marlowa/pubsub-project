@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -114,6 +115,17 @@ void BinaryOrderGatewayThread::on_app_ready_event() {
         /*handler_for_invalid_free=*/nullptr,
         /*handler_for_huge_pages_error=*/nullptr, pubsub_itc_fw::UseHugePagesFlag{pubsub_itc_fw::UseHugePagesFlag::DoNotUseHugePages});
 
+    // Registered after the pool exists, and sampled from a timer because PrometheusEndpoint
+    // is push-style -- a gauge holds whatever was last set into it and there is no
+    // scrape-time callback. Five seconds matches the scrape interval, so the value a scrape
+    // reads is at most one interval stale and no work is done that nothing collects.
+    //
+    // Sampling on this thread is what makes it safe: the pool is touched only here. The cost
+    // is a walk of the pool chain reading counters the allocator maintains atomically as it
+    // goes, never a free-list traversal, so it is a couple of dozen atomic loads.
+    open_order_pool_metrics_.register_metrics(get_reactor().metrics(), gateway_metrics::open_order_pool_metrics_scope);
+    pool_metrics_timer_id_ = start_recurring_timer(gateway_metrics::pool_metrics_sample_interval);
+
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
         connect_to_service("authentication_service_secondary");
@@ -132,6 +144,13 @@ void BinaryOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
 
     if (timer_id == grace_timer_id_) {
         expire_grace_sessions();
+        return;
+    }
+
+    if (timer_id == pool_metrics_timer_id_) {
+        if (open_order_pool_ != nullptr) {
+            open_order_pool_metrics_.update(open_order_pool_->get_pool_statistics(), open_order_pool_->get_behaviour_statistics());
+        }
         return;
     }
 

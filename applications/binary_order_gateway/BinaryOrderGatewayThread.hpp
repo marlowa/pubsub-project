@@ -37,6 +37,7 @@
 #include "BinarySession.hpp"
 #include "CancelClOrdId.hpp"
 #include "GatewayIds.hpp"
+#include "PoolMetricsReporter.hpp"
 
 namespace binary_order_gateway {
 
@@ -262,6 +263,13 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // told apart by the component label -- see applications/fix_common/GatewayMetrics.hpp.
     // Unbound, and therefore a no-op, when no bounds are configured.
     pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
+
+    // Publishes the open-order pool's statistics. The pool records nothing itself -- it
+    // computes the numbers and offers them -- so something has to sample it, and this
+    // thread is the only one allowed to touch the pool. Refreshed from a recurring timer
+    // rather than at scrape time because PrometheusEndpoint has no scrape-time callback.
+    fix_common::PoolMetricsReporter open_order_pool_metrics_;
+    pubsub_itc_fw::TimerID pool_metrics_timer_id_{};
 
     // Running totals behind the GW-PROGRESS line, matching the FIX order gateway's so the two
     // gateways log the same amount and a perf comparison is not measuring logging.

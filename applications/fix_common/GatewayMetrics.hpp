@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <vector>
@@ -44,6 +45,34 @@ inline constexpr const char* order_round_trip_metric_name = "order_round_trip_na
  * help differs. It is therefore worded for both protocols, naming neither.
  */
 inline constexpr const char* order_round_trip_help = "Nanoseconds from taking an order off the client connection to starting to send its ExecutionReport";
+
+/**
+ * @brief Metric scope for the open-order pool, shared by both gateways.
+ *
+ * The scope names a pool, so that one family of pool gauges covers every pool in the venue
+ * and a query tells them apart by label rather than by metric name. Adding a pool then costs
+ * a label value instead of a new metric, a new panel and a new alert.
+ *
+ * The value is the TOML section that sizes the pool, not the pool's own name. An operator
+ * reading `pool_expansion_events_total{scope="open_order_pool"} > 0` learns which section to
+ * widen; the internal name "BinaryOpenOrderPool" names nothing that can be edited.
+ *
+ * The trap is the one the round-trip histogram has: a query without `by (scope)` blends the
+ * pools of a process into a number that describes none of them.
+ */
+inline constexpr const char* open_order_pool_metrics_scope = "open_order_pool";
+
+/**
+ * @brief How often a gateway samples its pool statistics into the gauges.
+ *
+ * Matched to the Prometheus scrape interval. Sampling faster does work nothing collects;
+ * sampling slower means a scrape reads a value that predates it by more than one interval,
+ * which shows up as a gauge that appears to lag the load.
+ *
+ * Shared by both gateways for the same reason the help text is: two gateways sampling at
+ * different rates would make a comparison between them measure the instrumentation.
+ */
+inline constexpr std::chrono::seconds pool_metrics_sample_interval{5};
 
 /** @brief Configuration path holding the bucket bounds, identical in every gateway file. */
 inline constexpr const char* order_round_trip_buckets_key = "metrics.order_round_trip_buckets";
