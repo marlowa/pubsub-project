@@ -135,3 +135,42 @@ By using an **Aeron-like SHM Journal**, we solve 99% of failures (software
 crashes) locally and instantly. This allows the **Leader-Follower network
 protocol** to remain simple, acting only as the fallback for the rare 1% of
 hardware disasters.
+
+---
+
+## 10. Decision Taken: no STONITH
+
+**STONITH was evaluated and is not implemented. It is not planned.** Sections 4, 6 and 7
+above are the discussion that led here, not a description of what runs. Where section 7 says
+"Follower uses STONITH to ensure the primary is dead before promoting", that step does not
+exist in the code and no node has ever been fenced by this venue.
+
+**Why it was rejected.** Section 4's own requirements are the reason: valid STONITH must be
+out-of-band, authoritative at the hardware level, and independent of the data network being
+judged. Every one of those is a property of a *deployment*, not of this software -- an IPMI
+or BMC path, a separate management network, credentials to power-cycle a peer. A developer
+machine has none of them, and the venue has to run the same way on a laptop as on a pair of
+production hosts. Building a mechanism that can only ever be exercised in one environment
+means shipping a promotion path that is never tested where it is written.
+
+**What is relied on instead** is Option A, and section 9's conclusion permits exactly this:
+*"a 2-node HA system without fencing **or an arbiter** is fundamentally unsafe"*. The arbiter
+is the answer to that "or".
+
+* **Arbiter-mediated leadership.** A follower does not promote itself. It asks, and the
+  arbiter decides from live connection state -- if the peer still holds a connection, the
+  peer keeps leadership. Two nodes cannot both be told they lead.
+* **Epoch fencing on every PDU, not only on commits.** Every cross-component PDU carries the
+  sender's view of the relevant pair's leader epoch, and receivers check it before
+  processing: equal accepted, lower discarded as stale, higher re-validated with the arbiter.
+  A stale leader that believes it still leads is therefore rejected at every interaction it
+  attempts, rather than at a commit boundary. This is a narrower guarantee than STONITH --
+  the stale node keeps running -- but it is a stronger one than commit-time fencing, and it
+  needs no hardware.
+* **A fence file written on becoming leader**, covering split-brain between two instances on
+  one host, where a network-level mechanism sees nothing to judge.
+
+**What this costs, stated plainly.** STONITH resolves uncertainty by removing a node; this
+does not. A node that is partitioned but alive keeps running and keeps being refused. That is
+the accepted trade: it cannot corrupt shared state, because nothing it sends is accepted, but
+it also does not stop, and it may hold resources until someone intervenes.
