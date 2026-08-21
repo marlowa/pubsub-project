@@ -441,24 +441,47 @@ the arbiter, because leadership goes to the lower instance id when both are conn
 primary's id is always the lower one. Asking earlier changes when the answer arrives, not what
 it is.
 
-**Possible fixes**, cheapest first. None is done.
+**PARKED 2026-08-21, pending a process-supervision design.** Nothing here should be changed
+until that exists -- see the correction below, which reverses this entry's first recommendation.
 
-1. **Treat a peer-initiated close as evidence, and ask the arbiter at once.** The follower
-   already distinguishes the two cases -- it logs "replication connection lost" with a reason.
-   A close delivered by the kernel because the peer is gone should go straight to arbitration;
-   the timer stays for the case it was designed for, a peer that has stopped answering without
-   closing. This is the whole 15 s, and the arbiter's answer is unchanged either way. A few
-   lines around `MatchingEngineThread.cpp:289`.
-2. **Give the promotion delay its own setting.** It currently borrows
+**The 15 seconds is the local recovery grace period, and it is doing nothing only because
+nothing fills it.** `design-notes-for-ha.md` section 7 gives the outer-loop trigger as "the
+heartbeat timer expires and the primary fails to reconnect **after the local recovery grace
+period**". That period is this timer. Its purpose is to give a locally-restarted primary time
+to come back so the follower never has to promote at all. Today the venue has no supervisor --
+components are started ad hoc by `scripts/devenv.py` for testing, which is not how a real
+deployment would start them -- so nothing restarts a dead engine and the window is simply dead
+time before a promotion.
+
+That means **the outage is not fixed by shortening the wait; it is fixed by filling it.** How
+long the grace period should be is a consequence of how fast a supervised restart is, which
+cannot be answered before process supervision is designed. That design is the next piece of
+work, and this entry is blocked on it.
+
+**Possible fixes, and a correction.** These were recorded before the above was understood.
+
+1. **WITHDRAWN: treat a peer-initiated close as evidence and arbitrate at once.** This was
+   this entry's original first recommendation and it is wrong. Promoting the moment the socket
+   closes pre-empts the local restart, forcing a cross-machine failover for a failure that did
+   not need one -- the opposite of what the layered design intends. It would only be right for
+   a venue that has decided never to recover a process in place.
+2. **Still valid: give the promotion delay its own setting.** It currently borrows
    `ha_timing.heartbeat_timeout_seconds`, which is a different quantity measured for a
    different purpose. Even keeping the outer-loop behaviour, one number serving two meanings
    cannot be tuned for either.
-3. **Build the inner loop the design describes.** Section 7 of `design-notes-for-ha.md` calls
+3. **The real fix: build the inner loop the design describes.** Section 7 of `design-notes-for-ha.md` calls
    for local process recovery -- SHM journal, restart in place -- with a sub-50 ms target, and
    it does not exist. Fix 1 shortens the outage to about a second by promoting the peer
    faster; this is what would meet the stated target, by not needing a promotion at all for a
    process that can simply be restarted. Much the largest piece of work of the three, and the
    only one that addresses the design gap rather than the symptom.
+
+   Measured 2026-08-21, and it bears on how this is built: rebuilding the book by replaying
+   entries costs 438 ms at 2^21, 921 ms at 2^22 and **2034 ms at 2^23** -- pre-reserved, no
+   migration, no decode, no I/O, so a lower bound. An SHM *journal* replayed on restart
+   therefore cannot reach section 8's sub-50 ms target at any realistic book size. Only the
+   book itself living in shared memory, re-attached rather than rebuilt, can. That is a much
+   larger change and it belongs after the supervision design, not before it.
 
 **Not investigated:** what a restarted primary does when it rejoins after the secondary has
 been promoted. `decide_and_broadcast` recomputes leadership rather than consulting
