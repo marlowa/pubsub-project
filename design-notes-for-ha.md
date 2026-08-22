@@ -301,6 +301,57 @@ precisely so a stale sender is detectable by the receiver -- and the same shape 
 sequencer can adopt follower without arbitration. The authority still rests with the arbiter,
 because the epoch a claim carries is one the arbiter issued.
 
+## 11c. An arbiter that restarts is told who leads; it does not remember
+
+Decided 2026-08-22, after the restart coverage matrix asked what the arbiter's leadership state
+depends on.
+
+**The problem.** `leadership_state_` is held in memory and nothing reads it back at startup. It
+is what stops a restarted primary taking leadership from a working secondary -- section 11 --
+so an arbiter that has forgotten it applies the cold-start tie-break instead, hands leadership
+to the lower instance id, and reproduces exactly the split-brain the rule was added to prevent.
+Narrow while the peer survives and answers; live when the surviving arbiter is the one that
+restarted, or when both restart.
+
+**Three ways out were considered, and the choice was made on what it does to the arbiter's
+job.**
+
+Persisting the map would work and was rejected: it gives a component that deliberately holds no
+venue state a persistence story, and a file written before a long outage asserts an incumbent
+that may since have changed, so it needs epoch validation regardless.
+
+Asking the peer works and is not sufficient on its own, because the case that matters most --
+both arbiters restarted -- is the one with no peer to ask.
+
+**What was chosen: the arbiter rebuilds the picture from what it is told.** Only a leader
+heartbeats an arbiter, so a heartbeat is already a claim to lead; it now carries the role
+explicitly rather than by implication, and the epoch settles disagreement. A restarted arbiter
+learns who leads by listening, needs no persistence, and depends on nothing that might also
+have restarted. **It arbitrates over facts it is told rather than facts it stored**, which is
+the same boundary as section 11b: the arbiter's job stays narrow.
+
+Asking the peer is kept as an accelerator rather than the mechanism. On a peer link coming up,
+each arbiter replays what it knows as `ArbiterStateRecord`s -- a message that already exists and
+that the peer already applies -- so in the common case a restarted arbiter is informed
+immediately instead of waiting a heartbeat interval.
+
+**The price, which is worth paying.** Between starting and being informed, an arbiter cannot
+tell "nobody leads" from "I have not been told yet". During that window it **declines to
+arbitrate** for a group it knows nothing about, rather than guessing. The asking component
+retries; the venue carries on under whoever currently leads. Declining costs a retry, and
+guessing costs the venue its order book.
+
+Two consequences follow and are part of the decision.
+
+* **A component must not read silence as absence.** A matching engine that asked and heard
+  nothing used to self-promote on the assumption that no arbiter was listening. It now asks
+  again, several times, before degrading -- because a silent arbiter may be one deliberately
+  declining, and promoting against that decision produces the second leader the decline exists
+  to prevent.
+* **The heartbeat interval now sets how long ignorance lasts** when there is no peer to ask. It
+  was chosen when a heartbeat meant liveness alone; now that it also carries leadership, thirty
+  seconds is longer than it wants to be, and is worth revisiting on its own.
+
 ## 12. A supervisor starts processes; it does not decide leadership
 
 These are two jobs and they must not be the same component.
