@@ -273,6 +273,34 @@ Each of those reads as a separate bug and all three are the same omission.
 Whether the pair ends up whole again is the measure -- not whether the venue kept trading, which
 a promotion achieves on its own while leaving one instance down and nobody watching.
 
+## 11b. The arbiter arbitrates, and does nothing else
+
+Decided 2026-08-22, when the sequencer turned out to be routing orders to whichever socket was
+"the primary matching engine" rather than to whichever instance leads.
+
+Three ways to tell the sequencer who leads were considered.
+
+**The engine states its role, unqualified.** Simple, and it trusts a claim from the one party
+whose confusion is the problem: an instance that has wrongly promoted itself announces
+leadership with exactly the same confidence as one that has been told it leads.
+
+**The arbiter tells everyone who cares.** Rejected, and not on cost. **The arbiter's job is to
+arbitrate.** Making it also the distributor of leadership news gives it a second role, a list of
+subscribers, and knowledge of who depends on which decision -- and a component that decides
+*and* announces is on its way to being the thing section 12 warns about. It should answer the
+question it is asked, by the party that asked it, and nothing more.
+
+**The engine states its role, stamped with the epoch it holds it under.** Chosen. The sequencer
+accepts a claim only when its epoch is at least as new as the last one it accepted for that
+group, so an instance whose leadership has been superseded cannot reclaim routing: its epoch is
+behind, and the claim is refused without anyone having to ask the arbiter anything.
+
+This is the same mechanism the venue already uses everywhere else -- epochs travel on every PDU
+precisely so a stale sender is detectable by the receiver -- and the same shape as
+`StatusResponse`, which already carries `current_role` and `epoch` so that a restarting
+sequencer can adopt follower without arbitration. The authority still rests with the arbiter,
+because the epoch a claim carries is one the arbiter issued.
+
 ## 12. A supervisor starts processes; it does not decide leadership
 
 These are two jobs and they must not be the same component.

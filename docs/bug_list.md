@@ -426,141 +426,84 @@ a suite in which everything succeeded, which is the failure the gate exists to p
 gate must not be able to fail that way itself. Both behaviours were checked: five suites found
 and run, and exit code 1 with a message naming the directory when the glob matches nothing.
 
-### Every HA scenario models machine death; none models process death
+### A restarted arbiter forgets who leads, and reverts to the cold-start rule
 
 | | |
 |---|---|
-| Found | 2026-08-22, designing process supervision |
-| How | Reading `scripts/ha_test.py` against the restart rule being designed |
-| Impact | The half of HA that a supervisor exercises is untested, including the defect recorded below |
+| Found | 2026-08-22, building the restart coverage matrix |
+| How | Asked what the arbiter's new leadership state depends on, and what happens when it is lost |
+| Impact | Undoes the incumbent-wins fix: a restarted arbiter hands leadership back to a restarted primary |
 
-`ha_test.py` kills a component and leaves it dead. Scenario 16, the ME HA failover, SIGKILLs
-`matching_engine_primary`, and the secondary waits out the ~15 s promotion timeout, arbitrates
-and adopts leader. Nothing restarts the primary -- which is correct for the failure being
-modelled, because a dead machine does not come back.
+`leadership_state_` lives only in memory. There is no snapshot, no WAL, and nothing reads
+anything back at startup. It is replicated to the peer arbiter as decisions are taken
+(`ArbiterStateRecord`), but that is a live feed and not a catch-up: an arbiter that starts, or
+restarts, has an empty map and is told nothing about decisions made while it was away.
 
-**But that is only half of what HA has to survive.** A process that dies on a machine that is
-still running will be restarted, and everything about that path is currently unexercised: the
-grace period doing its job, a restarted instance choosing a role, and a pair that has swapped
-roles swapping back on a later failure. Scenarios 10 to 13 do kill and restart the matching
-engine, but they run a single engine, so no role is ever in question.
+**Why that is worse than it was yesterday.** Before the incumbent rule, the arbiter was
+stateless in effect -- it recomputed leadership from instance ids every time, so forgetting cost
+nothing. Now the map is the thing that stops a restarted primary taking leadership back from a
+working secondary. An arbiter with an empty map finds no incumbent, falls back to the cold-start
+tie-break, and answers exactly as the code did before the fix.
 
-**Two scenarios are missing**, and the second is the regression test for the entry below.
+The exposure is real but narrow while both arbiters do not restart together: the peer holds the
+state and is the one that answers. It becomes live the moment the surviving arbiter is the one
+that restarted, or both are.
 
-1. **Restart inside the grace period.** Kill the primary and restart it before the follower's
-   promotion timeout expires. The secondary must *not* promote, no arbitration should occur,
-   and the primary should resume having reconciled. This is the case a supervisor makes normal,
-   and it is the one that proves the grace period is doing the job it exists for.
-2. **Restart after a promotion.** Kill the primary, let the secondary promote, then restart the
-   primary. It must come back as a **follower**. Today the arbiter would prefer it on instance
-   id and hand leadership back to the instance that has just lost its book -- see "Rejoin after
-   a promotion re-runs the cold-start tie-break". A scenario that asserts the primary comes back
-   as follower fails against the current code and passes against the fix.
+**What it needs, and it is a design question rather than a patch.** Either the state is
+recovered on startup -- from the peer, by asking, in the way a restarting sequencer syncs its
+sequence number from its peer through StatusResponse -- or it is durable. The peer-sync route
+looks the better fit: it is a pattern the venue already has, it needs no new persistence, and an
+arbiter with no reachable peer genuinely has nothing to go on and is right to fall back to the
+cold-start rule.
 
-A third is worth having once those pass: kill the promoted secondary afterwards and confirm the
-primary -- by then a follower -- takes over again. That is the property that makes the pair
-survive successive failures rather than one.
+**Not covered by any scenario.** No test restarts an arbiter at all -- see the matrix below.
 
-### The sequencer routes orders to the primary matching engine, not to the leader
+### Restart coverage: what ha_test.py exercises, and what it does not
 
 | | |
 |---|---|
-| Found | 2026-08-22, by scenario 24 once the self-promotion bug above was fixed |
-| How | After a promotion the primary was restarted; it correctly became a follower, and the sequencer resumed sending it orders |
-| Impact | Orders are sent to an instance that discards them. The leader holds the book and receives nothing |
+| Found | 2026-08-21, extended into a full matrix 2026-08-22 |
+| How | Reading every scenario against the restart cases an HA pair actually has |
+| Impact | Three defects were found in the two cases that were covered. The uncovered ones have not been looked at |
 
-The sequencer treats its connection to `matching_engine_primary` as "the matching engine" and
-the connection to the secondary as a pre-warmed standby. That holds while the primary leads,
-which until now was the only case that ever arose.
+Every scenario kills a component and leaves it dead, which models **machine** death correctly --
+a dead machine does not come back on its own. It leaves **process** death, where the instance is
+restarted on a machine that never failed, almost entirely unexercised. That is the half a
+supervisor makes normal, and it is where every defect found on 2026-08-21 and 2026-08-22 lives.
 
-It stops holding the moment a primary rejoins as a follower:
+**The cases an HA pair has, and where each stands:**
 
-```
-09:17:49  matching engine order connection 15 lost -- ME-secondary may promote and reconnect
-09:17:49  ME-secondary standby connection 23 established (pre-warmed for failover)
-09:18:06  [ME primary] arbiter assigned follower role -- staying passive
-09:18:08  matching engine order connection 53 established
-```
+| | sequencer | arbiter | matching engine |
+|---|---|---|---|
+| **R1** restart the leader *inside* the peer's grace period -- peer must not promote at all | none | none | none |
+| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | none | **24** |
+| **R3** restart the *follower* -- must stay follower, leader untouched | none | none | none |
+| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | none | none |
+| **R5** cold start both, in either order -- deterministic leader | none | none | none |
+| **R6** restart with no arbiter reachable -- degraded, and said so | none | none | none |
 
-Connection 53 is the restarted primary, and it is a follower:
-`on_framework_pdu_message` drops order PDUs outright in that state. So the sequencer sends
-orders to an instance that discards them, while the promoted secondary -- which holds the book
-and is the leader -- is still filed as the standby.
+Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
+question; they test that it comes back, not what it comes back as.
 
-**The same omission as the rest of this group.** *Primary* and *leader* were the same thing as
-long as nothing ever restarted, so the sequencer was written to route by identity. Now that an
-instance can come back as a follower, routing has to follow the role rather than the name. See
-design-notes-for-ha.md section 11a.
+**What the two covered cells cost to find.** R2 for the matching engine is scenario 24, written
+2026-08-22, and it found three defects in a row: the arbiter re-running the cold-start tie-break
+on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
+socket rather than by role. All three are in this file. That is one cell of eighteen.
 
-**Not yet designed.** The sequencer does not currently know who leads; it infers it from which
-socket connected. The options are for it to learn leadership from the arbiter as the engines do,
-or for the matching engine to state its role on the connection it opens. Which of those is right
-is a design question rather than a patch, and it wants deciding rather than guessing.
+**The gaps worth taking first, and why:**
 
-**Scenario 24 fails on this**, after passing every assertion it was written for.
-
-### A restarted primary matching engine promotes itself, producing two leaders
-
-| | |
-|---|---|
-| Found | 2026-08-22, by the ha_test.py scenario written to prove the arbiter fix |
-| How | Scenario 24 restarts the primary after the secondary has been promoted, and asserts it comes back a follower |
-| Impact | Two instances hold LEADER at once, and the venue stays that way -- the correct decision is discarded as a duplicate |
-
-`MatchingEngineThread::on_connected` (`MatchingEngineThread.cpp:225`) does this when the first
-arbiter connection comes up:
-
-```cpp
-if (first_arbiter && is_primary_) {
-    // Primary holds leadership by heartbeating the arbiter to renew its lease.
-    adopt_leader_role();
-}
-```
-
-**The primary declares itself leader before asking anyone.** On a cold start that is harmless,
-because the arbiter would name the same instance anyway. On a restart it is not: the secondary
-may already be leading and serving traffic.
-
-**And the correct answer is then thrown away.** `handle_arbitration_decision` suppresses a
-decision that arrives when the instance is already Leader or Reconciling, which exists to stop a
-second reply from both arbiters re-running reconciliation. It cannot tell that reply apart from
-the first authoritative answer this instance has ever received. Observed:
-
-```
-08:54:10.598297  arbiter-primary connection 4 established
-08:54:10.598297  adopting LEADER role (epoch=0)
-08:54:10.598385  ArbitrationDecision received (group=matching_engine leader=2 follower=1 epoch=1)
-08:54:10.598386  already LEADER -- ignoring duplicate ArbitrationDecision
-```
-
-The secondary had been promoted two seconds earlier and holds the book. The restarted primary
-holds nothing, believes it leads, and has just discarded the message telling it otherwise.
-
-**This is the failure the design says cannot happen.** `design-notes-for-ha.md` section 11: "The
-arbiter decides in every case. A restarting node never promotes itself, so no sequence of
-restarts can produce two leaders." The code does the opposite.
-
-**The arbiter is not at fault, and the fix above is working.** The same run shows it answering
-correctly, and answering at all only because `leadership_state_` is now keyed by group:
-
-```
-08:54:10  component group=matching_engine instance_id=1 registered on connection 9
-08:54:10  ArbitrationDecision sent to connection 9 (group=matching_engine leader=2 follower=1 epoch=1)
-```
-
-**The shape of the fix.** On first arbiter connection a primary should send an
-ArbitrationReport rather than adopt a role, and wait. The arbiter already answers both cases --
-lowest id when no incumbent is recorded, the connected incumbent when one is -- so nothing new
-is needed there. The duplicate guard needs to distinguish a genuine repeat from the first answer
-received, which the epoch already carries.
-
-**Blast radius, which is why this is recorded rather than immediately changed.** It alters
-startup for the matching engine: a cold-start primary would become leader a round trip later
-than it does today, and every scenario that waits on "adopting LEADER role" would see it at a
-different moment. The sequencer pair should be checked for the same pattern before either is
-touched.
-
-**Scenario 24 fails against the current code**, which is what it is for.
+* **R1 for the matching engine.** This is the case a supervisor makes the common one: the
+  grace period exists precisely so a quick local restart makes promotion unnecessary. It is now
+  writable -- `devenv.py --supervised` starts components under `scripts/launch.py` -- and a
+  version of it was run by hand on 2026-08-22: the engine was SIGKILLed, was back in six
+  seconds, and the secondary did not promote. That is not a test until it is one.
+* **Any arbiter restart at all.** No scenario restarts an arbiter, and the arbiter has just
+  become stateful in a way that matters -- see "A restarted arbiter forgets who leads".
+* **R3.** Restarting a follower looks dull and is the case where a wrong answer is quietest: a
+  follower that comes back believing it leads produces two leaders with nothing having visibly
+  failed.
+* **R5.** The lowest-instance-id preference is the venue's cold-start rule and nothing checks
+  that it actually produces the same answer whichever instance starts first.
 
 ### Rejoin after a promotion re-runs the cold-start tie-break
 
