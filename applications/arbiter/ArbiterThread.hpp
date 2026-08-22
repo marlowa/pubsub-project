@@ -16,6 +16,7 @@
 #include <leader_follower.hpp>
 
 #include "ArbiterConfiguration.hpp"
+#include "LeadershipDecision.hpp"
 
 namespace arbiter {
 
@@ -101,7 +102,11 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
         int64_t follower_instance_id{0};
         int32_t epoch{0};
     };
-    std::unordered_map<ComponentKey, ComponentState, ComponentKeyHash> leadership_state_;
+    // Keyed by GROUP, not by instance. "Which instance leads the matching engine?" has one
+    // answer, and keying it per instance made it unanswerable without already knowing who to
+    // ask about -- which is exactly what a rejoining instance does not know. See
+    // LeadershipDecision.hpp.
+    std::unordered_map<pubsub_itc_fw_app::ComponentGroup, ComponentState> leadership_state_;
 
     // Pending arbitration requests: (group, instance_id) -> conn_id of requestor.
     // Held until we can send ArbitrationDecision.

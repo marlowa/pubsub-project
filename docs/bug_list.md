@@ -494,8 +494,31 @@ and after a promotion nothing is stored under the primary's key. Whether that yi
 stale decision or a fresh arbitration was not followed through. It does not change the design
 above, which is needed either way.
 
-**Blocked on nothing** -- unlike the recovery-time entry, this can be fixed before supervision
-exists, and should be, because it is what makes a restarted primary safe.
+### Fixed 2026-08-22
+
+The rule is now `applications/arbiter/LeadershipDecision.hpp`, a pure function that reads no
+state and sends nothing, so it is tested directly rather than through a running venue.
+`ArbiterThread` gathers the inputs from its connection tables and carries the decision out.
+
+`leadership_state_` is re-keyed by group. That fixed a second fault found on the way: the
+reconnect path looked the stored decision up under *the connecting instance's own id*, so an
+instance rejoining after a promotion found nothing recorded against itself and was told nothing
+at all. Any instance reconnecting is now told who leads its group.
+
+The epoch advances only when leadership actually changes. Confirming an incumbent returns the
+epoch already in force, because epochs are checked on every PDU and superseding a leader's own
+epoch would have its traffic discarded while it was doing nothing wrong. When the epoch does
+advance it is taken from the higher of the arbiter's record and the reporter's, so an instance
+that has been away cannot wind the sequence backwards with a stale report.
+
+12 tests in `applications/arbiter/tests/LeadershipDecisionTest.cpp`, including a sweep asserting
+that leader and follower are always the two distinct instances whatever the inputs. The rejoin
+tests were checked against the previous rule and fail on it, so they catch the defect rather
+than merely describing the new behaviour.
+
+**Still to do: the integration scenario.** The unit tests prove the rule; they do not prove the
+arbiter is asked at the right moments. That needs the `ha_test.py` scenario recorded in "Every HA
+scenario models machine death; none models process death".
 
 ### A process death on the same host takes the machine-death path
 
