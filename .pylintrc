@@ -1,0 +1,19 @@
+# Pylint configuration for this project.
+#
+# It exists for one reason: pylint's default maximum line length is 100, this project's is
+# 160, and an unconfigured pylint therefore reports a violation of a rule the project does not
+# have. That misleading signal has caused Python here to be reformatted to 100 columns more
+# than once. See coding-rules-for-ai-chatbots.txt, "maximum line length is 160 characters",
+# which applies to every file in the project and not only to C++.
+#
+# check_standards.py enforces the same 160 for .hpp and .cpp. It does not look at Python at
+# all, so without this file nothing tells the truth about Python line length.
+
+[FORMAT]
+max-line-length=160
+
+[MASTER]
+# The floor is Python 3.8: release_check.py runs its Rocky 8 stage there, so a script using a
+# later feature builds here and fails on the target. Telling pylint the version makes it say
+# so rather than leaving it to be discovered downstream.
+py-version=3.8

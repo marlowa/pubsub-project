@@ -26,7 +26,11 @@ No space before function call parentheses: function() not function ()
 Space around binary operators: a + b, x = y, i < max
 No space inside parentheses: (x + y) not ( x + y )
 code inside a namespace must not be indented since any indentation does not show flow control it is to scope symbols for compiling and linking disambiguation
-maximum line length is 160 characters
+maximum line length is 160 characters. This applies to EVERY file in the project, not just
+C++: Python scripts, TOML, YAML, all of it. In particular do not reformat Python to 100
+columns because pylint says so -- pylint's 100 is its own default, it is not configured
+here, and the scripts are gated on pylint errors only, so its line-length complaint is
+noise. 160 is the number.
 when calling a function, do not put each argument on its own line
 lambda capture lists on same line as lambda
 template parameter on same line as template
