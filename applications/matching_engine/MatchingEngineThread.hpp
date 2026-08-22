@@ -364,6 +364,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      */
     void start_arbiter_heartbeats();
 
+    /// The role as a word, for log lines that a person will read after an incident.
+    [[nodiscard]] static const char* me_role_name(MeRole role);
+
     void begin_reconciliation();
     void send_me_position_request();
     void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);

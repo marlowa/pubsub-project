@@ -182,6 +182,14 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     // as a passive Follower.
     if (ha_enabled_) {
         ha_role_state_ = is_primary_ ? MeRole::Unknown : MeRole::Follower;
+        // A secondary used to adopt FOLLOWER without saying so, which left the most common
+        // starting state of the pair as the one thing the log did not record. Someone reading
+        // a log from a machine that has just come up should be able to see what it thinks it
+        // is before anything else happens.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA enabled, starting as {} (instance_id={}, configured {})",
+                   me_role_name(ha_role_state_), config_.instance_id, is_primary_ ? "primary" : "secondary");
+    } else {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA disabled -- single instance, no arbitration and no peer");
     }
 }
 
@@ -900,6 +908,20 @@ void MatchingEngineThread::request_startup_arbitration() {
     }
 }
 
+const char* MatchingEngineThread::me_role_name(MeRole role) {
+    switch (role) {
+        case MeRole::Unknown:
+            return "UNKNOWN";
+        case MeRole::Follower:
+            return "FOLLOWER";
+        case MeRole::Reconciling:
+            return "RECONCILING";
+        case MeRole::Leader:
+            return "LEADER";
+    }
+    return "UNKNOWN";
+}
+
 void MatchingEngineThread::adopt_leader_role() {
     if (ha_role_state_ == MeRole::Leader) {
         return;
@@ -1008,7 +1030,16 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
 }
 
 void MatchingEngineThread::enter_follower_state() {
+    const MeRole previous = ha_role_state_;
     ha_role_state_ = MeRole::Follower;
+    // Logged here rather than at each caller, so no path into this state is silent. Support
+    // reading a log after an incident wants every role CHANGE in it -- but a secondary that
+    // starts as a follower and is then confirmed as one has not changed anything, and
+    // "role now FOLLOWER (was FOLLOWER)" is noise dressed as an event.
+    if (previous != MeRole::Follower) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: role now FOLLOWER (was {}, epoch={}) -- passive, not accepting orders",
+                   me_role_name(previous), epoch_);
+    }
     // The timer is deliberately left running. A follower still sends liveness; what it stops
     // sending is the lease, which send_arbiter_heartbeat decides by role.
     announce_role();
@@ -1146,6 +1177,9 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
     cancel_all_orders_on_failover();
 
     // Transition to LEADER -- normal processing begins.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: reconciliation complete at seq_no={} with {} order(s) on the book -- resuming as leader", ack.last_seq_no,
+               order_book_.size());
     ha_role_state_ = MeRole::Unknown; // clear reconciling so adopt_leader_role proceeds
     adopt_leader_role();
 }
