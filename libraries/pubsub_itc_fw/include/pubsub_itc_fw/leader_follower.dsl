@@ -140,6 +140,10 @@ end
 #    - No heartbeat counter needed because TCP is ordered and reliable
 #    - A heartbeat with epoch lower than the receiver's epoch indicates
 #      a stale sender; receiver logs a warning and ignores it
+#    - Liveness and epoch, and nothing else. Leadership is asserted by
+#      LeadershipLease (117) and not by this message, which is why
+#      BOTH instances of a pair send it: an arbiter needs to know that
+#      a follower is there, not only that a leader is.
 #    - Heartbeat loss triggers leader/follower death detection; see
 #      epoch rule 3 in the file header for follower-promotion behaviour
 # ------------------------------------------------------------
@@ -298,6 +302,38 @@ end
 # ------------------------------------------------------------
 message MePositionAck (id=116, version=1)
     i64 last_seq_no        # sequencer's current WAL head at catch-up completion
+end
+
+# ------------------------------------------------------------
+#  118 -- LeadershipLease
+#  Sent by the leader of an HA pair to the arbiter, repeatedly, for
+#  as long as it leads.
+#
+#  This was carried by Heartbeat until 2026-08-22, which was a poor
+#  name for it: a heartbeat says a sender is alive, and this says
+#  something much stronger -- that the sender holds leadership of a
+#  group, at a stated epoch, and is renewing it. The code had always
+#  described it as a lease in its comments while calling it a
+#  heartbeat on the wire.
+#
+#  Separating them matters for more than naming. Only a leader has
+#  reason to renew a lease, so while the two were one message only
+#  leaders ever reached the arbiter -- and the arbiter registers a
+#  component when it hears from it, so it never knew a follower was
+#  connected at all. Its own cold-start rule asks whether the peer is
+#  connected, and it was asking about a map that could not contain
+#  followers.
+#
+#  It is also how an arbiter that has restarted learns who leads. It
+#  holds that knowledge only in memory and reads nothing back at
+#  startup, so rather than persisting it, it is told: a lease renewal
+#  is an assertion of leadership by the only party entitled to make
+#  one, and the epoch settles any disagreement between two of them.
+# ------------------------------------------------------------
+message LeadershipLease (id=118, version=1)
+    i64 instance_id        # the instance asserting leadership
+    ComponentGroup group   # the HA pair it leads
+    i32 epoch              # the epoch it holds leadership under
 end
 
 # ------------------------------------------------------------

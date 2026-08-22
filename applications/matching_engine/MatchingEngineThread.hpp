@@ -295,6 +295,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // -- the same fallback the sequencer has, and for the same reason.
     pubsub_itc_fw::TimerID startup_arbitration_timer_id_{};
 
+    /// How many times a starting instance asks the arbiter before giving up and degrading.
+    /// More than one because an arbiter that has itself restarted declines to answer until it
+    /// knows who leads, and that silence is a reason to wait rather than to promote.
+    static constexpr int max_startup_arbitration_attempts = 3;
+    int startup_arbitration_attempts_{0};
+
     // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
     // The pair's fixed identities. Primary is always the lower id -- the arbiter's cold-start
     // preference relies on it -- and neither ever changes for the life of a deployment.
@@ -348,6 +354,15 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      * explicitly is what lets it route to whoever leads. See design-notes-for-ha.md 11b.
      */
     void announce_role();
+
+    /**
+     * @brief Starts the recurring message to the arbiters, in whatever role this instance holds.
+     *
+     * Previously started only on becoming leader, which meant a follower never reached the
+     * arbiter at all -- and the arbiter registers a component when it hears from it, so it had
+     * no way of knowing a follower was connected. Its cold-start rule asks exactly that.
+     */
+    void start_arbiter_heartbeats();
 
     void begin_reconciliation();
     void send_me_position_request();

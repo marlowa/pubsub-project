@@ -66,11 +66,13 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: outbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
         send_status_query(id);
+        replay_leadership_to_peer(id);
     } else if (svc == peer_inbound_svc) {
         peer_inbound_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: inbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
         send_status_query(id);
+        replay_leadership_to_peer(id);
     } else if (svc == "witness") {
         witness_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: witness connection {} established", id.get_value());
@@ -134,6 +136,8 @@ void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& 
     const auto pdu_id = message.pdu_id();
     if (pdu_id == pubsub_itc_fw_app::Heartbeat::message_pdu_id) {
         handle_component_heartbeat(conn_id, message);
+    } else if (pdu_id == pubsub_itc_fw_app::LeadershipLease::message_pdu_id) {
+        handle_leadership_lease(conn_id, message);
     } else if (pdu_id == pubsub_itc_fw_app::ArbitrationReport::message_pdu_id) {
         handle_arbitration_report(conn_id, message);
     } else {
@@ -564,6 +568,19 @@ void ArbiterThread::decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group
         inputs.incumbent_connected = component_connections_.count(incumbent_key) > 0;
     }
 
+    // An arbiter that has just started has an empty map whether or not there is genuinely no
+    // leader, and cannot tell those apart. Guessing means applying the cold-start tie-break,
+    // which after a failover hands leadership to the lower instance id -- the instance that
+    // just restarted holding nothing. Declining costs the asker a retry; guessing costs the
+    // venue its book. See design-notes-for-ha.md 11c.
+    if (!inputs.has_incumbent && within_startup_learning_period()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "ArbiterThread: asked to arbitrate group={} by instance {} but nothing is known about it yet and this arbiter started "
+                   "recently -- declining rather than guessing; the component should retry",
+                   pubsub_itc_fw_app::to_string(group), self_instance_id);
+        return;
+    }
+
     const LeadershipDecision decision = LeadershipDecision::decide(inputs);
     const int64_t leader_id = decision.leader_instance_id;
     const int64_t follower_id = decision.follower_instance_id;
@@ -608,6 +625,60 @@ void ArbiterThread::send_arbitration_decision(const pubsub_itc_fw::ConnectionID&
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "ArbiterThread: ArbitrationDecision sent to connection {} (group={} leader={} follower={} epoch={})", conn_id.get_value(),
                pubsub_itc_fw_app::to_string(group), leader_id, follower_id, epoch);
+}
+
+void ArbiterThread::handle_leadership_lease(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::LeadershipLeaseView lease{};
+
+    if (!pubsub_itc_fw_app::decode(lease, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: failed to decode LeadershipLease -- dropping");
+        return;
+    }
+
+    // This is how an arbiter that has restarted learns who leads. It holds that knowledge only
+    // in memory and reads nothing back at startup, so rather than persisting it, it is told --
+    // by the only party entitled to assert leadership -- and the epoch settles disagreement
+    // between two instances that both believe they lead.
+    const auto known = leadership_state_.find(lease.group);
+    if (known != leadership_state_.end() && lease.epoch < known->second.epoch) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "ArbiterThread: LeadershipLease from group={} instance {} at epoch {} is behind the {} on record -- refused",
+                   pubsub_itc_fw_app::to_string(lease.group), lease.instance_id, lease.epoch, known->second.epoch);
+        return;
+    }
+
+    const bool changed = known == leadership_state_.end() || known->second.leader_instance_id != lease.instance_id;
+    leadership_state_[lease.group] = ComponentState{lease.instance_id, 0, lease.epoch};
+    if (changed) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "ArbiterThread: group={} is led by instance {} at epoch {} (learned from its lease on connection {})",
+                   pubsub_itc_fw_app::to_string(lease.group), lease.instance_id, lease.epoch, conn_id.get_value());
+    }
+}
+
+void ArbiterThread::replay_leadership_to_peer(const pubsub_itc_fw::ConnectionID& conn_id) {
+    // Sent when a peer link comes up. A peer that has just restarted knows nothing, and
+    // waiting for the next heartbeat from every leader would leave it ignorant for a whole
+    // heartbeat interval. ArbiterStateRecord already exists and the peer already applies it,
+    // so this is a replay of the same records rather than a new mechanism.
+    if (leadership_state_.empty()) {
+        return;
+    }
+    for (const auto& entry : leadership_state_) {
+        pubsub_itc_fw_app::ArbiterStateRecord record{};
+        record.component_instance_id = entry.second.leader_instance_id;
+        record.leader_instance_id = entry.second.leader_instance_id;
+        record.epoch = entry.second.epoch;
+        record.group = entry.first;
+        send_pdu(conn_id, pubsub_itc_fw_app::ArbiterStateRecord::message_pdu_id, 0, record);
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: replayed {} leadership record(s) to peer connection {}", leadership_state_.size(),
+               conn_id.get_value());
 }
 
 void ArbiterThread::replicate_state_to_peer(pubsub_itc_fw_app::ComponentGroup group, int64_t component_instance_id, int64_t leader_id, int32_t epoch) {

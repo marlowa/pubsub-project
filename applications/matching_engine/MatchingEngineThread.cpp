@@ -224,6 +224,9 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-primary connection {} established", id.get_value());
+        if (first_arbiter) {
+            start_arbiter_heartbeats();
+        }
         if (first_arbiter && is_primary_) {
             request_startup_arbitration();
         }
@@ -231,6 +234,9 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-secondary connection {} established", id.get_value());
+        if (first_arbiter) {
+            start_arbiter_heartbeats();
+        }
         if (first_arbiter && is_primary_) {
             request_startup_arbitration();
         }
@@ -733,9 +739,23 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
 void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     if (id == startup_arbitration_timer_id_) {
         if (ha_role_state_ == MeRole::Unknown) {
+            // Silence from a connected arbiter is not absence. An arbiter that has itself just
+            // restarted declines to answer until it knows who leads, precisely so that it does
+            // not guess -- and self-promoting against that decision would produce the second
+            // leader the decline exists to prevent. So ask again, and only give up after
+            // enough attempts that the arbiter is evidently not going to answer at all.
+            ++startup_arbitration_attempts_;
+            if (startup_arbitration_attempts_ < max_startup_arbitration_attempts) {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "MatchingEngineThread: no ArbitrationDecision within {}s (attempt {} of {}) -- asking again", config_.heartbeat_timeout_seconds,
+                           startup_arbitration_attempts_, max_startup_arbitration_attempts);
+                send_arbitration_report();
+                startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+                return;
+            }
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: no ArbitrationDecision within {}s -- self-promoting via instance-id rule (degraded)",
-                       config_.heartbeat_timeout_seconds);
+                       "MatchingEngineThread: no ArbitrationDecision after {} attempts -- self-promoting via instance-id rule (degraded)",
+                       startup_arbitration_attempts_);
             ++epoch_;
             begin_reconciliation();
         }
@@ -887,10 +907,8 @@ void MatchingEngineThread::adopt_leader_role() {
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
     ha_role_state_ = MeRole::Leader;
-    // Renew the arbiter lease periodically for as long as we are leader.
-    cancel_timer(arbiter_heartbeat_timer_id_);
-    arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
-    // Send one heartbeat immediately so the arbiter registers us without delay.
+    // The timer already runs -- it is started when the arbiter connection comes up, in every
+    // role. Send one now so the lease is asserted immediately rather than at the next tick.
     send_arbiter_heartbeat();
     announce_role();
 }
@@ -991,7 +1009,8 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
 
 void MatchingEngineThread::enter_follower_state() {
     ha_role_state_ = MeRole::Follower;
-    cancel_timer(arbiter_heartbeat_timer_id_);
+    // The timer is deliberately left running. A follower still sends liveness; what it stops
+    // sending is the lease, which send_arbiter_heartbeat decides by role.
     announce_role();
 }
 
@@ -1017,19 +1036,43 @@ void MatchingEngineThread::announce_role() {
                pubsub_itc_fw_app::to_string(announcement.current_role), epoch_);
 }
 
+void MatchingEngineThread::start_arbiter_heartbeats() {
+    cancel_timer(arbiter_heartbeat_timer_id_);
+    arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
+    // One immediately, so the arbiter registers this instance without waiting an interval.
+    send_arbiter_heartbeat();
+}
+
 void MatchingEngineThread::send_arbiter_heartbeat() {
+    // Liveness only, and sent whatever role this instance holds. The arbiter registers a
+    // component when it hears from it, and it needs to know a follower is there as well as a
+    // leader -- its own cold-start rule asks whether the peer is connected.
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
-    if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
+    for (const pubsub_itc_fw::ConnectionID& conn : {arbiter_primary_conn_id_, arbiter_secondary_conn_id_}) {
+        if (conn.is_valid()) {
+            send_pdu(conn, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
+        }
     }
-    if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
+
+    // Leadership is a separate assertion, made only by whoever holds it. Keeping it out of
+    // the heartbeat is what lets a follower send one at all.
+    if (ha_role_state_ == MeRole::Leader) {
+        pubsub_itc_fw_app::LeadershipLease lease{};
+        lease.instance_id = static_cast<int64_t>(config_.instance_id);
+        lease.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
+        lease.epoch = epoch_;
+        for (const pubsub_itc_fw::ConnectionID& conn : {arbiter_primary_conn_id_, arbiter_secondary_conn_id_}) {
+            if (conn.is_valid()) {
+                send_pdu(conn, pubsub_itc_fw_app::LeadershipLease::message_pdu_id, 0, lease);
+            }
+        }
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: arbiter heartbeat sent (instance_id={} epoch={})", hb.instance_id,
-               hb.epoch);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: arbiter heartbeat sent (instance_id={} epoch={} leader={})",
+               hb.instance_id, hb.epoch, ha_role_state_ == MeRole::Leader);
 }
 
 // WAL reconciliation (Slice D)

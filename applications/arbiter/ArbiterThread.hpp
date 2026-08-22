@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <string>
 #include <unordered_map>
@@ -107,6 +108,28 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // ask about -- which is exactly what a rejoining instance does not know. See
     // LeadershipDecision.hpp.
     std::unordered_map<pubsub_itc_fw_app::ComponentGroup, ComponentState> leadership_state_;
+
+    // When this arbiter started. leadership_state_ is memory only and nothing reads it back,
+    // so a restarted arbiter begins knowing nothing -- and an arbiter that knows nothing
+    // would apply the cold-start tie-break and hand leadership to the lower instance id,
+    // which after a failover is the instance that just restarted with no state. For a short
+    // period after starting it therefore declines to decide about a group it has heard
+    // nothing about, rather than deciding wrongly. See design-notes-for-ha.md 11c.
+    std::chrono::steady_clock::time_point started_at_{std::chrono::steady_clock::now()};
+
+    /// How long after startup the arbiter waits to be informed before it will guess.
+    static constexpr std::chrono::seconds startup_learning_period{10};
+
+    /// True while this arbiter may still be ignorant rather than genuinely facing a cold start.
+    [[nodiscard]] bool within_startup_learning_period() const {
+        return std::chrono::steady_clock::now() - started_at_ < startup_learning_period;
+    }
+
+    /// Replays what this arbiter knows about leadership to a peer that has just connected.
+    void replay_leadership_to_peer(const pubsub_itc_fw::ConnectionID& conn_id);
+
+    /// Records who leads a group, as asserted by the instance that holds it.
+    void handle_leadership_lease(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
     // Pending arbitration requests: (group, instance_id) -> conn_id of requestor.
     // Held until we can send ArbitrationDecision.
