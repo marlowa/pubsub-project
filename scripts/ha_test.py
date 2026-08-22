@@ -2064,6 +2064,264 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 36 — R5 for the sequencer pair: the cold-start tie-break must be deterministic.
+    #
+    # As scenario 34 for the matching engine. Both sequencers are taken down and brought back
+    # with the SECONDARY first, so the order they appear in is the opposite of the order the
+    # rule should prefer.
+    Scenario(
+        number=36,
+        short_name="sequencer_cold_start_tiebreak",
+        description="Restarting both sequencers secondary-first still leaves the primary leading",
+        expected_outcome="the primary sequencer leads despite the secondary having started first",
+        # In-flight orders during phase 4 advance the matching engine's counter past the
+        # recovery target, so the count phase then waits for a number that has already gone by.
+        # Suppressed for a deterministic count, as the ME-HA scenarios do.
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="sequencer_primary",
+                secondary_log_name="sequencer_secondary.log",
+                role_prefix=_SEQ_ROLE,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            KillStep(
+                proc_name="sequencer_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            RestartStep(
+                proc_name="sequencer_secondary",
+                ready_log_name="sequencer_secondary.log",
+                ready_markers=("SequencerThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            RestartStep(
+                proc_name="sequencer_primary",
+                ready_log_name="sequencer_primary.log",
+                ready_markers=("SequencerThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                # Longer than the usual settle: restarting a sequencer takes the gateway's
+                # connection to it with it, and orders sent before that reconnects are dropped
+                # rather than queued -- "primary sequencer not connected -- PDU not forwarded".
+                # The venue needs a moment to knit itself back together, and measuring before
+                # it has is measuring reconnection rather than the property under test.
+                settle_secs=10.0,
+            ),
+            VerifyStep(
+                log_name="sequencer_primary.log",
+                markers=(_SEQ_ROLE, _TO_LEADER),
+                timeout=90.0,
+                description="the primary sequencer leads despite the secondary starting first",
+            ),
+            # Both sequencers restarted, so the connection each opens to the matching engine
+            # had to be re-established before anything can be sequenced. Waiting for it is the
+            # honest precondition of the order phase rather than test tidiness -- without it
+            # the scenario measures reconnection time and calls it a failure.
+            VerifyStep(
+                log_name="sequencer_primary.log",
+                markers=("matching engine order connection", "established"),
+                timeout=60.0,
+                description="the restarted leader has reached the matching engine again",
+            ),
+        ],
+    ),
+
+    # 37 — R6 for the sequencer: with no arbiter, exactly one instance may self-promote.
+    #
+    # The matching engine's equivalent of this path existed, was documented, and had never
+    # once executed -- it was only reachable when an arbiter connection came up, which with no
+    # arbiter never happens. The sequencer arms its startup election timer unconditionally, so
+    # it should not have that fault; this scenario is what says so rather than assuming it.
+    Scenario(
+        number=37,
+        short_name="sequencer_degraded_promotion",
+        description="With no arbiter, the sequencer pair settles leadership between themselves",
+        expected_outcome=(
+            "with both arbiters dead, sequencer_primary and its peer settle leadership between "
+            "themselves by the instance-id rule; the secondary does not also elect itself"
+        ),
+        # In-flight orders during phase 4 advance the matching engine's counter past the
+        # recovery target, so the count phase then waits for a number that has already gone by.
+        # Suppressed for a deterministic count, as the ME-HA scenarios do.
+        orders_during_override=0,
+        # No recovery-order phase. Restarting a sequencer takes the gateway's connection with
+        # it, and orders sent during the reconnect window are dropped rather than queued --
+        # "primary sequencer not connected -- PDU not forwarded". That is documented venue
+        # behaviour and not what this scenario is about: the property under test is that the
+        # pair settles leadership between themselves with no arbiter present, which the two
+        # checks below establish directly. Measuring order flow here measures how long the
+        # venue takes to knit itself back together, which varies and is a different question.
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="arbiter_primary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=1.0,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            RestartStep(
+                proc_name="sequencer_primary",
+                ready_log_name="sequencer_primary.log",
+                ready_markers=("SequencerThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                # Longer than the usual settle: restarting a sequencer takes the gateway's
+                # connection to it with it, and orders sent before that reconnects are dropped
+                # rather than queued -- "primary sequencer not connected -- PDU not forwarded".
+                # The venue needs a moment to knit itself back together, and measuring before
+                # it has is measuring reconnection rather than the property under test.
+                settle_secs=10.0,
+            ),
+            # Asserts the RULE, not the outcome. The sequencer does not need an arbiter for
+            # this: it resolves leadership peer-to-peer through StatusQuery/StatusResponse and
+            # applies the lowest-instance-id rule with its peer's agreement, so it is not
+            # degraded at all -- it has a deterministic answer. That is a capability the
+            # matching engine lacks, which must ask an arbiter or fall back.
+            VerifyStep(
+                log_name="sequencer_primary.log",
+                markers=("SequencerThread:", "my instance_id=1 < peer instance_id=2", "adopting leader"),
+                timeout=90.0,
+                description="the sequencer resolves leadership with its peer, needing no arbiter",
+            ),
+            VerifyStep(
+                log_name="sequencer_primary.log",
+                markers=("matching engine order connection", "established"),
+                timeout=60.0,
+                description="the restarted leader has reached the matching engine again",
+            ),
+            # 45s rather than 20: it is both the absence check and the settle before orders are
+            # measured. With no arbiter AND a restarted sequencer the venue takes about a
+            # minute to resume order flow -- nothing is lost, but a shorter wait measures the
+            # healing rather than the property. The longer window also makes the absence
+            # claim stronger, since the peer has had three times the promotion timeout to
+            # elect itself and has not.
+            AssertAbsentStep(
+                log_name="sequencer_secondary.log",
+                markers=(_SEQ_ROLE, _TO_LEADER),
+                after_secs=45.0,
+                description="the secondary did not also elect itself with no arbiter present",
+            ),
+        ],
+    ),
+
+    # 38 — R5 for the arbiter pair.
+    #
+    # The arbiter prefers the lower instance id and yields to a peer that is already active,
+    # which is the same shape as the rule the matching engine now follows. Nothing has checked
+    # that the preference actually decides a genuine cold start.
+    Scenario(
+        number=38,
+        short_name="arbiter_cold_start_tiebreak",
+        description="Restarting both arbiters secondary-first still leaves the primary active",
+        expected_outcome="arbiter_primary becomes active despite arbiter_secondary starting first",
+        # In-flight orders during phase 4 advance the matching engine's counter past the
+        # recovery target, so the count phase then waits for a number that has already gone by.
+        # Suppressed for a deterministic count, as the ME-HA scenarios do.
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="arbiter_primary",
+                secondary_log_name="arbiter_secondary.log",
+                role_prefix=_ARB_ROLE,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            RestartStep(
+                proc_name="arbiter_secondary",
+                ready_log_name="arbiter_secondary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            RestartStep(
+                proc_name="arbiter_primary",
+                ready_log_name="arbiter_primary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            VerifyStep(
+                log_name="arbiter_primary.log",
+                markers=(_ARB_ROLE, _TO_LEADER),
+                timeout=90.0,
+                description="the primary arbiter becomes active despite the secondary starting first",
+            ),
+        ],
+    ),
+
+    # 39 — R6 for the arbiter: alone, with no peer and no witness, it must still decide.
+    #
+    # The arbiter's analogue of "no arbiter reachable" is having neither of the two parties it
+    # would otherwise consult. An arbiter that will not act alone leaves every component unable
+    # to arbitrate, which is the failure the whole design is arranged to avoid.
+    Scenario(
+        number=39,
+        short_name="arbiter_alone_still_decides",
+        description="An arbiter restarted with no peer and no witness still becomes active",
+        expected_outcome=(
+            "with the witness and its peer dead, a restarted arbiter_primary becomes active "
+            "rather than waiting for parties that are not coming"
+        ),
+        # In-flight orders during phase 4 advance the matching engine's counter past the
+        # recovery target, so the count phase then waits for a number that has already gone by.
+        # Suppressed for a deterministic count, as the ME-HA scenarios do.
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="witness",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=1.0,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=1.0,
+            ),
+            RestartStep(
+                proc_name="arbiter_primary",
+                ready_log_name="arbiter_primary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            VerifyStep(
+                log_name="arbiter_primary.log",
+                markers=(_ARB_ROLE, _TO_LEADER),
+                timeout=90.0,
+                description="the lone arbiter becomes active without a peer or a witness",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}

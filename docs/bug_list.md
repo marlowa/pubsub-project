@@ -646,8 +646,8 @@ supervisor makes normal, and it is where every defect found on 2026-08-21 and 20
 | **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
 | **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
 | **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
-| **R5** cold start both, in either order -- deterministic leader | none | none | **34** |
-| **R6** restart with no arbiter reachable -- degraded, and said so | none | none | **35** |
+| **R5** cold start both, in either order -- deterministic leader | **36** | **38** | **34** |
+| **R6** restart with no arbiter reachable -- degraded, and said so | **37** | **39** | **35** |
 
 Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
 question; they test that it comes back, not what it comes back as.
@@ -662,13 +662,23 @@ least one defect except R1, R3 and R4-arbiter, which passed first time -- and th
 itself informative: the defects all lived in what an instance comes back *as*, so the cells where
 nothing has to decide that were the ones that already worked.
 
-**What is left:**
+**Complete, 2026-08-22.** All eighteen cells. Ten defects were found on the way, every one of
+them a consequence of the same omission: process death was not in the model, so nothing decided
+what a restarted instance comes back as, and channels, records and fallbacks were all built on
+identities that stop being true once roles can move.
 
-* **R5 and R6 for the sequencer and the arbiter.** The matching engine versions found two
-  defects between them -- a stale incumbent surviving a restart, and a degraded fallback that
-  was unreachable. Neither is obviously matching-engine-specific, so the same questions are
-  worth asking of the other two pairs.
-* Nothing else. R1 to R4 are complete across all three components.
+**The cells that passed first time are as informative as the ones that did not.** R1, R3 and
+R4-arbiter, and both R5/R6 cells for the sequencer and arbiter, needed no fixes. The defects all
+lived in what an instance comes back *as*; where nothing has to decide that, the code was already
+right. And where a component already had a symmetric design -- the sequencer's `peer` channel,
+its unconditional startup election timer -- it had none of the faults its matching-engine
+counterpart did.
+
+**One thing worth carrying forward.** The sequencer settles leadership with its peer directly,
+through StatusQuery/StatusResponse and the instance-id rule, and needs no arbiter to do it. The
+matching engine cannot: it must ask an arbiter or fall back to a unilateral rule. Whether the
+engine should gain the same peer-to-peer resolution is a design question this coverage raised and
+did not answer.
 
 
 ### Rejoin after a promotion re-runs the cold-start tie-break
