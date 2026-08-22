@@ -223,15 +223,14 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-primary connection {} established", id.get_value());
         if (first_arbiter && is_primary_) {
-            // Primary holds leadership by heartbeating the arbiter to renew its lease.
-            adopt_leader_role();
+            request_startup_arbitration();
         }
     } else if (svc == "arbiter_secondary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-secondary connection {} established", id.get_value());
         if (first_arbiter && is_primary_) {
-            adopt_leader_role();
+            request_startup_arbitration();
         }
     } else if (!is_primary_ && ha_enabled_ && svc == replication_inbound_svc) {
         // Secondary: inbound connection from ME-primary (book replication channel).
@@ -730,6 +729,17 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
 }
 
 void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
+    if (id == startup_arbitration_timer_id_) {
+        if (ha_role_state_ == MeRole::Unknown) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MatchingEngineThread: no ArbitrationDecision within {}s -- self-promoting via instance-id rule (degraded)",
+                       config_.heartbeat_timeout_seconds);
+            ++epoch_;
+            begin_reconciliation();
+        }
+        return;
+    }
+
     if (id == promotion_timeout_timer_id_) {
         // Slice C: the primary did not reconnect in time. Request arbitration.
         promotion_pending_ = false;
@@ -849,6 +859,25 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
 
 // HA state machine (Slice C+D)
 
+void MatchingEngineThread::request_startup_arbitration() {
+    // Only from Unknown. A role already settled -- by an earlier decision, or by the
+    // reconciliation a promotion starts -- must not be reopened because a second arbiter
+    // connection happened to come up.
+    if (ha_role_state_ != MeRole::Unknown) {
+        return;
+    }
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: asking the arbiter which instance leads before adopting any role");
+    send_arbitration_report();
+
+    // send_arbitration_report() self-promotes outright when no arbiter is connected at all.
+    // This covers the other silence: an arbiter is there and does not answer, which would
+    // otherwise leave the venue with no matching engine leader and nothing to say so.
+    if (ha_role_state_ == MeRole::Unknown) {
+        cancel_timer(startup_arbitration_timer_id_);
+        startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+    }
+}
+
 void MatchingEngineThread::adopt_leader_role() {
     if (ha_role_state_ == MeRole::Leader) {
         return;
@@ -866,7 +895,7 @@ void MatchingEngineThread::adopt_leader_role() {
 void MatchingEngineThread::send_arbitration_report() {
     pubsub_itc_fw_app::ArbitrationReport report{};
     report.self_instance_id = static_cast<int64_t>(config_.instance_id);
-    report.peer_instance_id = primary_instance_id;
+    report.peer_instance_id = peer_instance_id();
     report.epoch = epoch_;
     report.proposed_role = pubsub_itc_fw_app::Role::leader;
     report.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
@@ -917,17 +946,36 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
     // duplicate decision once we are already promoting (Reconciling) or promoted
     // (Leader): re-running reconciliation would wrongly cancel orders accepted
     // after the first promotion completed.
-    if (ha_role_state_ == MeRole::Reconciling || ha_role_state_ == MeRole::Leader) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: already {} -- ignoring duplicate ArbitrationDecision",
-                   ha_role_state_ == MeRole::Leader ? "LEADER" : "RECONCILING");
+    // A decision carrying an epoch we have already reached is the second arbiter's copy of one
+    // we have acted on, and re-running reconciliation on it would wrongly cancel orders
+    // accepted since. A NEWER epoch is not a duplicate whatever role we hold: it is the
+    // arbiter telling us the answer has changed, and discarding it is how an instance that
+    // promoted itself stays wrong. That is not hypothetical -- it is the bug this check used
+    // to cause; see docs/bug_list.md, "A restarted primary matching engine promotes itself".
+    const bool already_settled = ha_role_state_ == MeRole::Reconciling || ha_role_state_ == MeRole::Leader;
+    if (already_settled && decision.epoch <= epoch_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: already {} at epoch {} -- ignoring duplicate ArbitrationDecision (epoch={})",
+                   ha_role_state_ == MeRole::Leader ? "LEADER" : "RECONCILING", epoch_, decision.epoch);
         return;
     }
 
+    cancel_timer(startup_arbitration_timer_id_);
     epoch_ = decision.epoch;
 
     if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        // We are the leader: begin WAL reconciliation, then adopt LEADER.
-        begin_reconciliation();
+        if (ha_role_state_ == MeRole::Follower) {
+            // Taking over from a peer that has been serving: catch up on the WAL before
+            // accepting anything, or this instance leads a book it does not have.
+            begin_reconciliation();
+        } else {
+            // Nothing to take over. This is a start rather than a promotion -- the peer is
+            // not leading and no replica book has been maintained here -- and reconciliation
+            // has no connection to wait on, so entering it strands the venue without a
+            // matching engine leader. See docs/bug_list.md, "A cold-start primary that is
+            // told it leads should not reconcile".
+            adopt_leader_role();
+        }
     } else if (decision.follower_instance_id == static_cast<int64_t>(config_.instance_id)) {
         // We remain the follower: stay passive.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter assigned follower role -- staying passive");

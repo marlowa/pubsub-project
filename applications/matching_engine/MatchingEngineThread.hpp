@@ -289,8 +289,25 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::TimerID promotion_timeout_timer_id_{};
     pubsub_itc_fw::TimerID arbiter_heartbeat_timer_id_{};
 
+    // Armed when a primary asks the arbiter who leads at startup, and cancelled by the
+    // answer. If it fires, no arbiter replied and the venue would otherwise have no matching
+    // engine leader at all, so the instance-id rule is applied locally and logged as degraded
+    // -- the same fallback the sequencer has, and for the same reason.
+    pubsub_itc_fw::TimerID startup_arbitration_timer_id_{};
+
     // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
+    // The pair's fixed identities. Primary is always the lower id -- the arbiter's cold-start
+    // preference relies on it -- and neither ever changes for the life of a deployment.
+    // Which of them LEADS is a separate question and moves; see design-notes-for-ha.md 11.
     static constexpr int64_t primary_instance_id = 1;
+    static constexpr int64_t secondary_instance_id = 2;
+
+    /// The other instance of this pair. Was hard-coded to the primary back when only the
+    /// secondary ever asked for arbitration; now that a restarting primary asks too, an
+    /// instance that named the primary unconditionally would report itself as its own peer.
+    [[nodiscard]] int64_t peer_instance_id() const {
+        return config_.instance_id == primary_instance_id ? secondary_instance_id : primary_instance_id;
+    }
 
     // Outbound connections to the arbiter pool (both roles when HA is enabled).
     pubsub_itc_fw::ConnectionID arbiter_primary_conn_id_;
@@ -313,6 +330,16 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void send_arbiter_heartbeat();
 
     // WAL reconciliation (RECONCILING state).
+    /**
+     * @brief Asks the arbiter which instance leads, rather than assuming it is this one.
+     *
+     * A primary used to adopt LEADER the moment its first arbiter connection came up. That is
+     * harmless on a cold start, where the arbiter would name it anyway, and wrong on a restart:
+     * the peer may already have been promoted and be serving, and the venue ends up with two
+     * leaders. See docs/bug_list.md, "A restarted primary matching engine promotes itself".
+     */
+    void request_startup_arbitration();
+
     void begin_reconciliation();
     void send_me_position_request();
     void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);
