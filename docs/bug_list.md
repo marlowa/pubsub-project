@@ -456,7 +456,30 @@ looks the better fit: it is a pattern the venue already has, it needs no new per
 arbiter with no reachable peer genuinely has nothing to go on and is right to fall back to the
 cold-start rule.
 
-**Not covered by any scenario.** No test restarts an arbiter at all -- see the matrix below.
+### Fixed 2026-08-22
+
+The arbiter is now told rather than remembering. `LeadershipLease` (id 118) carries what
+`Heartbeat` used to imply -- an assertion of leadership by the instance holding it, at a stated
+epoch -- and a restarted arbiter rebuilds its map from the leases it receives. Peer replay on a
+link coming up is kept as an accelerator, not the mechanism, so the case with no peer to ask
+still works. Full reasoning in `design-notes-for-ha.md` section 11c.
+
+Scenario 25 covers it, and the ordering inside that scenario is the substance of it: both
+arbiters must be killed before either is restarted, or the state survives through the peer and
+nothing is exercised. Demonstrated:
+
+```
+10:48:44  both arbiters dead
+10:48:48  group=matching_engine is led by instance 2 at epoch 1 (learned from its lease)
+10:49:07  replayed 1 leadership record(s) to peer
+```
+
+**An expectation this disproved, recorded because the reasoning looked sound.** The lease
+interval is 30s and the arbiter's learning window 10s, which appeared to leave twenty seconds in
+which a restarted arbiter would stop declining and start guessing before it could have been told
+anything. It cannot arise: an arbiter restarting is what closes its components' connections, and
+a leader sends a lease immediately on connecting rather than waiting for the timer. The interval
+was left alone rather than shortened on principle.
 
 ### Restart coverage: what ha_test.py exercises, and what it does not
 
@@ -476,7 +499,7 @@ supervisor makes normal, and it is where every defect found on 2026-08-21 and 20
 | | sequencer | arbiter | matching engine |
 |---|---|---|---|
 | **R1** restart the leader *inside* the peer's grace period -- peer must not promote at all | none | none | none |
-| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | none | **24** |
+| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
 | **R3** restart the *follower* -- must stay follower, leader untouched | none | none | none |
 | **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | none | none |
 | **R5** cold start both, in either order -- deterministic leader | none | none | none |
@@ -497,8 +520,8 @@ socket rather than by role. All three are in this file. That is one cell of eigh
   writable -- `devenv.py --supervised` starts components under `scripts/launch.py` -- and a
   version of it was run by hand on 2026-08-22: the engine was SIGKILLed, was back in six
   seconds, and the secondary did not promote. That is not a test until it is one.
-* **Any arbiter restart at all.** No scenario restarts an arbiter, and the arbiter has just
-  become stateful in a way that matters -- see "A restarted arbiter forgets who leads".
+* ~~Any arbiter restart at all.~~ **Done 2026-08-22**: scenario 25 restarts both and asserts
+  that a matching engine rejoining afterwards is still told to follow.
 * **R3.** Restarting a follower looks dull and is the case where a wrong answer is quietest: a
   follower that comes back believing it leads produces two leaders with nothing having visibly
   failed.
