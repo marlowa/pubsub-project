@@ -420,12 +420,20 @@ class VerifyStep(NamedTuple):
     timeout:     maximum seconds to wait
     description: human-readable label shown in test output
     from_byte:   byte offset to start reading from (0 = beginning of file)
+
+    absent_markers: strings that must NOT all appear on any one line, checked once the
+                    positive markers have been seen. Some properties are only expressible
+                    as an absence -- an instance that came back as a follower is proved as
+                    much by never having adopted LEADER as by the follower line itself --
+                    and a restart deletes the log first, so anything present afterwards
+                    happened after the restart and nothing older can produce a false alarm.
     """
     log_name: str
     markers: tuple
     timeout: float
     description: str
     from_byte: int = 0
+    absent_markers: tuple = ()
 
 
 class Scenario(NamedTuple):
@@ -1352,6 +1360,81 @@ _SCENARIOS: list[Scenario] = [
                 secondary_log_name=None,   # nothing is elected -- a gateway elects nothing
                 role_prefix=None,
                 settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+        ],
+    ),
+
+    # 24 — a restarted primary ME must come back as a FOLLOWER, not seize leadership.
+    #
+    # This is the regression test for "Rejoin after a promotion re-runs the cold-start
+    # tie-break" in docs/bug_list.md. The arbiter used to recompute leadership from instance
+    # ids on every request and never consult what it had already decided. The primary always
+    # holds the lower id, so a primary that restarted after the secondary had been promoted
+    # was handed leadership back -- from the instance holding a populated order book to the
+    # one that had just lost its.
+    #
+    # CURRENTLY FAILS, and not on anything it asserts. All four steps above pass; the run then
+    # fails in the recovery-order phase because the sequencer routes orders to whichever socket
+    # is "the primary matching engine" rather than to the leader, so the rejoined follower
+    # receives them and discards them. That is a separate defect, recorded as "The sequencer
+    # routes orders to the primary matching engine, not to the leader". This is a real failure
+    # and not a broken harness -- do not disable the scenario to make the suite green.
+    #
+    # It also covers the second half of that fix. leadership_state_ was keyed by instance, so
+    # the arbiter's reconnect path looked the stored decision up under the connecting
+    # instance's OWN id and, after a promotion, found nothing recorded against the primary.
+    # Before the fix the restarted primary was told nothing at all and sat in Unknown, so the
+    # positive assertion below fails as surely as the negative one.
+    Scenario(
+        number=24,
+        short_name="me_primary_rejoins_as_follower",
+        description="Restarted primary ME rejoins as follower, not leader",
+        expected_outcome=(
+            "matching_engine_secondary promotes and keeps leadership; the restarted "
+            "matching_engine_primary is assigned the follower role by the arbiter and "
+            "never adopts LEADER"
+        ),
+        me_ha=True,
+        # As scenario 16: in-flight orders would advance the promoted secondary's counter
+        # during reconciliation and make the recovery count non-deterministic.
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            # 1. Kill the primary and let the secondary promote properly, timeout and all.
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            # 2. Bring the primary back. The restart deletes its log first, so everything
+            #    asserted on below happened after it came back.
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            # 3. The assertion the fix exists for, stated both ways round.
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "arbiter assigned follower role"),
+                timeout=30.0,
+                description="restarted primary is assigned the follower role",
+                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            # 4. And the secondary must have kept it throughout -- a leadership that moved
+            #    and moved back would satisfy step 3 on its own.
+            VerifyStep(
+                log_name="matching_engine_secondary.log",
+                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                timeout=5.0,
+                description="promoted secondary still holds leadership",
             ),
         ],
     ),
@@ -2605,6 +2688,26 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         f"marker not seen in {step.log_name} within {step.timeout:.0f}s"
                     )
                 log(f"    confirmed ({elapsed:.1f}s)")
+
+                if step.absent_markers:
+                    absent_repr = " + ".join(repr(m) for m in step.absent_markers)
+                    log(f"    checking {step.log_name} does NOT contain {absent_repr} ...")
+                    # Zero timeout: this is a one-shot read of what is already there, not a
+                    # wait. The positive markers above have been seen, so the behaviour under
+                    # test has happened; anything the absent markers would match has had its
+                    # chance to appear.
+                    seen, _, _ = poll_log_for(
+                        log_dir / step.log_name, *step.absent_markers,
+                        timeout=0.0,
+                        from_byte=step.from_byte,
+                    )
+                    if seen:
+                        die(
+                            f"Verification failed: {step.description} — "
+                            f"{step.log_name} contains {absent_repr}, which must not be there"
+                        )
+                    log("    confirmed absent")
+
                 phase4_results.append(("verify", step.description, elapsed))
 
         # If ME was restarted, the _ME_READY_MARKERS fire as soon as the first
