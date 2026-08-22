@@ -1438,6 +1438,106 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 25 — an arbiter that has restarted must not hand leadership back to the wrong instance.
+    #
+    # The arbiter's leadership map lives only in memory and nothing reads it back at startup.
+    # It is what stops a restarted primary taking leadership from a working secondary, so an
+    # arbiter that has forgotten it would apply the cold-start tie-break, prefer the lower
+    # instance id, and reproduce the split-brain that rule exists to prevent. See
+    # docs/bug_list.md, "A restarted arbiter forgets who leads".
+    #
+    # BOTH arbiters are restarted deliberately. Restarting one leaves the other holding the
+    # state and answering from it, which proves nothing about recovery; with neither holding
+    # anything, the only source left is the leases the sitting leader keeps sending. That is
+    # the mechanism under test.
+    Scenario(
+        number=25,
+        short_name="arbiters_restart_then_me_rejoins",
+        description="Arbiters restart with no state, then the primary ME rejoins",
+        expected_outcome=(
+            "both arbiters relearn who leads from the promoted secondary's leases; the "
+            "restarted matching_engine_primary is told to follow and never adopts LEADER"
+        ),
+        me_ha=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            # 1. Fail the primary ME so the secondary is genuinely leading.
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            # 2. Wipe the arbiters' knowledge. BOTH must be down at the same time, which is
+            #    why they are killed before either is restarted: RestartStep kills and
+            #    restarts one component before moving to the next, so restarting them in
+            #    turn leaves the second one alive and holding the state while the first comes
+            #    back, and the first simply learns it from the peer. That passes without
+            #    exercising anything -- it is what this scenario did on its first run, and the
+            #    logs showed the state surviving hop by hop through the peer replay.
+            KillStep(
+                proc_name="arbiter_primary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=1.0,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            # Now both are dead and nothing anywhere remembers who leads except the matching
+            # engine that is doing the leading. Bring them back.
+            RestartStep(
+                proc_name="arbiter_primary",
+                ready_log_name="arbiter_primary.log",
+                ready_markers=(_ARB_ROLE,),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=1.0,
+            ),
+            RestartStep(
+                proc_name="arbiter_secondary",
+                ready_log_name="arbiter_secondary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            # 3. Bring the primary ME back. It asks whichever arbiter is active, and the
+            #    answer depends entirely on whether that arbiter has relearned.
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            # 4. The assertion. Before the relearning work an arbiter with an empty map
+            #    answered leader=1, and the restarted primary took leadership back from a
+            #    secondary holding the book.
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "arbiter assigned follower role"),
+                timeout=90.0,
+                description="restarted ME follows, even though the arbiters lost their state",
+                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            VerifyStep(
+                log_name="matching_engine_secondary.log",
+                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                timeout=5.0,
+                description="the secondary kept leadership throughout",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
