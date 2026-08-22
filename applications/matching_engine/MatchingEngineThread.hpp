@@ -221,12 +221,12 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool is_primary_{true};
 
     // Primary: outbound connection to ME-secondary's book replication listener.
-    pubsub_itc_fw::ConnectionID secondary_replication_conn_id_;
+    pubsub_itc_fw::ConnectionID outbound_replication_conn_id_;
 
     // Secondary: inbound replication connection from ME-primary.
     // Any inbound connection on the secondary IS the replication channel
     // (the secondary only has one inbound listener: the replication port).
-    pubsub_itc_fw::ConnectionID primary_replication_conn_id_;
+    pubsub_itc_fw::ConnectionID inbound_replication_conn_id_;
 
     // Secondary: seq_no of the most recently applied BookUpdate.
     // Carried forward to WAL reconciliation at promotion time (Slice C).

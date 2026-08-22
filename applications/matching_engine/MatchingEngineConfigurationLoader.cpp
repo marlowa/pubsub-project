@@ -30,7 +30,10 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             }
         }
 
-        const bool is_secondary = config.ha_enabled && config.ha_role == "secondary";
+        // No role check here any more: every HA section is read identically for both roles.
+        // Replication used to be the exception -- the primary read only the dial half and the
+        // secondary only the listen half -- and that asymmetry is what left no channel in the
+        // direction replication needed after a failover.
 
         // Network/sequencer sections are required for both roles.
         // The secondary needs them for pre-warmed connections (Slice C): it must
@@ -74,19 +77,22 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
                                                                 std::to_string(port));
                 }
             };
-            if (!is_secondary) {
-                toml.get_required_except("book_replication.host", config.secondary_replication_host);
-                int32_t repl_port = 0;
-                toml.get_required_except("book_replication.port", repl_port);
-                validate_port(repl_port, "book_replication.port");
-                config.secondary_replication_port = static_cast<uint16_t>(repl_port);
-            } else {
-                toml.get_required_except("book_replication.listen_host", config.replication_listen_host);
-                int32_t repl_listen_port = 0;
-                toml.get_required_except("book_replication.listen_port", repl_listen_port);
-                validate_port(repl_listen_port, "book_replication.listen_port");
-                config.replication_listen_port = static_cast<uint16_t>(repl_listen_port);
-            }
+            // Both halves, for both roles. Replication used to be read one way round -- the
+            // primary only dialled, the secondary only listened -- which left no channel at
+            // all in the direction replication needed after a failover. Both instances now
+            // listen and both dial; which connection carries book updates follows the ROLE,
+            // because the leader is the sender.
+            toml.get_required_except("book_replication.host", config.peer_replication_host);
+            int32_t repl_port = 0;
+            toml.get_required_except("book_replication.port", repl_port);
+            validate_port(repl_port, "book_replication.port");
+            config.peer_replication_port = static_cast<uint16_t>(repl_port);
+
+            toml.get_required_except("book_replication.listen_host", config.replication_listen_host);
+            int32_t repl_listen_port = 0;
+            toml.get_required_except("book_replication.listen_port", repl_listen_port);
+            validate_port(repl_listen_port, "book_replication.listen_port");
+            config.replication_listen_port = static_cast<uint16_t>(repl_listen_port);
 
             // Arbiter-mediated promotion (Slice C+D). Required for both roles when HA is on.
             toml.get_required_except("ha_instance.instance_id", config.instance_id);

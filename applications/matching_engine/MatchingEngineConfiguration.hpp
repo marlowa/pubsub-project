@@ -114,9 +114,12 @@ struct MatchingEngineConfiguration {
     /** @brief This instance's role: "primary" or "secondary". */
     std::string ha_role{"primary"};
 
-    // Primary-side: outbound connection to secondary's replication listener.
-    std::string secondary_replication_host{"127.0.0.1"};
-    uint16_t secondary_replication_port{7026};
+    // Where this instance dials to reach its peer's replication listener. Both instances
+    // dial and both listen: the connection that carries book updates is the one on which the
+    // LEADER is the sender, and holding both permanently means a role change needs no
+    // connection work at the moment the venue can least afford it.
+    std::string peer_replication_host{"127.0.0.1"};
+    uint16_t peer_replication_port{7026};
 
     // Secondary-side: inbound listener for book updates from primary.
     std::string replication_listen_host{"127.0.0.1"};

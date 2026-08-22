@@ -516,12 +516,31 @@ same omission behind all of them: *primary* and *leader* were interchangeable wh
 restarted, so channels were named after identities. Once roles move, every channel named for an
 identity is pointing at the wrong instance half the time.
 
-**Not fixed, because the shape is a design question.** Either replication follows the role --
-the leader connects to whichever instance is the follower, which means tearing down and
-re-establishing on every role change -- or both directions are maintained permanently and the
-one in use follows the role, which costs a connection and no reconnection latency. The second
-looks better for a venue that cares about failover time, but it is a decision rather than a
-patch.
+### Fixed 2026-08-22: both directions held permanently
+
+Replication is now symmetric. Each instance listens on its own port and dials its peer's, both
+connections stand at all times, and which one carries book updates follows the role because the
+leader is the sender. A role change therefore needs no connection work at the moment the venue
+can least afford it -- the alternative, having the leader dial the follower and re-establish on
+every change, puts a reconnect on the failover path and leaves a newly promoted leader serving
+without a replica while it completes.
+
+Failure detection then works in both directions without special handling, which is the point.
+A follower arms its promotion timer on losing the connection it *receives* replication on, and
+with both directions held, whichever instance is the follower always has one.
+
+**Three places had to stop branching on the configured identity**, and each was somewhere the
+design had quietly baked in "primary means leader":
+
+* the environment and both TOML templates, which gave the primary only a dial and the secondary
+  only a listener;
+* `MatchingEngineConfigurationLoader`, which read the two halves under an `is_secondary` test
+  and now reads both for both roles;
+* `MatchingEngine`, which registered the replication listener only on the secondary.
+
+All three `is_secondary` checks are gone. Scenario 32 passes: leadership moves primary to
+secondary, the primary rejoins as follower, and when the secondary then dies the primary takes
+it back -- 15.2 s each way, the promotion timeout in both cases.
 
 **A smaller fault visible in the same logs.** An ArbitrationDecision arrived as
 `leader=2 follower=0`, and the instance correctly ignored a decision that did not mention it. The
@@ -591,7 +610,7 @@ supervisor makes normal, and it is where every defect found on 2026-08-21 and 20
 | **R1** restart the leader *inside* the peer's grace period -- peer must not promote at all | none | none | none |
 | **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
 | **R3** restart the *follower* -- must stay follower, leader untouched | none | none | none |
-| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | none | **32** (fails) |
+| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | none | **32** |
 | **R5** cold start both, in either order -- deterministic leader | none | none | none |
 | **R6** restart with no arbiter reachable -- degraded, and said so | none | none | none |
 

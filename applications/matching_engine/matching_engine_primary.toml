@@ -15,7 +15,12 @@ enabled = ${matching_engine_ha_enabled}
 role    = "primary"
 
 [book_replication]
-# Outbound connection to ME-secondary's book replication listener.
+# Symmetric: this instance listens, and also dials its peer. Both connections stand at all
+# times; which one carries book updates follows the ROLE, because the leader is the sender.
+# Wiring it one way round left no channel at all in the direction replication needed after a
+# failover, and the survivor never noticed the leader die.
+listen_host = "${matching_engine_book_replication_listen_host}"
+listen_port = ${matching_engine_book_replication_listen_port}
 host = "${matching_engine_book_replication_host}"
 port = ${matching_engine_book_replication_port}
 

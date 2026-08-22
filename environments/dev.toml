@@ -524,6 +524,14 @@ sequencer_er_port             = 11021
 sequencer_er_secondary_host   = "127.0.0.1"
 sequencer_er_secondary_port   = 11022
 ha_enabled                    = true
+# Book replication is symmetric: each instance listens, and each dials the other. Both
+# connections stand at all times and a role change only switches which one carries traffic.
+# Wiring it one way round -- primary dials, secondary listens -- meant that after a failover
+# there was no channel at all in the direction replication then needed to flow, and the
+# surviving instance never noticed the leader die. See docs/bug_list.md, "The pair does not
+# survive a second failure".
+book_replication_listen_host  = "127.0.0.1"
+book_replication_listen_port  = 11025
 book_replication_host         = "127.0.0.1"
 book_replication_port         = 11026
 # HA arbiter-mediated promotion (Slice C+D).
@@ -542,6 +550,8 @@ metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9206
 book_replication_listen_host  = "127.0.0.1"
 book_replication_listen_port  = 11026
+book_replication_host         = "127.0.0.1"
+book_replication_port         = 11025
 # Order listener (distinct port from the primary; both run on the same dev host).
 network_listen_host           = "127.0.0.1"
 network_listen_port           = 11023

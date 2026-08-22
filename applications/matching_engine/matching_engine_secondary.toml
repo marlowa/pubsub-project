@@ -17,9 +17,12 @@ enabled = true
 role    = "secondary"
 
 [book_replication]
-# Inbound listener for book-update PDUs from ME-primary.
+# Symmetric with the primary: this instance listens, and also dials its peer. See the
+# primary's file for why both directions are held permanently.
 listen_host = "${matching_engine_secondary_book_replication_listen_host}"
 listen_port = ${matching_engine_secondary_book_replication_listen_port}
+host = "${matching_engine_secondary_book_replication_host}"
+port = ${matching_engine_secondary_book_replication_port}
 
 [ha_instance]
 instance_id = ${matching_engine_secondary_instance_id}

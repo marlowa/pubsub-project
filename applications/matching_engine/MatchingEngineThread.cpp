@@ -199,8 +199,11 @@ void MatchingEngineThread::on_app_ready_event() {
     connect_to_service("sequencer_er");
     connect_to_service("sequencer_er_secondary");
 
-    if (is_primary_ && ha_enabled_) {
-        connect_to_service("me_secondary_replication");
+    if (ha_enabled_) {
+        // Both roles dial, and both listen. Which connection carries book updates follows the
+        // role, because the leader is the sender; holding both permanently means a role
+        // change costs no connection work at the moment the venue can least afford it.
+        connect_to_service("me_peer_replication");
     }
 
     if (ha_enabled_) {
@@ -224,9 +227,10 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         sequencer_er_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
         announce_role();
-    } else if (svc == "me_secondary_replication") {
-        // Primary: outbound connection to ME-secondary's replication listener established.
-        secondary_replication_conn_id_ = id;
+    } else if (svc == "me_peer_replication") {
+        // Our dial to the peer's replication listener. Used to send book updates while this
+        // instance leads, and simply held open while it follows.
+        outbound_replication_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ME-secondary replication connection {} established", id.get_value());
     } else if (svc == "arbiter_primary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
@@ -248,9 +252,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         if (first_arbiter && is_primary_) {
             request_startup_arbitration();
         }
-    } else if (!is_primary_ && ha_enabled_ && svc == replication_inbound_svc) {
-        // Secondary: inbound connection from ME-primary (book replication channel).
-        primary_replication_conn_id_ = id;
+    } else if (ha_enabled_ && svc == replication_inbound_svc) {
+        // The peer's dial to us. This is the channel we receive book updates on while we
+        // follow, and losing it is how we learn the leader has gone -- which is why both
+        // instances must have one, not only the configured secondary.
+        inbound_replication_conn_id_ = id;
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: ME-primary replication connection {} established -- replica book will be updated", id.get_value());
@@ -288,13 +294,13 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         sequencer_er_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: secondary sequencer ER connection {} lost: {}", id.get_value(),
                    reason);
-    } else if (id == secondary_replication_conn_id_) {
-        secondary_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
+    } else if (id == outbound_replication_conn_id_) {
+        outbound_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MatchingEngineThread: ME-secondary replication connection {} lost: {} -- book updates paused until secondary reconnects", id.get_value(),
                    reason);
-    } else if (id == primary_replication_conn_id_) {
-        primary_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
+    } else if (id == inbound_replication_conn_id_) {
+        inbound_replication_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MatchingEngineThread: ME-primary replication connection {} lost: {} -- replica book is now stale (last seq={})", id.get_value(), reason,
                    last_replicated_seq_no_);
@@ -792,7 +798,7 @@ void MatchingEngineThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::
 
 void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::BookUpdateType update_type, const fix_common::SessionIdentity& session,
                                             std::string_view cl_ord_id, const OrderEntry* entry) {
-    if (!ha_enabled_ || !is_primary_ || !secondary_replication_conn_id_.is_valid()) {
+    if (!ha_enabled_ || !is_primary_ || !outbound_replication_conn_id_.is_valid()) {
         return;
     }
 
@@ -825,7 +831,7 @@ void MatchingEngineThread::send_book_update(int64_t seq_no, pubsub_itc_fw_app::B
         }
     }
 
-    send_pdu(secondary_replication_conn_id_, pubsub_itc_fw_app::BookUpdate::message_pdu_id, seq_no, upd);
+    send_pdu(outbound_replication_conn_id_, pubsub_itc_fw_app::BookUpdate::message_pdu_id, seq_no, upd);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: BookUpdate sent seq={} type={} comp_id='{}' cl_ord_id={}", seq_no,
                static_cast<int>(update_type), session.comp_id_view(), cl_ord_id);
 }

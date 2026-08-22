@@ -47,7 +47,9 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
-    const bool is_secondary = config_.ha_enabled && config_.ha_role == "secondary";
+    // Nothing here branches on the configured role any more: both instances listen for
+    // replication and both dial their peer, and which direction carries traffic follows the
+    // role at run time rather than the name in the config file.
 
     // Both roles listen for sequenced order PDUs on the order port. The primary
     // processes them immediately; the secondary discards them while in FOLLOWER
@@ -64,10 +66,14 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
                                         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
                                         pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
-    if (is_secondary) {
-        // Secondary: additionally listen for book-update PDUs from ME-primary. Also exempt:
-        // replication is silent whenever the book is not changing, and a quiet market must not
-        // cost the secondary its replication link.
+    if (config_.ha_enabled) {
+        // BOTH roles listen for book updates from their peer, because which instance sends
+        // them follows the role and not the configured identity. Listening only on the
+        // secondary meant that after a failover the leader had nowhere to send to, and -- worse
+        // -- the follower had no connection whose loss would tell it the leader had died.
+        //
+        // Exempt from the idle timeout: replication is silent whenever the book is not
+        // changing, and a quiet market must not cost an instance its replication link.
         reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.replication_listen_host, config_.replication_listen_port},
                                             pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
                                             pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
@@ -87,12 +93,13 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
 
     if (config_.ha_enabled) {
-        if (!is_secondary) {
-            // Primary with HA: connect outbound to the secondary's replication listener.
-            service_registry_.add("me_secondary_replication",
-                                  pubsub_itc_fw::NetworkEndpointConfiguration{config_.secondary_replication_host, config_.secondary_replication_port},
-                                  pubsub_itc_fw::NetworkEndpointConfiguration{});
-        }
+        // Both roles dial their peer's replication listener, and both listen on their own.
+        // The connection that carries book updates is whichever one the LEADER is the sender
+        // on, so a role change switches direction without any connection work -- which was
+        // the point: the old wiring had the primary dial and the secondary listen, leaving no
+        // channel at all in the direction replication needed once the secondary led.
+        service_registry_.add("me_peer_replication", pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_replication_host, config_.peer_replication_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
 
         // Both roles connect to the arbiter pool. The primary heartbeats the
         // arbiter to hold its lease; the secondary uses these connections to
@@ -109,13 +116,9 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: secondary ER connection to sequencer at {}:{}",
                config_.sequencer_er_secondary_host, config_.sequencer_er_secondary_port);
     if (config_.ha_enabled) {
-        if (!is_secondary) {
-            PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: HA primary -- book replication outbound to ME-secondary at {}:{}",
-                       config_.secondary_replication_host, config_.secondary_replication_port);
-        } else {
-            PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: HA secondary -- listening for book updates from ME-primary on {}:{}",
-                       config_.replication_listen_host, config_.replication_listen_port);
-        }
+        PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngine: HA book replication -- listening on {}:{} and dialling peer at {}:{} (both held; the leader is the sender)",
+                   config_.replication_listen_host, config_.replication_listen_port, config_.peer_replication_host, config_.peer_replication_port);
         PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngine: HA arbiter pool at {}:{} and {}:{} (instance_id={})",
                    config_.arbiter_primary_host, config_.arbiter_primary_port, config_.arbiter_secondary_host, config_.arbiter_secondary_port,
                    config_.instance_id);

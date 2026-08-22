@@ -1829,11 +1829,10 @@ _SCENARIOS: list[Scenario] = [
     # failure: roles are positions either instance can hold, and holding one once must not
     # stop it holding the other later.
     #
-    # CURRENTLY FAILS, on a real defect. Replication is hard-wired primary-to-secondary rather
-    # than leader-to-follower, so after a failover the leader has no replication channel to the
-    # follower and the follower's promotion path is never armed. It sees the socket go and
-    # concludes "my secondary has gone" instead of "the leader has gone". Recorded as "The pair
-    # does not survive a second failure". Left failing deliberately -- do not disable it.
+    # This failed when written, on a real defect: replication was hard-wired
+    # primary-to-secondary rather than leader-to-follower, so after a failover the leader had
+    # no channel to the follower and the follower's promotion path was never armed. Fixed by
+    # holding both directions permanently; see docs/bug_list.md.
     #
     # It is also the case most likely to expose leftover state. The primary has been leader,
     # then follower, then leader again, and the arbiter has issued three decisions about it.
