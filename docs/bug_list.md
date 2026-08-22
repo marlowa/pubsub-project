@@ -389,6 +389,43 @@ Two distinct faults, and the second is the awkward one:
   from *accepted and queued behind nothing* — the gap between `nos_received` and
   `accounted` already carries that information and nothing reports it.
 
+### Ninety application tests were built, installed, and never run
+
+| | |
+|---|---|
+| Found | 2026-08-22, after adding a test target to the arbiter and noticing it did not appear in the build output |
+| How | `build.py` names each test binary it runs, and application binaries were never added to that list |
+| Impact | Five suites, 90 tests, built and shipped by every release without once being executed |
+
+`build.py` ran five test binaries by name -- the framework's unit and integration suites,
+`scram_crypto`, and the two `fix_codec` ones. Every application suite was built, installed to
+`bin/`, and then ignored:
+
+| suite | tests |
+|---|---|
+| `fix_order_gateway_tests` | 39 |
+| `matching_engine_tests` | 18 |
+| `sequencer_tests` | 12 |
+| `binary_order_gateway_tests` | 9 |
+| `arbiter_tests` | 12 (added the same day) |
+
+`ctest` was never invoked either, so the `gtest_discover_tests` registrations went nowhere. All
+90 passed when run by hand, so nothing was being hidden -- but nothing was being checked, and a
+regression in any of them would have reached a release unremarked.
+
+**Fixed 2026-08-22.** `run_application_tests()` runs them, and the standard build goes from 893
+tests to 983.
+
+**The binaries are discovered, not listed**, and that is the point of the fix rather than an
+implementation detail. A list is how the gap arose: each new test target had to be remembered in
+`build.py`, and across five targets nobody remembered once. Discovery means a test target in any
+application gates from the moment it builds.
+
+**Finding nothing is an error, not a pass.** A glob that has stopped matching looks exactly like
+a suite in which everything succeeded, which is the failure the gate exists to prevent -- so the
+gate must not be able to fail that way itself. Both behaviours were checked: five suites found
+and run, and exit code 1 with a message naming the directory when the glob matches nothing.
+
 ### Every HA scenario models machine death; none models process death
 
 | | |

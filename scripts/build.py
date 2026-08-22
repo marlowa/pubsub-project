@@ -819,6 +819,38 @@ def run_scram_crypto_tests(build_dir):
     print("\n✓ All scram_crypto tests passed")
 
 
+def run_application_tests(build_dir):
+    """Run every application test binary. Only called after unit tests pass.
+
+    The binaries are discovered rather than listed, because a list is exactly how these
+    came to be unrun in the first place: five test targets were built, installed and never
+    executed, since each new one had to be remembered here and none of them was. Discovery
+    means a new test target in any application gates from the moment it builds.
+
+    Finding none is treated as an error rather than a pass. A glob that has stopped matching
+    looks identical to a suite in which everything succeeded, and that is the failure this
+    function exists to prevent -- so it must not be able to fail that way itself.
+    """
+    applications_dir = build_dir / "applications"
+    binaries = sorted(path for path in applications_dir.glob("*/*_tests") if path.is_file())
+
+    if not binaries:
+        print(f"ERROR: no application test binaries found under {applications_dir}.\n"
+              "       The glob has stopped matching; this is a broken gate, not an empty one.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    for test_binary in binaries:
+        run_command(
+            [str(test_binary)],
+            cwd=build_dir,
+            description=f"Running {test_binary.name}",
+            env=test_environment(build_dir)
+        )
+
+    print(f"\n\u2713 All application tests passed ({len(binaries)} suites)")
+
+
 def run_fix_codec_tests(build_dir):
     """Run the fix_codec library unit tests. Only called after unit tests pass."""
     test_binary = build_dir / "libraries" / "fix_codec" / "fix_codec_tests"
@@ -1185,6 +1217,7 @@ Examples:
             run_tests(build_dir, use_tsan=args.tsan, tsan_suppressions=args.tsan_suppressions)
             run_fix_codec_tests(build_dir)
             run_scram_crypto_tests(build_dir)
+            run_application_tests(build_dir)
             run_integration_tests(build_dir)
             if not args.no_performance_tests:
                 run_fix_codec_performance_tests(build_dir)
