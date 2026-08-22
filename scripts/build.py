@@ -229,6 +229,28 @@ def run_pytest(source_dir, build_dir=None):
     print("\n✓ Python tests passed")
 
 
+def run_scripts_pytest(source_dir):
+    """Run the tests for the scripts themselves, if any exist.
+
+    Separate from run_pytest because that one runs the DSL suite from python/ with a build
+    directory in its environment, which these neither need nor want. Skipped rather than
+    failed when the directory is absent, since a checkout without it is not broken -- unlike
+    the application test gate, where the binaries are known to exist and finding none means
+    the glob is wrong.
+    """
+    tests_dir = source_dir / "scripts" / "tests"
+    if not tests_dir.is_dir():
+        print(f"NOTE: no script tests at {tests_dir} -- skipping")
+        return
+
+    run_command(
+        [sys.executable, "-m", "pytest", "-q", str(tests_dir)],
+        cwd=source_dir,
+        description="Running script test suite"
+    )
+    print("\n\u2713 Script tests passed")
+
+
 def rewrite_tracefile_for_genhtml(raw_info, clean_info):
     """
     Rewrite gcovr's lcov tracefile into something genhtml renders honestly.
@@ -1200,6 +1222,7 @@ Examples:
             print("NOTE: --no-pylint is set; skipping pylint")
         if not skip_pytest:
             run_pytest(source_dir, build_dir)
+            run_scripts_pytest(source_dir)
 
         if args.clean:
             clean_build(build_dir)
