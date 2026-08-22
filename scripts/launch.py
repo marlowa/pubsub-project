@@ -5,6 +5,51 @@ launch.py — start one component and restart it if it dies.
 Usage:
   launch.py --name NAME --run-dir DIR [options] -- COMMAND [ARG...]
 
+Options:
+  --name NAME                 Component name. Everything this script writes is named after
+                              it: <name>.pid, <name>.launcher.pid, <name>.stop and
+                              <name>.launcher.state. Use the same name devenv.py uses, or
+                              the pid file will not be the one other tools read. Required.
+
+  --run-dir DIR               Directory holding those four files. Created if absent. This is
+                              the venue's run directory, the same one devenv.py is given.
+                              Required.
+
+  --minimum-runtime SECONDS   How long the command must survive before its exit counts as a
+                              run that ended rather than a start that failed. A healthy
+                              component runs for hours, so anything dying inside a couple of
+                              seconds has failed to start. Default 2.0.
+
+  --failure-sleep SECONDS     How long to wait after a failed start before trying again.
+                              Long enough that a deterministic fault retries slowly instead
+                              of spinning; short enough that a transient one is recovered
+                              from quickly. Not applied after a normal exit, which is
+                              restarted at once. Default 5.0.
+
+  --max-consecutive-failures N
+                              Give up after this many failed starts in a row, exiting 1.
+                              Zero means never give up, which is the default: abandoning a
+                              component guarantees there is none, where a slow retry keeps
+                              trying to restore service. Reset by any start that survives
+                              --minimum-runtime.
+
+  -- COMMAND [ARG...]         The command to run, after a bare --. The separator is
+                              conventional rather than required, but without it any leading
+                              dashes in COMMAND will be read as options to this script.
+
+Exit status:
+  0   stood down as asked, by signal or by a stop file
+  1   gave up after --max-consecutive-failures failed starts
+
+Files it writes, all in --run-dir:
+  <name>.pid              the COMPONENT's pid -- the plain file devenv.py, perf_run.py and
+                          the resource monitor already read, so none of them need to know
+                          this script exists. Removed on exit.
+  <name>.launcher.pid     this script's own pid. Removed on exit.
+  <name>.launcher.state   name, status, restart count, consecutive failed starts, and when
+                          it was last updated. Readable with cat.
+  <name>.stop             not written by this script -- read by it. See below.
+
 Wraps exactly one process. It knows the command line it was given and nothing
 else: not the topology, not which instance is primary, not who leads. That
 ignorance is the design. A launcher that also assigned roles would have to know
