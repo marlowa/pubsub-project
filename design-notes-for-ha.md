@@ -235,6 +235,44 @@ state.
 
 ---
 
+## 11a. Where the restart bugs came from: treating two failures as one
+
+Worth recording, because it explains a cluster of defects rather than any one of them.
+
+**The original HA design treated process death and machine death as equivalent.** They are not,
+and the difference is not about how the failure is detected -- it is about what the system is
+left with afterwards.
+
+When a machine dies, the pair is genuinely reduced to one instance. Nothing can be done about
+that until the machine comes back; resilience is lost because a machine is lost.
+
+When a *process* dies on a healthy machine, the pair need not be reduced at all. The machine is
+still there, the failed instance can be restarted on it in seconds, and the pair can be whole
+again almost immediately. **Treating this as machine death throws that away**: the peer is
+promoted, the failed instance is left down, and the venue runs single until a human decides
+otherwise -- carrying an unbounded exposure to a second failure for no reason other than the
+first having been misclassified.
+
+**That misclassification is what produced the restart defects found on 2026-08-21 and
+2026-08-22.** If a restart is not part of the model, then nothing needs to decide what a
+restarted instance comes back as -- and so nothing did:
+
+* the follower's grace period existed but nothing filled it, so it was dead time before a
+  promotion rather than a window for recovery (`docs/bug_list.md`, "A process death on the same
+  host takes the machine-death path");
+* the arbiter recomputed leadership from instance ids on every request, because "an instance
+  rejoining while another leads" was not a case it had been asked to handle ("Rejoin after a
+  promotion re-runs the cold-start tie-break");
+* the matching engine adopted LEADER the moment its arbiter connection came up, because a
+  primary starting was only ever imagined as a cold start ("A restarted primary matching engine
+  promotes itself, producing two leaders").
+
+Each of those reads as a separate bug and all three are the same omission.
+
+**The requirement this yields, stated positively:** a process death must not cost resilience.
+Whether the pair ends up whole again is the measure -- not whether the venue kept trading, which
+a promotion achieves on its own while leaving one instance down and nobody watching.
+
 ## 12. A supervisor starts processes; it does not decide leadership
 
 These are two jobs and they must not be the same component.

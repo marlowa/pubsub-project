@@ -461,6 +461,107 @@ A third is worth having once those pass: kill the promoted secondary afterwards 
 primary -- by then a follower -- takes over again. That is the property that makes the pair
 survive successive failures rather than one.
 
+### The sequencer routes orders to the primary matching engine, not to the leader
+
+| | |
+|---|---|
+| Found | 2026-08-22, by scenario 24 once the self-promotion bug above was fixed |
+| How | After a promotion the primary was restarted; it correctly became a follower, and the sequencer resumed sending it orders |
+| Impact | Orders are sent to an instance that discards them. The leader holds the book and receives nothing |
+
+The sequencer treats its connection to `matching_engine_primary` as "the matching engine" and
+the connection to the secondary as a pre-warmed standby. That holds while the primary leads,
+which until now was the only case that ever arose.
+
+It stops holding the moment a primary rejoins as a follower:
+
+```
+09:17:49  matching engine order connection 15 lost -- ME-secondary may promote and reconnect
+09:17:49  ME-secondary standby connection 23 established (pre-warmed for failover)
+09:18:06  [ME primary] arbiter assigned follower role -- staying passive
+09:18:08  matching engine order connection 53 established
+```
+
+Connection 53 is the restarted primary, and it is a follower:
+`on_framework_pdu_message` drops order PDUs outright in that state. So the sequencer sends
+orders to an instance that discards them, while the promoted secondary -- which holds the book
+and is the leader -- is still filed as the standby.
+
+**The same omission as the rest of this group.** *Primary* and *leader* were the same thing as
+long as nothing ever restarted, so the sequencer was written to route by identity. Now that an
+instance can come back as a follower, routing has to follow the role rather than the name. See
+design-notes-for-ha.md section 11a.
+
+**Not yet designed.** The sequencer does not currently know who leads; it infers it from which
+socket connected. The options are for it to learn leadership from the arbiter as the engines do,
+or for the matching engine to state its role on the connection it opens. Which of those is right
+is a design question rather than a patch, and it wants deciding rather than guessing.
+
+**Scenario 24 fails on this**, after passing every assertion it was written for.
+
+### A restarted primary matching engine promotes itself, producing two leaders
+
+| | |
+|---|---|
+| Found | 2026-08-22, by the ha_test.py scenario written to prove the arbiter fix |
+| How | Scenario 24 restarts the primary after the secondary has been promoted, and asserts it comes back a follower |
+| Impact | Two instances hold LEADER at once, and the venue stays that way -- the correct decision is discarded as a duplicate |
+
+`MatchingEngineThread::on_connected` (`MatchingEngineThread.cpp:225`) does this when the first
+arbiter connection comes up:
+
+```cpp
+if (first_arbiter && is_primary_) {
+    // Primary holds leadership by heartbeating the arbiter to renew its lease.
+    adopt_leader_role();
+}
+```
+
+**The primary declares itself leader before asking anyone.** On a cold start that is harmless,
+because the arbiter would name the same instance anyway. On a restart it is not: the secondary
+may already be leading and serving traffic.
+
+**And the correct answer is then thrown away.** `handle_arbitration_decision` suppresses a
+decision that arrives when the instance is already Leader or Reconciling, which exists to stop a
+second reply from both arbiters re-running reconciliation. It cannot tell that reply apart from
+the first authoritative answer this instance has ever received. Observed:
+
+```
+08:54:10.598297  arbiter-primary connection 4 established
+08:54:10.598297  adopting LEADER role (epoch=0)
+08:54:10.598385  ArbitrationDecision received (group=matching_engine leader=2 follower=1 epoch=1)
+08:54:10.598386  already LEADER -- ignoring duplicate ArbitrationDecision
+```
+
+The secondary had been promoted two seconds earlier and holds the book. The restarted primary
+holds nothing, believes it leads, and has just discarded the message telling it otherwise.
+
+**This is the failure the design says cannot happen.** `design-notes-for-ha.md` section 11: "The
+arbiter decides in every case. A restarting node never promotes itself, so no sequence of
+restarts can produce two leaders." The code does the opposite.
+
+**The arbiter is not at fault, and the fix above is working.** The same run shows it answering
+correctly, and answering at all only because `leadership_state_` is now keyed by group:
+
+```
+08:54:10  component group=matching_engine instance_id=1 registered on connection 9
+08:54:10  ArbitrationDecision sent to connection 9 (group=matching_engine leader=2 follower=1 epoch=1)
+```
+
+**The shape of the fix.** On first arbiter connection a primary should send an
+ArbitrationReport rather than adopt a role, and wait. The arbiter already answers both cases --
+lowest id when no incumbent is recorded, the connected incumbent when one is -- so nothing new
+is needed there. The duplicate guard needs to distinguish a genuine repeat from the first answer
+received, which the epoch already carries.
+
+**Blast radius, which is why this is recorded rather than immediately changed.** It alters
+startup for the matching engine: a cold-start primary would become leader a round trip later
+than it does today, and every scenario that waits on "adopting LEADER role" would see it at a
+different moment. The sequencer pair should be checked for the same pattern before either is
+touched.
+
+**Scenario 24 fails against the current code**, which is what it is for.
+
 ### Rejoin after a promotion re-runs the cold-start tie-break
 
 | | |
