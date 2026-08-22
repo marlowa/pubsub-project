@@ -1753,6 +1753,138 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 30 — R3 for the sequencer pair: restarting the follower changes nothing.
+    #
+    # A restarted sequencer learns from its peer through StatusQuery/StatusResponse that the
+    # peer already leads, and adopts follower without troubling the arbiter -- the mechanism
+    # the DSL documents for exactly this. What must not happen is the restarted instance
+    # deciding for itself and producing a second leader while the first carries on serving.
+    Scenario(
+        number=30,
+        short_name="sequencer_follower_restart_changes_nothing",
+        description="Restarting the follower sequencer leaves leadership untouched",
+        expected_outcome=(
+            "sequencer_secondary returns as follower via StatusResponse and never transitions "
+            "to leader; sequencer_primary keeps leading and orders are uninterrupted"
+        ),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            RestartStep(
+                proc_name="sequencer_secondary",
+                ready_log_name="sequencer_secondary.log",
+                ready_markers=_SEQ_FOLLOWER_MARKERS,
+                ready_timeout=_SEQ_FOLLOWER_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            AssertAbsentStep(
+                log_name="sequencer_secondary.log",
+                markers=(_SEQ_ROLE, _TO_LEADER),
+                after_secs=20.0,
+                description="the restarted follower sequencer never elected itself",
+            ),
+        ],
+    ),
+
+    # 31 — R3 for the arbiter pair: restarting the passive arbiter changes nothing.
+    #
+    # Worth having on its own because a returning arbiter now rebuilds a leadership map it
+    # never persisted. One coming back passive must not take over, and must not disturb the
+    # component leadership it has just relearned.
+    Scenario(
+        number=31,
+        short_name="arbiter_passive_restart_changes_nothing",
+        description="Restarting the passive arbiter leaves everything untouched",
+        expected_outcome=(
+            "arbiter_secondary returns passive and never becomes active; arbiter_primary "
+            "stays active and the sequencer keeps its leader"
+        ),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            RestartStep(
+                proc_name="arbiter_secondary",
+                ready_log_name="arbiter_secondary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            AssertAbsentStep(
+                log_name="arbiter_secondary.log",
+                markers=(_ARB_ROLE, _TO_LEADER),
+                after_secs=20.0,
+                description="the restarted passive arbiter never became active",
+            ),
+        ],
+    ),
+
+    # 32 — R4: the pair survives a SECOND failure, in the other direction.
+    #
+    # Kill the primary, let the secondary take over, bring the primary back as a follower,
+    # then kill the secondary. The primary -- by then the follower -- must take leadership
+    # again. This is the property that makes the pair durable rather than good for one
+    # failure: roles are positions either instance can hold, and holding one once must not
+    # stop it holding the other later.
+    #
+    # CURRENTLY FAILS, on a real defect. Replication is hard-wired primary-to-secondary rather
+    # than leader-to-follower, so after a failover the leader has no replication channel to the
+    # follower and the follower's promotion path is never armed. It sees the socket go and
+    # concludes "my secondary has gone" instead of "the leader has gone". Recorded as "The pair
+    # does not survive a second failure". Left failing deliberately -- do not disable it.
+    #
+    # It is also the case most likely to expose leftover state. The primary has been leader,
+    # then follower, then leader again, and the arbiter has issued three decisions about it.
+    Scenario(
+        number=32,
+        short_name="me_pair_survives_a_second_failure",
+        description="After a failover and rejoin, the pair survives a failure the other way",
+        expected_outcome=(
+            "matching_engine_secondary promotes, the restarted primary rejoins as follower, "
+            "and when the secondary then dies the primary takes leadership back"
+        ),
+        me_ha=True,
+        # The primary ends up leading again, so recovery orders return to it.
+        recovery_on_primary=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "arbiter assigned follower role"),
+                timeout=60.0,
+                description="the rejoined primary is a follower before the second failure",
+            ),
+            # Now the second failure, in the other direction.
+            KillStep(
+                proc_name="matching_engine_secondary",
+                secondary_log_name="matching_engine_primary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_primary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}

@@ -481,6 +481,57 @@ anything. It cannot arise: an arbiter restarting is what closes its components' 
 a leader sends a lease immediately on connecting rather than waiting for the timer. The interval
 was left alone rather than shortened on principle.
 
+### The pair does not survive a second failure: replication is wired by identity, not by role
+
+| | |
+|---|---|
+| Found | 2026-08-22, by scenario 32 |
+| How | Failover, rejoin, then fail the new leader -- the surviving instance never takes over |
+| Impact | After one failover the pair is finished. A second failure leaves the venue with no matching engine leader at all |
+
+`design-notes-for-ha.md` section 11 says the pair must be able to swap repeatedly: if the
+secondary is promoted and later dies, the primary -- by then a follower -- must take over again.
+It does not.
+
+**Replication is hard-wired primary to secondary.** The primary connects out to
+`me_secondary_replication`; the secondary listens. Nothing about that follows the role. So after
+a failover the leader is the secondary, which has no replication channel *to* the primary, and
+the primary has no channel *from* a leader.
+
+**Failure detection inherits the same wiring.** A follower arms its promotion timer when
+`primary_replication_conn_id_` is lost -- the connection it receives replication *on*. A primary
+acting as a follower has no such connection, so nothing arms. It does notice the socket go, and
+draws the wrong conclusion from it:
+
+```
+ME-secondary replication connection 3 lost: peer closed connection on service
+'me_secondary_replication' -- book updates paused until secondary reconnects
+```
+
+It reads the leader's death as "my secondary has gone, book updates paused". Nothing promotes,
+and the venue has no matching engine leader.
+
+**This is the same class as the sequencer routing defect fixed earlier the same day**, and the
+same omission behind all of them: *primary* and *leader* were interchangeable while nothing ever
+restarted, so channels were named after identities. Once roles move, every channel named for an
+identity is pointing at the wrong instance half the time.
+
+**Not fixed, because the shape is a design question.** Either replication follows the role --
+the leader connects to whichever instance is the follower, which means tearing down and
+re-establishing on every role change -- or both directions are maintained permanently and the
+one in use follows the role, which costs a connection and no reconnection latency. The second
+looks better for a venue that cares about failover time, but it is a decision rather than a
+patch.
+
+**A smaller fault visible in the same logs.** An ArbitrationDecision arrived as
+`leader=2 follower=0`, and the instance correctly ignored a decision that did not mention it. The
+zero comes from a leadership record rebuilt from a lease, which names only the leader; the
+follower field is filled with 0. Harmless today because a correct decision follows immediately,
+but it is a wrong value on the wire.
+
+**Scenario 32 fails on this and is left failing**, as scenario 24 was before its defect was
+fixed. It says so in place.
+
 ### Role announcements were routed to the wrong socket, and then to a dead one
 
 | | |
@@ -540,7 +591,7 @@ supervisor makes normal, and it is where every defect found on 2026-08-21 and 20
 | **R1** restart the leader *inside* the peer's grace period -- peer must not promote at all | none | none | none |
 | **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
 | **R3** restart the *follower* -- must stay follower, leader untouched | none | none | none |
-| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | none | none |
+| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | none | **32** (fails) |
 | **R5** cold start both, in either order -- deterministic leader | none | none | none |
 | **R6** restart with no arbiter reachable -- degraded, and said so | none | none | none |
 
