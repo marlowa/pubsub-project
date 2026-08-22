@@ -2121,3 +2121,108 @@ label value. The scope is the TOML section that sizes the pool, so an alert on
 | Event and command queue pool statistics | Need a `LockFreeMessageQueue` accessor |
 | C++23 advisory stage in `build.py` / `release_check.py` | Agreed, not built |
 | `.gitattributes` `export-subst` for the git hash | Offered, not built |
+
+---
+
+## Session 2026-08-22 — Restart, which had never been modelled
+
+A short session by the clock and a long one by consequence. It began with a supervisor design
+discussion and ended with seven defects found and fixed, all of them the same omission.
+
+### The omission
+
+The original HA design treated process death and machine death as equivalent. They are not, and
+the difference is not how the failure is detected but what the system is left with. A dead
+machine genuinely reduces the pair. A dead process on a healthy machine need not reduce it at
+all -- the instance can be restarted in seconds -- and treating it as machine death throws that
+away, promoting the peer and running single until somebody notices.
+
+If restart is not in the model, nothing needs to decide what a restarted instance comes back as.
+And nothing did. Written up as `design-notes-for-ha.md` section 11a.
+
+### What that produced
+
+| Defect | Found by |
+|---|---|
+| The arbiter re-ran the cold-start tie-break on a rejoin | reading it against the restart rule |
+| The matching engine promoted itself on arbiter connect | scenario 24 |
+| The sequencer routed orders by socket rather than by role | scenario 24, once the above was fixed |
+| A restarted arbiter forgot who leads, reverting to the cold-start rule | building the coverage matrix |
+| Only leaders reached the arbiter, so followers were never registered | splitting the lease from the heartbeat |
+| Role announcements were routed to the ER socket, not the order connection | scenario 26 |
+| ...and then to the connection of the process that had just died | scenario 26 |
+
+Each was visible only once the previous was fixed. Three of the seven came from one cell of an
+eighteen-cell coverage matrix.
+
+### Decisions taken
+
+**A supervisor starts processes and does not decide leadership** (section 12). Conflating the
+two is what makes such things intrusive: a component that assigns roles must know the whole
+topology and becomes something every deployment has to run. Keeping them apart is what leaves
+`scripts/launch.py` optional.
+
+**Restart must be automatic** (section 13), because a human closing the window makes it
+unbounded -- but the human was also asking *why* it died, so minimum-runtime, backoff and
+restart-as-follower take that job over. And automating recovery makes monitoring compulsory: a
+process that dies and stays dead is eventually noticed, one silently restarted forty times an
+hour never is.
+
+**Monitoring is not the control plane** (section 14). If something can be switched off, nothing
+may depend on it to work -- and `MetricsConfiguration::enabled` defaults to false, so a venue
+with no Prometheus is the default rather than a variant.
+
+**The sequencer learns leadership from an epoch-stamped claim** (section 11b), not from the
+arbiter. Making the arbiter tell everyone who cares gives it a subscriber list and knowledge of
+who depends on which decision. **The arbiter arbitrates and does nothing else.**
+
+**An arbiter that restarts is told who leads rather than remembering** (section 11c). It
+arbitrates over facts it is told rather than facts it stored. The price is that between starting
+and being informed it declines rather than guesses -- declining costs a retry, guessing costs
+the venue its book.
+
+### Things built
+
+`scripts/launch.py`, a per-process launcher: restarts what it starts, knows no topology, writes
+the *component's* pid to the plain pid file so `perf_run.py` and the resource monitor need no
+changes. Wired into `devenv.py --supervised`, off by default.
+
+`LeadershipLease` (PDU 118), which is what the component-to-arbiter message had always been
+while calling itself a heartbeat. `RoleAnnouncement` (117), so the sequencer can route to
+whoever leads.
+
+Scenarios 24, 25 and 26, covering three cells of the restart matrix. Scenario 26 needed
+`ha_test.py` taught to launch under the supervisor, because a harness restarting a process
+itself simulates a supervisor rather than exercising one.
+
+### Two tests that passed for the wrong reason, and were caught
+
+Scenario 25 restarted the arbiters in turn, so they were never down together and the state
+survived through the peer replay -- the lease path it existed to test was never touched. Killing
+both before restarting either fixed it.
+
+An expectation was also disproved: the 30 s lease interval against a 10 s learning window looked
+like a gap in which a restarted arbiter would guess. It cannot arise, because an arbiter
+restarting is what closes its components' connections and a leader leases immediately on
+connecting. The interval was left alone rather than changed on principle.
+
+### Also
+
+`build.py` was running five test binaries by name and ignoring every application suite: 90 tests
+built, installed and never executed. Now discovered rather than listed, because a list is how the
+gap arose. 893 tests to 983.
+
+The 160-column limit was clarified to cover every file type, and a root `.pylintrc` now says so,
+because an unconfigured pylint reporting 100 had caused Python here to be reformatted more than
+once.
+
+### Outstanding
+
+| Item | Status |
+|---|---|
+| Restart matrix | 4 of 18 cells. R1 for sequencer and arbiter, R3, R5, R6 all uncovered |
+| `[order_book] initial_capacity` | Agreed in principle; wants a number from the intended book size |
+| The SHM order book | Direction agreed, measurement done (2034 ms to rebuild by replay), nothing built |
+| `design-notes-for-ha.md` section 6 | Still says "Systemd or local supervisors", which contradicts section 12 |
+| A consolidated design document | Andrew's idea, parked deliberately |
+| TAP | Unchanged, still the next pub/sub component |

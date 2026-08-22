@@ -481,6 +481,45 @@ anything. It cannot arise: an arbiter restarting is what closes its components' 
 a leader sends a lease immediately on connecting rather than waiting for the timer. The interval
 was left alone rather than shortened on principle.
 
+### Role announcements were routed to the wrong socket, and then to a dead one
+
+| | |
+|---|---|
+| Found | 2026-08-22, by scenario 26, in the routing added earlier the same day |
+| How | A supervised restart made the ordering visible; the failover scenarios had hidden it |
+| Impact | Orders sent down the wrong channel, and then to the connection of a process that had just died |
+
+Two faults in the sequencer's handling of `RoleAnnouncement`, both introduced when routing was
+first made role-aware and neither caught by the failover scenarios.
+
+**The announcement arrives on the wrong socket to route by.** A matching engine opens an ER
+connection *to* the sequencer and announces on it. Orders travel the other way, on a connection
+the sequencer opens *to* the engine. Routing by the connection an announcement arrived on
+therefore aimed orders down the ER channel. The announcement names an instance, so the fix is to
+map that to this sequencer's own order connection for that instance.
+
+**And an ordering race the first fault concealed.** A restarted engine announces immediately on
+a connection it opens itself, while the sequencer's order connection to it is re-established a
+couple of seconds later. So the announcement arrived while the only order connection on record
+for that instance was the one belonging to the process that had just died:
+
+```
+11:09:32  instance 1 leads at epoch 1 -- orders now route to connection 15   <- dead process
+11:09:34  matching engine order connection 25 established                    <- the live one
+```
+
+The announced leader is now remembered, so the order connection to that instance is routed to
+when it appears:
+
+```
+11:09:34  order connection 25 to instance 1, which had already announced leadership -- routing there
+```
+
+**Why the failover scenarios missed both.** In a failover the promoted instance already holds a
+pre-warmed standby connection, so the socket exists before the announcement and the ordering
+never arises. It takes a restart -- where the connection is genuinely absent and then appears --
+to expose it. That is the argument for the restart cells of the matrix in one paragraph.
+
 ### Restart coverage: what ha_test.py exercises, and what it does not
 
 | | |
@@ -515,11 +554,12 @@ socket rather than by role. All three are in this file. That is one cell of eigh
 
 **The gaps worth taking first, and why:**
 
-* **R1 for the matching engine.** This is the case a supervisor makes the common one: the
-  grace period exists precisely so a quick local restart makes promotion unnecessary. It is now
-  writable -- `devenv.py --supervised` starts components under `scripts/launch.py` -- and a
-  version of it was run by hand on 2026-08-22: the engine was SIGKILLed, was back in six
-  seconds, and the secondary did not promote. That is not a test until it is one.
+* ~~R1 for the matching engine.~~ **Done 2026-08-22**: scenario 26. `ha_test.py` can now start
+  a component under `scripts/launch.py`, which is what makes the case testable -- a harness
+  restarting the process itself simulates a supervisor rather than exercising one. The engine
+  was restarted by its launcher in **0.1 s** and the secondary never promoted. That is the
+  sixteen-second outage of 2026-08-21 reduced to a tenth of a second, with no failover at all.
+  R1 for the sequencer and the arbiter remain uncovered.
 * ~~Any arbiter restart at all.~~ **Done 2026-08-22**: scenario 25 restarts both and asserts
   that a matching engine rejoining afterwards is still told to follow.
 * **R3.** Restarting a follower looks dull and is the case where a wrong answer is quietest: a
