@@ -182,14 +182,22 @@ it also does not stop, and it may hold resources until someone intervenes.
 Agreed 2026-08-22, while designing process supervision.
 
 **A process that dies on a machine that is still alive should be restarted, and it should come
-back as a follower unless it discovers there is no leader.** Coming back believing it leads is
-a second leader, which is the split-brain the arbiter exists to prevent, so the restart can be
-made as fast as we like without ever racing a promotion.
+back as a follower unless it discovers there is no leader.** If it came back believing it led,
+there would be two leaders whenever the peer had already been promoted -- the split-brain the
+arbiter exists to prevent.
+
+Coming back as a follower also means the restart can be made as fast as we like. There is no
+window in which a hurried restart might collide with a promotion that is already under way,
+because whichever of the two happens first, the restarted instance ends up following.
 
 **The lowest-instance-id preference is a cold-start tie-break, not a leadership policy.** It
 exists because at startup the two instances can come up in either order with a delay between
-them, and something has to make that deterministic. It is the wrong rule for a restart, where
-one instance may already be leading. The arbiter currently applies it to both -- see
+them, and something has to make that deterministic.
+
+It is the wrong rule for a restart, because by then one of the two may already be leading and
+serving traffic. Applying a preference at that point moves leadership for no reason other than
+which id is lower, and the instance it moves leadership *to* is the one that just failed. The
+arbiter currently applies it to both cases -- see
 `docs/bug_list.md`, "Rejoin after a promotion re-runs the cold-start tie-break".
 
 The rule that distinguishes them:
@@ -203,9 +211,13 @@ The rule that distinguishes them:
   sequence of restarts can produce two leaders.
 
 **Why the pair must be able to swap repeatedly.** If the secondary is promoted and later dies,
-the primary -- by then a follower -- must be able to take over again. Roles are therefore
-symmetric at runtime and only the identities are fixed: primary and secondary are permanent
-names tied to instance ids, leader and follower are positions either can hold.
+the primary -- by then a follower -- must be able to take over again.
+
+So the two words must not be confused. **Primary and secondary are permanent names**, fixed to
+instance ids in configuration, and they never change for the life of a deployment. **Leader and
+follower are positions**, and either instance can hold either one at any time. A sentence like
+"the primary is the follower" is not a contradiction; after one failover it is the normal
+state.
 
 **Two consequences that are easy to miss.**
 
@@ -213,11 +225,13 @@ names tied to instance ids, leader and follower are positions either can hold.
   process has lost its state; that is why it restarted. A leader with an empty order book does
   not know what is resting, so a member's cancel for a live order is rejected and the venue has
   quietly lost state it still holds.
-* **The grace period is sized by the restart, not chosen.** The follower waits before promoting
-  so that a quick local restart makes promotion unnecessary. That wait has to exceed a
-  supervised restart comfortably, or the venue fails over across machines for a failure that
-  did not need it -- and it has to stay short enough that a genuinely dead machine is not
-  tolerated for long. It cannot be picked before restart times are measured.
+* **The grace period is not a number to be chosen; it is measured.** The follower waits before
+  promoting so that a quick local restart can make promotion unnecessary. Set that wait shorter
+  than a restart takes and the venue fails over to another machine for a failure that did not
+  need it. Set it far longer and a genuinely dead machine is tolerated for longer than it
+  should be. The right value is therefore whatever a supervised restart actually takes, plus a
+  margin -- which cannot be known until restarts have been timed, and is a reason to build the
+  restart before tuning the timer.
 
 ---
 
@@ -283,17 +297,20 @@ comes back as a follower unless it finds there is no leader -- section 11. So au
 restart does not invent a policy, it removes a human from a judgement that already has a right
 answer.
 
-### Which is exactly why the crash-loop guard is load-bearing
+### Removing the human also removes a judgement, which has to be replaced
 
 A person deciding whether to restart is doing something a loop does not: they are asking *why*
 it died. If the cause was deterministic, restarting achieves another crash. Remove the person
 and something must take that job:
 
-* **A minimum runtime.** A process that dies sooner than this did not run, it failed to start.
+* **A minimum runtime.** A healthy component runs for hours. One that exits a couple of
+  seconds after starting has not run and stopped, it has failed to start -- so treat a death
+  inside that window as a failed start rather than as a normal exit, and count it.
 * **A backoff before retrying**, so a deterministic fault produces a slow retry rather than a
   spin.
-* **Restart as follower**, so a flapping instance cannot repeatedly take leadership from a
-  healthy peer and then lose it.
+* **Restart as follower**, so that an instance which is dying repeatedly cannot take leadership
+  from a healthy peer, die again, and hand it back -- disrupting a peer that was working
+  perfectly well, once per crash.
 
 Those three together are what make it safe to remove the human, and none is optional.
 
@@ -315,9 +332,105 @@ Two signals are wanted, and the first needs no new code:
   `up{job="pubsub_venue"} == 0` already names any component that has stopped answering. Fifteen
   targets, no instrumentation required, and it covers the invisible components exactly as well
   as the visible ones.
-* **A restart count per component**, published by whatever performs the restart. Deaths that are
-  being papered over show up as a rate; a flap is a rising count against a flat `up`.
+* **A restart count per component**, published by whatever does the restarting. This is not a
+  duplicate of the first signal, because a fast restart can be invisible to it: with a five
+  second scrape interval, a process that dies and is back within a second may never miss a
+  scrape at all, so `up` stays at 1 throughout and nothing looks wrong. A steadily rising
+  restart count beside an unbroken `up` is the only evidence that anything is happening.
 
 A third, once leadership state is exposed: **a gauge that reads 1 while a component group is
 running without a standby**, so the window of no resilience is a query and an alert rather than
 something known by whoever happened to be watching.
+
+---
+
+## 14. Monitoring is not the control plane
+
+### The rule that decides this
+
+**If something can be switched off, nothing may depend on it to work correctly.**
+`MetricsConfiguration::enabled` defaults to `false`, so a venue running with no Prometheus at
+all is not merely supported -- it is what you get unless you ask for otherwise. No recovery
+decision may therefore depend on it, or the default deployment is the broken one.
+
+The same rule decides two other things in this document. The role is a command-line argument,
+so no supervisor is needed for a process to know what it is; and a launcher is optional, so it
+cannot decide leadership. Both are section 12.
+
+**Letting the system depend on something means it can never be absent again.** Every
+deployment then has to run it, configure it and keep it healthy -- a production pair of
+machines, a developer's single laptop, and every automated test run alike. Prometheus is
+currently in none of those: `devenv.py` can start a venue without it, and the unit tests never
+see it. Make recovery depend on it and all three have to change. That is the price to weigh
+whenever something new is about to become a thing the venue cannot run without, and it is why
+that list should stay short.
+
+### Three jobs travel under the word "monitoring"
+
+**Detection that drives control.** This is the system noticing that something has failed and
+acting on it by itself: restarting a process that has died, or promoting a follower because the
+leader has gone. Nobody is asked and nobody is waiting, so it has to happen quickly, and it has
+to keep working on a machine where nothing else has been installed.
+
+Two things follow from that. It has to be **local**, because a decision taken on one machine
+must not wait on something running elsewhere that may be unreachable for the very reason the
+decision is being taken. And it has to be **immediate**, because the point of acting
+automatically is to have finished before anyone notices.
+
+The venue already has everything it needs, and in each case the failure is *reported* to it
+rather than worked out from something that has stopped happening:
+
+* a launcher calls `waitpid` and it returns -- the operating system is telling it that its
+  child has died, and telling it the exit status, at the moment it happens;
+* the follower's replication socket closes -- TCP is telling it the peer has gone, within about
+  a second, exactly as it did at 19:08:42 during the run on 2026-08-21;
+* a component's connection to the arbiter drops, and the arbiter removes it from its connection
+  table there and then.
+
+None of those involves polling, waiting for a timeout to expire, or concluding anything from
+data that has stopped arriving. The difference matters and it is the reason this job cannot be
+given to a metrics system. Being told is both fast and unambiguous. Noticing an absence takes at
+least as long as the interval you were expecting something at, and even then it cannot
+distinguish a process that has died from one that is merely slow, or from a network path that
+has broken between the two of you.
+
+**Notification to a person.** "The publisher has been dead for an hour and nobody noticed."
+This is what a metrics and alerting stack is for. Waking someone is inherently slow, so a scrape
+interval is a perfectly good granularity for it.
+
+**Reporting an event.** "This process died at 06:12 and I restarted it, for the third time this
+hour." The component that acted is the authoritative source, because it knows what happened and
+why. A poller can only ever infer it after the fact.
+
+Only the middle one belongs to Prometheus.
+
+### What `up == 0` actually means
+
+It is a **scrape failure**, not a process death, and it fires identically for a dead process, a
+wedged metrics thread inside a healthy one, and a broken path to the endpoint. That ambiguity is
+fine when paging a human, who will go and look. It is not an acceptable input to a restart
+decision. The timing says the same: scrape interval, plus rule evaluation, plus whatever `for:`
+duration stops it flapping -- tens of seconds before anything fires, against a `waitpid` that
+already knew.
+
+### Who watches the watchers
+
+The regress does not terminate by adding another watcher. It terminates when each watcher's
+failure is **covered, loud, or safe**.
+
+* **Covered -- redundancy.** The arbiter is a pair plus a witness. Nothing watches the arbiter;
+  one arbiter dying simply does not matter. This is why an arbiter beats a consensus protocol
+  for this topology: the small amount of consensus is confined to a component holding no venue
+  state.
+* **Loud -- a dead man's switch.** The answer to "who watches the monitoring". An alert that
+  always fires, routed to something that raises the alarm when it *stops* arriving. Silence
+  becomes the signal. Without it a dead monitoring system is indistinguishable from a healthy
+  venue, which is the worst failure available to it.
+* **Safe -- fail into a harmless state.** A launcher that dies leaves its child running: the
+  process is reparented and keeps trading, having lost only its restart capability. A
+  degradation rather than an outage.
+* **And, where it is cheap, let the watched watch the watcher.** A component can check
+  `getppid()`; a return of 1 means its launcher has died and it has been reparented to init.
+  Local, exact, free, no infrastructure. The pair watch each other and the regress closes at
+  two. Worth doing because it removes the one silent failure the launcher design would otherwise
+  introduce -- a component running unsupervised with nothing saying so.
