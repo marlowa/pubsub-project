@@ -1873,6 +1873,19 @@ _SCENARIOS: list[Scenario] = [
                 timeout=60.0,
                 description="the rejoined primary is a follower before the second failure",
             ),
+            # Wait for the leader's replication connection to reach the rejoined instance
+            # before failing the leader. This is not test tidiness: a follower learns the
+            # leader has died by losing the connection it RECEIVES replication on, so until
+            # that connection exists there is nothing whose loss would arm a promotion. The
+            # pair is genuinely unprotected for as long as the reconnect takes, and a version
+            # of this scenario without the wait raced that window -- passing alone and failing
+            # inside the suite, which is worse than failing outright.
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("ME-primary replication connection", "established"),
+                timeout=60.0,
+                description="the new leader's replication connection has reached the rejoined instance",
+            ),
             # Now the second failure, in the other direction.
             KillStep(
                 proc_name="matching_engine_secondary",
@@ -1881,6 +1894,173 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=SETTLE_AFTER_FAILOVER,
                 failover_to="matching_engine_primary",
                 leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+        ],
+    ),
+
+    # 33 — R4 for the arbiter pair: it must survive a second failure too.
+    #
+    # Kill the active arbiter, let its peer take over, restart the first one so it rejoins
+    # passive, then kill the peer. The restarted arbiter must become active again. An arbiter
+    # that can only take over once leaves the venue with no arbitration after two failures --
+    # and everything else now depends on an arbiter being reachable to answer.
+    Scenario(
+        number=33,
+        short_name="arbiter_pair_survives_a_second_failure",
+        description="After an arbiter failover and rejoin, the pair survives a failure the other way",
+        expected_outcome=(
+            "arbiter_secondary becomes active, arbiter_primary rejoins passive, and when the "
+            "secondary then dies the primary becomes active again"
+        ),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="arbiter_primary",
+                secondary_log_name="arbiter_secondary.log",
+                role_prefix=_ARB_ROLE,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            RestartStep(
+                proc_name="arbiter_primary",
+                ready_log_name="arbiter_primary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            # The second failure, the other way round. The restarted arbiter -- passive since
+            # rejoining -- must now take over.
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name="arbiter_primary.log",
+                role_prefix=_ARB_ROLE,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="arbiter_primary",
+            ),
+        ],
+    ),
+
+    # 34 — R5: the cold-start tie-break must give the same answer whichever instance is up.
+    #
+    # Lowest instance id wins, and the primary always holds the lower one. That rule is doing
+    # more work than it was: several fixes this session lean on it being the answer when no
+    # incumbent is known. Nothing has ever checked that it actually produces a deterministic
+    # outcome.
+    #
+    # Both engines are taken down and brought back with the SECONDARY first, so the order they
+    # appear in is the opposite of the order the rule should prefer. If the tie-break is doing
+    # its job the primary leads regardless.
+    Scenario(
+        number=34,
+        short_name="cold_start_tiebreak_is_deterministic",
+        description="Restarting both engines secondary-first still leaves the primary leading",
+        expected_outcome=(
+            "with both engines restarted and the secondary up first, the primary is still the "
+            "one that ends up leading"
+        ),
+        me_ha=True,
+        recovery_on_primary=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            KillStep(
+                proc_name="matching_engine_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            # Secondary back first, deliberately.
+            RestartStep(
+                proc_name="matching_engine_secondary",
+                ready_log_name="matching_engine_secondary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                timeout=90.0,
+                description="the primary leads despite the secondary having started first",
+            ),
+        ],
+    ),
+
+    # 35 — R6: with no arbiter reachable, the degraded rule must still pick ONE leader.
+    #
+    # design-notes-for-ha.md is explicit that a two-node system with no fencing and no arbiter
+    # is unsafe, and the fallback is "lowest instance id wins". The point of this scenario is
+    # that the fallback must actually apply that rule rather than simply promoting whoever
+    # notices: if both instances self-promote when the arbiter pool is gone, the degraded mode
+    # produces the split brain the whole design exists to avoid.
+    Scenario(
+        number=35,
+        short_name="degraded_promotion_picks_one_leader",
+        description="With no arbiter, only the lower instance id may self-promote",
+        expected_outcome=(
+            "with both arbiters dead, the restarted primary self-promotes via the instance-id "
+            "rule and says so; the secondary does not promote"
+        ),
+        me_ha=True,
+        recovery_on_primary=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            KillStep(
+                proc_name="arbiter_primary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=1.0,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            # The primary was leading; take it away and bring it back with nothing to ask.
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "self-promoting", "degraded"),
+                timeout=90.0,
+                description="the primary self-promotes and records that it is degraded",
+            ),
+            # And the other one must not have done the same. Two instances that both
+            # self-promote when the arbiter pool is gone is the split brain the arbiter exists
+            # to prevent, arrived at by the path that has no arbiter.
+            AssertAbsentStep(
+                log_name="matching_engine_secondary.log",
+                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                after_secs=25.0,
+                description="the secondary did not also promote itself",
             ),
         ],
     ),

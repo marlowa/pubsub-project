@@ -104,6 +104,18 @@ void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, co
             component_connections_.erase(key);
             conn_to_component_instance_.erase(conn_it);
             pending_requests_.erase(key);
+
+            // If the instance that just left was the one recorded as leading, stop believing
+            // it. The record exists to stop leadership being moved away from an instance that
+            // is SERVING, and one that has gone is not -- it may come back having lost
+            // everything it held. It becomes an incumbent again only by leasing again.
+            const auto known = leadership_state_.find(key.group);
+            if (known != leadership_state_.end() && known->second.leader_instance_id == key.instance_id && known->second.leadership_confirmed) {
+                known->second.leadership_confirmed = false;
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                           "ArbiterThread: group={} leader instance {} disconnected -- no longer treated as the incumbent until it leases again",
+                           pubsub_itc_fw_app::to_string(key.group), key.instance_id);
+            }
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: component group={} instance_id={} disconnected",
                        pubsub_itc_fw_app::to_string(key.group), key.instance_id);
         } else {
@@ -424,7 +436,7 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbiterStateRecord received (group={} component={} leader={} epoch={})",
                pubsub_itc_fw_app::to_string(record.group), record.component_instance_id, record.leader_instance_id, record.epoch);
 
-    leadership_state_[record.group] = ComponentState{record.leader_instance_id, 0, record.epoch};
+    leadership_state_[record.group] = ComponentState{record.leader_instance_id, 0, record.epoch, true, std::chrono::steady_clock::now()};
 
     // Acknowledge the replication record.
     const pubsub_itc_fw::ConnectionID peer = peer_active_conn();
@@ -509,8 +521,15 @@ void ArbiterThread::handle_component_heartbeat(const pubsub_itc_fw::ConnectionID
 
         // If we already have a decision for this component, send it now so it doesn't
         // have to wait for the peer to also connect before getting its role.
+        // Only a CONFIRMED record may be handed out. An unconfirmed one names an instance
+        // that held leadership once and has since gone, and telling a reconnecting instance
+        // that it leads on the strength of it is how the stale belief comes back to life: the
+        // instance believes it, leases, and re-confirms the very record that was invalidated
+        // when it disconnected. Observed doing exactly that before this check existed.
         const auto it = leadership_state_.find(hb.group);
-        if (it != leadership_state_.end() && role_ == pubsub_itc_fw_app::Role::leader) {
+        const bool usable =
+            it != leadership_state_.end() && it->second.leadership_confirmed && std::chrono::steady_clock::now() - it->second.leased_at <= leadership_lease_ttl;
+        if (usable && role_ == pubsub_itc_fw_app::Role::leader) {
             const ComponentState& state = it->second;
             send_arbitration_decision(conn_id, hb.group, state.leader_instance_id, state.follower_instance_id, state.epoch);
         }
@@ -560,7 +579,8 @@ void ArbiterThread::decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group
     inputs.reported_epoch = epoch;
 
     const auto incumbent = leadership_state_.find(group);
-    if (incumbent != leadership_state_.end()) {
+    const bool lease_expired = incumbent != leadership_state_.end() && std::chrono::steady_clock::now() - incumbent->second.leased_at > leadership_lease_ttl;
+    if (incumbent != leadership_state_.end() && incumbent->second.leadership_confirmed && !lease_expired) {
         inputs.has_incumbent = true;
         inputs.incumbent_instance_id = incumbent->second.leader_instance_id;
         inputs.incumbent_epoch = incumbent->second.epoch;
@@ -598,7 +618,7 @@ void ArbiterThread::decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group
                    pubsub_itc_fw_app::to_string(group), leader_id, follower_id, new_epoch, self_instance_id);
     }
 
-    leadership_state_[group] = ComponentState{leader_id, follower_id, new_epoch};
+    leadership_state_[group] = ComponentState{leader_id, follower_id, new_epoch, true, std::chrono::steady_clock::now()};
 
     // Send to the requesting component.
     send_arbitration_decision(requester_conn_id, group, leader_id, follower_id, new_epoch);
@@ -653,12 +673,17 @@ void ArbiterThread::handle_leadership_lease(const pubsub_itc_fw::ConnectionID& c
     }
 
     const bool changed = known == leadership_state_.end() || known->second.leader_instance_id != lease.instance_id;
-    leadership_state_[lease.group] = ComponentState{lease.instance_id, 0, lease.epoch};
-    if (changed) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "ArbiterThread: group={} is led by instance {} at epoch {} (learned from its lease on connection {})",
-                   pubsub_itc_fw_app::to_string(lease.group), lease.instance_id, lease.epoch, conn_id.get_value());
+    const bool was_unconfirmed = known == leadership_state_.end() || !known->second.leadership_confirmed;
+    ComponentState& state = leadership_state_[lease.group];
+    // The follower is not carried on a lease -- it names only the instance asserting
+    // leadership -- so an existing follower id is preserved rather than overwritten with zero.
+    const int64_t known_follower = (known == leadership_state_.end() || changed) ? 0 : known->second.follower_instance_id;
+    state = ComponentState{lease.instance_id, known_follower, lease.epoch, true, std::chrono::steady_clock::now()};
+    if (changed || was_unconfirmed) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: group={} leadership confirmed for instance {} at epoch {} by its lease",
+                   pubsub_itc_fw_app::to_string(lease.group), lease.instance_id, lease.epoch);
     }
+    static_cast<void>(conn_id);
 }
 
 void ArbiterThread::replay_leadership_to_peer(const pubsub_itc_fw::ConnectionID& conn_id) {

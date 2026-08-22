@@ -352,6 +352,40 @@ Two consequences follow and are part of the decision.
   was chosen when a heartbeat meant liveness alone; now that it also carries leadership, thirty
   seconds is longer than it wants to be, and is worth revisiting on its own.
 
+## 11d. A lease that never expires is not a lease
+
+Found 2026-08-22 by the scenario written to check the cold-start tie-break, and worth recording
+because two changes made the same day combined to produce it.
+
+**The arbiter recorded who led and then believed it indefinitely.** The record exists to stop
+leadership being moved away from an instance that is *serving*; it was being treated as a
+statement about an instance that had merely served once. An instance can restart, come back as a
+follower, and still be named as leader -- it is connected, and connection says nothing about
+leadership.
+
+**And it was made reachable by a fix.** Before, only leaders reached the arbiter, so a restarted
+follower was not in its connection table and the incumbent check failed, falling through to the
+cold-start rule -- accidentally right. Making both roles report liveness was correct on its own
+merits, and turned that accident into a trap.
+
+**Three ways the stale belief survived, all of which had to be closed:**
+
+* **The record outlived the process.** It is now cleared when the recorded leader disconnects.
+  Disconnection is the precise signal: a leader that has genuinely blipped re-leases the instant
+  it reconnects, so nothing healthy is unseated for longer than a reconnect.
+* **The lease never expired.** A time-to-live backstops it, for a leader that holds its socket
+  open and stops renewing -- which from the outside is indistinguishable from a healthy one. The
+  renewal interval was shortened from 30s to 3s to make a 10s TTL meaningful; at 30s a healthy
+  leader would expire between renewals.
+* **The invalidated record was handed back out.** This is the one that reasoning alone missed.
+  The arbiter tells a reconnecting instance what it last decided, and it was doing so from the
+  unconfirmed record -- so the restarting instance was told it led, believed it, leased, and
+  resurrected the belief that had just been invalidated. Only a confirmed record is now offered.
+
+**The general rule this leaves:** leadership is a claim with a lifetime, not a fact on file. The
+arbiter believes it while it is being renewed and while the claimant is present, and stops
+believing it otherwise -- which is what makes it a lease rather than a record.
+
 ## 12. A supervisor starts processes; it does not decide leadership
 
 These are two jobs and they must not be the same component.

@@ -37,7 +37,11 @@ port = ${matching_engine_arbiter_secondary_port}
 
 [ha_timing]
 heartbeat_timeout_seconds  = 15
-heartbeat_interval_seconds = 30
+# How often the leader renews its leadership lease with the arbiter, and how often
+# either instance reports liveness. Short because the arbiter stops believing a lease
+# that goes unrenewed for 10s: at 30s a healthy leader expired between renewals. Two
+# small PDUs every 3s against a venue doing thousands of orders a second is nothing.
+heartbeat_interval_seconds = 3
 
 [logging]
 applog_level = "info"

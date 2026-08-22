@@ -102,7 +102,24 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
         int64_t leader_instance_id{0};
         int64_t follower_instance_id{0};
         int32_t epoch{0};
+
+        // Whether this instance is still believed to hold leadership, as opposed to merely
+        // having held it once. A lease that never expires is not a lease, it is a fact -- and
+        // treating it as one meant the arbiter kept naming an instance as leader after that
+        // instance had restarted and come back as a follower, because it was still connected
+        // and connection says nothing about leadership. Cleared when the recorded leader
+        // disconnects, and when the lease goes unrenewed; set again only by a lease or a
+        // fresh decision. See design-notes-for-ha.md 11d.
+        bool leadership_confirmed{false};
+        std::chrono::steady_clock::time_point leased_at{};
     };
+
+    /// How long a lease stands without renewal before the arbiter stops believing it.
+    ///
+    /// A backstop rather than the mechanism: disconnection is the precise signal and clears
+    /// the record at once. This catches what disconnection cannot -- a leader that holds its
+    /// socket open and stops renewing, which from the outside looks identical to a healthy one.
+    static constexpr std::chrono::seconds leadership_lease_ttl{10};
     // Keyed by GROUP, not by instance. "Which instance leads the matching engine?" has one
     // answer, and keying it per instance made it unanswerable without already knowing who to
     // ask about -- which is exactly what a rejoining instance does not know. See
