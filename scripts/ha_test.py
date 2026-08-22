@@ -1636,6 +1636,78 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 27 — a supervised sequencer restart must beat its peer's promotion timeout.
+    #
+    # R1 for the sequencer pair, the same property scenario 26 establishes for the matching
+    # engine. The follower arms a timeout when peer heartbeats stop; a local restart that
+    # completes inside it means no election happens at all and the venue never changes leader
+    # for a failure that never left the machine.
+    #
+    # Scenario 1 is the counterpart: the same kill with nothing to restart the process, where
+    # the secondary correctly does promote. The two together say the mechanism distinguishes
+    # a dead process from a dead machine, which is the distinction the whole restart family of
+    # defects came from missing.
+    Scenario(
+        number=27,
+        short_name="supervised_sequencer_restart_beats_election",
+        description="Supervised sequencer restart completes before its peer elects itself",
+        expected_outcome=(
+            "the launcher restarts sequencer_primary within seconds; sequencer_secondary "
+            "never transitions to leader and order flow is uninterrupted"
+        ),
+        supervised=("sequencer_primary",),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            SupervisedKillStep(
+                proc_name="sequencer_primary",
+                restart_timeout=30.0,
+                settle_secs=2.0,
+            ),
+            AssertAbsentStep(
+                log_name="sequencer_secondary.log",
+                markers=(_SEQ_ROLE, _TO_LEADER),
+                after_secs=25.0,
+                description="sequencer_secondary never elected itself, because the restart beat its timeout",
+            ),
+        ],
+    ),
+
+    # 28 — a supervised arbiter restart must beat its peer taking over as active.
+    #
+    # R1 for the arbiter pair. Worth having separately from the other two because an arbiter
+    # that goes away and returns is now stateful in a way it was not before: it holds who
+    # leads each group, in memory, and relearns it from leases. A restart quick enough that
+    # its peer never takes over should leave the venue unable to tell anything happened.
+    #
+    # Scenario 2 is the counterpart, where nothing restarts it and arbiter_secondary does
+    # become active.
+    Scenario(
+        number=28,
+        short_name="supervised_arbiter_restart_beats_takeover",
+        description="Supervised arbiter restart completes before its peer becomes active",
+        expected_outcome=(
+            "the launcher restarts arbiter_primary within seconds; arbiter_secondary never "
+            "becomes active and the sequencer keeps its leader"
+        ),
+        supervised=("arbiter_primary",),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            SupervisedKillStep(
+                proc_name="arbiter_primary",
+                restart_timeout=30.0,
+                settle_secs=2.0,
+            ),
+            AssertAbsentStep(
+                log_name="arbiter_secondary.log",
+                markers=(_ARB_ROLE, _TO_LEADER),
+                after_secs=25.0,
+                description="arbiter_secondary never became active, because the restart beat its timeout",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}

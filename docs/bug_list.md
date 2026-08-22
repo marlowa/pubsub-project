@@ -559,12 +559,18 @@ socket rather than by role. All three are in this file. That is one cell of eigh
   restarting the process itself simulates a supervisor rather than exercising one. The engine
   was restarted by its launcher in **0.1 s** and the secondary never promoted. That is the
   sixteen-second outage of 2026-08-21 reduced to a tenth of a second, with no failover at all.
-  R1 for the sequencer and the arbiter remain uncovered.
+  Scenarios 27 and 28 do the same for the sequencer and the arbiter, and both passed first
+  time -- which is the useful result rather than a dull one. The defects all lived in what an
+  instance comes back *as*; a restart quick enough that no peer ever reacts asks nothing of
+  that machinery, so passing was the expectation and failing would have meant something worse
+  than what had already been found.
 * ~~Any arbiter restart at all.~~ **Done 2026-08-22**: scenario 25 restarts both and asserts
   that a matching engine rejoining afterwards is still told to follow.
-* **R3.** Restarting a follower looks dull and is the case where a wrong answer is quietest: a
-  follower that comes back believing it leads produces two leaders with nothing having visibly
-  failed.
+* **R3, now the first uncovered case.** Restarting a follower looks dull and is where a wrong
+  answer is quietest: a follower that comes back believing it leads produces two leaders with
+  nothing having visibly failed. Note that R1 does not cover it -- in R1 the restarted instance
+  is the leader and is *meant* to resume, so nothing there exercises an instance returning to a
+  subordinate role while its peer carries on.
 * **R5.** The lowest-instance-id preference is the venue's cold-start rule and nothing checks
   that it actually produces the same answer whichever instance starts first.
 
