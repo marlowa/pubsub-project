@@ -13,6 +13,11 @@ Options:
   --no-ha            Skip components marked ha_only = true.
   --delay SECONDS    Sleep between component starts (default: 1.0).
   --debug            Override applog_level to 'debug' in C++ configs before starting.
+  --supervised       Start each component under scripts/launch.py, so that a component
+                     which dies is restarted. Off by default. The launcher owns
+                     <name>.pid and writes the COMPONENT's pid there, so status, perf
+                     and the resource monitor are unaffected; the launcher's own pid
+                     goes to <name>.launcher.pid, and stop signals that.
 
 PID files are written to [run_dir]/<name>.pid as configured in the env TOML.
 Logs are written to [log_dir]/<name>.log and [log_dir]/<name>.stdout.
@@ -94,6 +99,27 @@ def write_pid(run_dir: Path, name: str, pid: int) -> None:
     _pid_path(run_dir, name).write_text(str(pid))
 
 
+def launcher_pid_path(run_dir: Path, name: str) -> Path:
+    """Where launch.py records its own pid, distinct from the component's.
+
+    A supervised component has two processes: the launcher and the component it started.
+    <name>.pid always names the component -- so status, perf and the resource monitor need no
+    knowledge of any of this -- and the launcher goes here.
+    """
+    return run_dir / f"{name}.launcher.pid"
+
+
+def read_launcher_pid(run_dir: Path, name: str) -> int | None:
+    """The launcher's pid, or None when the component is not supervised."""
+    path = launcher_pid_path(run_dir, name)
+    if not path.is_file():
+        return None
+    try:
+        return int(path.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
 def read_pid(run_dir: Path, name: str) -> int | None:
     """Return the PID from the PID file for name, or None if absent or unreadable."""
     path = _pid_path(run_dir, name)
@@ -162,9 +188,15 @@ def build_command(
 def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     name: str, comp: dict,
     install_dir: Path, log_dir: Path, run_dir: Path,
-    delay: float, debug: bool = False,
+    delay: float, debug: bool = False, supervised: bool = False,
 ) -> None:
     """Start a single component, writing a PID file on success.
+
+    With supervised=True the component is started under scripts/launch.py, which restarts it
+    if it dies. The launcher then owns <name>.pid and writes the COMPONENT's pid there, so
+    status, perf_run.py and the resource monitor are unaffected and need to know nothing about
+    it. Supervision is off by default: a component started without it behaves identically,
+    which is what keeps the launcher optional.
 
     If the component is already running the start is skipped.  The process is
     launched with its working directory set to comp['workdir'] (created if
@@ -218,6 +250,13 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     ldpath = ":".join(lib_dirs)
     child_env["LD_LIBRARY_PATH"] = f"{ldpath}:{existing_ldpath}" if existing_ldpath else ldpath
 
+    if supervised:
+        # launch.py restarts the component if it dies. It is put in front of the command
+        # rather than given knowledge of the venue: it wraps one process, knows only the
+        # command line below, and has no idea what a primary or a leader is.
+        command = [sys.executable, str(_SCRIPT_DIR / "launch.py"),
+                   "--name", name, "--run-dir", str(run_dir), "--"] + list(command)
+
     with stdout_path.open("w") as stdout_file:
         proc = subprocess.Popen(  # pylint: disable=consider-using-with
             command,
@@ -226,7 +265,14 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
             stderr=subprocess.STDOUT,
             env=child_env,
         )
-    write_pid(run_dir, name, proc.pid)
+
+    if supervised:
+        # Deliberately NOT written here. launch.py puts the component's pid in <name>.pid --
+        # writing the launcher's pid there instead would point every other tool at the wrapper,
+        # and the two would race to own the same file.
+        pass
+    else:
+        write_pid(run_dir, name, proc.pid)
     time.sleep(delay)
 
     # Report what actually happened, not merely what was launched. Popen succeeds as soon as
@@ -241,6 +287,39 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     print(f"  {name} — PID {proc.pid}")
 
 
+def stop_supervised(name: str, run_dir: Path, launcher_pid: int, timeout: float) -> None:
+    """Stop a component that is running under launch.py, by stopping its launcher.
+
+    The launcher forwards the signal to the component and exits without restarting it, then
+    removes both pid files itself. Waiting for the launcher to go is therefore waiting for the
+    component to have gone too.
+    """
+    os.kill(launcher_pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_pid_alive(launcher_pid):
+            break
+        time.sleep(0.1)
+    else:
+        print(f"  {name} (launcher {launcher_pid}): still alive after {timeout:.0f}s — sending SIGKILL")
+        try:
+            os.kill(launcher_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # A SIGKILLed launcher cannot tidy up after itself, and cannot have stopped its child
+        # either, so the component is dealt with directly and both files are removed here.
+        component_pid = read_pid(run_dir, name)
+        if component_pid is not None and is_pid_alive(component_pid):
+            try:
+                os.kill(component_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        remove_pid(run_dir, name)
+
+    launcher_pid_path(run_dir, name).unlink(missing_ok=True)
+    print(f"  {name} (launcher {launcher_pid}): stopped")
+
+
 def stop_one(name: str, run_dir: Path, timeout: float = _SHUTDOWN_TIMEOUT) -> None:
     """Stop a single running component by sending SIGTERM, then SIGKILL if needed.
 
@@ -249,6 +328,14 @@ def stop_one(name: str, run_dir: Path, timeout: float = _SHUTDOWN_TIMEOUT) -> No
     signal.  After SIGTERM the function polls until the process exits or the
     timeout elapses, at which point SIGKILL is sent.
     """
+    # A supervised component has a launcher in front of it, and killing the component alone
+    # would simply have the launcher start it again. Signalling the launcher is what stops
+    # the pair: it forwards the signal to the component, waits, and stands down.
+    launcher_pid = read_launcher_pid(run_dir, name)
+    if launcher_pid is not None and is_pid_alive(launcher_pid):
+        stop_supervised(name, run_dir, launcher_pid, timeout)
+        return
+
     pid = read_pid(run_dir, name)
     if pid is None:
         print(f"  {name}: no PID file — skipping")
@@ -470,7 +557,7 @@ def check_configs_expanded(install_dir: Path) -> None:
 
 def cmd_start(  # pylint: disable=too-many-arguments
     env: dict, ha_enabled: bool, delay: float, debug: bool = False,
-    component: str | None = None, with_prometheus: bool = True,
+    component: str | None = None, with_prometheus: bool = True, supervised: bool = False,
 ) -> None:
     """Implement the 'start' subcommand: export credentials then start all components.
 
@@ -501,7 +588,7 @@ def cmd_start(  # pylint: disable=too-many-arguments
         # restarting it by itself.
         if comp.get("metrics_only", False):
             write_prometheus_scrape_config(env, install_dir, run_dir)
-        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug)
+        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
         return
 
     order = startup_order(env, ha_enabled)
@@ -540,7 +627,7 @@ def cmd_start(  # pylint: disable=too-many-arguments
     print("=== starting components ===")
     for name in order:
         comp = env["components"][name]
-        start_one(name, comp, install_dir, log_dir, run_dir, delay, debug=debug)
+        start_one(name, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
     print()
     print(f"all components started.  logs → {log_dir}/")
 
@@ -579,7 +666,7 @@ def cmd_status(env: dict) -> None:
 
 def cmd_restart(  # pylint: disable=too-many-arguments
     env: dict, ha_enabled: bool, delay: float, component: str | None, debug: bool = False,
-    with_prometheus: bool = True,
+    with_prometheus: bool = True, supervised: bool = False,
 ) -> None:
     """Implement the 'restart' subcommand: stop and restart all or one named component.
 
@@ -609,11 +696,11 @@ def cmd_restart(  # pylint: disable=too-many-arguments
         comp = env["components"][component]
         if comp.get("metrics_only", False):
             write_prometheus_scrape_config(env, install_dir, run_dir)
-        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug)
+        start_one(component, comp, install_dir, log_dir, run_dir, delay, debug=debug, supervised=supervised)
     else:
         cmd_stop(env)
         print()
-        cmd_start(env, ha_enabled, delay, debug=debug, with_prometheus=with_prometheus)
+        cmd_start(env, ha_enabled, delay, debug=debug, with_prometheus=with_prometheus, supervised=supervised)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -642,6 +729,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--debug", action="store_true",
         help="override applog_level to 'debug' in all C++ component configs before starting",
+    )
+    parser.add_argument(
+        "--supervised", action="store_true",
+        help="start each component under scripts/launch.py, which restarts it if it dies. "
+             "Off by default: a component started without it behaves identically, which is "
+             "what keeps the launcher optional",
     )
     parser.add_argument(
         "--no-prometheus", action="store_true",
@@ -693,14 +786,14 @@ def main() -> None:
     with_prometheus = not args.no_prometheus
 
     if args.subcommand == "start":
-        cmd_start(env, ha_enabled, args.delay, debug=args.debug, component=args.component,
+        cmd_start(env, ha_enabled, args.delay, debug=args.debug, component=args.component, supervised=args.supervised,
                   with_prometheus=with_prometheus)
     elif args.subcommand == "stop":
         cmd_stop(env)
     elif args.subcommand == "status":
         cmd_status(env)
     elif args.subcommand == "restart":
-        cmd_restart(env, ha_enabled, args.delay, args.component, debug=args.debug,
+        cmd_restart(env, ha_enabled, args.delay, args.component, debug=args.debug, supervised=args.supervised,
                     with_prometheus=with_prometheus)
 
 
