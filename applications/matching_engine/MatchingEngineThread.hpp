@@ -340,6 +340,15 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      */
     void request_startup_arbitration();
 
+    /**
+     * @brief Tells the sequencers which role this instance now holds, and under which epoch.
+     *
+     * The sequencer used to decide where to send orders by which socket had connected, which
+     * was correct only while primary and leader meant the same thing. Announcing the role
+     * explicitly is what lets it route to whoever leads. See design-notes-for-ha.md 11b.
+     */
+    void announce_role();
+
     void begin_reconciliation();
     void send_me_position_request();
     void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);

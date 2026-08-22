@@ -268,6 +268,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // me_catchup_conn_id_ tracks the connection currently in catch-up so the handler
     // can stream to a specific ConnectionID rather than the buffered replay path.
     pubsub_itc_fw::ConnectionID me_catchup_conn_id_;
+
+    // The epoch of the most recent matching-engine RoleAnnouncement believed. An announcement
+    // quoting an older epoch is from an instance whose leadership has since been superseded
+    // and is refused, so a rejoining engine cannot take routing back from the one that
+    // replaced it. Starts at -1 so that a first announcement at epoch 0 is accepted.
+    // See design-notes-for-ha.md 11b.
+    int32_t me_announced_epoch_{-1};
+
+    /// Handles a matching engine stating which role it holds and under which epoch.
+    void handle_role_announcement(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload, size_t pdu_size,
                                  int64_t wall_time_ns);

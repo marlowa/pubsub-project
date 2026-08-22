@@ -211,9 +211,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     if (svc == "sequencer_er") {
         sequencer_er_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: primary sequencer ER connection {} established", id.get_value());
+        announce_role();
     } else if (svc == "sequencer_er_secondary") {
         sequencer_er_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
+        announce_role();
     } else if (svc == "me_secondary_replication") {
         // Primary: outbound connection to ME-secondary's replication listener established.
         secondary_replication_conn_id_ = id;
@@ -890,6 +892,7 @@ void MatchingEngineThread::adopt_leader_role() {
     arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
     // Send one heartbeat immediately so the arbiter registers us without delay.
     send_arbiter_heartbeat();
+    announce_role();
 }
 
 void MatchingEngineThread::send_arbitration_report() {
@@ -989,6 +992,29 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
 void MatchingEngineThread::enter_follower_state() {
     ha_role_state_ = MeRole::Follower;
     cancel_timer(arbiter_heartbeat_timer_id_);
+    announce_role();
+}
+
+void MatchingEngineThread::announce_role() {
+    // Reconciling counts as follower to the outside world: this instance has been told it
+    // will lead but cannot serve until its book is caught up, and orders sent meanwhile
+    // would be dropped. It announces LEADER from adopt_leader_role, once it can.
+    if (ha_role_state_ != MeRole::Leader && ha_role_state_ != MeRole::Follower) {
+        return;
+    }
+    pubsub_itc_fw_app::RoleAnnouncement announcement{};
+    announcement.instance_id = static_cast<int64_t>(config_.instance_id);
+    announcement.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
+    announcement.current_role = ha_role_state_ == MeRole::Leader ? pubsub_itc_fw_app::Role::leader : pubsub_itc_fw_app::Role::follower;
+    announcement.epoch = epoch_;
+
+    for (const pubsub_itc_fw::ConnectionID& conn : {sequencer_er_conn_id_, sequencer_er_secondary_conn_id_}) {
+        if (conn.is_valid()) {
+            send_pdu(conn, pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id, 0, announcement);
+        }
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: announced role {} at epoch {} to the sequencers",
+               pubsub_itc_fw_app::to_string(announcement.current_role), epoch_);
 }
 
 void MatchingEngineThread::send_arbiter_heartbeat() {

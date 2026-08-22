@@ -157,7 +157,19 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway protocol={} instance={} connection {} established",
                    endpoint->protocol, endpoint->instance, id.get_value());
     } else if (svc == "matching_engine") {
-        me_outbound_order_conn_id_ = id;
+        // Claim the order connection only if nothing else currently holds it. An engine that
+        // connects here is the one configured as primary, which is not the same thing as the
+        // one that leads: after a failover the promoted secondary holds leadership, and a
+        // restarting primary that took this slot would be sent orders it discards as a
+        // follower. Its RoleAnnouncement decides, not the fact that it dialled in.
+        if (!me_outbound_order_conn_id_.is_valid()) {
+            me_outbound_order_conn_id_ = id;
+        } else {
+            me_secondary_standby_conn_id_ = id;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: matching engine connection {} established while connection {} is already active -- held as standby pending its role",
+                       id.get_value(), me_outbound_order_conn_id_.get_value());
+        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: matching engine order connection {} established", id.get_value());
         if (config_.replay_mode) {
             replay_me_order_ready_ = true;
@@ -282,6 +294,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     if (message.pdu_id() == pubsub_itc_fw_app::MePositionRequest::message_pdu_id &&
         (conn_id == me_outbound_order_conn_id_ || conn_id == me_secondary_standby_conn_id_)) {
         handle_me_position_request(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // A matching engine stating which role it holds. Accepted on either ME connection,
+    // because which of them the leader is sitting on is exactly what this establishes.
+    if (message.pdu_id() == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
+        handle_role_announcement(conn_id, message);
         release_pdu_payload(message);
         return;
     }
@@ -1785,6 +1805,63 @@ void SequencerThread::stream_wal_record_to_external_subscribers(const pubsub_itc
 }
 
 // ME failover reconciliation (Slice D)
+
+void SequencerThread::handle_role_announcement(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::RoleAnnouncementView announcement{};
+
+    if (!pubsub_itc_fw_app::decode(announcement, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode RoleAnnouncement -- dropping");
+        return;
+    }
+
+    if (announcement.group != pubsub_itc_fw_app::ComponentGroup::matching_engine) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: RoleAnnouncement for group={} -- ignoring, only matching_engine is routed",
+                   pubsub_itc_fw_app::to_string(announcement.group));
+        return;
+    }
+
+    // The epoch is what makes a claim safe to believe. An instance whose leadership has been
+    // superseded still believes it leads until something tells it otherwise, and it may well
+    // announce that on reconnecting; its epoch is behind the one the arbiter has since issued,
+    // so the claim is refused without the sequencer having to ask the arbiter anything.
+    if (announcement.epoch < me_announced_epoch_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: RoleAnnouncement from instance {} on connection {} quotes epoch {}, behind the {} already accepted -- refusing",
+                   announcement.instance_id, conn_id.get_value(), announcement.epoch, me_announced_epoch_);
+        return;
+    }
+    me_announced_epoch_ = announcement.epoch;
+
+    if (announcement.current_role == pubsub_itc_fw_app::Role::leader) {
+        if (conn_id != me_outbound_order_conn_id_) {
+            // Whatever was in the order slot is not the leader, so it becomes the standby.
+            me_secondary_standby_conn_id_ = me_outbound_order_conn_id_;
+            me_outbound_order_conn_id_ = conn_id;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: matching engine instance {} leads at epoch {} -- orders now route to connection {}", announcement.instance_id,
+                       announcement.epoch, conn_id.get_value());
+        }
+        return;
+    }
+
+    // A follower must not be sent orders: it drops them. If it is holding the order slot --
+    // which is what happens when a restarted primary reconnects on the service it is
+    // configured for -- move it out and leave the slot to whichever instance announces
+    // leadership. Orders are refused meanwhile rather than sent somewhere they vanish.
+    if (conn_id == me_outbound_order_conn_id_) {
+        me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        me_secondary_standby_conn_id_ = conn_id;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- withdrawn from order routing",
+                   announcement.instance_id, conn_id.get_value(), announcement.epoch);
+    }
+}
 
 void SequencerThread::handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();

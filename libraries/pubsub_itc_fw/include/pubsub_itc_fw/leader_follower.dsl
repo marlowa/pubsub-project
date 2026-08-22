@@ -301,6 +301,38 @@ message MePositionAck (id=116, version=1)
 end
 
 # ------------------------------------------------------------
+#  117 -- RoleAnnouncement
+#  Sent by a matching engine to the sequencer to say which role it
+#  currently holds, and under which epoch it holds it.
+#
+#  It exists because the sequencer used to decide where to send orders
+#  by which socket had connected: the connection from the primary was
+#  "the matching engine" and the one from the secondary was a standby.
+#  That was true only while primary and leader meant the same thing.
+#  Once an instance can restart and rejoin as a follower, the sequencer
+#  can be sending orders to an instance that discards them while the
+#  leader sits on the connection it calls the standby.
+#
+#  The epoch is what makes the claim safe to believe. The sequencer
+#  accepts an announcement only when its epoch is at least as new as
+#  the last it accepted for that group, so an instance whose leadership
+#  has since been superseded cannot reclaim routing -- its epoch is
+#  behind and the claim is refused. The authority still rests with the
+#  arbiter, because the epoch being quoted is one the arbiter issued;
+#  the sequencer never has to ask it anything.
+#
+#  Sent on connecting to the sequencer, and again on every role change,
+#  so a sequencer that restarts learns the current arrangement from the
+#  next announcement rather than having to remember it.
+# ------------------------------------------------------------
+message RoleAnnouncement (id=117, version=1)
+    i64 instance_id        # which instance is announcing
+    ComponentGroup group   # the HA pair it belongs to
+    Role current_role      # the role it now holds
+    i32 epoch              # the epoch it holds that role under
+end
+
+# ------------------------------------------------------------
 #  120 -- SessionBound
 #  Sent by a gateway to the sequencer once a client session is
 #  authenticated and established, and again on every reconnect.
