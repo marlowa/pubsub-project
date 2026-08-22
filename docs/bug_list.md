@@ -389,6 +389,114 @@ Two distinct faults, and the second is the awkward one:
   from *accepted and queued behind nothing* — the gap between `nos_received` and
   `accounted` already carries that information and nothing reports it.
 
+### Every HA scenario models machine death; none models process death
+
+| | |
+|---|---|
+| Found | 2026-08-22, designing process supervision |
+| How | Reading `scripts/ha_test.py` against the restart rule being designed |
+| Impact | The half of HA that a supervisor exercises is untested, including the defect recorded below |
+
+`ha_test.py` kills a component and leaves it dead. Scenario 16, the ME HA failover, SIGKILLs
+`matching_engine_primary`, and the secondary waits out the ~15 s promotion timeout, arbitrates
+and adopts leader. Nothing restarts the primary -- which is correct for the failure being
+modelled, because a dead machine does not come back.
+
+**But that is only half of what HA has to survive.** A process that dies on a machine that is
+still running will be restarted, and everything about that path is currently unexercised: the
+grace period doing its job, a restarted instance choosing a role, and a pair that has swapped
+roles swapping back on a later failure. Scenarios 10 to 13 do kill and restart the matching
+engine, but they run a single engine, so no role is ever in question.
+
+**Two scenarios are missing**, and the second is the regression test for the entry below.
+
+1. **Restart inside the grace period.** Kill the primary and restart it before the follower's
+   promotion timeout expires. The secondary must *not* promote, no arbitration should occur,
+   and the primary should resume having reconciled. This is the case a supervisor makes normal,
+   and it is the one that proves the grace period is doing the job it exists for.
+2. **Restart after a promotion.** Kill the primary, let the secondary promote, then restart the
+   primary. It must come back as a **follower**. Today the arbiter would prefer it on instance
+   id and hand leadership back to the instance that has just lost its book -- see "Rejoin after
+   a promotion re-runs the cold-start tie-break". A scenario that asserts the primary comes back
+   as follower fails against the current code and passes against the fix.
+
+A third is worth having once those pass: kill the promoted secondary afterwards and confirm the
+primary -- by then a follower -- takes over again. That is the property that makes the pair
+survive successive failures rather than one.
+
+### Rejoin after a promotion re-runs the cold-start tie-break
+
+| | |
+|---|---|
+| Found | 2026-08-22, designing process supervision |
+| How | Reading the arbiter against the rule a restarted primary needs to follow |
+| Impact | A restarted primary -- which by definition has just lost its book -- would be handed leadership back from a healthy secondary that has it |
+
+**Two different questions are answered by one rule.** "Which instance should lead when neither
+is leading yet?" is a cold-start tie-break, and lowest instance id is the right answer for it:
+the two can start in either order with a delay between them, and the preference makes that
+deterministic. "Which instance should lead when one of them already is?" is a different
+question, and lowest id is the wrong answer to it.
+
+`decide_and_broadcast` (`ArbiterThread.cpp:550`) answers both the same way:
+
+```cpp
+const bool peer_connected = component_connections_.count(peer_key) > 0;
+const int64_t leader_id = peer_connected ? std::min(self_instance_id, peer_instance_id) : self_instance_id;
+```
+
+It writes `leadership_state_` and never reads it. The arbiter therefore has no notion of an
+incumbent, and recomputes leadership from scratch every time it is asked.
+
+**Why that is dangerous rather than merely untidy.** The primary always holds the lower id. So
+after the secondary has been promoted, a primary that restarts and triggers arbitration is
+handed leadership back -- and a restarted primary has lost its book, because losing it is why
+it restarted. The venue would move leadership from an instance holding the book to one holding
+nothing.
+
+**The rule agreed 2026-08-22**, which distinguishes the two questions:
+
+```
+if (an incumbent leader is recorded for this group AND that instance is connected)
+    keep the incumbent
+else
+    lowest instance id wins          // cold start, or the incumbent is gone
+```
+
+| situation | incumbent | connected | outcome |
+|---|---|---|---|
+| cold start, either order | none | -- | lowest id: primary leads |
+| primary restarts, secondary leads | secondary | yes | **primary becomes follower** |
+| primary restarts, secondary's machine died | secondary | no | falls through: primary leads |
+| primary restarts, secondary never promoted | primary | yes | primary leads again |
+
+The last row is the *common* case once a supervisor exists, not an exotic one: the follower's
+grace period is there so that a quick local restart happens before any promotion does.
+
+**What the fix needs.**
+
+1. **Re-key `leadership_state_` by group.** It is currently keyed `(group, instance_id)`
+   (`ArbiterThread.hpp:84`), so "who leads the matching engine?" is not a single lookup and the
+   incumbent cannot be consulted.
+2. **Consult it in `decide_and_broadcast`**, with the connectivity check above.
+3. **Gate resumption of leadership on reconciliation, not on the decision arriving.** A
+   restarted primary that becomes leader again with an empty book is a leader that does not
+   know what is resting: a member's cancel for a live order is rejected and the venue has
+   silently lost state it still notionally holds. The `Reconciling` state and WAL catch-up
+   exist; the ordering is what matters.
+4. **Learn the current epoch from the arbiter before emitting anything.** Epochs are checked on
+   every PDU, so a node rejoining with a stale one has its traffic discarded -- the right
+   outcome, but it should be deliberate.
+
+**Not traced:** what the code does on rejoin today, end to end. The reconnect path
+(`ArbiterThread.cpp:509`) sends a *stored* decision keyed by the connecting instance's own id,
+and after a promotion nothing is stored under the primary's key. Whether that yields silence, a
+stale decision or a fresh arbitration was not followed through. It does not change the design
+above, which is needed either way.
+
+**Blocked on nothing** -- unlike the recovery-time entry, this can be fixed before supervision
+exists, and should be, because it is what makes a restarted primary safe.
+
 ### A process death on the same host takes the machine-death path
 
 | | |
