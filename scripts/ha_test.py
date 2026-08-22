@@ -396,6 +396,46 @@ class RestartStep(NamedTuple):
     settle_secs: float
 
 
+class SupervisedKillStep(NamedTuple):
+    """
+    Kill a supervised component and wait for its launcher to bring it back.
+
+    Different from KillStep in what it targets and who restores it. The Popen the harness
+    holds is the launcher, so the component is killed by pid from <run_dir>/<name>.pid, and
+    nothing here restarts it -- launch.py does, which is the point. The harness restarting it
+    would be simulating a supervisor rather than exercising one.
+
+    Returns when a DIFFERENT pid appears in that file, which is the launcher having replaced
+    the process rather than merely the old one still being listed.
+
+    proc_name:      component to kill, and the pid file to watch
+    restart_timeout: how long the launcher is given to bring it back
+    settle_secs:    pause after it returns, before the next step
+    """
+    proc_name: str
+    restart_timeout: float
+    settle_secs: float
+
+
+class AssertAbsentStep(NamedTuple):
+    """
+    Wait, then assert a log does NOT contain a line with all of the given markers.
+
+    For properties that are only expressible as something not having happened. A peer that
+    correctly declines to promote produces no log line saying so -- the evidence is the
+    absence of the promotion it would otherwise have made -- and that can only be judged after
+    leaving it long enough to have made one.
+
+    after_secs must comfortably exceed the window in which the thing could occur, or the
+    absence proves nothing except that the test was impatient.
+    """
+    log_name: str
+    markers: tuple
+    after_secs: float
+    description: str
+    from_byte: int = 0
+
+
 class InterimOrdersStep(NamedTuple):
     """
     Send a batch of orders mid-Phase-4 and wait for ME confirmation.
@@ -458,7 +498,17 @@ class Scenario(NamedTuple):
     # seq_no=0 cancel ERs that must route to the client via the WalRecord envelope.
     # The assertion checks a non-empty book was cancelled and no ER was dropped for
     # a missing conn id.  See run_scenario's "ME-HA: cancel-on-failover" block.
+    # Components to start under scripts/launch.py, so that killing one has it restarted by a
+    # real supervisor rather than by this harness. Needed for any scenario whose subject is
+    # what happens when a restart beats a timeout: a harness restarting the process itself
+    # would be simulating the supervisor rather than testing one.
+    supervised: tuple = ()
+
     me_ha: bool = False
+    # For an me_ha scenario in which leadership does NOT move, so recovery orders return to
+    # the primary. Without it the run waits for them on the secondary, which correctly
+    # received nothing.
+    recovery_on_primary: bool = False
     # Override args.orders_during for this scenario (None = use the CLI value).
     # The ME-HA scenario sets 0 for a deterministic recovery count on the
     # promoted secondary (in-flight orders would advance the secondary's
@@ -1538,6 +1588,54 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 26 — a supervised matching engine that dies is restarted before its peer promotes.
+    #
+    # The case a supervisor makes ordinary, and the one the follower's grace period exists
+    # for. On 2026-08-21 the primary was OOM-killed and the venue stopped for sixteen seconds
+    # against a documented target of under fifty milliseconds for local process recovery --
+    # not because the timer was wrong, but because nothing filled the window it opens. See
+    # docs/bug_list.md, "A process death on the same host takes the machine-death path".
+    #
+    # matching_engine_primary is started under scripts/launch.py so a real supervisor
+    # restarts it. The harness doing that itself would prove nothing: the question is whether
+    # a genuine restart completes before the peer's promotion timeout, and a harness that
+    # restarts instantly is not evidence about a supervisor that does not.
+    #
+    # The assertion is an absence. A secondary that correctly declines to promote logs
+    # nothing saying so; the evidence is the promotion it never made, judged after leaving it
+    # comfortably longer than the timeout in which it would have made one.
+    Scenario(
+        number=26,
+        short_name="supervised_me_restart_beats_promotion",
+        description="Supervised ME restart completes before the peer promotes",
+        expected_outcome=(
+            "the launcher restarts matching_engine_primary within seconds; "
+            "matching_engine_secondary never promotes and the primary keeps leadership"
+        ),
+        me_ha=True,
+        supervised=("matching_engine_primary",),
+        recovery_on_primary=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            SupervisedKillStep(
+                proc_name="matching_engine_primary",
+                restart_timeout=30.0,
+                settle_secs=2.0,
+            ),
+            # The promotion timeout is ~15s (ha_timing.heartbeat_timeout_seconds). Waiting 25
+            # leaves no room for argument about whether the secondary simply had not got
+            # round to it.
+            AssertAbsentStep(
+                log_name="matching_engine_secondary.log",
+                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                after_secs=25.0,
+                description="the secondary never promoted, because the restart beat its timeout",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -1947,16 +2045,33 @@ def check_me_seq_monotonic(me_log: Path) -> tuple[bool, list[tuple[int, int, int
 
 
 def launch_app(name: str, bin_name: str, config: Path,
-               bin_dir: Path, log_dir: Path) -> subprocess.Popen:
+               bin_dir: Path, log_dir: Path, run_dir: Path | None = None) -> subprocess.Popen:
+    """Start one component, optionally under scripts/launch.py.
+
+    With run_dir given the component is supervised: launch.py restarts it if it dies, and the
+    Popen returned is the LAUNCHER, not the component. Anything that needs to kill the
+    component itself must read run_dir/<name>.pid, which launch.py keeps pointed at the child.
+
+    Supervision is what makes the "restart inside the grace period" case testable at all. A
+    harness that killed and restarted the process itself would be simulating a supervisor
+    rather than exercising one, and the thing under test is whether a real restart beats the
+    peer's promotion timeout.
+    """
     if not config.is_file():
         die(f"config not found: {config}")
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
     # passed as absolute paths, so they are unaffected by the cwd.
+    command = [str(bin_dir / bin_name), str(log_dir / f"{name}.log"), str(config)]
+    if run_dir is not None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        command = [sys.executable, str(Path(__file__).resolve().parent / "launch.py"),
+                   "--name", name, "--run-dir", str(run_dir), "--"] + command
+
     with open(log_dir / f"{name}.stdout", "w") as stdout_fh:
         proc = subprocess.Popen(
-            [str(bin_dir / bin_name), str(log_dir / f"{name}.log"), str(config)],
+            command,
             cwd=str(config.parent),
             stdout=stdout_fh,
             stderr=subprocess.STDOUT,
@@ -2353,6 +2468,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     bin_dir = prefix / "bin"
     etc_dir = prefix / "etc"
     log_dir = prefix / "log"
+    run_dir = prefix / "run"
 
     # The ME-HA topology uses the _primary/_secondary config set: baseline
     # orders flow to matching_engine_primary; after the primary is killed the
@@ -2558,7 +2674,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         log("=== Phase 1: starting all processes ===")
         for name, bin_name, config in launch_table:
             log(f"  Starting {name} ...")
-            proc = launch_app(name, bin_name, config, bin_dir, log_dir)
+            proc = launch_app(name, bin_name, config, bin_dir, log_dir,
+                              run_dir if name in scenario.supervised else None)
             app_procs.append((name, proc))
             proc_by_name[name] = proc
             time.sleep(STARTUP_DELAY)
@@ -2753,6 +2870,50 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 )
                 restart_results.append((step.proc_name, elapsed))
                 phase4_results.append(("restart", step.proc_name, elapsed))
+            elif isinstance(step, SupervisedKillStep):
+                pid_path = run_dir / f"{step.proc_name}.pid"
+                if not pid_path.is_file():
+                    die(f"{step.proc_name} is not supervised: no {pid_path}")
+                before = int(pid_path.read_text().strip())
+                log(f"  SIGKILL -> {step.proc_name} component PID {before} (its launcher should restore it)")
+                try:
+                    os.kill(before, signal.SIGKILL)
+                except ProcessLookupError:
+                    die(f"{step.proc_name} PID {before} was already gone")
+
+                started = time.monotonic()
+                after = before
+                while time.monotonic() - started < step.restart_timeout:
+                    if pid_path.is_file():
+                        try:
+                            current = int(pid_path.read_text().strip())
+                        except ValueError:
+                            current = before
+                        if current != before:
+                            after = current
+                            break
+                    time.sleep(0.05)
+                if after == before:
+                    die(f"{step.proc_name} was not restarted within {step.restart_timeout:.0f}s "
+                        f"-- the launcher did not replace PID {before}")
+                elapsed = time.monotonic() - started
+                log(f"  {step.proc_name} restarted by its launcher as PID {after} ({elapsed:.1f}s)")
+                phase4_results.append(("supervised restart", step.proc_name, elapsed))
+                time.sleep(step.settle_secs)
+            elif isinstance(step, AssertAbsentStep):
+                markers_repr = " + ".join(repr(m) for m in step.markers)
+                log(f"  VERIFY: {step.description}")
+                log(f"    waiting {step.after_secs:.0f}s, then requiring {step.log_name} NOT to contain {markers_repr} ...")
+                time.sleep(step.after_secs)
+                seen, _, _ = poll_log_for(
+                    log_dir / step.log_name, *step.markers,
+                    timeout=0.0,
+                    from_byte=step.from_byte,
+                )
+                if seen:
+                    die(f"Verification failed: {step.description} -- {step.log_name} contains {markers_repr}")
+                log("    confirmed absent")
+                phase4_results.append(("verify", step.description, step.after_secs))
             elif isinstance(step, InterimOrdersStep):
                 count = step.count_batches * 1000
                 running_me_total += count
@@ -2851,7 +3012,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
         )
         after_total  = orders_after * 1000
 
-        if scenario.me_ha:
+        if scenario.me_ha and scenario.recovery_on_primary:
+            # No failover happened: the primary kept leadership, so recovery orders come back
+            # to it rather than to the secondary. The scenario that needs this is the one where
+            # a supervised restart beats the peer's promotion timeout -- the whole point being
+            # that leadership never moved.
+            recovery_log = me_log
+            me_log_from  = file_end(me_log)
+            count_based  = True
+            after_target = after_total
+        elif scenario.me_ha:
             # Recovery orders flow to the PROMOTED secondary ME.  Count live NOS
             # accepts on its log from the current EOF: WAL reconciliation logs no
             # accept line (it applies NOS to the book silently), so the count is
@@ -2970,7 +3140,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
         #
         # The gateway-death scenario reuses the same cancel burst but asserts the
         # opposite outcome, so it takes the branch below instead of this one.
-        if scenario.me_ha and not scenario.assert_gateway_orphaned:
+        # Skipped when leadership never moved: there is no promotion, so no book to cancel
+        # and no cancel-ER routing to exercise. Asserting it would be requiring a failover of
+        # a scenario whose whole point is that none happened.
+        if scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary:
             cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
             if cancel_count <= 0:
                 die("ME-HA: promoted secondary did not cancel a non-empty book on failover "
