@@ -1708,6 +1708,51 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 29 — restarting the FOLLOWER must change nothing about who leads.
+    #
+    # R3, and the case where a wrong answer is quietest. The other restart scenarios are
+    # about an instance returning to a role it is entitled to; this is about one returning to
+    # a subordinate role while its peer carries on serving. If it came back believing it led,
+    # there would be two leaders with nothing having visibly failed -- no outage, no error, no
+    # promotion in any log -- which is the one failure mode that does not announce itself.
+    #
+    # A starting secondary adopts Follower silently, with no line saying so, so the assertion
+    # has to be built the other way round: prove it came back and rejoined properly (the
+    # primary's replication connection is re-established to it), then require that it never
+    # promoted. RestartStep deletes its log first, so the absence covers only what happened
+    # after it returned.
+    Scenario(
+        number=29,
+        short_name="me_follower_restart_changes_nothing",
+        description="Restarting the follower ME leaves leadership untouched",
+        expected_outcome=(
+            "matching_engine_secondary returns as a follower, rejoins replication, and never "
+            "adopts LEADER; the primary keeps leading and orders are uninterrupted"
+        ),
+        me_ha=True,
+        # Leadership never moves, so recovery orders come back to the primary.
+        recovery_on_primary=True,
+        orders_during_override=0,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            RestartStep(
+                proc_name="matching_engine_secondary",
+                ready_log_name="matching_engine_secondary.log",
+                ready_markers=("ME-primary replication connection", "established"),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            AssertAbsentStep(
+                log_name="matching_engine_secondary.log",
+                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                after_secs=20.0,
+                description="the restarted follower never promoted itself",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
