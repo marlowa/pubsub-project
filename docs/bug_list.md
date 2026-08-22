@@ -590,6 +590,41 @@ pre-warmed standby connection, so the socket exists before the announcement and 
 never arises. It takes a restart -- where the connection is genuinely absent and then appears --
 to expose it. That is the argument for the restart cells of the matrix in one paragraph.
 
+### With no arbiter reachable, a starting engine never promoted and never said so
+
+| | |
+|---|---|
+| Found | 2026-08-22, by scenario 35 |
+| How | Killed both arbiters, then restarted the matching engine that had been leading |
+| Impact | The venue has no matching engine leader, indefinitely, announced by nothing but connection-refused retries |
+
+`design-notes-for-ha.md` is explicit that a two-node system with no arbiter falls back to
+"lowest instance id wins". The fallback existed, and was unreachable.
+
+The degraded self-promotion lives inside `send_arbitration_report()`, which was only ever called
+from `request_startup_arbitration()` -- and that was called **when an arbiter connection came
+up**. With the arbiter pool down, no connection comes up, so a starting engine never asked, never
+degraded, and sat in `UNKNOWN` forever:
+
+```
+HA enabled, starting as UNKNOWN (instance_id=1, configured primary)
+service 'arbiter_primary' failed to connect; retrying every 2000ms
+service 'arbiter_secondary' failed to connect; retrying every 2000ms
+```
+
+Nothing else logged. The venue was not serving and said so only by omission -- the failure mode
+section 13 of the design notes describes as the one that does not announce itself.
+
+**Fixed 2026-08-22.** The startup arbitration timer is armed when the thread starts rather than
+when an arbiter connects. It fires, finds the role still unresolved, and applies the instance-id
+rule.
+
+**Only the primary arms it**, which is worth stating because it is what makes the fallback
+correct rather than merely present. The secondary starts as a follower and waits, so the instance
+that promotes unilaterally is always the lower id -- the rule the design specifies, satisfied by
+construction rather than by a comparison that could be written the wrong way round. Scenario 35
+asserts both halves: the primary degrades and says so, and the secondary does not also promote.
+
 ### Restart coverage: what ha_test.py exercises, and what it does not
 
 | | |
@@ -607,12 +642,12 @@ supervisor makes normal, and it is where every defect found on 2026-08-21 and 20
 
 | | sequencer | arbiter | matching engine |
 |---|---|---|---|
-| **R1** restart the leader *inside* the peer's grace period -- peer must not promote at all | none | none | none |
+| **R1** restart the leader inside the peer's grace period; the peer must not promote | **27** | **28** | **26** |
 | **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
-| **R3** restart the *follower* -- must stay follower, leader untouched | none | none | none |
-| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | none | **32** |
-| **R5** cold start both, in either order -- deterministic leader | none | none | none |
-| **R6** restart with no arbiter reachable -- degraded, and said so | none | none | none |
+| **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
+| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
+| **R5** cold start both, in either order -- deterministic leader | none | none | **34** |
+| **R6** restart with no arbiter reachable -- degraded, and said so | none | none | **35** |
 
 Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
 question; they test that it comes back, not what it comes back as.
@@ -622,27 +657,19 @@ question; they test that it comes back, not what it comes back as.
 on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
 socket rather than by role. All three are in this file. That is one cell of eighteen.
 
-**The gaps worth taking first, and why:**
+**Where it stands, 2026-08-22.** Fourteen of eighteen cells. Every cell taken so far found at
+least one defect except R1, R3 and R4-arbiter, which passed first time -- and that pattern is
+itself informative: the defects all lived in what an instance comes back *as*, so the cells where
+nothing has to decide that were the ones that already worked.
 
-* ~~R1 for the matching engine.~~ **Done 2026-08-22**: scenario 26. `ha_test.py` can now start
-  a component under `scripts/launch.py`, which is what makes the case testable -- a harness
-  restarting the process itself simulates a supervisor rather than exercising one. The engine
-  was restarted by its launcher in **0.1 s** and the secondary never promoted. That is the
-  sixteen-second outage of 2026-08-21 reduced to a tenth of a second, with no failover at all.
-  Scenarios 27 and 28 do the same for the sequencer and the arbiter, and both passed first
-  time -- which is the useful result rather than a dull one. The defects all lived in what an
-  instance comes back *as*; a restart quick enough that no peer ever reacts asks nothing of
-  that machinery, so passing was the expectation and failing would have meant something worse
-  than what had already been found.
-* ~~Any arbiter restart at all.~~ **Done 2026-08-22**: scenario 25 restarts both and asserts
-  that a matching engine rejoining afterwards is still told to follow.
-* **R3, now the first uncovered case.** Restarting a follower looks dull and is where a wrong
-  answer is quietest: a follower that comes back believing it leads produces two leaders with
-  nothing having visibly failed. Note that R1 does not cover it -- in R1 the restarted instance
-  is the leader and is *meant* to resume, so nothing there exercises an instance returning to a
-  subordinate role while its peer carries on.
-* **R5.** The lowest-instance-id preference is the venue's cold-start rule and nothing checks
-  that it actually produces the same answer whichever instance starts first.
+**What is left:**
+
+* **R5 and R6 for the sequencer and the arbiter.** The matching engine versions found two
+  defects between them -- a stale incumbent surviving a restart, and a degraded fallback that
+  was unreachable. Neither is obviously matching-engine-specific, so the same questions are
+  worth asking of the other two pairs.
+* Nothing else. R1 to R4 are complete across all three components.
+
 
 ### Rejoin after a promotion re-runs the cold-start tie-break
 

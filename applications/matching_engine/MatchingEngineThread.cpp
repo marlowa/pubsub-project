@@ -206,6 +206,22 @@ void MatchingEngineThread::on_app_ready_event() {
         connect_to_service("me_peer_replication");
     }
 
+    if (ha_enabled_ && is_primary_) {
+        // Arm the startup arbitration timer HERE, not only when an arbiter connection comes
+        // up. The degraded fallback lived inside the path taken on arbiter connect, so an
+        // instance starting with the arbiter pool down never asked, never degraded, and sat
+        // in UNKNOWN indefinitely -- the venue with no matching engine leader, announced by
+        // nothing but connection-refused retries. Armed unconditionally, the timer fires,
+        // finds the role still unresolved, and applies the instance-id rule.
+        //
+        // Only the primary arms it. The secondary starts as a follower and waits, so the
+        // instance that degrades unilaterally is always the lower id -- which is the rule the
+        // design specifies for the no-arbiter case, satisfied by construction rather than by
+        // a check that could be got wrong.
+        cancel_timer(startup_arbitration_timer_id_);
+        startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+    }
+
     if (ha_enabled_) {
         // Both roles connect to the arbiter pool: the primary heartbeats to hold
         // its lease; the secondary requests arbitration on primary loss.
