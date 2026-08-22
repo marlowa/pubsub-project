@@ -276,6 +276,26 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // See design-notes-for-ha.md 11b.
     int32_t me_announced_epoch_{-1};
 
+    // Which instance last announced leadership. Kept because the announcement can arrive
+    // before this sequencer's order connection to that instance exists: a restarted engine
+    // announces on its ER connection, which it opens, while the order connection is one this
+    // sequencer opens to it and may not have re-established yet. Without remembering, routing
+    // is left pointing at the connection to the process that just died.
+    int64_t me_announced_leader_instance_{0};
+
+    // The sequencer's own ORDER connection to each matching engine instance, so that a
+    // RoleAnnouncement -- which names an instance and arrives on that instance's ER
+    // connection, a different socket entirely -- can be mapped to the socket orders actually
+    // travel on. Routing orders down the connection an announcement arrived on sends them the
+    // wrong way, which is what the first version of this did.
+    std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> me_order_conn_by_instance_;
+
+    // Primary is always instance 1 and secondary always 2; the ids are fixed for the life of
+    // a deployment and the arbiter's cold-start preference relies on it. Which of them LEADS
+    // moves, and is what the announcement reports.
+    static constexpr int64_t me_primary_instance_id = 1;
+    static constexpr int64_t me_secondary_instance_id = 2;
+
     /// Handles a matching engine stating which role it holds and under which epoch.
     void handle_role_announcement(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
