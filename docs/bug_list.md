@@ -190,172 +190,6 @@ fixed entry below). Unlike the hostnames, these are safe to fill in from `dev.to
 environments are built, because a queue depth is a capacity decision rather than a fact about a
 host that has to be looked up — so the count is larger but the difficulty is unchanged.
 
-### A growing hash map stalls the reactor callback thread for over a second
-
-| | |
-|---|---|
-| Found | 2026-08-08 |
-| How | The first clean compressed-trading-day load run — the reactor's own watchdog logged it, and the profile confirmed the cause |
-| Impact | p99 of 733 ms at 4.2M orders, over 1 s at 8.4M, after which the pipeline did not recover and 1,167,392 of 9,556,000 orders were never accepted |
-
-The matching engine's order book is a `tsl::robin_map` with `power_of_two_growth_policy<2ul>`. It
-doubles, and each doubling rehashes the whole table **on the callback thread**. Stalls land only on
-exact powers of two — all five stalls of 200 ms or more did, and none occurred elsewhere.
-
-**This is a framework requirement, not an application bug.** Calling `reserve()` in the matching
-engine would remove the symptom from a stub and teach nothing. `pubsub_itc_fw` offers slab and pool
-allocators for messages *in flight* and nothing at all for long-lived hot-path state that *grows* —
-so every application that keeps state (an order book, a session table, a subscription registry)
-will grow a container on a reactor callback thread and eventually stall it.
-
-See [Compressed Trading Day Load Profile](design/trading_day_load.md).
-
-**The framework half is done, 2026-08-11.** `IncrementalRehashMap` is the growable structure the
-design note asked for: when the table must grow it allocates a second one and moves the entries
-eight slots per mutating operation, searching both while the move is in flight. The worst case for
-any one operation is a probe plus eight moves, whatever the size of the map -- where the old cost
-was O(capacity) in the operation that crossed the threshold, and the capacity is what kept
-doubling. Rehashing on a background thread was the alternative and was rejected: it puts two
-threads on one table, which means a lock on the hot path or a lock-free open-addressed table with
-tombstones. Migrating a few slots at a time keeps the structure thread-confined, as the container
-it replaces already was -- and confinement is now checked rather than assumed, under
-`PUBSUB_ITC_FW_THREAD_CHECKS`.
-
-What remains O(capacity) is clearing the new table's state array: one byte per slot, a memset of
-about 8 MB at the size that stalled for over a second, which measures under a millisecond. That is
-recorded in the header rather than glossed over.
-
-47 unit tests, counting the ones added for `GrowthReportingAllocator` alongside it: differential
-testing against `std::unordered_map` over three seeds and three workload shapes, the migration
-boundaries driven one step at a time through a template parameter, adversarial hashes that put
-every key in one probe chain, lifetime accounting proving every construction is matched by a
-destruction, and -- the property the class exists for -- a bound on entries moved per operation
-that is **counted rather than timed**, so a loaded machine cannot make it flaky and a return to
-one-pass rehashing fails it immediately. Clean under ASan, and under the C++23 dialect.
-
-**Cured, and measured — see "The measurement that closes this entry" below.** The order book is
-on `IncrementalRehashMap`, and a trading-day run on 2026-08-21 shows peak p99 flat at 1.78–4.27 ms
-across six growth steps from 305 MB to 9760 MB, against 96 ms, 733 ms and over a second for the
-same steps under `tsl::robin_map`.
-
-**This entry stays under Open only because the change is uncommitted.** It moves to Fixed when the
-order-book swap lands. Nothing else is outstanding on it.
-
-What the container does *not* do is reduce peak memory — it holds two tables for *longer*, across
-the whole migration rather than one operation. That is now the binding constraint rather than
-latency, and it has its own entry below.
-
-### The 2026-08-16 run measured the old book, not the swap
-
-A trading-day run was made on 2026-08-16 intending to measure the order book on
-`IncrementalRehashMap`. It did not: the binary it exercised was the `tsl::robin_map` build
-installed on 2026-08-11. The swap was compiled into `build/` at 16:59 that day and never
-deployed, and `perf_run.py` takes an install prefix and runs what is already there -- it neither
-builds nor deploys. So the run is a second `tsl::robin_map` measurement, and says nothing about
-the container it was meant to test.
-
-Three independent confirmations, recorded so this is not re-argued:
-
-1. **Symbols.** `installed/bin/matching_engine`, dated 2026-08-11 20:29, carries 13 `robin_map`
-   symbols and no `IncrementalRehashMap` symbol. `build/applications/matching_engine/matching_engine`,
-   dated 2026-08-16 16:59, is the reverse: no `robin_map`, 7 `IncrementalRehashMap`.
-2. **The log line number.** Every growth report in `matching_engine_primary.log` names
-   `MatchingEngineThread.cpp:162`. That is where the `PUBSUB_LOG` sits in the committed source;
-   the swap adds comment lines above it and moves it to 164.
-3. **Bytes per slot.** The reports are 156, 312, 624, 1248, 2496 and 4992 MB, and 4992 MiB over
-   2^24 buckets is exactly 312 bytes each. `sizeof(std::pair<OrderKey, OrderEntry>)` is 304
-   (`OrderKey` 134, `OrderEntry` 168), and robin_map adds an 8-byte distance-and-hash word per
-   bucket: 312. `IncrementalRehashMap` reports `state_bytes + entry_bytes`, one extra byte per
-   slot, which would have logged 5008 MB rather than 4992.
-
-**Correcting a figure this entry carried.** The table did not cost 624 bytes per slot. It cost
-**312 bytes per bucket**, and the six growth reports correspond to bucket arrays of 2^19 through
-2^24 -- reached, at robin_map's half-full growth policy, somewhere around 2^18 to 2^23 live
-orders. The earlier "2^21 / 2^22 / 2^23" labels were counting entries rather than buckets, which
-is consistent, but the per-slot figure was double the truth and any sizing argument built on it
-was wrong by a factor of two.
-
-**What the run does establish**, all of it about `tsl::robin_map`:
-
-| allocation | buckets | growth step at | p99 then | first run, 2026-08-08 |
-|---|---|---|---|---|
-| 1248 MB | 2^22 | 18:38:32 | **84.94 ms** | 96 ms |
-| 2496 MB | 2^23 | 18:48:37 | **378.32 ms** | 733 ms |
-| 4992 MB | 2^24 | 19:08:47 | **997.20 ms** | over 1 s |
-
-Median p99 in each window was ~0.9 ms, so the tail-excursion signature reproduces: the bulk of
-orders are untouched and a few are delayed catastrophically. The spread against the first run --
-733 ms against 378 ms at the same step, on the same container -- is run-to-run variation, and is
-itself worth knowing, because it sets how large a difference the re-run must show before it means
-anything.
-
-**The profile is off-CPU.** `perf record` on `matching_engine_primary` across all six growth steps
-gives a flat profile for the reactor thread: the top symbol is `handle_new_order_single` at 0.66%,
-and no allocation or rehash symbol appears near the top. A one-second *CPU* stall would be
-impossible to miss at that sampling rate, so the thread is blocked rather than spinning, and
-cycle-based sampling cannot attribute it. This holds for the robin_map book and is the most useful
-thing the run produced.
-
-**The allocation hypothesis is untested, not supported.** The idea that the stall is the single
-large `operator new` for the entry array was framed around `allocate_table`, which is
-`IncrementalRehashMap`'s function and was not in the binary. robin_map's own bucket-array
-reallocation is the same shape and the off-CPU evidence is compatible with it, but nothing here
-distinguishes it from any other blocking cause. If the re-run with the swap deployed still shows
-spikes that grow with table size, timing the two `operator new` calls in `allocate_table`
-directly -- logged at Warning, so it survives the load run's log level -- settles it cheaply.
-
-**Status: superseded.** The re-run was made on 2026-08-21, deployed first and with the documented
-`--clients 4`. See the next section.
-
-### The measurement that closes this entry, 2026-08-21
-
-Trading-day run with the order book on `IncrementalRehashMap`, deployed first this time, and with
-the documented `--gateway binary --clients 4`. Prometheus started on its own beforehand and load
-confirmed reaching it within 20 seconds. p99 is the worst 15-second sample in a window of -90s to
-+240s around each growth step, taken from `order_round_trip_nanoseconds_bucket` on
-`binary_order_gateway_a`; step times come from the growth-report lines in
-`matching_engine_primary.log`.
-
-| buckets | table | peak p99 | median p99 | robin_map 2026-08-16 | first run 2026-08-08 |
-|---|---|---|---|---|---|
-| 2^20 | 305 MB | 2.50 ms | 1.25 ms | -- | -- |
-| 2^21 | 610 MB | 1.78 ms | 0.99 ms | -- | -- |
-| 2^22 | 1220 MB | **2.43 ms** | 0.99 ms | 84.94 ms | 96 ms |
-| 2^23 | 2440 MB | **4.27 ms** | 2.34 ms | 378.32 ms | 733 ms |
-| 2^24 | 4880 MB | **2.44 ms** | 0.98 ms | 997.20 ms | over 1 s, pipeline collapsed |
-| 2^25 | 9760 MB | **2.43 ms** | 0.99 ms | never reached | never reached |
-
-**Flat across a 32-fold range of table size.** That is the property the container exists for, and
-it is the part that could not be argued from unit tests. The failure signature was a tail
-excursion -- median p99 around 0.9 ms while the peak went to 85 ms and then to a second -- and the
-median is unchanged at 0.98-0.99 ms while the peak now sits beside it. The excursion is gone
-rather than reduced. The 4.27 ms at 2^23 is not the start of a trend: the next doubling came back
-to 2.44 ms.
-
-Delivery was 12,735,099 of 13,016,000 orders offered, a 2.16% shortfall entirely inside the OOM
-window described in the entry below. The first run lost 12.22% to the stall itself.
-
-**The profile shows the migration doing its work.** `step_migration()` at **0.44%** of the reactor
-thread, `find()` at 0.52%, `insert_entry()` at 0.41%. Compare the 2026-08-16 profile, where the
-whole thread was flat at 0.66% top symbol because it was blocked rather than working.
-
-### The allocation hypothesis was wrong
-
-Recorded because it was the leading theory for a fortnight and the refutation is one comparison:
-
-| | allocation in one `operator new` | stall |
-|---|---|---|
-| `tsl::robin_map` at its worst step | 4992 MB | ~1 s |
-| `IncrementalRehashMap` at the same step | 4880 MB | 2.44 ms |
-
-Same machine, same profile, near-identical request size. `operator new` reads 0.02% in the profile
-and `memset` 0.00%, and `node_pressure_memory_stalled_seconds_total` was 0.000 at every step but
-the last, where it reached 0.001 with the machine nearly full. The cost was always the rehash.
-
-Two things follow. The `allocate_table` timing experiment proposed above is not needed. And the
-reasoning that the table's bytes-per-slot was the thing to attack was chasing the wrong quantity --
-the size of the allocation was never what stalled the thread.
-
 ### Dismissed: the gateway's per-session `OpenOrderMap` is not the shape the order book was
 
 | | |
@@ -391,6 +225,35 @@ Worth keeping rather than deleting, for two reasons. It records that the pattern
 elsewhere and where it was found, so the sweep is not repeated. And it is a reminder that "same
 container, same thread, same growth policy" is not enough to make two structures behave alike --
 what mattered was what each bucket held.
+
+**Correction, 2026-08-23. The dismissal was right about the cost and wrong about one of its
+premises.** Left above as it was written, because how it was reached matters.
+
+The premise that failed is this one: *"entries leave on terminal ERs rather than resting
+indefinitely."* They did not. A cancel report names the retired order in OrigClOrdID and the
+cancel request in ClOrdID, and the gateway looked up the latter -- a key that had never been
+filed. Nothing was ever removed. Measured on a trading-day run: the map grew at 1,925 entries a
+second against an order rate of 1,925 a second, with a profile specifying a tenth of orders
+cancelled. Fixed the same day; see "remove the order a cancel names, not the cancel itself" in
+the git history.
+
+So the map was unbounded for any session, not only for the single-session load client the entry
+worried about. The reasoning that "a venue with many small sessions never grows any one map
+large enough to matter" did not hold, because every session grew without limit.
+
+The second correction is about what was measured rather than what was assumed. `rehash_impl`
+reading 0.06% of a profile is still true and still not the whole cost. A rehash was observed
+taking p99 from 0.99 ms to about 2.3 ms for eleven minutes, with the load unchanged, recovering
+to exactly 0.99 ms afterwards -- three times, at 2Mi, 4Mi and 8Mi entries, each step predicted
+before it happened. A CPU profile cannot see it: the cycles in `rehash_impl` really are
+negligible, and the cost is in the memory system afterwards, most likely huge pages being
+re-formed under a freshly mapped table.
+
+**What survives.** The conclusion that a doubling here copies pointers rather than order records
+stands, and 32 bytes a bucket against 304 is still the reason this was not the order book's
+problem. The entry's closing point survives too, and gains a second half: what each bucket held
+was what mattered -- and a dismissal resting on a claim about behaviour needs that claim checked
+against the code, not against what the code was meant to do.
 
 ### Growing the order book by doubling needs more memory than the machine has
 
@@ -511,394 +374,6 @@ Two distinct faults, and the second is the awkward one:
   without moving it. Whatever replaces this needs to distinguish *accepted and processed*
   from *accepted and queued behind nothing* — the gap between `nos_received` and
   `accounted` already carries that information and nothing reports it.
-
-### Ninety application tests were built, installed, and never run
-
-| | |
-|---|---|
-| Found | 2026-08-22, after adding a test target to the arbiter and noticing it did not appear in the build output |
-| How | `build.py` names each test binary it runs, and application binaries were never added to that list |
-| Impact | Five suites, 90 tests, built and shipped by every release without once being executed |
-
-`build.py` ran five test binaries by name -- the framework's unit and integration suites,
-`scram_crypto`, and the two `fix_codec` ones. Every application suite was built, installed to
-`bin/`, and then ignored:
-
-| suite | tests |
-|---|---|
-| `fix_order_gateway_tests` | 39 |
-| `matching_engine_tests` | 18 |
-| `sequencer_tests` | 12 |
-| `binary_order_gateway_tests` | 9 |
-| `arbiter_tests` | 12 (added the same day) |
-
-`ctest` was never invoked either, so the `gtest_discover_tests` registrations went nowhere. All
-90 passed when run by hand, so nothing was being hidden -- but nothing was being checked, and a
-regression in any of them would have reached a release unremarked.
-
-**Fixed 2026-08-22.** `run_application_tests()` runs them, and the standard build goes from 893
-tests to 983.
-
-**The binaries are discovered, not listed**, and that is the point of the fix rather than an
-implementation detail. A list is how the gap arose: each new test target had to be remembered in
-`build.py`, and across five targets nobody remembered once. Discovery means a test target in any
-application gates from the moment it builds.
-
-**Finding nothing is an error, not a pass.** A glob that has stopped matching looks exactly like
-a suite in which everything succeeded, which is the failure the gate exists to prevent -- so the
-gate must not be able to fail that way itself. Both behaviours were checked: five suites found
-and run, and exit code 1 with a message naming the directory when the glob matches nothing.
-
-### A restarted arbiter forgets who leads, and reverts to the cold-start rule
-
-| | |
-|---|---|
-| Found | 2026-08-22, building the restart coverage matrix |
-| How | Asked what the arbiter's new leadership state depends on, and what happens when it is lost |
-| Impact | Undoes the incumbent-wins fix: a restarted arbiter hands leadership back to a restarted primary |
-
-`leadership_state_` lives only in memory. There is no snapshot, no WAL, and nothing reads
-anything back at startup. It is replicated to the peer arbiter as decisions are taken
-(`ArbiterStateRecord`), but that is a live feed and not a catch-up: an arbiter that starts, or
-restarts, has an empty map and is told nothing about decisions made while it was away.
-
-**Why that is worse than it was yesterday.** Before the incumbent rule, the arbiter was
-stateless in effect -- it recomputed leadership from instance ids every time, so forgetting cost
-nothing. Now the map is the thing that stops a restarted primary taking leadership back from a
-working secondary. An arbiter with an empty map finds no incumbent, falls back to the cold-start
-tie-break, and answers exactly as the code did before the fix.
-
-The exposure is real but narrow while both arbiters do not restart together: the peer holds the
-state and is the one that answers. It becomes live the moment the surviving arbiter is the one
-that restarted, or both are.
-
-**What it needs, and it is a design question rather than a patch.** Either the state is
-recovered on startup -- from the peer, by asking, in the way a restarting sequencer syncs its
-sequence number from its peer through StatusResponse -- or it is durable. The peer-sync route
-looks the better fit: it is a pattern the venue already has, it needs no new persistence, and an
-arbiter with no reachable peer genuinely has nothing to go on and is right to fall back to the
-cold-start rule.
-
-### Fixed 2026-08-22
-
-The arbiter is now told rather than remembering. `LeadershipLease` (id 118) carries what
-`Heartbeat` used to imply -- an assertion of leadership by the instance holding it, at a stated
-epoch -- and a restarted arbiter rebuilds its map from the leases it receives. Peer replay on a
-link coming up is kept as an accelerator, not the mechanism, so the case with no peer to ask
-still works. Full reasoning in `design-notes-for-ha.md` section 11c.
-
-Scenario 25 covers it, and the ordering inside that scenario is the substance of it: both
-arbiters must be killed before either is restarted, or the state survives through the peer and
-nothing is exercised. Demonstrated:
-
-```
-10:48:44  both arbiters dead
-10:48:48  group=matching_engine is led by instance 2 at epoch 1 (learned from its lease)
-10:49:07  replayed 1 leadership record(s) to peer
-```
-
-**An expectation this disproved, recorded because the reasoning looked sound.** The lease
-interval is 30s and the arbiter's learning window 10s, which appeared to leave twenty seconds in
-which a restarted arbiter would stop declining and start guessing before it could have been told
-anything. It cannot arise: an arbiter restarting is what closes its components' connections, and
-a leader sends a lease immediately on connecting rather than waiting for the timer. The interval
-was left alone rather than shortened on principle.
-
-### The pair does not survive a second failure: replication is wired by identity, not by role
-
-| | |
-|---|---|
-| Found | 2026-08-22, by scenario 32 |
-| How | Failover, rejoin, then fail the new leader -- the surviving instance never takes over |
-| Impact | After one failover the pair is finished. A second failure leaves the venue with no matching engine leader at all |
-
-`design-notes-for-ha.md` section 11 says the pair must be able to swap repeatedly: if the
-secondary is promoted and later dies, the primary -- by then a follower -- must take over again.
-It does not.
-
-**Replication is hard-wired primary to secondary.** The primary connects out to
-`me_secondary_replication`; the secondary listens. Nothing about that follows the role. So after
-a failover the leader is the secondary, which has no replication channel *to* the primary, and
-the primary has no channel *from* a leader.
-
-**Failure detection inherits the same wiring.** A follower arms its promotion timer when
-`primary_replication_conn_id_` is lost -- the connection it receives replication *on*. A primary
-acting as a follower has no such connection, so nothing arms. It does notice the socket go, and
-draws the wrong conclusion from it:
-
-```
-ME-secondary replication connection 3 lost: peer closed connection on service
-'me_secondary_replication' -- book updates paused until secondary reconnects
-```
-
-It reads the leader's death as "my secondary has gone, book updates paused". Nothing promotes,
-and the venue has no matching engine leader.
-
-**This is the same class as the sequencer routing defect fixed earlier the same day**, and the
-same omission behind all of them: *primary* and *leader* were interchangeable while nothing ever
-restarted, so channels were named after identities. Once roles move, every channel named for an
-identity is pointing at the wrong instance half the time.
-
-### Fixed 2026-08-22: both directions held permanently
-
-Replication is now symmetric. Each instance listens on its own port and dials its peer's, both
-connections stand at all times, and which one carries book updates follows the role because the
-leader is the sender. A role change therefore needs no connection work at the moment the venue
-can least afford it -- the alternative, having the leader dial the follower and re-establish on
-every change, puts a reconnect on the failover path and leaves a newly promoted leader serving
-without a replica while it completes.
-
-Failure detection then works in both directions without special handling, which is the point.
-A follower arms its promotion timer on losing the connection it *receives* replication on, and
-with both directions held, whichever instance is the follower always has one.
-
-**Three places had to stop branching on the configured identity**, and each was somewhere the
-design had quietly baked in "primary means leader":
-
-* the environment and both TOML templates, which gave the primary only a dial and the secondary
-  only a listener;
-* `MatchingEngineConfigurationLoader`, which read the two halves under an `is_secondary` test
-  and now reads both for both roles;
-* `MatchingEngine`, which registered the replication listener only on the secondary.
-
-All three `is_secondary` checks are gone. Scenario 32 passes: leadership moves primary to
-secondary, the primary rejoins as follower, and when the secondary then dies the primary takes
-it back -- 15.2 s each way, the promotion timeout in both cases.
-
-**A smaller fault visible in the same logs.** An ArbitrationDecision arrived as
-`leader=2 follower=0`, and the instance correctly ignored a decision that did not mention it. The
-zero comes from a leadership record rebuilt from a lease, which names only the leader; the
-follower field is filled with 0. Harmless today because a correct decision follows immediately,
-but it is a wrong value on the wire.
-
-**Scenario 32 fails on this and is left failing**, as scenario 24 was before its defect was
-fixed. It says so in place.
-
-### Role announcements were routed to the wrong socket, and then to a dead one
-
-| | |
-|---|---|
-| Found | 2026-08-22, by scenario 26, in the routing added earlier the same day |
-| How | A supervised restart made the ordering visible; the failover scenarios had hidden it |
-| Impact | Orders sent down the wrong channel, and then to the connection of a process that had just died |
-
-Two faults in the sequencer's handling of `RoleAnnouncement`, both introduced when routing was
-first made role-aware and neither caught by the failover scenarios.
-
-**The announcement arrives on the wrong socket to route by.** A matching engine opens an ER
-connection *to* the sequencer and announces on it. Orders travel the other way, on a connection
-the sequencer opens *to* the engine. Routing by the connection an announcement arrived on
-therefore aimed orders down the ER channel. The announcement names an instance, so the fix is to
-map that to this sequencer's own order connection for that instance.
-
-**And an ordering race the first fault concealed.** A restarted engine announces immediately on
-a connection it opens itself, while the sequencer's order connection to it is re-established a
-couple of seconds later. So the announcement arrived while the only order connection on record
-for that instance was the one belonging to the process that had just died:
-
-```
-11:09:32  instance 1 leads at epoch 1 -- orders now route to connection 15   <- dead process
-11:09:34  matching engine order connection 25 established                    <- the live one
-```
-
-The announced leader is now remembered, so the order connection to that instance is routed to
-when it appears:
-
-```
-11:09:34  order connection 25 to instance 1, which had already announced leadership -- routing there
-```
-
-**Why the failover scenarios missed both.** In a failover the promoted instance already holds a
-pre-warmed standby connection, so the socket exists before the announcement and the ordering
-never arises. It takes a restart -- where the connection is genuinely absent and then appears --
-to expose it. That is the argument for the restart cells of the matrix in one paragraph.
-
-### With no arbiter reachable, a starting engine never promoted and never said so
-
-| | |
-|---|---|
-| Found | 2026-08-22, by scenario 35 |
-| How | Killed both arbiters, then restarted the matching engine that had been leading |
-| Impact | The venue has no matching engine leader, indefinitely, announced by nothing but connection-refused retries |
-
-`design-notes-for-ha.md` is explicit that a two-node system with no arbiter falls back to
-"lowest instance id wins". The fallback existed, and was unreachable.
-
-The degraded self-promotion lives inside `send_arbitration_report()`, which was only ever called
-from `request_startup_arbitration()` -- and that was called **when an arbiter connection came
-up**. With the arbiter pool down, no connection comes up, so a starting engine never asked, never
-degraded, and sat in `UNKNOWN` forever:
-
-```
-HA enabled, starting as UNKNOWN (instance_id=1, configured primary)
-service 'arbiter_primary' failed to connect; retrying every 2000ms
-service 'arbiter_secondary' failed to connect; retrying every 2000ms
-```
-
-Nothing else logged. The venue was not serving and said so only by omission -- the failure mode
-section 13 of the design notes describes as the one that does not announce itself.
-
-**Fixed 2026-08-22.** The startup arbitration timer is armed when the thread starts rather than
-when an arbiter connects. It fires, finds the role still unresolved, and applies the instance-id
-rule.
-
-**Only the primary arms it**, which is worth stating because it is what makes the fallback
-correct rather than merely present. The secondary starts as a follower and waits, so the instance
-that promotes unilaterally is always the lower id -- the rule the design specifies, satisfied by
-construction rather than by a comparison that could be written the wrong way round. Scenario 35
-asserts both halves: the primary degrades and says so, and the secondary does not also promote.
-
-### Restart coverage: what ha_test.py exercises, and what it does not
-
-| | |
-|---|---|
-| Found | 2026-08-21, extended into a full matrix 2026-08-22 |
-| How | Reading every scenario against the restart cases an HA pair actually has |
-| Impact | Three defects were found in the two cases that were covered. The uncovered ones have not been looked at |
-
-Every scenario kills a component and leaves it dead, which models **machine** death correctly --
-a dead machine does not come back on its own. It leaves **process** death, where the instance is
-restarted on a machine that never failed, almost entirely unexercised. That is the half a
-supervisor makes normal, and it is where every defect found on 2026-08-21 and 2026-08-22 lives.
-
-**The cases an HA pair has, and where each stands:**
-
-| | sequencer | arbiter | matching engine |
-|---|---|---|---|
-| **R1** restart the leader inside the peer's grace period; the peer must not promote | **27** | **28** | **26** |
-| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
-| **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
-| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
-| **R5** cold start both, in either order -- deterministic leader | **36** | **38** | **34** |
-| **R6** restart with no arbiter reachable -- degraded, and said so | **37** | **39** | **35** |
-
-Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
-question; they test that it comes back, not what it comes back as.
-
-**What the two covered cells cost to find.** R2 for the matching engine is scenario 24, written
-2026-08-22, and it found three defects in a row: the arbiter re-running the cold-start tie-break
-on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
-socket rather than by role. All three are in this file. That is one cell of eighteen.
-
-**Where it stands, 2026-08-22.** Fourteen of eighteen cells. Every cell taken so far found at
-least one defect except R1, R3 and R4-arbiter, which passed first time -- and that pattern is
-itself informative: the defects all lived in what an instance comes back *as*, so the cells where
-nothing has to decide that were the ones that already worked.
-
-**Complete, 2026-08-22.** All eighteen cells. Ten defects were found on the way, every one of
-them a consequence of the same omission: process death was not in the model, so nothing decided
-what a restarted instance comes back as, and channels, records and fallbacks were all built on
-identities that stop being true once roles can move.
-
-**The cells that passed first time are as informative as the ones that did not.** R1, R3 and
-R4-arbiter, and both R5/R6 cells for the sequencer and arbiter, needed no fixes. The defects all
-lived in what an instance comes back *as*; where nothing has to decide that, the code was already
-right. And where a component already had a symmetric design -- the sequencer's `peer` channel,
-its unconditional startup election timer -- it had none of the faults its matching-engine
-counterpart did.
-
-**One thing worth carrying forward.** The sequencer settles leadership with its peer directly,
-through StatusQuery/StatusResponse and the instance-id rule, and needs no arbiter to do it. The
-matching engine cannot: it must ask an arbiter or fall back to a unilateral rule. Whether the
-engine should gain the same peer-to-peer resolution is a design question this coverage raised and
-did not answer.
-
-
-### Rejoin after a promotion re-runs the cold-start tie-break
-
-| | |
-|---|---|
-| Found | 2026-08-22, designing process supervision |
-| How | Reading the arbiter against the rule a restarted primary needs to follow |
-| Impact | A restarted primary -- which by definition has just lost its book -- would be handed leadership back from a healthy secondary that has it |
-
-**Two different questions are answered by one rule.** "Which instance should lead when neither
-is leading yet?" is a cold-start tie-break, and lowest instance id is the right answer for it:
-the two can start in either order with a delay between them, and the preference makes that
-deterministic. "Which instance should lead when one of them already is?" is a different
-question, and lowest id is the wrong answer to it.
-
-`decide_and_broadcast` (`ArbiterThread.cpp:550`) answers both the same way:
-
-```cpp
-const bool peer_connected = component_connections_.count(peer_key) > 0;
-const int64_t leader_id = peer_connected ? std::min(self_instance_id, peer_instance_id) : self_instance_id;
-```
-
-It writes `leadership_state_` and never reads it. The arbiter therefore has no notion of an
-incumbent, and recomputes leadership from scratch every time it is asked.
-
-**Why that is dangerous rather than merely untidy.** The primary always holds the lower id. So
-after the secondary has been promoted, a primary that restarts and triggers arbitration is
-handed leadership back -- and a restarted primary has lost its book, because losing it is why
-it restarted. The venue would move leadership from an instance holding the book to one holding
-nothing.
-
-**The rule agreed 2026-08-22**, which distinguishes the two questions:
-
-```
-if (an incumbent leader is recorded for this group AND that instance is connected)
-    keep the incumbent
-else
-    lowest instance id wins          // cold start, or the incumbent is gone
-```
-
-| situation | incumbent | connected | outcome |
-|---|---|---|---|
-| cold start, either order | none | -- | lowest id: primary leads |
-| primary restarts, secondary leads | secondary | yes | **primary becomes follower** |
-| primary restarts, secondary's machine died | secondary | no | falls through: primary leads |
-| primary restarts, secondary never promoted | primary | yes | primary leads again |
-
-The last row is the *common* case once a supervisor exists, not an exotic one: the follower's
-grace period is there so that a quick local restart happens before any promotion does.
-
-**What the fix needs.**
-
-1. **Re-key `leadership_state_` by group.** It is currently keyed `(group, instance_id)`
-   (`ArbiterThread.hpp:84`), so "who leads the matching engine?" is not a single lookup and the
-   incumbent cannot be consulted.
-2. **Consult it in `decide_and_broadcast`**, with the connectivity check above.
-3. **Gate resumption of leadership on reconciliation, not on the decision arriving.** A
-   restarted primary that becomes leader again with an empty book is a leader that does not
-   know what is resting: a member's cancel for a live order is rejected and the venue has
-   silently lost state it still notionally holds. The `Reconciling` state and WAL catch-up
-   exist; the ordering is what matters.
-4. **Learn the current epoch from the arbiter before emitting anything.** Epochs are checked on
-   every PDU, so a node rejoining with a stale one has its traffic discarded -- the right
-   outcome, but it should be deliberate.
-
-**Not traced:** what the code does on rejoin today, end to end. The reconnect path
-(`ArbiterThread.cpp:509`) sends a *stored* decision keyed by the connecting instance's own id,
-and after a promotion nothing is stored under the primary's key. Whether that yields silence, a
-stale decision or a fresh arbitration was not followed through. It does not change the design
-above, which is needed either way.
-
-### Fixed 2026-08-22
-
-The rule is now `applications/arbiter/LeadershipDecision.hpp`, a pure function that reads no
-state and sends nothing, so it is tested directly rather than through a running venue.
-`ArbiterThread` gathers the inputs from its connection tables and carries the decision out.
-
-`leadership_state_` is re-keyed by group. That fixed a second fault found on the way: the
-reconnect path looked the stored decision up under *the connecting instance's own id*, so an
-instance rejoining after a promotion found nothing recorded against itself and was told nothing
-at all. Any instance reconnecting is now told who leads its group.
-
-The epoch advances only when leadership actually changes. Confirming an incumbent returns the
-epoch already in force, because epochs are checked on every PDU and superseding a leader's own
-epoch would have its traffic discarded while it was doing nothing wrong. When the epoch does
-advance it is taken from the higher of the arbiter's record and the reporter's, so an instance
-that has been away cannot wind the sequence backwards with a stale report.
-
-12 tests in `applications/arbiter/tests/LeadershipDecisionTest.cpp`, including a sweep asserting
-that leader and follower are always the two distinct instances whatever the inputs. The rejoin
-tests were checked against the previous rule and fail on it, so they catch the defect rather
-than merely describing the new behaviour.
-
-**Still to do: the integration scenario.** The unit tests prove the rule; they do not prove the
-arbiter is asked at the right moments. That needs the `ha_test.py` scenario recorded in "Every HA
-scenario models machine death; none models process death".
 
 ### A process death on the same host takes the machine-death path
 
@@ -1401,6 +876,565 @@ log line fails the check rather than silently ceasing to match.
 ---
 
 ## Fixed
+
+### Rejoin after a promotion re-runs the cold-start tie-break
+
+| | |
+|---|---|
+| Found | 2026-08-22, designing process supervision |
+| How | Reading the arbiter against the rule a restarted primary needs to follow |
+| Impact | A restarted primary -- which by definition has just lost its book -- would be handed leadership back from a healthy secondary that has it |
+
+**Two different questions are answered by one rule.** "Which instance should lead when neither
+is leading yet?" is a cold-start tie-break, and lowest instance id is the right answer for it:
+the two can start in either order with a delay between them, and the preference makes that
+deterministic. "Which instance should lead when one of them already is?" is a different
+question, and lowest id is the wrong answer to it.
+
+`decide_and_broadcast` (`ArbiterThread.cpp:550`) answers both the same way:
+
+```cpp
+const bool peer_connected = component_connections_.count(peer_key) > 0;
+const int64_t leader_id = peer_connected ? std::min(self_instance_id, peer_instance_id) : self_instance_id;
+```
+
+It writes `leadership_state_` and never reads it. The arbiter therefore has no notion of an
+incumbent, and recomputes leadership from scratch every time it is asked.
+
+**Why that is dangerous rather than merely untidy.** The primary always holds the lower id. So
+after the secondary has been promoted, a primary that restarts and triggers arbitration is
+handed leadership back -- and a restarted primary has lost its book, because losing it is why
+it restarted. The venue would move leadership from an instance holding the book to one holding
+nothing.
+
+**The rule agreed 2026-08-22**, which distinguishes the two questions:
+
+```
+if (an incumbent leader is recorded for this group AND that instance is connected)
+    keep the incumbent
+else
+    lowest instance id wins          // cold start, or the incumbent is gone
+```
+
+| situation | incumbent | connected | outcome |
+|---|---|---|---|
+| cold start, either order | none | -- | lowest id: primary leads |
+| primary restarts, secondary leads | secondary | yes | **primary becomes follower** |
+| primary restarts, secondary's machine died | secondary | no | falls through: primary leads |
+| primary restarts, secondary never promoted | primary | yes | primary leads again |
+
+The last row is the *common* case once a supervisor exists, not an exotic one: the follower's
+grace period is there so that a quick local restart happens before any promotion does.
+
+**What the fix needs.**
+
+1. **Re-key `leadership_state_` by group.** It is currently keyed `(group, instance_id)`
+   (`ArbiterThread.hpp:84`), so "who leads the matching engine?" is not a single lookup and the
+   incumbent cannot be consulted.
+2. **Consult it in `decide_and_broadcast`**, with the connectivity check above.
+3. **Gate resumption of leadership on reconciliation, not on the decision arriving.** A
+   restarted primary that becomes leader again with an empty book is a leader that does not
+   know what is resting: a member's cancel for a live order is rejected and the venue has
+   silently lost state it still notionally holds. The `Reconciling` state and WAL catch-up
+   exist; the ordering is what matters.
+4. **Learn the current epoch from the arbiter before emitting anything.** Epochs are checked on
+   every PDU, so a node rejoining with a stale one has its traffic discarded -- the right
+   outcome, but it should be deliberate.
+
+**Not traced:** what the code does on rejoin today, end to end. The reconnect path
+(`ArbiterThread.cpp:509`) sends a *stored* decision keyed by the connecting instance's own id,
+and after a promotion nothing is stored under the primary's key. Whether that yields silence, a
+stale decision or a fresh arbitration was not followed through. It does not change the design
+above, which is needed either way.
+
+### Fixed 2026-08-22
+
+The rule is now `applications/arbiter/LeadershipDecision.hpp`, a pure function that reads no
+state and sends nothing, so it is tested directly rather than through a running venue.
+`ArbiterThread` gathers the inputs from its connection tables and carries the decision out.
+
+`leadership_state_` is re-keyed by group. That fixed a second fault found on the way: the
+reconnect path looked the stored decision up under *the connecting instance's own id*, so an
+instance rejoining after a promotion found nothing recorded against itself and was told nothing
+at all. Any instance reconnecting is now told who leads its group.
+
+The epoch advances only when leadership actually changes. Confirming an incumbent returns the
+epoch already in force, because epochs are checked on every PDU and superseding a leader's own
+epoch would have its traffic discarded while it was doing nothing wrong. When the epoch does
+advance it is taken from the higher of the arbiter's record and the reporter's, so an instance
+that has been away cannot wind the sequence backwards with a stale report.
+
+12 tests in `applications/arbiter/tests/LeadershipDecisionTest.cpp`, including a sweep asserting
+that leader and follower are always the two distinct instances whatever the inputs. The rejoin
+tests were checked against the previous rule and fail on it, so they catch the defect rather
+than merely describing the new behaviour.
+
+**Still to do: the integration scenario.** The unit tests prove the rule; they do not prove the
+arbiter is asked at the right moments. That needs the `ha_test.py` scenario recorded in "Every HA
+scenario models machine death; none models process death".
+
+
+### A growing hash map stalls the reactor callback thread for over a second
+
+| | |
+|---|---|
+| Found | 2026-08-08 |
+| How | The first clean compressed-trading-day load run — the reactor's own watchdog logged it, and the profile confirmed the cause |
+| Impact | p99 of 733 ms at 4.2M orders, over 1 s at 8.4M, after which the pipeline did not recover and 1,167,392 of 9,556,000 orders were never accepted |
+
+The matching engine's order book is a `tsl::robin_map` with `power_of_two_growth_policy<2ul>`. It
+doubles, and each doubling rehashes the whole table **on the callback thread**. Stalls land only on
+exact powers of two — all five stalls of 200 ms or more did, and none occurred elsewhere.
+
+**This is a framework requirement, not an application bug.** Calling `reserve()` in the matching
+engine would remove the symptom from a stub and teach nothing. `pubsub_itc_fw` offers slab and pool
+allocators for messages *in flight* and nothing at all for long-lived hot-path state that *grows* —
+so every application that keeps state (an order book, a session table, a subscription registry)
+will grow a container on a reactor callback thread and eventually stall it.
+
+See [Compressed Trading Day Load Profile](design/trading_day_load.md).
+
+**The framework half is done, 2026-08-11.** `IncrementalRehashMap` is the growable structure the
+design note asked for: when the table must grow it allocates a second one and moves the entries
+eight slots per mutating operation, searching both while the move is in flight. The worst case for
+any one operation is a probe plus eight moves, whatever the size of the map -- where the old cost
+was O(capacity) in the operation that crossed the threshold, and the capacity is what kept
+doubling. Rehashing on a background thread was the alternative and was rejected: it puts two
+threads on one table, which means a lock on the hot path or a lock-free open-addressed table with
+tombstones. Migrating a few slots at a time keeps the structure thread-confined, as the container
+it replaces already was -- and confinement is now checked rather than assumed, under
+`PUBSUB_ITC_FW_THREAD_CHECKS`.
+
+What remains O(capacity) is clearing the new table's state array: one byte per slot, a memset of
+about 8 MB at the size that stalled for over a second, which measures under a millisecond. That is
+recorded in the header rather than glossed over.
+
+47 unit tests, counting the ones added for `GrowthReportingAllocator` alongside it: differential
+testing against `std::unordered_map` over three seeds and three workload shapes, the migration
+boundaries driven one step at a time through a template parameter, adversarial hashes that put
+every key in one probe chain, lifetime accounting proving every construction is matched by a
+destruction, and -- the property the class exists for -- a bound on entries moved per operation
+that is **counted rather than timed**, so a loaded machine cannot make it flaky and a return to
+one-pass rehashing fails it immediately. Clean under ASan, and under the C++23 dialect.
+
+**Cured, and measured — see "The measurement that closes this entry" below.** The order book is
+on `IncrementalRehashMap`, and a trading-day run on 2026-08-21 shows peak p99 flat at 1.78–4.27 ms
+across six growth steps from 305 MB to 9760 MB, against 96 ms, 733 ms and over a second for the
+same steps under `tsl::robin_map`.
+
+**Committed, so this entry moves to Fixed.** It previously read: this entry stays under Open
+only because the change is uncommitted. It moves to Fixed when the
+order-book swap lands. Nothing else is outstanding on it.
+
+What the container does *not* do is reduce peak memory — it holds two tables for *longer*, across
+the whole migration rather than one operation. That is now the binding constraint rather than
+latency, and it has its own entry below.
+
+### The 2026-08-16 run measured the old book, not the swap
+
+A trading-day run was made on 2026-08-16 intending to measure the order book on
+`IncrementalRehashMap`. It did not: the binary it exercised was the `tsl::robin_map` build
+installed on 2026-08-11. The swap was compiled into `build/` at 16:59 that day and never
+deployed, and `perf_run.py` takes an install prefix and runs what is already there -- it neither
+builds nor deploys. So the run is a second `tsl::robin_map` measurement, and says nothing about
+the container it was meant to test.
+
+Three independent confirmations, recorded so this is not re-argued:
+
+1. **Symbols.** `installed/bin/matching_engine`, dated 2026-08-11 20:29, carries 13 `robin_map`
+   symbols and no `IncrementalRehashMap` symbol. `build/applications/matching_engine/matching_engine`,
+   dated 2026-08-16 16:59, is the reverse: no `robin_map`, 7 `IncrementalRehashMap`.
+2. **The log line number.** Every growth report in `matching_engine_primary.log` names
+   `MatchingEngineThread.cpp:162`. That is where the `PUBSUB_LOG` sits in the committed source;
+   the swap adds comment lines above it and moves it to 164.
+3. **Bytes per slot.** The reports are 156, 312, 624, 1248, 2496 and 4992 MB, and 4992 MiB over
+   2^24 buckets is exactly 312 bytes each. `sizeof(std::pair<OrderKey, OrderEntry>)` is 304
+   (`OrderKey` 134, `OrderEntry` 168), and robin_map adds an 8-byte distance-and-hash word per
+   bucket: 312. `IncrementalRehashMap` reports `state_bytes + entry_bytes`, one extra byte per
+   slot, which would have logged 5008 MB rather than 4992.
+
+**Correcting a figure this entry carried.** The table did not cost 624 bytes per slot. It cost
+**312 bytes per bucket**, and the six growth reports correspond to bucket arrays of 2^19 through
+2^24 -- reached, at robin_map's half-full growth policy, somewhere around 2^18 to 2^23 live
+orders. The earlier "2^21 / 2^22 / 2^23" labels were counting entries rather than buckets, which
+is consistent, but the per-slot figure was double the truth and any sizing argument built on it
+was wrong by a factor of two.
+
+**What the run does establish**, all of it about `tsl::robin_map`:
+
+| allocation | buckets | growth step at | p99 then | first run, 2026-08-08 |
+|---|---|---|---|---|
+| 1248 MB | 2^22 | 18:38:32 | **84.94 ms** | 96 ms |
+| 2496 MB | 2^23 | 18:48:37 | **378.32 ms** | 733 ms |
+| 4992 MB | 2^24 | 19:08:47 | **997.20 ms** | over 1 s |
+
+Median p99 in each window was ~0.9 ms, so the tail-excursion signature reproduces: the bulk of
+orders are untouched and a few are delayed catastrophically. The spread against the first run --
+733 ms against 378 ms at the same step, on the same container -- is run-to-run variation, and is
+itself worth knowing, because it sets how large a difference the re-run must show before it means
+anything.
+
+**The profile is off-CPU.** `perf record` on `matching_engine_primary` across all six growth steps
+gives a flat profile for the reactor thread: the top symbol is `handle_new_order_single` at 0.66%,
+and no allocation or rehash symbol appears near the top. A one-second *CPU* stall would be
+impossible to miss at that sampling rate, so the thread is blocked rather than spinning, and
+cycle-based sampling cannot attribute it. This holds for the robin_map book and is the most useful
+thing the run produced.
+
+**The allocation hypothesis is untested, not supported.** The idea that the stall is the single
+large `operator new` for the entry array was framed around `allocate_table`, which is
+`IncrementalRehashMap`'s function and was not in the binary. robin_map's own bucket-array
+reallocation is the same shape and the off-CPU evidence is compatible with it, but nothing here
+distinguishes it from any other blocking cause. If the re-run with the swap deployed still shows
+spikes that grow with table size, timing the two `operator new` calls in `allocate_table`
+directly -- logged at Warning, so it survives the load run's log level -- settles it cheaply.
+
+**Status: superseded.** The re-run was made on 2026-08-21, deployed first and with the documented
+`--clients 4`. See the next section.
+
+### The measurement that closes this entry, 2026-08-21
+
+Trading-day run with the order book on `IncrementalRehashMap`, deployed first this time, and with
+the documented `--gateway binary --clients 4`. Prometheus started on its own beforehand and load
+confirmed reaching it within 20 seconds. p99 is the worst 15-second sample in a window of -90s to
++240s around each growth step, taken from `order_round_trip_nanoseconds_bucket` on
+`binary_order_gateway_a`; step times come from the growth-report lines in
+`matching_engine_primary.log`.
+
+| buckets | table | peak p99 | median p99 | robin_map 2026-08-16 | first run 2026-08-08 |
+|---|---|---|---|---|---|
+| 2^20 | 305 MB | 2.50 ms | 1.25 ms | -- | -- |
+| 2^21 | 610 MB | 1.78 ms | 0.99 ms | -- | -- |
+| 2^22 | 1220 MB | **2.43 ms** | 0.99 ms | 84.94 ms | 96 ms |
+| 2^23 | 2440 MB | **4.27 ms** | 2.34 ms | 378.32 ms | 733 ms |
+| 2^24 | 4880 MB | **2.44 ms** | 0.98 ms | 997.20 ms | over 1 s, pipeline collapsed |
+| 2^25 | 9760 MB | **2.43 ms** | 0.99 ms | never reached | never reached |
+
+**Flat across a 32-fold range of table size.** That is the property the container exists for, and
+it is the part that could not be argued from unit tests. The failure signature was a tail
+excursion -- median p99 around 0.9 ms while the peak went to 85 ms and then to a second -- and the
+median is unchanged at 0.98-0.99 ms while the peak now sits beside it. The excursion is gone
+rather than reduced. The 4.27 ms at 2^23 is not the start of a trend: the next doubling came back
+to 2.44 ms.
+
+Delivery was 12,735,099 of 13,016,000 orders offered, a 2.16% shortfall entirely inside the OOM
+window described in the entry below. The first run lost 12.22% to the stall itself.
+
+**The profile shows the migration doing its work.** `step_migration()` at **0.44%** of the reactor
+thread, `find()` at 0.52%, `insert_entry()` at 0.41%. Compare the 2026-08-16 profile, where the
+whole thread was flat at 0.66% top symbol because it was blocked rather than working.
+
+### The allocation hypothesis was wrong
+
+Recorded because it was the leading theory for a fortnight and the refutation is one comparison:
+
+| | allocation in one `operator new` | stall |
+|---|---|---|
+| `tsl::robin_map` at its worst step | 4992 MB | ~1 s |
+| `IncrementalRehashMap` at the same step | 4880 MB | 2.44 ms |
+
+Same machine, same profile, near-identical request size. `operator new` reads 0.02% in the profile
+and `memset` 0.00%, and `node_pressure_memory_stalled_seconds_total` was 0.000 at every step but
+the last, where it reached 0.001 with the machine nearly full. The cost was always the rehash.
+
+Two things follow. The `allocate_table` timing experiment proposed above is not needed. And the
+reasoning that the table's bytes-per-slot was the thing to attack was chasing the wrong quantity --
+the size of the allocation was never what stalled the thread.
+
+### Ninety application tests were built, installed, and never run
+
+| | |
+|---|---|
+| Found | 2026-08-22, after adding a test target to the arbiter and noticing it did not appear in the build output |
+| How | `build.py` names each test binary it runs, and application binaries were never added to that list |
+| Impact | Five suites, 90 tests, built and shipped by every release without once being executed |
+
+`build.py` ran five test binaries by name -- the framework's unit and integration suites,
+`scram_crypto`, and the two `fix_codec` ones. Every application suite was built, installed to
+`bin/`, and then ignored:
+
+| suite | tests |
+|---|---|
+| `fix_order_gateway_tests` | 39 |
+| `matching_engine_tests` | 18 |
+| `sequencer_tests` | 12 |
+| `binary_order_gateway_tests` | 9 |
+| `arbiter_tests` | 12 (added the same day) |
+
+`ctest` was never invoked either, so the `gtest_discover_tests` registrations went nowhere. All
+90 passed when run by hand, so nothing was being hidden -- but nothing was being checked, and a
+regression in any of them would have reached a release unremarked.
+
+**Fixed 2026-08-22.** `run_application_tests()` runs them, and the standard build goes from 893
+tests to 983.
+
+**The binaries are discovered, not listed**, and that is the point of the fix rather than an
+implementation detail. A list is how the gap arose: each new test target had to be remembered in
+`build.py`, and across five targets nobody remembered once. Discovery means a test target in any
+application gates from the moment it builds.
+
+**Finding nothing is an error, not a pass.** A glob that has stopped matching looks exactly like
+a suite in which everything succeeded, which is the failure the gate exists to prevent -- so the
+gate must not be able to fail that way itself. Both behaviours were checked: five suites found
+and run, and exit code 1 with a message naming the directory when the glob matches nothing.
+
+### A restarted arbiter forgets who leads, and reverts to the cold-start rule
+
+| | |
+|---|---|
+| Found | 2026-08-22, building the restart coverage matrix |
+| How | Asked what the arbiter's new leadership state depends on, and what happens when it is lost |
+| Impact | Undoes the incumbent-wins fix: a restarted arbiter hands leadership back to a restarted primary |
+
+`leadership_state_` lives only in memory. There is no snapshot, no WAL, and nothing reads
+anything back at startup. It is replicated to the peer arbiter as decisions are taken
+(`ArbiterStateRecord`), but that is a live feed and not a catch-up: an arbiter that starts, or
+restarts, has an empty map and is told nothing about decisions made while it was away.
+
+**Why that is worse than it was yesterday.** Before the incumbent rule, the arbiter was
+stateless in effect -- it recomputed leadership from instance ids every time, so forgetting cost
+nothing. Now the map is the thing that stops a restarted primary taking leadership back from a
+working secondary. An arbiter with an empty map finds no incumbent, falls back to the cold-start
+tie-break, and answers exactly as the code did before the fix.
+
+The exposure is real but narrow while both arbiters do not restart together: the peer holds the
+state and is the one that answers. It becomes live the moment the surviving arbiter is the one
+that restarted, or both are.
+
+**What it needs, and it is a design question rather than a patch.** Either the state is
+recovered on startup -- from the peer, by asking, in the way a restarting sequencer syncs its
+sequence number from its peer through StatusResponse -- or it is durable. The peer-sync route
+looks the better fit: it is a pattern the venue already has, it needs no new persistence, and an
+arbiter with no reachable peer genuinely has nothing to go on and is right to fall back to the
+cold-start rule.
+
+### Fixed 2026-08-22
+
+The arbiter is now told rather than remembering. `LeadershipLease` (id 118) carries what
+`Heartbeat` used to imply -- an assertion of leadership by the instance holding it, at a stated
+epoch -- and a restarted arbiter rebuilds its map from the leases it receives. Peer replay on a
+link coming up is kept as an accelerator, not the mechanism, so the case with no peer to ask
+still works. Full reasoning in `design-notes-for-ha.md` section 11c.
+
+Scenario 25 covers it, and the ordering inside that scenario is the substance of it: both
+arbiters must be killed before either is restarted, or the state survives through the peer and
+nothing is exercised. Demonstrated:
+
+```
+10:48:44  both arbiters dead
+10:48:48  group=matching_engine is led by instance 2 at epoch 1 (learned from its lease)
+10:49:07  replayed 1 leadership record(s) to peer
+```
+
+**An expectation this disproved, recorded because the reasoning looked sound.** The lease
+interval is 30s and the arbiter's learning window 10s, which appeared to leave twenty seconds in
+which a restarted arbiter would stop declining and start guessing before it could have been told
+anything. It cannot arise: an arbiter restarting is what closes its components' connections, and
+a leader sends a lease immediately on connecting rather than waiting for the timer. The interval
+was left alone rather than shortened on principle.
+
+### The pair does not survive a second failure: replication is wired by identity, not by role
+
+| | |
+|---|---|
+| Found | 2026-08-22, by scenario 32 |
+| How | Failover, rejoin, then fail the new leader -- the surviving instance never takes over |
+| Impact | After one failover the pair is finished. A second failure leaves the venue with no matching engine leader at all |
+
+`design-notes-for-ha.md` section 11 says the pair must be able to swap repeatedly: if the
+secondary is promoted and later dies, the primary -- by then a follower -- must take over again.
+It does not.
+
+**Replication is hard-wired primary to secondary.** The primary connects out to
+`me_secondary_replication`; the secondary listens. Nothing about that follows the role. So after
+a failover the leader is the secondary, which has no replication channel *to* the primary, and
+the primary has no channel *from* a leader.
+
+**Failure detection inherits the same wiring.** A follower arms its promotion timer when
+`primary_replication_conn_id_` is lost -- the connection it receives replication *on*. A primary
+acting as a follower has no such connection, so nothing arms. It does notice the socket go, and
+draws the wrong conclusion from it:
+
+```
+ME-secondary replication connection 3 lost: peer closed connection on service
+'me_secondary_replication' -- book updates paused until secondary reconnects
+```
+
+It reads the leader's death as "my secondary has gone, book updates paused". Nothing promotes,
+and the venue has no matching engine leader.
+
+**This is the same class as the sequencer routing defect fixed earlier the same day**, and the
+same omission behind all of them: *primary* and *leader* were interchangeable while nothing ever
+restarted, so channels were named after identities. Once roles move, every channel named for an
+identity is pointing at the wrong instance half the time.
+
+### Fixed 2026-08-22: both directions held permanently
+
+Replication is now symmetric. Each instance listens on its own port and dials its peer's, both
+connections stand at all times, and which one carries book updates follows the role because the
+leader is the sender. A role change therefore needs no connection work at the moment the venue
+can least afford it -- the alternative, having the leader dial the follower and re-establish on
+every change, puts a reconnect on the failover path and leaves a newly promoted leader serving
+without a replica while it completes.
+
+Failure detection then works in both directions without special handling, which is the point.
+A follower arms its promotion timer on losing the connection it *receives* replication on, and
+with both directions held, whichever instance is the follower always has one.
+
+**Three places had to stop branching on the configured identity**, and each was somewhere the
+design had quietly baked in "primary means leader":
+
+* the environment and both TOML templates, which gave the primary only a dial and the secondary
+  only a listener;
+* `MatchingEngineConfigurationLoader`, which read the two halves under an `is_secondary` test
+  and now reads both for both roles;
+* `MatchingEngine`, which registered the replication listener only on the secondary.
+
+All three `is_secondary` checks are gone. Scenario 32 passes: leadership moves primary to
+secondary, the primary rejoins as follower, and when the secondary then dies the primary takes
+it back -- 15.2 s each way, the promotion timeout in both cases.
+
+**A smaller fault visible in the same logs.** An ArbitrationDecision arrived as
+`leader=2 follower=0`, and the instance correctly ignored a decision that did not mention it. The
+zero comes from a leadership record rebuilt from a lease, which names only the leader; the
+follower field is filled with 0. Harmless today because a correct decision follows immediately,
+but it is a wrong value on the wire.
+
+**Scenario 32 fails on this and is left failing**, as scenario 24 was before its defect was
+fixed. It says so in place.
+
+### Role announcements were routed to the wrong socket, and then to a dead one
+
+| | |
+|---|---|
+| Found | 2026-08-22, by scenario 26, in the routing added earlier the same day |
+| How | A supervised restart made the ordering visible; the failover scenarios had hidden it |
+| Impact | Orders sent down the wrong channel, and then to the connection of a process that had just died |
+
+Two faults in the sequencer's handling of `RoleAnnouncement`, both introduced when routing was
+first made role-aware and neither caught by the failover scenarios.
+
+**The announcement arrives on the wrong socket to route by.** A matching engine opens an ER
+connection *to* the sequencer and announces on it. Orders travel the other way, on a connection
+the sequencer opens *to* the engine. Routing by the connection an announcement arrived on
+therefore aimed orders down the ER channel. The announcement names an instance, so the fix is to
+map that to this sequencer's own order connection for that instance.
+
+**And an ordering race the first fault concealed.** A restarted engine announces immediately on
+a connection it opens itself, while the sequencer's order connection to it is re-established a
+couple of seconds later. So the announcement arrived while the only order connection on record
+for that instance was the one belonging to the process that had just died:
+
+```
+11:09:32  instance 1 leads at epoch 1 -- orders now route to connection 15   <- dead process
+11:09:34  matching engine order connection 25 established                    <- the live one
+```
+
+The announced leader is now remembered, so the order connection to that instance is routed to
+when it appears:
+
+```
+11:09:34  order connection 25 to instance 1, which had already announced leadership -- routing there
+```
+
+**Why the failover scenarios missed both.** In a failover the promoted instance already holds a
+pre-warmed standby connection, so the socket exists before the announcement and the ordering
+never arises. It takes a restart -- where the connection is genuinely absent and then appears --
+to expose it. That is the argument for the restart cells of the matrix in one paragraph.
+
+### With no arbiter reachable, a starting engine never promoted and never said so
+
+| | |
+|---|---|
+| Found | 2026-08-22, by scenario 35 |
+| How | Killed both arbiters, then restarted the matching engine that had been leading |
+| Impact | The venue has no matching engine leader, indefinitely, announced by nothing but connection-refused retries |
+
+`design-notes-for-ha.md` is explicit that a two-node system with no arbiter falls back to
+"lowest instance id wins". The fallback existed, and was unreachable.
+
+The degraded self-promotion lives inside `send_arbitration_report()`, which was only ever called
+from `request_startup_arbitration()` -- and that was called **when an arbiter connection came
+up**. With the arbiter pool down, no connection comes up, so a starting engine never asked, never
+degraded, and sat in `UNKNOWN` forever:
+
+```
+HA enabled, starting as UNKNOWN (instance_id=1, configured primary)
+service 'arbiter_primary' failed to connect; retrying every 2000ms
+service 'arbiter_secondary' failed to connect; retrying every 2000ms
+```
+
+Nothing else logged. The venue was not serving and said so only by omission -- the failure mode
+section 13 of the design notes describes as the one that does not announce itself.
+
+**Fixed 2026-08-22.** The startup arbitration timer is armed when the thread starts rather than
+when an arbiter connects. It fires, finds the role still unresolved, and applies the instance-id
+rule.
+
+**Only the primary arms it**, which is worth stating because it is what makes the fallback
+correct rather than merely present. The secondary starts as a follower and waits, so the instance
+that promotes unilaterally is always the lower id -- the rule the design specifies, satisfied by
+construction rather than by a comparison that could be written the wrong way round. Scenario 35
+asserts both halves: the primary degrades and says so, and the secondary does not also promote.
+
+### Restart coverage: what ha_test.py exercises, and what it does not
+
+| | |
+|---|---|
+| Found | 2026-08-21, extended into a full matrix 2026-08-22 |
+| How | Reading every scenario against the restart cases an HA pair actually has |
+| Impact | Three defects were found in the two cases that were covered. The uncovered ones have not been looked at |
+
+Every scenario kills a component and leaves it dead, which models **machine** death correctly --
+a dead machine does not come back on its own. It leaves **process** death, where the instance is
+restarted on a machine that never failed, almost entirely unexercised. That is the half a
+supervisor makes normal, and it is where every defect found on 2026-08-21 and 2026-08-22 lives.
+
+**The cases an HA pair has, and where each stands:**
+
+| | sequencer | arbiter | matching engine |
+|---|---|---|---|
+| **R1** restart the leader inside the peer's grace period; the peer must not promote | **27** | **28** | **26** |
+| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
+| **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
+| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
+| **R5** cold start both, in either order -- deterministic leader | **36** | **38** | **34** |
+| **R6** restart with no arbiter reachable -- degraded, and said so | **37** | **39** | **35** |
+
+Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
+question; they test that it comes back, not what it comes back as.
+
+**What the two covered cells cost to find.** R2 for the matching engine is scenario 24, written
+2026-08-22, and it found three defects in a row: the arbiter re-running the cold-start tie-break
+on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
+socket rather than by role. All three are in this file. That is one cell of eighteen.
+
+**Completed 2026-08-23.** Eighteen of eighteen cells. The last four were taken by
+ha_test.py scenarios 36-39; the suite went from 23 scenarios to 39.
+
+**Where it stood, 2026-08-22.** Fourteen of eighteen cells. Every cell taken so far found at
+least one defect except R1, R3 and R4-arbiter, which passed first time -- and that pattern is
+itself informative: the defects all lived in what an instance comes back *as*, so the cells where
+nothing has to decide that were the ones that already worked.
+
+**Complete, 2026-08-22.** All eighteen cells. Ten defects were found on the way, every one of
+them a consequence of the same omission: process death was not in the model, so nothing decided
+what a restarted instance comes back as, and channels, records and fallbacks were all built on
+identities that stop being true once roles can move.
+
+**The cells that passed first time are as informative as the ones that did not.** R1, R3 and
+R4-arbiter, and both R5/R6 cells for the sequencer and arbiter, needed no fixes. The defects all
+lived in what an instance comes back *as*; where nothing has to decide that, the code was already
+right. And where a component already had a symmetric design -- the sequencer's `peer` channel,
+its unconditional startup election timer -- it had none of the faults its matching-engine
+counterpart did.
+
+**One thing worth carrying forward.** The sequencer settles leadership with its peer directly,
+through StatusQuery/StatusResponse and the instance-id rule, and needs no arbiter to do it. The
+matching engine cannot: it must ask an arbiter or fall back to a unilateral rule. Whether the
+engine should gain the same peer-to-peer resolution is a design question this coverage raised and
+did not answer.
+
 
 ### Five ways 0.3.0 would not build or run on an RHEL8 target host
 

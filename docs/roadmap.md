@@ -35,6 +35,59 @@ See [WAL and High Availability](design/wal_and_ha.md) for the full design behind
 
 Near-term tasks not tied to a specific slice.
 
+### Priority order, agreed 2026-08-23
+
+Set after reading the bug list and this roadmap together. The ordering is by what each item
+costs while it is left alone, not by how interesting it is or how long it would take.
+
+**1. The FIX session layer, taken as one piece.** Inbound sequence-number validation, inbound
+`PossDupFlag`, `EndSeqNo` on a ResendRequest, and the gap tests that are missing. Four entries
+in the bug list, one piece of work: they share the same per-session state and the same test
+harness, and splitting them means touching the same code four times.
+
+It goes first because it is the only open item where the venue can lose a member's order
+without either side noticing. A member sends an order, the connection drops before it arrives,
+the member reconnects and carries on numbering; nothing compares the number it receives against
+the number it expected, so the missing order is never asked for. See
+`docs/design/fix_sequence_numbers_and_gaps.md` for what the protocol requires and where this
+venue departs from it.
+
+The objection to doing it is that the order gateway is a sample application rather than a
+product, and session-layer conformance sounds like polish on a shell. **That is the argument
+for doing it.** The inbound counter has to survive a gateway failover, because the sequence
+series belongs to the session and not to the connection. That is a framework question -- which
+session state migrates on promotion, and by what mechanism -- and the venue currently answers
+it for the outbound counter and for nothing else. Fleshing out the FIX layer is how the
+framework question gets answered, and the answer is not specific to FIX.
+
+Start with the three cheap tests: that `PossDupFlag` is set inside the requested gap and not
+beyond it, that `OrigSendingTime` is present on every resent message, and that the terminating
+gap-fill leaves the member expecting the number the venue will send next. All three assert on
+bytes the existing `resend_recovery` scenario already produces, so they need no new venue
+behaviour and they exist before anything changes underneath them.
+
+**2. The order book grows without bound, and the venue does not say so.** Two bug list entries
+with one cause: nothing fills orders, so an order rests until it is cancelled and roughly nine
+in ten never are. Measured on 2026-08-23: 8.6 million resting orders, a single table allocation
+of 9.5 GiB, 8.0 GB resident, growing dead-linearly with no plateau after 84 minutes. A longer
+run ends in the OOM killer, which has happened before at 9.9 GB.
+
+Real matching is a large piece of work and is not what this asks for. Bounding the book,
+rejecting past the bound, and saying so is not large, and the gauges to drive it were added on
+2026-08-23.
+
+**3. The idle-connection reaper tears down the pre-warmed failover link.** Availability quietly
+reduced, and only observable during a failover, which is when it is too late to notice.
+
+**4. Instruments that report something other than what happened.** The order-accounting check
+that reports "could not measure" as "orders were lost"; `cmake --install` re-laying
+configuration templates unexpanded; `deploy.py` ignoring a changed environment file. None of
+these break the venue. All of them cost time by sending someone to look in the wrong place.
+
+**5. Everything else** -- the lint gate, the orphaned `start_fix_seq_system.py`, the Doxygen
+`\ref` handling, the five-second logon delay. Worth doing, cheap to do, and nothing depends on
+when.
+
 ### Active / Next
 
 - **CPU core layout: declared allocation and background by default** — **DONE.** Design agreed
