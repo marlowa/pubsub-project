@@ -18,16 +18,33 @@ Environment:
 
 PostgreSQL superuser access:
     The script needs to connect as the PostgreSQL superuser (default:
-    postgres) to create the role and database.  Two approaches:
+    postgres) to create the role and database.  Three approaches:
 
-      a) Pass --sudo-postgres to prefix psql commands with
+      a) Run the script from a shell already logged in as the postgres
+         OS user.  Nothing extra is needed: psql connects over the Unix
+         socket using peer authentication, no password and no sudo.
+         This is the least troublesome option where sudo is restricted.
+
+      b) Pass --sudo-postgres to prefix psql commands with
          'sudo -u postgres'; psql then connects via the Unix socket
          using peer authentication (no password required).
 
-      b) Allow password auth for the superuser in pg_hba.conf (md5 or
+      c) Allow password auth for the superuser in pg_hba.conf (md5 or
          scram-sha-256 for host 127.0.0.1/32), then supply the password
          either interactively (psql will prompt) or non-interactively
          via the PGPASSWORD environment variable.
+
+    The Unix socket is used for (a) and (b) -- that is, whenever this
+    process will reach PostgreSQL as the superuser's own OS account.
+    Otherwise the connection is forced over TCP, because peer
+    authentication is not available there and a password can be.
+
+Recreating from scratch:
+    --drop-existing drops the database and the application role before
+    recreating them and re-running the changesets, which is the way to
+    get back to a known state when the schema has drifted.  Sessions
+    still attached to the database are disconnected first; without that
+    the drop fails, and something is nearly always attached.
 
 PostgreSQL JDBC driver:
     Liquibase needs the PostgreSQL JDBC driver (postgresql-*.jar) installed
@@ -45,6 +62,7 @@ PostgreSQL JDBC driver:
 """
 
 import argparse
+import getpass
 import os
 import shutil
 import subprocess
@@ -68,13 +86,31 @@ def _run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=True, **kwargs)
 
 
+def _running_as(user: str) -> bool:
+    """True when this process's own OS account is `user`."""
+    try:
+        return getpass.getuser() == user
+    except Exception:
+        # getuser() consults the environment before falling back to the password
+        # database, and can raise where neither answers. Not knowing is not the
+        # same as being the superuser, so say no and let TCP be used.
+        return False
+
+
 def _superuser_psql_args(psql_prefix: list[str], host: str, port: int,
                           superuser: str) -> list[str]:
-    # Use the Unix socket (omit --host) only when running as the postgres OS
-    # user via sudo, where peer auth is available.  Otherwise force TCP so
-    # that password auth (md5/scram) can be used — peer auth is not available
-    # over TCP, and the caller is not the postgres OS user.
-    use_socket = bool(psql_prefix) and host in ("localhost", "127.0.0.1")
+    # Use the Unix socket (omit --host) whenever psql will reach PostgreSQL as
+    # the superuser's own OS account, because peer authentication then applies
+    # and no password is involved.  That is true two ways: with 'sudo -u
+    # postgres' in front, and when this process is already running as postgres,
+    # which is what a shell logged in as that user gives.
+    #
+    # Testing for sudo alone missed the second case, so someone logged in as
+    # postgres — precisely to sidestep sudo — was pushed onto TCP and asked for
+    # a password.  Otherwise force TCP, where password auth (md5/scram) works
+    # and peer auth does not.
+    local_cluster = host in ("localhost", "127.0.0.1", "::1", "")
+    use_socket = local_cluster and (bool(psql_prefix) or _running_as(superuser))
     host_args = [] if use_socket else ["--host", host]
     return psql_prefix + [
         "psql",
@@ -202,6 +238,15 @@ def main() -> None:
 
     if args.drop_existing:
         print("--- Dropping existing database and role ---")
+        # PostgreSQL refuses to drop a database that anything is still connected
+        # to, and after a venue has been running something nearly always is --
+        # an idle psql, a pooled application connection, a monitoring query. The
+        # drop then fails and the recreate never happens, which is the opposite
+        # of what --drop-existing was asked for. Disconnect them first.
+        _psql_as_superuser(psql_prefix, args.pg_host, args.pg_port,
+                           args.pg_superuser,
+                           "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                           f"WHERE datname = '{args.db_name}' AND pid <> pg_backend_pid();")
         _psql_as_superuser(psql_prefix, args.pg_host, args.pg_port,
                            args.pg_superuser,
                            f"DROP DATABASE IF EXISTS {args.db_name};")
