@@ -18,6 +18,129 @@ Fixed entries are kept for one release cycle and then deleted — the commit is 
 
 ## Open
 
+### Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed
+
+| | |
+|---|---|
+| Found | 2026-08-23 |
+| How | Reading the gateway's session handling against FIXT.1.1 while writing docs/design/fix_sequence_numbers_and_gaps.md |
+| Impact | An order a member believes it placed can fail to reach the venue with neither side detecting it |
+
+`MsgSeqNum` (tag 34) on an inbound message is never compared against an expected value. The
+gateway keeps no expected-inbound counter, never detects a gap in what a member sends, and never
+sends a `ResendRequest` -- the only `ResendRequest` code in the gateway is the handler for
+receiving one from a member.
+
+**What this costs.** A member sends an order; the connection drops before it arrives; the member
+reconnects and continues numbering from the next value. The venue was expecting the missing
+number and receives the one after it, processes it, and carries on. The order that never arrived
+is not requested, not logged and not missed. The member has an order it believes is resting and
+the venue has never heard of it. Noticing exactly this is the purpose of the numbering.
+
+A message arriving with a number *lower* than expected is accepted for the same reason. FIXT.1.1
+calls that a serious error, on the grounds that the far side has gone backwards and its state
+can no longer be trusted.
+
+**A related defect with the same root.** `PossDupFlag` (tag 43) is written on the outbound
+resend path and never read on inbound. A member recovering a gap of its own retransmits with
+`PossDupFlag=Y`, meaning "you may already have this"; the gateway treats it as a new order.
+What prevents a duplicate order today is the matching engine rejecting a repeated ClOrdID
+within a session -- the application layer catching a session-layer failure. The member gets a
+rejection for an order that does exist, and under load the rejections arrive in bulk: a run has
+been observed producing 132,000 duplicate-ClOrdID warnings from a client retransmitting orders
+it had not been acknowledged.
+
+**What is needed.** An expected-inbound counter per session, checked on every message, with the
+three outcomes the specification defines: equal, process; higher, hold the message and send a
+`ResendRequest`; lower, a serious error unless `PossDupFlag=Y`, in which case the message has
+already been processed and should be discarded rather than forwarded. The counter has to
+survive a reconnect, since the series belongs to the session and not to the connection, and it
+has to survive a gateway failover for the same reason the outbound counter does.
+
+Not a small change, and it touches the session state that HA already carries across a failover.
+Worth sizing before starting.
+
+### ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream
+
+| | |
+|---|---|
+| Found | 2026-08-23 |
+| How | Reading the resend path against the FIX session-layer rules rather than against its own comments |
+| Impact | None in normal operation. A member asking for a bounded range gets an unbounded replay, and the venue pays for it |
+
+`FixOrderGatewayThread::handle_resend_request` reads `BeginSeqNo` (tag 7) and nothing else.
+`EndSeqNo` (tag 16) is never read anywhere in the codebase, though the data dictionary carries
+it and marks it required on ResendRequest. The gateway replays from `BeginSeqNo` to wherever
+the session had reached, which is to say it treats every request as though `EndSeqNo` were 0.
+
+**Recorded as a deviation rather than a bug**, because in the case that actually happens it is
+the correct behaviour. `EndSeqNo=0` means "everything from here on" and is what an engine sends
+after a disconnect, which is when resends occur. A member that asked for 100-150 and receives
+100 onwards sees messages in sequence, and its inbound counter advances exactly as it would
+have; nothing in the session breaks.
+
+**Where it stops being benign is a bounded request.** A member asking for fifty messages gets
+every report since, and the reports come from the sequencer's WAL rather than from a buffer in
+the gateway -- so a small request from one member turns into a large slice read on the shared
+path that live traffic depends on. On a session with millions of reports behind it that is a
+substantial amount of work, asked for by a message the member was entitled to send.
+
+The gap between "no member does this" and "no member can do this" is the whole of the risk. It
+is unusual engines behaving reasonably that find this kind of thing, and they find it in
+production.
+
+Three ways to settle it, in increasing effort:
+
+- Honour `EndSeqNo` when it is non-zero, which is what the specification asks for.
+- Keep the current behaviour and say so deliberately in a comment, so the next reader knows it
+  was considered rather than missed.
+- Bound the replay regardless of what was asked for, which addresses the cost but not the
+  conformance.
+
+Whichever is chosen, `EndSeqNo` being absent from the code with no comment is the one state
+that should not persist, because it cannot be told apart from an oversight.
+
+### The order-accounting check reports lost orders when it means it could not count them
+
+| | |
+|---|---|
+| Found | 2026-08-23 |
+| How | A 113-minute trading-day run ended `FAIL -- the matching engine did not accept every order`, having just said it could not read the counter it needed |
+| Impact | A clean run is reported as order loss. That is the conclusion this check exists to prevent being drawn wrongly |
+
+`perf_run.py` finishes a run by comparing the matching engine's `orders_processed_total`
+against the orders the profile offered. When the counter cannot be read it sets the count to
+-1, prints `COULD NOT READ the matching engine's metrics endpoint`, and then falls into the
+same comparison as any other run. -1 is not the expected total, so the run is declared a
+failure with the words *the matching engine did not accept every order*.
+
+Nothing had gone wrong with the venue. **"I could not measure this" and "this measurement came
+out wrong" are different results, and only one of them is about the venue.** Reporting the
+first as the second is the more damaging error, because it sends someone to look for a fault
+in the system rather than in the instrument.
+
+That is worth more here than it would be elsewhere. This check exists *because* of a false
+loss report: a June run reported 166 orders missing, which was investigated at length and
+turned out to be a Quill flushing artefact with every one of the million orders present. The
+post-shutdown ground-truth count was the answer to that. It has now produced a false loss
+report of its own, by a different route.
+
+**The read failure itself is unexplained**, and the obvious causes are all eliminated: the
+counter exists (`orders_processed_total`, registered in `MatchingEngineThread.cpp`), the scrape
+happens before `full_shutdown()` rather than after it, and the metrics port resolves correctly
+from the deployed configuration. It needs the next run to pin down.
+
+Two things to fix, and the first does not depend on diagnosing the second:
+
+- Report an unreadable counter as *not verified*, distinct from both PASS and FAIL. A run whose
+  accounting could not be taken is not a run that failed.
+- Find out why the counter could not be read.
+
+Related: `component_metrics_port()` calls `die()` when a deployed config still holds
+unexpanded `${...}` placeholders, which is the state `build.sh` leaves `installed/etc` in until
+`deploy.py` runs again. A stale deployment therefore kills a run at the accounting step, long
+after the point where the cause would have been obvious.
+
 ### Python style warnings across the top-level scripts, and a lint gate that ignores them
 
 | | |
