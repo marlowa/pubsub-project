@@ -175,10 +175,27 @@ turned out to be a Quill flushing artefact with every one of the million orders 
 post-shutdown ground-truth count was the answer to that. It has now produced a false loss
 report of its own, by a different route.
 
-**The read failure itself is unexplained**, and the obvious causes are all eliminated: the
-counter exists (`orders_processed_total`, registered in `MatchingEngineThread.cpp`), the scrape
-happens before `full_shutdown()` rather than after it, and the metrics port resolves correctly
-from the deployed configuration. It needs the next run to pin down.
+**The reporting is fixed. The read failure itself is not**, and the obvious causes are all
+eliminated: the counter exists (`orders_processed_total`, registered in
+`MatchingEngineThread.cpp`), the scrape happens before `full_shutdown()` rather than after it,
+and the metrics port resolves correctly from the deployed configuration.
+
+**A leading hypothesis, and how to test it.** `read_counter` allows the scrape **two seconds**
+and turns any `URLError` or `OSError` into `None`, which the caller cannot tell apart from the
+metric being absent. At the end of the trading-day run the matching engine held 8.6 million
+resting orders in a table whose largest allocation was 9.5 GiB, with 8.0 GB resident. Rendering
+the Prometheus exposition under that is plausibly slower than two seconds, or the endpoint's
+thread simply did not get scheduled promptly.
+
+The evidence fits: the read failed after 113 minutes and 8.6 million orders, and succeeded twice
+immediately afterwards on runs of 1,000 orders. If the hypothesis holds, the failure follows the
+size of the book rather than anything about the code path -- so it will reproduce at the end of
+a long run and never at the end of a short one, which is the worst possible shape for noticing
+it.
+
+Two things follow if it is confirmed. The timeout is too short for a process holding several
+gigabytes, and more importantly a timeout and an absent metric should not arrive at the caller
+as the same value: one is "ask again", the other is "this venue does not publish that".
 
 Two things to fix, and the first does not depend on diagnosing the second:
 
