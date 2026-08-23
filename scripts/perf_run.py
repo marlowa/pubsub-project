@@ -1612,12 +1612,24 @@ def main() -> None:
         # already failed the run if they did not match, so the ME count is the only
         # independent check worth making here.
         log("=== Post-shutdown ground-truth counts ===")
+        # "I could not measure this" and "this measurement came out wrong" are different
+        # results, and only the second is about the venue. Reporting the first as the second
+        # sends the reader to look for a fault in the system rather than in the instrument,
+        # which is the more expensive mistake and the one this check exists to prevent being
+        # made: it was itself built after a false report of 166 lost orders cost a day, and
+        # every one of that million turned out to be present.
         if me_final < 0:
             log("  ME-ORD        : COULD NOT READ the matching engine's metrics endpoint.")
             log("                  Is metrics_enabled true for this environment?")
-        else:
-            log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  "
-                f"{'OK' if me_final == total_orders else 'MISMATCH'}")
+            log("  ER delivery   : verified by binary_load_client (it exits non-zero on any shortfall)")
+            log("=== NOT VERIFIED — the run completed, but its order count could not be read ===")
+            log("    This is not a failure of the venue. Nothing here says an order was lost;")
+            log("    it says the check could not be carried out. Fix the endpoint and re-run")
+            log("    to find out either way.")
+            log("=== Done ===")
+            sys.exit(2)
+        log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  "
+            f"{'OK' if me_final == total_orders else 'MISMATCH'}")
         log("  ER delivery   : verified by binary_load_client (it exits non-zero on any shortfall)")
         if me_final != total_orders:
             log("=== FAIL — the matching engine did not accept every order ===")
@@ -1664,7 +1676,13 @@ def main() -> None:
         return f"SHORT by {-diff:,}"
 
     log("=== Post-shutdown ground-truth counts ===")
-    log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {count_status(me_final, total_orders)}")
+    # Not counted, rather than counted as -1. Feeding the sentinel to count_status prints
+    # "SHORT by 1,000,001", which reads as the venue having lost everything it was sent.
+    if me_final < 0:
+        log(f"  ME-ORD        :  NOT READ  / {total_orders:,}  (metrics endpoint unavailable; "
+            f"this line says nothing about whether orders were lost)")
+    else:
+        log(f"  ME-ORD        : {me_final:>10,} / {total_orders:,}  {count_status(me_final, total_orders)}")
     log(f"  GW-NOS-RECV   : {gw_nos_recv:>10,} / {total_orders:,}  {count_status(gw_nos_recv, total_orders)}")
     log(f"  GW-ER-SENT    : {gw_er_sent:>10,} / {total_orders:,}  {count_status(gw_er_sent, total_orders)}")
     if gw_er_dropped > 0:
