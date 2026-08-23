@@ -18,6 +18,56 @@ Fixed entries are kept for one release cycle and then deleted — the commit is 
 
 ## Open
 
+### The resend scenario never creates a gap, so nothing tests the resend
+
+| | |
+|---|---|
+| Found | 2026-08-23 |
+| How | Reading the reconnecting client's own output while planning assertions for it |
+| Impact | The FIX resend path has no member-observable test coverage, while a scenario named for it passes |
+
+`ha_test.py` scenario 22, `resend_recovery`, is described as "A reconnecting member is sent the
+execution reports it missed" and promises the member "receives real execution reports marked
+PossDupFlag=Y instead of a blanket gap-fill".
+
+It asserts neither. What it asserts is that the venue resumed the session's numbering across the
+reconnect, which it does correctly and which is worth having. The reconnecting client's output
+was checked after a run: **579 bytes, containing one Logon and nothing else.** Zero execution
+reports, zero `PossDupFlag`, zero `SequenceReset`, zero `OrigSendingTime`. Scenario 23,
+`inflight_gateway_death`, produces an identical 579-byte Logon-only output.
+
+The cause is straightforward once seen. The scenario sends its baseline orders, waits for their
+reports, and only then drops the session -- so at the moment of the drop the venue owes the
+member nothing. Nothing is missed, so the member has no gap to notice, sends no ResendRequest,
+and there is nothing to resend. `orders_during_override=0` and `orders_after_override=0` ensure
+no traffic arrives during the window either.
+
+**A gap has to be manufactured, and the choice of how is a design decision.** Three candidates:
+
+- **Reconnect after the cancel-on-disconnect grace expires.** The member leaves orders resting,
+  the venue cancels them and emits a report per order into a socket that is gone, and the member
+  returns to a real gap of its own orders being cancelled. Uses only behaviour the venue already
+  has, and is the most realistic of the three. It needs checking that the session's sequence
+  state outlives the grace period -- if it does not, the member's numbering restarts and the
+  test fails for an unrelated reason.
+- **Stop the client with orders in flight**, so the reports land while it is away. Closest to
+  scenario 23's intent, and depends on timing that will vary by machine.
+- **Have the venue generate reports for a disconnected session directly**, which is the most
+  controllable and the least like anything that happens.
+
+Until one is chosen, three assertions have nothing to run against: that `PossDupFlag` is set
+inside the requested gap and absent beyond it, that `OrigSendingTime` accompanies every resent
+report, and that the terminating gap-fill leaves the member expecting the number the venue will
+send next. All three are cheap once a gap exists, and all three read tags from the client's own
+output, which is the member-observable fact rather than the venue's account of itself.
+
+A helper for the first of them, `_client_report_counts`, already exists in `ha_test.py` and is
+never called.
+
+**The scenario should not be left describing work it does not do.** Whatever is decided about
+manufacturing the gap, the description and expected outcome need to match what is asserted, or
+the next person to ask "is the resend path tested?" gets the same wrong answer twice.
+
 ### Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed
 
 | | |
