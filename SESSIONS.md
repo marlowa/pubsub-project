@@ -2226,3 +2226,136 @@ once.
 | `design-notes-for-ha.md` section 6 | Still says "Systemd or local supervisors", which contradicts section 12 |
 | A consolidated design document | Andrew's idea, parked deliberately |
 | TAP | Unchanged, still the next pub/sub component |
+
+---
+
+## Session 2026-08-23 — Epochs that outlive the process, and instruments that lied
+
+A long session with one theme running through it: several things claimed to be true, and the
+work was checking each claim against the code rather than against what the code was meant to do.
+Four of the day's findings came from doing that, including the two most serious.
+
+### The leadership epoch did not survive a restart
+
+The session began with a design question -- should the matching engine gain the sequencer's
+peer-to-peer leadership resolution -- and the answer turned on a defect neither of us had seen.
+The epoch is the venue's generation counter for leadership, checked on every PDU, and it was
+held only in memory. It started at zero on every start, so a pair restarted together came back
+at zero, elected a leader between them, and stamped messages with a generation the venue had
+used long ago. Restarting one node at a time hid it completely, because the survivor told the
+returning node what generation it was in.
+
+`fix_common::EpochStore` now writes it to a small file beside the WAL, atomically, flushing the
+directory as well so the rename survives loss of power rather than only loss of the process.
+Both the sequencer and the matching engine carry it. A damaged file reads as zero, which is safe
+because zero loses to every real epoch.
+
+**Persisting it turned a restarted node from a guaranteed loser of every epoch comparison into a
+credible claimant, and three rules that had quietly depended on it losing broke at once:**
+
+| Defect | What it did |
+|---|---|
+| A peer with a higher epoch was treated as entitled to lead | both nodes deferred; the pair came up with two followers and no leader |
+| Election ran on `StatusQuery`, which carries no role | a node restarting beside a healthy leader made itself a second leader |
+| A follower never adopted the leader's epoch | promoting a lagging follower reused a spent generation |
+
+The second is the one worth remembering. `StatusQuery` carries an instance id and an epoch but
+not the sender's role, so the code passed `Role::unknown` as a placeholder and a node already
+leading looked exactly like one holding nothing. Election now runs only on `StatusResponse`.
+
+### A design recommendation overturned by measurement
+
+The first answer to the leadership question was that the arbiter should be the sole issuer of
+epochs, on the argument that fencing with two issuers is not fencing. Routing every election to
+the arbiter was then measured: **17 reports received, zero decisions issued**, and every election
+falling through to the degraded path. A recently started arbiter declines to arbitrate rather
+than guess, and a venue starting up is exactly when elections happen.
+
+The better reason to reject it is not the timing. Where neither node holds a role and the two can
+see each other, the peers hold every fact the decision needs and the arbiter holds none of them
+first-hand. The rule now: peers settle what they can see, the arbiter settles what they cannot,
+and a lease keeps the two from ever issuing at once. Recorded as `design-notes-for-ha.md`
+section 11e, with the measurement, so the tidier rule is not restored by someone who has not
+seen it fail.
+
+### The gateway never removed a cancelled order
+
+Chased from a memory chart showing a 128 MB step. The step was the open-order `robin_map`
+rehashing, and predicting the next two rehashes -- 15:11:34 at +256 MB, 15:47:50 at +507 MB,
+both within seconds and megabytes of the forecast -- confirmed the model but raised a better
+question: why was the map growing at all?
+
+Both gateways removed a resting order on a terminal report by looking up that report's ClOrdID.
+For a cancel that is the wrong field: ClOrdID names the cancel request, which was never filed;
+OrigClOrdID names the order being retired. Nothing was ever removed. Measured: the map grew at
+1,925 entries a second against an order rate of 1,925 a second, with a tenth of orders cancelled.
+
+It survived because it needed two conditions and had both. Cancels never matched, and the
+matching engine never fills anything -- and a fill *does* name the resting order in ClOrdID.
+The one terminal report that reaches a gateway in practice was the one looked up wrongly.
+
+### The FIX session layer, and what is not in it
+
+A primer was written because the session layer was unfamiliar and assessing the gap-fill
+implementation needs it: `docs/design/fix_sequence_numbers_and_gaps.md`, based on FIXT.1.1
+rather than the FIX 4.2/4.4 material that dominates search results and differs in detail.
+
+Writing it found two departures beyond the one already known:
+
+- **Inbound `MsgSeqNum` is never checked.** No expected-inbound counter, no gap detection, and
+  the gateway never sends a `ResendRequest`. An order lost when a connection dropped is never
+  asked for: the member believes it has an order resting and the venue never received it.
+- **Inbound `PossDupFlag` is ignored.** A member's legitimate retransmission is treated as a new
+  order, and what prevents a duplicate is the matching engine rejecting a repeated ClOrdID --
+  the application layer catching a session-layer failure, and the source of the 132,000
+  duplicate-ClOrdID warnings recorded earlier.
+- **`EndSeqNo` is not read**, so every resend runs to the head of the stream.
+
+The principle behind the third of these was also recorded: FIX gap handling recovers from message
+loss on a session and is not a failover mechanism, so **HA must be invisible to the session
+layer**. A member reconnecting after a failover has to see an ordinary session that continued,
+because nothing in FIX gives it a way to be told otherwise.
+
+### Instruments that reported the wrong thing
+
+Four, and they cost real time during the session.
+
+- A trading-day run ended `FAIL -- the matching engine did not accept every order` immediately
+  after saying it could not read the counter. "Could not measure" and "measured wrong" are
+  different results and only one is about the venue. Now `NOT VERIFIED`.
+- The bug list's Open section held eight finished entries, four carrying `Fixed 2026-08-22`
+  markers inside them. Entries and sub-sections use the same heading level, so a finished entry
+  is indistinguishable from an open one at a glance.
+- `ha_test.py` scenario 22 is named `resend_recovery` and describes sending a reconnecting member
+  the reports it missed. Its client output after a run is 579 bytes: one Logon. The scenario waits
+  for the baseline reports before dropping the session, so there is no gap to resend. The resend
+  path has no member-observable coverage at all.
+- A dismissal in the bug list rested on the premise that entries leave the gateway's map on
+  terminal reports. They did not. Corrected in place rather than rewritten, because how a wrong
+  conclusion was reached is the part worth keeping.
+
+### Measurements taken
+
+| | |
+|---|---|
+| Cold start to leader elected, epoch persisted | 0.9 s |
+| Leadership lease reaching the arbiter after adoption | 113 µs |
+| Peak resting orders, 113-minute trading day | 8,646,218, growing linearly, no plateau |
+| Largest single order-book allocation | 9.5 GiB |
+| Matching engine RSS at the end of the run | 8.0 GB |
+| Gateway RSS growth over 84 minutes | 4.18 GB to 5.21 GB |
+| HA suite | 39 of 39, seven times |
+
+`[order_book] initial_capacity` was left unchanged at 262144, deliberately. The run answered the
+question by dissolving it: the book never plateaus, so there is no working-set size to reserve
+against, and the number to fix is the unbounded growth rather than the reservation. Four gauges
+were added so that is now visible rather than inferred from a corpse.
+
+### Tooling
+
+The Prometheus visualiser marks stretches with no data, which matters on a machine that is
+switched off between sessions -- any chart spanning more than a day contains them, and joining
+across one is a claim the data does not support. The memory monitor keeps the whole run by
+default rather than sliding, pins its target, marks when the target changes, reports a sample it
+could not take instead of drawing a flat line, shows the machine alongside the process, and
+freezes for a screenshot without pausing the recording.
