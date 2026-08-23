@@ -19,6 +19,7 @@ add_dependencies(sequencer fix_orders_generated leader_follower_generated)
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sequencer PRIVATE
         SequencerConfiguration.hpp
+        EpochStore.hpp
         SequencerConfigurationLoader.hpp
         SequencerThread.hpp
         Sequencer.hpp
@@ -40,6 +41,7 @@ install(FILES
 # sequencer that starts and then delivers reports nowhere.
 add_executable(sequencer_tests
         tests/SequencerConfigurationLoaderTest.cpp
+        tests/EpochStoreTest.cpp
         SequencerConfigurationLoader.cpp
 )
 

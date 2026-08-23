@@ -21,6 +21,7 @@
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
+#include "EpochStore.hpp"
 #include "GatewayIds.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
@@ -151,7 +152,42 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // Leader-follower state machine (slice 6).
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
+
+    // The leadership generation. Never assign to this directly: go through
+    // set_epoch(), which also writes it to disk. A restart that forgets the
+    // epoch lets this node claim a generation the venue has already used.
     int32_t epoch_{0};
+
+    // Where the epoch outlives the process. Read once at startup, rewritten
+    // whenever the epoch moves.
+    EpochStore epoch_store_;
+
+    // Context for an arbitration request that is still outstanding, so the
+    // timeout can fall back the way this particular request needs.
+    //
+    // The two callers face different situations. A peer heartbeat timeout means
+    // the peer is believed gone, so taking leadership unopposed is right. An
+    // election triggered by a peer's StatusQuery means the peer is demonstrably
+    // alive and asking the same question, so taking leadership unopposed would
+    // produce two leaders; that case has to be settled by a rule both sides
+    // compute identically.
+
+    // A freshly started arbiter refuses to arbitrate for a short while, because
+    // an empty leadership map looks the same whether there is genuinely no
+    // leader or it simply has not been told yet. It says so and asks the
+    // component to retry. This counts the retries so that a silent arbiter still
+    // ends in a decision rather than an indefinite wait.
+    int32_t arbitration_attempts_{0};
+
+    // True from asking the arbiter until it answers or the retries run out.
+    // The peer exchange runs an election on both the query and the response, so
+    // without this a single startup sends the arbiter four identical reports.
+    bool arbitration_outstanding_{false};
+
+    // Enough attempts to outlast the arbiter's learning period at the configured
+    // arbitration timeout, with room to spare. Running out means no arbiter is
+    // coming, not that one is still warming up.
+    static constexpr int32_t max_arbitration_attempts{6};
 
     // Timer ids (default-constructed = not scheduled); on_timer_event compares
     // a fired timer's id against these to identify it.
@@ -196,6 +232,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Leader-follower helpers.
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
+    void set_epoch(int32_t new_epoch);
+    bool request_arbitration();
+    void send_leadership_lease();
+    void resolve_with_visible_peer(int64_t peer_instance_id, int32_t peer_epoch);
     void elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role);
     void send_status_query(const pubsub_itc_fw::ConnectionID& conn_id);
     void send_status_response(const pubsub_itc_fw::ConnectionID& conn_id);
