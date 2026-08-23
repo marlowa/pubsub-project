@@ -392,6 +392,123 @@ merits, and turned that accident into a trap.
 arbiter believes it while it is being renewed and while the claimant is present, and stops
 believing it otherwise -- which is what makes it a lease rather than a record.
 
+## 11e. The epoch must outlive the process, and not everything may issue one
+
+The epoch is the venue's generation counter for leadership. Every component checks it on
+every PDU and rejects anything from an older generation. That check is the whole of the
+fencing, and it works only while the counter never goes backwards.
+
+Held only in memory, it went backwards. It started at zero on every start, so a pair
+restarted together both came back at zero, elected a leader between them, and stamped
+messages with a generation the venue had used long ago. Downstream could not tell the new
+leader from the old one, and a message left over from the earlier generation compared as
+current. Restarting one node at a time hid this completely, because the survivor told the
+returning node what generation it was in -- which is section 11a's mistake again, in a new
+place: process death and machine death are not the same failure.
+
+The epoch is now written to a small file that outlives the process, one per instance, next
+to the WAL. Writes go to a temporary file which is flushed and renamed over the real one,
+and the directory is flushed too, so a reader sees either the old epoch or the new one
+whatever moment the process dies at, and the rename survives loss of power rather than
+merely loss of the process. A missing or damaged file reads as zero, which is right for a
+new deployment and safe for a damaged one: zero loses to every real epoch, so the node
+defers instead of claiming a generation it cannot substantiate.
+
+### Who is allowed to issue a generation
+
+The first answer was that the arbiter should be the only one, on the argument that fencing
+with two issuers is not fencing. Two issuers can fail two ways:
+
+* **Collision.** The pair issues epoch 11 naming instance 1 while the arbiter issues epoch
+  11 naming instance 2. Downstream sees two leaders in the same generation and has no basis
+  to prefer either.
+* **Regression.** An issuer produces an epoch that is not greater than one already in
+  circulation. This was the live bug: local election never advanced the counter at all.
+
+That answer was wrong, and it was measurement that showed it. Routing every election to the
+arbiter produced no decisions at all -- in one run the arbiter received 17 reports and
+issued none, and every election fell through to the degraded path. The reason is section
+11c: an arbiter that has just started declines to arbitrate rather than guess, and a venue
+starting up is precisely when elections happen. The rule and the requirement could not both
+be satisfied.
+
+There is a better reason to reject it than the timing. **In the case where neither node
+holds a role and the two can see each other, the arbiter is the least-informed party in the
+system.** The two peers hold every fact the decision needs: both instance ids, both epochs,
+and the knowledge that neither is leading. The arbiter holds none of it first-hand and says
+so. Referring the question from the side that has the facts to the side that has not is the
+wrong direction.
+
+**The rule that replaced it:**
+
+* **The peer is visible.** The peers settle it themselves. Leadership goes to the lower
+  instance id and the new generation is one past the higher of the two epochs. Both sides
+  compute both values from the same two inputs, so they reach the same answer without
+  needing to agree on anything further. `max` is symmetric, so they still agree when one of
+  them has lost its stored epoch and the other has not.
+* **The peer is not visible.** The arbiter decides. This is the case a node cannot settle
+  alone, and the only one where a second claimant might exist unseen -- which is what the
+  arbiter is for.
+
+**Why that is not two issuers after all.** The two are mutually exclusive by construction. A
+node only resolves locally when it can see its peer, and a peer that is visible is running
+the same local resolution rather than reporting. The arbiter only issues on receiving a
+report, and a node only reports when it cannot see its peer. So for any group, at any
+moment, exactly one of them is in a position to issue. Regression is closed separately, by
+both of them using the same rule -- strictly greater than every epoch known -- which is only
+truthful because the epoch now survives a restart.
+
+The residual case is visibility that is briefly asymmetric: A sees B while B does not see A,
+so B reports while A resolves locally. The lease closes it. A node that takes leadership
+tells the arbiter immediately rather than at the next heartbeat, and an arbiter holding a
+confirmed incumbent confirms that incumbent instead of issuing a fresh generation. Measured,
+the lease reaches the arbiter around a tenth of a millisecond after leadership is adopted.
+
+**This is weaker than a single issuer and deliberately so.** Sole-issuer was a structural
+guarantee; this one depends on visibility being symmetric, with the lease narrowing the
+window where it is not. What it buys is a venue that elects a leader in about a second
+instead of having no leader for the ten seconds an arbiter spends learning. Anyone tempted
+to restore the tidier rule should re-read the measurement above first.
+
+### The sequencer and the matching engine are deliberately different
+
+The sequencer resolves in **both** directions between peers: it may take leadership as well
+as give it up. It can, because both sides exchange status and hold both epochs at the same
+moment, so both can compute the same answer.
+
+The matching engine only ever **gives leadership up**. Its peer exchange is a one-way
+announcement, so there is no moment at which both sides hold both epochs and no basis for a
+symmetric rule. It adopts follower on the peer's word and takes the peer's generation rather
+than inventing one, so it never issues at all. Deferring cannot create a second leader
+whatever the peer is confused about, which is what makes acting on the peer's word alone
+safe. It is guarded three ways: the peer must say it is leading, this instance must still
+hold no role, and the peer's epoch must not be older than one this instance has seen.
+
+That asymmetry is a consequence of what each protocol carries, not an inconsistency to be
+tidied away.
+
+### What persistence broke on the way in
+
+Worth recording, because all three have the same shape and a fourth of the same kind is
+likely. Each was a rule that held while the epoch was ephemeral and stopped holding once it
+survived a restart -- because a restarted node went from losing every epoch comparison
+automatically to being a credible claimant.
+
+* **Two followers and no leader.** A peer with a higher epoch was treated as a newer
+  generation to defer to. Once epochs persist, two nodes' stored values drift apart in normal
+  operation, and the rule started reading as "whoever stored the bigger number leads". The
+  node with the lower epoch deferred by that rule and the other deferred by the instance-id
+  rule. Only a peer that *says* it is leading is deferred to now; having seen more
+  generations does not put a node in charge.
+* **Two leaders.** Election ran on the status *query*, which carries an instance id and an
+  epoch but not the sender's role, so a node already leading looked exactly like one holding
+  nothing. A node restarting beside a healthy leader made itself a second leader before the
+  reply that would have said so arrived. Election now runs only on the *response*, which
+  carries the role.
+* **Silent drift.** A follower never adopted the leader's epoch -- the heartbeat handler
+  rejected stale heartbeats but never followed a newer one -- so promoting a lagging follower
+  produced a generation the venue had already used.
+
 ## 12. A supervisor starts processes; it does not decide leadership
 
 These are two jobs and they must not be the same component.
