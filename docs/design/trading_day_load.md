@@ -574,6 +574,29 @@ exposes its metrics endpoints; nothing collects them, so there is no band chart 
 only the client's own figures and the manifest. If the chart is wanted, Prometheus has to be
 running before step 3.
 
+### Netfilter on loopback, and why it is not a tuning step
+
+Roughly **13% of CPU in both the gateway and the matching engine profiles is nftables and
+conntrack**, and none of it is the venue's doing. Every component of this venue runs on one
+machine here, so all of its traffic crosses `lo` -- and netfilter hooks fire on every packet
+regardless of interface, loopback included. `nft_do_chain`, `nft_counter_eval`,
+`nft_immediate_eval` and `expr_call_ops_eval` sit near the top of both profiles as a result.
+
+**This is an artefact of collapsing the venue onto one host, not a property of the venue.** In
+a real deployment the primary and secondary are on separate machines and the traffic goes over
+a NIC, where kernel bypass takes the data path out of the kernel stack entirely. That 13% is
+not waiting to be recovered in production; it mostly does not exist there.
+
+So read it as noise to discount when comparing profiles, and be aware it inflates every
+latency figure a single-machine run produces. `nft flush ruleset` before a run removes it and
+makes two runs more comparable, which is worth doing when the profile itself is the subject.
+
+**It is not a production tuning action and must not be recorded as one.** Flushing the ruleset
+on a deployed host is a change to that host's firewall, made for the benefit of a benchmark.
+The ruleset is there deliberately. Nothing in this document asks anyone to remove it, and a
+run made without flushing is a valid run -- it simply carries a known, quantified overhead
+that a production deployment would not.
+
 ---
 
 ## First run, 2026-08-08: what it found

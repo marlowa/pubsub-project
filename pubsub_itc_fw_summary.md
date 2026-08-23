@@ -49,6 +49,69 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 ---
 
+## Running and Testing the System
+
+### Scripts
+
+The scripts live in `scripts/`; the repository root holds none. The ones below are the
+entry points a newcomer needs; `scripts/` holds others for narrower jobs.
+
+**`devenv.py`** — developer sandbox management. Subcommands: `start`, `stop`, `status`, `restart [name]`. Reads component definitions from the env TOML (`--env`, default `environments/dev.toml`). Starts components in dependency order, stops in reverse. `--no-ha` skips `ha_only=true` components. Exports credentials before start; re-exports on auth service restart.
+
+**`release.py`** — assembles a versioned deployment artefact. Reads version from `CMakeLists.txt`, git hash from `git rev-parse --short HEAD`. Stages `bin/` (deployment binaries), `lib/` (`.so` + jars), `etc/` (config templates from `applications/`), `db/`, `environments/`, `devenv.py`, `deploy.py`, `release.json`. Output: `build/release/pubsub-<version>-<hash>.tar.gz`.
+
+**`deploy.py`** — deploys a release artefact or expands an in-place install. Steps: (1) unpack artefact if `--artefact` given; (2) expand `${...}` placeholders in `etc/**/*.toml` using the env TOML flattened into a substitution namespace; (3) generate self-signed TLS certs via `openssl req -x509` (skip with `--skip-certs` for production CA certs); (4) run `db/create_db.py`; (5) run `db/export_credentials.py`. Use `--skip-db` to skip database steps on re-deploy.
+
+**`start_fix_seq_system.py`** — starts the full system for interactive testing.
+
+```
+./start_fix_seq_system.py installed
+./start_fix_seq_system.py installed --startup-delay 2.0
+./start_fix_seq_system.py installed --valgrind --valgrind_command "valgrind"
+```
+
+Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → fix_order_gateway → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
+
+**`perf_run.py`** — starts the full system, attaches `perf record` to gateway and ME, fires fix8 NOS orders, waits for completion, SIGTERMs everything, then produces per-process perf reports and flamegraph SVGs.
+
+```
+./perf_run.py                              # 1 client, 1 burst (1 000 orders)
+./perf_run.py --burst=5                    # 1 client, 5 000 orders
+./perf_run.py --clients=3 --burst=4        # 3 clients × 4 bursts = 12 000 orders
+./perf_run.py installed --burst=2    # explicit install prefix
+```
+
+Output goes to `installed/perf/<YYYYMMDD_HHMMSS>/`. Requires `perf` in PATH and the FlameGraph scripts at `/home/marlowa/mystuff/FlameGraph`.
+
+### Manual fix8 testing
+
+fix8 is installed at `/home/marlowa/mystuff/fix8_install`. The test binary and config must be run from that directory:
+
+```
+cd /home/marlowa/mystuff/fix8_install
+./bin/f8test -c myfix_gateway_client.xml -N GW1
+```
+
+`-N GW1` selects the session name from the XML config. Once the FIX Logon is established, interactive commands at the prompt:
+
+| Command | Effect |
+|---|---|
+| `T` | Send 1 000 NewOrderSingle messages |
+| `T` repeated | Each `T` sends another 1 000; type it N times for N × 1 000 orders |
+| `d` | Toggle debug output |
+| `q` | Quit (sends FIX Logout) |
+
+Add `-d` on the command line for verbose debug output from startup:
+
+```
+./bin/f8test -d -c myfix_gateway_client.xml -N GW1
+```
+
+The gateway listens for FIX connections on port 9879. The matching engine log at `installed/log/matching_engine.log` contains `ME-ORD-N` entries that confirm each order was processed.
+
+---
+
+
 ## Major Subsystems
 
 ### 1. Allocator Subsystem
@@ -163,7 +226,21 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 - `last_activity_time_` — for idle timeout enforcement
 - `target_thread_id_` — for `ConnectionLost` delivery
 
-**Protocol handler strategy:**
+**Protocol handler strategy.** There are two because there are two kinds of peer, and the
+difference is not a detail of either one.
+
+A peer built on this framework sends framework PDUs, which carry their own length and so can
+be split into messages by generic code that need not know what any of them mean. A peer that
+is not — an *alien* protocol such as ASCII FIX, or any third-party binary protocol — marks its
+message boundaries its own way, and the ways do not resemble each other: FIX carries a body
+length and terminates on a checksum field, another protocol will do something else entirely.
+
+The framework could be taught to find a FIX message boundary. It deliberately is not. Framing
+knowledge for a particular protocol would make the framework partly a FIX implementation, and
+the next protocol would add its own case beside it, in a layer whose whole value is that it
+does not care what it is carrying. So alien streams are handed to the application thread as
+raw bytes and framed there, by code that is allowed to know what it is reading. That division
+is what the two strategies are:
 
 | Class | Description |
 |---|---|
@@ -1688,67 +1765,6 @@ For the framework's *generic* leader-follower DSL protocol (separate from the se
 the five-node topology described in subsystem 12 still applies.
 The sequencer-specific design uses a simpler topology (two sequencers + one arbiter, single site)
 because matching-engine workloads have different durability constraints than the framework's generic streaming use case.
-
----
-
-## Running and Testing the System
-
-### Scripts
-
-Five Python scripts live in the project root.
-
-**`devenv.py`** — developer sandbox management. Subcommands: `start`, `stop`, `status`, `restart [name]`. Reads component definitions from the env TOML (`--env`, default `environments/dev.toml`). Starts components in dependency order, stops in reverse. `--no-ha` skips `ha_only=true` components. Exports credentials before start; re-exports on auth service restart.
-
-**`release.py`** — assembles a versioned deployment artefact. Reads version from `CMakeLists.txt`, git hash from `git rev-parse --short HEAD`. Stages `bin/` (deployment binaries), `lib/` (`.so` + jars), `etc/` (config templates from `applications/`), `db/`, `environments/`, `devenv.py`, `deploy.py`, `release.json`. Output: `build/release/pubsub-<version>-<hash>.tar.gz`.
-
-**`deploy.py`** — deploys a release artefact or expands an in-place install. Steps: (1) unpack artefact if `--artefact` given; (2) expand `${...}` placeholders in `etc/**/*.toml` using the env TOML flattened into a substitution namespace; (3) generate self-signed TLS certs via `openssl req -x509` (skip with `--skip-certs` for production CA certs); (4) run `db/create_db.py`; (5) run `db/export_credentials.py`. Use `--skip-db` to skip database steps on re-deploy.
-
-**`start_fix_seq_system.py`** — starts the full system for interactive testing.
-
-```
-./start_fix_seq_system.py installed
-./start_fix_seq_system.py installed --startup-delay 2.0
-./start_fix_seq_system.py installed --valgrind --valgrind_command "valgrind"
-```
-
-Starts 7 processes in dependency order: witness → arbiter-primary → arbiter-secondary → fix_order_gateway → sequencer-primary → sequencer-secondary → matching_engine. Monitors for unexpected exits. Ctrl-C sends SIGTERM to all processes.
-
-**`perf_run.py`** — starts the full system, attaches `perf record` to gateway and ME, fires fix8 NOS orders, waits for completion, SIGTERMs everything, then produces per-process perf reports and flamegraph SVGs.
-
-```
-./perf_run.py                              # 1 client, 1 burst (1 000 orders)
-./perf_run.py --burst=5                    # 1 client, 5 000 orders
-./perf_run.py --clients=3 --burst=4        # 3 clients × 4 bursts = 12 000 orders
-./perf_run.py installed --burst=2    # explicit install prefix
-```
-
-Output goes to `installed/perf/<YYYYMMDD_HHMMSS>/`. Requires `perf` in PATH and the FlameGraph scripts at `/home/marlowa/mystuff/FlameGraph`.
-
-### Manual fix8 testing
-
-fix8 is installed at `/home/marlowa/mystuff/fix8_install`. The test binary and config must be run from that directory:
-
-```
-cd /home/marlowa/mystuff/fix8_install
-./bin/f8test -c myfix_gateway_client.xml -N GW1
-```
-
-`-N GW1` selects the session name from the XML config. Once the FIX Logon is established, interactive commands at the prompt:
-
-| Command | Effect |
-|---|---|
-| `T` | Send 1 000 NewOrderSingle messages |
-| `T` repeated | Each `T` sends another 1 000; type it N times for N × 1 000 orders |
-| `d` | Toggle debug output |
-| `q` | Quit (sends FIX Logout) |
-
-Add `-d` on the command line for verbose debug output from startup:
-
-```
-./bin/f8test -d -c myfix_gateway_client.xml -N GW1
-```
-
-The gateway listens for FIX connections on port 9879. The matching engine log at `installed/log/matching_engine.log` contains `ME-ORD-N` entries that confirm each order was processed.
 
 ---
 

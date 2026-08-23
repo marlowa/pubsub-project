@@ -130,6 +130,45 @@ Near-term tasks not tied to a specific slice.
 
 ### Deferred
 
+- **Find out why a first-time reader concludes the arbiter is unfinished** (documentation).  
+  Raised 2026-08-23, from a note made some time earlier. `pubsub_itc_fw_summary.md` was given to
+  a reader with no other knowledge of the project -- a large language model, which is a fair proxy
+  for someone who has cloned the repository and read only this -- and it reported "Next: Arbiter
+  full implementation (slice 8)" among the open items. The arbiter is implemented, deployed, and
+  exercised by the HA suite, so either something in the document still says otherwise or something
+  in it is easy to read that way.  
+  Worth chasing rather than dismissing, for two reasons. The reader had no stake and no context to
+  fill gaps with, which is exactly the position of anyone arriving at the project cold, and a
+  summary that leaves them thinking the central safety mechanism is unbuilt misrepresents the
+  system in the way most likely to matter. Slice numbering is the first suspect: a plan that lists
+  slice 8 as the arbiter reads as outstanding unless something nearby says it was completed.  
+  The task is to read the arbiter sections as a stranger would, find what supports that reading,
+  and fix it -- not to argue the reader was wrong. The same source made other assessments that
+  were harder to account for, so the exercise may turn up more than one.
+
+- **A two-tier order record, so fields stop going missing from `OrderEntry` one at a time** (matching engine).  
+  Raised 2026-08-07 by commit `557b185`, which fixed a GoodTillDate order being acknowledged with no
+  expiry on it and named this as the cause. Recorded here 2026-08-23 because until now it existed only
+  in that commit message, which is not where anyone would look for it.  
+  `OrderEntry` is a hand-written struct holding what the matching engine's own logic touches, rather
+  than what the venue has to be able to say about an order. Anything the engine does not itself act on
+  is simply absent, so each feature that needs a field discovers its absence separately and adds it.
+  That has now happened twice: `TimeInForce` was added when cancel-on-disconnect needed it, and
+  `ExpireTime` when reporting the terms back to the member needed it. Neither was an oversight; the
+  structure guarantees it recurs.  
+  The failure is quiet in a way that matters. A missing field costs nothing until something has to
+  report on an order long after the NewOrderSingle has gone -- and worse, `BookUpdate` replicates only
+  what the struct holds, so a promoted secondary serves a book with the missing terms stripped. That is
+  invisible until a failover, which is the same shape as the connection-id defect the same commit
+  mentions.  
+  The shape of the fix is to separate the two things the struct is currently doing at once: the fields
+  the engine matches on, and the full record of what the member sent and is entitled to be told. The
+  second tier is written once at acceptance and echoed thereafter, so a new reportable field does not
+  need the engine to care about it. **Not yet designed** -- the tiers, where replication draws the
+  line, and what it costs per resting order all need settling before any code moves, and the book is
+  the venue's largest structure, so a per-order size increase is not free. Deferred rather than active:
+  nothing is broken today, but the next missing field is a matter of time.
+
 - **Adopt Conan for C++ dependency management** (build tooling).  
   Replace the current `THIRDPARTY_DIR` + `*_VERSION` env-var scheme with a Conan `conanfile.py` pinning the C++ third-party deps (fmt, quill, argparse, tsl-robin-map, googletest — all in ConanCenter) plus a gcc / `cppstd=17` profile. Low-churn fit: the build already uses config-mode `find_package(<pkg> CONFIG)`, so Conan's `CMakeDeps` / `CMakeToolchain` generators slot in with minimal `CMakeLists` change. Conan is pip-installable, so no root needed on RHEL8. **Must be designed first:** the Docker build is deliberately offline/air-gapped (deps prebuilt, liquibase copied from host), whereas Conan defaults to fetching from ConanCenter — so it needs a local Conan remote or a pre-seeded cache baked into the image. Approach when picked up: spike on a branch, validate the offline path in the Rocky 8 container. Deferred for now — the current env-var scheme works; not urgent.
 
