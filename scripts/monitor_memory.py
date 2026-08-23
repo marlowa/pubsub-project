@@ -110,6 +110,11 @@ _current_target = [None]
 # second is recorded once rather than ten times a second.
 _reported_failures = set()
 
+# Display frozen for a screenshot. Sampling is deliberately unaffected: the whole point of
+# pausing is to hold an image still, and a monitor that stopped recording to do it would
+# leave a hole in the run as the price of taking a picture of it.
+paused = [False]
+
 # Two panels sharing the time axis rather than two y scales on one. The units are the same
 # -- megabytes -- but the magnitudes are not: a machine with tens of gigabytes in use dwarfs
 # a process holding a few, and on a shared scale the process steps this tool exists to show
@@ -332,6 +337,16 @@ def update(frame):
             # itself into the same width as it lengthens and the start stays on the chart.
             # A step can then be read against where memory began rather than against
             # whatever happened to be on screen a few seconds earlier.
+            log_row(elapsed, proc_label, pid, rss_mb, vsize_mb, vm, swap)
+
+            if paused[0]:
+                # Everything above still ran: the sample was taken, kept and logged. Only the
+                # drawing stops, and the lines keep the data they were last given, so the
+                # figure holds completely still rather than merely slowly. Resuming redraws
+                # from the full series, which is why the chart jumps rather than resuming
+                # where the eye left it -- the jump IS the data gathered while it was held.
+                return line_rss, line_vsize
+
             plotted = [
                 (line_rss, rss_data),
                 (line_vsize, vsize_data),
@@ -351,8 +366,6 @@ def update(frame):
             for panel in (ax, ax_sys):
                 panel.relim()
                 panel.autoscale_view()
-
-            log_row(elapsed, proc_label, pid, rss_mb, vsize_mb, vm, swap)
         except Exception as failure:
             note_sample_failure(elapsed, failure)
     else:
@@ -363,7 +376,37 @@ def update(frame):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def toggle_pause(event):
+    """Freeze or release the display on the space bar.
+
+    A key rather than a Button widget: this figure is two stacked panels under a constrained
+    layout, and an axes placed by hand for a button competes with the layout engine and moves
+    about on a resize. A key costs no chart area and cannot disturb what is being
+    photographed, which is the point of the feature.
+
+    The paused title is written once, here, and not refreshed per frame. Repainting a running
+    sample count into it would leave the figure changing while it is supposed to be still --
+    which is exactly the thing that makes a live chart awkward to capture.
+    """
+    if event.key != " ":
+        return
+    paused[0] = not paused[0]
+    if paused[0]:
+        held = len(timestamps)
+        ax.set_title(f"PAUSED -- {proc_name[0]}  --  {held} samples shown, still recording "
+                     f"(space to resume)", fontsize=12, color="#b30000")
+        fig.canvas.draw_idle()
+
+
+fig.canvas.mpl_connect("key_press_event", toggle_pause)
+
+# Stated on the figure rather than only in --help. Someone reaches for this at the moment
+# they want a screenshot, which is not a moment they are reading the usage message.
+fig.text(0.995, 0.005, "space = pause display (recording continues)",
+         ha="right", va="bottom", fontsize=7, color="0.45")
+
 print("Monitor started. Launch your test now...")
+print("Press space in the chart window to freeze the display; sampling continues.")
 ani = FuncAnimation(fig, update, interval=INTERVAL_MS, cache_frame_data=False)
 plt.show()
 log_file.close()
