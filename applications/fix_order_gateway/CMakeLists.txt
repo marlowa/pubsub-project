@@ -51,6 +51,7 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/fix_order_gateway_a.toml
 
 # ── Unit tests ────────────────────────────────────────────────────────────────
 add_executable(fix_order_gateway_tests
+        tests/OpenOrderRemovalTest.cpp
         tests/FixCaptureTest.cpp
         tests/FixParserTest.cpp
         tests/FixSerialiserTest.cpp

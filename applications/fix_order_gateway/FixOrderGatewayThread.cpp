@@ -5,6 +5,7 @@
 #include "FixErEncoder.hpp"
 #include "FixGroupExtractor.hpp"
 #include "GatewayMetrics.hpp"
+#include "OpenOrderRemoval.hpp"
 
 #include <openssl/rand.h>
 
@@ -135,19 +136,6 @@ constexpr auto sequence_report_interval = std::chrono::seconds{2};
 // On expiry the session opens with whatever it has, which is the behaviour that existed
 // before the venue remembered anything.
 constexpr auto sequence_state_timeout = std::chrono::seconds{5};
-
-bool is_terminal_ord_status(pubsub_itc_fw_app::OrdStatus status) {
-    switch (status) {
-        case pubsub_itc_fw_app::OrdStatus::Filled:
-        case pubsub_itc_fw_app::OrdStatus::Canceled:
-        case pubsub_itc_fw_app::OrdStatus::DoneForDay:
-        case pubsub_itc_fw_app::OrdStatus::Rejected:
-        case pubsub_itc_fw_app::OrdStatus::Expired:
-            return true;
-        default:
-            return false;
-    }
-}
 
 } // namespaces
 
@@ -594,13 +582,20 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     // The view's string_views are backed by the PDU payload, which is valid
     // until release_pdu_payload() below, so copies are safe here.
     if (view.has_cl_ord_id) {
-        if (is_terminal_ord_status(view.ord_status)) {
-            // Erase without constructing a std::string -- string_view lookup
-            // compares contents so this finds the entry keyed by pool storage.
-            auto it = session.open_orders.find(std::string_view(view.cl_ord_id));
-            if (it != session.open_orders.end()) {
-                open_order_pool_->deallocate(it->second);
-                session.open_orders.erase(it);
+        if (open_orders::is_terminal_ord_status(view.ord_status)) {
+            // Which order this retires is not simply its ClOrdID: a cancel names the
+            // request in ClOrdID and the resting order in OrigClOrdID. See
+            // open_orders::OpenOrderRemoval.
+            const open_orders::OpenOrderRemoval removal =
+                open_orders::decide_open_order_removal(view.ord_status, view.has_cl_ord_id, view.cl_ord_id, view.has_orig_cl_ord_id, view.orig_cl_ord_id);
+            if (removal.remove) {
+                // Erase without constructing a std::string -- string_view lookup
+                // compares contents so this finds the entry keyed by pool storage.
+                auto it = session.open_orders.find(removal.key);
+                if (it != session.open_orders.end()) {
+                    open_order_pool_->deallocate(it->second);
+                    session.open_orders.erase(it);
+                }
             }
         } else {
             // Allocate a pool entry and copy all string fields inline.

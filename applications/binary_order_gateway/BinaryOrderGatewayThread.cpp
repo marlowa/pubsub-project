@@ -22,6 +22,7 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 #include "GatewayMetrics.hpp"
+#include "OpenOrderRemoval.hpp"
 
 namespace binary_order_gateway {
 
@@ -68,18 +69,6 @@ constexpr int cancel_drain_batch_size = 500;
 constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 
 /** @brief True for an ExecutionReport status that means the order has left the book. */
-bool is_terminal_ord_status(pubsub_itc_fw_app::OrdStatus status) {
-    switch (status) {
-        case pubsub_itc_fw_app::OrdStatus::Filled:
-        case pubsub_itc_fw_app::OrdStatus::Canceled:
-        case pubsub_itc_fw_app::OrdStatus::DoneForDay:
-        case pubsub_itc_fw_app::OrdStatus::Rejected:
-        case pubsub_itc_fw_app::OrdStatus::Expired:
-            return true;
-        default:
-            return false;
-    }
-}
 
 } // namespaces
 
@@ -824,10 +813,17 @@ void BinaryOrderGatewayThread::track_open_order(BinarySession& session, const pu
         return;
     }
 
-    if (is_terminal_ord_status(report.ord_status)) {
+    if (open_orders::is_terminal_ord_status(report.ord_status)) {
+        // Which order this retires is not simply its ClOrdID: a cancel names the request in
+        // ClOrdID and the resting order in OrigClOrdID. See open_orders::OpenOrderRemoval.
+        const open_orders::OpenOrderRemoval removal =
+            open_orders::decide_open_order_removal(report.ord_status, report.has_cl_ord_id, report.cl_ord_id, report.has_orig_cl_ord_id, report.orig_cl_ord_id);
+        if (!removal.remove) {
+            return;
+        }
         // Looking up by string_view compares contents, so this finds the entry keyed by
         // the pool storage without building a std::string.
-        auto existing = session.open_orders.find(std::string_view(report.cl_ord_id));
+        auto existing = session.open_orders.find(removal.key);
         if (existing != session.open_orders.end()) {
             open_order_pool_->deallocate(existing->second);
             session.open_orders.erase(existing);
