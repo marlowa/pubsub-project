@@ -1530,6 +1530,76 @@ BAND_TRACK_COLOURS = ["#8FBCE6", "#4C72B0", "#1F3D63"]
 BAND_CEILING_COLOUR = "#C0392B"
 
 
+BAND_GAP_COLOUR = "#000000"
+
+# Several pixels: thicker than the 1.4 the percentile tracks use, so it reads as a rule
+# drawn across the chart rather than as one more line on it.
+BAND_GAP_LINEWIDTH = 3.0
+
+
+def find_measurement_gaps(times, tracks):
+    """Return [(start_index, end_index_exclusive)] for stretches where nothing was measured.
+
+    A moment counts as unmeasured only when EVERY track is None there. One percentile
+    missing while its siblings have values is not a gap in the data -- it is a percentile
+    that could not be derived from a distribution that was recorded -- and marking it as
+    one would put a discontinuity on the chart at a moment the venue was being observed
+    perfectly well.
+    """
+    if not times or not tracks:
+        return []
+    gaps, run_start = [], None
+    for index in range(len(times)):
+        unmeasured = all(values[index] is None for _, values in tracks if index < len(values))
+        if unmeasured and run_start is None:
+            run_start = index
+        elif not unmeasured and run_start is not None:
+            gaps.append((run_start, index))
+            run_start = None
+    if run_start is not None:
+        gaps.append((run_start, len(times)))
+    return gaps
+
+
+def draw_measurement_gaps(axis, times, gaps, step_seconds=None):
+    """Mark stretches with no data so the reader cannot read across them as continuous.
+
+    The x axis is time and time did not stop, so a gap is a discontinuity in the DATA, not
+    in the axis -- nothing here compresses or breaks the scale. What it must not do is let
+    a reader join up either side by eye. Breaking the line, which the tracks already do, is
+    not enough on its own: one missing sample in a long window is a few pixels of white
+    that reads as ink that happens to be thin.
+
+    Two marks rather than one. The verticals say exactly WHERE observation stopped and
+    resumed, which is what matters when correlating against something that happened at a
+    known moment. The shading between them says HOW LONG for, which a pair of lines cannot
+    -- and without it a ten-minute outage and a one-sample blip draw identically.
+
+    A single-interval gap gets its verticals but no shading: there is no width to fill, and
+    a hairline of grey at that scale reads as a rendering artefact rather than as a claim.
+    """
+    if not gaps:
+        return False
+    if step_seconds is None:
+        step_seconds = (times[1] - times[0]) if len(times) > 1 else 0
+
+    for start_index, end_index in gaps:
+        gap_start = times[start_index]
+        # The interval described by the last unmeasured sample ends one step later, so the
+        # gap reaches the next measured point rather than stopping short of it.
+        gap_end = times[end_index] if end_index < len(times) else times[-1] + step_seconds
+        if gap_end > gap_start + step_seconds:
+            axis.axvspan(gap_start, gap_end, color=BAND_GAP_COLOUR, alpha=0.06, linewidth=0, zorder=0)
+        for boundary in (gap_start, gap_end):
+            # Deliberately heavier than any data line on the chart. This is not another
+            # series competing for attention -- it is a statement that the series stop
+            # meaning anything here, and it has to survive being looked at quickly and
+            # being scaled down into a report.
+            axis.axvline(boundary, color=BAND_GAP_COLOUR, linestyle="-",
+                         linewidth=BAND_GAP_LINEWIDTH, alpha=0.85, zorder=5)
+    return True
+
+
 def draw_latency_bands(axis, breach_axis, band):
     """Draw percentiles over time, the ceiling, and the count of orders that exceeded it.
 
@@ -1542,6 +1612,7 @@ def draw_latency_bands(axis, breach_axis, band):
     inside the limit all day" from a picture that cannot support it.
     """
     import matplotlib.ticker as mticker
+    from matplotlib.lines import Line2D
 
     times = band["times"]
     tracks = band["tracks"]
@@ -1601,21 +1672,35 @@ def draw_latency_bands(axis, breach_axis, band):
                       bbox={"facecolor": "white", "edgecolor": "none",
                             "boxstyle": "round,pad=0.2", "alpha": 0.75})
 
+    gaps = find_measurement_gaps(times, tracks)
+    step_seconds = (times[1] - times[0]) if len(times) > 1 else None
+    marked = draw_measurement_gaps(axis, times, gaps, step_seconds)
+
     axis.set_xlim(times[0], times[-1])
     axis.set_ylabel("latency (log scale)")
     axis.grid(True, which="major", axis="both", linestyle=":", alpha=0.3)
     axis.yaxis.set_major_formatter(
         mticker.FuncFormatter(lambda value, _: format_latency_ns(value)))
     axis.yaxis.set_minor_formatter(mticker.NullFormatter())
-    axis.legend(fontsize=8, loc="upper left", framealpha=0.9, ncol=len(tracks))
 
-    draw_breach_counts(breach_axis, times, breaches, ceiling_ns, band["observations"])
+    # The gap marker goes in the legend with the tracks. An unexplained black rule across
+    # someone else's chart invites a guess, and the likeliest guess -- an annotation of some
+    # event -- is the opposite of what it means.
+    handles, labels = axis.get_legend_handles_labels()
+    if marked:
+        handles.append(Line2D([], [], color=BAND_GAP_COLOUR, linewidth=BAND_GAP_LINEWIDTH, alpha=0.85))
+        labels.append("no data")
+    axis.legend(handles, labels, fontsize=8, loc="upper left", framealpha=0.9,
+                ncol=len(tracks) + (1 if marked else 0))
+
+    draw_breach_counts(breach_axis, times, breaches, ceiling_ns, band["observations"],
+                       gaps=gaps, step_seconds=step_seconds)
 
 
 BAND_VOLUME_COLOUR = "#6B7280"
 
 
-def draw_breach_counts(axis, times, breaches, ceiling_ns, observations):
+def draw_breach_counts(axis, times, breaches, ceiling_ns, observations, gaps=None, step_seconds=None):
     """Draw orders over the ceiling, and how many orders there were, beneath the percentiles.
 
     The two share this axis because they are both counts per interval, and because they are
@@ -1623,6 +1708,13 @@ def draw_breach_counts(axis, times, breaches, ceiling_ns, observations):
     nothing was sent", and those call for opposite responses.
     """
     import matplotlib.ticker as mticker
+
+    # Same marks on this panel. It shares the x axis with the percentiles above and has the
+    # same blind spot: a bar chart with nothing drawn at a moment looks exactly like a bar
+    # chart with a zero there, and "no order breached the ceiling" is a different claim from
+    # "nothing was measured".
+    if gaps:
+        draw_measurement_gaps(axis, times, gaps, step_seconds)
 
     axis.set_xlim(times[0], times[-1])
     axis.set_xlabel("time")
