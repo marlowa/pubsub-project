@@ -60,6 +60,24 @@ session state migrates on promotion, and by what mechanism -- and the venue curr
 it for the outbound counter and for nothing else. Fleshing out the FIX layer is how the
 framework question gets answered, and the answer is not specific to FIX.
 
+**The extension point already exists, and is the most useful fact for whoever picks this up.**
+The session's sequence state does not live in the gateway: the sequencer holds it and hands it
+to whichever gateway binds the session, over `SessionUnbound` (121), `SessionBoundAck` (122)
+and `SessionSequenceUpdate` (126) in `leader_follower.dsl`. That is how the outbound number
+already survives a promotion, and it is the mechanism an inbound number would use unchanged.
+
+The DSL says so itself, at the `outbound_seq_num` field of `SessionUnbound`:
+
+> Only the outbound number is carried. The gateway does not track what the member sends it --
+> there is no inbound gap detection to hold a number for -- so a field for it would be one
+> nothing populates. When that is built, it belongs here beside this one.
+
+So the framework question this work answers has in fact been answered; what is missing is the
+field and the checking behind it. There is no wire-compatibility constraint before 1.0.0, so
+adding a field to those three PDUs costs nothing beyond regenerating them. That makes this a
+smaller piece of work than its position at the top of this list suggests -- it leads on what it
+costs to leave alone, not on how long it takes.
+
 Start with the three cheap tests: that `PossDupFlag` is set inside the requested gap and not
 beyond it, that `OrigSendingTime` is present on every resent message, and that the terminating
 gap-fill leaves the member expecting the number the venue will send next. All three assert on
