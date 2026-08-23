@@ -5,6 +5,7 @@
 
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <cstring>
 #include <optional>
@@ -28,6 +29,7 @@
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
 #include "MatchingEngineConfiguration.hpp"
+#include "OrderBookMetricsReporter.hpp"
 #include "OrderKey.hpp"
 
 namespace matching_engine {
@@ -257,6 +259,19 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // with a message lifetime, and the book is long-lived state that grows -- uninstrumented,
     // it reached 9.9 GB and the process was OOM-killed having logged no memory warning.
     pubsub_itc_fw::AllocationGrowthReporter book_growth_reporter_;
+
+    // How big the book actually is. Sampled on a timer rather than written on every
+    // order: the value is wanted as a trend over a trading day, and touching a gauge
+    // on the order path would put metrics work in the hot path to buy resolution
+    // nobody reads.
+    fix_common::OrderBookMetricsReporter book_metrics_;
+
+    // Scope for the book's gauges. A metric key token, so [A-Za-z0-9_]+ only.
+    static constexpr const char* book_metrics_scope = "order_book";
+
+    // Often enough to show a burst of resting orders building, rare enough to be
+    // invisible against order flow. Matches the gateways' pool sampling.
+    static constexpr std::chrono::seconds book_metrics_sample_interval{5};
     pubsub_itc_fw::IncrementalRehashMap<OrderKey, OrderEntry, OrderKeyHash> order_book_;
 
     // Monotonic counters for generated OrderID and ExecID values (primary only).
@@ -302,6 +317,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // engine leader at all, so the instance-id rule is applied locally and logged as degraded
     // -- the same fallback the sequencer has, and for the same reason.
     pubsub_itc_fw::TimerID startup_arbitration_timer_id_{};
+    pubsub_itc_fw::TimerID book_metrics_timer_id_{};
 
     /// How many times a starting instance asks the arbiter before giving up and degrading.
     /// More than one because an arbiter that has itself restarted declines to answer until it
@@ -375,6 +391,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     /// The role as a word, for log lines that a person will read after an incident.
     [[nodiscard]] static const char* me_role_name(MeRole role);
     void set_epoch(int32_t new_epoch);
+    void publish_book_metrics();
     void handle_peer_role_announcement(const pubsub_itc_fw::EventMessage& message);
 
     void begin_reconciliation();

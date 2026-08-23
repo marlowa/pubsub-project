@@ -206,6 +206,12 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
 }
 
 void MatchingEngineThread::on_app_ready_event() {
+    // Registered here rather than in the constructor because the reactor's metrics
+    // endpoint is what gauges bind to, and it is ready by this point.
+    book_metrics_.register_metrics(get_reactor().metrics(), book_metrics_scope);
+    book_metrics_timer_id_ = start_recurring_timer(book_metrics_sample_interval);
+    publish_book_metrics();
+
     // Both roles connect outbound to the sequencer ER listeners (pre-warmed so
     // ERs, including the cancel-on-failover burst, flow immediately on promotion).
     connect_to_service("sequencer_er");
@@ -795,6 +801,11 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
 }
 
 void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
+    if (id == book_metrics_timer_id_) {
+        publish_book_metrics();
+        return;
+    }
+
     if (id == startup_arbitration_timer_id_) {
         if (ha_role_state_ == MeRole::Unknown) {
             // Silence from a connected arbiter is not absence. An arbiter that has itself just
@@ -956,6 +967,15 @@ void MatchingEngineThread::request_startup_arbitration() {
         cancel_timer(startup_arbitration_timer_id_);
         startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
     }
+}
+
+void MatchingEngineThread::publish_book_metrics() {
+    // capacity() spans both tables while the book is being moved into a larger one,
+    // so it steps up during a migration and back down when the old table goes. That
+    // is the memory genuinely held at that moment, and migrating_ is published
+    // alongside it so a step in slots is not mistaken for a step in the book.
+    book_metrics_.update(order_book_.size(), order_book_.capacity(), order_book_.is_migrating(),
+                         book_growth_reporter_.largest_allocation_bytes.load(std::memory_order_relaxed));
 }
 
 void MatchingEngineThread::set_epoch(int32_t new_epoch) {
