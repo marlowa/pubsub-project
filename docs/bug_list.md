@@ -174,11 +174,11 @@ cycle-based sampling cannot attribute it. This holds for the robin_map book and 
 thing the run produced.
 
 **The allocation hypothesis is untested, not supported.** The idea that the stall is the single
-large `::operator new` for the entry array was framed around `allocate_table`, which is
+large `operator new` for the entry array was framed around `allocate_table`, which is
 `IncrementalRehashMap`'s function and was not in the binary. robin_map's own bucket-array
 reallocation is the same shape and the off-CPU evidence is compatible with it, but nothing here
 distinguishes it from any other blocking cause. If the re-run with the swap deployed still shows
-spikes that grow with table size, timing the two `::operator new` calls in `allocate_table`
+spikes that grow with table size, timing the two `operator new` calls in `allocate_table`
 directly -- logged at Warning, so it survives the load run's log level -- settles it cheaply.
 
 **Status: superseded.** The re-run was made on 2026-08-21, deployed first and with the documented
@@ -220,7 +220,7 @@ whole thread was flat at 0.66% top symbol because it was blocked rather than wor
 
 Recorded because it was the leading theory for a fortnight and the refutation is one comparison:
 
-| | allocation in one `::operator new` | stall |
+| | allocation in one `operator new` | stall |
 |---|---|---|
 | `tsl::robin_map` at its worst step | 4992 MB | ~1 s |
 | `IncrementalRehashMap` at the same step | 4880 MB | 2.44 ms |

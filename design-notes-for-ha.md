@@ -77,14 +77,20 @@ A well-designed HA system separates failure domains to avoid "over-fencing."
 ### Layer 1: Local Failure (The Inner Loop)
 Handles process-level issues: core dumps, crashes, and transient bugs.
 * **Behaviour:** Restart the process locally; no fencing involved.
-* **Tooling:** Systemd or local supervisors.
+* **Tooling:** `scripts/launch.py`, a per-process launcher that restarts what it
+    starts and knows nothing else. See section 12 for why it deliberately has no
+    say in leadership, and section 13 for why the restart must be automatic.
 
 ### Layer 2: Cluster Failure (The Outer Loop)
 Handles node-level uncertainty: network partitions, OS hangs, or kernel
 lockups.
-* **Behaviour:** Use STONITH to resolve ambiguity.
-* **Philosophy:** If we cannot prove the node is safe, we make it safe by
-    removing it entirely.
+* **Behaviour:** Resolve the ambiguity rather than tolerating it. This section
+    originally said STONITH; **that was evaluated and rejected** and the venue
+    does not fence. What stands in its place -- arbiter-mediated leadership and
+    epoch checks on every PDU -- is section 10, which also records why.
+* **Philosophy:** If we cannot prove a node is safe, we must not let it act.
+    Fencing achieves that by removing the node; the arbiter and the epoch achieve
+    it by refusing everything the node sends.
 
 ---
 
