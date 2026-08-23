@@ -36,3 +36,11 @@ admin_users.toml
 # The FIX serialisation .dsl and .hpp are generated into the build tree
 # (build/generated_dsl/fix_orders.{dsl,hpp}) -- never the source tree -- so there is
 # nothing to ignore here. See CMakeLists.txt / docs/design/fix_pdu_generation.md.
+
+# clang-tidy output, regenerated on every scripts/sca.py run. The summaries are a snapshot
+# of one run against one tree, so a committed copy would be stale the next time anyone ran
+# it. Note clang-summary-prev.txt is deliberately NOT here: it is a baseline kept by hand to
+# diff against, not something the run produces.
+clang-output.txt
+clang-summary.txt
+clang-summary-byfile.txt
