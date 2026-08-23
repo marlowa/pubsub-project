@@ -334,6 +334,10 @@ network_listen_port  = 11071
 admin_listen_port    = 11073
 
 [matching_engine]
+# Where the leadership epoch outlives the process, so a restart cannot reuse a
+# generation the venue has already spent. Kept outside the versioned tree in
+# the deployed environments for the same reason the WAL is.
+epoch_state_file    = "/opt/pubsub/var/matching_engine_epoch.state"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9205
 network_listen_host           = "0.0.0.0"

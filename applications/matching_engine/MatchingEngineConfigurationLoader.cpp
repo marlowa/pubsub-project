@@ -96,6 +96,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
 
             // Arbiter-mediated promotion (Slice C+D). Required for both roles when HA is on.
             toml.get_required_except("ha_instance.instance_id", config.instance_id);
+            toml.get_required_except("ha_instance.epoch_state_file", config.epoch_state_file);
 
             toml.get_required_except("arbiter_primary.host", config.arbiter_primary_host);
             int32_t arbiter_primary_port = 0;

@@ -51,22 +51,22 @@ class EpochStoreTest : public ::testing::Test {
 };
 
 TEST_F(EpochStoreTest, AbsentFileReadsAsZero) {
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.load(), 0);
 }
 
 TEST_F(EpochStoreTest, StoredValueSurvivesANewStore) {
     // The point of the class: a second EpochStore, standing in for the process
     // that comes back after a restart, sees what the first one wrote.
-    const sequencer::EpochStore writer(path_);
+    const fix_common::EpochStore writer(path_);
     ASSERT_TRUE(writer.store(5));
 
-    const sequencer::EpochStore reader(path_);
+    const fix_common::EpochStore reader(path_);
     EXPECT_EQ(reader.load(), 5);
 }
 
 TEST_F(EpochStoreTest, LaterStoreReplacesEarlier) {
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     ASSERT_TRUE(store.store(1));
     ASSERT_TRUE(store.store(2));
     ASSERT_TRUE(store.store(7));
@@ -74,13 +74,13 @@ TEST_F(EpochStoreTest, LaterStoreReplacesEarlier) {
 }
 
 TEST_F(EpochStoreTest, ZeroRoundTrips) {
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     ASSERT_TRUE(store.store(0));
     EXPECT_EQ(store.load(), 0);
 }
 
 TEST_F(EpochStoreTest, LargeEpochRoundTrips) {
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     const int32_t large = 2147483647;
     ASSERT_TRUE(store.store(large));
     EXPECT_EQ(store.load(), large);
@@ -89,7 +89,7 @@ TEST_F(EpochStoreTest, LargeEpochRoundTrips) {
 TEST_F(EpochStoreTest, ContentsAreReadableText) {
     // Deliberately a format someone can inspect with cat and correct with an
     // editor, because that is what happens when a venue is in trouble.
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     ASSERT_TRUE(store.store(42));
 
     std::ifstream in(path_);
@@ -100,19 +100,19 @@ TEST_F(EpochStoreTest, ContentsAreReadableText) {
 
 TEST_F(EpochStoreTest, HandEditedValueIsRead) {
     write_raw("11\n");
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.load(), 11);
 }
 
 TEST_F(EpochStoreTest, ValueWithoutTrailingNewlineIsRead) {
     write_raw("13");
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.load(), 13);
 }
 
 TEST_F(EpochStoreTest, EmptyFileReadsAsZero) {
     write_raw("");
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.load(), 0);
 }
 
@@ -120,26 +120,26 @@ TEST_F(EpochStoreTest, GarbageReadsAsZero) {
     // Zero is the safe answer for a damaged file: it loses to every real epoch,
     // so the node defers instead of claiming a generation it cannot support.
     write_raw("not a number\n");
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.load(), 0);
 }
 
 TEST_F(EpochStoreTest, NegativeValueReadsAsZero) {
     write_raw("-4\n");
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.load(), 0);
 }
 
 TEST_F(EpochStoreTest, ValueTooLargeForTheFieldReadsAsZero) {
     write_raw("99999999999999\n");
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.load(), 0);
 }
 
 TEST_F(EpochStoreTest, NoTemporaryFileIsLeftBehind) {
     // The write goes via a temporary and a rename. If the temporary survived, a
     // later reader could find a stale one and the directory would slowly fill.
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     ASSERT_TRUE(store.store(3));
 
     const std::string temp = path_ + ".tmp";
@@ -150,12 +150,12 @@ TEST_F(EpochStoreTest, NoTemporaryFileIsLeftBehind) {
 TEST_F(EpochStoreTest, StoreIntoAMissingDirectoryFails) {
     // Reported rather than thrown, so the sequencer can log an alert and carry
     // on leading rather than taking itself out over a storage fault.
-    const sequencer::EpochStore store(dir_ + "/no_such_directory/epoch.state");
+    const fix_common::EpochStore store(dir_ + "/no_such_directory/epoch.state");
     EXPECT_FALSE(store.store(1));
 }
 
 TEST_F(EpochStoreTest, FailedStoreLeavesThePreviousValueIntact) {
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     ASSERT_TRUE(store.store(9));
 
     // Make the rename fail by turning the destination into a directory.
@@ -166,7 +166,7 @@ TEST_F(EpochStoreTest, FailedStoreLeavesThePreviousValueIntact) {
 }
 
 TEST_F(EpochStoreTest, PathIsReportedForDiagnostics) {
-    const sequencer::EpochStore store(path_);
+    const fix_common::EpochStore store(path_);
     EXPECT_EQ(store.path(), path_);
 }
 

@@ -24,6 +24,7 @@
 #include <leader_follower.hpp>
 #include <matching_engine_replication.hpp>
 
+#include "EpochStore.hpp"
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
 #include "MatchingEngineConfiguration.hpp"
@@ -282,7 +283,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Leadership generation. Adopted from ArbitrationDecision, or self-incremented
     // on degraded self-promotion.
+    // The leadership generation. Never assign to this directly: go through
+    // set_epoch(), which also writes it to disk. A restart that forgets the
+    // epoch lets this node claim a generation the venue has already spent.
     int32_t epoch_{0};
+
+    // Where the epoch outlives the process. Read once at startup, rewritten
+    // whenever the epoch moves.
+    fix_common::EpochStore epoch_store_;
 
     // Timer ids (default-constructed = not scheduled); on_timer_event compares
     // a fired timer's id against these to identify it.
@@ -366,6 +374,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     /// The role as a word, for log lines that a person will read after an incident.
     [[nodiscard]] static const char* me_role_name(MeRole role);
+    void set_epoch(int32_t new_epoch);
+    void handle_peer_role_announcement(const pubsub_itc_fw::EventMessage& message);
 
     void begin_reconciliation();
     void send_me_position_request();

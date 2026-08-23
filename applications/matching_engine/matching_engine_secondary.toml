@@ -26,6 +26,9 @@ port = ${matching_engine_secondary_book_replication_port}
 
 [ha_instance]
 instance_id = ${matching_engine_secondary_instance_id}
+# Where the leadership epoch outlives the process. Without it a restart
+# starts at generation zero and can reuse a generation the venue has spent.
+epoch_state_file = "${matching_engine_secondary_epoch_state_file}"
 
 [arbiter_primary]
 host = "${matching_engine_secondary_arbiter_primary_host}"

@@ -160,7 +160,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // Where the epoch outlives the process. Read once at startup, rewritten
     // whenever the epoch moves.
-    EpochStore epoch_store_;
+    fix_common::EpochStore epoch_store_;
 
     // Context for an arbitration request that is still outstanding, so the
     // timeout can fall back the way this particular request needs.

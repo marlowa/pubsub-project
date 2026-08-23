@@ -15,7 +15,7 @@
 
 #include <fmt/format.h>
 
-namespace sequencer {
+namespace fix_common {
 
 /**
  * @brief Durable store for the leadership epoch.

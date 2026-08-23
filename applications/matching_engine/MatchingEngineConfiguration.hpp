@@ -136,6 +136,9 @@ struct MatchingEngineConfiguration {
     /** @brief Unique instance identity within the ME pair (1 = primary, 2 = secondary). */
     int32_t instance_id{1};
 
+    /// File holding the leadership epoch across restarts. See fix_common::EpochStore.
+    std::string epoch_state_file;
+
     /** @brief Host address of the primary arbiter's component listener. */
     std::string arbiter_primary_host{"127.0.0.1"};
 

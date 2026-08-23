@@ -148,7 +148,8 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
     , sequencer_er_conn_id_{}
     , sequencer_er_secondary_conn_id_{}
-    , order_book_(0, OrderKeyHash{}, std::equal_to<OrderKey>{}, &book_growth_reporter_) {
+    , order_book_(0, OrderKeyHash{}, std::equal_to<OrderKey>{}, &book_growth_reporter_)
+    , epoch_store_(config.epoch_state_file) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
     // completely uninstrumented: the pool and slab allocators cover objects with a message
@@ -186,8 +187,19 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
         // starting state of the pair as the one thing the log did not record. Someone reading
         // a log from a machine that has just come up should be able to see what it thinks it
         // is before anything else happens.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA enabled, starting as {} (instance_id={}, configured {})",
-                   me_role_name(ha_role_state_), config_.instance_id, is_primary_ ? "primary" : "secondary");
+        // Recover the leadership generation before anything can elect. Without this
+        // the node starts at zero, and a pair restarted together would agree on a
+        // generation the venue has already used -- see fix_common::EpochStore.
+        epoch_ = epoch_store_.load();
+
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA enabled, starting as {} (instance_id={}, configured {}, epoch={})",
+                   me_role_name(ha_role_state_), config_.instance_id, is_primary_ ? "primary" : "secondary", epoch_);
+        if (epoch_ > 0) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: recovered epoch={} from {}", epoch_, epoch_store_.path());
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: no stored epoch at {} -- starting from epoch 0",
+                       epoch_store_.path());
+        }
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA disabled -- single instance, no arbitration and no peer");
     }
@@ -248,6 +260,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // instance leads, and simply held open while it follows.
         outbound_replication_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ME-secondary replication connection {} established", id.get_value());
+        // Tell the peer what this instance is as soon as there is a link to tell it
+        // on. An instance that has just restarted is sitting in Unknown waiting for
+        // arbitration, and a leader saying so here lets it settle immediately rather
+        // than waiting on an arbiter that may decline while it is still learning.
+        announce_role();
     } else if (svc == "arbiter_primary") {
         const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
@@ -276,6 +293,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: ME-primary replication connection {} established -- replica book will be updated", id.get_value());
+        // Tell the peer what this instance is as soon as there is a link to tell it
+        // on. An instance that has just restarted is sitting in Unknown waiting for
+        // arbitration, and a leader saying so here lets it settle immediately rather
+        // than waiting on an arbiter that may decline while it is still learning.
+        announce_role();
         // Slice C: if a promotion was pending (primary had dropped and we armed
         // the timeout), the primary has reconnected first -- cancel the promotion.
         if (promotion_pending_) {
@@ -362,6 +384,12 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
+        handle_peer_role_announcement(message);
+        release_pdu_payload(message);
+        return;
+    }
+
     if (pdu_id == pubsub_itc_fw_app::MePositionAck::message_pdu_id) {
         handle_me_position_ack(message);
         release_pdu_payload(message);
@@ -786,7 +814,7 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: no ArbitrationDecision after {} attempts -- self-promoting via instance-id rule (degraded)",
                        startup_arbitration_attempts_);
-            ++epoch_;
+            set_epoch(epoch_ + 1);
             begin_reconciliation();
         }
         return;
@@ -930,6 +958,37 @@ void MatchingEngineThread::request_startup_arbitration() {
     }
 }
 
+void MatchingEngineThread::set_epoch(int32_t new_epoch) {
+    if (new_epoch < epoch_) {
+        // Nothing should ask for this. Refusing keeps the counter monotonic even if
+        // some future caller gets it wrong, because an epoch that moves backwards
+        // silently disarms every downstream check at once.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: refusing to move epoch backwards ({} -> {}) -- keeping {}", epoch_,
+                   new_epoch, epoch_);
+        return;
+    }
+    if (new_epoch == epoch_) {
+        return;
+    }
+
+    const int32_t previous = epoch_;
+    epoch_ = new_epoch;
+
+    // Written before the new epoch is acted on, so a crash in the gap cannot bring
+    // the node back believing it still owns a generation it has spent.
+    if (!epoch_store_.store(epoch_)) {
+        // Carry on in the new generation regardless. Stopping would take out a
+        // matching engine that is otherwise healthy, and the in-memory epoch is
+        // still correct for as long as this process lives. What is lost is the
+        // guarantee across a restart, and that is worth an alert.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: epoch advanced {} -> {} but could not be written to {} -- a restart from here may reuse a spent generation", previous,
+                   epoch_, epoch_store_.path());
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: epoch advanced {} -> {} (recorded)", previous, epoch_);
+}
+
 const char* MatchingEngineThread::me_role_name(MeRole role) {
     switch (role) {
         case MeRole::Unknown:
@@ -974,7 +1033,7 @@ void MatchingEngineThread::send_arbitration_report() {
         // No arbiter reachable -- degrade to the local instance-id rule and self-promote.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: no arbiter connected -- self-promoting via instance-id rule (degraded)");
-        ++epoch_;
+        set_epoch(epoch_ + 1);
         begin_reconciliation();
         return;
     }
@@ -1026,7 +1085,7 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
     }
 
     cancel_timer(startup_arbitration_timer_id_);
-    epoch_ = decision.epoch;
+    set_epoch(decision.epoch);
 
     if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
         if (ha_role_state_ == MeRole::Follower) {
@@ -1067,6 +1126,60 @@ void MatchingEngineThread::enter_follower_state() {
     announce_role();
 }
 
+void MatchingEngineThread::handle_peer_role_announcement(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::RoleAnnouncementView announcement{};
+
+    if (!pubsub_itc_fw_app::decode(announcement, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode peer RoleAnnouncement -- dropping");
+        return;
+    }
+
+    if (announcement.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || announcement.instance_id == static_cast<int64_t>(config_.instance_id)) {
+        return;
+    }
+
+    // This path may only ever give leadership up, never take it. Deferring cannot
+    // produce a second leader whatever the peer is confused about, so it is safe
+    // to act on the peer's word alone. Claiming would mean issuing a generation,
+    // which needs the arbiter, so a node that hears nothing useful here simply
+    // carries on waiting for arbitration.
+    if (announcement.current_role != pubsub_itc_fw_app::Role::leader) {
+        return;
+    }
+
+    // Only from a standing start. Once this instance is leading, reconciling
+    // towards leading, or already a follower, the question is settled and a
+    // late-arriving announcement must not disturb it.
+    if (ha_role_state_ != MeRole::Unknown) {
+        return;
+    }
+
+    if (announcement.epoch < epoch_) {
+        // A leader from a generation older than one this node has already seen. It
+        // led once and has not learned that it stopped. Following it would put the
+        // venue back into a generation it has left, so wait for the arbiter.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: peer (instance_id={}) claims leader at epoch {} but this node has seen epoch {} -- not following a stale leader",
+                   announcement.instance_id, announcement.epoch, epoch_);
+        return;
+    }
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: peer (instance_id={}) is already leader at epoch {} -- adopting follower without arbitration", announcement.instance_id,
+               announcement.epoch);
+
+    // Take the peer's generation rather than inventing one: this is deference, and
+    // the generation being deferred to is the peer's.
+    set_epoch(announcement.epoch);
+    cancel_timer(startup_arbitration_timer_id_);
+    enter_follower_state();
+}
+
 void MatchingEngineThread::announce_role() {
     // Reconciling counts as follower to the outside world: this instance has been told it
     // will lead but cannot serve until its book is caught up, and orders sent meanwhile
@@ -1080,12 +1193,18 @@ void MatchingEngineThread::announce_role() {
     announcement.current_role = ha_role_state_ == MeRole::Leader ? pubsub_itc_fw_app::Role::leader : pubsub_itc_fw_app::Role::follower;
     announcement.epoch = epoch_;
 
-    for (const pubsub_itc_fw::ConnectionID& conn : {sequencer_er_conn_id_, sequencer_er_secondary_conn_id_}) {
+    // The peer gets this too, not just the sequencers. An instance starting beside
+    // an established leader can then adopt follower on the strength of the leader
+    // saying so, instead of waiting on arbitration that a recently started arbiter
+    // will decline. Both replication connections are held permanently in both
+    // directions, so whichever one is up carries it.
+    for (const pubsub_itc_fw::ConnectionID& conn :
+         {sequencer_er_conn_id_, sequencer_er_secondary_conn_id_, outbound_replication_conn_id_, inbound_replication_conn_id_}) {
         if (conn.is_valid()) {
             send_pdu(conn, pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id, 0, announcement);
         }
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: announced role {} at epoch {} to the sequencers",
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: announced role {} at epoch {} to the sequencers and the peer",
                pubsub_itc_fw_app::to_string(announcement.current_role), epoch_);
 }
 

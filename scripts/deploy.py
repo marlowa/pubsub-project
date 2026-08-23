@@ -809,6 +809,18 @@ def main() -> None:
             wal_path.mkdir(parents=True, exist_ok=True)
             namespace[key] = str(wal_path)
 
+    # Same treatment for the matching engine's epoch file. It is a file rather than
+    # a directory, so it is the parent that gets created; the file itself is written
+    # by the matching engine when leadership first moves, and its absence reads as
+    # generation zero, which is what a new deployment should start from.
+    for key in ("matching_engine_epoch_state_file", "matching_engine_secondary_epoch_state_file"):
+        if key in namespace:
+            epoch_path = Path(namespace[key])
+            if not epoch_path.is_absolute():
+                epoch_path = install_dir / epoch_path
+            epoch_path.parent.mkdir(parents=True, exist_ok=True)
+            namespace[key] = str(epoch_path)
+
     expand_templates(install_dir, namespace, map_config_files_to_components(env, install_dir))
     patch_jar_properties(env, install_dir, namespace)
     print()
