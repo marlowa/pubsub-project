@@ -315,11 +315,16 @@ microseconds), drains in-flight WAL appends to a clean cut at seqNo `S`, capture
 state in memory, releases the gate, and serialises the file asynchronously. The ME never
 sees a pause.
 
-**Dual rolling snapshots.** Two snapshots are kept: `snapshot_A` (older, trusted, used as
-the WAL truncation anchor) and `snapshot_B` (newer, candidate, validated before promotion).
-WAL truncation uses the older trusted snapshot, not the newest one just taken. Invariant:
-**never delete WAL history unless at least one older verified snapshot can reproduce the
-same state.**
+**Dual rolling snapshots -- designed, not built.** The intent is that two snapshots are kept:
+`snapshot_A` (older, trusted, used as the WAL truncation anchor) and `snapshot_B` (newer,
+candidate, validated before promotion), so that truncation uses the older trusted snapshot rather
+than the newest one just taken. Invariant: **never delete WAL history unless at least one older
+verified snapshot can reproduce the same state.**
+
+**What runs today is a single snapshot.** `take_snapshot()` and `truncate_below()` exist;
+`snapshot_A` and `snapshot_B` appear nowhere in the code. Dual snapshots and snapshot validation
+are slice 9 of the [Roadmap](../roadmap.md), which is not started. Until then the invariant above
+is a statement of intent rather than something the code enforces.
 
 ### WAL Truncation
 
@@ -509,6 +514,10 @@ The arbiter is **off the critical data path.** It holds leadership state for eac
 pair: `(component_id, leader_instance_id, epoch, lease_expiry)`. Leaders heartbeat to
 renew their lease. The arbiter never participates in order processing.
 
+**Leadership state is keyed by `(component-group, instance_id)`**, not by instance id alone.
+The sequencer, matching engine and MEP pairs each use instances `{1, 2}`, so keying on the id by
+itself would alias three different pairs onto the same two slots.
+
 On failover, the surviving instance contacts the arbiter with `ArbitrationReport`. The
 arbiter performs an atomic compare-and-swap: if the old leader's lease has expired, it
 grants promotion, bumps the epoch, and records the new leader. The old leader on revival
@@ -645,38 +654,16 @@ framework relies on it being present but does not implement PTP itself.
 
 ---
 
-## Implementation Status
+## Implementation status
 
-The WAL and HA design is staged into vertical slices.
+**Tracked in the [Roadmap](../roadmap.md), which is the single record.** It carries the numbered
+slices this design is delivered in, and it carries the ones that are *not* done -- which is why
+the status does not live here as well. This document used to repeat slices 1 to 8, all marked
+Done, and omit slice 9. A reader had no way to tell that dual snapshots and snapshot validation,
+which are WAL work described above, are not started.
 
-**Sequencer / arbiter WAL+HA:**
-
-| Slice | Description | Status |
-|-------|-------------|--------|
-| 1 | seqNo on wire and in `EventMessage` | Done |
-| 2 | In-memory WAL | Done |
-| 3 | mmap'd WAL on disk, segmented, no fsync | Done |
-| 4 | Snapshot (single, not yet rolling) | Done |
-| 5 | `cl_ord_id → SenderCompID` routing map in sequencer | Done |
-| 6 | Leader-follower HA state machine | Done |
-| 7 | WAL replication to follower + two-tier commit | Done |
-| 8 | Arbiter PSA+witness topology | Done |
-
-**Matching-engine HA (slices A–D):**
-
-| Slice | Description | Status |
-|-------|-------------|--------|
-| A | Role config + second ME instance | Done |
-| B | Book-replication channel (ME-leader → ME-follower) | Done |
-| C | Arbiter-mediated promotion | Done |
-| D | WAL reconciliation + cancel-on-failover; sequencer re-routes to the promoted ME | Done |
-
-**Cross-cutting HA fixes:**
-
-| Item | Description | Status |
-|------|-------------|--------|
-| Arbiter component-group keying | Arbiter keys leadership state by `(component-group, instance_id)` so the sequencer/ME/MEP pairs don't alias onto shared `{1,2}` slots | Done |
-| Auth active/active fan-out | Admin service fans credential updates to **both** auth instances so a failover target is current | Done |
+The matching-engine pair (role config, book replication, arbiter-mediated promotion, WAL
+reconciliation with cancel-on-failover) landed on 2026-07-05 and is recorded there too.
 
 ---
 

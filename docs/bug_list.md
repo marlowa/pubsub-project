@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 47 |
-| Open | 26 (22 defects, 4 tasks) |
+| Bugs recorded | 48 |
+| Open | 27 (23 defects, 4 tasks) |
 | Closed | 21 |
-| Next id | BUG-0048 |
+| Next id | BUG-0049 |
 
 ## Open bugs by severity
 
-5 high, 14 medium, 7 low.
+5 high, 15 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -32,6 +32,7 @@
 | BUG-0045 | medium | task | A member has no defined way to discover its primary gateway is down |
 | BUG-0046 | medium | task | The binary order gateway has no in-flight report recovery |
 | BUG-0047 | medium | task | Disaster recovery is not modelled |
+| BUG-0048 | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
 | BUG-0004 | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
 | BUG-0005 | low | defect | fix-test-client reports a dead gateway poorly |
 | BUG-0011 | low | defect | `cmake --install` re-lays config templates unexpanded |
@@ -1103,6 +1104,43 @@ it cannot deliver, discovered at the moment it is needed.
 
 Deliberately out of scope for 0.3.0 and not urgent. Recorded here because "we decided not to do
 this yet" and "nobody has thought about it" are different states, and only one of them is true.
+
+### BUG-0048: Nothing truncates the WAL, so it grows for the life of the venue
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-24 |
+| Recorded | 2026-08-24 |
+| How | Checking a claim in `wal_and_ha.md` about snapshot-anchored truncation against the code that implements it |
+| Impact | WAL segments accumulate on disk with nothing reclaiming them. Two design documents state a retention bound that does not exist |
+
+`Wal::truncate_below()` is implemented and correct: it finds the segment holding the first record
+at or after the safe sequence number and unlinks every segment before it. `delete_segments_before`
+is the only path in the venue that deletes a WAL segment.
+
+**Nothing in the venue calls it.** The callers are `WalTest.cpp`, `TopicPubSubIntegrationTest.cpp`
+and `TopicPubSubBench.cpp` -- two tests and a benchmark. No sequencer, no matching engine, no
+snapshot path. So the WAL grows for as long as the venue runs, bounded by the disk rather than by
+any policy.
+
+**Two documents state a bound that does not hold.** `gateway_ha.md` step 6 tells the reader
+*"Snapshots truncate the WAL, and anything older than the retained segments cannot be replayed"*,
+and `wal_and_ha.md` describes truncation anchored to an older verified snapshot. Both describe the
+design. Neither describes what runs, and a member's resend depth is currently bounded by disk
+capacity instead.
+
+**Why this has not bitten.** The longest run so far is 113 minutes. Retention only becomes visible
+over a trading day, and the failure when it arrives is a full disk rather than a slow degradation
+-- which is the worst shape for noticing it.
+
+**What it depends on.** Truncation must not delete history the follower still needs, nor history
+behind the newest snapshot -- and the safe anchor is the *older verified* snapshot, which is
+roadmap slice 9 and not started. So this is not simply a missing call: calling
+`truncate_below(newest_snapshot)` today would delete WAL history with only one unvalidated
+snapshot standing behind it, which is the case the invariant exists to prevent.
+
+Related: BUG-0046, since the WAL is what a member's resend is served from.
 
 ---
 

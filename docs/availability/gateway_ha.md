@@ -879,9 +879,9 @@ Each step leaves the system working.
 
    - **No outbound message store.** Only execution reports are replayable, because only they
      are in the WAL. Administrative messages are gap-filled, as FIX permits.
-   - **Replay depth is bounded by WAL retention.** Snapshots truncate the WAL, and anything
-     older than the retained segments cannot be replayed. A real venue would keep a separate
-     outbound store for the trading day.
+   - **Replay depth is bounded by WAL retention** -- by design. In practice nothing truncates
+     the WAL today (BUG-0048), so the bound is disk capacity rather than a retention policy.
+     A real venue would keep a separate outbound store for the trading day.
    - **No durability across a venue restart.** The remembered sequence numbers live in the
      sequencer's memory; restarting the pair loses them.
    - **The binary gateway is unchanged.** It has no session layer to hang a resend on, so
