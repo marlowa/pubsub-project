@@ -49,7 +49,7 @@ namespace pubsub_itc_fw {
  * no call site knows whether metrics are switched on. When they are not, every metric is a
  * shared no-op.
  *
- * ### Construction, then start
+ * **Construction, then start**
  *
  * These are deliberately separate, and the reason is CPU affinity. The listener's threads
  * inherit the affinity of whichever thread calls `start()`, and civetweb's threads must not
@@ -67,12 +67,12 @@ namespace pubsub_itc_fw {
  * so -- a constructor would have to be handed the core list, which is not known until the
  * layout has been read.
  *
- * ### Lifetime
+ * **Lifetime**
  *
  * Every reference returned by `register_*` points into the registry this object owns, so
  * **this object must outlive every holder**. The Reactor owns it for that reason.
  *
- * ### Threading
+ * **Threading**
  *
  * Registration is mutex-guarded and is expected at startup rather than on a hot path.
  * Recording is not guarded here: Counter and Gauge are atomic, and Histogram takes its own

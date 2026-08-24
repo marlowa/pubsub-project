@@ -24,7 +24,7 @@ namespace fix_common {
  * meant to cover. And a book that grows without bound looks exactly like one
  * that is merely busy until the process is killed for it.
  *
- * ## Entries against slots
+ * **Entries against slots**
  *
  * `entries` is what the venue is holding. `slots` is what the map has claimed
  * to hold it in, and is deliberately larger: the load factor is held at a half,
@@ -39,7 +39,7 @@ namespace fix_common {
  * reason to report it rather than smooth it away. `migrating` says when this is
  * happening, so a step in `slots` can be told apart from a step in the book.
  *
- * ## Names
+ * **Names**
  *
  * No `_count` or `_total` suffix, matching PoolMetricsReporter: Prometheus
  * reserves `_total` for counters, and these are gauges -- they fall as well as

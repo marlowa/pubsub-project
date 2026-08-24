@@ -15,7 +15,7 @@ namespace arbiter {
  * through a running venue. ArbiterThread gathers the inputs from its connection tables and
  * carries out the decision.
  *
- * ## Two questions, not one
+ * **Two questions, not one**
  *
  * "Which instance should lead when neither leads yet?" and "which should lead when one of them
  * already does?" are different questions, and answering them with a single rule is what this
@@ -32,7 +32,7 @@ namespace arbiter {
  * book to one holding nothing. So an instance that is already leading keeps leading, provided
  * it is still there to lead.
  *
- * ## The epoch moves only when leadership does
+ * **The epoch moves only when leadership does**
  *
  * An arbitration that confirms the incumbent returns the epoch already in force. Bumping it
  * would invalidate the leader's own view of itself for no reason: epochs are checked on every

@@ -23,7 +23,7 @@ namespace fix_common {
  * an owner that wants the numbers in a log, in a shutdown report, or nowhere at all is
  * unaffected.
  *
- * ## Why this lives with the applications
+ * **Why this lives with the applications**
  *
  * It sits in the applications rather than in pubsub_itc_fw for the same reason the
  * allocator has no metrics in it. The framework provides the mechanism -- pools that
@@ -33,7 +33,7 @@ namespace fix_common {
  * framework. Putting this here keeps a component free to publish a different set, or
  * none, without the framework having an opinion about it.
  *
- * ## Why the caller drives the sampling
+ * **Why the caller drives the sampling**
  *
  * PrometheusEndpoint is push-style -- a gauge holds whatever was last set into it, and
  * there is no scrape-time callback. Something must therefore call update() periodically.
@@ -46,7 +46,7 @@ namespace fix_common {
  * allocations happen; it never traverses a free list. A chain of twenty-odd pools is
  * twenty-odd atomic loads, which at the scrape interval is immaterial.
  *
- * ## Why these are all gauges, and why none of them ends in `_total`
+ * **Why these are all gauges, and why none of them ends in `_total`**
  *
  * The lifetime figures -- allocations, expansions, failures -- rise and never fall, which
  * is counter-shaped. They are gauges anyway, and are named accordingly.
@@ -64,14 +64,14 @@ namespace fix_common {
  * declared as a gauge is classified as a counter by anything following the convention. That
  * these are cumulative belongs in the help text, where it is now.
  *
- * ## What to watch
+ * **What to watch**
  *
  * pool_bytes_reserved against pool_bytes_in_use is the pair that says how much of a pool
  * is live and how much is reservation waiting to be used. A pool sized by
  * `initial_pools` claims all of it at startup, so resident memory reveals nothing about
  * demand and this pair is the only way to tell the two apart.
  *
- * ## Two names that deliberately avoid `_count`
+ * **Two names that deliberately avoid `_count`**
  *
  * The number of pools is `pool_segments` and the number of full ones is
  * `pool_chain_full`, rather than the obvious `pool_count` and `pool_full_count`.

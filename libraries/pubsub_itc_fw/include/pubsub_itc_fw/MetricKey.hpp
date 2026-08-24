@@ -29,7 +29,7 @@ namespace pubsub_itc_fw {
  * **The dotted key itself is never given to Prometheus.** Only the individual parts are:
  * the leaf becomes the metric name, and the others become label values.
  *
- * ### Validation
+ * **Validation**
  *
  * Every rule is checked in the constructor, which throws ConfigurationException on any
  * violation. Metric paths arrive from configuration, so a malformed one is a deployment

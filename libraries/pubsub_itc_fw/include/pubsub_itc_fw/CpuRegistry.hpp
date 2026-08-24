@@ -33,7 +33,7 @@ namespace pubsub_itc_fw {
  * Stale entries from dead processes are cleaned up automatically the next time
  * any live process calls record_assignment(). No daemon or heartbeat is required.
  *
- * ### Typical lifecycle
+ * **Typical lifecycle**
  *
  *  1. Construct -- opens (or creates) the shared file and maps it read/write.
  *  2. Caller pins its threads to the cores the layout file allocated it.
@@ -41,7 +41,7 @@ namespace pubsub_itc_fw {
  *     live process already holding those cores, records this process, releases.
  *  4. Destructor / release_cpus() -- acquires flock, removes this PID's entries.
  *
- * ### File lifecycle
+ * **File lifecycle**
  *
  * Both files live under the deployment's run directory and neither is cleared by
  * the operating system, so removing them is the deployment tooling's job:

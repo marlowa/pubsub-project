@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 49 |
-| Open | 28 (24 defects, 4 tasks) |
-| Closed | 21 |
-| Next id | BUG-0050 |
+| Bugs recorded | 50 |
+| Open | 28 (23 defects, 5 tasks) |
+| Closed | 22 |
+| Next id | BUG-0051 |
 
 ## Open bugs by severity
 
-5 high, 16 medium, 7 low.
+5 high, 15 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -33,7 +33,6 @@
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
 | [BUG-0047](#bug_0047) | medium | task | Disaster recovery is not modelled |
 | [BUG-0048](#bug_0048) | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
-| [BUG-0049](#bug_0049) | medium | defect | The docs build's strictest gate is silently off on RHEL8 |
 | [BUG-0004](#bug_0004) | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
@@ -41,6 +40,7 @@
 | [BUG-0016](#bug_0016) | low | defect | `start_fix_seq_system.py` launches from configs that no longer exist |
 | [BUG-0017](#bug_0017) | low | defect | Slab allocator design notes do not mention the tripwire |
 | [BUG-0044](#bug_0044) | low | defect | Scripts cannot answer `--help` without their plotting dependencies |
+| [BUG-0050](#bug_0050) | low | task | Doxygen 1.8.14 cannot build the documentation with warnings as errors |
 
 ---
 
@@ -1143,6 +1143,54 @@ snapshot standing behind it, which is the case the invariant exists to prevent.
 
 Related: BUG-0046, since the WAL is what a member's resend is served from.
 
+### BUG-0050: Doxygen 1.8.14 cannot build the documentation with warnings as errors {#bug_0050}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task -- a limitation to decide about, not a defect in the documents |
+| Found | 2026-08-24 |
+| Recorded | 2026-08-24 |
+| How | Setting `WARN_AS_ERROR = YES` for BUG-0049 and running the full docs build in the RHEL8 container |
+| Impact | The RHEL8 docs build needs `WARN_AS_ERROR=NO` on the command line. The gate is real on the development host and unavailable on the target |
+
+Doxygen 1.9.8 builds this documentation with **zero** warnings. Doxygen 1.8.14, the newest release
+packaged for RHEL8, produces **893**:
+
+| Count | Complaint |
+|---|---|
+| 393 | found subsection command outside of section context |
+| 362 | found subsubsection command outside of subsection context |
+| 104 | unexpected token TK |
+| 16 | found paragraph command outside of subsubsection context |
+| 18 | everything else |
+
+**771 of them are one thing.** 1.8.14 maps a markdown `##` to `\subsection` and `###` to
+`\subsubsection`, and requires each to sit inside the level above. It will not infer that from a
+page title, so every document written with markdown headings fails it. The documents are not
+wrong; 1.9.8 reads the same files and says nothing.
+
+**So this is a property of the old Doxygen, not a defect to fix in the documentation.**
+Restructuring 64 documents to satisfy a parser that one machine runs would be the wrong trade, and
+would make them worse to read.
+
+Three ways to settle it, none obviously right:
+
+- **Leave it.** `docs/orientation/building.md` documents `WARN_AS_ERROR=NO` for the container, with
+  the reason. The gate protects the development host, which is where documentation is written.
+- **Stop publishing docs from RHEL8 at all**, and say so. Nothing automated builds them there
+  today -- `build.py --doxygen` is opt-in and the Rocky stage never passes it -- so this would
+  record what is already true.
+- **Carry a second Doxyfile for 1.8.14.** Most faithful, and a second configuration to keep in
+  step with the first, which is its own failure mode.
+
+Related: BUG-0004, which is the same version's other markdown weakness -- an unresolved `\ref`
+renders as a bare directory link rather than failing.
+
+---
+
+## Closed
+
 ### BUG-0049: The docs build's strictest gate is silently off on RHEL8 {#bug_0049}
 
 | | |
@@ -1152,6 +1200,7 @@ Related: BUG-0046, since the WAL is what a member's resend is served from.
 | Recorded | 2026-08-24 |
 | How | Testing a proposed `Doxyfile` change against the RHEL8 container before adopting it, and checking what else that Doxygen makes of the file |
 | Impact | Documentation warnings fail the build on the development host and are ignored on the target platform, which is the one where they render as silent breakage |
+| Fixed | 2026-08-24 -- `WARN_AS_ERROR = YES`, understood by both versions, and `scripts/check_doxyfile.py` to keep the file readable by 1.8.14 |
 
 `Doxyfile` sets `WARN_AS_ERROR = FAIL_ON_WARNINGS`. That value was introduced in Doxygen 1.9.
 RHEL8 ships **1.8.14**, where `WARN_AS_ERROR` is a boolean and the value is rejected:
@@ -1180,9 +1229,9 @@ labels, which both versions support, rather than heading slugs.
   running the container by hand. `docs/orientation/building.md` documents how to do that, and
   `release_check.py` has a Rocky stage, so the mechanism exists; nothing joins them up.
 
----
+**Fixed 2026-08-24.** The value is now `YES`, which 1.8.14 accepts as a boolean and 1.9.8 accepts as the equivalent of failing on a warning. `scripts/check_doxyfile.py` checks every tag against the 1.8.14 vocabulary, captured in `scripts/doxygen_1_8_14_tags.txt`, and `--container` runs the real 1.8.14 against the file rather than the snapshot. Both fault classes were proved by reintroducing them.
 
-## Closed
+Turning the gate on revealed why it had never been on: 1.8.14 cannot build this documentation at all under it. That is BUG-0050.
 
 ### BUG-0007: Metrics silently disabled when CPU pinning is off {#bug_0007}
 

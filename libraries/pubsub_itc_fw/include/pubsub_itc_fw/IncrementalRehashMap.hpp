@@ -48,7 +48,7 @@ namespace pubsub_itc_fw {
  * exists to answer, and because the shape of the failure -- a tail excursion on exact powers of
  * two, with p50 and p90 untouched throughout -- is what to look for if it ever returns.
  *
- * ## What this does instead
+ * **What this does instead**
  *
  * When the table must grow, a second table is allocated and the entries are moved a few at a
  * time, by the operations that follow. Every insert and erase carries a bounded share of the
@@ -60,33 +60,33 @@ namespace pubsub_itc_fw {
  * size of the map. It does not grow with the table, which is the whole point: the old
  * behaviour was O(capacity) in one operation, and the capacity is what kept doubling.
  *
- * ## What still costs O(capacity), and why it is acceptable
+ * **What still costs O(capacity), and why it is acceptable**
  *
  * Allocating the new table clears its state array, which is one byte per slot. That is a
  * memset, not a rehash: about 8 MB at the 2^23 size that stalled for over a second, which
  * measures under a millisecond. The entry storage itself is left uninitialised, and the
  * kernel faults its pages in lazily as the migration touches them.
  *
- * ## Erasure and tombstones
+ * **Erasure and tombstones**
  *
  * Open addressing with linear probing, and an erased slot becomes a tombstone so that probe
  * chains through it stay intact. Tombstones count towards the load factor, so a workload that
  * inserts and erases in equal measure eventually triggers a migration to the SAME capacity,
  * which clears them. Growth and tombstone-clearing are one mechanism, not two.
  *
- * ## Iterator invalidation
+ * **Iterator invalidation**
  *
  * Any insert or erase may move entries, so any insert or erase invalidates every iterator --
  * including the one being erased through, which is why erase(ConstIterator) does its removal
  * before it advances the migration. This is stricter than std::unordered_map, where erase
  * leaves other iterators alone, and it is the price of moving entries a few at a time.
  *
- * ## Mutating a stored value
+ * **Mutating a stored value**
  *
  * Iterators expose their entry as const, as tsl::robin_map's do. Use find_value(), which
  * returns a pointer straight to the stored value, or insert_or_assign(). Neither allocates.
  *
- * ## Threading
+ * **Threading**
  *
  * Thread-confined, like the `tsl::robin_map` and `std::unordered_map` it stands in for, and
  * deliberately so. An application thread is the single consumer of its own message queue and

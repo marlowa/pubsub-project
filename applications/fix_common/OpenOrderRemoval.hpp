@@ -30,7 +30,7 @@ namespace open_orders {
  * does name the resting order. So the rule is to prefer OrigClOrdID and fall
  * back to ClOrdID, not to swap one for the other.
  *
- * ## A rejected cancel retires nothing
+ * **A rejected cancel retires nothing**
  *
  * A rejection carrying OrigClOrdID is a cancel that did **not** happen: the
  * engine is saying it could not act on the request. Both possible mistakes are

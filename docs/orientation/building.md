@@ -197,8 +197,14 @@ Rocky 8 keeps doxygen (RHEL8 calls the equivalent repo
 
 ```bash
 docker run --rm --entrypoint bash -v "$PWD":/workspace:ro pubsub-rhel8:latest \
-    -lc '( cat Doxyfile; echo "OUTPUT_DIRECTORY=/tmp/dox" ) | doxygen -'
+    -lc '( cat Doxyfile; echo "OUTPUT_DIRECTORY=/tmp/dox"; echo "WARN_AS_ERROR=NO" ) | doxygen -'
 ```
+
+**`WARN_AS_ERROR=NO` is required there and is not a workaround for bad documentation.** 1.8.14
+maps a markdown `##` to `\subsection` and `###` to `\subsubsection`, and requires each to sit
+inside the level above; it will not infer that from a page title. Every document written with
+markdown headings therefore produces warnings under it -- 893 across the tree, 771 of them that
+one complaint. The documents are correct and 1.9.8 builds them with none. See BUG-0050.
 
 **No intra-document anchor links to a heading slug.** A markdown `[text](#anchor)` link becomes a
 `\ref anchor` command, and a GitHub-style heading slug is not a label Doxygen knows, so it is an
