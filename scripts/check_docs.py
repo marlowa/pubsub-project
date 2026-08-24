@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""
+check_docs.py -- Check that the documentation forms a connected book, and that every path
+pointing into it still resolves.
+
+Why this exists. Three documents were moved into docs/design/history/ and the references to them
+from pubsub.dsl, topics.dsl, TopicPublisher.hpp and generator_topics.py were never updated, so
+four doc paths cited from source resolve to nothing. Twelve markdown files are reachable from no
+other document at all. Both faults are silent: nothing builds the documentation as a whole, so a
+path that has stopped working looks exactly like one nobody has followed yet.
+
+Checks implemented:
+  1. Every markdown link between documents resolves to a file that exists
+  2. Every documentation path cited from a non-markdown file exists
+  3. Every tracked markdown file under docs/ is reachable by following links from the contents
+     page, so a document cannot be added and then be readable by nobody
+
+Reachability starts at the repository README and the documentation contents page, which is
+docs/README.md where that exists and docs/index.md otherwise. GitHub renders README.md when a
+directory is browsed, which is why the contents page wants that name.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Deliberately outside the book: instructions to an AI assistant, the changelog, which GitHub
+# renders on its own, and scratch directories that are not documentation at all.
+_NOT_IN_THE_BOOK = {'claude.md', 'CHANGELOG.md', 'README.md'}
+_IGNORED_PREFIXES = ('.pytest_cache/', 'python/.pytest_cache/', '.claude/')
+
+_MARKDOWN_LINK_RE = re.compile(r'\[[^\]]*\]\(([^)]+)\)')
+
+
+def tracked_markdown() -> list[str]:
+    result = subprocess.run(['git', 'ls-files', '*.md'], cwd=_PROJECT_ROOT, capture_output=True, text=True, check=True)
+    return [line for line in result.stdout.split() if not line.startswith(_IGNORED_PREFIXES)]
+
+
+def without_code_blocks(text: str) -> str:
+    """Drop fenced blocks and inline code, so C++ such as vector<const char*> is not read as a link."""
+    text = re.sub(r'^```.*?^```', '', text, flags=re.MULTILINE | re.DOTALL)
+    return re.sub(r'`[^`\n]*`', '', text)
+
+
+def link_targets(path: Path) -> list[str]:
+    """Return the link targets in one markdown file, anchors and external URLs removed."""
+    targets = []
+    for raw in _MARKDOWN_LINK_RE.findall(without_code_blocks(path.read_text(encoding='utf-8'))):
+        target = raw.split()[0].split('#')[0].strip()
+        if not target or '://' in target or target.startswith('mailto:'):
+            continue
+        targets.append(target)
+    return targets
+
+
+def check_links(files: list[str]) -> tuple[list[str], dict[str, set[str]]]:
+    """Check every markdown link resolves, and return the graph of what links to what."""
+    faults: list[str] = []
+    graph: dict[str, set[str]] = {}
+    for name in files:
+        path = _PROJECT_ROOT / name
+        graph[name] = set()
+        for target in link_targets(path):
+            resolved = (path.parent / target).resolve()
+            try:
+                relative = str(resolved.relative_to(_PROJECT_ROOT))
+            except ValueError:
+                faults.append(f'{name}: link escapes the repository: {target!r}')
+                continue
+            if not resolved.exists():
+                faults.append(f'{name}: link to {target!r} resolves to {relative}, which does not exist')
+            elif relative.endswith('.md'):
+                graph[name].add(relative)
+    return faults, graph
+
+
+def check_citations_from_source() -> list[str]:
+    """Documentation paths named in code, configuration and scripts must exist."""
+    result = subprocess.run(['git', 'grep', '-hoE', r'docs/[A-Za-z0-9_/.-]+\.md', '--', ':!*.md'],
+                            cwd=_PROJECT_ROOT, capture_output=True, text=True, check=False)
+    if result.returncode not in (0, 1):
+        return [f'git grep failed: {result.stderr.strip()}']
+
+    faults = []
+    for cited in sorted(set(result.stdout.split())):
+        if not (_PROJECT_ROOT / cited).exists():
+            where = subprocess.run(['git', 'grep', '-ln', cited, '--', ':!*.md'],
+                                   cwd=_PROJECT_ROOT, capture_output=True, text=True, check=False)
+            citers = ', '.join(where.stdout.split()) or 'unknown'
+            faults.append(f'{cited} is cited by {citers} but does not exist')
+    return faults
+
+
+def contents_page() -> str | None:
+    for candidate in ('docs/README.md', 'docs/index.md'):
+        if (_PROJECT_ROOT / candidate).exists():
+            return candidate
+    return None
+
+
+def check_reachable(files: list[str], graph: dict[str, set[str]]) -> list[str]:
+    roots = [name for name in ('README.md', contents_page()) if name]
+    seen: set[str] = set()
+    queue = list(roots)
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        queue.extend(graph.get(name, ()))
+
+    faults = []
+    for name in sorted(files):
+        if name in seen or Path(name).name in _NOT_IN_THE_BOOK:
+            continue
+        faults.append(f'{name} is reachable from no other document')
+    return faults
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--links-only', action='store_true', help='check that links resolve, without the reachability check')
+    args = parser.parse_args()
+
+    files = tracked_markdown()
+    faults, graph = check_links(files)
+    faults += check_citations_from_source()
+    if not args.links_only:
+        faults += check_reachable(files, graph)
+
+    for fault in faults:
+        print(fault)
+
+    if faults:
+        print(f'\n{len(faults)} fault(s) found across {len(files)} documents.')
+        return 1
+
+    print(f'Documentation is consistent: {len(files)} documents, every link resolves, every one reachable.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
