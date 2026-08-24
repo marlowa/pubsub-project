@@ -23,6 +23,9 @@ Checks implemented:
   10. The counts table matches the entries
   11. Headings inside an entry are level four or deeper, so '###' always means a new entry
   12. Every BUG-nnnn cited anywhere in the repository resolves to an entry
+  13. Every entry declares {#bug_nnnn} matching its own id, and the index links to it, so the
+      summary is clickable in Doxygen -- which needs an explicit label, autotoc ids being
+      positional
 """
 
 from __future__ import annotations
@@ -36,8 +39,8 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _BUG_LIST = _PROJECT_ROOT / 'docs' / 'bug_list.md'
 
-_ENTRY_RE = re.compile(r'^### (BUG-\d{4}): (.+)$')
-_INDEX_RE = re.compile(r'^\| (BUG-\d{4}) \| (high|medium|low) \| (defect|task) \| (.+) \|$')
+_ENTRY_RE = re.compile(r'^### (BUG-\d{4}): (.+?) \{#(bug_\d{4})\}$')
+_INDEX_RE = re.compile(r'^\| \[(BUG-\d{4})\]\(#(bug_\d{4})\) \| (high|medium|low) \| (defect|task) \| (.+) \|$')
 _CITATION_RE = re.compile(r'BUG-\d{4}')
 _SEVERITY_RANK = {'high': 0, 'medium': 1, 'low': 2}
 _REQUIRED_ROWS = ('Severity', 'Found', 'Recorded', 'How')
@@ -53,6 +56,7 @@ class Entry:
         self.section = section
         self.line = line
         self.rows: dict[str, str] = {}
+        self.anchor = ''
 
     @property
     def kind(self) -> str:
@@ -84,6 +88,7 @@ def parse(lines: list[str]) -> tuple[list[Entry], list[tuple[str, str, str, str]
         match = _ENTRY_RE.match(line)
         if match:
             current = Entry(match.group(1), match.group(2), section, number)
+            current.anchor = match.group(3)
             entries.append(current)
             continue
 
@@ -102,7 +107,10 @@ def parse(lines: list[str]) -> tuple[list[Entry], list[tuple[str, str, str, str]
 
         index_match = _INDEX_RE.match(line)
         if index_match:
-            index.append(index_match.groups())
+            bug_id, anchor, severity, kind, title = index_match.groups()
+            if anchor != 'bug_' + bug_id[4:]:
+                faults.append(f'bug_list.md:{number}: index row for {bug_id} links to #{anchor}')
+            index.append((bug_id, severity, kind, title))
             in_counts = False
 
     return entries, index, counts, faults
@@ -127,6 +135,9 @@ def check_entries(entries: list[Entry], counts: dict[str, str]) -> list[str]:
 
         if 'Kind' in entry.rows and not entry.rows['Kind'].startswith('task'):
             faults.append(f"{where}: Kind row must begin with 'task'; an entry with no Kind row is a defect")
+
+        if entry.anchor != 'bug_' + entry.bug_id[4:]:
+            faults.append(f'{where}: declares {{#{entry.anchor}}}, which does not match its id')
 
         closed = [row for row in _CLOSING_ROWS if row in entry.rows]
         if entry.section == 'Closed' and not closed:

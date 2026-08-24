@@ -2,44 +2,45 @@
 
 | | |
 |---|---|
-| Bugs recorded | 48 |
-| Open | 27 (23 defects, 4 tasks) |
+| Bugs recorded | 49 |
+| Open | 28 (24 defects, 4 tasks) |
 | Closed | 21 |
-| Next id | BUG-0049 |
+| Next id | BUG-0050 |
 
 ## Open bugs by severity
 
-5 high, 15 medium, 7 low.
+5 high, 16 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
-| BUG-0009 | high | defect | The venue accepts orders indefinitely with no matching engine, and tells nobody |
-| BUG-0010 | high | defect | HA fails over into a condition both nodes share |
-| BUG-0028 | high | defect | Growing the order book by doubling needs more memory than the machine has |
-| BUG-0029 | high | defect | A process death on the same host takes the machine-death path |
-| BUG-0038 | high | defect | Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed |
-| BUG-0001 | medium | defect | Shutdown timeout errors in timer tests |
-| BUG-0002 | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
-| BUG-0003 | medium | defect | Environment placeholders are missing outside dev |
-| BUG-0006 | medium | defect | ResendRequest under load |
-| BUG-0015 | medium | defect | `deploy.py` silently ignores a change to an environment file |
-| BUG-0018 | medium | defect | The idle-connection reaper tears down the pre-warmed failover link |
-| BUG-0030 | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
-| BUG-0037 | medium | defect | The resend scenario never creates a gap, so nothing tests the resend |
-| BUG-0039 | medium | defect | ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream |
-| BUG-0040 | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
-| BUG-0041 | medium | defect | Five ways the venue will not start on a RHEL8 target host |
-| BUG-0045 | medium | task | A member has no defined way to discover its primary gateway is down |
-| BUG-0046 | medium | task | The binary order gateway has no in-flight report recovery |
-| BUG-0047 | medium | task | Disaster recovery is not modelled |
-| BUG-0048 | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
-| BUG-0004 | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
-| BUG-0005 | low | defect | fix-test-client reports a dead gateway poorly |
-| BUG-0011 | low | defect | `cmake --install` re-lays config templates unexpanded |
-| BUG-0014 | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
-| BUG-0016 | low | defect | `start_fix_seq_system.py` launches from configs that no longer exist |
-| BUG-0017 | low | defect | Slab allocator design notes do not mention the tripwire |
-| BUG-0044 | low | defect | Scripts cannot answer `--help` without their plotting dependencies |
+| [BUG-0009](#bug_0009) | high | defect | The venue accepts orders indefinitely with no matching engine, and tells nobody |
+| [BUG-0010](#bug_0010) | high | defect | HA fails over into a condition both nodes share |
+| [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
+| [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
+| [BUG-0038](#bug_0038) | high | defect | Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed |
+| [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
+| [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
+| [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
+| [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
+| [BUG-0015](#bug_0015) | medium | defect | `deploy.py` silently ignores a change to an environment file |
+| [BUG-0018](#bug_0018) | medium | defect | The idle-connection reaper tears down the pre-warmed failover link |
+| [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
+| [BUG-0037](#bug_0037) | medium | defect | The resend scenario never creates a gap, so nothing tests the resend |
+| [BUG-0039](#bug_0039) | medium | defect | ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream |
+| [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
+| [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
+| [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
+| [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
+| [BUG-0047](#bug_0047) | medium | task | Disaster recovery is not modelled |
+| [BUG-0048](#bug_0048) | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
+| [BUG-0049](#bug_0049) | medium | defect | The docs build's strictest gate is silently off on RHEL8 |
+| [BUG-0004](#bug_0004) | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
+| [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
+| [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
+| [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
+| [BUG-0016](#bug_0016) | low | defect | `start_fix_seq_system.py` launches from configs that no longer exist |
+| [BUG-0017](#bug_0017) | low | defect | Slab allocator design notes do not mention the tripwire |
+| [BUG-0044](#bug_0044) | low | defect | Scripts cannot answer `--help` without their plotting dependencies |
 
 ---
 
@@ -84,7 +85,7 @@ saying which it is.
 
 ## Open
 
-### BUG-0001: Shutdown timeout errors in timer tests
+### BUG-0001: Shutdown timeout errors in timer tests {#bug_0001}
 
 | | |
 |---|---|
@@ -99,7 +100,7 @@ shutdown_timeout" still appear in timer test logs. **Root cause not identified.*
 `ThreadWithJoinTimeout` exists precisely because a raw `std::thread` terminates on an early return
 before join, so a join that times out is not obviously benign.
 
-### BUG-0002: The FIX order gateway's `process_message` exit paths are not audited
+### BUG-0002: The FIX order gateway's `process_message` exit paths are not audited {#bug_0002}
 
 | | |
 |---|---|
@@ -118,7 +119,7 @@ Given that the reactor watchdog is what made the order-book rehash stall diagnos
 positives from it would be costly: a watchdog that cries wolf gets ignored, and it is the
 instrument that turned a year-old latency mystery into a measurement.
 
-### BUG-0003: Environment placeholders are missing outside dev
+### BUG-0003: Environment placeholders are missing outside dev {#bug_0003}
 
 | | |
 |---|---|
@@ -140,7 +141,7 @@ now closed). Unlike the hostnames, these are safe to fill in from `dev.toml` whe
 environments are built, because a queue depth is a capacity decision rather than a fact about a
 host that has to be looked up — so the count is larger but the difficulty is unchanged.
 
-### BUG-0004: Doxygen 1.8.14 turns `\ref` labels into bare directory links
+### BUG-0004: Doxygen 1.8.14 turns `\ref` labels into bare directory links {#bug_0004}
 
 | | |
 |---|---|
@@ -154,7 +155,7 @@ An unresolved `\ref` collapses to `href="../../"`, which a browser opens as a di
 or, on Windows, a file chooser. 1.8.14 does **not** fail the build on an unresolved reference, so
 this is silent. `docs/architecture_map_howto.dox` proposes a post-build check; not written.
 
-### BUG-0005: fix-test-client reports a dead gateway poorly
+### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
 
 | | |
 |---|---|
@@ -167,7 +168,7 @@ this is silent. `docs/architecture_map_howto.dox` proposes a post-build check; n
 Two undecided items: `lastError` is left empty, and `connected` stays true after the gateway dies.
 FIX produces no disconnect message, so there is nothing to display without inferring it.
 
-### BUG-0006: ResendRequest under load
+### BUG-0006: ResendRequest under load {#bug_0006}
 
 | | |
 |---|---|
@@ -181,7 +182,7 @@ Partly overtaken by the 0.3.0 work, which replaced the blanket `SequenceReset-Ga
 resends carrying `PossDupFlag`. The original concern — never exercised under load — still stands,
 and the trading-day profile is a natural place to exercise it once it drives the FIX gateway.
 
-### BUG-0009: The venue accepts orders indefinitely with no matching engine, and tells nobody
+### BUG-0009: The venue accepts orders indefinitely with no matching engine, and tells nobody {#bug_0009}
 
 | | |
 |---|---|
@@ -257,7 +258,7 @@ Two distinct faults, and the second is the awkward one:
   from *accepted and queued behind nothing* — the gap between `nos_received` and
   `accounted` already carries that information and nothing reports it.
 
-### BUG-0010: HA fails over into a condition both nodes share
+### BUG-0010: HA fails over into a condition both nodes share {#bug_0010}
 
 | | |
 |---|---|
@@ -352,7 +353,7 @@ its own headroom would, in run 8, have **wrongly declined** a promotion it went 
 complete successfully, because the headroom it needed did not exist until the moment the
 primary died.
 
-### BUG-0011: `cmake --install` re-lays config templates unexpanded
+### BUG-0011: `cmake --install` re-lays config templates unexpanded {#bug_0011}
 
 | | |
 |---|---|
@@ -369,7 +370,7 @@ component and then starting the venue.
 
 See also BUG-0015, which is the converse and the more dangerous half.
 
-### BUG-0014: Python style warnings across the top-level scripts, and a lint gate that ignores them
+### BUG-0014: Python style warnings across the top-level scripts, and a lint gate that ignores them {#bug_0014}
 
 | | |
 |---|---|
@@ -400,7 +401,7 @@ worth more than tidiness:
 Not urgent, but it should not sit indefinitely: the gate as it stands protects against the
 class of defect that stops a script dead, and nothing else.
 
-### BUG-0015: `deploy.py` silently ignores a change to an environment file
+### BUG-0015: `deploy.py` silently ignores a change to an environment file {#bug_0015}
 
 | | |
 |---|---|
@@ -428,7 +429,7 @@ or refuse to report success when a deployment expanded nothing — `0 template(s
 almost never what the caller intended, and it is the one case that currently looks identical to
 success.
 
-### BUG-0016: `start_fix_seq_system.py` launches from configs that no longer exist
+### BUG-0016: `start_fix_seq_system.py` launches from configs that no longer exist {#bug_0016}
 
 | | |
 |---|---|
@@ -453,7 +454,7 @@ it will spend time on it before finding out.
 it as superseded by `devenv.py` and `perf_run.py`. That question was deliberately left open rather
 than answered in passing.
 
-### BUG-0017: Slab allocator design notes do not mention the tripwire
+### BUG-0017: Slab allocator design notes do not mention the tripwire {#bug_0017}
 
 | | |
 |---|---|
@@ -471,7 +472,7 @@ from the documentation would not know the allocator can terminate a component.
 Worth adding when the allocator documentation is next touched, together with the rule that
 the condition needs both a spent budget and a spun loop.
 
-### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link
+### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
 
 | | |
 |---|---|
@@ -503,7 +504,7 @@ take the `UseIdleTimeout` default instead.
 healthy system teaches a reader to skim past `connection lost` — which is the line that matters
 when a connection is genuinely lost.
 
-### BUG-0044: Scripts cannot answer `--help` without their plotting dependencies
+### BUG-0044: Scripts cannot answer `--help` without their plotting dependencies {#bug_0044}
 
 | | |
 |---|---|
@@ -526,7 +527,7 @@ dependency of starting the venue.
 The gate is therefore weaker than it looks on exactly the machine that most needs it: on a host
 without the optional packages, those scripts are checked for nothing at all.
 
-### BUG-0028: Growing the order book by doubling needs more memory than the machine has
+### BUG-0028: Growing the order book by doubling needs more memory than the machine has {#bug_0028}
 
 | | |
 |---|---|
@@ -574,7 +575,7 @@ the expected case, the container handles being wrong about it.
 **Not yet changed.** The number to use should come from the book size the venue is meant to
 support, not from this profile.
 
-### BUG-0029: A process death on the same host takes the machine-death path
+### BUG-0029: A process death on the same host takes the machine-death path {#bug_0029}
 
 | | |
 |---|---|
@@ -679,7 +680,7 @@ been promoted. `decide_and_broadcast` recomputes leadership rather than consulti
 up under the connecting instance's own key. Whether that yields a clean failback or a
 disagreement was not traced, and is a separate question from this entry.
 
-### BUG-0030: Restart coverage: what ha_test.py exercises, and what it does not
+### BUG-0030: Restart coverage: what ha_test.py exercises, and what it does not {#bug_0030}
 
 | | |
 |---|---|
@@ -740,7 +741,7 @@ matching engine cannot: it must ask an arbiter or fall back to a unilateral rule
 engine should gain the same peer-to-peer resolution is a design question this coverage raised and
 did not answer.
 
-### BUG-0037: The resend scenario never creates a gap, so nothing tests the resend
+### BUG-0037: The resend scenario never creates a gap, so nothing tests the resend {#bug_0037}
 
 | | |
 |---|---|
@@ -792,7 +793,7 @@ never called.
 manufacturing the gap, the description and expected outcome need to match what is asserted, or
 the next person to ask "is the resend path tested?" gets the same wrong answer twice.
 
-### BUG-0038: Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed
+### BUG-0038: Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed {#bug_0038}
 
 | | |
 |---|---|
@@ -836,7 +837,7 @@ has to survive a gateway failover for the same reason the outbound counter does.
 Not a small change, and it touches the session state that HA already carries across a failover.
 Worth sizing before starting.
 
-### BUG-0039: ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream
+### BUG-0039: ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream {#bug_0039}
 
 | | |
 |---|---|
@@ -878,7 +879,7 @@ Three ways to settle it, in increasing effort:
 Whichever is chosen, `EndSeqNo` being absent from the code with no comment is the one state
 that should not persist, because it cannot be told apart from an oversight.
 
-### BUG-0040: The order-accounting check reports lost orders when it means it could not count them
+### BUG-0040: The order-accounting check reports lost orders when it means it could not count them {#bug_0040}
 
 | | |
 |---|---|
@@ -938,7 +939,7 @@ unexpanded `${...}` placeholders, which is the state `build.sh` leaves `installe
 `deploy.py` runs again. A stale deployment therefore kills a run at the accounting step, long
 after the point where the cause would have been obvious.
 
-### BUG-0041: Five ways the venue will not start on a RHEL8 target host
+### BUG-0041: Five ways the venue will not start on a RHEL8 target host {#bug_0041}
 
 | | |
 |---|---|
@@ -1038,7 +1039,7 @@ refusing to start a trading system because a monitoring tool is absent gets the 
 backwards. Recorded here because it appears alongside the five as a sixth failure and is not
 one.
 
-### BUG-0045: A member has no defined way to discover its primary gateway is down
+### BUG-0045: A member has no defined way to discover its primary gateway is down {#bug_0045}
 
 | | |
 |---|---|
@@ -1061,7 +1062,7 @@ instance died.
 Related: BUG-0019, where a logon racing the gateway's sequencer links took the five-second
 degraded path. The same class of problem -- the member's timeout budget deciding the outcome.
 
-### BUG-0046: The binary order gateway has no in-flight report recovery
+### BUG-0046: The binary order gateway has no in-flight report recovery {#bug_0046}
 
 | | |
 |---|---|
@@ -1083,7 +1084,7 @@ than assumed, which was right, and it has stayed open since.
 Until it is answered, a binary member and a FIX member get materially different guarantees from
 the same venue across the same failure.
 
-### BUG-0047: Disaster recovery is not modelled
+### BUG-0047: Disaster recovery is not modelled {#bug_0047}
 
 | | |
 |---|---|
@@ -1105,7 +1106,7 @@ it cannot deliver, discovered at the moment it is needed.
 Deliberately out of scope for 0.3.0 and not urgent. Recorded here because "we decided not to do
 this yet" and "nobody has thought about it" are different states, and only one of them is true.
 
-### BUG-0048: Nothing truncates the WAL, so it grows for the life of the venue
+### BUG-0048: Nothing truncates the WAL, so it grows for the life of the venue {#bug_0048}
 
 | | |
 |---|---|
@@ -1142,11 +1143,48 @@ snapshot standing behind it, which is the case the invariant exists to prevent.
 
 Related: BUG-0046, since the WAL is what a member's resend is served from.
 
+### BUG-0049: The docs build's strictest gate is silently off on RHEL8 {#bug_0049}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-24 |
+| Recorded | 2026-08-24 |
+| How | Testing a proposed `Doxyfile` change against the RHEL8 container before adopting it, and checking what else that Doxygen makes of the file |
+| Impact | Documentation warnings fail the build on the development host and are ignored on the target platform, which is the one where they render as silent breakage |
+
+`Doxyfile` sets `WARN_AS_ERROR = FAIL_ON_WARNINGS`. That value was introduced in Doxygen 1.9.
+RHEL8 ships **1.8.14**, where `WARN_AS_ERROR` is a boolean and the value is rejected:
+
+```
+warning: argument `FAIL_ON_WARNINGS' for option WARN_AS_ERROR is not a valid boolean value
+Using the default: NO!
+```
+
+**So the gate falls back to off, on the platform that needs it most.** BUG-0004 records that 1.8.14
+does not fail on an unresolved `\ref` -- it renders one as `href="../../"`, a bare directory link
+that a browser opens as a directory listing. The one Doxygen that fails silently is the one running
+without the setting meant to stop it.
+
+A second tag is ignored there too: `MARKDOWN_ID_STYLE` is 1.9-only, so any reliance on
+GitHub-style heading ids would work on the development host and quietly produce positional
+`autotoc_md*` ids on RHEL8. That is why the bug list's summary links use explicit `{#bug_nnnn}`
+labels, which both versions support, rather than heading slugs.
+
+**Two things to settle, and they are separable.**
+
+- `WARN_AS_ERROR = YES` is understood by both: 1.8.14 treats it as a boolean, and 1.9 accepts it
+  as the equivalent of failing on a warning. Whether that is the right setting for this project
+  is a judgement, but a value only one of the two versions understands is not.
+- **Nothing checks that the `Doxyfile` stays readable by 1.8.14.** Both faults were found by
+  running the container by hand. `docs/orientation/building.md` documents how to do that, and
+  `release_check.py` has a Rocky stage, so the mechanism exists; nothing joins them up.
+
 ---
 
 ## Closed
 
-### BUG-0007: Metrics silently disabled when CPU pinning is off
+### BUG-0007: Metrics silently disabled when CPU pinning is off {#bug_0007}
 
 | | |
 |---|---|
@@ -1165,7 +1203,7 @@ Left alone when first found because nothing depended on it. It became urgent whe
 harnesses moved their ground truth onto those counters, at which point a silent disable would make
 them pass while verifying nothing. **This is exactly the defect that motivated this file.**
 
-### BUG-0008: A growing hash map stalls the reactor callback thread for over a second
+### BUG-0008: A growing hash map stalls the reactor callback thread for over a second {#bug_0008}
 
 | | |
 |---|---|
@@ -1335,7 +1373,7 @@ Two things follow. The `allocate_table` timing experiment proposed above is not 
 reasoning that the table's bytes-per-slot was the thing to attack was chasing the wrong quantity --
 the size of the allocation was never what stalled the thread.
 
-### BUG-0012: Orphaned build directories break coverage capture
+### BUG-0012: Orphaned build directories break coverage capture {#bug_0012}
 
 | | |
 |---|---|
@@ -1350,7 +1388,7 @@ tree. gcovr searches the whole build tree *before* the report-level excludes app
 files with no `.gcda`, could not resolve their compilation directory, searched upward and aborted
 at `/`.
 
-### BUG-0013: Trading-day phases reused ClOrdIDs
+### BUG-0013: Trading-day phases reused ClOrdIDs {#bug_0013}
 
 | | |
 |---|---|
@@ -1365,7 +1403,7 @@ from 1, so 5,256,000 of 8,632,000 orders were rejected as duplicates and four of
 recorded no latency at all. Quiet in the worst way: rejected orders still travel through the
 gateway and sequencer, so the load looked real while measuring nothing.
 
-### BUG-0019: A FIX logon arriving before the gateway's sequencer links are up is delayed five seconds
+### BUG-0019: A FIX logon arriving before the gateway's sequencer links are up is delayed five seconds {#bug_0019}
 
 | | |
 |---|---|
@@ -1500,7 +1538,7 @@ being written; and a previous session's fallback sitting before `from_byte` is c
 Both marker strings were checked to appear verbatim in `FixOrderGatewayThread.cpp`, so a reworded
 log line fails the check rather than silently ceasing to match.
 
-### BUG-0020: The Rocky container deployed its gcc-8.5 binaries over the host's install tree
+### BUG-0020: The Rocky container deployed its gcc-8.5 binaries over the host's install tree {#bug_0020}
 
 | | |
 |---|---|
@@ -1555,7 +1593,7 @@ Checked in both directions before being trusted: it passes on the repaired tree,
 23 scenarios failed, which reads as a catastrophic regression in the high-availability code and
 was nothing of the kind.
 
-### BUG-0021: `pubsub_metrics.py` built query labels from a module global, and fell back to a table describing the wrong venue
+### BUG-0021: `pubsub_metrics.py` built query labels from a module global, and fell back to a table describing the wrong venue {#bug_0021}
 
 | | |
 |---|---|
@@ -1597,7 +1635,7 @@ naming what was asked for. The built-in table survives solely for `--demo`, whic
 data and never queries, and is now named `build_demo_component_config()` so its one purpose is
 visible at the call site.
 
-### BUG-0022: `--application` never reached metric discovery
+### BUG-0022: `--application` never reached metric discovery {#bug_0022}
 
 | | |
 |---|---|
@@ -1627,7 +1665,7 @@ discovery code wearing a connection failure's clothes. It now catches `RequestEx
 `ValueError` and `KeyError`, so an unreachable Prometheus or a malformed response still falls
 back to the static table while a programming error surfaces as itself.
 
-### BUG-0023: The band chart drew a flat line across periods with no data
+### BUG-0023: The band chart drew a flat line across periods with no data {#bug_0023}
 
 | | |
 |---|---|
@@ -1663,7 +1701,7 @@ rather than one run. Both accept `HH:MM` for today, `YYYY-MM-DD HH:MM`, a date a
 epoch second, in local time — the axis is local and so is the reader. Scoped to run 8 alone the
 count reads 831,554 orders over the 2.5 ms ceiling, which is a statement about a run.
 
-### BUG-0024: The slab allocator had a hard message ceiling, below the performance target
+### BUG-0024: The slab allocator had a hard message ceiling, below the performance target {#bug_0024}
 
 | | |
 |---|---|
@@ -1715,7 +1753,7 @@ interim mitigation and remains a better default: a slab stays mapped while any o
 is outstanding, so worst-case retention rises with slab size, and 256 KB keeps that four times
 lower than 1 MB.
 
-### BUG-0025: Reactor queue pool sizes were not configurable in any environment
+### BUG-0025: Reactor queue pool sizes were not configurable in any environment {#bug_0025}
 
 | | |
 |---|---|
@@ -1747,7 +1785,7 @@ the literal it replaced in `git HEAD`.
 command pool of 4,096 where `fix_order_gateway_*` has 1,000,000. The two gateways do the same job
 over different protocols, so one of those two numbers is wrong, and 4,096 is the suspicious one.
 
-### BUG-0026: Five ways 0.3.0 would not build or run on an RHEL8 target host
+### BUG-0026: Five ways 0.3.0 would not build or run on an RHEL8 target host {#bug_0026}
 
 | | |
 |---|---|
@@ -1824,7 +1862,7 @@ banner of the step that was *starting*. Both now name the command and repeat wha
 `devenv.py` additionally names where the connection details came from, since psql reports the
 host and port it could not reach but not that they came from the environment file.
 
-### BUG-0027: Dismissed: the gateway's per-session `OpenOrderMap` is not the shape the order book was
+### BUG-0027: Dismissed: the gateway's per-session `OpenOrderMap` is not the shape the order book was {#bug_0027}
 
 | | |
 |---|---|
@@ -1892,7 +1930,7 @@ problem. The entry's closing point survives too, and gains a second half: what e
 was what mattered -- and a dismissal resting on a claim about behaviour needs that claim checked
 against the code, not against what the code was meant to do.
 
-### BUG-0031: Rejoin after a promotion re-runs the cold-start tie-break
+### BUG-0031: Rejoin after a promotion re-runs the cold-start tie-break {#bug_0031}
 
 | | |
 |---|---|
@@ -1991,7 +2029,7 @@ than merely describing the new behaviour.
 arbiter is asked at the right moments. That needs the `ha_test.py` scenario recorded in "Every HA
 scenario models machine death; none models process death".
 
-### BUG-0032: Ninety application tests were built, installed, and never run
+### BUG-0032: Ninety application tests were built, installed, and never run {#bug_0032}
 
 | | |
 |---|---|
@@ -2031,7 +2069,7 @@ a suite in which everything succeeded, which is the failure the gate exists to p
 gate must not be able to fail that way itself. Both behaviours were checked: five suites found
 and run, and exit code 1 with a message naming the directory when the glob matches nothing.
 
-### BUG-0033: A restarted arbiter forgets who leads, and reverts to the cold-start rule
+### BUG-0033: A restarted arbiter forgets who leads, and reverts to the cold-start rule {#bug_0033}
 
 | | |
 |---|---|
@@ -2089,7 +2127,7 @@ anything. It cannot arise: an arbiter restarting is what closes its components' 
 a leader sends a lease immediately on connecting rather than waiting for the timer. The interval
 was left alone rather than shortened on principle.
 
-### BUG-0034: The pair does not survive a second failure: replication is wired by identity, not by role
+### BUG-0034: The pair does not survive a second failure: replication is wired by identity, not by role {#bug_0034}
 
 | | |
 |---|---|
@@ -2162,7 +2200,7 @@ but it is a wrong value on the wire.
 **Scenario 32 fails on this and is left failing**, as scenario 24 was before its defect was
 fixed. It says so in place.
 
-### BUG-0035: Role announcements were routed to the wrong socket, and then to a dead one
+### BUG-0035: Role announcements were routed to the wrong socket, and then to a dead one {#bug_0035}
 
 | | |
 |---|---|
@@ -2204,7 +2242,7 @@ pre-warmed standby connection, so the socket exists before the announcement and 
 never arises. It takes a restart -- where the connection is genuinely absent and then appears --
 to expose it. That is the argument for the restart cells of the matrix in one paragraph.
 
-### BUG-0036: With no arbiter reachable, a starting engine never promoted and never said so
+### BUG-0036: With no arbiter reachable, a starting engine never promoted and never said so {#bug_0036}
 
 | | |
 |---|---|
@@ -2242,7 +2280,7 @@ that promotes unilaterally is always the lower id -- the rule the design specifi
 construction rather than by a comparison that could be written the wrong way round. Scenario 35
 asserts both halves: the primary degrades and says so, and the secondary does not also promote.
 
-### BUG-0042: A restarted primary matching engine promotes itself, producing two leaders
+### BUG-0042: A restarted primary matching engine promotes itself, producing two leaders {#bug_0042}
 
 | | |
 |---|---|
@@ -2313,7 +2351,7 @@ scenario 24 were folded into the restart-coverage matrix. Its substance did not 
 nothing in the matrix records the self-promotion, and three comments in `MatchingEngineThread.cpp`
 and `.hpp` went on citing it by title. That is what ids and `check_bug_list.py` exist to prevent.
 
-### BUG-0043: A cold-start primary routed through reconciliation strands the venue
+### BUG-0043: A cold-start primary routed through reconciliation strands the venue {#bug_0043}
 
 | | |
 |---|---|
