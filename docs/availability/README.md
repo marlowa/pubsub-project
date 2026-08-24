@@ -6,7 +6,7 @@ different time budgets, and conflating them is the subject of a bug entry.
 - [design_notes.md](design_notes.md) — The decision record: primary/secondary against leader/follower, why no STONITH, the two loops
 - [wal_and_ha.md](wal_and_ha.md) — How the log and the HA model fit together
 - [gateway_ha.md](gateway_ha.md) — Session identity, cancel-on-disconnect, and what a member sees across a failover
-- [process_death.md](process_death.md) — STUB: evolving thoughts on handling process death. Nothing written yet
+- [process_death.md](process_death.md) — the inner loop: what is settled, what `launch.py` already does, and the measurement that ruled out a shared-memory journal
 
 ---
 

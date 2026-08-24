@@ -627,8 +627,11 @@ the arbiter, because leadership goes to the lower instance id when both are conn
 primary's id is always the lower one. Asking earlier changes when the answer arrives, not what
 it is.
 
-**PARKED 2026-08-21, pending a process-supervision design.** Nothing here should be changed
-until that exists -- see the correction below, which reverses this entry's first recommendation.
+**PARKED 2026-08-21, pending a process-supervision design.** That design is
+`docs/availability/process_death.md`, started 2026-08-24: it records what `launch.py` already
+does, the measurement that rules out a shared-memory journal, and the four questions still open --
+of which the grace period is this entry's. Nothing here should be changed
+until that is settled -- see the correction below, which reverses this entry's first recommendation.
 
 **The 15 seconds is the local recovery grace period, and it is doing nothing only because
 nothing fills it.** `docs/availability/design_notes.md#ha_process_vs_machine` gives the outer-loop trigger as "the
