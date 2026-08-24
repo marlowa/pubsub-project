@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 44 |
-| Open | 23 (22 defects, 1 task) |
+| Bugs recorded | 47 |
+| Open | 26 (22 defects, 4 tasks) |
 | Closed | 21 |
-| Next id | BUG-0045 |
+| Next id | BUG-0048 |
 
 ## Open bugs by severity
 
-5 high, 11 medium, 7 low.
+5 high, 14 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,6 +29,9 @@
 | BUG-0039 | medium | defect | ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream |
 | BUG-0040 | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
 | BUG-0041 | medium | defect | Five ways the venue will not start on a RHEL8 target host |
+| BUG-0045 | medium | task | A member has no defined way to discover its primary gateway is down |
+| BUG-0046 | medium | task | The binary order gateway has no in-flight report recovery |
+| BUG-0047 | medium | task | Disaster recovery is not modelled |
 | BUG-0004 | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
 | BUG-0005 | low | defect | fix-test-client reports a dead gateway poorly |
 | BUG-0011 | low | defect | `cmake --install` re-lays config templates unexpanded |
@@ -1030,6 +1033,73 @@ absent from `PATH` and prints that it is doing so. The comment above it gives th
 refusing to start a trading system because a monitoring tool is absent gets the priority
 backwards. Recorded here because it appears alongside the five as a sixth failure and is not
 one.
+
+### BUG-0045: A member has no defined way to discover its primary gateway is down
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- an open design question, not a defect in what exists |
+| Found | 2026-08-06, recorded as an open question while designing session pinning |
+| Recorded | 2026-08-24, lifted out of `docs/availability/gateway_ha.md` so it can be triaged |
+| How | Reading the gateway HA design's own open-questions section against the bug list |
+| Impact | Failover to the backup gateway depends on member behaviour the venue has not specified |
+
+Sessions are pinned to a primary gateway and a backup. Nothing states how a member learns it
+should try the backup.
+
+**Connection refusal is the simple answer and is what venues rely on**, but it interacts with
+logon timeouts: a member that dials a dead instance and waits for a timeout rather than a refusal
+spends that timeout before trying the backup, and the venue has no say in how long it is. A
+refusal is immediate; a black-holed SYN is not, and which one a member sees depends on how the
+instance died.
+
+Related: BUG-0019, where a logon racing the gateway's sequencer links took the five-second
+degraded path. The same class of problem -- the member's timeout budget deciding the outcome.
+
+### BUG-0046: The binary order gateway has no in-flight report recovery
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a capability the FIX gateway has and this one does not |
+| Found | 2026-08-06, when session pinning was settled for both gateways but resend only for FIX |
+| Recorded | 2026-08-24, lifted out of `docs/availability/gateway_ha.md` so it can be triaged |
+| How | Reading the gateway HA design's own open-questions section against the bug list |
+| Impact | A binary member reconnecting after a gateway failure cannot recover the reports it missed |
+
+Session pinning was settled for both gateways at step 4: **both enforce it and both refuse the
+same way.** Steps 5 and 6 -- the resend half -- were built on the FIX session layer, which has
+`ResendRequest` and a sequence number to anchor a replay to.
+
+**The binary protocol has neither**, so "in-flight reports survive a failover" means something
+different there and needs its own mechanism rather than the same one. It was left open rather
+than assumed, which was right, and it has stayed open since.
+
+Until it is answered, a binary member and a FIX member get materially different guarantees from
+the same venue across the same failure.
+
+### BUG-0047: Disaster recovery is not modelled
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- design not started, deliberately deferred |
+| Found | 2026-08-06, noted while settling the primary/backup gateway pair |
+| Recorded | 2026-08-24, lifted out of `docs/availability/gateway_ha.md` so it can be triaged |
+| How | Reading the gateway HA design's own open-questions section against the bug list |
+| Impact | No second-site capability, and the shape of one is not decided |
+
+Venues publish a third address at a second site. It runs under a **different regime** from the
+primary/backup pair: typically a start-of-day sequence reset, and no continuity of in-flight
+state.
+
+**So it is not a third backup and must not be built as one.** Adding it as another column in the
+session-provisioning table would produce exactly the wrong thing -- a site that claims continuity
+it cannot deliver, discovered at the moment it is needed.
+
+Deliberately out of scope for 0.3.0 and not urgent. Recorded here because "we decided not to do
+this yet" and "nobody has thought about it" are different states, and only one of them is true.
 
 ---
 

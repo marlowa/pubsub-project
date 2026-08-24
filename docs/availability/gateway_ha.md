@@ -342,6 +342,10 @@ replayed to it, which is step 6.
 
 ## Gaps to close
 
+**Status: closed, except where noted.** This table is kept as the record of what the work was
+for. Gaps 1, 2, 5 and 6 are closed, gap 3 is narrowed and gap 4 is answered rather than closed;
+the paragraph below the table says how.
+
 | # | Gap | Consequence today |
 |---|-----|-------------------|
 | 1 | `origin_gateway_id` names a protocol, not an instance | Two FIX gateways would both stamp `1`; the sequencer could not tell them apart |
@@ -637,7 +641,11 @@ each session's own throughput is still bounded by the one instance serving it.
 
 ---
 
-## Implementation order
+## How it was built
+
+**All six steps are done**, between 2026-08-05 and 2026-08-06. This section is the record of the
+order they were taken in and why, not a plan waiting to be executed. It is kept because the
+reasoning behind each step is what stops the next person undoing it.
 
 Each step leaves the system working.
 
@@ -894,20 +902,15 @@ decision and are the larger half.
   applied on the way out. That is exact when the gap is all execution reports, and when it is
   not, the administrative remainder is gap-filled -- which is the case the FIX split already
   covers. A true mapping would need the outbound store this deliberately does not have.
-- How does a member discover that its primary is down? Connection refusal is the simple answer and
-  is what venues rely on, but it interacts with logon timeouts.
-- Does the binary order gateway get the same treatment, or does pinning apply only to FIX? It has no
-  session-layer resend to build on, so "in-flight reports survive" means something different there
-  and may need its own mechanism. *Settled for step 4: both gateways enforce pinning, and both
-  refuse the same way. The question remains open for steps 5 and 6, which are the resend half.*
+- **How does a member discover that its primary is down?** Tracked as BUG-0045.
+- **Does the binary order gateway get the same treatment?** Settled for step 4: both gateways
+  enforce pinning and both refuse the same way. The resend half, steps 5 and 6, is still open and
+  is tracked as BUG-0046.
 - **Should the WAL scan become an indexed lookup?** A replay is a scan from the oldest
   retained segment: 18 ms for 4 MB today, and linear in what the WAL holds. That is
   comfortable for a reconnect and would not be for anything frequent. The alternatives -- a
   per-session cursor, or segment skipping -- trade write-path cost or memory for it, and none
-  is worth paying until a replay stops being rare. The user has separately raised making
-  replay a first-class framework capability, which is where this belongs.
-- **Disaster recovery is not modelled at all.** Venues publish a third address at a second site,
-  under a different regime from the primary/backup pair: typically a start-of-day sequence reset
-  and no in-flight state continuity, so it is not a third backup and must not be built as one. Not
-  urgent, and deliberately out of scope for 0.3.0, but it will need its own design rather than an
-  extra column.
+  is worth paying until a replay stops being rare. Making replay a first-class framework
+  capability has been raised separately, and that is where this belongs.
+- **Disaster recovery is not modelled at all**, and a second site is not a third backup. Tracked
+  as BUG-0047.
