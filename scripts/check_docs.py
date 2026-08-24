@@ -14,6 +14,8 @@ Checks implemented:
   2. Every documentation path cited from a non-markdown file exists
   3. Every tracked markdown file under docs/ is reachable by following links from the contents
      page, so a document cannot be added and then be readable by nobody
+  4. Every clickable target in the architecture diagram resolves to a declared Doxygen anchor
+  5. No reference uses a path-derived Doxygen id (md_*), which a file move would silently break
 
 Reachability starts at the repository README and the documentation contents page, which is
 docs/README.md where that exists and docs/index.md otherwise. GitHub renders README.md when a
@@ -83,7 +85,8 @@ def check_links(files: list[str]) -> tuple[list[str], dict[str, set[str]]]:
 
 def check_citations_from_source() -> list[str]:
     """Documentation paths named in code, configuration and scripts must exist."""
-    result = subprocess.run(['git', 'grep', '-hoE', r'docs/[A-Za-z0-9_/.-]+\.md', '--', ':!*.md'],
+    result = subprocess.run(['git', 'grep', '-hoE', r'docs/[A-Za-z0-9_/.-]+\.md', '--', ':!*.md',
+                             ':!scripts/check_docs.py'],
                             cwd=_PROJECT_ROOT, capture_output=True, text=True, check=False)
     if result.returncode not in (0, 1):
         return [f'git grep failed: {result.stderr.strip()}']
@@ -91,10 +94,45 @@ def check_citations_from_source() -> list[str]:
     faults = []
     for cited in sorted(set(result.stdout.split())):
         if not (_PROJECT_ROOT / cited).exists():
-            where = subprocess.run(['git', 'grep', '-ln', cited, '--', ':!*.md'],
+            where = subprocess.run(['git', 'grep', '-ln', cited, '--', ':!*.md', ':!scripts/check_docs.py'],
                                    cwd=_PROJECT_ROOT, capture_output=True, text=True, check=False)
             citers = ', '.join(where.stdout.split()) or 'unknown'
             faults.append(f'{cited} is cited by {citers} but does not exist')
+    return faults
+
+
+def declared_anchors() -> dict[str, str]:
+    """Doxygen ids declared anywhere: {#id} in markdown, and \\page / \\section in .dox."""
+    result = subprocess.run(['git', 'ls-files', '*.md', '*.dox'], cwd=_PROJECT_ROOT,
+                            capture_output=True, text=True, check=True)
+    anchors = {}
+    for name in result.stdout.split():
+        text = (_PROJECT_ROOT / name).read_text(encoding='utf-8')
+        for anchor in re.findall(r'\{#([A-Za-z0-9_]+)\}', text):
+            anchors[anchor] = name
+        for anchor in re.findall(r'[\\@](?:page|section|subsection|anchor|defgroup)\s+([A-Za-z0-9_]+)', text):
+            anchors[anchor] = name
+    return anchors
+
+
+def check_doxygen() -> list[str]:
+    """The architecture diagram is clickable. Its boxes link by Doxygen anchor, so an anchor that
+    stops being declared turns a box into a dead link, and Doxygen 1.8.14 does not fail on it."""
+    anchors = declared_anchors()
+    faults = []
+
+    for dot in subprocess.run(['git', 'ls-files', '*.dot'], cwd=_PROJECT_ROOT,
+                              capture_output=True, text=True, check=True).stdout.split():
+        text = (_PROJECT_ROOT / dot).read_text(encoding='utf-8')
+        for target in re.findall(r'URL\s*=\s*"\\ref\s+([A-Za-z0-9_]+)"', text):
+            if target not in anchors:
+                faults.append(f'{dot}: the diagram links to \\ref {target}, which no document declares')
+
+    grep = subprocess.run(['git', 'grep', '-nE', r'[\\@]ref[[:space:]]+md_'], cwd=_PROJECT_ROOT,
+                          capture_output=True, text=True, check=False)
+    for line in grep.stdout.splitlines():
+        faults.append(f'{line.strip()}: references a path-derived Doxygen id, which a file move breaks. '
+                      f'Give the target an explicit {{#anchor}} and reference that instead')
     return faults
 
 
@@ -132,6 +170,7 @@ def main() -> int:
     files = tracked_markdown()
     faults, graph = check_links(files)
     faults += check_citations_from_source()
+    faults += check_doxygen()
     if not args.links_only:
         faults += check_reachable(files, graph)
 
