@@ -18,7 +18,7 @@ namespace open_orders {
 // <= these and are enforced at startup; over-length symbol/qty get a FIX BusinessReject.
 // ClOrdID instead uses the single shared fix_order_limits::max_cl_ord_id_length -- validated
 // at ingress with an ExecutionReport rejection -- so the gateway pool and the matching-engine
-// book key stay on one value. See docs/applications/fix_order_gateway.md.
+// book key stay on one value. See docs/venue/fix_order_gateway.md.
 //
 // Why fixed char arrays rather than std::string or a general pool:
 //   std::string causes one heap allocation per field per order, measured at

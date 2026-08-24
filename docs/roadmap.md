@@ -27,7 +27,7 @@ reconciliation with cancel-on-failover). `ha_test.py` scenario 16 covers it. A s
 now, which makes the venue multi-gateway for the first time — but that is one more gateway, not
 the pool of slice 12+, and it raises the availability and fairness questions listed below.
 
-See [WAL and High Availability](design/wal_and_ha.md) for the full design behind slices 1–11.
+See [WAL and High Availability](availability/wal_and_ha.md) for the full design behind slices 1–11.
 
 ---
 
@@ -49,7 +49,7 @@ It goes first because it is the only open item where the venue can lose a member
 without either side noticing. A member sends an order, the connection drops before it arrives,
 the member reconnects and carries on numbering; nothing compares the number it receives against
 the number it expected, so the missing order is never asked for. See
-`docs/design/fix_sequence_numbers_and_gaps.md` for what the protocol requires and where this
+`docs/fix/sequence_numbers_and_gaps.md` for what the protocol requires and where this
 venue departs from it.
 
 The objection to doing it is that the order gateway is a sample application rather than a
@@ -119,7 +119,7 @@ when.
   on P-cores under `--no-ha`, which would make the FIX-versus-binary comparison measure core type
   rather than protocol.  
   The agreed design is in
-  [CPU Core Layout](design/cpu_pinning_anti_affinity.md). In outline: a per-machine manifest in the
+  [CPU Core Layout](framework/cpu_pinning_anti_affinity.md). In outline: a per-machine manifest in the
   environment TOML declares which components run on each host; a machine-invariant `hot_path_rank`
   per component declares the order in which entitlement to a good core is surrendered, with whole
   rank groups admitted atomically so the two gateways can never be split; `deploy.py` runs on the
@@ -160,7 +160,7 @@ when.
   Hot-path instrumentation: `std::atomic` increments only — no locks, no allocation. Dedicated metrics-serving thread on a non-hot CPU, excluded from the hot-path CPU registry.
 
 - **Gateway availability, fairness and identity** — **design agreed 2026-07-30, targeted at
-  0.3.0.** Written up in [Gateway High Availability](design/gateway_ha.md); nothing is built yet,
+  0.3.0.** Written up in [Gateway High Availability](availability/gateway_ha.md); nothing is built yet,
   and the gateway remains a single point of failure until it is.
   Two decisions were taken. Sessions are **pinned to a primary and a backup gateway**, not pooled
   any-of-N — that is how venues actually provision order entry, and it turns a distributed-state
@@ -183,7 +183,7 @@ when.
   it smaller — two instances to check rather than N — but does not solve it.
 
 - **Framework-level replay** — raised 2026-08-06 as a conversation, not a task. Notes toward a
-  design in [Replay](design/replay.md), written up 2026-08-08 so the conclusions are not
+  design in [Replay](durability/replay.md), written up 2026-08-08 so the conclusions are not
   rediscovered. In short: decide between *state reconstruction* (largely already working, and the
   remaining work is access rather than determinism) and *faithful re-execution* (hard, probably not
   worth it). The framework is well placed for the first — the clock is injected, the matching
@@ -249,7 +249,7 @@ Kept as a record of what the "Active / Next" and "Deferred" lists used to hold. 
 account of each is in `pubsub_itc_fw_summary.md` under the same item number.
 
 - **Pub/sub WAL** (item 7) — done as slice 10. Topic-based fan-out over the WAL, streamed and
-  socket-paced, with replay from a cursor. See [Pub/Sub](design/pubsub.md). The MEP is the
+  socket-paced, with replay from a cursor. See [Pub/Sub](pubsub/pubsub.md). The MEP is the
   reference publisher, `topic_probe` the reference subscriber, and TAP (slice 11) is the next
   consumer to build on it. This also removes the rendezvous problem that the connection-retry
   workaround exists to paper over.
@@ -344,7 +344,7 @@ Key architectural decisions and the reasoning behind them.
 
 - **Prometheus for statistics.** Hot-path instrumentation via shared-memory atomic counter/gauge/histogram updates. Dedicated gatherer process per machine reads shared memory and exposes scrape endpoints.
 
-- **WAL-follower pattern for a single downstream consumer** (e.g. a Kafka publisher). The consumer opens a connection to the sequencer leader with a position cursor and receives WAL records from cursor onward, reusing the existing replication primitive. For multi-subscriber fan-out with replay, the framework now provides the [topic pub/sub primitive](design/pubsub.md) (slice 10) instead; the two coexist and are chosen per consumer.
+- **WAL-follower pattern for a single downstream consumer** (e.g. a Kafka publisher). The consumer opens a connection to the sequencer leader with a position cursor and receives WAL records from cursor onward, reusing the existing replication primitive. For multi-subscriber fan-out with replay, the framework now provides the [topic pub/sub primitive](pubsub/pubsub.md) (slice 10) instead; the two coexist and are chosen per consumer.
 
 ### Leaning
 

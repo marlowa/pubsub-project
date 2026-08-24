@@ -12,7 +12,7 @@ namespace pubsub_itc_fw {
 /**
  * @brief Configuration for this process's Prometheus scrape endpoint.
  *
- * See docs/design/metrics.md.
+ * See docs/operations/metrics.md.
  */
 struct MetricsConfiguration {
     /**

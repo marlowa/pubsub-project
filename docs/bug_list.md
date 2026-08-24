@@ -74,7 +74,7 @@ saying which it is.
 ## See Also
 
 - [Roadmap](roadmap.md) — planned work, as distinct from defects
-- [Testing and Code Coverage](testing.md)
+- [Testing and Code Coverage](orientation/testing.md)
 
 ---
 
@@ -792,7 +792,7 @@ the next person to ask "is the resend path tested?" gets the same wrong answer t
 | Severity | high |
 | Found | 2026-08-23 |
 | Recorded | 2026-08-23 (03ba5d8) |
-| How | Reading the gateway's session handling against FIXT.1.1 while writing docs/design/fix_sequence_numbers_and_gaps.md |
+| How | Reading the gateway's session handling against FIXT.1.1 while writing docs/fix/sequence_numbers_and_gaps.md |
 | Impact | An order a member believes it placed can fail to reach the venue with neither side detecting it |
 
 `MsgSeqNum` (tag 34) on an inbound message is never compared against an expected value. The
@@ -1075,7 +1075,7 @@ allocators for messages *in flight* and nothing at all for long-lived hot-path s
 so every application that keeps state (an order book, a session table, a subscription registry)
 will grow a container on a reactor callback thread and eventually stall it.
 
-See [Compressed Trading Day Load Profile](design/trading_day_load.md).
+See [Compressed Trading Day Load Profile](operations/trading_day_load.md).
 
 **The framework half is done, 2026-08-11.** `IncrementalRehashMap` is the growable structure the
 design note asked for: when the table must grow it allocates a second one and moves the entries

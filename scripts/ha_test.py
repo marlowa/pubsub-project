@@ -1168,7 +1168,7 @@ _SCENARIOS: list[Scenario] = [
     # reduces the single point of failure for *new* sessions, but there is no session
     # handover: instance b inherits nothing from a, and reports for a's orders are
     # dropped by the sequencer rather than rerouted. See the "What running two
-    # instances gives you today" section of docs/design/gateway_ha.md.
+    # instances gives you today" section of docs/availability/gateway_ha.md.
     #
     # Getting a deterministic ER for an order whose gateway is dead is the awkward
     # part. Killing the gateway mid-burst would work but is a race. Instead this
@@ -2006,7 +2006,7 @@ _SCENARIOS: list[Scenario] = [
 
     # 35 — R6: with no arbiter reachable, the degraded rule must still pick ONE leader.
     #
-    # design-notes-for-ha.md is explicit that a two-node system with no fencing and no arbiter
+    # docs/availability/design_notes.md is explicit that a two-node system with no fencing and no arbiter
     # is unsafe, and the fallback is "lowest instance id wins". The point of this scenario is
     # that the fallback must actually apply that rule rather than simply promoting whoever
     # notices: if both instances self-promote when the arbiter pool is gone, the degraded mode
@@ -3816,7 +3816,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # Those cancel ERs are NOT tied to a sequenced order, so the sequencer cannot
         # route them via its seq_no->conn map; the originating session's connection id
         # rides on the WalRecord envelope instead (see commit 5cb18a6 and
-        # docs/design/fix_pdu_generation.md). A regression there is silent to the
+        # docs/fix/pdu_generation.md). A regression there is silent to the
         # recovery-order check -- the cancels are simply dropped -- so assert directly:
         #   * the secondary cancelled a non-empty book (N > 0), and
         #   * the gateway dropped NO ER for a missing conn id (the regression's
@@ -3880,7 +3880,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # Assertion 3 is the load-bearing one. Were b ever to pick up a's sessions,
         # the third check fails first and loudest.
         #
-        # WHEN SESSION HANDOVER LANDS (steps 3b-6 of docs/design/gateway_ha.md) THIS
+        # WHEN SESSION HANDOVER LANDS (steps 3b-6 of docs/availability/gateway_ha.md) THIS
         # BLOCK SHOULD FAIL. Invert it rather than deleting it: dropped_ers becomes 0
         # and b's traffic becomes non-zero.
         if scenario.assert_gateway_orphaned:
@@ -3906,7 +3906,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("gateway orphan: the sequencer never reported dropping an execution report "
                     "for the dead FIX instance 1. Either the reports went somewhere they should "
                     "not have, or session handover now exists -- if the latter, invert this "
-                    "scenario's assertions rather than removing them. See docs/design/gateway_ha.md.")
+                    "scenario's assertions rather than removing them. See docs/availability/gateway_ha.md.")
             dropped_ers = count_log_marker(seq_primary_log, drop_marker, from_byte=seq_primary_pos_pre_kill)
             log(f"  gateway orphan: sequencer dropped {dropped_ers} ER(s) bound for the dead "
                 f"instance 1, first after {elapsed:.1f}s -- not rerouted to b")
@@ -4136,7 +4136,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("provisioning: the gateway did not refuse a comp id provisioned for another "
                     f"instance. It should have logged '{refused_marker}'. A session that can log "
                     "on anywhere makes the pinning a convention rather than a rule, and the "
-                    "recovery guarantees in docs/design/gateway_ha.md rest on it being a rule.")
+                    "recovery guarantees in docs/availability/gateway_ha.md rest on it being a rule.")
             log(f"  provisioning: logon refused at the wrong instance ({elapsed:.1f}s)")
 
             # And refused means refused: no session may have been established alongside it.

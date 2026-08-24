@@ -24,7 +24,7 @@ namespace arbiter {
  * The first is a **cold start**. The two instances come up in either order, possibly seconds
  * apart, and something has to make the outcome the same regardless. Preferring the lower
  * instance id settles it, and the primary always holds the lower one -- see
- * design-notes-for-ha.md.
+ * docs/availability/design_notes.md.
  *
  * The second is a **rejoin**, and there the preference is wrong. An instance that restarts has
  * lost whatever state it held, because losing it is why it restarted. Handing leadership back

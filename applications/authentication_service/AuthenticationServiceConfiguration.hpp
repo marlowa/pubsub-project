@@ -148,7 +148,7 @@ struct AuthenticationServiceConfiguration {
     std::unordered_map<std::string, SessionPolicy> session_policies;
 
     /**
-     * @brief This process's Prometheus scrape endpoint; see docs/design/metrics.md.
+     * @brief This process's Prometheus scrape endpoint; see docs/operations/metrics.md.
      *
      * Copied into ReactorConfiguration, which is where the Reactor reads it from.
      */

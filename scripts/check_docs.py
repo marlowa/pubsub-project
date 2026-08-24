@@ -18,7 +18,7 @@ Checks implemented:
   5. No reference uses a path-derived Doxygen id (md_*), which a file move would silently break
 
 Reachability starts at the repository README and the documentation contents page, which is
-docs/README.md where that exists and docs/index.md otherwise. GitHub renders README.md when a
+docs/README.md where that exists and docs/README.md otherwise. GitHub renders README.md when a
 directory is browsed, which is why the contents page wants that name.
 """
 
@@ -34,10 +34,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Deliberately outside the book: instructions to an AI assistant, the changelog, which GitHub
 # renders on its own, and scratch directories that are not documentation at all.
-_NOT_IN_THE_BOOK = {'claude.md', 'CHANGELOG.md', 'README.md'}
+_NOT_IN_THE_BOOK = {'claude.md', 'CHANGELOG.md', 'README.md', 'DESIGN.md'}
 _IGNORED_PREFIXES = ('.pytest_cache/', 'python/.pytest_cache/', '.claude/')
 
+# Paths that are deliberately illustrative. architecture_map_howto.dox teaches how to add a
+# component by working through an invented one, so its example path must not exist.
+_DOCUMENTED_EXAMPLES = {'docs/venue/foo_service.md'}
+
 _MARKDOWN_LINK_RE = re.compile(r'\[[^\]]*\]\(([^)]+)\)')
+# A raw HTML link is how a document links to one Doxygen deliberately excludes: Doxygen passes
+# it through untouched instead of trying to resolve it as a page reference.
+_HTML_LINK_RE = re.compile(r'<a\s+href="([^"]+)"')
 
 
 def tracked_markdown() -> list[str]:
@@ -54,7 +61,8 @@ def without_code_blocks(text: str) -> str:
 def link_targets(path: Path) -> list[str]:
     """Return the link targets in one markdown file, anchors and external URLs removed."""
     targets = []
-    for raw in _MARKDOWN_LINK_RE.findall(without_code_blocks(path.read_text(encoding='utf-8'))):
+    text = without_code_blocks(path.read_text(encoding='utf-8'))
+    for raw in _MARKDOWN_LINK_RE.findall(text) + _HTML_LINK_RE.findall(text):
         target = raw.split()[0].split('#')[0].strip()
         if not target or '://' in target or target.startswith('mailto:'):
             continue
@@ -93,6 +101,8 @@ def check_citations_from_source() -> list[str]:
 
     faults = []
     for cited in sorted(set(result.stdout.split())):
+        if cited in _DOCUMENTED_EXAMPLES:
+            continue
         if not (_PROJECT_ROOT / cited).exists():
             where = subprocess.run(['git', 'grep', '-ln', cited, '--', ':!*.md', ':!scripts/check_docs.py'],
                                    cwd=_PROJECT_ROOT, capture_output=True, text=True, check=False)
@@ -137,7 +147,7 @@ def check_doxygen() -> list[str]:
 
 
 def contents_page() -> str | None:
-    for candidate in ('docs/README.md', 'docs/index.md'):
+    for candidate in ('docs/README.md', 'docs/README.md'):
         if (_PROJECT_ROOT / candidate).exists():
             return candidate
     return None

@@ -33,7 +33,7 @@ namespace matching_engine {
  * after a gateway failover it could not even do that, because the instance in the key was
  * a process that no longer existed. Keying on the identity means a member that comes back
  * -- to the same instance or to its backup -- builds the same key and can manage what it
- * left resting. See docs/design/gateway_ha.md.
+ * left resting. See docs/availability/gateway_ha.md.
  *
  * SessionIdentity carries the protocol, and deliberately not the instance: an instance
  * failover moves a session between instances of one protocol, so including it would defeat

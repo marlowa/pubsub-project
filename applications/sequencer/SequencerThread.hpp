@@ -89,7 +89,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // More than one gateway feeds the same book -- the ASCII FIX one and the binary one --
     // and each may run as several instances, so neither axis identifies a process on its
     // own. Protocol says which wire format the report is encoded in; instance says which
-    // process to send it to. See fix_common/GatewayIds.hpp and docs/design/gateway_ha.md.
+    // process to send it to. See fix_common/GatewayIds.hpp and docs/availability/gateway_ha.md.
     //
     // Packed into one integer key rather than a std::pair so the map needs no custom hash.
     using GatewayKey = int32_t;
@@ -270,7 +270,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // WalRecord doubles as the pipeline envelope (Option B): the WAL, the follower
     // replication stream and the external-subscriber stream all carry the stamped
     // WalRecord, so leader and follower WALs stay byte-identical and every reader
-    // decodes envelope-then-payload. See docs/design/fix_pdu_generation.md.
+    // decodes envelope-then-payload. See docs/fix/pdu_generation.md.
     [[nodiscard]] bool needs_wal_ack() const;
     void append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope);
     void send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope);
@@ -313,7 +313,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // quoting an older epoch is from an instance whose leadership has since been superseded
     // and is refused, so a rejoining engine cannot take routing back from the one that
     // replaced it. Starts at -1 so that a first announcement at epoch 0 is accepted.
-    // See design-notes-for-ha.md 11b.
+    // See docs/availability/design_notes.md 11b.
     int32_t me_announced_epoch_{-1};
 
     // Which instance last announced leadership. Kept because the announcement can arrive

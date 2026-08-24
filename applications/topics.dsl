@@ -64,7 +64,7 @@ end
 #  Control channel (rare out-of-band signals: lag warnings,
 #  termination, the periodic truncation cursor, heartbeat). Both
 #  connections carry the same subscriber_id so the publisher can
-#  correlate the pair. See docs/design/pubsub_flow_control.md.
+#  correlate the pair. See docs/pubsub/flow_control.md.
 # ------------------------------------------------------------
 enum TopicChannelRole : i8 {
     Data    = 0
@@ -180,7 +180,7 @@ end
 #  oldest_retained_seq_no:  the oldest seq_no the publisher still
 #                           holds; the subscriber has a gap below
 #                           this and could resume from here.
-#  See docs/design/pubsub_flow_control.md (F3, F4).
+#  See docs/pubsub/flow_control.md (F3, F4).
 # ------------------------------------------------------------
 message TopicLagged (id=112, version=1)
     string reason

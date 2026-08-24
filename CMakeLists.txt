@@ -340,7 +340,7 @@ set(FIX_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/fix_orders.hpp")
 # expanding a curated FIX data dictionary. The committed inputs are the DD XML and the message
 # list below. It is generated into the build tree (${FIX_DSL_INCLUDE_DIR}); applications/pubsub.dsl
 # `include`s it by filename, resolved via the generator's --include-dir search path (below), so no
-# generated file lives in the source tree. See docs/design/fix_pdu_generation.md.
+# generated file lives in the source tree. See docs/fix/pdu_generation.md.
 set(FIX_DD_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_orders.dd.xml")
 set(FIX_DSL_GENERATED "${FIX_DSL_INCLUDE_DIR}/fix_orders.dsl")
 set(FIX_DD_GENERATOR "${CMAKE_SOURCE_DIR}/python/tools/generate_dd_to_dsl.py")

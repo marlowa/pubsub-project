@@ -109,7 +109,7 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
         // instance had restarted and come back as a follower, because it was still connected
         // and connection says nothing about leadership. Cleared when the recorded leader
         // disconnects, and when the lease goes unrenewed; set again only by a lease or a
-        // fresh decision. See design-notes-for-ha.md 11d.
+        // fresh decision. See docs/availability/design_notes.md 11d.
         bool leadership_confirmed{false};
         std::chrono::steady_clock::time_point leased_at{};
     };
@@ -131,7 +131,7 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // would apply the cold-start tie-break and hand leadership to the lower instance id,
     // which after a failover is the instance that just restarted with no state. For a short
     // period after starting it therefore declines to decide about a group it has heard
-    // nothing about, rather than deciding wrongly. See design-notes-for-ha.md 11c.
+    // nothing about, rather than deciding wrongly. See docs/availability/design_notes.md 11c.
     std::chrono::steady_clock::time_point started_at_{std::chrono::steady_clock::now()};
 
     /// How long after startup the arbiter waits to be informed before it will guess.

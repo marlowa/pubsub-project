@@ -32,7 +32,7 @@ inline constexpr int16_t binary_order_gateway = 2; ///< The binary (DSL PDU) gat
 // WalRecord at all. It sends a bare NewOrderSingle and the sequencer wraps it, so on that
 // path there is nothing upstream that could stamp an origin. The default covers that gap.
 // Removing it needs the sequencer to attribute origin from the connection a PDU arrived on
-// -- see docs/design/gateway_ha.md, step 2.
+// -- see docs/availability/gateway_ha.md, step 2.
 inline constexpr int16_t default_when_absent = fix_order_gateway;
 
 // Which *instance* of a gateway an order entered through, carried on the envelope as

@@ -52,7 +52,7 @@ Rules:
   - --input requires --graphic
   - --component is required when fetching live (no --input, no --demo)
 
-Prometheus is started with the venue by devenv.py; see docs/design/metrics.md.
+Prometheus is started with the venue by devenv.py; see docs/operations/metrics.md.
 """
 
 import argparse
@@ -165,7 +165,7 @@ def add_gauge(data, name, value):
 # Every series this venue exposes is identified by application + component + scope.
 # 'application' is the same everywhere, 'component' is the process INSTANCE
 # (fix_order_gateway_a, not fix_order_gateway), and 'scope' names the thread within
-# it. See docs/design/metrics.md.
+# it. See docs/operations/metrics.md.
 #
 # Only components that set a metrics_scope expose series of their own; the rest
 # serve nothing but the exposer's own counters and are deliberately absent here.
@@ -273,7 +273,7 @@ def build_demo_component_config(application):
 # component added to the venue appears here with no edit, and one renamed cannot
 # leave a stale entry behind that silently returns nothing.
 #
-# It rests on the metric key design (docs/design/metrics.md): every series this
+# It rests on the metric key design (docs/operations/metrics.md): every series this
 # venue exposes carries application, component and -- where a thread names one --
 # scope. So one series query for {application="pubsub"} yields the whole shape:
 # which components exist, which metrics each has, and which thread scope each

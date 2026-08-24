@@ -7,7 +7,7 @@ import com.pubsub.fixtestclient.fix.LogonMode;
  *
  * The venue runs several gateways -- two instances of each protocol -- and a member is given
  * its endpoints out of band, exactly as a real venue provisions them (see
- * docs/design/gateway_ha.md). So the client is CONFIGURED with this list rather than
+ * docs/availability/gateway_ha.md). So the client is CONFIGURED with this list rather than
  * discovering it: reading the venue's own deployed configs would work only on the venue host
  * and would quietly abandon that principle.
  *

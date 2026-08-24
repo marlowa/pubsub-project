@@ -1,4 +1,4 @@
-# A compressed trading day. See docs/design/trading_day_load.md.
+# A compressed trading day. See docs/operations/trading_day_load.md.
 #
 # Phase rates are FRACTIONS of ceiling_orders_per_second, never absolute, so the same
 # profile means the same thing on a machine with different capacity. Measure the ceiling

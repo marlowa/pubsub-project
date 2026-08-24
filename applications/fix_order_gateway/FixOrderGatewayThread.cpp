@@ -158,7 +158,7 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
     // Registered here rather than in the initialiser list because the handle is a value and
     // default-constructs unbound, so unconfigured bounds simply leave it recording
     // nowhere. The application and component tokens come from configuration; only the scope
-    // and the metric name are named here. See docs/design/metrics.md.
+    // and the metric name are named here. See docs/operations/metrics.md.
     if (!config_.order_round_trip_buckets.empty()) {
         order_round_trip_histogram_ = get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_round_trip_metric_name,
                                                                                  gateway_metrics::order_round_trip_help, config_.order_round_trip_buckets);
@@ -1867,7 +1867,7 @@ size_t FixOrderGatewayThread::reclaim_grace_session(std::string_view comp_id) {
         // keys an order by the session connection id it arrived on, so an order placed on
         // the old connection cannot be cancelled from the new one -- the ME would not find
         // it. Adopting the entries would make the gateway claim a control it does not have.
-        // Re-keying an order onto a recovered session is step 5 of docs/design/gateway_ha.md.
+        // Re-keying an order onto a recovered session is step 5 of docs/availability/gateway_ha.md.
         for (OpenOrderEntry* entry : it->open_orders) {
             open_order_pool_->deallocate(entry);
         }

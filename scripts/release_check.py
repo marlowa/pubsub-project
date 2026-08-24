@@ -174,7 +174,7 @@ def stage_coverage(args) -> tuple[bool, str]:
 
     It does NOT fail on a coverage number, ever. There is no threshold. If coverage fell,
     you regenerated the baseline and tagged anyway, that is a decision taken with the
-    figures in front of you, which is the entire point. See docs/testing.md.
+    figures in front of you, which is the entire point. See docs/orientation/testing.md.
 
     Only FUNCTION coverage is compared for the staleness check. Line counts differ between
     identical runs -- measured across four clean runs at one commit, function coverage was

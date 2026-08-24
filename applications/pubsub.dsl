@@ -13,7 +13,7 @@
 #  GENERATED downstream so it can never drift from the pdu ids. Per-topic
 #  operational policy (retention, ports, ...) is hand-written TOML validated
 #  against the generated registry -- it is deliberately NOT here.
-#  See docs/design/dsl_topic_catalog.md.
+#  See docs/superseded/dsl_topic_catalog.md.
 #
 #  The message definitions (and their pdu ids) come from fix_orders.dsl,
 #  pulled in transitively so the topic members below resolve to real pdu ids.

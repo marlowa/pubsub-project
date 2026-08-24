@@ -88,7 +88,7 @@ ca   = ""
 # registers with the Reactor; deploy.py asks the binary rather than reading a
 # figure that would drift silently.
 #
-# See docs/design/cpu_pinning_anti_affinity.md.
+# See docs/framework/cpu_pinning_anti_affinity.md.
 
 [startup_order]
 components = [

@@ -1009,7 +1009,7 @@ size_t BinaryOrderGatewayThread::reclaim_grace_session(std::string_view comp_id)
         // Cancel nothing. The gateway's bookkeeping is released rather than handed to the
         // new session: the matching engine keys an order by the connection it arrived on,
         // so an order placed on the old one cannot be cancelled from the new one. Re-keying
-        // onto a recovered session is step 5 of docs/design/gateway_ha.md.
+        // onto a recovered session is step 5 of docs/availability/gateway_ha.md.
         for (open_orders::OpenOrderEntry* entry : it->open_orders) {
             open_order_pool_->deallocate(entry);
         }

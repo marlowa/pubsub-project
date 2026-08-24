@@ -4,7 +4,7 @@ human-readable Markdown catalog.
 Both artifacts are derived from the `topic` groupings in a *validated* DSL AST
 (so every member message's `id` metadata is already an integer). They are the
 generated "identity" layer of the topic design (see
-docs/design/dsl_topic_catalog.md): the single source of truth for which topics
+docs/superseded/dsl_topic_catalog.md): the single source of truth for which topics
 exist and which pdu ids belong to each. Policy (retention, ports, ...) is
 hand-written TOML validated against this registry, and is not emitted here.
 

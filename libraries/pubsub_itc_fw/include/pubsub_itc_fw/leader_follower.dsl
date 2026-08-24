@@ -58,7 +58,7 @@
 #  ArbiterVoteResponse. The witness never becomes leader,
 #  follower, active, or passive in any component sense.
 #
-#  See pubsub_itc_fw_topology.puml and pubsub_itc_fw_topology.md
+#  See pubsub_itc_fw_topology.puml and docs/framework/topology.md
 #  for the authoritative deployment diagram.
 #
 #  Role enum
@@ -170,7 +170,7 @@ message WalRecord (id=103, version=1)
     # WalRecord doubles as the pipeline envelope: the routing metadata that must not live
     # inside the (DD-derived) FIX PDU rides here instead. FIX messages here are a genuine
     # FIX50SP2 subset, so venue-internal routing data cannot be smuggled in as an invented
-    # tag; it belongs on the envelope. See docs/design/fix_pdu_generation.md.
+    # tag; it belongs on the envelope. See docs/fix/pdu_generation.md.
     #
     # The four fields below are optional together, and for one shared reason: a WalRecord
     # does not always have an originating client session. Plain leader-to-follower
@@ -190,7 +190,7 @@ message WalRecord (id=103, version=1)
     # protocol can be served by several processes and the protocol id alone stopped
     # identifying a process the moment a second instance was started. Conflating them is a
     # mistake this project has already made at three separate layers; see
-    # docs/design/gateway_ha.md.
+    # docs/availability/gateway_ha.md.
     #
     # The triple (origin_gateway_id, gateway_instance_id, gateway_session_conn_id)
     # identifies a client session venue-wide.
@@ -215,7 +215,7 @@ message WalRecord (id=103, version=1)
     #   - an order replayed from the WAL carries the ingress time of the original client
     #     read, which is minutes or hours stale, so a consumer must be able to tell a
     #     missing value from a misleading one rather than reading a defaulted zero.
-    # A recorded observation is therefore always a real measurement; see docs/design/metrics.md.
+    # A recorded observation is therefore always a real measurement; see docs/operations/metrics.md.
     #
     # Wall clock rather than steady clock, because the two ends of the measurement are not
     # always stamped by the same process: after a gateway failover the ER is sent by the
@@ -384,7 +384,7 @@ end
 #  the connection the order arrived on, which is gateway-local and
 #  dies with the socket. A reconnecting member could therefore not
 #  be handed reports for orders it had already placed: the address
-#  they were bound to no longer existed. See docs/design/gateway_ha.md.
+#  they were bound to no longer existed. See docs/availability/gateway_ha.md.
 #
 #  The identity is (comp_id, gateway_protocol_id), NOT the comp id
 #  alone. A comp id gets one session per order-entry protocol: an

@@ -25,7 +25,7 @@ namespace gateway_metrics {
  *
  * **One name for every protocol, told apart by the component label**, which is the process
  * instance -- "fix_order_gateway_a" against "binary_order_gateway_a". This is the case
- * docs/design/metrics.md builds its registration rules around: one family, several
+ * docs/operations/metrics.md builds its registration rules around: one family, several
  * labelled children. Comparing the two protocols is then one query grouped by component
  * rather than two queries stitched together, and a third protocol would cost a label value
  * rather than a new metric, a new panel and a new alert.

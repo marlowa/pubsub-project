@@ -39,8 +39,8 @@ Doxygen's \c {\#label} syntax. The label is simply the markdown file's basename 
 # Matching Engine {#matching_engine}
 \endverbatim
 
-So \c docs/applications/fix_order_gateway.md carries \c {\#fix_order_gateway} and
-\c docs/design/wal_and_ha.md carries \c {\#wal_and_ha}; the map then refers to those with a
+So \c docs/venue/fix_order_gateway.md carries \c {\#fix_order_gateway} and
+\c docs/availability/wal_and_ha.md carries \c {\#wal_and_ha}; the map then refers to those with a
 plain \c "\\ref fix_order_gateway".
 
 \par Why explicit labels and not Doxygen's auto-generated names
@@ -54,7 +54,7 @@ listing -- or, on Windows, a file-chooser dialog -- instead of the doc. An expli
 
 \section amh_add Adding a new component
 
-1. Write the component's documentation as usual, e.g. \c docs/applications/foo_service.md,
+1. Write the component's documentation as usual, e.g. \c docs/venue/foo_service.md,
    and give its top-level heading an explicit label matching the file's basename:
 \verbatim
 # Foo Service {#foo_service}

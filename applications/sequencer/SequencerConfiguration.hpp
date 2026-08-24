@@ -60,7 +60,7 @@ struct SequencerConfiguration {
     // This collection supplies the first two: protocol says which wire format the report
     // is encoded in, instance says which process to send it to.
     //
-    // See docs/design/gateway_ha.md.
+    // See docs/availability/gateway_ha.md.
 
     /** @brief One gateway process the sequencer delivers execution reports to. */
     struct GatewayEndpoint {
@@ -281,7 +281,7 @@ struct SequencerConfiguration {
     bool replay_mode{false};
 
     /**
-     * @brief This process's Prometheus scrape endpoint; see docs/design/metrics.md.
+     * @brief This process's Prometheus scrape endpoint; see docs/operations/metrics.md.
      *
      * Copied into ReactorConfiguration, which is where the Reactor reads it from.
      */

@@ -145,7 +145,7 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // should stop coming here when it ends. The sequencer keys its routing on the session
     // identity and treats this connection as a destination it can replace, which is what
     // lets a member reconnect -- here or at its backup instance -- and still be sent
-    // reports for orders it placed before. See docs/design/gateway_ha.md.
+    // reports for orders it placed before. See docs/availability/gateway_ha.md.
     void announce_session_bound(const BinarySession& session);
     void announce_session_unbound(const BinarySession& session);
 

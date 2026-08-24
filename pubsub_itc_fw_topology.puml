@@ -2,7 +2,7 @@
 ' =====================================================================
 ' pubsub_itc_fw deployment topology
 ' Single-site, single-instrument view of the WAL+HA design.
-' See pubsub_itc_fw_topology.md for the companion explanation.
+' See docs/framework/topology.md for the companion explanation.
 ' =====================================================================
 
 ' Layout direction. PlantUML's auto-layout will still struggle with

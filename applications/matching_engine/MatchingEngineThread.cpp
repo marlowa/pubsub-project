@@ -173,7 +173,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     // Registered unconditionally: this component has exactly one application thread and
     // names its scope above, so there is no second thread to collide with. The handle is a
     // no-op when metrics are disabled, and the application and component tokens come from
-    // configuration rather than from here. See docs/design/metrics.md.
+    // configuration rather than from here. See docs/operations/metrics.md.
     orders_processed_counter_ = get_reactor().metrics().register_counter("matching_engine_thread", "orders_processed_total",
                                                                          "New orders accepted onto the book by the matching engine");
 

@@ -39,7 +39,7 @@ namespace pubsub_itc_fw {
 /**
  * @brief This process's metrics: registration, and the HTTP endpoint Prometheus scrapes.
  *
- * See docs/design/metrics.md for the whole picture. The essentials:
+ * See docs/operations/metrics.md for the whole picture. The essentials:
  *
  * A MetricKey names a metric as `<application>.<component>[.<scope>].<metricName>`. The
  * leaf becomes the Prometheus metric name and the rest become labels, so metrics sharing a

@@ -38,7 +38,7 @@ Two properties of that loop carry the whole design:
     group is considered either; otherwise a small low-rank group could leapfrog
     a larger high-rank one.
 
-See docs/design/cpu_pinning_anti_affinity.md.
+See docs/framework/cpu_pinning_anti_affinity.md.
 """
 
 from __future__ import annotations

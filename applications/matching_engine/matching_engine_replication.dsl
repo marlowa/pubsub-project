@@ -35,7 +35,7 @@ message BookUpdate(id=600)
     # id names a socket on a gateway process: the process the secondary is being promoted
     # because of, so the entries it replicated were filed under addresses that no longer
     # existed and could not be matched to the member that placed them. The identity
-    # outlives the connection, which is the whole point of it. See docs/design/gateway_ha.md.
+    # outlives the connection, which is the whole point of it. See docs/availability/gateway_ha.md.
     string          comp_id
     i16             origin_gateway_id
     string          cl_ord_id

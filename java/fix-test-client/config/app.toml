@@ -13,7 +13,7 @@ trust_store_password = "pubsub_dev"
 # one session at a time; this list is what it chooses between.
 #
 # A member is TOLD its endpoints out of band, which is how a venue provisions order entry
-# (docs/design/gateway_ha.md) -- so they are configured here rather than discovered from the
+# (docs/availability/gateway_ha.md) -- so they are configured here rather than discovered from the
 # venue's own deployed configs. Discovery would work only on the venue host, and would make
 # this client something no real member could be.
 #

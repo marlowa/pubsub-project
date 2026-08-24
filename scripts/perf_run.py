@@ -893,7 +893,7 @@ def set_applog_level(config: Path, level: str) -> str | None:
 #
 # A run shaped like a trading day rather than a flat rate: quiet periods, steady
 # activity, short bursts and at least one sustained hour. See
-# docs/design/trading_day_load.md for why, and for what each phase is meant to find.
+# docs/operations/trading_day_load.md for why, and for what each phase is meant to find.
 #
 # Phase rates are FRACTIONS of a ceiling measured on this machine, never absolute
 # orders/second, so the same profile means the same thing on a different box.
@@ -1348,7 +1348,7 @@ def main() -> None:
                         help="Run a trading-day load profile instead of a flat rate: quiet "
                              "periods, bursts and a sustained phase, driven from a TOML file. "
                              "Binary gateway only, since the FIX load client has no rate "
-                             "control. See docs/design/trading_day_load.md.")
+                             "control. See docs/operations/trading_day_load.md.")
     parser.add_argument("--rate", type=int, default=0,
                         help="Orders per second per session (binary gateway only).  Omit for a "
                              "throughput test, which offers load faster than the pipeline "

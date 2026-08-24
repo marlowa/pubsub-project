@@ -49,7 +49,7 @@ using open_orders::OpenOrderMap;
  *
  * What is deliberately NOT held here is a store of the messages sent. Recovering them is the
  * sequencer's job, from its WAL, because the reports may have been sent by a different
- * instance of this gateway entirely. See docs/design/gateway_ha.md.
+ * instance of this gateway entirely. See docs/availability/gateway_ha.md.
  */
 struct FixSession {
     /**

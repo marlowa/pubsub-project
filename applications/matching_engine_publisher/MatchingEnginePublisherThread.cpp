@@ -630,7 +630,7 @@ void MatchingEnginePublisherThread::topic_truncate_wal(int64_t /*safe_seq_no*/) 
     // No-op. This MEP's WAL is shared by both topics and its retention is governed by the
     // periodic wal_snapshot (durability) policy, not by topic acks. Ack-driven reclamation
     // over a shared multi-topic WAL would have to truncate to the global minimum across BOTH
-    // publishers' subscriber sets; that is deferred (see docs/design/pubsub_mep_rewire_and_tap.md,
+    // publishers' subscriber sets; that is deferred (see docs/pubsub/mep_rewire_and_tap.md,
     // "Wrinkle A"). on_ack still advances each publisher's cursor for the lag policy.
 }
 

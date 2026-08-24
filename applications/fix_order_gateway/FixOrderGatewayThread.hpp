@@ -36,7 +36,7 @@
 
 // WalRecord doubles as the pipeline envelope carrying the routing metadata that
 // must not live inside the (DD-derived) FIX PDU. Included after authentication.hpp
-// so BytesView is already defined. See docs/design/fix_pdu_generation.md.
+// so BytesView is already defined. See docs/fix/pdu_generation.md.
 #include <leader_follower.hpp>
 
 // ExecutionReportView appears in this header's own interface: send_execution_report_to_session
@@ -217,7 +217,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // The routing metadata that must not live inside the (DD-derived) FIX PDU --
     // the originating session's connection id (for ER routing) and its SenderCompID
     // (for audit) -- rides on the envelope, not the PDU. The sequencer stamps seq_no
-    // and wall_time_ns; both are left zero here. See docs/design/fix_pdu_generation.md.
+    // and wall_time_ns; both are left zero here. See docs/fix/pdu_generation.md.
     // @param[in] gateway_ingress_ns When the originating bytes were read off the client
     //            socket, or 0 for an order this gateway generated itself (the cancels
     //            issued on client disconnect). Zero is stamped as absent, so a
@@ -332,7 +332,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // should stop coming here when it ends. The sequencer keys its routing on the session
     // identity and treats this connection as a destination it can replace, which is what
     // lets a member reconnect -- here or at its backup instance -- and still be sent
-    // reports for orders it placed before. See docs/design/gateway_ha.md.
+    // reports for orders it placed before. See docs/availability/gateway_ha.md.
     void announce_session_bound(const FixSession& session);
     void announce_session_unbound(const FixSession& session);
 

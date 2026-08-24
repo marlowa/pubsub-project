@@ -510,7 +510,7 @@ their CSS framework.
 
 ### Documentation
 
-- **[Gateway High Availability](docs/design/gateway_ha.md)** — a new design document
+- **[Gateway High Availability](docs/availability/gateway_ha.md)** — a new design document
   recording the agreed direction for gateway redundancy: sessions **pinned to a primary and
   backup instance** rather than pooled any-of-N, and in-flight execution reports surviving
   a reconnect. **This is direction, not code — it is planned for 0.3.0 and none of it is

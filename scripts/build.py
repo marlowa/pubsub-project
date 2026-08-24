@@ -733,7 +733,7 @@ def build_directory_name(args):
     This is about time and hygiene, NOT correctness. Sharing one directory between
     flavours is already known to be correct here: every object rule carries flags.make as
     a prerequisite, so changing flavour changes that file and every object is rebuilt.
-    That was measured on 2026-07-26 and is written up in docs/building.md -- do not
+    That was measured on 2026-07-26 and is written up in docs/orientation/building.md -- do not
     justify this function by claiming a mixture of instrumented and plain objects, which
     is the plausible-sounding thing that does not actually happen.
 
@@ -741,7 +741,7 @@ def build_directory_name(args):
     build without --build-dir correctly rebuilt every object in build/ as instrumented,
     and the next plain build correctly rebuilt them all back -- two full rebuilds, for a
     mistake with no visible symptom. Per-flavour directories keep each flavour's objects
-    warm, which is exactly the use docs/building.md already recommends --build-dir for;
+    warm, which is exactly the use docs/orientation/building.md already recommends --build-dir for;
     this only makes it the default rather than something to remember.
 
     Only used when the caller did not name a directory. An explicit --build-dir is obeyed
@@ -1173,7 +1173,7 @@ Examples:
     if args.build_dir is None and build_dir.name != "build":
         print(f"NOTE: instrumented build -- building in {build_dir.name}/ instead of build/")
         print("  Sharing build/ would still be CORRECT (CMake rebuilds every object when the")
-        print("  flavour changes -- see docs/building.md), but it costs a full rebuild in each")
+        print("  flavour changes -- see docs/orientation/building.md), but it costs a full rebuild in each")
         print("  direction every time you switch. Each flavour now keeps its own objects warm.")
         print("  Pass --build-dir explicitly to override this.")
 

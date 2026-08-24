@@ -24,7 +24,7 @@ namespace fix_common {
  * the socket does, it is renumbered on reconnect, and it is not even the same number at
  * the member's backup gateway. So a member that reconnected could not be handed reports
  * for orders it had already placed, and could not cancel them either -- the order was
- * filed under an address that no longer existed. See docs/design/gateway_ha.md.
+ * filed under an address that no longer existed. See docs/availability/gateway_ha.md.
  *
  * The triple is still how a report is *delivered*. It is simply no longer what a session
  * *is*: identity is this struct, the connection triple is a mutable destination bound to

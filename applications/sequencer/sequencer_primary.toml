@@ -19,7 +19,7 @@ er_listen_port = ${sequencer_primary_network_er_listen_port}
 # enabled = false leaves an entry configured but undialled, which is how preprod, prod and
 # test-1 run a single instance of each protocol. Omitting the table entirely does the same
 # thing; the flag exists so an environment can switch a gateway off without editing this
-# template. See docs/design/gateway_ha.md.
+# template. See docs/availability/gateway_ha.md.
 
 [[gateway]]
 protocol = 1
@@ -90,7 +90,7 @@ snapshot_interval_seconds = 30
 applog_level = "info"
 syslog_level = "critical"
 
-# Prometheus scrape endpoint for this process. See docs/design/metrics.md.
+# Prometheus scrape endpoint for this process. See docs/operations/metrics.md.
 #
 # enabled comes from a shared value so the whole venue switches together. The listener is
 # per process -- roughly fifteen of them run on one host in dev and cannot share a port --

@@ -465,7 +465,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // connection is where the session happens to be *now*, and by the time a report is
         // ready it may be somewhere else entirely -- a different socket, or a different
         // gateway instance after a failover. Resolving that at send time is what makes a
-        // report survive the reconnect; see docs/design/gateway_ha.md.
+        // report survive the reconnect; see docs/availability/gateway_ha.md.
         if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
             OriginSession origin;
             origin.identity = fix_common::SessionIdentity::make(inbound.sender_comp_id,
@@ -1748,7 +1748,7 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     // on the write path that every order pays for so that a rare reconnect can be quicker.
     // A logon is rare and a resend rarer; if that ever stops being true the answer is a
     // cursor or a per-session index, not a slower hot path. Measured, not assumed: see
-    // docs/design/gateway_ha.md.
+    // docs/availability/gateway_ha.md.
     // The MOST RECENT max_records reports, not the first found.
     //
     // What a member has missed is by definition the tail of its stream, so streaming as the

@@ -103,7 +103,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         // emitted when a process has died, so the connection it named was already gone,
         // and a member reconnecting elsewhere could neither be sent the report nor cancel
         // what it had left resting. The sequencer now resolves this identity to wherever
-        // the session is currently bound. See docs/design/gateway_ha.md.
+        // the session is currently bound. See docs/availability/gateway_ha.md.
         fix_common::SessionIdentity session;
         pubsub_itc_fw_app::Side side{};
         pubsub_itc_fw_app::OrdType ord_type{};
@@ -328,7 +328,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
     // The pair's fixed identities. Primary is always the lower id -- the arbiter's cold-start
     // preference relies on it -- and neither ever changes for the life of a deployment.
-    // Which of them LEADS is a separate question and moves; see design-notes-for-ha.md 11.
+    // Which of them LEADS is a separate question and moves; see docs/availability/design_notes.md 11.
     static constexpr int64_t primary_instance_id = 1;
     static constexpr int64_t secondary_instance_id = 2;
 
@@ -375,7 +375,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      *
      * The sequencer used to decide where to send orders by which socket had connected, which
      * was correct only while primary and leader meant the same thing. Announcing the role
-     * explicitly is what lets it route to whoever leads. See design-notes-for-ha.md 11b.
+     * explicitly is what lets it route to whoever leads. See docs/availability/design_notes.md 11b.
      */
     void announce_role();
 

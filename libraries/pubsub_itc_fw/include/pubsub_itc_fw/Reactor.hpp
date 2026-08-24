@@ -275,7 +275,7 @@ class Reactor : public ThreadLookupInterface {
      * endpoint's registry and must not outlive it.
      *
      * Usable before run(): registration works whether or not the listener has started, and
-     * whether or not metrics are enabled at all. See docs/design/metrics.md.
+     * whether or not metrics are enabled at all. See docs/operations/metrics.md.
      */
     PrometheusEndpoint& metrics() {
         return metrics_endpoint_;

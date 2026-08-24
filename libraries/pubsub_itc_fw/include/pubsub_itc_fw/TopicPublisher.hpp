@@ -59,7 +59,7 @@ class TopicPublisherHost {
  * stricter "control required" policy could be added later.)
  *
  * Data delivery is streamed straight from the WAL and paced by the TCP socket, not
- * by acks (see docs/design/pubsub_flow_control.md): each subscriber has its own
+ * by acks (see docs/pubsub/flow_control.md): each subscriber has its own
  * WalCursor and receives one TopicPage per on_connection_writable(). A page batches
  * up to max_records_per_page records (bounded also by an encoded-payload budget that
  * stays well under the outbound slab / decode arena), which amortises the epoll

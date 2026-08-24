@@ -176,7 +176,7 @@ components = [
 # ── Machine layout ────────────────────────────────────────────────────────────
 # Which processes run on which host.  deploy.py reads this on the target machine,
 # reads that machine's real CPU topology, and resolves the hot_path_rank values
-# below into concrete core ids.  See docs/design/cpu_pinning_anti_affinity.md.
+# below into concrete core ids.  See docs/framework/cpu_pinning_anti_affinity.md.
 #
 # Every process is listed, not only those that pin.  A process absent from this
 # list gets no background mask and is therefore free to be scheduled onto the
@@ -380,7 +380,7 @@ environment_label = "dev"
 # per-CPU utilisation, IRQ counts and context switches, so a gateway round-trip percentile
 # can be overlaid on what the cores were actually doing at the time. Kept in the same
 # database as the venue's metrics precisely so that overlay is one query rather than two
-# servers compared by eye. See docs/design/cpu_pinning_anti_affinity.md.
+# servers compared by eye. See docs/framework/cpu_pinning_anti_affinity.md.
 [[prometheus.extra_job]]
 name    = "node"
 comment = "machine metrics -- per-core utilisation and IRQ rates, for latency investigation"

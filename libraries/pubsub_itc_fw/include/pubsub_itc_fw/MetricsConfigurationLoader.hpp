@@ -29,7 +29,7 @@ namespace pubsub_itc_fw {
  *     listen_host = "127.0.0.1"
  *     listen_port = 9101
  *
- * See docs/design/metrics.md.
+ * See docs/operations/metrics.md.
  */
 class MetricsConfigurationLoader {
   public:

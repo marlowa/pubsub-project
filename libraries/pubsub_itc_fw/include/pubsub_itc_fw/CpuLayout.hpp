@@ -38,7 +38,7 @@ namespace pubsub_itc_fw {
  * demotion_reason() says why, so a demotion is diagnosable rather than showing
  * up only as unexplained latency.
  *
- * See docs/design/cpu_pinning_anti_affinity.md.
+ * See docs/framework/cpu_pinning_anti_affinity.md.
  */
 class CpuLayout {
   public:

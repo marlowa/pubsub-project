@@ -306,7 +306,7 @@ def report_hot_path_occupancy(hot_path_owner: dict[int, str], deployment_pids: s
     if strict and by_kind["userspace"]:
         return [f"{len(by_kind['userspace'])} unrelated userspace thread(s) may run on "
                 f"hot-path cores -- this machine is not quiet enough for a latency "
-                f"measurement (see isolcpus in docs/design/cpu_pinning.md)"]
+                f"measurement (see isolcpus in docs/framework/cpu_pinning.md)"]
     return []
 
 
