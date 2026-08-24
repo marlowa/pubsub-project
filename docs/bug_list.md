@@ -843,7 +843,7 @@ after the point where the cause would have been obvious.
 |---|---|
 | Severity | medium |
 | Found | 2026-08-24 |
-| Recorded | 2026-08-24 |
+| Recorded | 2026-08-24 (95b8713) |
 | How | Bringing the venue up on a RHEL8 target host -- the first run of `create_db.py` and `devenv.py` outside this machine and the Rocky container |
 | Impact | Database creation fails outright; the venue starts only after hand-editing `environments/dev.toml` |
 
