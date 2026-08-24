@@ -47,9 +47,9 @@ Subclasses override these to implement their behaviour:
 Earlier versions used a `BackoffWithYield` spin strategy that degraded through busy-spin,
 `sched_yield`, and finally `sleep_for(microseconds(10))`. On a `CONFIG_HZ=1000` kernel, the
 sleep tier actually slept ~65 µs. With five `ApplicationThread` hops on the order pipeline
-(OGT → Sequencer → ME → Sequencer → OGT), each potentially in the sleep tier, the avoidable
-overhead was ~325 µs per round-trip. Measured ITC latency from heartbeat timer pairs confirmed
-~140 µs average wakeup per hop.
+(order gateway → sequencer → matching engine → sequencer → order gateway), each potentially in
+the sleep tier, the avoidable overhead was ~325 µs per round-trip. Measured ITC latency from
+heartbeat timer pairs confirmed ~140 µs average wakeup per hop.
 
 The fix replaced `BackoffWithYield` entirely:
 - Each `ApplicationThread` owns a non-blocking `eventfd` (`notify_fd_`).

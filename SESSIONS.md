@@ -1781,7 +1781,7 @@ The number of "missing" orders varied between runs (166, 170, ...).
 
 `grep -c "ME-ORD" matching_engine.log` after process exit: **1,000,000** exactly.
 `ME-ORD-1000000` has timestamp `20:30:17.128` — the matching engine processed every order
-within **16 seconds** of the test starting. The OGT also processed all 1 M orders by
+within **16 seconds** of the test starting. The order gateway also processed all 1 M orders by
 `20:30:14`.
 
 The perf script polls `matching_engine.log` as a real-time proxy. Quill's async backend
@@ -1815,16 +1815,16 @@ numbers apart.
 1. During the burst at ~20:30:04-20:30:11, connection 9 experienced TCP read backpressure
    (EPOLLIN deregistered for up to 2.5 s). During these windows the TCP send buffer to
    that client also filled up.
-2. The OGT calls `session.outbound_seq_num++` *before* `send_raw`. If `send_raw` fails
+2. The order gateway calls `session.outbound_seq_num++` *before* `send_raw`. If `send_raw` fails
    (EAGAIN), the sequence number is burned. Only one pending-send slot exists
    (`pending_send_` is `std::optional`); further failed sends are dropped.
-3. This created a gap in the OGT's outbound FIX sequence numbers as seen by fix8.
+3. This created a gap in the order gateway's outbound FIX sequence numbers as seen by fix8.
 4. Fix8 detected the gap and sent a ResendRequest (`MsgType=2`) at ~20:30:11.
-5. The OGT was ignoring all unrecognised message types, including ResendRequest — logged
+5. The order gateway was ignoring all unrecognised message types, including ResendRequest — logged
    as `"ignoring MsgType='2'"`.
-6. Fix8 waited ~3 s for a response, got none, and closed the TCP connection. OGT detected
+6. Fix8 waited ~3 s for a response, got none, and closed the TCP connection. The order gateway detected
    Broken Pipe at `20:30:14`.
-7. All 11,238 ERs that subsequently arrived at the OGT for `gateway_session_conn_id=9`
+7. All 11,238 execution reports that subsequently arrived at the order gateway for `gateway_session_conn_id=9`
    were dropped: `"no matching FIX session — dropping"`.
 
 **Fix applied** (`applications/order_gateway/`):
@@ -1859,15 +1859,15 @@ until the send is confirmed, or a proper outbound message queue — a larger ref
 
 ---
 
-### Outstanding issue — OGT "callback not finished, checking if stuck"
+### Outstanding issue — order gateway "callback not finished, checking if stuck"
 
 The gateway log contained `"Thread OrderGatewayThread callback not finished, checking if
-stuck"` at 20:30:01 and 20:30:04. These fire when the backstop timer catches the OGT
+stuck"` at 20:30:01 and 20:30:04. These fire when the backstop timer catches the order gateway
 mid-callback during burst processing. The default threshold is
 `itc_maximum_inactivity_interval_ = 60 s`; neither instance exceeded it so no shutdown
 was triggered and no orders were lost.
 
-Gemini raised a concern: if the OGT becomes idle after a burst but `time_event_started_`
+Gemini raised a concern: if the order gateway becomes idle after a burst but `time_event_started_`
 remains greater than `time_event_finished_` (callback appears "in progress"), the reactor
 would falsely detect the idle thread as stuck after 60 s and call `shutdown()`.
 
@@ -1896,7 +1896,7 @@ engagements total, all with matching releases). Releases came one connection at 
 |------|--------|
 | Shutdown timeout errors after SEGV fix | Root cause not yet identified |
 | ResendRequest / SequenceReset-GapFill fix | Compiled, NOT TESTED |
-| OGT idle-thread false-stuck risk (Gemini concern) | Needs process_message exit-path audit |
+| Order gateway idle-thread false-stuck risk (Gemini concern) | Needs process_message exit-path audit |
 | ME-ORD perf monitoring unreliable (Quill flush ordering) | Known; low-priority tooling issue |
 
 ---
