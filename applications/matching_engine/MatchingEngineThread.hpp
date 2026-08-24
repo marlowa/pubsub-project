@@ -366,7 +366,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      * A primary used to adopt LEADER the moment its first arbiter connection came up. That is
      * harmless on a cold start, where the arbiter would name it anyway, and wrong on a restart:
      * the peer may already have been promoted and be serving, and the venue ends up with two
-     * leaders. See docs/bug_list.md, "A restarted primary matching engine promotes itself".
+     * leaders. See docs/bug_list.md, BUG-0042.
      */
     void request_startup_arbitration();
 

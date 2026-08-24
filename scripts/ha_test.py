@@ -1416,8 +1416,7 @@ _SCENARIOS: list[Scenario] = [
 
     # 24 — a restarted primary ME must come back as a FOLLOWER, not seize leadership.
     #
-    # This is the regression test for "Rejoin after a promotion re-runs the cold-start
-    # tie-break" in docs/bug_list.md. The arbiter used to recompute leadership from instance
+    # This is the regression test for BUG-0031 in docs/bug_list.md. The arbiter used to recompute leadership from instance
     # ids on every request and never consult what it had already decided. The primary always
     # holds the lower id, so a primary that restarted after the secondary had been promoted
     # was handed leadership back -- from the instance holding a populated order book to the
@@ -1495,7 +1494,7 @@ _SCENARIOS: list[Scenario] = [
     # It is what stops a restarted primary taking leadership from a working secondary, so an
     # arbiter that has forgotten it would apply the cold-start tie-break, prefer the lower
     # instance id, and reproduce the split-brain that rule exists to prevent. See
-    # docs/bug_list.md, "A restarted arbiter forgets who leads".
+    # docs/bug_list.md, BUG-0033.
     #
     # BOTH arbiters are restarted deliberately. Restarting one leaves the other holding the
     # state and answering from it, which proves nothing about recovery; with neither holding
@@ -1595,7 +1594,7 @@ _SCENARIOS: list[Scenario] = [
     # for. On 2026-08-21 the primary was OOM-killed and the venue stopped for sixteen seconds
     # against a documented target of under fifty milliseconds for local process recovery --
     # not because the timer was wrong, but because nothing filled the window it opens. See
-    # docs/bug_list.md, "A process death on the same host takes the machine-death path".
+    # docs/bug_list.md, BUG-0029.
     #
     # matching_engine_primary is started under scripts/launch.py so a real supervisor
     # restarts it. The harness doing that itself would prove nothing: the question is whether
@@ -1832,7 +1831,7 @@ _SCENARIOS: list[Scenario] = [
     # This failed when written, on a real defect: replication was hard-wired
     # primary-to-secondary rather than leader-to-follower, so after a failover the leader had
     # no channel to the follower and the follower's promotion path was never armed. Fixed by
-    # holding both directions permanently; see docs/bug_list.md.
+    # holding both directions permanently; see docs/bug_list.md, BUG-0034.
     #
     # It is also the case most likely to expose leftover state. The primary has been leader,
     # then follower, then leader again, and the arbiter has issued three decisions about it.
@@ -2972,7 +2971,7 @@ def send_burst(count: int, gw_log: Path, config: str = FIX8_CFG,
         stop_f8test(proc)
         die("FIX logon completed only via the gateway's sequence-state fallback — the session was opened "
             "at a number the sequencer never confirmed. The logon raced the gateway's sequencer links "
-            "and the retry on connect did not close the window; see docs/bug_list.md")
+            "and the retry on connect did not close the window; see docs/bug_list.md, BUG-0019")
     if outcome == "timeout":
         stop_f8test(proc)
         die(f"FIX logon timed out after {FIX8_LOGON_WAIT:.0f}s — gateway or auth service may not be ready")

@@ -2,37 +2,40 @@
 
 | | |
 |---|---|
-| Bugs recorded | 41 |
-| Open | 21 |
-| Closed | 20 |
+| Bugs recorded | 44 |
+| Open | 23 (22 defects, 1 task) |
+| Closed | 21 |
+| Next id | BUG-0045 |
 
 ## Open bugs by severity
 
-5 high, 10 medium, 6 low.
+5 high, 11 medium, 7 low.
 
-| Id | Severity | Title |
-|---|---|---|
-| BUG-0009 | high | The venue accepts orders indefinitely with no matching engine, and tells nobody |
-| BUG-0010 | high | HA fails over into a condition both nodes share |
-| BUG-0028 | high | Growing the order book by doubling needs more memory than the machine has |
-| BUG-0029 | high | A process death on the same host takes the machine-death path |
-| BUG-0038 | high | Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed |
-| BUG-0001 | medium | Shutdown timeout errors in timer tests |
-| BUG-0002 | medium | The FIX order gateway's `process_message` exit paths are not audited |
-| BUG-0003 | medium | Environment placeholders are missing outside dev |
-| BUG-0006 | medium | ResendRequest under load |
-| BUG-0015 | medium | `deploy.py` silently ignores a change to an environment file |
-| BUG-0018 | medium | The idle-connection reaper tears down the pre-warmed failover link |
-| BUG-0037 | medium | The resend scenario never creates a gap, so nothing tests the resend |
-| BUG-0039 | medium | ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream |
-| BUG-0040 | medium | The order-accounting check reports lost orders when it means it could not count them |
-| BUG-0041 | medium | Five ways the venue will not start on a RHEL8 target host |
-| BUG-0004 | low | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
-| BUG-0005 | low | fix-test-client reports a dead gateway poorly |
-| BUG-0011 | low | `cmake --install` re-lays config templates unexpanded |
-| BUG-0014 | low | Python style warnings across the top-level scripts, and a lint gate that ignores them |
-| BUG-0016 | low | `start_fix_seq_system.py` launches from configs that no longer exist |
-| BUG-0017 | low | Slab allocator design notes do not mention the tripwire |
+| Id | Severity | Kind | Title |
+|---|---|---|---|
+| BUG-0009 | high | defect | The venue accepts orders indefinitely with no matching engine, and tells nobody |
+| BUG-0010 | high | defect | HA fails over into a condition both nodes share |
+| BUG-0028 | high | defect | Growing the order book by doubling needs more memory than the machine has |
+| BUG-0029 | high | defect | A process death on the same host takes the machine-death path |
+| BUG-0038 | high | defect | Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed |
+| BUG-0001 | medium | defect | Shutdown timeout errors in timer tests |
+| BUG-0002 | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
+| BUG-0003 | medium | defect | Environment placeholders are missing outside dev |
+| BUG-0006 | medium | defect | ResendRequest under load |
+| BUG-0015 | medium | defect | `deploy.py` silently ignores a change to an environment file |
+| BUG-0018 | medium | defect | The idle-connection reaper tears down the pre-warmed failover link |
+| BUG-0030 | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
+| BUG-0037 | medium | defect | The resend scenario never creates a gap, so nothing tests the resend |
+| BUG-0039 | medium | defect | ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream |
+| BUG-0040 | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
+| BUG-0041 | medium | defect | Five ways the venue will not start on a RHEL8 target host |
+| BUG-0004 | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
+| BUG-0005 | low | defect | fix-test-client reports a dead gateway poorly |
+| BUG-0011 | low | defect | `cmake --install` re-lays config templates unexpanded |
+| BUG-0014 | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
+| BUG-0016 | low | defect | `start_fix_seq_system.py` launches from configs that no longer exist |
+| BUG-0017 | low | defect | Slab allocator design notes do not mention the tripwire |
+| BUG-0044 | low | defect | Scripts cannot answer `--help` without their plotting dependencies |
 
 ---
 
@@ -52,6 +55,13 @@ reading the code" tells you the tests would not have caught it.
 
 Closed entries are kept for one release cycle and then deleted -- the commit is the permanent
 record. **An id is permanent and is never reused**, so a citation from the code always resolves.
+
+**Most entries are defects. A few are tracked tasks**, marked with a `Kind` row; an entry with no
+`Kind` row is a defect. A task is kept here rather than in a list of its own, deliberately: a
+separate list is opened less often than this one, and an item nobody reads is the failure this
+file was created to prevent. BUG-0030 is the current example -- a coverage matrix with four of
+eighteen cells done, which belongs in neither Open-as-a-defect nor Closed-as-finished without
+saying which it is.
 
 **Severity** is about what the defect can do to the venue, not how hard it is to fix.
 
@@ -489,6 +499,29 @@ take the `UseIdleTimeout` default instead.
 healthy system teaches a reader to skim past `connection lost` — which is the line that matters
 when a connection is genuinely lost.
 
+### BUG-0044: Scripts cannot answer `--help` without their plotting dependencies
+
+| | |
+|---|---|
+| Severity | low |
+| Found | Known when `build.py`'s pylint gate was written; the date it was first noticed is not recorded |
+| Recorded | 2026-08-24, after a citation sweep found `build.py` pointing at an entry that did not exist |
+| How | `check_bug_list.py` compared every citation of the bug list against the entries actually in it |
+| Impact | A script that cannot describe itself on a machine without matplotlib or psutil. The gate tolerates it, so nothing fails |
+
+`scripts/build.py` runs each top-level script with `--help` as part of the pylint gate, and treats
+a `ModuleNotFoundError` as a skip rather than a failure. The comment there explains why, and is
+right to: the Rocky container carries no matplotlib or psutil, and failing a C++ toolchain check
+because a visualisation library is absent would be the same mistake as making Prometheus a
+dependency of starting the venue.
+
+**What it tolerates is still a defect.** A script imports its plotting stack at module scope, so
+`--help` cannot run without it. The fix is a lazy import at the point of use, which
+`pubsub_metrics.py` already does so that it can run headless.
+
+The gate is therefore weaker than it looks on exactly the machine that most needs it: on a host
+without the optional packages, those scripts are checked for nothing at all.
+
 ### BUG-0028: Growing the order book by doubling needs more memory than the machine has
 
 | | |
@@ -638,6 +671,67 @@ been promoted. `decide_and_broadcast` recomputes leadership rather than consulti
 `leadership_state_`, and the reconnect path at `ArbiterThread.cpp:509` looks the stored state
 up under the connecting instance's own key. Whether that yields a clean failback or a
 disagreement was not traced, and is a separate question from this entry.
+
+### BUG-0030: Restart coverage: what ha_test.py exercises, and what it does not
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a coverage matrix, not a defect |
+| Found | 2026-08-21, extended into a full matrix 2026-08-22 |
+| Recorded | 2026-08-22 (63889b8) |
+| How | Reading every scenario against the restart cases an HA pair actually has |
+| Impact | Three defects were found in the two cases that were covered. The uncovered ones have not been looked at |
+
+Every scenario kills a component and leaves it dead, which models **machine** death correctly --
+a dead machine does not come back on its own. It leaves **process** death, where the instance is
+restarted on a machine that never failed, almost entirely unexercised. That is the half a
+supervisor makes normal, and it is where every defect found on 2026-08-21 and 2026-08-22 lives.
+
+**The cases an HA pair has, and where each stands:**
+
+| | sequencer | arbiter | matching engine |
+|---|---|---|---|
+| **R1** restart the leader inside the peer's grace period; the peer must not promote | **27** | **28** | **26** |
+| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
+| **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
+| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
+| **R5** cold start both, in either order -- deterministic leader | **36** | **38** | **34** |
+| **R6** restart with no arbiter reachable -- degraded, and said so | **37** | **39** | **35** |
+
+Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
+question; they test that it comes back, not what it comes back as.
+
+**What the two covered cells cost to find.** R2 for the matching engine is scenario 24, written
+2026-08-22, and it found three defects in a row: the arbiter re-running the cold-start tie-break
+on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
+socket rather than by role. All three are in this file. That is one cell of eighteen.
+
+**Completed 2026-08-23.** Eighteen of eighteen cells. The last four were taken by
+ha_test.py scenarios 36-39; the suite went from 23 scenarios to 39.
+
+**Where it stood, 2026-08-22.** Fourteen of eighteen cells. Every cell taken so far found at
+least one defect except R1, R3 and R4-arbiter, which passed first time -- and that pattern is
+itself informative: the defects all lived in what an instance comes back *as*, so the cells where
+nothing has to decide that were the ones that already worked.
+
+**Complete, 2026-08-22.** All eighteen cells. Ten defects were found on the way, every one of
+them a consequence of the same omission: process death was not in the model, so nothing decided
+what a restarted instance comes back as, and channels, records and fallbacks were all built on
+identities that stop being true once roles can move.
+
+**The cells that passed first time are as informative as the ones that did not.** R1, R3 and
+R4-arbiter, and both R5/R6 cells for the sequencer and arbiter, needed no fixes. The defects all
+lived in what an instance comes back *as*; where nothing has to decide that, the code was already
+right. And where a component already had a symmetric design -- the sequencer's `peer` channel,
+its unconditional startup election timer -- it had none of the faults its matching-engine
+counterpart did.
+
+**One thing worth carrying forward.** The sequencer settles leadership with its peer directly,
+through StatusQuery/StatusResponse and the instance-id rule, and needs no arbiter to do it. The
+matching engine cannot: it must ask an arbiter or fall back to a unilateral rule. Whether the
+engine should gain the same peer-to-peer resolution is a design question this coverage raised and
+did not answer.
 
 ### BUG-0037: The resend scenario never creates a gap, so nothing tests the resend
 
@@ -969,6 +1063,7 @@ them pass while verifying nothing. **This is exactly the defect that motivated t
 | Recorded | 2026-08-08 (8cc0ced) |
 | How | The first clean compressed-trading-day load run — the reactor's own watchdog logged it, and the profile confirmed the cause |
 | Impact | p99 of 733 ms at 4.2M orders, over 1 s at 8.4M, after which the pipeline did not recover and 1,167,392 of 9,556,000 orders were never accepted |
+| Fixed | 2026-08-21 (68ab2b5) |
 
 The matching engine's order book is a `tsl::robin_map` with `power_of_two_growth_policy<2ul>`. It
 doubles, and each doubling rehashes the whole table **on the callback thread**. Stalls land only on
@@ -1627,6 +1722,7 @@ host and port it could not reach but not that they came from the environment fil
 | Recorded | 2026-08-21 (875259f) |
 | How | Swept for other instances of the growing-hash-map pattern after moving the order book off `tsl::robin_map` |
 | Impact | **None. Measured 2026-08-21 and dismissed** -- see the closing paragraph |
+| Dismissed | 2026-08-21 (875259f) -- measured, and found not to be a problem |
 
 `open_orders::OpenOrderMap` (`applications/fix_common/OpenOrderEntry.hpp`) is a `tsl::robin_map`
 held per session (`FixSession::open_orders`) and mutated on the gateway's reactor callback thread
@@ -1685,66 +1781,6 @@ problem. The entry's closing point survives too, and gains a second half: what e
 was what mattered -- and a dismissal resting on a claim about behaviour needs that claim checked
 against the code, not against what the code was meant to do.
 
-### BUG-0030: Restart coverage: what ha_test.py exercises, and what it does not
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-21, extended into a full matrix 2026-08-22 |
-| Recorded | 2026-08-22 (63889b8) |
-| How | Reading every scenario against the restart cases an HA pair actually has |
-| Impact | Three defects were found in the two cases that were covered. The uncovered ones have not been looked at |
-
-Every scenario kills a component and leaves it dead, which models **machine** death correctly --
-a dead machine does not come back on its own. It leaves **process** death, where the instance is
-restarted on a machine that never failed, almost entirely unexercised. That is the half a
-supervisor makes normal, and it is where every defect found on 2026-08-21 and 2026-08-22 lives.
-
-**The cases an HA pair has, and where each stands:**
-
-| | sequencer | arbiter | matching engine |
-|---|---|---|---|
-| **R1** restart the leader inside the peer's grace period; the peer must not promote | **27** | **28** | **26** |
-| **R2** restart the leader *after* the peer has promoted -- must rejoin as follower | 14 | **25** | **24** |
-| **R3** restart the *follower* -- must stay follower, leader untouched | **30** | **31** | **29** |
-| **R4** after R2, kill the new leader -- the rejoined instance must take over | 14 | **33** | **32** |
-| **R5** cold start both, in either order -- deterministic leader | **36** | **38** | **34** |
-| **R6** restart with no arbiter reachable -- degraded, and said so | **37** | **39** | **35** |
-
-Scenarios 10 to 13 restart a matching engine but run a single one, so no role is ever in
-question; they test that it comes back, not what it comes back as.
-
-**What the two covered cells cost to find.** R2 for the matching engine is scenario 24, written
-2026-08-22, and it found three defects in a row: the arbiter re-running the cold-start tie-break
-on a rejoin, the engine promoting itself on arbiter connect, and the sequencer routing orders by
-socket rather than by role. All three are in this file. That is one cell of eighteen.
-
-**Completed 2026-08-23.** Eighteen of eighteen cells. The last four were taken by
-ha_test.py scenarios 36-39; the suite went from 23 scenarios to 39.
-
-**Where it stood, 2026-08-22.** Fourteen of eighteen cells. Every cell taken so far found at
-least one defect except R1, R3 and R4-arbiter, which passed first time -- and that pattern is
-itself informative: the defects all lived in what an instance comes back *as*, so the cells where
-nothing has to decide that were the ones that already worked.
-
-**Complete, 2026-08-22.** All eighteen cells. Ten defects were found on the way, every one of
-them a consequence of the same omission: process death was not in the model, so nothing decided
-what a restarted instance comes back as, and channels, records and fallbacks were all built on
-identities that stop being true once roles can move.
-
-**The cells that passed first time are as informative as the ones that did not.** R1, R3 and
-R4-arbiter, and both R5/R6 cells for the sequencer and arbiter, needed no fixes. The defects all
-lived in what an instance comes back *as*; where nothing has to decide that, the code was already
-right. And where a component already had a symmetric design -- the sequencer's `peer` channel,
-its unconditional startup election timer -- it had none of the faults its matching-engine
-counterpart did.
-
-**One thing worth carrying forward.** The sequencer settles leadership with its peer directly,
-through StatusQuery/StatusResponse and the instance-id rule, and needs no arbiter to do it. The
-matching engine cannot: it must ask an arbiter or fall back to a unilateral rule. Whether the
-engine should gain the same peer-to-peer resolution is a design question this coverage raised and
-did not answer.
-
 ### BUG-0031: Rejoin after a promotion re-runs the cold-start tie-break
 
 | | |
@@ -1754,6 +1790,7 @@ did not answer.
 | Recorded | 2026-08-22 (4ba3314) |
 | How | Reading the arbiter against the rule a restarted primary needs to follow |
 | Impact | A restarted primary -- which by definition has just lost its book -- would be handed leadership back from a healthy secondary that has it |
+| Fixed | 2026-08-22 (81300d9) |
 
 **Two different questions are answered by one rule.** "Which instance should lead when neither
 is leading yet?" is a cold-start tie-break, and lowest instance id is the right answer for it:
@@ -1852,6 +1889,7 @@ scenario models machine death; none models process death".
 | Recorded | 2026-08-22 (fbce587) |
 | How | `build.py` names each test binary it runs, and application binaries were never added to that list |
 | Impact | Five suites, 90 tests, built and shipped by every release without once being executed |
+| Fixed | 2026-08-22 (fbce587) |
 
 `build.py` ran five test binaries by name -- the framework's unit and integration suites,
 `scram_crypto`, and the two `fix_codec` ones. Every application suite was built, installed to
@@ -1891,6 +1929,7 @@ and run, and exit code 1 with a message naming the directory when the glob match
 | Recorded | 2026-08-22 (63889b8) |
 | How | Asked what the arbiter's new leadership state depends on, and what happens when it is lost |
 | Impact | Undoes the incumbent-wins fix: a restarted arbiter hands leadership back to a restarted primary |
+| Fixed | 2026-08-22 (c7b0d5d) |
 
 `leadership_state_` lives only in memory. There is no snapshot, no WAL, and nothing reads
 anything back at startup. It is replicated to the peer arbiter as decisions are taken
@@ -1948,6 +1987,7 @@ was left alone rather than shortened on principle.
 | Recorded | 2026-08-22 (32060cc) |
 | How | Failover, rejoin, then fail the new leader -- the surviving instance never takes over |
 | Impact | After one failover the pair is finished. A second failure leaves the venue with no matching engine leader at all |
+| Fixed | 2026-08-22 (5a47932) |
 
 `design-notes-for-ha.md` section 11 says the pair must be able to swap repeatedly: if the
 secondary is promoted and later dies, the primary -- by then a follower -- must take over again.
@@ -2020,6 +2060,7 @@ fixed. It says so in place.
 | Recorded | 2026-08-22 (abf7914) |
 | How | A supervised restart made the ordering visible; the failover scenarios had hidden it |
 | Impact | Orders sent down the wrong channel, and then to the connection of a process that had just died |
+| Fixed | 2026-08-22 (4339a47) |
 
 Two faults in the sequencer's handling of `RoleAnnouncement`, both introduced when routing was
 first made role-aware and neither caught by the failover scenarios.
@@ -2061,6 +2102,7 @@ to expose it. That is the argument for the restart cells of the matrix in one pa
 | Recorded | 2026-08-22 (eb2acec) |
 | How | Killed both arbiters, then restarted the matching engine that had been leading |
 | Impact | The venue has no matching engine leader, indefinitely, announced by nothing but connection-refused retries |
+| Fixed | 2026-08-22 (eb2acec) |
 
 `design-notes-for-ha.md` is explicit that a two-node system with no arbiter falls back to
 "lowest instance id wins". The fallback existed, and was unreachable.
@@ -2088,3 +2130,104 @@ correct rather than merely present. The secondary starts as a follower and waits
 that promotes unilaterally is always the lower id -- the rule the design specifies, satisfied by
 construction rather than by a comparison that could be written the wrong way round. Scenario 35
 asserts both halves: the primary degrades and says so, and the secondary does not also promote.
+
+### BUG-0042: A restarted primary matching engine promotes itself, producing two leaders
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-22, by the ha_test.py scenario written to prove the arbiter fix |
+| Recorded | 2026-08-22 (c7b3459) |
+| How | Scenario 24 restarts the primary after the secondary has been promoted, and asserts it comes back a follower |
+| Impact | Two instances hold LEADER at once, and the venue stays that way -- the correct decision is discarded as a duplicate |
+| Fixed | 2026-08-22 (193ad36) |
+
+`MatchingEngineThread::on_connected` (`MatchingEngineThread.cpp:225`) does this when the first
+arbiter connection comes up:
+
+```cpp
+if (first_arbiter && is_primary_) {
+    // Primary holds leadership by heartbeating the arbiter to renew its lease.
+    adopt_leader_role();
+}
+```
+
+**The primary declares itself leader before asking anyone.** On a cold start that is harmless,
+because the arbiter would name the same instance anyway. On a restart it is not: the secondary
+may already be leading and serving traffic.
+
+**And the correct answer is then thrown away.** `handle_arbitration_decision` suppresses a
+decision that arrives when the instance is already Leader or Reconciling, which exists to stop a
+second reply from both arbiters re-running reconciliation. It cannot tell that reply apart from
+the first authoritative answer this instance has ever received. Observed:
+
+```
+08:54:10.598297  arbiter-primary connection 4 established
+08:54:10.598297  adopting LEADER role (epoch=0)
+08:54:10.598385  ArbitrationDecision received (group=matching_engine leader=2 follower=1 epoch=1)
+08:54:10.598386  already LEADER -- ignoring duplicate ArbitrationDecision
+```
+
+The secondary had been promoted two seconds earlier and holds the book. The restarted primary
+holds nothing, believes it leads, and has just discarded the message telling it otherwise.
+
+**This is the failure the design says cannot happen.** `design-notes-for-ha.md` section 11: "The
+arbiter decides in every case. A restarting node never promotes itself, so no sequence of
+restarts can produce two leaders." The code does the opposite.
+
+**The arbiter is not at fault, and the fix above is working.** The same run shows it answering
+correctly, and answering at all only because `leadership_state_` is now keyed by group:
+
+```
+08:54:10  component group=matching_engine instance_id=1 registered on connection 9
+08:54:10  ArbitrationDecision sent to connection 9 (group=matching_engine leader=2 follower=1 epoch=1)
+```
+
+**The shape of the fix.** On first arbiter connection a primary should send an
+ArbitrationReport rather than adopt a role, and wait. The arbiter already answers both cases --
+lowest id when no incumbent is recorded, the connected incumbent when one is -- so nothing new
+is needed there. The duplicate guard needs to distinguish a genuine repeat from the first answer
+received, which the epoch already carries.
+
+**Blast radius, which is why this is recorded rather than immediately changed.** It alters
+startup for the matching engine: a cold-start primary would become leader a round trip later
+than it does today, and every scenario that waits on "adopting LEADER role" would see it at a
+different moment. The sequencer pair should be checked for the same pattern before either is
+touched.
+
+**Scenario 24 fails against the current code**, which is what it is for.
+
+**Restored 2026-08-24.** This entry was deleted in `63889b8`, when three defects found by
+scenario 24 were folded into the restart-coverage matrix. Its substance did not survive the fold:
+nothing in the matrix records the self-promotion, and three comments in `MatchingEngineThread.cpp`
+and `.hpp` went on citing it by title. That is what ids and `check_bug_list.py` exist to prevent.
+
+### BUG-0043: A cold-start primary routed through reconciliation strands the venue
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-22, uncovered by the fix for BUG-0042 |
+| Recorded | 2026-08-24, written from `193ad36` after the code comment citing it was found to name an entry that had never existed |
+| How | Reading what a starting instance does when the arbiter names it leader, having just changed what a restarting one does |
+| Impact | A venue starting cold gets no matching engine leader at all: the instance waits on a connection it will never be given |
+| Fixed | 2026-08-22 (193ad36) |
+
+Reconciliation exists for a **promotion**. A follower that is told to lead already holds a replica
+book and an open replication connection to the instance it is taking over from, and reconciliation
+uses that connection to close the gap between the replica and the truth.
+
+A cold start has neither. There is no peer serving, no replica to reconcile against, and no
+connection to wait on -- so an instance routed through reconciliation on the way to leadership
+waits for something that will not arrive, and the venue comes up with no matching engine leading.
+
+The fix is stated as a rule rather than a special case: **reconciliation is entered only when
+promoting from Follower.** A start is not a promotion, so it adopts the leader role directly.
+`MatchingEngineThread.cpp` carries the reasoning at the branch that decides between the two.
+
+**Why this had no entry until 2026-08-24.** It was found and fixed inside the change for BUG-0042
+and recorded only in that commit's message. A comment at `MatchingEngineThread.cpp:1119` cited it
+as though it were in this file, naming *"A cold-start primary that is told it leads should not
+reconcile"* -- a title `git log -S` finds nowhere except in the commit that wrote the comment. A
+citation to an entry nobody wrote is indistinguishable from a citation to one that was deleted,
+which is the argument for checking citations mechanically.

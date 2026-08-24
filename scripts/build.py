@@ -188,7 +188,7 @@ def check_scripts_support_help(source_dir):
             # would make a C++ toolchain check depend on which visualisation libraries a
             # machine happens to carry -- the same fault as leaving import-error enabled
             # above. That these scripts cannot describe themselves without their plotting
-            # dependencies is a real defect, recorded in docs/bug_list.md; the fix is to
+            # dependencies is a real defect, recorded in docs/bug_list.md as BUG-0044; the fix is to
             # import lazily, as pubsub_metrics.py already does so it can run headless.
             if "ModuleNotFoundError" in detail or "Missing dependency" in detail:
                 skipped.append((name, last))

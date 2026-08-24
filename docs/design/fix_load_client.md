@@ -17,8 +17,7 @@ consequences follow that are easy to miss.
 sustained hour, the memory findings — is unavailable over FIX.
 
 **`--gateway fix` drives `f8test`, which is not ours.** It is external to this repository, and
-it is already recorded in [Bug List](../bug_list.md) as dying on a Logon-level gap, which is why
-the gateway's resend path has no end-to-end test. Owning the client removes an external
+it dies on a Logon-level gap, which is why the gateway's resend path has no end-to-end test. Owning the client removes an external
 dependency that is known to fail on the case a load run is most likely to produce.
 
 ## Why this is worth building

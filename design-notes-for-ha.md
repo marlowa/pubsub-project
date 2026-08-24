@@ -204,7 +204,7 @@ It is the wrong rule for a restart, because by then one of the two may already b
 serving traffic. Applying a preference at that point moves leadership for no reason other than
 which id is lower, and the instance it moves leadership *to* is the one that just failed. The
 arbiter currently applies it to both cases -- see
-`docs/bug_list.md`, "Rejoin after a promotion re-runs the cold-start tie-break".
+`docs/bug_list.md`, BUG-0031.
 
 The rule that distinguishes them:
 
@@ -264,11 +264,9 @@ first having been misclassified.
 restarted instance comes back as -- and so nothing did:
 
 * the follower's grace period existed but nothing filled it, so it was dead time before a
-  promotion rather than a window for recovery (`docs/bug_list.md`, "A process death on the same
-  host takes the machine-death path");
+  promotion rather than a window for recovery (`docs/bug_list.md`, BUG-0029);
 * the arbiter recomputed leadership from instance ids on every request, because "an instance
-  rejoining while another leads" was not a case it had been asked to handle ("Rejoin after a
-  promotion re-runs the cold-start tie-break");
+  rejoining while another leads" was not a case it had been asked to handle (BUG-0031);
 * the matching engine adopted LEADER the moment its arbiter connection came up, because a
   primary starting was only ever imagined as a cold start ("A restarted primary matching engine
   promotes itself, producing two leaders").

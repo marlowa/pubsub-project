@@ -726,7 +726,8 @@ by daily volume.
 
 ### What that does NOT excuse
 
-Three findings survive a passing run, and they are recorded in [Bug List](../bug_list.md):
+Three findings survive a passing run, and they are recorded in [Bug List](../bug_list.md) as
+BUG-0009, BUG-0010 and BUG-0008:
 
 - **The venue accepts orders indefinitely with no matching engine**, at INFO, once per
   order, telling nobody. Run 4 accepted and acknowledged 924,000 orders that nothing could

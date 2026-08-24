@@ -1095,7 +1095,7 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
     // accepted since. A NEWER epoch is not a duplicate whatever role we hold: it is the
     // arbiter telling us the answer has changed, and discarding it is how an instance that
     // promoted itself stays wrong. That is not hypothetical -- it is the bug this check used
-    // to cause; see docs/bug_list.md, "A restarted primary matching engine promotes itself".
+    // to cause; see docs/bug_list.md, BUG-0042.
     const bool already_settled = ha_role_state_ == MeRole::Reconciling || ha_role_state_ == MeRole::Leader;
     if (already_settled && decision.epoch <= epoch_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -1116,8 +1116,7 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
             // Nothing to take over. This is a start rather than a promotion -- the peer is
             // not leading and no replica book has been maintained here -- and reconciliation
             // has no connection to wait on, so entering it strands the venue without a
-            // matching engine leader. See docs/bug_list.md, "A cold-start primary that is
-            // told it leads should not reconcile".
+            // matching engine leader. See docs/bug_list.md, BUG-0043.
             adopt_leader_role();
         }
     } else if (decision.follower_instance_id == static_cast<int64_t>(config_.instance_id)) {

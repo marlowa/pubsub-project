@@ -532,8 +532,7 @@ ha_enabled                    = true
 # connections stand at all times and a role change only switches which one carries traffic.
 # Wiring it one way round -- primary dials, secondary listens -- meant that after a failover
 # there was no channel at all in the direction replication then needed to flow, and the
-# surviving instance never noticed the leader die. See docs/bug_list.md, "The pair does not
-# survive a second failure".
+# surviving instance never noticed the leader die. See docs/bug_list.md, BUG-0034.
 book_replication_listen_host  = "127.0.0.1"
 book_replication_listen_port  = 11025
 book_replication_host         = "127.0.0.1"

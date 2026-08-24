@@ -290,7 +290,7 @@ sends 0 anyway. It stops being correct for a bounded request: a member asking fo
 receives every report since, and because the slice is read from the sequencer's WAL, one small
 request from one member becomes a large read on the path live traffic depends on.
 
-See `docs/bug_list.md` for each of these.
+See `docs/bug_list.md` for each of these: BUG-0038 and BUG-0039.
 
 ---
 

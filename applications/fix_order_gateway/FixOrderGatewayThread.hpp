@@ -340,7 +340,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // for its numbering. A member that logs on while the gateway is between connect retries
     // has its SessionBound dropped for want of anywhere to send it, and nothing else would
     // ever ask again -- the session then hangs until `sequence_state_timeout` opens it on
-    // numbering the venue never confirmed. See docs/bug_list.md.
+    // numbering the venue never confirmed. See docs/bug_list.md, BUG-0019.
     //
     // Sent down the one link named, NOT to both sequencers: a SessionBound that arrives at a
     // leader which already holds this binding is read as the previous session having died,
