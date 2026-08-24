@@ -592,7 +592,7 @@ void ArbiterThread::decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group
     // leader, and cannot tell those apart. Guessing means applying the cold-start tie-break,
     // which after a failover hands leadership to the lower instance id -- the instance that
     // just restarted holding nothing. Declining costs the asker a retry; guessing costs the
-    // venue its book. See docs/availability/design_notes.md 11c.
+    // venue its book. See docs/availability/design_notes.md#ha_arbiter_relearns.
     if (!inputs.has_incumbent && within_startup_learning_period()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "ArbiterThread: asked to arbitrate group={} by instance {} but nothing is known about it yet and this arbiter started "

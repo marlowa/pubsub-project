@@ -580,7 +580,7 @@ support, not from this profile.
 | How | The trading-day run that proved the order-book stall cured -- the primary was OOM-killed and the venue stopped trading for 16 seconds |
 | Impact | 16 s outage against a design target of under 50 ms for this class of failure. ~280,000 orders lost across it |
 
-`design-notes-for-ha.md` separates two recovery paths and gives them very different targets:
+`docs/availability/design_notes.md` separates two recovery paths and gives them very different targets:
 
 | | Local (process) recovery | Network (machine) failover |
 |---|---|---|
@@ -617,7 +617,7 @@ exists is not silence, it is evidence. The design already draws that line and th
 not act on it.
 
 **What this does not depend on.** Promotion safety here rests on the arbiter, not on a race
-being avoided by waiting -- see `design-notes-for-ha.md` section 10, which records that STONITH
+being avoided by waiting -- see `docs/availability/design_notes.md#ha_no_stonith`, which records that STONITH
 is not implemented and that arbiter-mediated leadership plus epoch fencing stands in its place.
 A follower asking sooner is refused just as surely if the peer is alive and still connected to
 the arbiter, because leadership goes to the lower instance id when both are connected, and the
@@ -628,7 +628,7 @@ it is.
 until that exists -- see the correction below, which reverses this entry's first recommendation.
 
 **The 15 seconds is the local recovery grace period, and it is doing nothing only because
-nothing fills it.** `design-notes-for-ha.md` section 7 gives the outer-loop trigger as "the
+nothing fills it.** `docs/availability/design_notes.md#ha_process_vs_machine` gives the outer-loop trigger as "the
 heartbeat timer expires and the primary fails to reconnect **after the local recovery grace
 period**". That period is this timer. Its purpose is to give a locally-restarted primary time
 to come back so the follower never has to promote at all. Today the venue has no supervisor --
@@ -652,7 +652,7 @@ work, and this entry is blocked on it.
    `ha_timing.heartbeat_timeout_seconds`, which is a different quantity measured for a
    different purpose. Even keeping the outer-loop behaviour, one number serving two meanings
    cannot be tuned for either.
-3. **The real fix: build the inner loop the design describes.** Section 7 of `design-notes-for-ha.md` calls
+3. **The real fix: build the inner loop the design describes.** Section 7 of `docs/availability/design_notes.md` calls
    for local process recovery -- a shared-memory journal, restart in place -- with a sub-50 ms target, and
    it does not exist. Fix 1 shortens the outage to about a second by promoting the peer
    faster; this is what would meet the stated target, by not needing a promotion at all for a
@@ -1959,7 +1959,7 @@ The arbiter is now told rather than remembering. `LeadershipLease` (id 118) carr
 `Heartbeat` used to imply -- an assertion of leadership by the instance holding it, at a stated
 epoch -- and a restarted arbiter rebuilds its map from the leases it receives. Peer replay on a
 link coming up is kept as an accelerator, not the mechanism, so the case with no peer to ask
-still works. Full reasoning in `design-notes-for-ha.md` section 11c.
+still works. Full reasoning in `docs/availability/design_notes.md#ha_arbiter_relearns`.
 
 Scenario 25 covers it, and the ordering inside that scenario is the substance of it: both
 arbiters must be killed before either is restarted, or the state survives through the peer and
@@ -1989,7 +1989,7 @@ was left alone rather than shortened on principle.
 | Impact | After one failover the pair is finished. A second failure leaves the venue with no matching engine leader at all |
 | Fixed | 2026-08-22 (5a47932) |
 
-`design-notes-for-ha.md` section 11 says the pair must be able to swap repeatedly: if the
+`docs/availability/design_notes.md#ha_restart_role` says the pair must be able to swap repeatedly: if the
 secondary is promoted and later dies, the primary -- by then a follower -- must take over again.
 It does not.
 
@@ -2104,7 +2104,7 @@ to expose it. That is the argument for the restart cells of the matrix in one pa
 | Impact | The venue has no matching engine leader, indefinitely, announced by nothing but connection-refused retries |
 | Fixed | 2026-08-22 (eb2acec) |
 
-`design-notes-for-ha.md` is explicit that a two-node system with no arbiter falls back to
+`docs/availability/design_notes.md` is explicit that a two-node system with no arbiter falls back to
 "lowest instance id wins". The fallback existed, and was unreachable.
 
 The degraded self-promotion lives inside `send_arbitration_report()`, which was only ever called
@@ -2171,7 +2171,7 @@ the first authoritative answer this instance has ever received. Observed:
 The secondary had been promoted two seconds earlier and holds the book. The restarted primary
 holds nothing, believes it leads, and has just discarded the message telling it otherwise.
 
-**This is the failure the design says cannot happen.** `design-notes-for-ha.md` section 11: "The
+**This is the failure the design says cannot happen.** `docs/availability/design_notes.md#ha_restart_role`: "The
 arbiter decides in every case. A restarting node never promotes itself, so no sequence of
 restarts can produce two leaders." The code does the opposite.
 

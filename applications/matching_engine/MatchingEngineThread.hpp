@@ -328,7 +328,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
     // The pair's fixed identities. Primary is always the lower id -- the arbiter's cold-start
     // preference relies on it -- and neither ever changes for the life of a deployment.
-    // Which of them LEADS is a separate question and moves; see docs/availability/design_notes.md 11.
+    // Which of them LEADS is a separate question and moves; see docs/availability/design_notes.md#ha_restart_role.
     static constexpr int64_t primary_instance_id = 1;
     static constexpr int64_t secondary_instance_id = 2;
 
@@ -375,7 +375,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      *
      * The sequencer used to decide where to send orders by which socket had connected, which
      * was correct only while primary and leader meant the same thing. Announcing the role
-     * explicitly is what lets it route to whoever leads. See docs/availability/design_notes.md 11b.
+     * explicitly is what lets it route to whoever leads. See docs/availability/design_notes.md#ha_arbiter_only_arbitrates.
      */
     void announce_role();
 

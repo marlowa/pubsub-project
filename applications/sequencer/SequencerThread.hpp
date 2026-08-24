@@ -313,7 +313,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // quoting an older epoch is from an instance whose leadership has since been superseded
     // and is refused, so a rejoining engine cannot take routing back from the one that
     // replaced it. Starts at -1 so that a first announcement at epoch 0 is accepted.
-    // See docs/availability/design_notes.md 11b.
+    // See docs/availability/design_notes.md#ha_arbiter_only_arbitrates.
     int32_t me_announced_epoch_{-1};
 
     // Which instance last announced leadership. Kept because the announcement can arrive

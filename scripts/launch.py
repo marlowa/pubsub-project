@@ -56,7 +56,7 @@ ignorance is the design. A launcher that also assigned roles would have to know
 the whole venue, and would become something every deployment had to run; this one
 is optional, and a component started without it behaves identically.
 
-See docs/availability/design_notes.md sections 12 and 13.
+See docs/availability/design_notes.md#ha_supervisor_role and #ha_automatic_restart.
 
 What it does
   - Starts the command, and restarts it when it exits, for any reason.

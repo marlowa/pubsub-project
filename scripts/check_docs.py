@@ -16,6 +16,8 @@ Checks implemented:
      page, so a document cannot be added and then be readable by nobody
   4. Every clickable target in the architecture diagram resolves to a declared Doxygen anchor
   5. No reference uses a path-derived Doxygen id (md_*), which a file move would silently break
+  6. Every anchor cited as file.md#anchor, or linked as (#anchor), resolves -- either to an
+     explicit {#anchor} declaration or to a heading whose GitHub slug matches
 
 Reachability starts at the repository README and the documentation contents page, which is
 docs/README.md where that exists and docs/README.md otherwise. GitHub renders README.md when a
@@ -146,6 +148,45 @@ def check_doxygen() -> list[str]:
     return faults
 
 
+def heading_slugs() -> set[str]:
+    """GitHub derives an anchor from every heading: lower-cased, punctuation dropped, spaces to
+    hyphens. Those are legitimate link targets even though nothing declares them."""
+    slugs = set()
+    result = subprocess.run(['git', 'ls-files', '*.md'], cwd=_PROJECT_ROOT, capture_output=True, text=True, check=True)
+    for name in result.stdout.split():
+        if name.startswith('.claude/'):
+            continue
+        for heading in re.findall(r'^#{1,6} +(.*)$', (_PROJECT_ROOT / name).read_text(encoding='utf-8'), re.MULTILINE):
+            heading = re.sub(r'\{#[A-Za-z0-9_]+\}', '', heading)
+            heading = re.sub(r'[`*\[\]()]', '', heading).strip().lower()
+            slugs.add(re.sub(r'[^a-z0-9 _-]', '', heading).replace(' ', '-'))
+    return slugs
+
+
+def check_anchor_citations() -> list[str]:
+    """A section cited by anchor must exist. Section numbers used to be the identifier in the HA
+    decision record, and 11a to 11e exist because inserting a section would have renumbered every
+    citation of it. Anchors do not have that problem, which is why the citations now use them."""
+    known = set(declared_anchors()) | heading_slugs()
+    faults = []
+    grep = subprocess.run(['git', 'grep', '-nE', r'(\.md#[A-Za-z0-9_-]+|\]\(#[A-Za-z0-9_-]+\))', '--',
+                           ':!scripts/check_docs.py'],
+                          cwd=_PROJECT_ROOT, capture_output=True, text=True, check=False)
+    if grep.returncode not in (0, 1):
+        return [f'git grep failed: {grep.stderr.strip()}']
+
+    for line in grep.stdout.splitlines():
+        location, _, text = line.partition(':')
+        number, _, body = text.partition(':')
+        if location.startswith(('.claude/', 'docs/history/')):
+            continue
+        body = re.sub(r'`[^`]*`', '', body)
+        cited = set(re.findall(r'\.md#([A-Za-z0-9_-]+)', body)) | set(re.findall(r'\]\(#([A-Za-z0-9_-]+)\)', body))
+        for anchor in sorted(cited - known):
+            faults.append(f'{location}:{number}: cites anchor #{anchor}, which is neither declared nor a heading')
+    return faults
+
+
 def contents_page() -> str | None:
     for candidate in ('docs/README.md', 'docs/README.md'):
         if (_PROJECT_ROOT / candidate).exists():
@@ -181,6 +222,7 @@ def main() -> int:
     faults, graph = check_links(files)
     faults += check_citations_from_source()
     faults += check_doxygen()
+    faults += check_anchor_citations()
     if not args.links_only:
         faults += check_reachable(files, graph)
 

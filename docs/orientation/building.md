@@ -200,11 +200,20 @@ docker run --rm --entrypoint bash -v "$PWD":/workspace:ro pubsub-rhel8:latest \
     -lc '( cat Doxyfile; echo "OUTPUT_DIRECTORY=/tmp/dox" ) | doxygen -'
 ```
 
-**No intra-document anchor links in `docs/`.** A markdown `[text](#anchor)` link becomes a
+**No intra-document anchor links to a heading slug.** A markdown `[text](#anchor)` link becomes a
 `\ref anchor` command, and a GitHub-style heading slug is not a label Doxygen knows, so it is an
-error under `WARN_AS_ERROR` on 1.9.x. Name the target section in bold instead. Adding `{#label}`
-to headings would resolve it but renders literally on GitHub, and `MARKDOWN_ID_STYLE = GITHUB`
-does not exist in 1.8.14.
+error under `WARN_AS_ERROR` on 1.9.x. `MARKDOWN_ID_STYLE = GITHUB` does not exist in 1.8.14.
+Name the target section in bold instead.
+
+**The one exception is a section cited from outside the document**, where an explicit `{#label}`
+on the heading is the right answer and the link resolves under both Doxygen and GitHub. The cost
+is that GitHub has no such extension and renders the braces literally in the heading, so pay it
+only where it buys something. `docs/availability/design_notes.md` is the worked example: seven of
+its nineteen sections carry a label because `ArbiterThread`, `MatchingEngineThread`,
+`SequencerThread`, `launch.py` and the bug list cite them, and those citations used to be section
+numbers -- which is why that document has sections 11a to 11e, since inserting a real section 12
+would have renumbered every one of them. The other twelve sections have no label and are referred
+to in prose. `scripts/check_docs.py` verifies that every anchor cited anywhere resolves.
 
 ---
 

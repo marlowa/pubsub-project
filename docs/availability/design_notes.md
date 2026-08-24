@@ -1,4 +1,4 @@
-# HA Design Discussion Summary: 2-Node System, STONITH, and Cloud Portability
+# High Availability: the decision record {#ha_design_notes}
 
 ## 1. Initial Problem
 Designing a high-availability (HA) system with the following constraints:
@@ -78,7 +78,7 @@ A well-designed HA system separates failure domains to avoid "over-fencing."
 Handles process-level issues: core dumps, crashes, and transient bugs.
 * **Behaviour:** Restart the process locally; no fencing involved.
 * **Tooling:** `scripts/launch.py`, a per-process launcher that restarts what it
-    starts and knows nothing else. See section 12 for why it deliberately has no
+    starts and knows nothing else. See [section 12](#ha_supervisor_role) for why it deliberately has no
     say in leadership, and section 13 for why the restart must be automatic.
 
 ### Layer 2: Cluster Failure (The Outer Loop)
@@ -87,14 +87,14 @@ lockups.
 * **Behaviour:** Resolve the ambiguity rather than tolerating it. This section
     originally said STONITH; **that was evaluated and rejected** and the venue
     does not fence. What stands in its place -- arbiter-mediated leadership and
-    epoch checks on every PDU -- is section 10, which also records why.
+    epoch checks on every PDU -- is [section 10](#ha_no_stonith), which also records why.
 * **Philosophy:** If we cannot prove a node is safe, we must not let it act.
     Fencing achieves that by removing the node; the arbiter and the epoch achieve
     it by refusing everything the node sends.
 
 ---
 
-## 7. High Availability Design: Process vs. Machine Recovery
+## 7. High Availability Design: Process vs. Machine Recovery {#ha_process_vs_machine}
 
 ### The Core Philosophy
 Treating a deterministic software failure the same as a non-deterministic
@@ -144,10 +144,10 @@ hardware disasters.
 
 ---
 
-## 10. Decision Taken: no STONITH
+## 10. Decision Taken: no STONITH {#ha_no_stonith}
 
 **STONITH was evaluated and is not implemented. It is not planned.** Sections 4, 6 and 7
-above are the discussion that led here, not a description of what runs. Where section 7 says
+above are the discussion that led here, not a description of what runs. Where [section 7](#ha_process_vs_machine) says
 "Follower uses STONITH to ensure the primary is dead before promoting", that step does not
 exist in the code and no node has ever been fenced by this venue.
 
@@ -183,7 +183,7 @@ it also does not stop, and it may hold resources until someone intervenes.
 
 ---
 
-## 11. Restart of a failed process: what role does it come back as?
+## 11. Restart of a failed process: what role does it come back as? {#ha_restart_role}
 
 Agreed 2026-08-22, while designing process supervision.
 
@@ -277,7 +277,7 @@ Each of those reads as a separate bug and all three are the same omission.
 Whether the pair ends up whole again is the measure -- not whether the venue kept trading, which
 a promotion achieves on its own while leaving one instance down and nobody watching.
 
-## 11b. The arbiter arbitrates, and does nothing else
+## 11b. The arbiter arbitrates, and does nothing else {#ha_arbiter_only_arbitrates}
 
 Decided 2026-08-22, when the sequencer turned out to be routing orders to whichever socket was
 "the primary matching engine" rather than to whichever instance leads.
@@ -291,7 +291,7 @@ leadership with exactly the same confidence as one that has been told it leads.
 **The arbiter tells everyone who cares.** Rejected, and not on cost. **The arbiter's job is to
 arbitrate.** Making it also the distributor of leadership news gives it a second role, a list of
 subscribers, and knowledge of who depends on which decision -- and a component that decides
-*and* announces is on its way to being the thing section 12 warns about. It should answer the
+*and* announces is on its way to being the thing [section 12](#ha_supervisor_role) warns about. It should answer the
 question it is asked, by the party that asked it, and nothing more.
 
 **The engine states its role, stamped with the epoch it holds it under.** Chosen. The sequencer
@@ -305,13 +305,13 @@ precisely so a stale sender is detectable by the receiver -- and the same shape 
 sequencer can adopt follower without arbitration. The authority still rests with the arbiter,
 because the epoch a claim carries is one the arbiter issued.
 
-## 11c. An arbiter that restarts is told who leads; it does not remember
+## 11c. An arbiter that restarts is told who leads; it does not remember {#ha_arbiter_relearns}
 
 Decided 2026-08-22, after the restart coverage matrix asked what the arbiter's leadership state
 depends on.
 
 **The problem.** `leadership_state_` is held in memory and nothing reads it back at startup. It
-is what stops a restarted primary taking leadership from a working secondary -- section 11 --
+is what stops a restarted primary taking leadership from a working secondary -- [section 11](#ha_restart_role) --
 so an arbiter that has forgotten it applies the cold-start tie-break instead, hands leadership
 to the lower instance id, and reproduces exactly the split-brain the rule was added to prevent.
 Narrow while the peer survives and answers; live when the surviving arbiter is the one that
@@ -332,7 +332,7 @@ heartbeats an arbiter, so a heartbeat is already a claim to lead; it now carries
 explicitly rather than by implication, and the epoch settles disagreement. A restarted arbiter
 learns who leads by listening, needs no persistence, and depends on nothing that might also
 have restarted. **It arbitrates over facts it is told rather than facts it stored**, which is
-the same boundary as section 11b: the arbiter's job stays narrow.
+the same boundary as [section 11b](#ha_arbiter_only_arbitrates): the arbiter's job stays narrow.
 
 Asking the peer is kept as an accelerator rather than the mechanism. On a peer link coming up,
 each arbiter replays what it knows as `ArbiterStateRecord`s -- a message that already exists and
@@ -356,7 +356,7 @@ Two consequences follow and are part of the decision.
   was chosen when a heartbeat meant liveness alone; now that it also carries leadership, thirty
   seconds is longer than it wants to be, and is worth revisiting on its own.
 
-## 11d. A lease that never expires is not a lease
+## 11d. A lease that never expires is not a lease {#ha_lease_expiry}
 
 Found 2026-08-22 by the scenario written to check the cold-start tie-break, and worth recording
 because two changes made the same day combined to produce it.
@@ -507,7 +507,7 @@ automatically to being a credible claimant.
   rejected stale heartbeats but never followed a newer one -- so promoting a lagging follower
   produced a generation the venue had already used.
 
-## 12. A supervisor starts processes; it does not decide leadership
+## 12. A supervisor starts processes; it does not decide leadership {#ha_supervisor_role}
 
 These are two jobs and they must not be the same component.
 
@@ -565,7 +565,7 @@ Closing that window is the reason automatic restart exists. It is not a convenie
 operators; it is the difference between a bounded and an unbounded exposure.
 
 **The decision being automated is the one already designed.** Restart the failed instance and it
-comes back as a follower unless it finds there is no leader -- section 11. So automating the
+comes back as a follower unless it finds there is no leader -- [section 11](#ha_restart_role). So automating the
 restart does not invent a policy, it removes a human from a judgement that already has a right
 answer.
 
@@ -627,7 +627,7 @@ decision may therefore depend on it, or the default deployment is the broken one
 
 The same rule decides two other things in this document. The role is a command-line argument,
 so no supervisor is needed for a process to know what it is; and a launcher is optional, so it
-cannot decide leadership. Both are section 12.
+cannot decide leadership. Both are [section 12](#ha_supervisor_role).
 
 **Letting the system depend on something means it can never be absent again.** Every
 deployment then has to run it, configure it and keep it healthy -- a production pair of
