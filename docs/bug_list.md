@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 50 |
-| Open | 28 (23 defects, 5 tasks) |
-| Closed | 22 |
-| Next id | BUG-0051 |
+| Bugs recorded | 54 |
+| Open | 26 (21 defects, 5 tasks) |
+| Closed | 28 |
+| Next id | BUG-0055 |
 
 ## Open bugs by severity
 
-5 high, 15 medium, 8 low.
+5 high, 12 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,8 +25,6 @@
 | [BUG-0015](#bug_0015) | medium | defect | `deploy.py` silently ignores a change to an environment file |
 | [BUG-0018](#bug_0018) | medium | defect | The idle-connection reaper tears down the pre-warmed failover link |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
-| [BUG-0037](#bug_0037) | medium | defect | The resend scenario never creates a gap, so nothing tests the resend |
-| [BUG-0039](#bug_0039) | medium | defect | ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
@@ -741,58 +739,6 @@ matching engine cannot: it must ask an arbiter or fall back to a unilateral rule
 engine should gain the same peer-to-peer resolution is a design question this coverage raised and
 did not answer.
 
-### BUG-0037: The resend scenario never creates a gap, so nothing tests the resend {#bug_0037}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-23 |
-| Recorded | 2026-08-23 (5bc615c) |
-| How | Reading the reconnecting client's own output while planning assertions for it |
-| Impact | The FIX resend path has no member-observable test coverage, while a scenario named for it passes |
-
-`ha_test.py` scenario 22, `resend_recovery`, is described as "A reconnecting member is sent the
-execution reports it missed" and promises the member "receives real execution reports marked
-PossDupFlag=Y instead of a blanket gap-fill".
-
-It asserts neither. What it asserts is that the venue resumed the session's numbering across the
-reconnect, which it does correctly and which is worth having. The reconnecting client's output
-was checked after a run: **579 bytes, containing one Logon and nothing else.** Zero execution
-reports, zero `PossDupFlag`, zero `SequenceReset`, zero `OrigSendingTime`. Scenario 23,
-`inflight_gateway_death`, produces an identical 579-byte Logon-only output.
-
-The cause is straightforward once seen. The scenario sends its baseline orders, waits for their
-reports, and only then drops the session -- so at the moment of the drop the venue owes the
-member nothing. Nothing is missed, so the member has no gap to notice, sends no ResendRequest,
-and there is nothing to resend. `orders_during_override=0` and `orders_after_override=0` ensure
-no traffic arrives during the window either.
-
-**A gap has to be manufactured, and the choice of how is a design decision.** Three candidates:
-
-- **Reconnect after the cancel-on-disconnect grace expires.** The member leaves orders resting,
-  the venue cancels them and emits a report per order into a socket that is gone, and the member
-  returns to a real gap of its own orders being cancelled. Uses only behaviour the venue already
-  has, and is the most realistic of the three. It needs checking that the session's sequence
-  state outlives the grace period -- if it does not, the member's numbering restarts and the
-  test fails for an unrelated reason.
-- **Stop the client with orders in flight**, so the reports land while it is away. Closest to
-  scenario 23's intent, and depends on timing that will vary by machine.
-- **Have the venue generate reports for a disconnected session directly**, which is the most
-  controllable and the least like anything that happens.
-
-Until one is chosen, three assertions have nothing to run against: that `PossDupFlag` is set
-inside the requested gap and absent beyond it, that `OrigSendingTime` accompanies every resent
-report, and that the terminating gap-fill leaves the member expecting the number the venue will
-send next. All three are cheap once a gap exists, and all three read tags from the client's own
-output, which is the member-observable fact rather than the venue's account of itself.
-
-A helper for the first of them, `_client_report_counts`, already exists in `ha_test.py` and is
-never called.
-
-**The scenario should not be left describing work it does not do.** Whatever is decided about
-manufacturing the gap, the description and expected outcome need to match what is asserted, or
-the next person to ask "is the resend path tested?" gets the same wrong answer twice.
-
 ### BUG-0038: Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed {#bug_0038}
 
 | | |
@@ -836,48 +782,6 @@ has to survive a gateway failover for the same reason the outbound counter does.
 
 Not a small change, and it touches the session state that HA already carries across a failover.
 Worth sizing before starting.
-
-### BUG-0039: ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream {#bug_0039}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-23 |
-| Recorded | 2026-08-23 (03ba5d8) |
-| How | Reading the resend path against the FIX session-layer rules rather than against its own comments |
-| Impact | None in normal operation. A member asking for a bounded range gets an unbounded replay, and the venue pays for it |
-
-`FixOrderGatewayThread::handle_resend_request` reads `BeginSeqNo` (tag 7) and nothing else.
-`EndSeqNo` (tag 16) is never read anywhere in the codebase, though the data dictionary carries
-it and marks it required on ResendRequest. The gateway replays from `BeginSeqNo` to wherever
-the session had reached, which is to say it treats every request as though `EndSeqNo` were 0.
-
-**Recorded as a deviation rather than a bug**, because in the case that actually happens it is
-the correct behaviour. `EndSeqNo=0` means "everything from here on" and is what an engine sends
-after a disconnect, which is when resends occur. A member that asked for 100-150 and receives
-100 onwards sees messages in sequence, and its inbound counter advances exactly as it would
-have; nothing in the session breaks.
-
-**Where it stops being benign is a bounded request.** A member asking for fifty messages gets
-every report since, and the reports come from the sequencer's WAL rather than from a buffer in
-the gateway -- so a small request from one member turns into a large slice read on the shared
-path that live traffic depends on. On a session with millions of reports behind it that is a
-substantial amount of work, asked for by a message the member was entitled to send.
-
-The gap between "no member does this" and "no member can do this" is the whole of the risk. It
-is unusual engines behaving reasonably that find this kind of thing, and they find it in
-production.
-
-Three ways to settle it, in increasing effort:
-
-- Honour `EndSeqNo` when it is non-zero, which is what the specification asks for.
-- Keep the current behaviour and say so deliberately in a comment, so the next reader knows it
-  was considered rather than missed.
-- Bound the replay regardless of what was asked for, which addresses the cost but not the
-  conformance.
-
-Whichever is chosen, `EndSeqNo` being absent from the code with no comment is the one state
-that should not persist, because it cannot be told apart from an oversight.
 
 ### BUG-0040: The order-accounting check reports lost orders when it means it could not count them {#bug_0040}
 
@@ -1084,6 +988,12 @@ than assumed, which was right, and it has stayed open since.
 Until it is answered, a binary member and a FIX member get materially different guarantees from
 the same venue across the same failure.
 
+**Design it with [Resend provenance](availability/resend_provenance.md), added 2026-08-27.** That
+design changes the sequencer's replay contract, and this task will consume the same contract, so
+specifying them separately means specifying it twice. The note also records why a binary mechanism
+built on a cursor cannot have BUG-0051 -- and why a proposed one that could is a warning sign
+rather than a gain in test coverage.
+
 ### BUG-0047: Disaster recovery is not modelled {#bug_0047}
 
 | | |
@@ -1190,6 +1100,423 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0054: `build-log.txt` looks like a build log and is three days stale {#bug_0054}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task -- a repository artefact to remove, not a code defect |
+| Found | 2026-08-27 |
+| Recorded | 2026-08-27 |
+| How | Checking whether a newly added unit test had actually run, and finding the figure came from a file no build writes |
+| Impact | Test results read from it are confident and wrong |
+| Fixed | 2026-08-27 -- deleted |
+
+`build-log.txt` sits in the repository root, is untracked, and is **not written by anything**.
+Neither `scripts/build.py` nor `scripts/build.sh` produces it. It was last written on 2026-08-24
+and its contents name the pre-move path,
+`pubsub-poc-attempts/simple-publish-poc/pubsub-project-10-copilot`.
+
+It contains plausible `[  PASSED  ]` lines, so grepping it after a build returns a clean answer
+that has nothing to do with the build. On 2026-08-27 "646 unit and 46 integration tests pass" was
+reported several times across a working session; every one of those figures came from this file
+rather than from any build actually run. The real figure that day was about 1023 tests across the
+framework unit and integration suites, `fix_codec`, `scram_crypto` and five application suites.
+
+**The same shape as the `coverage_baseline_fresh.txt` trap**: an artefact that was true once,
+still looks authoritative, and is never regenerated to contradict itself. Deleting it costs
+nothing -- the build prints its own output and exits non-zero when a suite fails.
+
+Related: BUG-0040, which is the same class of fault in an instrument rather than an artefact.
+
+**Deleted 2026-08-27.** Nothing referenced it. The build prints its own output and exits
+non-zero when a suite fails, so reading a file for the answer was never necessary.
+
+### BUG-0053: A bounded resend is answered with the most recent reports, not the ones asked for {#bug_0053}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-27 |
+| Recorded | 2026-08-27 |
+| How | Reading the resend path against the sequencer's reply contract, while designing the fix for BUG-0051 |
+| Impact | A member asking about an old range of its stream is sent recent reports under those numbers, with the right sequence numbers on them |
+| Fixed | 2026-08-27 -- the gateway names which reports it wants rather than asking for a count |
+
+`SequencerThread::handle_session_replay_request` keeps a sliding window of the session's matching
+records and returns **the most recent `max_records`** of them. The gateway's request says how many
+it wants and nothing about which, and its comment explains why that was thought sufficient:
+
+> The sequencer returns the most recent that many reports, which is what a member has missed --
+> it is the tail of its stream that went undelivered, never the beginning.
+
+That holds for the case the venue actually sees: a member reconnects after a disconnect and asks
+for everything from where it stopped, so the gap is the tail. **It does not hold for a bounded
+request.** A member asking for 500 to 550 out of a stream that has reached 10,000 is asking about
+the middle, and the sequencer answers with the fifty most recent reports instead. They carry the
+right sequence numbers and the wrong contents, which is the same class of fault as
+[BUG-0051](#bug_0051) and equally invisible to the member.
+
+**Reachable only since `EndSeqNo` was honoured**, on 2026-08-27 under
+[BUG-0039](#bug_0039). Before that every resend ran to the head of the stream, so every resend was
+a tail request and the assumption held. Bounding the replay bounded the count without changing
+which reports come back, so the latent half surfaced. That is an argument for having honoured it,
+not against: the venue was previously papering over this by ignoring what the member asked for.
+
+**Reproduced 2026-08-27** by `ha_test.py` scenario 40, which asks for numbers 100 to 149 out of a
+thousand-order session and compares what comes back, by ClOrdID, against what the member itself
+received under those numbers:
+
+```
+50 message(s) came back, none outside 100..149 -- OK
+50 of 50 resent message(s) carry a different order than the member was originally sent
+under that number (100: was 'ord99', resent 'ord951'; 101: was 'ord100', resent 'ord952';
+102: was 'ord101', resent 'ord953' ...)
+```
+
+The offset is constant: they are the fifty **most recent** reports, `ord951` to `ord1000`, wearing
+the numbers 100 to 149. Every other property of the reply is correct -- the count, the bounds, the
+numbering, `PossDupFlag`, `OrigSendingTime` -- which is why nothing on the member's side
+distinguishes it from a correct resend.
+
+**The range has to come from the middle of the session's history to see this.** A venue that
+ignores what was asked for and returns the most recent reports answers a request for the *tail*
+correctly by accident, so a tail request discriminates nothing.
+
+**Scenario 40 also settles what BUG-0039 was closed without.** That nothing came back outside
+100..149 is the test that `EndSeqNo` is read and honoured, which was owed and missing.
+
+**The fix belongs in the design for BUG-0051**, at
+[Resend provenance](availability/resend_provenance.md), because both come from the same missing
+fact. Once the venue records which outbound number each report went out on, it can name the
+reports it wants by position in the session's stream rather than asking for a count and trusting
+the sequencer to guess which end.
+
+**Fixed 2026-08-27.** `SessionReplayRequest` gained `skip_most_recent`: how many of the session's
+newest reports to pass over before collecting. The sequencer widens its window by that much and
+drops the newest that many at the end, so "the most recent N" becomes "the most recent N below a
+point the caller names", and the tail case is the same code with the point at zero.
+
+The gateway can always compute it, and only because of the record built for
+[BUG-0051](#bug_0051): the reports above the range being replayed are recent, so the record covers
+them and they can be counted exactly. The two defects came from one missing fact and were fixed
+together.
+
+Verified by `ha_test.py` scenario 40, which reproduced it: a member asking for numbers 100 to 149
+out of a thousand-order session now receives, under each of those numbers, the very order it was
+originally sent under that number.
+
+### BUG-0052: The resend truncation warning fires on every healthy resend {#bug_0052}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-08-27 |
+| Recorded | 2026-08-27 |
+| How | Reading the gateway log of the scenario 22 run that found BUG-0051 |
+| Impact | A WARNING that says the member was short when it was not, on every resend a busy session makes |
+| Fixed | 2026-08-27 -- truncated now means the reply was short of what was asked for |
+
+`SequencerThread::handle_session_replay_request` sets `truncated` when the session has more
+matching records in the WAL than the reply window holds:
+
+```cpp
+truncated = total_matched > static_cast<int64_t>(window.size());
+```
+
+That is true of every resend on a session with any history: the window holds the gap the member
+asked for, and the WAL holds everything the session has ever done. The gateway then logs
+
+```
+resend was truncated at the sequencer's record cap (last_seq_no=38503449) --
+the member has been sent what fitted and gap-filled the rest
+```
+
+immediately after reporting the resend complete with no gap left. **The member was not short.**
+It asked for twenty-one messages and received twenty-one.
+
+Two separable faults. The condition means "there is history older than what was asked for",
+which is not truncation and is the normal state of affairs; truncation would be the window
+failing to hold the range the member requested. And `last_seq_no` is a WAL record id, not a FIX
+sequence number, which is why the figure reads as alarming next to a member whose numbering is
+in the low thousands -- the message does not say which numbering it is quoting.
+
+**Fixed 2026-08-27.** `truncated` is now `record_count < max_records`: the caller was given less
+than it asked for, so part of its range reaches further back than the WAL still holds. The old test,
+`total_matched > window.size()`, was true of every resend a session with any history makes, which is
+why the warning fired on healthy ones. Verified by the runs that fixed BUG-0051: zero occurrences
+across both gateway logs, where before it fired on every resend.
+
+The misleading `last_seq_no` in the message is unchanged and still a WAL record id rather than a FIX
+sequence number. It now only appears when something really was truncated, which is when a reader
+wants the WAL number anyway.
+
+### BUG-0051: A resend reuses sequence numbers that carried administrative messages, and the session dies {#bug_0051}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-27 |
+| Recorded | 2026-08-27 |
+| How | `ha_test.py` scenario 22, once it was made to manufacture a gap -- BUG-0037. Found on the first run that had anything to resend |
+| Impact | A member that asks for a gap is answered correctly message by message and then loses the session on the next heartbeat. The resend reports success |
+| Fixed | 2026-08-27 -- the venue records which outbound number each report went out on, and gap-fills the rest |
+
+The gateway holds no store of what it sent, so it replays by rewinding its outbound sequence
+number to `BeginSeqNo` and filling every number in the range with an execution report from the
+sequencer's WAL. **The range does not contain only execution reports.** Whatever administrative
+traffic occupied those numbers -- a Logon, a Heartbeat -- is not in the WAL and has no record
+anywhere, so the venue puts a report on that number instead, and the number goes out twice
+carrying two different messages.
+
+Observed on 2026-08-27, with the member returning into a gap of twenty:
+
+```
+16:51:22.158874  FIX OUT  8=FIXT.1.1|35=A|34=1002|...      <- Logon
+16:51:32.206291  FIX OUT  8=FIXT.1.1|35=0|34=1003|...      <- Heartbeat
+16:51:32.206879  ResendRequest BeginSeqNo=983 -- resending 983..1003, will resume at 1004
+16:51:32.223220  resend complete -- 21 report(s) resent, no gap left
+```
+
+Twenty-one reports were sent into 983..1003. Numbers 1002 and 1003 had already gone out as the
+Logon and the Heartbeat. The member had received the heartbeat, held it as the message that
+revealed the gap, and processed it after the replay filled in behind it -- so it counted
+twenty-two messages where the venue had counted twenty-one, and came out expecting 1005 while
+the venue stood at 1004. Ten seconds later the venue sent its next heartbeat:
+
+```
+Fatal  Message Sequence too low, received: 1004 expected: 1005 - will logoff
+```
+
+**Every message-level assertion passes.** The twenty-one reports are real, all inside the
+requested gap, all marked `PossDupFlag=Y`, all stamped `OrigSendingTime`, and the range closes
+where the gateway said it would. The resend is correct in every particular and the session is
+dead. That is why scenario 22 asserts that the session survives the heartbeat that follows,
+which is the only one of its six assertions that fails.
+
+**The venue cannot currently know which of its outbound numbers were administrative.** The
+gateway knows at the moment it sends -- it is the one choosing between an execution report and a
+heartbeat -- and it does not record it. Nothing else can reconstruct it: the WAL holds reports
+and knows nothing of the FIX numbering laid over them, and the sequencer's session state carries
+only where the numbering had reached.
+
+**The symptom is intermittent, and the reason matters for diagnosing it.** The member ends the
+resend ahead of the venue by one for each such number, but a terminating `SequenceReset-GapFill`
+sets its expected number outright rather than counting, so a resend that ends in one resynchronises
+the member and hides the fault. The session dies only when the reports exactly fill the range and
+no gap-fill is emitted -- the `no gap left` case above. Measured on 2026-08-27: with the range
+deliberately over-filled by 3883 reports, the session **survived**, because the trailing gap-fill
+corrected it. So the reliable symptom is not a dead session; it is a member handed reports under
+numbers that never carried them. The sequencer returns the *most recent* N reports for the
+session, so what it receives are recent reports presented as the old missing ones, and its record
+of the session is wrong in a way neither side can detect.
+
+**Designed 2026-08-27 in [Resend provenance](availability/resend_provenance.md), not built.** In
+outline: record the outbound number each report went out on -- the primary fact -- so a resend
+places each report back on its own number and gap-fills every number no report claims. That needs
+no separate notion of which numbers were not reports, because it is the complement. It belongs in
+the session state the sequencer already hands to whichever gateway binds the session, because a
+resend is served by whichever instance holds the session now, which after a failover is not the
+one that sent the messages being asked about.
+
+**A gateway-local mechanism recording the complement was built the same day and reverted.** It
+worked, and it was the wrong shape: a derived fact that could not grow into the real answer, a
+second concept bolted on to cover the first one's lifetime, an unbounded per-comp-id map, and
+silent degradation when that map was trimmed. The design note records it in full so the reasoning
+is not repeated.
+
+**What is tested. Two scenarios fail on this, from different angles, and both are expected to
+until the design above is built.**
+
+- **Scenario 22**, the ordinary reconnect. Its other six assertions pass, which is the point:
+  every message-level property of the resend holds while it is broken. It fails on the heartbeat
+  put deliberately in the middle of the gap, which is filled with a report instead of skipped.
+- **Scenario 23**, the failover. The member returns on the surviving instance, asks for what it
+  missed, and is left expecting a number the venue will not send, because that instance filled the
+  whole range with reports. Measured 2026-08-27: gap-fills received, none.
+
+What no test can reach is whether the reports were placed on the numbers they came from. The
+sequencer returns the most recent reports for the session, so after a failover the member is
+handed recent ones presented as the old missing ones, and nothing on its side distinguishes that
+from a correct answer.
+
+Related: BUG-0037, which is how this was found, and BUG-0006.
+
+**Fixed 2026-08-27**, by building [Resend provenance](availability/resend_provenance.md). The
+gateway records the outbound number each execution report goes out on; the record travels to the
+sequencer on `SessionSequenceUpdate` and `SessionUnbound` and comes back on `SessionBoundAck`, so
+it outlives the instance that made it. A resend places each report back on its own number and
+gap-fills, in runs, every number the record does not cover -- which is one rule for "held something
+unreplayable" and "older than the venue remembers", because both want the same treatment.
+
+**The failover half is fixed too, and that was the point of putting the record in the sequencer.**
+`ha_test.py` scenario 23 kills the gateway holding a session and brings the member back on the
+surviving instance, which never sent the messages being asked about: it resent **1000 real
+reports**, where before it filled the range with whatever the sequencer returned. A gateway-local
+record was built first and reverted because it is empty in exactly this case; the design note
+records why in full.
+
+Three scenarios pin it, all of which failed on this until it was built: 22 (ordinary reconnect,
+with a heartbeat placed mid-gap on purpose), 23 (failover), and 40 (bounded range).
+
+**What remains true.** A session that lives and dies inside one reporting interval leaves the
+sequencer no record, and the surviving instance then gap-fills the whole range rather than
+guessing. The member keeps its session and its numbering and loses those reports. That is the
+designed behaviour, not a residue of this defect -- see the note's Retention and shipping
+sections.
+
+### BUG-0037: The resend scenario never creates a gap, so nothing tests the resend {#bug_0037}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-23 |
+| Recorded | 2026-08-23 (5bc615c) |
+| How | Reading the reconnecting client's own output while planning assertions for it |
+| Impact | The FIX resend path has no member-observable test coverage, while a scenario named for it passes |
+| Fixed | 2026-08-27 -- the scenario manufactures a gap with `f8test -R` and asserts six things about what the member is handed |
+
+`ha_test.py` scenario 22, `resend_recovery`, is described as "A reconnecting member is sent the
+execution reports it missed" and promises the member "receives real execution reports marked
+PossDupFlag=Y instead of a blanket gap-fill".
+
+It asserts neither. What it asserts is that the venue resumed the session's numbering across the
+reconnect, which it does correctly and which is worth having. The reconnecting client's output
+was checked after a run: **579 bytes, containing one Logon and nothing else.** Zero execution
+reports, zero `PossDupFlag`, zero `SequenceReset`, zero `OrigSendingTime`. Scenario 23,
+`inflight_gateway_death`, produces an identical 579-byte Logon-only output.
+
+The cause is straightforward once seen. The scenario sends its baseline orders, waits for their
+reports, and only then drops the session -- so at the moment of the drop the venue owes the
+member nothing. Nothing is missed, so the member has no gap to notice, sends no ResendRequest,
+and there is nothing to resend. `orders_during_override=0` and `orders_after_override=0` ensure
+no traffic arrives during the window either.
+
+**A gap has to be manufactured, and the choice of how is a design decision.** Three candidates:
+
+- **Reconnect after the cancel-on-disconnect grace expires.** The member leaves orders resting,
+  the venue cancels them and emits a report per order into a socket that is gone, and the member
+  returns to a real gap of its own orders being cancelled. Uses only behaviour the venue already
+  has, and is the most realistic of the three. It needs checking that the session's sequence
+  state outlives the grace period -- if it does not, the member's numbering restarts and the
+  test fails for an unrelated reason.
+- **Stop the client with orders in flight**, so the reports land while it is away. Closest to
+  scenario 23's intent, and depends on timing that will vary by machine.
+- **Have the venue generate reports for a disconnected session directly**, which is the most
+  controllable and the least like anything that happens.
+
+Until one is chosen, three assertions have nothing to run against: that `PossDupFlag` is set
+inside the requested gap and absent beyond it, that `OrigSendingTime` accompanies every resent
+report, and that the terminating gap-fill leaves the member expecting the number the venue will
+send next. All three are cheap once a gap exists, and all three read tags from the client's own
+output, which is the member-observable fact rather than the venue's account of itself.
+
+A helper for the first of them, `_client_report_counts`, already exists in `ha_test.py` and is
+never called.
+
+**The scenario should not be left describing work it does not do.** Whatever is decided about
+manufacturing the gap, the description and expected outcome need to match what is asserted, or
+the next person to ask "is the resend path tested?" gets the same wrong answer twice.
+
+**Fixed 2026-08-27.** None of the three candidates above was used, because the first two cannot
+produce a gap at all and that is worth recording before anyone tries them again.
+
+**The venue only advances a session's outbound number when it actually sends.** A report for a
+session that has gone is dropped before that point -- at the sequencer
+(`SequencerThread.cpp`, "session not bound to any instance, dropping") and again at the gateway,
+where `find_session_by_conn_id` returns nothing. `on_connection_lost` unbinds the session the
+instant the socket closes, so the cancel-on-disconnect reports that the first candidate depends
+on are emitted into an unbound session and consume no numbers. The member returns expecting
+exactly what the venue is about to send. The second candidate fails the same way outside a short
+race: only the reports numbered before the gateway notices the socket died are lost.
+
+**What was used instead is a fourth option none of the three anticipated.** `f8test` takes `-R`,
+"set next expected receive sequence number", so the reconnecting client is started believing it
+has received twenty fewer messages than it has. The gap is exact, chosen, free of timing, and
+needs no change to the venue -- and it is what a member looks like after messages died in a
+socket, which is the case the resend path exists for.
+
+One thing had to be added for the member to be able to ask. fix8 decides what to do about a
+too-high inbound number in `Session::enforce`, and the branch depends on the session state: once
+continuous it sends a `ResendRequest`, but at logon -- where a member reconnecting into a gap
+first sees the number -- it throws `InvalidMsgSequence` and logs off, unless the session config
+sets `ignore_logon_sequence_check`. Without it the client answered a venue that had resumed its
+numbering correctly by dropping the session. The generated no-reset config now sets it.
+
+The scenario asserts six things, five of them read from the client's own received messages: the
+venue continues the numbering; the member asks for the right range; the reports that come back
+are real, marked `PossDupFlag=Y`, and inside the requested gap and nowhere beyond it; every one
+carries `OrigSendingTime`; the range closes where the gateway said it would; and the session is
+still there afterwards.
+
+**The sixth is the one that matters, and it fails.** The first five pass and the session dies on
+the next heartbeat. That is BUG-0051, which this test was written to be capable of finding and
+found on its first run with anything to resend.
+
+### BUG-0039: ResendRequest ignores EndSeqNo, so every resend runs to the head of the stream {#bug_0039}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-23 |
+| Recorded | 2026-08-23 (03ba5d8) |
+| How | Reading the resend path against the FIX session-layer rules rather than against its own comments |
+| Impact | None in normal operation. A member asking for a bounded range gets an unbounded replay, and the venue pays for it |
+| Fixed | 2026-08-27 -- a non-zero `EndSeqNo` inside the stream is honoured, and the remainder is gap-filled |
+| Tested | `ha_test.py` scenario 40, added 2026-08-27: a bounded request returns nothing outside its bounds |
+
+`FixOrderGatewayThread::handle_resend_request` reads `BeginSeqNo` (tag 7) and nothing else.
+`EndSeqNo` (tag 16) is never read anywhere in the codebase, though the data dictionary carries
+it and marks it required on ResendRequest. The gateway replays from `BeginSeqNo` to wherever
+the session had reached, which is to say it treats every request as though `EndSeqNo` were 0.
+
+**Recorded as a deviation rather than a bug**, because in the case that actually happens it is
+the correct behaviour. `EndSeqNo=0` means "everything from here on" and is what an engine sends
+after a disconnect, which is when resends occur. A member that asked for 100-150 and receives
+100 onwards sees messages in sequence, and its inbound counter advances exactly as it would
+have; nothing in the session breaks.
+
+**Where it stops being benign is a bounded request.** A member asking for fifty messages gets
+every report since, and the reports come from the sequencer's WAL rather than from a buffer in
+the gateway -- so a small request from one member turns into a large slice read on the shared
+path that live traffic depends on. On a session with millions of reports behind it that is a
+substantial amount of work, asked for by a message the member was entitled to send.
+
+The gap between "no member does this" and "no member can do this" is the whole of the risk. It
+is unusual engines behaving reasonably that find this kind of thing, and they find it in
+production.
+
+Three ways to settle it, in increasing effort:
+
+- Honour `EndSeqNo` when it is non-zero, which is what the specification asks for.
+- Keep the current behaviour and say so deliberately in a comment, so the next reader knows it
+  was considered rather than missed.
+- Bound the replay regardless of what was asked for, which addresses the cost but not the
+  conformance.
+
+Whichever is chosen, `EndSeqNo` being absent from the code with no comment is the one state
+that should not persist, because it cannot be told apart from an oversight.
+
+**Fixed 2026-08-27**, by the first of the three: `EndSeqNo` is read, and a non-zero value falling
+inside what the session has sent bounds both the reports asked of the sequencer and the numbers
+replayed into. A value of zero, or one at or past the end of the stream, asks for nothing the
+venue does not already give and is treated as the open-ended case it is.
+
+**Closed without a test, and that was an omission rather than a tooling limit.** f8test can drive a
+bounded request -- its `R` command reads `BeginSeqNo` and `EndSeqNo` from stdin -- which was not
+checked before closing this. Scenario 40 was added the same day and confirms the bound is honoured.
+It also reproduced [BUG-0053](#bug_0053): the bound is respected and the reports inside it are the
+wrong ones.
+
+The consequence worth naming is what happens above the bound. This gateway holds no store of what
+it sent, so it replays by rewinding its live outbound number, and that number has to be returned
+to where the session had reached before the next live report goes out. A gap-fill over the
+unrequested remainder is the only in-band way to do it, so a member that asks for a bounded range
+is told to skip everything above it. That is not the member being denied what it asked for -- it
+asked for no more than the bound -- but it does mean the remainder has to be asked for before it
+is gap-filled, rather than after. Both the bound and this consequence are commented at
+`handle_resend_request`.
 
 ### BUG-0049: The docs build's strictest gate is silently off on RHEL8 {#bug_0049}
 

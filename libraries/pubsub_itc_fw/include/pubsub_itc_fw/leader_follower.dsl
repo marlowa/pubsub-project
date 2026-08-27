@@ -405,6 +405,32 @@ message SessionBound (id=120, version=1)
 end
 
 # ------------------------------------------------------------
+#  SeqNumRange -- an inclusive run of outbound sequence numbers.
+#
+#  Nested only; it is never a PDU in its own right, hence id=0.
+#
+#  Carried by the three session PDUs below to say which of a
+#  member's outbound numbers held an execution report. A resend
+#  refills a range of numbers from the WAL, and the WAL holds
+#  reports and nothing else -- so every number that held a Logon,
+#  a heartbeat or a reject has to be gap-filled instead, and the
+#  venue can only do that if it knows which those were.
+#
+#  Ranges rather than a number apiece because reports come in
+#  runs: a member sending orders is sent a contiguous block of
+#  numbered reports, broken only when it goes quiet long enough
+#  for a heartbeat to take one. A burst of ten thousand orders
+#  is a single range.
+#
+#  See docs/availability/resend_provenance.md, and BUG-0051 for
+#  what filling every number with a report instead does.
+# ------------------------------------------------------------
+message SeqNumRange (id=0, version=1)
+    i32 from_seq_num
+    i32 to_seq_num              # inclusive
+end
+
+# ------------------------------------------------------------
 #  121 -- SessionUnbound
 #  Sent by a gateway when a client session goes away, so the
 #  sequencer stops addressing reports at a connection that is gone.
@@ -444,6 +470,11 @@ message SessionUnbound (id=121, version=1)
     # it -- there is no inbound gap detection to hold a number for -- so a field for it would
     # be one nothing populates. When that is built, it belongs here beside this one.
     i32    outbound_seq_num        # next number the venue would send to this member
+    # Which of this session's outbound numbers held an execution report, for the part of the
+    # stream this gateway has not already reported on SessionSequenceUpdate. Everything not
+    # covered by these -- and by what earlier updates carried -- held something the venue
+    # cannot replay, and a resend gap-fills it. See SeqNumRange above.
+    list<SeqNumRange> report_seq_nums
 end
 
 # ------------------------------------------------------------
@@ -467,6 +498,11 @@ message SessionBoundAck (id=122, version=1)
     i16    gateway_protocol_id
     bool   known                   # false: first sight of this session, the number is the default
     i32    outbound_seq_num        # next number to send to the member
+    # Which of this session's outbound numbers held an execution report, as far back as the
+    # venue still remembers. This is what lets a gateway answer a resend for messages it did
+    # not send: the instance that did send them is gone, and this is the only record of what
+    # its numbering carried. Empty when known = false.
+    list<SeqNumRange> report_seq_nums
 end
 
 # ------------------------------------------------------------
@@ -494,6 +530,17 @@ message SessionReplayRequest (id=123, version=1)
     i16    gateway_protocol_id
     i64    from_seq_no             # WAL sequence to resume after; 0 means from the beginning
     i32    max_records             # cap on records returned; 0 means the sequencer's own limit
+    # How many of this session's most recent reports to pass over before starting to collect.
+    #
+    # Without it the sequencer can only return the most recent max_records reports, which is
+    # right when the member is asking about the tail of its stream -- the usual case, after a
+    # disconnect -- and wrong for any other range. A member asking about the middle of its
+    # history was sent recent reports wearing the numbers it asked for, with every other
+    # property of the reply correct. That is BUG-0053.
+    #
+    # The gateway can always compute it: the reports above the range being replayed are recent
+    # ones, so they are covered by what it knows of the session's numbering.
+    i32    skip_most_recent        # reports to skip, counting back from the newest; 0 for the tail
 end
 
 # ------------------------------------------------------------
@@ -559,6 +606,14 @@ message SessionSequenceUpdate (id=126, version=1)
     i16    gateway_instance_id
     i32    gateway_session_conn_id
     i32    outbound_seq_num        # next number this gateway would send to the member
+    # Which outbound numbers have held an execution report since the last update, so the
+    # sequencer's record keeps pace with the session rather than arriving only at unbind.
+    #
+    # Sent here for the same reason the number above is: a gateway that is killed sends no
+    # unbind, and a record that only ever travelled at unbind would be empty in exactly the
+    # case it exists for. Incremental rather than the whole history, so an update stays small
+    # however long the session has been up.
+    list<SeqNumRange> report_seq_nums
 end
 
 # ------------------------------------------------------------

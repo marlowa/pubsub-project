@@ -258,6 +258,48 @@ _RESEND_TIMEOUT               = 30.0
 # received before counting. Asserting on another process's output without this reads an
 # empty file and blames the venue.
 _RESEND_CLIENT_SETTLE         = 3.0
+# How many messages the reconnecting member is made to believe it missed.
+#
+# A gap has to be manufactured, because nothing in an ordinary reconnect creates one. The
+# venue only advances a session's outbound number when it actually sends -- and a report for
+# a session that has gone is dropped before that, at the sequencer ('session not bound to any
+# instance') and again at the gateway. So a member that leaves and returns finds the venue
+# expecting exactly the number it is expecting, with nothing missing on either side.
+#
+# f8test takes -R, "set next expected receive sequence number", so the reconnecting client is
+# started believing it has received this many fewer than it has. That is what a member looks
+# like after messages died in a socket, it is exact rather than timing-dependent, and it needs
+# no change to the venue to arrange.
+#
+# Twenty is chosen to be small enough to replay quickly and wide enough that the assertions
+# discriminate: a venue that marked every message PossDupFlag=Y, or none, fails either way.
+_RESEND_GAP_MESSAGES          = 20
+# How long to watch the session after the resend says it succeeded.
+#
+# Long enough to span a heartbeat, because that is what exposes a resend that left the two
+# sides disagreeing about the numbering: nothing is wrong until the venue next sends, and with
+# the member idle the next thing it sends is a heartbeat reply. The client config asks for a
+# 10s interval, so this covers two.
+_RESEND_SURVIVAL_WAIT         = 25.0
+# Long enough for the client to send a heartbeat, which the gateway answers with a numbered one
+# of its own. That puts a number the venue cannot replay in the middle of the stream rather than
+# only at the end, which is the case the replay has to gap-fill in place rather than leave to the
+# completion. The generated config asks for a 10s interval.
+_RESEND_HEARTBEAT_IDLE        = 14.0
+# Orders sent after that heartbeat, so it has reports on both sides of it. Sent one at a time --
+# f8test's 'n' -- because the burst command sends a thousand, and this only has to be enough to
+# sit inside the gap. Must stay comfortably below _RESEND_GAP_MESSAGES, or the gap no longer
+# reaches back past the heartbeat and the case being set up disappears.
+_RESEND_TAIL_ORDERS           = 8
+# The bounded range scenario 40 asks for, out of the MIDDLE of the session's history. Chosen well
+# below where the numbering has reached, because that is the whole point: a request for the tail
+# is answered correctly by a venue that ignores the bounds entirely, so only a range with history
+# on both sides of it can tell the two apart. Fifty is a plausible thing for a member to ask.
+_BOUNDED_RESEND_BEGIN         = 100
+_BOUNDED_RESEND_END           = 149
+# The client is asked for the range on its stdin -- f8test's 'R' reads BeginSeqNo then EndSeqNo --
+# and the reply comes back through the sequencer's WAL, so give it room.
+_BOUNDED_RESEND_SETTLE        = 5.0
 # Scenario 23. The client that takes over on instance b after instance a is killed.
 _INFLIGHT_A_CFG               = "myfix_gateway_client_inflight_a.xml"
 _INFLIGHT_CFG                 = "myfix_gateway_client_inflight_b.xml"
@@ -267,6 +309,12 @@ _INFLIGHT_BURSTS              = 5
 # Orders that must be through before the kill, proving the pipeline is full. A fraction of
 # the burst, so the remainder is genuinely still in flight when the gateway dies.
 _INFLIGHT_STARTED             = 500
+# Long enough for the gateway's session sequence report to fire at least once before the kill.
+# The gateway reports every 2s; this is comfortably more than one interval, and what it buys is
+# that the sequencer holds a record of which of the member's numbers held a report -- which is
+# what the surviving instance answers the member's resend from. See
+# docs/availability/resend_provenance.md.
+_INFLIGHT_REPORT_SETTLE       = 5.0
 _INFLIGHT_START_TIMEOUT       = 20.0
 SETTLE_AFTER_KILL      = 1.0   # seconds after a kill where no failover is expected
 
@@ -555,6 +603,10 @@ class Scenario(NamedTuple):
     # reconnect, the member notices the gap and asks, and the venue answers with the real
     # execution reports rather than gap-filling them away. See run_scenario's "resend" block.
     assert_resend_recovery: bool = False
+    # When True, the member asks mid-session for a BOUNDED range out of the middle of its own
+    # history, and what comes back is compared against what it was originally sent under those
+    # very numbers. See run_scenario's "bounded resend" block.
+    assert_bounded_resend: bool = False
     # When True, kill the gateway with orders IN FLIGHT and then bring the client back on the
     # OTHER instance, asserting what the member can recover. See run_scenario's "in-flight"
     # block. Needs gateway_b, since the whole point is that the member returns elsewhere.
@@ -1347,18 +1399,34 @@ _SCENARIOS: list[Scenario] = [
     # one asks the venue to forget the session on every logon -- and a venue that honours
     # that, as it must, has nothing to resend.
     #
-    # Three things are asserted, and the third is the one that matters: the venue continues
-    # the member's numbering rather than restarting it; the member notices and asks; and what
-    # comes back is real execution reports carrying PossDupFlag=Y, checked in the CLIENT's own
-    # received messages rather than in a gateway log line.
+    # The gap is manufactured, and has to be. An ordinary reconnect creates none: the venue
+    # advances a session's outbound number only when it actually sends, and a report for a
+    # session that has gone is dropped before that point, so the member returns expecting
+    # exactly the number the venue is about to send. The reconnecting client is therefore
+    # started with -R below where the venue has reached -- see _RESEND_GAP_MESSAGES -- which
+    # is what a member looks like after messages died in a socket.
+    #
+    # A heartbeat is let through mid-stream with orders on both sides of it, because the venue
+    # cannot replay what a heartbeat's number carried -- the WAL holds reports and nothing else
+    # -- and gap-filling it where it stands is a different path from gap-filling the tail.
+    #
+    # Seven things are asserted, and every one after the first reads the CLIENT's own received
+    # messages rather than a gateway log line, because what the member was handed is the fact
+    # under test: the venue continues the member's numbering rather than restarting it; the
+    # member notices the gap and asks for the right range; the reports that come back are real
+    # ones marked PossDupFlag=Y, inside the requested gap and nowhere beyond it; every one of
+    # them carries OrigSendingTime; the numbers the venue cannot replay are gap-filled in place
+    # rather than overwritten; the range is closed so the member ends up expecting the number
+    # the venue will send next; and the session is still alive after the heartbeat that follows.
     Scenario(
         number=22,
         short_name="resend_recovery",
-        description="A reconnecting member is sent the execution reports it missed",
+        description="A reconnecting member with a gap is sent the execution reports it missed",
         expected_outcome=(
             "the venue resumes the session's sequence numbering across the reconnect, the "
-            "member asks for what it missed, and receives real execution reports marked "
-            "PossDupFlag=Y instead of a blanket gap-fill"
+            "member notices the manufactured gap and asks for it, and receives real execution "
+            "reports marked PossDupFlag=Y and stamped OrigSendingTime instead of a blanket "
+            "gap-fill, leaving it expecting the venue's next number"
         ),
         orders_during_override=0,
         orders_after_override=0,
@@ -2321,6 +2389,38 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 40 -- a bounded resend, asked for out of the middle of the member's own history.
+    #
+    # Nothing is killed and nothing reconnects. The member simply exercises a right it has at
+    # any time: asking for a specific range of what the venue sent it. FIX allows it, real
+    # engines do it, and until 2026-08-27 this venue read BeginSeqNo and ignored EndSeqNo, so
+    # every resend ran to the head of the stream and the case could not arise.
+    #
+    # The range is taken from the MIDDLE deliberately. A venue that ignores what was asked for
+    # and returns the most recent reports answers a request for the TAIL correctly by accident,
+    # so a tail request discriminates nothing. Only a range with the member's history on both
+    # sides of it can tell a venue that listened from one that guessed.
+    #
+    # What is asserted is the strongest thing available, and it is available only because the
+    # member keeps its own record of what it was sent: every resent report is compared, by
+    # ClOrdID, against the report the member originally received under that very number. A
+    # resend is not "fifty messages numbered 100 to 149"; it is "the fifty messages that WERE
+    # 100 to 149". The difference is invisible in every other property -- the numbering is
+    # right, PossDupFlag is right, the session survives -- and it is the whole of BUG-0053.
+    Scenario(
+        number=40,
+        short_name="bounded_resend",
+        description="A member asks for a bounded range out of the middle of its own history",
+        expected_outcome=(
+            "the venue resends exactly the messages that occupied the requested numbers, and "
+            "nothing outside the range"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_bounded_resend=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -2578,6 +2678,103 @@ def _client_report_counts(client_output: Path) -> tuple[int, int]:
     reports = text.count("MsgType (35): 8")
     poss_dup = len(re.findall(r"PossDupFlag \(43\): [Yy]", text))
     return reports, poss_dup
+
+
+def _client_messages(client_output: Path) -> list[dict[str, str]]:
+    """Every FIX message the CLIENT printed, as {field name: value}, in the order received.
+
+    f8test prints a message as a header block, a body block and a trailer block, one indented
+    "FieldName (tag): value" line per field. Enum-valued fields print as "NAME (value)" and
+    plain ones print the value alone; both are reduced to the value here, so a caller compares
+    against what the specification calls it rather than against how fix8 chose to render it.
+
+    Parsed per message rather than counted across the file, because the assertions that matter
+    are positional. PossDupFlag belongs on the messages inside the requested gap and on no
+    others, and a total cannot tell those apart.
+    """
+    if not client_output.is_file():
+        return []
+    messages: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in client_output.read_text(errors="replace").splitlines():
+        if line.startswith('header ("header")'):
+            current = {}
+            messages.append(current)
+            continue
+        if current is None:
+            continue
+        match = re.match(r"\s+(\w+) \((\d+)\): (.*)$", line)
+        if not match:
+            continue
+        name, _tag, raw = match.groups()
+        enum_value = re.match(r"^.*\((.+)\)$", raw.strip())
+        current[name] = enum_value.group(1) if enum_value else raw.strip()
+    return messages
+
+
+def _fix_flag_is_set(value: str | None) -> bool:
+    """True for a FIX boolean the client rendered as set, however it chose to render it."""
+    return value is not None and value.strip().lower() in ("y", "yes", "true", "1")
+
+
+def _wait_for_client_prompt(client_output: Path, prompt: str, timeout: float) -> bool:
+    """Wait for f8test to print one of its interactive prompts.
+
+    The menu reads keys in raw mode and takes what it finds in one go, so a whole command written
+    at once is swallowed by the keystroke read and the numbers after it are lost. Each line has to
+    be written only once the client has asked for it, and this is how that is known.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if client_output.is_file() and prompt in client_output.read_text(errors="replace"):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _client_highest_seq_num(client_output: Path) -> int | None:
+    """The highest MsgSeqNum the CLIENT was sent, or None if it was sent nothing.
+
+    This is where the venue's numbering had reached from the member's side, which is the only
+    side that can say so without the venue vouching for itself.
+    """
+    numbers = [int(msg["MsgSeqNum"]) for msg in _client_messages(client_output) if msg.get("MsgSeqNum", "").isdigit()]
+    return max(numbers) if numbers else None
+
+
+def _resend_resume_point(log_path: Path, from_byte: int = 0) -> int | None:
+    """The outbound number the gateway said it would resume at after the resend, or None.
+
+    The end of the requested range, and the number the member must be left expecting. Taken
+    from the gateway rather than assumed from where the numbering stood before the reconnect,
+    because the member detects its gap on the first message after the Logon -- so by the time
+    it asks, a heartbeat or a live report may have moved the venue on. Only the boundary comes
+    from here; every assertion about what the member was handed reads the client's own output.
+    """
+    try:
+        with log_path.open("r", errors="replace") as handle:
+            handle.seek(from_byte)
+            for line in handle:
+                match = re.search(r"will resume at (\d+)\)", line)
+                if match:
+                    return int(match.group(1))
+    except OSError:
+        return None
+    return None
+
+
+def _resend_gap_fill(log_path: Path, from_byte: int = 0) -> tuple[int, int] | None:
+    """The (from, to) range named on the gateway's gap-fill line, or None if it filled nothing."""
+    try:
+        with log_path.open("r", errors="replace") as handle:
+            handle.seek(from_byte)
+            for line in handle:
+                match = re.search(r"gap-filled (\d+)\.\.(\d+) \(administrative traffic\)", line)
+                if match:
+                    return int(match.group(1)), int(match.group(2))
+    except OSError:
+        return None
+    return None
 
 
 def _held_grace_period_seconds(log_path: Path, from_byte: int = 0) -> int | None:
@@ -2876,7 +3073,8 @@ def gateway_listen_port(prefix: Path, instance: str) -> int:
 
 
 def write_fix8_variant(filename: str, *, listen_port: int | None = None,
-                       keep_sequence_numbers: bool = False) -> str:
+                       keep_sequence_numbers: bool = False,
+                       ignore_logon_sequence_check: bool = False) -> str:
     """Generate an f8test config from the stock one with specific attributes rewritten.
 
     Generated rather than checked in because it must track the stock config: a divergence
@@ -2887,6 +3085,14 @@ def write_fix8_variant(filename: str, *, listen_port: int | None = None,
     keep_sequence_numbers turns OFF reset_sequence_numbers, so the client keeps its own
     numbering rather than telling the venue to forget the session's -- which is what makes
     it notice a gap and ask for what it missed.
+
+    ignore_logon_sequence_check is what lets it survive noticing. fix8 handles a too-high
+    inbound number in Session::enforce, and the branch it takes depends on the session state:
+    once continuous it sends a ResendRequest, but at logon -- where a member reconnecting into
+    a gap first sees the number -- it throws InvalidMsgSequence and logs off, unless this flag
+    is set. So a client without it cannot ask for a gap it detects on the Logon, and answers a
+    venue that resumed its numbering correctly by dropping the session. Set for the resend
+    scenario only, because it is a property of that client, not of the venue.
 
     The session store is deliberately left in MEMORY, so a restarted client forgets its
     sequence numbers and expects to begin at 1.
@@ -2909,6 +3115,12 @@ def write_fix8_variant(filename: str, *, listen_port: int | None = None,
                               text, count=1)
         if count == 0:
             die(f"no reset_sequence_numbers attribute to rewrite in {source}")
+    if ignore_logon_sequence_check:
+        text, count = re.subn(r'(\n\s*)reset_sequence_numbers=',
+                              r'\1ignore_logon_sequence_check="true"\1reset_sequence_numbers=',
+                              text, count=1)
+        if count == 0:
+            die(f"nowhere to add ignore_logon_sequence_check in {source}")
     if listen_port is not None:
         text, count = re.subn(r'port="\d+"', f'port="{listen_port}"', text, count=1)
         if count == 0:
@@ -2919,8 +3131,9 @@ def write_fix8_variant(filename: str, *, listen_port: int | None = None,
 
 
 def write_no_reset_fix8_config() -> None:
-    """The resend scenario's client: instance a, not asking the venue to forget the session."""
-    write_fix8_variant(FIX8_NO_RESET_CFG, keep_sequence_numbers=True)
+    """The resend scenario's client: instance a, not asking the venue to forget the session,
+    and prepared to ask for a gap it first sees on the Logon rather than logging off over it."""
+    write_fix8_variant(FIX8_NO_RESET_CFG, keep_sequence_numbers=True, ignore_logon_sequence_check=True)
 
 
 def write_recovery_fix8_config() -> None:
@@ -2940,7 +3153,8 @@ def write_recovery_fix8_config() -> None:
 
 
 def send_burst(count: int, gw_log: Path, config: str = FIX8_CFG,
-               client_output: Path | None = None) -> subprocess.Popen:
+               client_output: Path | None = None,
+               next_expected_receive: int | None = None) -> subprocess.Popen:
     """
     Launch one f8test session, wait for confirmed FIX logon, then send `count`
     T commands.  Each T command sends 1000 NOS.  Returns the Popen object.
@@ -2949,11 +3163,18 @@ def send_burst(count: int, gw_log: Path, config: str = FIX8_CFG,
     client_output captures what the CLIENT received, which is the only place some things can
     be checked: whether a resent report carried PossDupFlag is visible to the member and to
     nobody else, the gateway's own record of it being below the deployed log level.
+
+    next_expected_receive starts the client believing the venue's numbering stands at that
+    value. Setting it below where the venue has actually reached manufactures a gap the member
+    detects for itself and asks about -- see _RESEND_GAP_MESSAGES.
     """
     gw_pos = file_end(gw_log)
     stdout_target = client_output.open("w") if client_output is not None else subprocess.DEVNULL
+    command = [str(FIX8_BIN), "-c", config, "-N", "GW1"]
+    if next_expected_receive is not None:
+        command += ["-R", str(next_expected_receive)]
     proc = subprocess.Popen(
-        [str(FIX8_BIN), "-c", config, "-N", "GW1"],
+        command,
         cwd=str(FIX8_DIR),
         stdin=subprocess.PIPE,
         stdout=stdout_target,
@@ -3433,11 +3654,20 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # The resend scenario needs a client that keeps its own sequence numbering; every
         # other scenario uses the stock one, which resets it on each logon.
         baseline_config = FIX8_CFG
-        if scenario.assert_resend_recovery:
+        baseline_output: Path | None = None
+        bounded_output = log_dir / "f8test_bounded_resend.txt"
+        if scenario.assert_bounded_resend:
+            # The member's own record of what it was sent, which is what the reply is checked
+            # against. Captured from the start, because the numbers asked about are baseline ones.
+            baseline_output = bounded_output
+        elif scenario.assert_resend_recovery:
             baseline_config = FIX8_NO_RESET_CFG
+            # Captured because the gap is measured backwards from where the venue's numbering
+            # actually reached, and this is where that is visible without asking the venue.
+            baseline_output = log_dir / "f8test_resend_baseline.txt"
         elif scenario.assert_inflight_recovery:
             baseline_config = _INFLIGHT_A_CFG
-        f8proc = send_burst(args.orders_before, gw_log, baseline_config)
+        f8proc = send_burst(args.orders_before, gw_log, baseline_config, baseline_output)
         log(f"  Waiting for ME-ORD-{before_total} ...")
         found, elapsed, me_pos = wait_for_me_ord(
             me_log, before_total, timeout=120.0, from_byte=0,
@@ -3497,6 +3727,18 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # they are still somewhere in the pipeline -- socket, gateway, sequencer, matching
         # engine -- at the instant the gateway is killed.
         if scenario.assert_inflight_recovery:
+            # Let the gateway report this session to the sequencer at least once before it is
+            # killed. Without the pause the whole session lives and dies inside one reporting
+            # interval, so the sequencer holds no record of which of the member's numbers held a
+            # report -- and the surviving instance, having no provenance, correctly gap-fills
+            # the lot. That is real behaviour and it is the DEGENERATE case: it is what the
+            # venue does when a gateway dies seconds after a member logs on, and it exercises
+            # none of the recovery this scenario is named for. A failover worth testing happens
+            # to a session that has been up longer than an interval, which is what this makes it.
+            log(f"=== Letting the gateway report the session before killing it "
+                f"({_INFLIGHT_REPORT_SETTLE:.0f}s) ===")
+            time.sleep(_INFLIGHT_REPORT_SETTLE)
+
             log(f"=== Sending {_INFLIGHT_BURSTS * 1000} orders and killing the gateway while they fly ===")
             for _ in range(_INFLIGHT_BURSTS):
                 f8proc.stdin.write(b"T\n")
@@ -4005,6 +4247,95 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "the member's book was flattened anyway.")
             log("  cancel grace: no cancel was sent at any point in this scenario -- OK")
 
+        # ── A bounded resend, out of the middle of the member's history ───────
+        # Nothing is killed. The member asks for a range it is entitled to ask for, and what
+        # comes back is checked against its own record of what it was sent under those numbers.
+        if scenario.assert_bounded_resend:
+            gw_pos = file_end(gw_log)
+
+            # Let the reports for the baseline settle in the client's output before it is read.
+            # The ME accepting an order and the member receiving the report are separate events.
+            time.sleep(_BOUNDED_RESEND_SETTLE)
+            originals = {int(msg["MsgSeqNum"]): msg.get("ClOrdID", "")
+                         for msg in _client_messages(bounded_output)
+                         if msg.get("MsgType") == "8" and msg.get("MsgSeqNum", "").isdigit()
+                         and not _fix_flag_is_set(msg.get("PossDupFlag"))}
+            requested = range(_BOUNDED_RESEND_BEGIN, _BOUNDED_RESEND_END + 1)
+            missing = [n for n in requested if n not in originals]
+            if missing:
+                die(f"bounded resend: the member was never sent {len(missing)} of the numbers it "
+                    f"is about to ask about ({missing[:10]}). The range has to sit inside what "
+                    "this session actually received, or the test asks the venue for messages that "
+                    "never existed. Lower the range or raise --orders-before.")
+            log(f"  bounded resend: the member holds its own record of numbers "
+                f"{_BOUNDED_RESEND_BEGIN}..{_BOUNDED_RESEND_END}, against which the reply is checked")
+
+            # f8test's 'R' reads BeginSeqNo then EndSeqNo from stdin. Asking on the live session
+            # rather than after a reconnect, because nothing here is about recovery: it is about
+            # whether the venue sends what was asked for.
+            log(f"=== Asking for a bounded resend of {_BOUNDED_RESEND_BEGIN}..{_BOUNDED_RESEND_END} ===")
+            for keystroke, prompt in (("R", "Enter BeginSeqNo"),
+                                      (str(_BOUNDED_RESEND_BEGIN), "Enter EndSeqNo"),
+                                      (str(_BOUNDED_RESEND_END), None)):
+                f8proc.stdin.write(f"{keystroke}\n".encode())
+                f8proc.stdin.flush()
+                if prompt is not None and not _wait_for_client_prompt(bounded_output, prompt, _BOUNDED_RESEND_SETTLE):
+                    die(f"bounded resend: the client never asked for '{prompt}' after being sent "
+                        f"{keystroke!r}. Its menu reads keys in raw mode, so each line has to be "
+                        "written only once it has asked for it.")
+
+            found, elapsed, _ = poll_log_for(
+                gw_log, f"ResendRequest BeginSeqNo={_BOUNDED_RESEND_BEGIN} EndSeqNo={_BOUNDED_RESEND_END}",
+                timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("bounded resend: the gateway never logged the request with both bounds. Either "
+                    "the client did not send it, or EndSeqNo is not being read -- which was "
+                    "BUG-0039, and this is the test that was owed for it.")
+            log(f"  bounded resend: the gateway read both bounds off the request ({elapsed:.1f}s)")
+
+            found, elapsed, _ = poll_log_for(
+                gw_log, "resend complete", timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("bounded resend: the gateway never finished the resend.")
+            log(f"  bounded resend: the venue answered ({elapsed:.1f}s)")
+
+            time.sleep(_BOUNDED_RESEND_SETTLE)
+            resent = {int(msg["MsgSeqNum"]): msg.get("ClOrdID", "")
+                      for msg in _client_messages(bounded_output)
+                      if msg.get("MsgType") == "8" and msg.get("MsgSeqNum", "").isdigit()
+                      and _fix_flag_is_set(msg.get("PossDupFlag"))}
+            if not resent:
+                die(f"bounded resend: the member received no resent report (see {bounded_output}).")
+
+            # 1. Nothing outside the range. This is BUG-0039's assertion: a venue that ignores
+            #    EndSeqNo replays to the head of the stream, which shows up here as numbers past
+            #    the bound.
+            beyond = sorted(n for n in resent if n not in requested)
+            if beyond:
+                die(f"bounded resend: {len(beyond)} message(s) came back outside the requested "
+                    f"range {_BOUNDED_RESEND_BEGIN}..{_BOUNDED_RESEND_END}: {beyond[:10]}. The "
+                    "member asked for a bounded range and was sent more than it asked for.")
+            log(f"  bounded resend: {len(resent)} message(s) came back, none outside "
+                f"{_BOUNDED_RESEND_BEGIN}..{_BOUNDED_RESEND_END} -- OK")
+
+            # 2. And they are the right messages. Compared by ClOrdID against what the member
+            #    itself received under those numbers, which is the only record of the fact that
+            #    does not come from the venue vouching for itself.
+            wrong = [(n, originals[n], resent[n]) for n in sorted(resent)
+                     if n in originals and resent[n] != originals[n]]
+            if wrong:
+                sample = ", ".join(f"{n}: was {was!r}, resent {now!r}" for n, was, now in wrong[:5])
+                die(f"bounded resend: {len(wrong)} of {len(resent)} resent message(s) carry a "
+                    f"different order than the member was originally sent under that number "
+                    f"({sample}). The numbering is right and the contents are not, so nothing on "
+                    "the member's side distinguishes this from a correct resend -- see BUG-0053. "
+                    "The sequencer returns the most recent reports for the session rather than "
+                    "the ones the range names, which is only correct when the range is the tail.")
+            log(f"  bounded resend: every one of the {len(resent)} resent message(s) carries the "
+                "order the member was originally sent under that number -- OK")
+
         # ── Sequence continuity across a reconnect (step 6) ───────────────────
         # The member goes away cleanly and comes back to the SAME instance. The venue
         # remembered where its numbering had reached and resumes there, so the member is not
@@ -4017,10 +4348,45 @@ def run_scenario(scenario: Scenario, args) -> bool:
             gw_pos = file_end(gw_log)
             client_output = log_dir / "f8test_resend_client.txt"
 
+            # A number the venue cannot replay, with reports on both sides of it. Without this
+            # the only such numbers are the Logon and heartbeat of the reconnect itself, which
+            # sit at the end of the range where the replay's own completion gap-fills them --
+            # so the harder case, gap-filling in place and putting the reports after it back on
+            # the numbers they came from, would never run.
+            log("=== Letting a heartbeat land mid-stream, then sending a few more orders ===")
+            time.sleep(_RESEND_HEARTBEAT_IDLE)
+            for _ in range(_RESEND_TAIL_ORDERS):
+                f8proc.stdin.write(b"n\n")
+            f8proc.stdin.flush()
+            tail_total = before_total + _RESEND_TAIL_ORDERS
+            found, elapsed, _ = wait_for_me_ord(me_log, tail_total, timeout=30.0, from_byte=running_me_pos)
+            if not found:
+                die(f"resend: the {_RESEND_TAIL_ORDERS} orders sent after the heartbeat did not "
+                    f"reach the matching engine (waited for ME-ORD-{tail_total}).")
+            log(f"  resend: {_RESEND_TAIL_ORDERS} order(s) reported after the heartbeat ({elapsed:.1f}s)")
+
             log("=== Dropping the session and reconnecting a client that keeps its sequence numbers ===")
             stop_f8test(f8proc)
             f8proc = None
-            f8proc = send_burst(0, gw_log, FIX8_NO_RESET_CFG, client_output)
+
+            # Where the venue's numbering stands, read from what the baseline client was sent
+            # rather than from the venue's account of itself. The member is then brought back
+            # believing it has received _RESEND_GAP_MESSAGES fewer, and that is the gap.
+            baseline_seen = _client_highest_seq_num(baseline_output)
+            if baseline_seen is None:
+                die(f"resend: the baseline client recorded no messages (see {baseline_output}), so "
+                    "there is no numbering to measure a gap against.")
+            venue_next = baseline_seen + 1
+            resume_from = venue_next - _RESEND_GAP_MESSAGES
+            if resume_from < 2:
+                die(f"resend: the venue had only reached MsgSeqNum={baseline_seen}, which is fewer "
+                    f"than the {_RESEND_GAP_MESSAGES}-message gap this scenario asks for. Run with "
+                    "more baseline orders.")
+            log(f"  resend: the venue's numbering stands at {venue_next}; the member returns "
+                f"expecting {resume_from}, a gap of {_RESEND_GAP_MESSAGES}")
+
+            f8proc = send_burst(0, gw_log, FIX8_NO_RESET_CFG, client_output,
+                                next_expected_receive=resume_from)
 
             found, elapsed, _ = poll_log_for(
                 gw_log, "resuming the venue's sequence state", "outbound=",
@@ -4032,6 +4398,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "that the unbind carried a number and that the sequencer replied.")
             log(f"  resend: the venue resumed the session's numbering ({elapsed:.1f}s)")
 
+            # 1. The venue continued the member's numbering rather than restarting it. Visible
+            #    in the very first message the member is sent, and nowhere else from its side.
             time.sleep(_RESEND_CLIENT_SETTLE)
             logon_seq = _client_logon_seq_num(client_output)
             if logon_seq is None:
@@ -4042,6 +4410,166 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "to spare it.")
             log(f"  resend: the member's Logon carried MsgSeqNum={logon_seq}, continuing the "
                 "session rather than restarting it -- OK")
+
+            # 2. The member noticed the gap and asked. Asserted on the number it asked for, not
+            #    merely that it asked: a member that requested the wrong range would still log a
+            #    ResendRequest, and the range is what the rest of this depends on.
+            # One past what -R set. The member accepts the Logon it is holding a gap over --
+            # that is what ignore_logon_sequence_check buys -- and its expected-receive advances
+            # over it before the gap is acted on, so it asks from the number after.
+            asks_from = resume_from + 1
+            found, elapsed, _ = poll_log_for(
+                gw_log, f"ResendRequest BeginSeqNo={asks_from}",
+                timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die(f"resend: the member never asked for the gap. It was started expecting "
+                    f"MsgSeqNum={resume_from} and was sent a Logon numbered {logon_seq}, so it had "
+                    f"{_RESEND_GAP_MESSAGES} messages missing and should have sent a "
+                    f"ResendRequest BeginSeqNo={asks_from}. Check, in order: that -R took (the "
+                    "client's session log names the number it expected); that the generated config "
+                    "carries ignore_logon_sequence_check, without which fix8 logs off over a gap it "
+                    "sees on the Logon instead of asking about it; and that the gateway parsed the "
+                    "request.")
+            log(f"  resend: the member asked for the gap from {asks_from} ({elapsed:.1f}s)")
+
+            # The end of the range, and the number the member must be left expecting. The member
+            # detects its gap on the first message after the Logon, so the venue may have moved
+            # on by a heartbeat or a live report before it asks; where the numbering stood at the
+            # reconnect is no longer the answer.
+            resume_at = _resend_resume_point(gw_log, from_byte=gw_pos)
+            if resume_at is None:
+                die("resend: the gateway did not say where it would resume after the replay, so "
+                    "the range the member asked about cannot be bounded.")
+
+            found, elapsed, _ = poll_log_for(
+                gw_log, "resend complete", timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("resend: the gateway never finished the resend. The reports come from the "
+                    "sequencer's WAL asynchronously -- check for a SessionReplayRequest that got "
+                    "no SessionReplayComplete.")
+            resent = _resent_report_count(gw_log, from_byte=gw_pos)
+            if not resent:
+                die(f"resend: the gateway resent {resent} reports. The whole point of this "
+                    "scenario is that the member is sent real execution reports rather than a "
+                    "blanket gap-fill over the range.")
+            log(f"  resend: the venue resent {resent} report(s) ({elapsed:.1f}s)")
+
+            # Everything below reads the CLIENT's output. What the member was handed is the fact
+            # under test; the gateway's own account of it proves only that it believes itself.
+            time.sleep(_RESEND_CLIENT_SETTLE)
+            received = _client_messages(client_output)
+            gap_range = range(asks_from, resume_at)
+
+            # 3. PossDupFlag inside the requested gap and not beyond it. A replay routinely runs
+            #    past the gap -- reports the venue could not deliver while the session was away
+            #    sit in the same slice and have never been sent -- and marking those would invite
+            #    the member to discard news it is seeing for the first time.
+            poss_dup = [msg for msg in received if _fix_flag_is_set(msg.get("PossDupFlag"))]
+            if not poss_dup:
+                die(f"resend: the member received no message marked PossDupFlag=Y (see "
+                    f"{client_output}). The gateway says it resent {resent} report(s), so either "
+                    "they went unmarked or they never reached the member.")
+            outside = [msg["MsgSeqNum"] for msg in poss_dup
+                       if not msg.get("MsgSeqNum", "").isdigit() or int(msg["MsgSeqNum"]) not in gap_range]
+            if outside:
+                die(f"resend: {len(outside)} message(s) were marked PossDupFlag=Y outside the "
+                    f"requested gap {asks_from}..{resume_at - 1}: {outside[:10]}. A message the "
+                    "member has never seen must not be offered to it as a possible duplicate.")
+            log(f"  resend: {len(poss_dup)} message(s) marked PossDupFlag=Y, all within the "
+                f"requested gap {asks_from}..{resume_at - 1} -- OK")
+
+            # 4. OrigSendingTime on every resent message. FIX requires it: the member is being
+            #    handed a message under a new SendingTime and needs the original to tell how old
+            #    what it is looking at really is.
+            missing_orig = [msg.get("MsgSeqNum", "?") for msg in poss_dup if not msg.get("OrigSendingTime")]
+            if missing_orig:
+                die(f"resend: {len(missing_orig)} resent message(s) carried no OrigSendingTime "
+                    f"(MsgSeqNum {missing_orig[:10]}). A resent message stamps SendingTime with "
+                    "the time it was resent, so without OrigSendingTime the member cannot tell "
+                    "how old the report it is being handed is.")
+            log(f"  resend: every one of the {len(poss_dup)} resent message(s) carried "
+                "OrigSendingTime -- OK")
+
+            # 5. The numbers the venue cannot replay were gap-filled where they stood, not
+            #    filled with reports. The scenario put a heartbeat in the middle of the range on
+            #    purpose, so a gap-fill must have gone out inside it -- ending before the number
+            #    the resend resumes at, which is what distinguishes it from the terminating one.
+            #    Without this the run below passes on a venue that only handles the trailing
+            #    case, which is the half that was already working.
+            gap_fills = [msg for msg in received
+                         if msg.get("MsgType") == "4" and _fix_flag_is_set(msg.get("GapFillFlag"))
+                         and msg.get("NewSeqNo", "").isdigit()]
+            in_range_fills = [int(msg["NewSeqNo"]) for msg in gap_fills if int(msg["NewSeqNo"]) < resume_at]
+            if not in_range_fills:
+                die(f"resend: no gap-fill arrived inside the requested range. A heartbeat was put "
+                    f"in the middle of it deliberately, and the venue cannot replay what that "
+                    f"number carried, so it had to be gap-filled in place -- the reports after it "
+                    f"belong on the numbers they were first sent on. The member received "
+                    f"{len(gap_fills)} gap-fill(s), at NewSeqNo "
+                    f"{[msg['NewSeqNo'] for msg in gap_fills]}, none below {resume_at}.")
+            log(f"  resend: {len(in_range_fills)} gap-fill(s) inside the range, at NewSeqNo "
+                f"{in_range_fills} -- the numbers the venue cannot replay were skipped, not "
+                "overwritten -- OK")
+
+            # 6. The member ends the resend expecting the number the venue will send next.
+            #    Whichever way the range was closed -- real reports to the end of it, or a
+            #    terminating gap-fill over the remainder -- this is the property that decides
+            #    whether the session survives, and it is the one that has to hold.
+            filled = _resend_gap_fill(gw_log, from_byte=gw_pos)
+            if filled is not None:
+                gap_from, gap_to = filled
+                resets = [msg for msg in received
+                          if msg.get("MsgType") == "4" and _fix_flag_is_set(msg.get("GapFillFlag"))]
+                if not resets:
+                    die(f"resend: the gateway gap-filled {gap_from}..{gap_to} but the member "
+                        "received no SequenceReset-GapFill. The administrative remainder was "
+                        "skipped on the venue's side only, and the member is now short.")
+                new_seq_nums = [msg.get("NewSeqNo") for msg in resets]
+                if str(resume_at) not in new_seq_nums:
+                    die(f"resend: the terminating gap-fill carried NewSeqNo {new_seq_nums}, not "
+                        f"{resume_at}. The member is left expecting a number other than the one "
+                        "the venue will send next, which is a gap that never closes.")
+                log(f"  resend: the gap-fill over {gap_from}..{gap_to} left the member expecting "
+                    f"{resume_at}, the venue's next number -- OK")
+            else:
+                highest = _client_highest_seq_num(client_output)
+                if highest is None or highest < resume_at - 1:
+                    die(f"resend: the venue reported no gap left, so the resent reports should "
+                        f"have run to {resume_at - 1}. The member's highest MsgSeqNum is "
+                        f"{highest}, so the range was not closed and the member is still short.")
+                log(f"  resend: the resent reports closed the range at {highest}, leaving the "
+                    f"member expecting {resume_at} -- OK")
+
+            # 7. The session is still there afterwards. This is the assertion the others
+            #    cannot make between them: every one of them can hold while the two sides walk
+            #    away from the resend disagreeing about where the numbering now stands, and
+            #    nothing shows it until the venue next sends. A resend that is answered
+            #    correctly message by message and then kills the session on the following
+            #    heartbeat has not worked, and a test that stops at "resend complete" says it
+            #    has.
+            survival_pos = file_end(gw_log)
+            log(f"  resend: watching the session for {_RESEND_SURVIVAL_WAIT:.0f}s, spanning a "
+                "heartbeat, to see that it survives the resend ...")
+            time.sleep(_RESEND_SURVIVAL_WAIT)
+
+            unbound = count_log_marker(
+                gw_log, f"announced session comp_id='{FIX8_COMP_ID}' unbound from instance",
+                from_byte=survival_pos,
+            )
+            if unbound > 0:
+                die("resend: the session died after the resend completed. The venue reported the "
+                    "replay as successful and the member then dropped the session, which means "
+                    "the two sides came out of it disagreeing about the numbering -- the "
+                    "member's own session log names the number it received and the number it "
+                    "expected. Check whether the replay reused a number the venue had already "
+                    "sent: the range it rewinds into includes whatever administrative traffic "
+                    "occupied those numbers, and the WAL holds no record of that.")
+            if f8proc.poll() is not None:
+                die("resend: the member's client exited after the resend completed. Its session "
+                    "log records why; a sequence-number disagreement is the likely cause.")
+            log("  resend: the session survived the resend and the heartbeat that followed -- OK")
 
         # ── Session provisioning (step 4) ─────────────────────────────────────
         # Nothing is killed. Everything here reads the gateway's own log, because the
@@ -4182,6 +4710,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 _INFLIGHT_CFG,
                 listen_port=gateway_listen_port(prefix, "b"),
                 keep_sequence_numbers=True,
+                ignore_logon_sequence_check=True,
             )
             f8proc = send_burst(0, gw_b_log, instance_b_config, client_output)
 
@@ -4216,13 +4745,103 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  in-flight: the member's Logon carried MsgSeqNum={logon_seq}, not 1 -- the venue "
                 "resumed the session rather than resetting it -- OK")
 
-            # The resend leg is deliberately NOT asserted here, and the reason is a limitation
-            # of the harness client rather than of the venue. With the venue correctly numbering
-            # its Logon at the resumed position, the gap the member must recover from appears on
-            # the LOGON itself; f8test terminates the session in that case instead of issuing a
-            # ResendRequest, which the FIX standard says it should. Replay itself is exercised by
-            # the sequencer's own path -- see the SessionReplayRequest handling -- and the venue
-            # side of recovery is what this scenario pins.
+            # 6. The member asks for what it missed, and the session survives being answered.
+            #
+            #    This leg used to be skipped, on the grounds that f8test terminates rather than
+            #    issuing a ResendRequest when the gap appears on the Logon itself. That is what
+            #    it does by default, and it is a property of the client's configuration rather
+            #    than of the venue: fix8 only throws there when ignore_logon_sequence_check is
+            #    unset, which the config above now sets. No gap has to be manufactured, either
+            #    -- the unclean death biased the numbering high, so the member is already short
+            #    by everything the dead instance sent.
+            #
+            #    What is pinned here is the member-observable part: it asks, it is answered,
+            #    and it comes out of the answer still logged in with its numbering agreeing
+            #    with the venue's. That is enough to catch the failover half of BUG-0051 --
+            #    instance b did not send the messages being asked about and cannot say which
+            #    of those numbers carried reports, so it fills them all with reports, and the
+            #    member is left expecting a number the venue will not send.
+            #
+            #    What no assertion here can reach is whether the reports it was handed belong
+            #    on the numbers they arrived under. The sequencer returns the most recent
+            #    reports for the session, so after a failover the member is handed recent ones
+            #    presented as the old missing ones, and nothing on its side distinguishes that
+            #    from a correct answer. See docs/availability/resend_provenance.md.
+            found, elapsed, _ = poll_log_for(
+                gw_b_log, "ResendRequest BeginSeqNo=", timeout=_RESEND_TIMEOUT, from_byte=gw_b_pos,
+            )
+            if not found:
+                die("in-flight: the member never asked for what it missed. It was sent a Logon "
+                    f"numbered {logon_seq} while expecting 1, so it was short by everything the "
+                    "dead instance had sent. Check the generated config carries "
+                    "ignore_logon_sequence_check.")
+            log(f"  in-flight: the member asked instance b for the gap ({elapsed:.1f}s)")
+
+            found, elapsed, _ = poll_log_for(
+                gw_b_log, "resend complete", timeout=_RESEND_TIMEOUT, from_byte=gw_b_pos,
+            )
+            if not found:
+                die("in-flight: instance b never finished answering the resend. The reports come "
+                    "from the sequencer's WAL asynchronously -- check for a SessionReplayRequest "
+                    "that got no SessionReplayComplete.")
+            log(f"  in-flight: instance b answered the resend ({elapsed:.1f}s)")
+
+            # 6a. And it answered with real reports, not a gap-fill over the whole range.
+            #
+            #     This is the assertion that separates a venue that recovered from one that
+            #     merely survived. Instance b never sent the messages being asked about, so it
+            #     can only replay them if the record of which numbers held a report outlived
+            #     the instance that made it -- which is the point of keeping that record in the
+            #     sequencer's session state rather than in the gateway. Without it, b has no
+            #     provenance, correctly declines to guess, and gap-fills everything: the member
+            #     keeps its session and loses every report it missed.
+            resent = _resent_report_count(gw_b_log, from_byte=gw_b_pos)
+            if not resent or resent <= 1:
+                die(f"in-flight: instance b resent {resent} report(s) -- it gap-filled the range "
+                    "instead of replaying it. The member kept its session and lost everything it "
+                    "missed. That is what the venue does when it has no record of which of the "
+                    "member's numbers held a report, so check that the sequencer was given one: "
+                    "the gateway reports it on SessionSequenceUpdate every 2s, and a session that "
+                    "lives and dies inside one interval never reports at all.")
+            log(f"  in-flight: instance b resent {resent} real report(s) for a session it never "
+                "served -- the record outlived the instance that made it -- OK")
+
+            resume_at = _resend_resume_point(gw_b_log, from_byte=gw_b_pos)
+            if resume_at is None:
+                die("in-flight: instance b did not say where it would resume after the replay.")
+
+            time.sleep(_RESEND_CLIENT_SETTLE)
+            received = _client_messages(client_output)
+            gap_fills = [int(msg["NewSeqNo"]) for msg in received
+                         if msg.get("MsgType") == "4" and _fix_flag_is_set(msg.get("GapFillFlag"))
+                         and msg.get("NewSeqNo", "").isdigit()]
+            if resume_at not in gap_fills:
+                die(f"in-flight: the member's gap was not closed at {resume_at}, the number the "
+                    f"venue will send next. It received gap-fills at NewSeqNo {gap_fills}. The "
+                    "member is left expecting something other than what arrives, which is a gap "
+                    "that never closes.")
+            log(f"  in-flight: the member's gap closed at {resume_at}, the venue's next number -- OK")
+
+            # The same watch scenario 22 keeps, and for the same reason: everything above can
+            # hold while the two sides come out of the resend disagreeing, and nothing shows it
+            # until the venue next sends.
+            survival_pos = file_end(gw_b_log)
+            log(f"  in-flight: watching the session for {_RESEND_SURVIVAL_WAIT:.0f}s, spanning a "
+                "heartbeat, to see that it survives the resend ...")
+            time.sleep(_RESEND_SURVIVAL_WAIT)
+            unbound = count_log_marker(
+                gw_b_log, f"announced session comp_id='{FIX8_COMP_ID}' unbound from instance",
+                from_byte=survival_pos,
+            )
+            if unbound > 0:
+                die("in-flight: the session died after instance b answered the resend. A member "
+                    "that fails over to the surviving gateway and asks for what it missed must "
+                    "come out of it still logged in -- losing the session at a failover is the "
+                    "moment it can least afford it.")
+            if f8proc.poll() is not None:
+                die("in-flight: the member's client exited after the resend. Its session log "
+                    "records why; a sequence-number disagreement is the likely cause.")
+            log("  in-flight: the session survived the resend and the heartbeat that followed -- OK")
 
         result_pass = True
         log("")

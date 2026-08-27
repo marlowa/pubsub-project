@@ -115,6 +115,13 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void disconnect_session(const FixSession& session, const std::string& reason);
     void send_fix_to_session(FixSession& session, const FixMessage& msg);
 
+    /// The session's report-number ranges not yet reported to the sequencer, ready for the wire.
+    static std::vector<pubsub_itc_fw_app::SeqNumRange> unreported_report_seq_nums(const FixSession& session);
+
+    /// Emits one SequenceReset-GapFill over the run of numbers, starting where the replay
+    /// stands, that held something the venue cannot replay. See FixSession::report_seq_nums.
+    void gap_fill_unreplayable_run(FixSession& session);
+
     // On client disconnect: moves the session's open_orders into the pending
     // cancel queue in O(1) and arms the drain timer.  The actual OCRs are
     // sent in batches by drain_pending_cancels() so the reactor thread is

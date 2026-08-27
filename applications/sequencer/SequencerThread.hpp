@@ -23,6 +23,7 @@
 
 #include "EpochStore.hpp"
 #include "GatewayIds.hpp"
+#include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
 
@@ -419,6 +420,20 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         /// is sent. What it cannot see is the admin traffic (heartbeats, rejects), which is
         /// what the allowance below covers.
         int32_t ers_since_report{0};
+
+        /**
+         * @brief Which of this session's outbound numbers held an execution report.
+         *
+         * Reported by the gateway, for the same reason the number above it is: the sequencer
+         * cannot derive it. The FIX numbering covers every message the member was sent, and
+         * the heartbeats, Logons and rejects among them never come near the sequencer.
+         *
+         * Held here rather than in the gateway because a resend is served by whichever
+         * instance holds the session *now*, which after a failover is not the instance that
+         * sent the messages being asked about. A record kept in the gateway is empty in
+         * exactly the case it exists for. See docs/availability/resend_provenance.md.
+         */
+        std::vector<fix_common::SeqNumRange> report_seq_nums;
     };
 
     /// Added when resuming a session whose gateway died without reporting.

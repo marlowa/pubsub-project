@@ -1599,11 +1599,22 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         resume_seq_num += state.ers_since_report + unclean_resume_admin_allowance;
     }
 
+    // And which of the session's numbers held a report, which is the half a gateway cannot
+    // work out for itself. The instance that sent them may be gone; this is the only surviving
+    // record of what its numbering carried, and without it a resend has to guess. See
+    // docs/availability/resend_provenance.md.
+    std::vector<pubsub_itc_fw_app::SeqNumRange> wire_ranges;
+    wire_ranges.reserve(state.report_seq_nums.size());
+    for (const fix_common::SeqNumRange& range : state.report_seq_nums) {
+        wire_ranges.push_back(pubsub_itc_fw_app::SeqNumRange{range.from_seq_num, range.to_seq_num});
+    }
+
     pubsub_itc_fw_app::SessionBoundAck ack{};
     ack.comp_id = identity.comp_id_view();
     ack.gateway_protocol_id = identity.protocol;
     ack.known = known;
     ack.outbound_seq_num = resume_seq_num;
+    ack.report_seq_nums = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::SeqNumRange>{wire_ranges.data(), wire_ranges.size()};
     send_pdu(conn_id, pubsub_itc_fw_app::SessionBoundAck::message_pdu_id, 0, ack);
 
     // The resumed session starts from the figure just handed out, so the running count that
@@ -1625,6 +1636,20 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
                    identity.comp_id_view(), identity.protocol, known ? "restored" : "is new", resume_seq_num);
     }
 }
+
+namespace {
+
+/// The wire's ranges as the ones the merge and query helpers work on.
+std::vector<fix_common::SeqNumRange> to_seq_num_ranges(const pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::SeqNumRangeView>& wire) {
+    std::vector<fix_common::SeqNumRange> ranges;
+    ranges.reserve(wire.size);
+    for (size_t index = 0; index < wire.size; ++index) {
+        ranges.push_back(fix_common::SeqNumRange{wire.data[index].from_seq_num, wire.data[index].to_seq_num});
+    }
+    return ranges;
+}
+
+} // namespaces
 
 void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
@@ -1670,10 +1695,17 @@ void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& 
     SessionSequenceState& state = session_sequence_state_[identity];
     state.outbound_seq_num = view.outbound_seq_num;
 
+    // And which of its numbers held a report, for the part the departing gateway had not
+    // already reported. Without this a resend served by the next gateway would have to guess
+    // which numbers it may replay into, and guessing is BUG-0051.
+    fix_common::seq_num_ranges::merge(state.report_seq_nums, to_seq_num_ranges(view.report_seq_nums));
+    fix_common::seq_num_ranges::trim(state.report_seq_nums, fix_common::seq_num_ranges::max_remembered);
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: session comp_id='{}' protocol={} unbound from instance={} connection={} -- "
-               "remembered outbound={}; its reports have nowhere to go until it binds again",
-               identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id, state.outbound_seq_num);
+               "remembered outbound={} and {} report range(s); its reports have nowhere to go until it binds again",
+               identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id, state.outbound_seq_num,
+               state.report_seq_nums.size());
 }
 
 void SequencerThread::note_report_forwarded(const fix_common::SessionIdentity& identity) {
@@ -1714,6 +1746,13 @@ void SequencerThread::handle_session_sequence_update(const pubsub_itc_fw::EventM
         // reports forwarded since the last one starts again.
         state.ers_since_report = 0;
     }
+
+    // Merged unconditionally, and not gated on the number above moving. The ranges describe
+    // numbers already sent, so a late update from an instance that has lost the session still
+    // carries facts about numbers that really did hold reports; merging is idempotent and
+    // cannot wind anything backwards, which is why this is safe where the number is not.
+    fix_common::seq_num_ranges::merge(state.report_seq_nums, to_seq_num_ranges(view.report_seq_nums));
+    fix_common::seq_num_ranges::trim(state.report_seq_nums, fix_common::seq_num_ranges::max_remembered);
 }
 
 void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -1733,9 +1772,18 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     const int64_t from_seq_no = view.from_seq_no;
     const int32_t max_records = view.max_records > 0 ? view.max_records : default_replay_max_records;
 
+    // How many of the session's newest reports to pass over before collecting.
+    //
+    // Zero means the member is asking about the tail of its stream, which is the usual case
+    // after a disconnect and the only one this used to serve. A member asking about the middle
+    // of its history names how far back the range sits, because otherwise it is sent the most
+    // recent reports wearing the numbers it asked for -- BUG-0053, which is invisible to it,
+    // every other property of the reply being correct.
+    const int32_t skip_most_recent = view.skip_most_recent > 0 ? view.skip_most_recent : 0;
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: SessionReplayRequest id={} comp_id='{}' protocol={} from_seq_no={} max_records={}", view.request_id, identity.comp_id_view(),
-               identity.protocol, from_seq_no, max_records);
+               "SequencerThread: SessionReplayRequest id={} comp_id='{}' protocol={} from_seq_no={} max_records={} skip_most_recent={}", view.request_id,
+               identity.comp_id_view(), identity.protocol, from_seq_no, max_records, skip_most_recent);
 
     // Walk the WAL and hand back this session's execution reports.
     //
@@ -1760,6 +1808,13 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     //
     // So matches are collected into a window of the last max_records and sent afterwards.
     // The window is what bounds the memory: max_records payloads, not the whole slice.
+    //
+    // With skip_most_recent the window holds that many more, and the newest skip_most_recent
+    // of them are dropped at the end -- so what is returned is the max_records reports sitting
+    // immediately behind the ones skipped. "Most recent" becomes "most recent below a point the
+    // caller names", and the tail case is the same code with the point at zero.
+    const size_t window_capacity = static_cast<size_t>(max_records) + static_cast<size_t>(skip_most_recent);
+
     struct ReplayMatch {
         int64_t record_id{};
         int64_t wall_time_ns{};
@@ -1773,7 +1828,7 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     const int64_t started_ns = config_.wall_clock->now_ns();
 
     [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, {0, 0}, [&identity, from_seq_no, max_records, &window, &total_matched](int64_t record_id, const void* payload, size_t size) {
+        config_.wal_directory, {0, 0}, [&identity, from_seq_no, window_capacity, &window, &total_matched](int64_t record_id, const void* payload, size_t size) {
             if (record_id <= from_seq_no) {
                 return;
             }
@@ -1812,15 +1867,17 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
             match.wall_time_ns = wall_time_ns;
             match.payload.assign(stored.payload.data, stored.payload.data + stored.payload.size);
             window.push_back(std::move(match));
-            if (window.size() > static_cast<size_t>(max_records)) {
+            if (window.size() > window_capacity) {
                 window.pop_front();
             }
         });
 
-    // Older matches than the window holds were dropped rather than never found, which is
-    // what the member needs to know: it has been given the most recent ones and there is
-    // history behind them it has not seen.
-    truncated = total_matched > static_cast<int64_t>(window.size());
+    // Drop the newest skip_most_recent, leaving the ones the caller actually named. The window
+    // held them only so that the ones behind them could be found: a scan that discarded them as
+    // it went could not know, at the time it saw them, how many more were still coming.
+    for (int32_t skipped = 0; skipped < skip_most_recent && !window.empty(); ++skipped) {
+        window.pop_back();
+    }
 
     for (const ReplayMatch& match : window) {
         pubsub_itc_fw_app::SessionReplayRecord replay_record{};
@@ -1832,6 +1889,16 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
         ++record_count;
         last_seq_no = match.record_id;
     }
+
+    // Truncated means the caller was given less than it asked for, so what it wanted reaches
+    // further back than the WAL still holds and part of its range cannot be served.
+    //
+    // It used to mean "the session has history older than this reply", which is true of every
+    // resend a session with any history makes -- the reply holds the range asked for and the WAL
+    // holds everything the session has ever done. So a warning saying the member had been short
+    // changed fired on every healthy resend, and said it right after reporting the resend
+    // complete with no gap left. That was BUG-0052.
+    truncated = record_count < max_records;
 
     pubsub_itc_fw_app::SessionReplayComplete complete{};
     complete.request_id = view.request_id;

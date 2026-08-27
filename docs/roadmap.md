@@ -80,9 +80,31 @@ costs to leave alone, not on how long it takes.
 
 Start with the three cheap tests: that `PossDupFlag` is set inside the requested gap and not
 beyond it, that `OrigSendingTime` is present on every resent message, and that the terminating
-gap-fill leaves the member expecting the number the venue will send next. All three assert on
-bytes the existing `resend_recovery` scenario already produces, so they need no new venue
-behaviour and they exist before anything changes underneath them.
+gap-fill leaves the member expecting the number the venue will send next.
+
+**Started 2026-08-27, and starting there was right for a reason worth keeping.** The three tests
+are written, along with four more, and `EndSeqNo` is honoured: BUG-0037 and BUG-0039 are closed.
+The advice above was wrong on one point -- the `resend_recovery` scenario produced no such bytes,
+because nothing in an ordinary reconnect creates a gap, and the scenario had to be made to
+manufacture one before any of the three had anything to run against.
+
+What that turned up was **BUG-0051**, and then two siblings of it. The venue replayed by rewinding
+its outbound sequence number and filling the range with reports, and the range holds messages the
+WAL knows nothing about, so a number went out twice -- after a resend that reported success and
+that every message-level assertion passed over. BUG-0053: a bounded resend was answered with the
+most recent reports rather than the ones asked for. BUG-0052: the truncation warning fired on every
+healthy resend.
+
+**All three are fixed**, by [Resend provenance](availability/resend_provenance.md), built the same
+day. They came from one missing fact: the venue has no outbound message store, deliberately, and
+the trade was made for gateway HA -- but that store was doing two jobs and only one of them was
+replaced by the WAL. It now records which outbound number each report went out on, in the session
+state that already carries a member's numbering between gateway instances, so the record outlives
+the gateway that made it. Scenarios 22, 23 and 40 each failed on this until it was built and now
+pass; on a failover the surviving instance replays a thousand real reports for a session it never
+served, where before it filled the range with whatever came back.
+
+Inbound validation, the half this item leads on, has not been started.
 
 **2. The order book grows without bound, and the venue does not say so.** Two bug list entries
 with one cause: nothing fills orders, so an order rests until it is cancelled and roughly nine

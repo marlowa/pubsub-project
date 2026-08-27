@@ -19,6 +19,7 @@
 #include "FixOrderLimits.hpp"
 #include "FixParser.hpp"
 #include "OpenOrderEntry.hpp"
+#include "SeqNumRanges.hpp"
 
 namespace fix_order_gateway {
 
@@ -205,6 +206,36 @@ struct FixSession {
     int64_t replay_request_id{0};
     /// The outbound number the session had reached before the resend began; where to resume.
     int replay_resume_seq_num{1};
+    /// The last number the member asked for: EndSeqNo when it named one, otherwise the last
+    /// number the session had reached. Nothing is resent past it.
+    int replay_end_seq_num{1};
+
+    /**
+     * @brief Which of this session's outbound numbers held an execution report.
+     *
+     * A resend rewinds the outbound number and refills the range from the sequencer's WAL,
+     * which holds reports and nothing else. Every other message the member was sent -- a Logon,
+     * a heartbeat, a reject, a report this gateway synthesised for an order the sequencer never
+     * saw -- took a number in that range and cannot be produced again, so those numbers are
+     * gap-filled instead. This says which they are; a number not covered here is gap-filled,
+     * and it makes no difference whether that is because nothing replayable was there or
+     * because the venue no longer remembers back that far.
+     *
+     * Seeded from SessionBoundAck rather than accumulated here from scratch, which is the
+     * point: a resend is served by whichever instance holds the session now, and after a
+     * failover that is not the instance that sent the messages being asked about. The
+     * sequencer holds the record across that change, exactly as it holds outbound_seq_num.
+     *
+     * Reported onward on SessionSequenceUpdate and SessionUnbound, from
+     * report_seq_nums_shipped_to, so an update carries what has happened since the last one
+     * rather than the session's whole history.
+     *
+     * See docs/availability/resend_provenance.md, and BUG-0051 for what refilling every number
+     * with a report instead does to a member.
+     */
+    std::vector<fix_common::SeqNumRange> report_seq_nums;
+    /// Highest number already reported to the sequencer; where the next update starts.
+    int report_seq_nums_shipped_to{0};
     /// Encoded ExecutionReports that arrived live while the resend was running.
     std::vector<std::vector<uint8_t>> deferred_execution_reports;
 
