@@ -714,6 +714,27 @@ has to survive a gateway failover for the same reason the outbound counter does.
 Not a small change, and it touches the session state that HA already carries across a failover.
 Worth sizing before starting.
 
+**Designed 2026-08-27 in [Inbound sequence checking](fix/inbound_sequence_checking.md), not
+built.** Three decisions were taken, and one of them is the reason the design was written down
+before any code:
+
+- **The resume bias after an unclean gateway death is the opposite of the outbound one.** The
+  outbound number resumes deliberately high, because too low sends the member a fatal number. The
+  inbound number must resume deliberately **low**, because too high makes the venue treat an
+  innocent member as committing a serious error and disconnect it. The two fields will sit beside
+  each other on the same three PDUs, so the instinct to treat them alike is the trap.
+- **A message arriving while a gap is open is discarded, not buffered**, and the `ResendRequest`
+  names `EndSeqNo=0` so the member sends it again with the rest. A gap therefore halts that member
+  until it answers, which is an availability cost taken deliberately rather than discovered.
+- **Lower than expected without `PossDupFlag` ends the session**, as the specification requires.
+
+The note also records the awkward part: the venue does not know what to expect when a Logon
+arrives, because the expected number comes back asynchronously on `SessionBoundAck`. The existing
+`awaiting_sequence_state` window is where that check belongs.
+
+Testing is unusually well served: `f8test -S` sets the client's next *send* number, the mirror of
+the `-R` that manufactured the outbound gaps for BUG-0037.
+
 ### BUG-0040: The order-accounting check reports lost orders when it means it could not count them {#bug_0040}
 
 | | |
