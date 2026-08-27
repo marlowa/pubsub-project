@@ -23,8 +23,21 @@ lose a member's order without either side noticing.
 
 ## The rule
 
-One gate at the top of the inbound dispatch, before the branch on message type, so no message can
-reach a handler without passing it.
+One gate, before the branch on message type, so no message can reach a handler without passing it.
+
+**It has to sit on two paths, not one.** The parser has separate callbacks for a message that
+parses and one that is well framed but fails FIX validation, and the second currently sends a
+Reject (35=3) without the counter ever seeing the message. **A rejected message has still consumed
+its sequence number**, so leaving that path alone would make the next valid message look like a
+gap and produce a `ResendRequest` for a number the member had already sent. Sequence position is
+decided first on both paths, because a message whose place in the stream is unknown cannot be
+trusted whatever else is wrong with it:
+
+- number readable and **in sequence** — send the Reject, advance the counter;
+- number readable and **out of sequence** — the table below applies, and the Reject is not sent
+  at all, because the message will arrive again in the resend;
+- number **not readable** — send the Reject and do not advance, since there is no position to
+  advance to. The next message then reveals a gap and the resend recovers.
 
 `expected_inbound_seq_num` is **the next number the venue expects from this member**. Getting that
 definition wrong by one is the whole game, so it is stated rather than implied.
@@ -188,6 +201,13 @@ session looking healthy to anyone not reading the log. That is the shape of
 [BUG-0009](../bug_list.md#bug_0009), where the sequencer knew for seven minutes that it had no
 matching engine, logged it a million times at INFO, and told the gateway nothing.
 
+**Five seconds between attempts, two attempts, then the Logout** — so a member has about fifteen
+seconds to answer before it loses the session. A named constant beside the existing logon and
+SCRAM timeouts, not configuration: nothing yet suggests members need different values, and a
+figure in a TOML that no operator has a reason to change is a field to keep in step for nothing.
+If one ever does, the gateway configuration is where it goes, and the per-comp-id route that
+cancel-on-disconnect takes is the step beyond that.
+
 Three things this needs, and none is new machinery: a per-session timer of the kind already armed
 for logon and for the SCRAM exchange; a WARNING when the retries are exhausted that names the
 member and the gap; and the gap's age exposed as a metric, so a member sitting in this state is
@@ -206,8 +226,8 @@ Each step leaves the venue working.
 
 1. **The field on the three PDUs**, populated and carried but not yet acted on. No behaviour
    change; the sequencer starts remembering a number nothing reads.
-2. **The counter and the checks**, in the gateway, with the Logon path last because it is the one
-   with the ordering subtlety.
+2. **The counter and the checks**, in the gateway, on both the parse and the reject paths, with
+   the Logon path last because it is the one with the ordering subtlety.
 3. **The retry timer and the Logout**, which needs the checks above it to have anything to time.
 4. **The scenarios**, written to fail first — including a member that goes silent instead of
    answering, which is the one whose absence would not otherwise be noticed.
