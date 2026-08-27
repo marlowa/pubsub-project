@@ -180,11 +180,51 @@ numbered 1 has been processed. The venue already honours the flag for the outbou
 inbound side follows it for the same reason, and the two must reset together or the session is
 half-reset.
 
+## What the venue does today, measured
+
+Taken on 2026-08-27 with `scripts/fix_raw_client.py` against a running venue, as the "before" this
+work changes. The member logs on, sends one order in sequence, and then misbehaves:
+
+```
+in-sequence order  -> ExecutionReport ClOrdID=base1   (venue expects 3 next)
+
+1. GAP: order numbered 50 when the venue expects 3
+   -> ACCEPTED, ClOrdID=gap1
+   -> ResendRequest from venue? NO
+
+2. TOO LOW: order numbered 2, no PossDupFlag
+   -> ACCEPTED, ClOrdID=low1
+   -> Logout from venue? NO
+
+3. NO MsgSeqNum AT ALL
+   -> venue replied with: ['3']        (a Reject -- this path already behaves)
+```
+
+The first is BUG-0038 in one line: forty-seven numbers were skipped, the order was accepted anyway,
+and neither side has any reason to think something is missing. The third is the encouraging one --
+`MsgSeqNum` is a required header field, so a message without it already fails validation and gets a
+Reject. Step 2's work there is only to make sure the counter is **not** advanced for it.
+
 ## Testing
 
+**Two clients, for two jobs.**
+
 `f8test -S` sets the client's next **send** sequence number, the exact mirror of the `-R` used to
-manufacture the outbound gaps in `ha_test.py` scenarios 22 and 40. An inbound gap is therefore as
-manufacturable as an outbound one, in a harness that now knows how to drive it.
+manufacture the outbound gaps in `ha_test.py` scenarios 22 and 40. That covers the conforming
+cases: a member that continues its numbering, or restarts it, or genuinely misses messages.
+
+**`scripts/fix_raw_client.py` covers what a conforming engine will not do.** f8test is an engine
+and is trying to be correct: it always writes a valid `MsgSeqNum` and will not send below its own
+expected without marking it. At least two of the rules above can only be exercised by a client
+that misbehaves on purpose — a message with no readable number, and a number below expected with
+no `PossDupFlag`. The raw client has no session layer at all: it sends the bytes it is told to,
+computes the framing unless asked to get it wrong, and never forms an opinion about what comes
+back.
+
+It needs no cryptography, which is what made it small. The member's side of authentication is a
+plaintext password on tag 554 of the Logon — an empty one is simply absent — because the SCRAM
+exchange happens between the gateway and the authentication service, not between the member and
+the gateway.
 
 Scenarios worth having, and each should be seen to fail before the code exists:
 
