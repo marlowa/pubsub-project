@@ -2081,6 +2081,10 @@ void FixOrderGatewayThread::announce_session_bound(const FixSession& session) {
     bound.gateway_protocol_id = gateway_ids::fix_order_gateway;
     bound.gateway_instance_id = config_.instance_id;
     bound.gateway_session_conn_id = session.conn_id.get_value();
+    // Told at bind time, not left to be inferred. The gateway discards what it is handed when
+    // the member asked for a reset, but the sequencer would otherwise keep it -- and keep the
+    // report-number ranges with it, which then describe a numbering that no longer exists.
+    bound.reset_seq_nums = session.reset_seq_num_requested;
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionBound::message_pdu_id, bound);
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",

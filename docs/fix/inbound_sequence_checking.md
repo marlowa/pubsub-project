@@ -120,6 +120,16 @@ That figure is already a lower bound — a member can only have sent *more* sinc
 which is exactly the safe side. Adding an allowance, by symmetry with the outbound field, would
 disconnect members who had done nothing wrong.
 
+**"A member can only have sent more" holds only because a reset is handled separately, and that
+is the one thing this rests on.** A member may restart its numbering at any Logon with
+`ResetSeqNumFlag=Y`, and clients make it easy — the venue's own Java test client offers it, and it
+is the default in the stock fix8 configuration. On that path the member's next number is *lower*
+than the venue remembers, by design. So the reset is carried on `SessionBound` (120) and the
+sequencer discards everything it remembers for the session, which is what keeps the lower-bound
+argument true for every other path. See [BUG-0055](../bug_list.md#bug_0055), which is what happens
+when it is not: the venue's memory sticks on a numbering the member has abandoned, and a returning
+member is judged to have gone backwards on every reconnect.
+
 **The price, stated plainly.** After an unclean death the venue may re-receive messages it already
 processed, and the session layer cannot recognise them: they arrive with `PossDupFlag=Y` and a
 number at or above what the venue now expects, which is indistinguishable from a legitimate

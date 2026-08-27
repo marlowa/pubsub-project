@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 54 |
+| Bugs recorded | 55 |
 | Open | 23 (18 defects, 5 tasks) |
-| Closed | 31 |
-| Next id | BUG-0055 |
+| Closed | 32 |
+| Next id | BUG-0056 |
 
 ## Open bugs by severity
 
@@ -1062,6 +1062,60 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0055: A member restarting its numbering leaves the sequencer remembering the old one {#bug_0055}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-27 |
+| Recorded | 2026-08-27 |
+| How | Raised in design review of BUG-0038: a member can set its sequence number at Logon, and the venue's own Java test client offers it |
+| Impact | The venue's memory of a session is stuck on a numbering the member has abandoned, and the record of which numbers held reports becomes a mixture of two numberings |
+| Fixed | 2026-08-27 -- `SessionBound` carries the reset and the sequencer discards what it remembers |
+
+`ResetSeqNumFlag=Y` on a Logon means "forget where we were, both of us start at 1". The gateway
+honours it. **The sequencer was never told**, and `SessionBound` had no field for it.
+
+Everything the sequencer remembers about a session then describes a series the member has
+abandoned. Observed on `ha_test.py` scenario 19, whose client reconnects with the flag set:
+
+```
+sequence state is new      -- outbound=1    inbound=1
+unbound ... remembered outbound=1002 and 1 report range
+sequence state restored    -- outbound=1002 inbound=1002   <- the reconnect asked to restart at 1
+```
+
+**Two consequences, and the second is the serious one.**
+
+The **sequence numbers** are caught, just, by the gateway: its `reset_seq_num_requested` branch
+discards whatever it is handed. But the sequencer's copy then sticks, because the updates that
+follow report the new low numbers and both guards there refuse to lower. So its record stays on
+the old numbering for the life of the process. Harmless while nothing reads it; fatal once
+[BUG-0038](#bug_0038) does, because a returning member would be expected at a number a thousand
+above where it is, judged to have gone backwards, and logged out on every reconnect thereafter.
+
+The **report-number ranges** are not caught at all, and this reaches work that was committed the
+same day. [BUG-0051](#bug_0051)'s fix records which outbound numbers held execution reports. After
+a reset the gateway clears its own copy and starts again from 1 -- and ships the new ranges to the
+sequencer, which **merges** them into the ranges from the old numbering. The next gateway to bind
+the session is then told that numbers 2 to 1001 held reports, when in the new numbering they hold
+a Logon and heartbeats. A resend would replay reports onto them, which is BUG-0051 exactly,
+arriving by a road its fix did not consider.
+
+**This is an ordinary path, not an edge case.** A member may reset at any logon, the venue's Java
+test client offers it, and it is the default in the stock fix8 configuration -- so the common case
+in this project's own testing is the one that was wrong.
+
+**Fixed 2026-08-27.** `SessionBound` (120) gains `reset_seq_nums`, set from the flag the gateway
+already reads at Logon and sent at bind time, before anything is handed back. The sequencer erases
+the whole remembered entry -- both numbers, the report count, and the ranges -- because a reset
+invalidates all of it equally. The bind then answers `known=false`, which is the truth: the venue
+remembers nothing about this numbering, because the member asked it not to.
+
+Verified both ways on scenario 19 and scenario 22. A member that asks now sees
+`its remembered sequence state discarded` followed by `is new -- outbound=1 inbound=1`; a member
+that does not ask still sees `restored -- outbound=1011 inbound=1011`, with no discard.
 
 ### BUG-0044: Scripts cannot answer `--help` without their plotting dependencies {#bug_0044}
 

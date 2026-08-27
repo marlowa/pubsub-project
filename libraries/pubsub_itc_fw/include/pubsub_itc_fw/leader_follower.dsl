@@ -402,6 +402,17 @@ message SessionBound (id=120, version=1)
     i16    gateway_protocol_id    # which order-entry protocol: see GatewayIds.hpp
     i16    gateway_instance_id    # which instance of that protocol now holds it
     i32    gateway_session_conn_id # the connection within that instance: the destination
+    # The member asked, on its Logon, for both sides to restart at 1 (ResetSeqNumFlag=Y).
+    #
+    # The sequencer has to be told, because everything it remembers about this session describes
+    # a numbering the member has just discarded: both sequence numbers, and the record of which
+    # outbound numbers held execution reports. Kept, they would be handed to the next gateway to
+    # bind the session as though they still described it.
+    #
+    # A member is entitled to do this at any logon, and clients make it easy -- the venue's own
+    # Java test client offers it, and it is the default in the stock fix8 configuration. So this
+    # is the ordinary path, not an edge case.
+    bool   reset_seq_nums         # the member asked to restart at 1; forget what is remembered
 end
 
 # ------------------------------------------------------------

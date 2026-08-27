@@ -1568,6 +1568,27 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
 
     session_destinations_[identity] = destination;
 
+    // Unless the member asked to start again, in which case there is nothing to hand back and
+    // keeping it would be worse than useless.
+    //
+    // ResetSeqNumFlag=Y on a Logon discards the numbering on both sides, so everything remembered
+    // here describes a series the member has abandoned: both sequence numbers, and the record of
+    // which outbound numbers held execution reports. The numbers alone would be caught by the
+    // gateway, which discards what it is handed on that path -- but they would then be stuck,
+    // because the updates that follow report the new low numbers and the guards here refuse to
+    // lower. And the report ranges would not be caught at all: new ranges from the restarted
+    // numbering would be merged into the old ones, and the next gateway to bind the session
+    // would be told that numbers 2 to 1001 held reports when in the new numbering they hold a
+    // Logon and heartbeats. That is BUG-0051 arriving by a different road.
+    //
+    // A member may reset at any logon and clients make it easy, so this is an ordinary path.
+    if (view.reset_seq_nums) {
+        const size_t forgotten = session_sequence_state_.erase(identity);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: session comp_id='{}' protocol={} asked to restart its numbering -- {} remembered sequence state discarded",
+                   identity.comp_id_view(), identity.protocol, forgotten > 0 ? "its" : "no");
+    }
+
     // Hand back what the venue remembers of this session's sequence numbers, so the gateway
     // that has just taken it on continues where the last one left off instead of starting
     // at 1. A member whose numbers restarted on every reconnect would see a break it cannot
