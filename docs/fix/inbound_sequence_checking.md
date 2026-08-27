@@ -28,16 +28,24 @@ One gate, before the branch on message type, so no message can reach a handler w
 **It has to sit on two paths, not one.** The parser has separate callbacks for a message that
 parses and one that is well framed but fails FIX validation, and the second currently sends a
 Reject (35=3) without the counter ever seeing the message. **A rejected message has still consumed
-its sequence number**, so leaving that path alone would make the next valid message look like a
-gap and produce a `ResendRequest` for a number the member had already sent. Sequence position is
-decided first on both paths, because a message whose place in the stream is unknown cannot be
-trusted whatever else is wrong with it:
+its sequence number** — that part is the specification — so leaving that path alone would make the
+next valid message look like a gap and produce a `ResendRequest` for a number the member had
+already sent, on every validation failure.
 
-- number readable and **in sequence** — send the Reject, advance the counter;
-- number readable and **out of sequence** — the table below applies, and the Reject is not sent
-  at all, because the message will arrive again in the resend;
-- number **not readable** — send the Reject and do not advance, since there is no position to
-  advance to. The next message then reveals a gap and the resend recovers.
+Sequence position is therefore decided first on both paths, because a message whose place in the
+stream is unknown cannot be trusted whatever else is wrong with it. Three cases, and **only the
+first is settled by the specification; the other two were chosen** and can be revisited:
+
+| The message | What happens | Why |
+|---|---|---|
+| number readable, **in sequence** | send the Reject, advance | the specification: it consumed its number |
+| number readable, **out of sequence** | apply the gap rules; **do not** send the Reject | *chosen.* It arrives again in the resend and is rejected then, at the point the venue can place it. A Reject now would name a message the venue is simultaneously asking to be sent again |
+| number **not readable** | send the Reject, **do not** advance | *chosen.* It consumed some number, but not knowably the expected one, and assuming is how a counter drifts. The next message reveals a gap and the resend repairs it |
+
+The second and third have coherent alternatives — reject immediately as well as handling the gap;
+advance optimistically, or treat a message with no sequence number as grounds for disconnection.
+They are recorded as decisions rather than as consequences so that a reader who disagrees knows
+there is something to disagree with.
 
 `expected_inbound_seq_num` is **the next number the venue expects from this member**. Getting that
 definition wrong by one is the whole game, so it is stated rather than implied.
