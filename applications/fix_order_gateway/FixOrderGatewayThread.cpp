@@ -9,6 +9,7 @@
 
 #include <openssl/rand.h>
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstring>
@@ -1303,11 +1304,16 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
     // reconcile and which no amount of replay would fix.
     session->outbound_seq_num = view.outbound_seq_num;
 
-    // And where the member's own numbering had reached. Taken exactly as given: unlike the number
-    // above it, this one is never adjusted upward on the way out of the sequencer, because
-    // expecting too high a number from a member is how an innocent one gets disconnected. See
-    // docs/fix/inbound_sequence_checking.md.
-    session->expected_inbound_seq_num = view.inbound_seq_num;
+    // And where the member's own numbering had reached. Never adjusted upward on the way out of
+    // the sequencer, unlike the number above it, because expecting too high a number from a member
+    // is how an innocent one gets disconnected. See docs/fix/inbound_sequence_checking.md.
+    //
+    // The higher of the two, not simply what was handed back, and the reason is an ordering that
+    // is easy to miss: the member's Logon has ALREADY been seen by the time this reply arrives --
+    // it is what caused the bind -- so the counter has advanced past it, while the sequencer's
+    // figure predates it. Assigning would wind the counter back over a message the venue has
+    // consumed, and the member's next message would then look like a gap of one.
+    session->expected_inbound_seq_num = std::max(session->expected_inbound_seq_num, view.inbound_seq_num);
 
     // And which of the session's numbers held a report. This gateway may never have sent them
     // -- after a failover it certainly did not -- and this is the only surviving record of what
@@ -1320,9 +1326,9 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
     session->report_seq_nums_shipped_to = view.outbound_seq_num - 1;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixOrderGatewayThread: comp_id='{}' resuming the venue's sequence state -- outbound={} inbound={} (was 1), {} report range(s) covering {} "
-               "number(s)",
-               session->client_comp_id, view.outbound_seq_num, view.inbound_seq_num, session->report_seq_nums.size(),
+               "FixOrderGatewayThread: comp_id='{}' resuming the venue's sequence state -- outbound={} inbound={} (venue remembered inbound={}), {} report "
+               "range(s) covering {} number(s)",
+               session->client_comp_id, view.outbound_seq_num, session->expected_inbound_seq_num, view.inbound_seq_num, session->report_seq_nums.size(),
                fix_common::seq_num_ranges::count_in(session->report_seq_nums, 1, view.outbound_seq_num));
     complete_session_establishment(*session);
 }

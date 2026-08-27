@@ -199,6 +199,13 @@ Scenarios worth having, and each should be seen to fail before the code exists:
 - **Too low without `PossDupFlag` ends the session**, with a Logout the member can see.
 - **The counter survives a gateway failover**, in the shape of scenario 23: the member's inbound
   numbering must continue across the instance change, and must not be resumed high.
+- **A member that continues its own send numbering across a reconnect**, which no scenario does
+  today — every client uses a memory persister and restarts at 1, so the venue has never been
+  tested against a member whose Logon lands at or above where the venue expects. `f8test -S`
+  supplies it, but `send_burst` needs to set it per client rather than for the whole run.
+- **A member that asks for a sequence reset while the provenance record holds ranges**, which is
+  the shape of [BUG-0055](../bug_list.md#bug_0055): the common case in this project's own testing
+  was the one that was wrong, and nothing yet asserts on it.
 
 ## An unanswered ResendRequest: re-ask twice, then Logout
 
@@ -268,6 +275,15 @@ resuming the venue's sequence state -- outbound=4140 inbound=1002
 The member's inbound position survived the death of the gateway that observed it, and the
 asymmetry is legible in that one line: `outbound` biased high by its allowance, `inbound` exactly
 as reported.
+
+**One correction to step 1, made the same day.** `SessionBoundAck` assigned the remembered number
+over the counter; it now takes the higher of the two. The member's Logon has already been seen by
+the time the reply arrives — it is what caused the bind — so the counter has advanced past it while
+the sequencer's figure predates it, and assigning would wind it back over a message the venue had
+consumed. **Reasoned from the ordering, not observed**, and it is worth knowing why it could not
+be: reaching it needs a member whose Logon number is at or above what the venue remembers, and
+every client in the harness uses a memory persister, so each reconnects with its own numbering
+restarted at 1. That case is in step 4's list.
 
 ### Step 2 — the counter and the checks. **Not started.**
 
