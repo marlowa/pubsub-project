@@ -763,7 +763,9 @@ def install_directory_notice(staging_dir):
     print("  binaries' RUNPATH, so an instrumented library installed there would silently")
     print("  become what every other tool loads -- a perf_run.py after a coverage build")
     print("  would report figures with no indication that they are meaningless.")
-    print(f"  To run the system instrumented, name this prefix: ./start_fix_seq_system.py {staging_dir.name}")
+    print(f"  To run the system instrumented, name this prefix: ./scripts/perf_run.py {staging_dir.name}")
+    print(f"  or ./scripts/ha_test.py --scenario N {staging_dir.name}.  devenv.py takes it from the")
+    print(f"  env TOML instead: copy environments/dev.toml and set install_dir = \"{staging_dir.name}\".")
 
 
 def run_tests(build_dir, use_tsan=False, tsan_suppressions=None):

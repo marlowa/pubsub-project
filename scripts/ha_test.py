@@ -178,7 +178,7 @@ Options:
     --failover-timeout S  Max seconds per failover step (default: 30)
     --recovery-timeout S  Max seconds for recovery orders (default: 30)
 
-Startup order (mirrors start_fix_seq_system.py):
+Startup order (the same dependency order devenv.py uses):
   1. witness                          -- arbiters connect outbound to it (port 7100)
   2. arbiter_primary                  -- component listener 7200, peer listener 7203
   3. arbiter_secondary                -- component listener 7201, peer listener 7204

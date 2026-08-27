@@ -105,13 +105,22 @@ The dangerous case is not coverage but performance. A coverage library is `-O0` 
 disabled and roughly 10% larger; a `perf_run.py` executed after a coverage build would produce
 figures that mean nothing, with nothing in its output to indicate why.
 
-To run the system deliberately instrumented, name the prefix -- both `start_fix_seq_system.py` and
-`perf_run.py` take it as their first positional argument:
+To run the system deliberately instrumented, name the prefix. `perf_run.py` and `ha_test.py` take
+it as a positional argument; `devenv.py` reads it from the environment file instead, so point one
+at the instrumented tree:
 
 ```bash
 ./scripts/build.sh --asan
-./scripts/start_fix_seq_system.py installed-asan
+./scripts/perf_run.py installed-asan
+./scripts/ha_test.py --scenario 1 installed-asan
+
+# for devenv.py: copy environments/dev.toml, set install_dir = "installed-asan"
+./scripts/devenv.py --env environments/dev-asan.toml start
 ```
+
+Under valgrind, use `callgrind_run.py`, which is built for it -- callgrind runs the guest in an
+instrumentation virtual machine some twenty to fifty times slower, so it establishes readiness by
+polling component logs rather than by sleeping.
 
 ---
 

@@ -124,7 +124,7 @@ that reports "could not measure" as "orders were lost"; `cmake --install` re-lay
 configuration templates unexpanded; `deploy.py` ignoring a changed environment file. None of
 these break the venue. All of them cost time by sending someone to look in the wrong place.
 
-**5. Everything else** -- the lint gate, the orphaned `start_fix_seq_system.py`, the Doxygen
+**5. Everything else** -- the lint gate, the Doxygen
 `\ref` handling, the five-second logon delay. Worth doing, cheap to do, and nothing depends on
 when.
 

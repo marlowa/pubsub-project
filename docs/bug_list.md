@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 54 |
-| Open | 26 (21 defects, 5 tasks) |
-| Closed | 28 |
+| Open | 25 (20 defects, 5 tasks) |
+| Closed | 29 |
 | Next id | BUG-0055 |
 
 ## Open bugs by severity
 
-5 high, 12 medium, 9 low.
+5 high, 12 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -35,7 +35,6 @@
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
-| [BUG-0016](#bug_0016) | low | defect | `start_fix_seq_system.py` launches from configs that no longer exist |
 | [BUG-0017](#bug_0017) | low | defect | Slab allocator design notes do not mention the tripwire |
 | [BUG-0044](#bug_0044) | low | defect | Scripts cannot answer `--help` without their plotting dependencies |
 | [BUG-0050](#bug_0050) | low | task | Doxygen 1.8.14 cannot build the documentation with warnings as errors |
@@ -426,31 +425,6 @@ run. Either re-copy a template when it or the environment file is newer than the
 or refuse to report success when a deployment expanded nothing — `0 template(s) expanded` is
 almost never what the caller intended, and it is the one case that currently looks identical to
 success.
-
-### BUG-0016: `start_fix_seq_system.py` launches from configs that no longer exist {#bug_0016}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-08-09 |
-| Recorded | 2026-08-09 (d9b38e5) |
-| How | Tracing what still referenced `matching_engine.toml` before deleting it |
-| Impact | The script cannot start a venue; it fails at the sequencer, and nothing says why until you read it |
-
-`start_fix_seq_system.py` in the repository root starts the sequencer from
-`etc/sequencer/sequencer.toml` and the matching engine from `etc/matching_engine/matching_engine.toml`.
-Neither file exists. They are pre-rename names: `arbiter.toml` and `sequencer.toml` were removed
-when the HA `_primary`/`_secondary` pair replaced them, and `matching_engine.toml` was deleted on
-2026-08-09 as the last of that family. `ha_test.py` already carries a comment noting these three
-are "orphaned and rejected by today's binaries".
-
-It is not obviously dead code — 10 KB, executable, in the root — so the next person to reach for
-it will spend time on it before finding out.
-
-**Fix is a choice, not a lookup.** Either repoint it at `sequencer_primary.toml` and
-`matching_engine_primary.toml`, the way `ha_test.py` does for its single-engine topology, or delete
-it as superseded by `devenv.py` and `perf_run.py`. That question was deliberately left open rather
-than answered in passing.
 
 ### BUG-0017: Slab allocator design notes do not mention the tripwire {#bug_0017}
 
@@ -1100,6 +1074,60 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0016: `start_fix_seq_system.py` launches from configs that no longer exist {#bug_0016}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-08-09 |
+| Recorded | 2026-08-09 (d9b38e5) |
+| How | Tracing what still referenced `matching_engine.toml` before deleting it |
+| Impact | The script cannot start a venue; it fails at its first component, and nothing says why until you read it |
+| Fixed | 2026-08-27 -- deleted as superseded |
+
+`start_fix_seq_system.py` in the repository root starts the sequencer from
+`etc/sequencer/sequencer.toml` and the matching engine from `etc/matching_engine/matching_engine.toml`.
+Neither file exists. They are pre-rename names: `arbiter.toml` and `sequencer.toml` were removed
+when the HA `_primary`/`_secondary` pair replaced them, and `matching_engine.toml` was deleted on
+2026-08-09 as the last of that family. `ha_test.py` already carries a comment noting these three
+are "orphaned and rejected by today's binaries".
+
+It is not obviously dead code — 10 KB, executable, in the root — so the next person to reach for
+it will spend time on it before finding out.
+
+**Fix is a choice, not a lookup.** Either repoint it at `sequencer_primary.toml` and
+`matching_engine_primary.toml`, the way `ha_test.py` does for its single-engine topology, or delete
+it as superseded by `devenv.py` and `perf_run.py`. That question was deliberately left open rather
+than answered in passing.
+
+**Deleted 2026-08-27**, taking the second of the two options above.
+
+**It was worse than recorded here.** Four configuration files it names are gone, not two:
+`authentication_service.toml` and `arbiter.toml` as well as `sequencer.toml` and
+`matching_engine.toml`. The authentication service is the *first* component it starts, so it failed
+at step one rather than at the sequencer.
+
+**Everything it did is covered, on every axis:**
+
+- **Interactive running** -- `devenv.py`, which is strictly more capable: `start`, `stop`, `status`
+  and `restart [name]`, driven by the environment TOML rather than a hard-coded component list, with
+  `--supervised` to restart what dies, and the Java components handled alongside the C++ ones.
+- **Running from an instrumented install prefix** -- `perf_run.py` and `ha_test.py` both take the
+  prefix positionally; `devenv.py` reads it from the environment file, so an instrumented tree needs
+  a copy of `dev.toml` with `install_dir` repointed.
+- **Valgrind** -- `callgrind_run.py`, which is built for it and explains in its own docstring why a
+  copy of `perf_run.py` will not do: callgrind runs the guest twenty to fifty times slower, so
+  readiness has to be established by polling logs rather than by sleeping.
+
+Its hard-coded component list is also why it rotted. `devenv.py` reads the same environment TOML
+that `deploy.py` expands, so a component renamed in one place cannot be missed in the other.
+
+References repointed rather than left dangling: the hint `build.py` prints after an instrumented
+build, the instrumented-run recipe in `docs/orientation/building.md`, its entry and two mentions in
+`docs/framework/summary.md`, the startup-order comment in `ha_test.py`, and the roadmap's item 5.
+The mentions in `docs/history/sessions.md` are left alone: they record what happened at the time,
+which is still true.
 
 ### BUG-0054: `build-log.txt` looks like a build log and is three days stale {#bug_0054}
 
