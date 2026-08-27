@@ -714,8 +714,14 @@ has to survive a gateway failover for the same reason the outbound counter does.
 Not a small change, and it touches the session state that HA already carries across a failover.
 Worth sizing before starting.
 
-**Designed 2026-08-27 in [Inbound sequence checking](fix/inbound_sequence_checking.md), not
-built.** Three decisions were taken, and one of them is the reason the design was written down
+**Designed 2026-08-27 in [Inbound sequence checking](fix/inbound_sequence_checking.md); step 1 of
+4 built the same day.** The note carries the full plan and the state of each step, so this entry
+does not repeat it: in short, the `inbound_seq_num` field is on PDUs 121, 122 and 126 and is
+observed, carried and resumed, and **nothing checks it yet** -- so this defect is still fully
+open. Verified surviving a gateway death in `ha_test.py` scenario 23, which resumed the member on
+the surviving instance at `outbound=4140 inbound=1002`.
+
+Decisions were taken, and one of them is the reason the design was written down
 before any code:
 
 - **The resume bias after an unclean gateway death is the opposite of the outbound one.** The

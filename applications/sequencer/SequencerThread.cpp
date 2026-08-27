@@ -1599,6 +1599,16 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         resume_seq_num += state.ers_since_report + unclean_resume_admin_allowance;
     }
 
+    // The inbound number gets NO such allowance, and the asymmetry is deliberate rather than an
+    // omission. Above, erring high is safe because it leaves the member a gap it can close with a
+    // ResendRequest. Here, erring high means the venue expects a number the member has not reached
+    // and will treat its next message as having gone backwards -- fatal, to a member that has done
+    // nothing wrong. Erring low leaves the VENUE with the gap, which is the side that can ask.
+    //
+    // The stored figure is already a lower bound: a member can only have sent more since it was
+    // reported, never less. So it is handed back untouched.
+    const int32_t resume_inbound_seq_num = state.inbound_seq_num;
+
     // And which of the session's numbers held a report, which is the half a gateway cannot
     // work out for itself. The instance that sent them may be gone; this is the only surviving
     // record of what its numbering carried, and without it a resend has to guess. See
@@ -1614,6 +1624,7 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     ack.gateway_protocol_id = identity.protocol;
     ack.known = known;
     ack.outbound_seq_num = resume_seq_num;
+    ack.inbound_seq_num = resume_inbound_seq_num;
     ack.report_seq_nums = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::SeqNumRange>{wire_ranges.data(), wire_ranges.size()};
     send_pdu(conn_id, pubsub_itc_fw_app::SessionBoundAck::message_pdu_id, 0, ack);
 
@@ -1629,11 +1640,14 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: session comp_id='{}' protocol={} previous gateway died without reporting -- "
                    "resuming at outbound={} (reported {} + {} report(s) forwarded since + {} allowance), "
-                   "deliberately ahead so the member sees a gap rather than a fatal low sequence",
-                   identity.comp_id_view(), identity.protocol, resume_seq_num, state.outbound_seq_num, state.ers_since_report, unclean_resume_admin_allowance);
+                   "deliberately ahead so the member sees a gap rather than a fatal low sequence; "
+                   "inbound={} as reported, deliberately NOT ahead so the member is not treated as having gone backwards",
+                   identity.comp_id_view(), identity.protocol, resume_seq_num, state.outbound_seq_num, state.ers_since_report, unclean_resume_admin_allowance,
+                   resume_inbound_seq_num);
     } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: session comp_id='{}' protocol={} sequence state {} -- outbound={}",
-                   identity.comp_id_view(), identity.protocol, known ? "restored" : "is new", resume_seq_num);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: session comp_id='{}' protocol={} sequence state {} -- outbound={} inbound={}", identity.comp_id_view(), identity.protocol,
+                   known ? "restored" : "is new", resume_seq_num, resume_inbound_seq_num);
     }
 }
 
@@ -1694,6 +1708,9 @@ void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& 
     // the only reason a reconnect can continue the member's numbering rather than reset it.
     SessionSequenceState& state = session_sequence_state_[identity];
     state.outbound_seq_num = view.outbound_seq_num;
+    if (view.inbound_seq_num > state.inbound_seq_num) {
+        state.inbound_seq_num = view.inbound_seq_num;
+    }
 
     // And which of its numbers held a report, for the part the departing gateway had not
     // already reported. Without this a resend served by the next gateway would have to guess
@@ -1745,6 +1762,14 @@ void SequencerThread::handle_session_sequence_update(const pubsub_itc_fw::EventM
         // The reported figure now accounts for everything sent so far, so the running count of
         // reports forwarded since the last one starts again.
         state.ers_since_report = 0;
+    }
+
+    // Tracked independently of the number above, because the two move for different reasons: a
+    // member can send while the venue is quiet, and the venue can send while the member is quiet.
+    // Never lowered, for the same reason as the outbound one -- backwards is the direction that
+    // breaks a session.
+    if (view.inbound_seq_num > state.inbound_seq_num) {
+        state.inbound_seq_num = view.inbound_seq_num;
     }
 
     // Merged unconditionally, and not gated on the number above moving. The ranges describe

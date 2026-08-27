@@ -1,6 +1,7 @@
 # Inbound sequence checking {#fix_inbound_sequence_checking}
 
-**Status: designed 2026-08-27, not built. Nothing here is open.** It addresses
+**Status: step 1 of 4 built, 2026-08-27. Nothing in the design is open.** See
+[Implementation order](#implementation-order) for what is done and what is not. It addresses
 [BUG-0038](../bug_list.md#bug_0038), and items 1 and 2 of the departures in
 [FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md), which are one piece of
 work and cannot be split.
@@ -232,13 +233,60 @@ visible without reading logs.
 
 Each step leaves the venue working.
 
-1. **The field on the three PDUs**, populated and carried but not yet acted on. No behaviour
-   change; the sequencer starts remembering a number nothing reads.
-2. **The counter and the checks**, in the gateway, on both the parse and the reject paths, with
-   the Logon path last because it is the one with the ordering subtlety.
-3. **The retry timer and the Logout**, which needs the checks above it to have anything to time.
-4. **The scenarios**, written to fail first — including a member that goes silent instead of
-   answering, which is the one whose absence would not otherwise be noticed.
+### Step 1 — the field, carried but not acted on. **Done 2026-08-27.**
+
+`inbound_seq_num` is on `SessionUnbound` (121), `SessionBoundAck` (122) and
+`SessionSequenceUpdate` (126); `FixSession::expected_inbound_seq_num` holds it in the gateway and
+`SequencerThread::SessionSequenceState::inbound_seq_num` in the sequencer.
+`FixOrderGatewayThread::note_inbound_seq_num` observes it from **both** inbound callbacks, and the
+sequencer hands it back untouched — the no-allowance rule is implemented at the same site as the
+outbound allowance, with the reason beside it, because that is where the two will be read
+together.
+
+**No behaviour changed**, which was the point: nothing compares an arriving number against it, so
+a member that skips numbers is still processed as though nothing were missing. What the venue has
+gained is that it now *knows* where a member's numbering stands and keeps that across a gateway
+change.
+
+Verified end to end by `ha_test.py` scenario 23, which kills the gateway holding a session and
+brings the member back on the surviving instance:
+
+```
+resuming the venue's sequence state -- outbound=4140 inbound=1002
+```
+
+The member's inbound position survived the death of the gateway that observed it, and the
+asymmetry is legible in that one line: `outbound` biased high by its allowance, `inbound` exactly
+as reported.
+
+### Step 2 — the counter and the checks. **Not started.**
+
+In the gateway, on both the parse and the reject paths, per [The rule](#the-rule). The Logon path
+last, because it is the one with the ordering subtlety — the expected number arrives
+asynchronously on `SessionBoundAck`, so the Logon's own number is checked retrospectively in the
+existing `awaiting_sequence_state` window.
+
+### Step 3 — the retry timer and the Logout. **Not started.**
+
+Five seconds, two retries, then Logout; a named constant beside the logon and SCRAM timeouts.
+Needs step 2 above it to have anything to time. Also the WARNING and the gap-age metric.
+
+### Step 4 — the scenarios, written to fail first. **Not started.**
+
+Driven by `f8test -S`, per [Testing](#testing). Including the member that goes silent instead of
+answering, which is the one whose absence would not otherwise be noticed.
+
+## An adjacent behaviour this does not change
+
+A member that sends anything before the venue's Logon reply — pipelining an order straight after
+its own Logon — is disconnected today by the `!session_established` branch in the inbound dispatch.
+That window is where `SessionBoundAck` is awaited, so it widens slightly as a session's state grows,
+and step 2 stashes the Logon's number across it.
+
+**Left alone deliberately.** A member is entitled to expect a Logon response before sending, so
+the behaviour is defensible, and changing it is a separate question from this one. Recorded here
+because the design touches the window and the next person to work in it should know the branch is
+there on purpose.
 
 ## See also
 

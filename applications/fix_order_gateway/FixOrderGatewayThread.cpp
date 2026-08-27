@@ -320,6 +320,11 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                     FixSession& session = sit->second;
                     const std::string_view type = msg.msg_type();
 
+                    // Before the branch on type, so no message reaches a handler without the
+                    // member's numbering being noted. Step 2 turns this into the gate that
+                    // decides whether the message may be processed at all.
+                    note_inbound_seq_num(session, msg);
+
                     if (type == MsgType::Logon) {
                         handle_logon(session, msg);
                     } else if (!session.session_established) {
@@ -350,6 +355,10 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                         return;
                     }
                     FixSession& session = sit->second;
+                    // A rejected message has still consumed its sequence number. A counter that
+                    // skipped this path would sit below where the member actually is, and the
+                    // checking built on it would see a gap that is not there.
+                    note_inbound_seq_num(session, msg);
                     char text[128];
                     const std::string_view description = reject.describe(text, sizeof(text));
                     // A message that fails validation before the session is established, or an
@@ -1294,6 +1303,12 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
     // reconcile and which no amount of replay would fix.
     session->outbound_seq_num = view.outbound_seq_num;
 
+    // And where the member's own numbering had reached. Taken exactly as given: unlike the number
+    // above it, this one is never adjusted upward on the way out of the sequencer, because
+    // expecting too high a number from a member is how an innocent one gets disconnected. See
+    // docs/fix/inbound_sequence_checking.md.
+    session->expected_inbound_seq_num = view.inbound_seq_num;
+
     // And which of the session's numbers held a report. This gateway may never have sent them
     // -- after a failover it certainly did not -- and this is the only surviving record of what
     // that numbering carried, so it is what a resend served here has to work from. Everything
@@ -1305,8 +1320,9 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
     session->report_seq_nums_shipped_to = view.outbound_seq_num - 1;
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixOrderGatewayThread: comp_id='{}' resuming the venue's sequence state -- outbound={} (was 1), {} report range(s) covering {} number(s)",
-               session->client_comp_id, view.outbound_seq_num, session->report_seq_nums.size(),
+               "FixOrderGatewayThread: comp_id='{}' resuming the venue's sequence state -- outbound={} inbound={} (was 1), {} report range(s) covering {} "
+               "number(s)",
+               session->client_comp_id, view.outbound_seq_num, view.inbound_seq_num, session->report_seq_nums.size(),
                fix_common::seq_num_ranges::count_in(session->report_seq_nums, 1, view.outbound_seq_num));
     complete_session_establishment(*session);
 }
@@ -2038,6 +2054,7 @@ void FixOrderGatewayThread::report_session_sequence_numbers() {
         update.gateway_instance_id = config_.instance_id;
         update.gateway_session_conn_id = session.conn_id.get_value();
         update.outbound_seq_num = session.outbound_seq_num;
+        update.inbound_seq_num = session.expected_inbound_seq_num;
         std::vector<pubsub_itc_fw_app::SeqNumRange> wire_ranges = unreported_report_seq_nums(session);
         update.report_seq_nums = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::SeqNumRange>{wire_ranges.data(), wire_ranges.size()};
         forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionSequenceUpdate::message_pdu_id, update);
@@ -2086,6 +2103,30 @@ void FixOrderGatewayThread::retry_pending_session_binds(pubsub_itc_fw::Connectio
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: sequencer connection {} came up with comp_id='{}' still awaiting its numbering -- re-announcing the binding",
                    sequencer_conn_id.get_value(), session.client_comp_id);
+    }
+}
+
+void FixOrderGatewayThread::note_inbound_seq_num(FixSession& session, const ParsedFixMessage& msg) {
+    // Observe where the member's numbering has reached. Nothing acts on it yet: this is step 1 of
+    // BUG-0038, which puts the number in the session state and carries it to the sequencer so the
+    // checking built on top of it has something to start from after a gateway change.
+    //
+    // Called from both inbound paths -- the message callback and the reject callback -- because a
+    // message that fails FIX validation has still consumed its sequence number, and a counter that
+    // missed those would report a figure below where the member actually is.
+    const std::string_view seq_num_field = msg.get(Tag::MsgSeqNum);
+    if (seq_num_field.empty()) {
+        return; // no readable number: there is no position to record
+    }
+    int seq_num = 0;
+    if (std::from_chars(seq_num_field.data(), seq_num_field.data() + seq_num_field.size(), seq_num).ec != std::errc{}) {
+        return;
+    }
+
+    // Never lowered. A number below what has been seen describes a message already processed, and
+    // winding back would have the venue ask for messages it already holds.
+    if (seq_num >= session.expected_inbound_seq_num) {
+        session.expected_inbound_seq_num = seq_num + 1;
     }
 }
 
@@ -2143,6 +2184,7 @@ void FixOrderGatewayThread::announce_session_unbound(const FixSession& session) 
     // Where this session's numbering reached, so the next gateway to hold it carries on from
     // here rather than restarting the member at 1.
     unbound.outbound_seq_num = session.outbound_seq_num;
+    unbound.inbound_seq_num = session.expected_inbound_seq_num;
     // And which of those numbers held a report, for the part not already reported. The next
     // gateway to hold this session answers its resends from this.
     std::vector<pubsub_itc_fw_app::SeqNumRange> wire_ranges = unreported_report_seq_nums(session);

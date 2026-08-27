@@ -115,6 +115,10 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void disconnect_session(const FixSession& session, const std::string& reason);
     void send_fix_to_session(FixSession& session, const FixMessage& msg);
 
+    /// Records where the member's numbering has reached, from either inbound path. Observed only:
+    /// nothing acts on it yet. See FixSession::expected_inbound_seq_num and BUG-0038.
+    static void note_inbound_seq_num(FixSession& session, const ParsedFixMessage& msg);
+
     /// The session's report-number ranges not yet reported to the sequencer, ready for the wire.
     static std::vector<pubsub_itc_fw_app::SeqNumRange> unreported_report_seq_nums(const FixSession& session);
 

@@ -466,10 +466,22 @@ message SessionUnbound (id=121, version=1)
     # the venue behind it -- which its own ResendRequest then resolves, and which is one of
     # the reasons resend has to work.
     #
-    # Only the outbound number is carried. The gateway does not track what the member sends
-    # it -- there is no inbound gap detection to hold a number for -- so a field for it would
-    # be one nothing populates. When that is built, it belongs here beside this one.
     i32    outbound_seq_num        # next number the venue would send to this member
+    # Next number the venue EXPECTS FROM this member: the highest MsgSeqNum it has seen on the
+    # session plus one. The counterpart of the field above, and it travels for the same reason --
+    # the series belongs to the session, not to the connection, so it has to survive the member
+    # moving between gateway instances.
+    #
+    # It is resumed DIFFERENTLY, and that is the trap of having the two side by side. The
+    # outbound number is resumed deliberately HIGH after an unclean death, because too low sends
+    # the member a number below what it expects, which FIX treats as fatal. Every term of that
+    # reverses here: resuming the inbound number too high makes the VENUE treat an innocent
+    # member as having gone backwards, which is also fatal, and this time to a member that has
+    # done nothing wrong. So this one is resumed exactly as reported, with no allowance added --
+    # the reported figure is already a lower bound, since a member can only have sent more since.
+    #
+    # See docs/fix/inbound_sequence_checking.md.
+    i32    inbound_seq_num         # next number the venue expects FROM this member
     # Which of this session's outbound numbers held an execution report, for the part of the
     # stream this gateway has not already reported on SessionSequenceUpdate. Everything not
     # covered by these -- and by what earlier updates carried -- held something the venue
@@ -498,6 +510,10 @@ message SessionBoundAck (id=122, version=1)
     i16    gateway_protocol_id
     bool   known                   # false: first sight of this session, the number is the default
     i32    outbound_seq_num        # next number to send to the member
+    # Next number to expect FROM the member. Handed back exactly as the venue remembers it, with
+    # no allowance added -- see the note at SessionUnbound for why this one must not be biased the
+    # way the number above it is.
+    i32    inbound_seq_num         # next number to expect from the member
     # Which of this session's outbound numbers held an execution report, as far back as the
     # venue still remembers. This is what lets a gateway answer a resend for messages it did
     # not send: the instance that did send them is gone, and this is the only record of what
@@ -606,6 +622,10 @@ message SessionSequenceUpdate (id=126, version=1)
     i16    gateway_instance_id
     i32    gateway_session_conn_id
     i32    outbound_seq_num        # next number this gateway would send to the member
+    # Next number this gateway expects from the member, reported for the same reason as the one
+    # above: a gateway that is killed sends no unbind, so a figure that only ever travelled at
+    # unbind would be missing in exactly the case it exists for.
+    i32    inbound_seq_num         # next number this gateway expects from the member
     # Which outbound numbers have held an execution report since the last update, so the
     # sequencer's record keeps pace with the session rather than arriving only at unbind.
     #

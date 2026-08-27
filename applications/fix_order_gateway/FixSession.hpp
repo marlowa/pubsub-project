@@ -164,6 +164,25 @@ struct FixSession {
     int outbound_seq_num{1};
 
     /**
+     * @brief The next sequence number the venue expects to receive FROM this member.
+     *
+     * The highest `MsgSeqNum` seen on this session plus one. Never lowered: a number below what
+     * has already been seen describes a message the venue has processed, and winding the counter
+     * back would make it ask for messages again.
+     *
+     * **Observed but not yet acted on.** Nothing compares an arriving number against this, so a
+     * member that skips numbers is still processed as though nothing were missing -- BUG-0038, of
+     * which this field is the first step. What it does buy immediately is that the venue now
+     * *knows* where a member's numbering stands and remembers it across a gateway change, which
+     * is the state the checking will need before it can be written.
+     *
+     * Seeded from `SessionBoundAck`, reported onward on `SessionSequenceUpdate` and
+     * `SessionUnbound`, exactly as `outbound_seq_num` is -- and resumed differently from it. See
+     * docs/fix/inbound_sequence_checking.md.
+     */
+    int expected_inbound_seq_num{1};
+
+    /**
      * @brief True when the member asked, on Logon, for both sides to restart at 1.
      *
      * ResetSeqNumFlag=Y is the standard way a member says "forget where we were". A venue

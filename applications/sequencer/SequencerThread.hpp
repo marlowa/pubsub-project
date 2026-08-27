@@ -422,6 +422,24 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         int32_t ers_since_report{0};
 
         /**
+         * @brief Highest position the gateway has reported for what the member SENDS it.
+         *
+         * The counterpart of `outbound_seq_num`, and **resumed differently from it**, which is
+         * the trap of having the two side by side.
+         *
+         * `outbound_seq_num` is handed back deliberately high after an unclean death: too low
+         * sends the member a number below what it expects, which FIX requires it to treat as
+         * fatal. Every term of that reverses here. Resuming this one too high makes the venue
+         * treat a member that has done nothing wrong as having gone backwards, which is equally
+         * fatal and this time to the innocent party. So it is handed back exactly as reported,
+         * with no allowance and nothing added for what the sequencer has seen since -- the
+         * reported figure is already a lower bound, because a member can only have sent more.
+         *
+         * Nothing reads it yet; see docs/fix/inbound_sequence_checking.md and BUG-0038.
+         */
+        int32_t inbound_seq_num{1};
+
+        /**
          * @brief Which of this session's outbound numbers held an execution report.
          *
          * Reported by the gateway, for the same reason the number above it is: the sequencer
