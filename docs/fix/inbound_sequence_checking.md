@@ -1,6 +1,6 @@
 # Inbound sequence checking {#fix_inbound_sequence_checking}
 
-**Status: designed 2026-08-27, not built.** It addresses
+**Status: designed 2026-08-27, not built. Nothing here is open.** It addresses
 [BUG-0038](../bug_list.md#bug_0038), and items 1 and 2 of the departures in
 [FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md), which are one piece of
 work and cannot be split.
@@ -50,15 +50,24 @@ The alternative — hold it and process it once the gap fills — is what QuickF
 wrong, but it buys little here and costs a buffer whose exhaustion behaviour would need designing.
 Asking the member to send it again is cheaper than deciding what to do when the buffer is full.
 
-### A gap halts that member, and that is a decision
+### While a gap is open, that member's later messages wait
 
-While a gap is open, **nothing from that member may be processed**, not merely the message that
-revealed it. Processing anything after the gap risks sequencing a cancel ahead of the order it
-cancels, which is worse than a pause.
+**Nothing from that member may be processed while the gap is open**, not merely the message that
+revealed it.
 
-So a member with a gap is effectively halted until it answers the `ResendRequest`. That is a real
-availability cost, borne by one member, and it is stated here so that it is a decision rather than
-something discovered later in a log.
+This is not the venue imposing anything. It cannot process message 101 because it does not have
+100, and the ordering matters: a member sending `NewOrderSingle(100)` then `Cancel(101)`, with 100
+lost, would have the cancel applied to an order the venue never received. It rejects the cancel as
+unknown, then the resend delivers 100 and the order rests — leaving the member holding an order it
+believes it cancelled. Every conforming engine waits for the same reason.
+
+The member stays connected throughout. Its resting orders are untouched, its execution reports
+keep flowing outbound, and the wait is one round trip.
+
+**The decision is what to do when that round trip does not come back.** A member whose engine is
+faulty, or which has lost its own store, may never answer the `ResendRequest` — and then its order
+flow really does stop, with the venue sitting silent and nothing saying why. The venue re-asks twice
+and then disconnects — see [An unanswered ResendRequest](#an-unanswered-resendrequest-re-ask-twice-then-logout).
 
 ### Lower without `PossDupFlag` ends the session
 
@@ -159,6 +168,31 @@ Scenarios worth having, and each should be seen to fail before the code exists:
 - **The counter survives a gateway failover**, in the shape of scenario 23: the member's inbound
   numbering must continue across the instance change, and must not be resumed high.
 
+## An unanswered ResendRequest: re-ask twice, then Logout
+
+A member that never answers has its flow stopped for as long as it stays connected, which is the
+failure mode most likely to reach the venue as "you have stopped taking my orders". So the wait is
+bounded and the venue acts at the end of it.
+
+**On a timer, the `ResendRequest` is repeated, up to twice. If the gap is still open after that,
+the venue sends a Logout and disconnects.**
+
+Repeating costs nothing and covers the ordinary case: a request lost in flight, or a member that
+was slow rather than broken. Only a member genuinely not answering reaches the Logout — and a
+disconnect there is recoverable rather than destructive, because the venue still holds the
+session's numbering, so the member reconnects and resynchronises from it. That is the same
+property the outbound side relies on.
+
+Waiting indefinitely was rejected for a reason with a precedent in this venue: it leaves a stopped
+session looking healthy to anyone not reading the log. That is the shape of
+[BUG-0009](../bug_list.md#bug_0009), where the sequencer knew for seven minutes that it had no
+matching engine, logged it a million times at INFO, and told the gateway nothing.
+
+Three things this needs, and none is new machinery: a per-session timer of the kind already armed
+for logon and for the SCRAM exchange; a WARNING when the retries are exhausted that names the
+member and the gap; and the gap's age exposed as a metric, so a member sitting in this state is
+visible without reading logs.
+
 ## What this does not solve
 
 - **Duplicate suppression after an unclean death**, as above. The application layer remains the
@@ -174,7 +208,9 @@ Each step leaves the venue working.
    change; the sequencer starts remembering a number nothing reads.
 2. **The counter and the checks**, in the gateway, with the Logon path last because it is the one
    with the ordering subtlety.
-3. **The scenarios**, written to fail first.
+3. **The retry timer and the Logout**, which needs the checks above it to have anything to time.
+4. **The scenarios**, written to fail first — including a member that goes silent instead of
+   answering, which is the one whose absence would not otherwise be noticed.
 
 ## See also
 

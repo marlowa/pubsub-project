@@ -724,8 +724,12 @@ before any code:
   innocent member as committing a serious error and disconnect it. The two fields will sit beside
   each other on the same three PDUs, so the instinct to treat them alike is the trap.
 - **A message arriving while a gap is open is discarded, not buffered**, and the `ResendRequest`
-  names `EndSeqNo=0` so the member sends it again with the rest. A gap therefore halts that member
-  until it answers, which is an availability cost taken deliberately rather than discovered.
+  names `EndSeqNo=0` so the member sends it again with the rest. Its later messages wait until the
+  gap is filled -- they have to, or a cancel is applied to an order the venue never received.
+- **An unanswered `ResendRequest` is repeated twice and then ends the session.** A member that
+  never answers would otherwise have its flow stopped for as long as it stayed connected, while
+  looking healthy to anyone not reading the log -- the shape of [BUG-0009](#bug_0009). It
+  reconnects against session state the venue still holds, so the disconnect is recoverable.
 - **Lower than expected without `PossDupFlag` ends the session**, as the specification requires.
 
 The note also records the awkward part: the venue does not know what to expect when a Logon
