@@ -4,15 +4,6 @@ import time
 import sys
 import datetime
 
-try:
-    import psutil
-    import matplotlib.pyplot as plt
-    import matplotlib.ticker as mticker
-    from matplotlib.animation import FuncAnimation
-except ImportError as e:
-    print(f"Error: Missing dependency. Please run: pip install psutil matplotlib")
-    sys.exit(1)
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -52,6 +43,19 @@ parser.add_argument(
     help=f"ASCII log file for vmstat-style figures (default: {_default_log})",
 )
 args = parser.parse_args()
+
+# Imported after the arguments are parsed, so --help answers on a host without the plotting
+# stack. argparse exits inside parse_args() above, before this is reached. The Rocky container
+# carries neither psutil nor matplotlib, and build.py's gate runs --help on every script -- a
+# script that cannot describe itself there is checked for nothing at all. See BUG-0044.
+try:
+    import psutil
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    from matplotlib.animation import FuncAnimation
+except ImportError as missing:
+    print(f"Error: {missing}. This script needs the plotting stack: pip install psutil matplotlib")
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Configuration

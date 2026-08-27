@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import matplotlib.pyplot as plot
 import argparse
 import sys
 import os
@@ -61,6 +60,11 @@ def parse_behaviour_statistics(log_file_path):
 # Save a plot with consistent formatting
 # ------------------------------------------------------------
 def save_plot(path, quality):
+    # Imported here, not at module scope, so --help works on a host without the plotting
+    # stack. The Rocky container has neither matplotlib nor pandas, and build.py's gate
+    # runs --help on every script -- a script that cannot describe itself there is
+    # checked for nothing at all. See BUG-0044.
+    import matplotlib.pyplot as plot
     plot.tight_layout()
     plot.savefig(path, format="jpg", pil_kwargs={"quality": quality})
     plot.close()
@@ -69,6 +73,11 @@ def save_plot(path, quality):
 # Generate all plots for each dataset
 # ------------------------------------------------------------
 def plot_datasets(datasets, output_dir, quality):
+    # Imported here, not at module scope, so --help works on a host without the plotting
+    # stack. The Rocky container has neither matplotlib nor pandas, and build.py's gate
+    # runs --help on every script -- a script that cannot describe itself there is
+    # checked for nothing at all. See BUG-0044.
+    import matplotlib.pyplot as plot
     for index, data in enumerate(datasets):
         if data["type"] == "BEHAVIOUR-STATS":
             # existing behaviour plots unchanged

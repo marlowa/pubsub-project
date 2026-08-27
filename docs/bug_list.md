@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 54 |
-| Open | 25 (20 defects, 5 tasks) |
-| Closed | 29 |
+| Open | 23 (18 defects, 5 tasks) |
+| Closed | 31 |
 | Next id | BUG-0055 |
 
 ## Open bugs by severity
 
-5 high, 12 medium, 8 low.
+5 high, 12 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -35,8 +35,6 @@
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
-| [BUG-0017](#bug_0017) | low | defect | Slab allocator design notes do not mention the tripwire |
-| [BUG-0044](#bug_0044) | low | defect | Scripts cannot answer `--help` without their plotting dependencies |
 | [BUG-0050](#bug_0050) | low | task | Doxygen 1.8.14 cannot build the documentation with warnings as errors |
 
 ---
@@ -426,24 +424,6 @@ or refuse to report success when a deployment expanded nothing — `0 template(s
 almost never what the caller intended, and it is the one case that currently looks identical to
 success.
 
-### BUG-0017: Slab allocator design notes do not mention the tripwire {#bug_0017}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-08-09 |
-| Recorded | 2026-08-09 (f413a72) |
-| How | Noticed while fixing the tripwire |
-| Impact | Documentation only |
-
-`drain_empty_slab_queue()` carries a safety tripwire that throws and takes the reactor down
-with it. That is a significant behaviour of the allocator and it appears nowhere in the
-design notes -- only in a comment inside the function. Anyone reasoning about failure modes
-from the documentation would not know the allocator can terminate a component.
-
-Worth adding when the allocator documentation is next touched, together with the rule that
-the condition needs both a spent budget and a spun loop.
-
 ### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
 
 | | |
@@ -475,29 +455,6 @@ take the `UseIdleTimeout` default instead.
 **Second-order cost, and the more insidious one.** A WARNING that fires every ten minutes in a
 healthy system teaches a reader to skim past `connection lost` — which is the line that matters
 when a connection is genuinely lost.
-
-### BUG-0044: Scripts cannot answer `--help` without their plotting dependencies {#bug_0044}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | Known when `build.py`'s pylint gate was written; the date it was first noticed is not recorded |
-| Recorded | 2026-08-24, after a citation sweep found `build.py` pointing at an entry that did not exist |
-| How | `check_bug_list.py` compared every citation of the bug list against the entries actually in it |
-| Impact | A script that cannot describe itself on a machine without matplotlib or psutil. The gate tolerates it, so nothing fails |
-
-`scripts/build.py` runs each top-level script with `--help` as part of the pylint gate, and treats
-a `ModuleNotFoundError` as a skip rather than a failure. The comment there explains why, and is
-right to: the Rocky container carries no matplotlib or psutil, and failing a C++ toolchain check
-because a visualisation library is absent would be the same mistake as making Prometheus a
-dependency of starting the venue.
-
-**What it tolerates is still a defect.** A script imports its plotting stack at module scope, so
-`--help` cannot run without it. The fix is a lazy import at the point of use, which
-`pubsub_metrics.py` already does so that it can run headless.
-
-The gate is therefore weaker than it looks on exactly the machine that most needs it: on a host
-without the optional packages, those scripts are checked for nothing at all.
 
 ### BUG-0028: Growing the order book by doubling needs more memory than the machine has {#bug_0028}
 
@@ -1074,6 +1031,91 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0044: Scripts cannot answer `--help` without their plotting dependencies {#bug_0044}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | Known when `build.py`'s pylint gate was written; the date it was first noticed is not recorded |
+| Recorded | 2026-08-24, after a citation sweep found `build.py` pointing at an entry that did not exist |
+| How | `check_bug_list.py` compared every citation of the bug list against the entries actually in it |
+| Impact | A script that cannot describe itself on a machine without matplotlib or psutil. The gate tolerates it, so nothing fails |
+| Fixed | 2026-08-27 -- the imports are lazy, and the gate runs under `-S` so it means the same on every machine |
+
+`scripts/build.py` runs each top-level script with `--help` as part of the pylint gate, and treats
+a `ModuleNotFoundError` as a skip rather than a failure. The comment there explains why, and is
+right to: the Rocky container carries no matplotlib or psutil, and failing a C++ toolchain check
+because a visualisation library is absent would be the same mistake as making Prometheus a
+dependency of starting the venue.
+
+**What it tolerates is still a defect.** A script imports its plotting stack at module scope, so
+`--help` cannot run without it. The fix is a lazy import at the point of use, which
+`pubsub_metrics.py` already does so that it can run headless.
+
+The gate is therefore weaker than it looks on exactly the machine that most needs it: on a host
+without the optional packages, those scripts are checked for nothing at all.
+
+**Fixed 2026-08-27, both halves.**
+
+**The scripts.** Four imported their plotting stack at module scope. `plot_performance.py`,
+`plot_latency_histogram.py` and `plot_behavioural_histogram.py` now import inside the one or two
+functions that plot. `monitor_memory.py` needed a different shape -- it is a top-to-bottom script
+whose argparse parser and figure are built at module scope -- so its import block moved to just
+after `parse_args()`, which is where `--help` has already exited. Its error message now names the
+module that is missing instead of guessing.
+
+**The gate, which mattered more.** Tolerating a `ModuleNotFoundError` was the reason this could
+persist, so the gate no longer tolerates one, and its failure message says what to do about it.
+
+**That alone would have been close to cosmetic**, and finding out why is the useful part of this
+entry. The check runs `<script> --help` on the machine doing the build, where matplotlib usually
+*is* installed -- so a module-scope import passes there and fails only on the container that
+lacks it. Failing rather than skipping would have moved the alarm to the one machine nobody is
+watching. The check therefore runs the script under **`python3 -S`**, without site-packages, so
+only the standard library and the script's own directory are importable. It now means the same
+thing everywhere, which is what its success line claims: *all 33 scripts answer --help using only
+the standard library*.
+
+Both directions verified: all 33 pass, and re-adding a module-scope `import matplotlib` to
+`plot_performance.py` fails the build on this machine with the message pointing at the fix.
+
+### BUG-0017: Slab allocator design notes do not mention the tripwire {#bug_0017}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-08-09 |
+| Recorded | 2026-08-09 (f413a72) |
+| How | Noticed while fixing the tripwire |
+| Impact | Documentation only |
+| Fixed | 2026-08-27 -- the tripwire's behaviour and its two-condition rule are in the allocator notes |
+
+`drain_empty_slab_queue()` carries a safety tripwire that throws and takes the reactor down
+with it. That is a significant behaviour of the allocator and it appears nowhere in the
+design notes -- only in a comment inside the function. Anyone reasoning about failure modes
+from the documentation would not know the allocator can terminate a component.
+
+Worth adding when the allocator documentation is next touched, together with the rule that
+the condition needs both a spent budget and a spun loop.
+
+**Fixed 2026-08-27** in [Allocators](framework/allocators.md), under *Wall-Clock Drain Tripwire*.
+
+A section of that name already existed and said the drain "aborts after 1 second of wall-clock
+time". It omitted both things this entry was raised about: that aborting means **throwing**, and
+that the throw terminates the reactor. It also omitted the two-condition rule.
+
+That rule is now written down with its reasoning, because it is not obvious and looks like
+belt-and-braces until you see why. Wall-clock time alone does not describe progress: a tight retry
+loop runs hundreds of thousands of iterations inside a sub-millisecond preemption, while a thread
+the scheduler has not run manages **one** in a whole second. Only the iteration count tells a
+stuck producer from an ordinary preemption, so the budget alone would fire on a healthy system
+under load.
+
+Also recorded: why the clock is read every iteration rather than short-circuited away by the
+cheaper test — the read yields the few tens of nanoseconds a mid-enqueue producer needs, so the
+spin does not starve what it is waiting on — and why the exception message leads with counters and
+puts the conclusion last.
 
 ### BUG-0016: `start_fix_seq_system.py` launches from configs that no longer exist {#bug_0016}
 

@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-import matplotlib.pyplot as plt
-import pandas as pd
 import argparse
 import sys
 import os
@@ -45,6 +43,12 @@ def parse_behaviour_stats(log_file):
     return datasets
 
 def plot_datasets(datasets, output_dir, quality):
+    # Imported here, not at module scope, so --help works on a host without the plotting
+    # stack. The Rocky container has neither matplotlib nor pandas, and build.py's gate
+    # runs --help on every script -- a script that cannot describe itself there is
+    # checked for nothing at all. See BUG-0044.
+    import matplotlib.pyplot as plt
+    import pandas as pd
     for idx, data in enumerate(datasets):
         df = pd.DataFrame([data])
 

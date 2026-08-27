@@ -172,10 +172,15 @@ def check_scripts_support_help(source_dir):
     scripts_dir = source_dir / "scripts"
     scripts = sorted(str(path.relative_to(source_dir)) for path in scripts_dir.glob("*.py"))
     print(f"\n=== Checking --help on {len(scripts)} top-level scripts ===")
-    broken, skipped = [], []
+    broken = []
     for name in scripts:
         try:
-            result = subprocess.run([sys.executable, name, "--help"], cwd=source_dir,
+            # -S runs without site-packages, so only the standard library and the script's own
+            # directory are importable. That is what makes this check mean the same thing on
+            # every machine: without it a module-scope `import matplotlib` passes on a developer
+            # host that happens to have matplotlib and fails only on the target that does not,
+            # which is the wrong way round -- the target is where nobody is watching.
+            result = subprocess.run([sys.executable, "-S", name, "--help"], cwd=source_dir,
                                     capture_output=True, timeout=60, check=False)
         except subprocess.TimeoutExpired:
             broken.append((name, "timed out -- does it do work before parsing arguments?"))
@@ -183,28 +188,35 @@ def check_scripts_support_help(source_dir):
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).decode(errors="replace").strip()
             last = detail.splitlines()[-1] if detail else f"exited {result.returncode}"
-            # A script that cannot import an OPTIONAL third-party package is reported and
-            # not failed. The Rocky container has no matplotlib or psutil, so demanding it
-            # would make a C++ toolchain check depend on which visualisation libraries a
-            # machine happens to carry -- the same fault as leaving import-error enabled
-            # above. That these scripts cannot describe themselves without their plotting
-            # dependencies is a real defect, recorded in docs/bug_list.md as BUG-0044; the fix is to
-            # import lazily, as pubsub_metrics.py already does so it can run headless.
-            if "ModuleNotFoundError" in detail or "Missing dependency" in detail:
-                skipped.append((name, last))
-            else:
-                broken.append((name, last))
-
-    for name, why in skipped:
-        print(f"  SKIP {name}: {why}")
+            # A missing optional package is no longer tolerated here, and that is the point.
+            #
+            # It used to be: the Rocky container has no matplotlib or psutil, and failing a C++
+            # toolchain check because a visualisation library is absent would be the same
+            # mistake as making Prometheus a dependency of starting the venue. But tolerating it
+            # made the gate weakest on the machine that most needed it -- on a host without the
+            # optional packages, those scripts were checked for nothing at all. That was
+            # BUG-0044.
+            #
+            # Every script now imports its plotting stack lazily, at the point of use or after
+            # arguments are parsed, so describing itself needs nothing beyond the standard
+            # library. Failing here rather than skipping, and running under -S, is what stops
+            # that decaying: a new module-scope `import matplotlib` breaks the build for
+            # whoever adds it, rather than quietly disarming the check on a machine none of
+            # them runs.
+            broken.append((name, last))
 
     if broken:
         print("\nERROR: these scripts do not support --help:", file=sys.stderr)
         for name, why in broken:
             print(f"  {name}: {why}", file=sys.stderr)
+        print("\n  A missing third-party module here means an import at module scope that",
+              file=sys.stderr)
+        print("  --help should not need. Import it lazily instead -- at the point of use, or",
+              file=sys.stderr)
+        print("  after parse_args() -- as the plot_*.py scripts do. See BUG-0044.",
+              file=sys.stderr)
         sys.exit(1)
-    print(f"\n\u2713 {len(scripts) - len(skipped)} of {len(scripts)} scripts answer --help"
-          f"{f', {len(skipped)} skipped for missing optional packages' if skipped else ''}")
+    print(f"\n\u2713 all {len(scripts)} scripts answer --help using only the standard library")
 
 
 def run_pytest(source_dir, build_dir=None):

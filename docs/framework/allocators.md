@@ -277,9 +277,42 @@ mid-enqueue on that node.
 
 ### Wall-Clock Drain Tripwire
 
-`drain_empty_slab_queue` aborts after 1 second of wall-clock time if `head_->next` has
-still not become non-null. This is a safety net for a genuinely stuck producer; under
-normal conditions the drain completes in nanoseconds.
+**`drain_empty_slab_queue` can throw, and the throw terminates the reactor.** That is the
+intended behaviour and it is worth stating plainly here, because reasoning about a component's
+failure modes from this document would otherwise miss that the allocator can stop the process.
+
+The drain loop is bounded by the number of live slabs. Spinning far past any sane multiple of
+that means the queue state is corrupt, and a corrupt lock-free queue does not recover by being
+spun on: the alternative to failing is spinning until the machine is out of memory. So it fails
+fast, with a `PubSubItcException` carrying the counters that distinguish the causes, and the
+reactor terminates cleanly where an operator can see why.
+
+**Two conditions are required, not one**, and the reason is the interesting part:
+
+| | |
+|---|---|
+| A spent budget | more than one second of `steady_clock` time has passed |
+| A loop that has actually spun | more than 1,000 iterations |
+
+Wall-clock time alone does not describe progress. A tight retry loop runs in tens of nanoseconds
+per iteration, so a sub-millisecond preemption can cover hundreds of thousands of iterations —
+but a thread the scheduler simply has not run manages **one** iteration in the same second. The
+first is a stuck producer; the second is an ordinary preemption that resolves itself. Only the
+iteration count separates them, which is why the budget alone would fire on a healthy system
+under load. See `drain_loop_has_stalled` in `ExpandableSlabAllocator.cpp`.
+
+The clock is read on **every** iteration and its result passed in, rather than being
+short-circuited away by the cheaper iteration test. That read yields the few tens of nanoseconds
+a mid-enqueue producer needs to finish, so a retry spin does not starve the producer it is
+waiting on.
+
+The exception message leads with the counters and puts the conclusion last — `got_item`,
+`retry`, `last_slab_id`, `same_id_repeats`, `live_slabs`. A self-loop or a stuck producer gives a
+high retry or repeat count against few or no items taken. An earlier wording opened with "likely
+a corrupted lock-free queue state" while its own diagnostics said the queue was empty and no id
+had repeated, and it sent a reader hunting a lock-free bug that did not exist.
+
+Under normal conditions the drain completes in nanoseconds and none of this is reached.
 
 ---
 
