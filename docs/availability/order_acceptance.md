@@ -1,9 +1,12 @@
 # Refusing orders the venue cannot process {#ha_order_acceptance}
 
-**Status: built, 2026-08-28.** All five steps of [BUG-0009](../bug_list.md#bug_0009). A venue that
-cannot process orders now says so, refuses them with a rejected ExecutionReport, and starts
-accepting again on its own when an engine returns — and `ha_test.py` scenario 42 holds all of it in
-place. See [Implementation order](#ha_order_acceptance_steps).
+**Status: all five steps built, 2026-08-28. [BUG-0009](../bug_list.md#bug_0009) is NOT closed.** A
+venue that cannot process orders now says so, refuses orders and cancels with a rejected
+ExecutionReport, and starts accepting again on its own when an engine returns; `ha_test.py`
+scenario 42 holds that in place. What is not done is the half this document scoped out — the orders
+deferred *before* refusal begins are still never answered, and the reason they were scoped out has
+since been disproved. See [What this does not solve](#ha_order_acceptance_gaps) and
+[Implementation order](#ha_order_acceptance_steps).
 
 ## The problem
 
@@ -135,13 +138,22 @@ flapping matching engine reopening the venue repeatedly — but it makes recover
 being present, and BUG-0009 is precisely a case where nobody was watching for seven minutes. A
 design whose safety rests on the watching that has already failed is not safer.
 
-## What this does not solve
+## What this does not solve {#ha_order_acceptance_gaps}
 
 - **A matching engine that is connected but not working.** Everything here keys on the connection.
   An engine that accepts orders and does nothing with them looks healthy throughout, which is
   closer to [BUG-0010](../bug_list.md#bug_0010)'s territory.
-- **Orders already acknowledged before the venue noticed.** They stay deferred and are recovered by
-  WAL replay, as now. This bounds how many join them; it does not rescue the ones already there.
+- **Orders already deferred before the venue noticed.** This bounds how many join them; it does not
+  rescue the ones already there.
+
+  **This bullet used to end "and are recovered by WAL replay, as now", and that was wrong.**
+  Measured on 2026-08-28: a restarted matching engine takes leadership and replays nothing, the
+  orders are never executed and never rejected, and the sequencer logs that they were recovered.
+  See [BUG-0064](../bug_list.md#bug_0064).
+
+  It is recorded here rather than quietly corrected because the false version is *why* these orders
+  were scoped out of this design at all. Scoping them out was reasonable if they were recovered.
+  They are not, so it was not, and [BUG-0009](../bug_list.md#bug_0009) has been reopened.
 - **Telling the member when acceptance resumes.** Nothing pushes that; a member discovers it by
   sending an order that is not rejected. Worth revisiting if it proves awkward in practice.
 
