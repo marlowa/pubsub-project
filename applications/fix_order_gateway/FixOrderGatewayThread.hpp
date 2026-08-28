@@ -199,6 +199,12 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      */
     void report_order_progress();
 
+    /// Emits the health line on a timer when the count-driven one has fallen silent.
+    void report_order_progress_on_timer();
+
+    /// Writes the line itself, from either path.
+    void emit_order_progress(int64_t accounted);
+
     /**
      * @brief Sends an ExecutionReport-Rejected back to the originating client
      *        when an inbound order/cancel cannot be forwarded (e.g. primary
@@ -489,6 +495,11 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // with a client whose own store had restarted too -- looked like a clean new session
     // while thousands of that member's orders were live on the book.
     pubsub_itc_fw::TimerID sequence_report_timer_id_{};
+
+    /// Guarantees a health line even when nothing is progressing -- which is exactly when one is
+    /// wanted, and exactly when the count-driven line falls silent. See BUG-0009.
+    pubsub_itc_fw::TimerID order_progress_timer_id_{};
+    std::chrono::steady_clock::time_point last_order_progress_report_{};
 
     /** @brief Tells the sequencer where each established session's numbering has reached. */
     void report_session_sequence_numbers();

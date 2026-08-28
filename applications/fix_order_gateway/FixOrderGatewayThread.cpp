@@ -130,6 +130,11 @@ constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 // bounded by session count rather than by traffic.
 constexpr auto sequence_report_interval = std::chrono::seconds{2};
 
+// How often the gateway says how it is doing, whether or not anything is progressing. Short enough
+// that a stall is visible while an operator is still looking, long enough that a healthy venue's
+// log is not made of these. See BUG-0009.
+constexpr auto order_progress_report_interval = std::chrono::seconds{5};
+
 // How long the venue waits for a member to answer a ResendRequest before asking again, and how
 // many times it asks in total. Two attempts after the first, so a member has about fifteen
 // seconds before it loses the session.
@@ -201,6 +206,7 @@ void FixOrderGatewayThread::on_app_ready_event() {
     // allocator maintains as it goes rather than traversing a free list.
     open_order_pool_metrics_.register_metrics(get_reactor().metrics(), gateway_metrics::open_order_pool_metrics_scope);
     pool_metrics_timer_id_ = start_recurring_timer(gateway_metrics::pool_metrics_sample_interval);
+    order_progress_timer_id_ = start_recurring_timer(order_progress_report_interval);
 
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {
@@ -861,6 +867,11 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
     if (timer_id == sequence_report_timer_id_) {
         report_session_sequence_numbers();
         sequence_report_timer_id_ = start_one_off_timer(sequence_report_interval);
+        return;
+    }
+
+    if (timer_id == order_progress_timer_id_) {
+        report_order_progress_on_timer();
         return;
     }
 
@@ -1948,9 +1959,45 @@ void FixOrderGatewayThread::report_order_progress() {
     if (accounted % order_progress_interval != 0) {
         return;
     }
-    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={}", accounted, execution_reports_sent_,
-               execution_reports_dropped_, orders_received_);
+    emit_order_progress(accounted);
+}
+
+void FixOrderGatewayThread::report_order_progress_on_timer() {
+    // Why this exists: the line above is emitted once per N orders ACCOUNTED, so when accounting
+    // stalls the reporting stalls with it. **A line driven by progress cannot report the absence
+    // of progress.** In the incident behind BUG-0009 it went silent for 2 minutes 19 seconds and
+    // then caught up in three lines inside 0.2 seconds, while 230,572 orders arrived and 14,000
+    // were accounted for. An operator watching a terminal saw the last healthy line and nothing
+    // after it.
+    //
+    // Skipped when the count-driven line has just spoken, so a busy venue is not reported twice
+    // and a quiet one is still reported at all.
+    if (std::chrono::steady_clock::now() - last_order_progress_report_ < order_progress_report_interval) {
+        return;
+    }
+    emit_order_progress(execution_reports_sent_ + execution_reports_dropped_);
+}
+
+void FixOrderGatewayThread::emit_order_progress(int64_t accounted) {
+    last_order_progress_report_ = std::chrono::steady_clock::now();
+
+    // awaiting = orders taken from members and acknowledged, for which no execution report has yet
+    // been accounted. It is the figure that was missing when it mattered most: `dropped` stayed at
+    // zero throughout the incident and was not lying -- nothing was dropped, the orders were queued
+    // behind a matching engine that no longer existed. The gap between what arrived and what has
+    // been accounted for already carried that, and was thrown away.
+    const int64_t awaiting = orders_received_ - accounted;
+
+    // TEST CONTRACT -- ha_test.py and perf_run.py match this text. The wording is an interface:
+    // change it and the test breaks, silently and elsewhere. Both read a PREFIX of the line, so a
+    // field may be appended without breaking them; the existing four may not be reordered.
+    //
+    // And the wording is not the whole contract: WHEN this is emitted is part of it too. Adding
+    // the timer above broke scenario 18, which had used the presence of a line as evidence that a
+    // gateway had handled traffic -- true while the only trigger was N orders accounted, false the
+    // moment an idle gateway started reporting. That scenario now reads the figures instead.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} awaiting={}", accounted,
+               execution_reports_sent_, execution_reports_dropped_, orders_received_, awaiting);
 }
 
 void FixOrderGatewayThread::queue_session_for_cleanup(FixSession& session) {

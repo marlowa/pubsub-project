@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 61 |
-| Open | 28 (20 defects, 8 tasks) |
+| Bugs recorded | 62 |
+| Open | 29 (21 defects, 8 tasks) |
 | Closed | 33 |
-| Next id | BUG-0062 |
+| Next id | BUG-0063 |
 
 ## Open bugs by severity
 
-7 high, 14 medium, 7 low.
+8 high, 14 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -20,6 +20,7 @@
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0057](#bug_0057) | high | defect | The sequencer segfaulted on 2026-08-21 and nothing recorded it |
 | [BUG-0061](#bug_0061) | high | defect | HA cannot actually be turned off, and the venue silently stops trading |
+| [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
@@ -155,6 +156,55 @@ constant in `GatewayMetrics.hpp`, which is where the gateway's existing metrics 
 that is a larger change than the checking it would observe. See
 [Inbound sequence checking](fix/inbound_sequence_checking.md).
 
+### BUG-0062: Two instances led with HA off, and nothing notices when they are reunited {#bug_0062}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Reasoning through what HA-off should mean while recording [BUG-0061](#bug_0061) |
+| Impact | Two WALs and two epoch sequences that both look authoritative. Nothing detects it, and the harm lands at a later start rather than at the time |
+
+**Recorded on its own rather than left inside BUG-0061, because fixing BUG-0061 is what makes this
+reachable.** Today HA cannot properly be turned off, so this cannot happen by that route. Make it
+possible -- which is what BUG-0061 asks for, and rightly -- and it can.
+
+With HA off, a primary and a secondary can both be started and both lead. That is the agreed
+behaviour and it is right: role means nothing without a peer or an arbiter, and refusing would
+block running a venue on the surviving machine after the primary's hardware has died.
+
+**While it lasts, nothing is wrong.** The gateway reaches only one sequencer with HA off --
+`forward_pdu_to_sequencers` sends to the secondary only inside `if (config_.ha_enabled)` -- so the
+same order cannot enter two books. It is not split brain.
+
+**The damage is deferred, which is what makes it nasty.** Both instances advance state that is
+meant to be single-valued:
+
+- **Each grows its own WAL**, from its own sequence numbers, with no relationship between them.
+- **Each burns leadership epochs** from the `epoch_state_file`, which exists precisely so that a
+  restart cannot reuse a generation the venue has already spent.
+
+Nothing records that this happened. When someone later starts the pair **with HA on** -- the
+obvious thing to do once the failed machine is back -- the venue has two divergent histories and
+two epoch sequences, and no mechanism compares them. The arbiter arbitrates leadership; it does not
+ask whether the two candidates have been leading separately since Tuesday.
+
+**What is wanted is detection, not prevention.** Preventing it would block the legitimate case. The
+venue should be able to tell, when instances come together, that they have diverged -- and halt
+rather than pick one. Halting is the venue's established answer to exactly this class of thing:
+mid-segment WAL corruption, both arbiter halves unreachable, and snapshot validation failure on the
+only snapshot all halt rather than guess. See the decision log in [Roadmap](roadmap.md).
+
+Where to look first, none of it investigated: whether a WAL carries anything identifying the
+instance and generation that wrote it; whether the epoch state file records enough to spot a
+sequence that has advanced without this instance's involvement; and what a component should do on
+finding it -- refuse to join, most likely, and say so in terms an operator can act on.
+
+Related: [BUG-0042](#bug_0042), closed, where a restarted primary matching engine promoted itself
+and produced two leaders. Different mechanism, same underlying fact -- that two instances each
+believing themselves leader is not something the venue currently detects after the event.
+
 ### BUG-0061: HA cannot actually be turned off, and the venue silently stops trading {#bug_0061}
 
 | | |
@@ -221,7 +271,8 @@ reaches only one sequencer -- `forward_pdu_to_sequencers` sends to the secondary
 state independently: each grows its own WAL, and each burns leadership epochs from the
 `epoch_state_file` that exists precisely so a restart cannot reuse a spent generation. Nothing is
 wrong while it lasts. The damage is deferred to the next time someone starts them together under
-HA.
+HA, and **is recorded separately as [BUG-0062](#bug_0062) -- because fixing this entry is what
+makes that one reachable.**
 
 **And a secondary started while the gateway still points at the primary trades nothing at all.**
 The gateway logs *"primary sequencer not connected"* and the orders go nowhere -- accepted,

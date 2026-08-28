@@ -2855,6 +2855,24 @@ def _held_grace_period_seconds(log_path: Path, from_byte: int = 0) -> int | None
     return int(match.group(1)) if match else None
 
 
+def _gateway_progress_lines(log_path: Path) -> list[dict[str, int]]:
+    """Every GW-PROGRESS line in a gateway log, as its figures.
+
+    The line is emitted on a timer as well as per N orders accounted, so a gateway serving nobody
+    still writes one every few seconds -- the whole point of BUG-0009's change, and the reason a
+    caller must read what a line SAYS rather than count how many there are.
+    """
+    lines: list[dict[str, int]] = []
+    try:
+        text = log_path.read_text(errors="replace")
+    except OSError:
+        return lines
+    for match in re.finditer(r"GW-PROGRESS accounted=(\d+) sent=(\d+) dropped=(\d+) nos_received=(\d+)", text):
+        lines.append({"accounted": int(match.group(1)), "sent": int(match.group(2)),
+                      "dropped": int(match.group(3)), "nos_received": int(match.group(4))})
+    return lines
+
+
 def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
     """Return (sent, nos_received) from the last GW-PROGRESS line, or (None, 0).
 
@@ -4269,17 +4287,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  gateway orphan: sequencer dropped {dropped_ers} ER(s) bound for the dead "
                 f"instance 1, first after {elapsed:.1f}s -- not rerouted to b")
 
-            # The load-bearing assertion: b was alive throughout, and the question is
-            # only whether anything reached it. GW-PROGRESS is the gateway's own
-            # per-1000-report marker, so any non-zero count means b handled traffic for
-            # sessions it never owned.
-            b_progress = count_log_marker(gw_b_log, "GW-PROGRESS")
-            if b_progress > 0:
-                die(f"gateway orphan: instance b logged {b_progress} GW-PROGRESS line(s). It was "
-                    "sent no orders of its own, so either instance a's reports were rerouted to it "
-                    "-- which nothing implements -- or session handover now exists and this "
-                    "scenario's assertions need inverting, not removing.")
-            log("  gateway orphan: instance b inherited nothing from a (no handover exists) -- OK")
+            # The load-bearing assertion: b was alive throughout, and the question is only whether
+            # anything reached it.
+            #
+            # This used to count GW-PROGRESS lines and require zero. That stopped being a test of
+            # traffic on 2026-08-28, when the line gained a timer so that a stalled venue keeps
+            # reporting -- BUG-0009. A gateway serving nobody now emits one every five seconds, all
+            # of them zeros, so the presence of a line says nothing and its CONTENTS say everything.
+            #
+            # Worth noting for whoever changes that line next: its wording is a declared test
+            # contract, and this scenario shows the wording is not the whole contract. When it is
+            # emitted matters too.
+            b_traffic = [line for line in _gateway_progress_lines(gw_b_log)
+                         if line["accounted"] > 0 or line["nos_received"] > 0]
+            if b_traffic:
+                die(f"gateway orphan: instance b reported traffic it should never have seen -- "
+                    f"{b_traffic[-1]}. It was sent no orders of its own, so either instance a's "
+                    "reports were rerouted to it -- which nothing implements -- or session handover "
+                    "now exists and this scenario's assertions need inverting, not removing.")
+            log(f"  gateway orphan: instance b reported only idle progress lines "
+                f"({count_log_marker(gw_b_log, 'GW-PROGRESS')} of them, all zeros) -- it inherited "
+                "nothing from a -- OK")
 
             # The member is never told: the orders were cancelled in the book, and the
             # reports saying so had nowhere to go.

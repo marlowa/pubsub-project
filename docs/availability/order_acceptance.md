@@ -1,6 +1,6 @@
 # Refusing orders the venue cannot process {#ha_order_acceptance}
 
-**Status: step 1 of 5 built, 2026-08-28.** It addresses [BUG-0009](../bug_list.md#bug_0009), which
+**Status: steps 1 and 2 of 5 built, 2026-08-28.** It addresses [BUG-0009](../bug_list.md#bug_0009), which
 stays open until the member is told — the sequencer now reports the condition properly, and nothing
 yet reaches the gateway. See [Implementation order](#implementation-order).
 
@@ -162,8 +162,38 @@ Each step leaves the venue working.
    A venue that recovered while nothing was trading said nothing at all, leaving an operator with
    the last warning and silence — which is the same shape as the defect this is fixing. It is now
    reported when the engine reconnects.
-2. **The health line** — timer-based emission and the accepted-versus-accounted gap. Independent of
-   everything else, and the thing an operator would have wanted first.
+2. **The health line** — timer-based emission and the accepted-versus-accounted gap.
+   **Done 2026-08-28.**
+
+   A recurring five-second timer calls `report_order_progress_on_timer`, which skips if the
+   count-driven line has just spoken — so a busy venue is not reported twice and a quiet one is
+   still reported at all. Both paths write through `emit_order_progress`.
+
+   The line gains **`awaiting`**: orders taken from members and acknowledged for which no execution
+   report has been accounted. It is appended rather than inserted, because `ha_test.py` and
+   `perf_run.py` both read a prefix of it — a field may be added, the existing four may not be
+   reordered.
+
+   Measured, with both engines killed and thirty orders sent into the silence:
+
+   ```
+   GW-PROGRESS accounted=1 sent=1 dropped=0 nos_received=1  awaiting=0
+   GW-PROGRESS accounted=1 sent=1 dropped=0 nos_received=31 awaiting=30
+   GW-PROGRESS accounted=1 sent=1 dropped=0 nos_received=31 awaiting=30
+   ```
+
+   `dropped=0` is still true, and now it is no longer the only thing an operator can watch. The
+   line also keeps being emitted while nothing progresses, which is the whole point: before this,
+   `accounted` stuck at 1 never reached the modulo and the line stopped entirely.
+
+   **It broke a scenario, and the way it broke is worth keeping.** `ha_test.py` scenario 18
+   asserted that a gateway serving nobody logged *zero* `GW-PROGRESS` lines, using the line's
+   presence as evidence of traffic. A timer makes that false: an idle gateway now emits one every
+   five seconds, all zeros. The scenario reads the figures instead of counting the lines.
+
+   The wording of that line is a declared test contract and the comment saying so is honoured here
+   -- the format was appended to, never reordered. **The wording turned out not to be the whole
+   contract.** When it is emitted mattered too, and nothing said so. Both comments now do.
 3. **`OrderAcceptance` (127)** — carried and logged, acted on by nobody.
 4. **The gateway refuses**, orders and cancels, with a rejected ExecutionReport.
 5. **The scenarios**, written to fail first: a matching engine killed and not restarted must produce
