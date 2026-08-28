@@ -1,7 +1,8 @@
 # Inbound sequence checking {#fix_inbound_sequence_checking}
 
-**Status: steps 1, 2 and 3 of 4 built. The venue checks what a member sends and bounds how long
-it waits. Nothing in the design is open.** See
+**Status: built, 2026-08-28. All four steps.** The venue checks what a member sends, bounds how
+long it waits, and has scenarios that fail without the checks. One piece of observability is
+tracked separately as [BUG-0058](../bug_list.md#bug_0058). See
 [Implementation order](#implementation-order) for what is done and what is not. It addresses
 [BUG-0038](../bug_list.md#bug_0038), and items 1 and 2 of the departures in
 [FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md), which are one piece of
@@ -396,15 +397,36 @@ out anything real.
 
 The gap-age metric is **not** built. `GatewayMetrics` is where it goes.
 
-### Step 4 — the scenarios, written to fail first. **Not started.**
+### Step 4 — the scenarios. **Done 2026-08-28.**
 
-Also outstanding, and both found while building the steps above:
+`ha_test.py` scenario 41, `inbound_sequence_checking`, driven by
+`scripts/fix_raw_client.py` because f8test will not misbehave to order. Six rules, each asserted
+on what the member is handed:
 
-- **The gap-age metric**, so a member sitting in this state is visible without reading logs.
-- **`scripts/fix_raw_client.py` misses messages it should see** under some interleavings -- it
-  reported no Logon for a session that had demonstrably established. Every venue behaviour above
-  was confirmed from the gateway's own logs as well, but a test client whose reads cannot be
-  trusted is not a foundation for step 4's assertions and needs tightening first.
+- a number above expected — asked about **from the right number**, and the message is not processed;
+- a further message while the gap is open — no second request;
+- the gap filled — the orders are processed and the session carries on;
+- below expected with `PossDupFlag` — discarded, session kept usable;
+- below expected unmarked — Logout naming both numbers, session ended;
+- no `MsgSeqNum` — Reject, and **the counter does not move**, checked by sending an ordinary order
+  afterwards and requiring no resend request.
+
+**Seen to fail first.** With `classify_inbound_sequence` stubbed to return `InSequence`, the
+scenario fails on its first assertion: *"an order numbered 43 arrived when the venue expected 3 and
+it asked for nothing"*. That is BUG-0038 restated by the test that catches it.
+
+**A defect in the test client was found and fixed on the way**, and it had been costing time:
+`receive_until` did `self.pending.extend(self.receive(...))`, which binds `extend` to the list
+`self.pending` names *before* evaluating the argument — and `receive()` rebinds `self.pending` to a
+fresh list. Every message it returned was appended to the orphaned old list and silently dropped.
+That is why the client intermittently reported no Logon for sessions that had demonstrably
+established, and why some venue behaviour looked wrong when it was not. There is now a regression
+test for it that fails on the old code.
+
+**Still outstanding, and tracked rather than done:** the gap-age metric, so a member halted by a
+gap is visible without reading a log — [BUG-0058](../bug_list.md#bug_0058). It needs a gauge
+registered through the reactor's metrics registry, which is a larger change than the checking it
+would observe.
 
 Driven by `f8test -S`, per [Testing](#testing). Including the member that goes silent instead of
 answering, which is the one whose absence would not otherwise be noticed.

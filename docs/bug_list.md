@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 57 |
-| Open | 25 (20 defects, 5 tasks) |
-| Closed | 32 |
-| Next id | BUG-0058 |
+| Bugs recorded | 58 |
+| Open | 25 (19 defects, 6 tasks) |
+| Closed | 33 |
+| Next id | BUG-0059 |
 
 ## Open bugs by severity
 
-7 high, 12 medium, 6 low.
+6 high, 12 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -17,7 +17,6 @@
 | [BUG-0010](#bug_0010) | high | defect | HA fails over into a condition both nodes share |
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
-| [BUG-0038](#bug_0038) | high | defect | Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0057](#bug_0057) | high | defect | The sequencer segfaulted on 2026-08-21 and nothing recorded it |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
@@ -38,6 +37,7 @@
 | [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0050](#bug_0050) | low | task | Doxygen 1.8.14 cannot build the documentation with warnings as errors |
+| [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 
 ---
 
@@ -122,6 +122,35 @@ from a backtrace should be treated as indicative rather than exact.
 **Worth doing regardless of what the core says:** nothing noticed. The venue crashed during a
 measured run and the fact reached no log this file reads, no session note, and no commit. Whatever
 the cause, a crash that leaves no trace anyone would encounter is its own defect.
+
+### BUG-0058: A member halted by a sequence gap is invisible to monitoring {#bug_0058}
+
+| | |
+|---|---|
+| Severity | low |
+| Kind | task -- observability the design called for and did not get |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Building step 3 of BUG-0038; the design asks for a gap-age metric and only the log line was built |
+| Impact | A member whose order flow has stopped is visible only to someone reading the gateway log at the time |
+
+When a member's numbering gaps, the venue stops processing its orders until the gap is filled --
+for up to fifteen seconds, and then the session ends. That is deliberate and correct, and it is
+also **exactly the condition an operator would want to see without going looking.**
+
+Today it produces a WARNING per request and an ERROR on the Logout, and nothing else. Nobody
+watching a dashboard would know. [BUG-0009](#bug_0009) is the same shape and the reason this is
+worth recording rather than shrugging at: the sequencer knew for seven minutes that it had no
+matching engine, said so a million times at INFO, and told nobody who could act.
+
+**What is wanted** is the age of the oldest open gap, per gateway, as a gauge -- so a member stuck
+in this state shows up as a number that climbs rather than as a line in a file. The count of
+sessions currently waiting on a resend would be the natural companion.
+
+Not built because it needs a gauge registered through the reactor's metrics registry rather than a
+constant in `GatewayMetrics.hpp`, which is where the gateway's existing metrics constants live, and
+that is a larger change than the checking it would observe. See
+[Inbound sequence checking](fix/inbound_sequence_checking.md).
 
 ### BUG-0056: The FIX gateway stopped completing logons while still running {#bug_0056}
 
@@ -769,92 +798,6 @@ matching engine cannot: it must ask an arbiter or fall back to a unilateral rule
 engine should gain the same peer-to-peer resolution is a design question this coverage raised and
 did not answer.
 
-### BUG-0038: Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed {#bug_0038}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-23 |
-| Recorded | 2026-08-23 (03ba5d8) |
-| How | Reading the gateway's session handling against FIXT.1.1 while writing docs/fix/sequence_numbers_and_gaps.md |
-| Impact | An order a member believes it placed can fail to reach the venue with neither side detecting it |
-
-`MsgSeqNum` (tag 34) on an inbound message is never compared against an expected value. The
-gateway keeps no expected-inbound counter, never detects a gap in what a member sends, and never
-sends a `ResendRequest` -- the only `ResendRequest` code in the gateway is the handler for
-receiving one from a member.
-
-**What this costs.** A member sends an order; the connection drops before it arrives; the member
-reconnects and continues numbering from the next value. The venue was expecting the missing
-number and receives the one after it, processes it, and carries on. The order that never arrived
-is not requested, not logged and not missed. The member has an order it believes is resting and
-the venue has never heard of it. Noticing exactly this is the purpose of the numbering.
-
-A message arriving with a number *lower* than expected is accepted for the same reason. FIXT.1.1
-calls that a serious error, on the grounds that the far side has gone backwards and its state
-can no longer be trusted.
-
-**A related defect with the same root.** `PossDupFlag` (tag 43) is written on the outbound
-resend path and never read on inbound. A member recovering a gap of its own retransmits with
-`PossDupFlag=Y`, meaning "you may already have this"; the gateway treats it as a new order.
-What prevents a duplicate order today is the matching engine rejecting a repeated ClOrdID
-within a session -- the application layer catching a session-layer failure. The member gets a
-rejection for an order that does exist, and under load the rejections arrive in bulk: a run has
-been observed producing 132,000 duplicate-ClOrdID warnings from a client retransmitting orders
-it had not been acknowledged.
-
-**What is needed.** An expected-inbound counter per session, checked on every message, with the
-three outcomes the specification defines: equal, process; higher, hold the message and send a
-`ResendRequest`; lower, a serious error unless `PossDupFlag=Y`, in which case the message has
-already been processed and should be discarded rather than forwarded. The counter has to
-survive a reconnect, since the series belongs to the session and not to the connection, and it
-has to survive a gateway failover for the same reason the outbound counter does.
-
-Not a small change, and it touches the session state that HA already carries across a failover.
-Worth sizing before starting.
-
-**Designed 2026-08-27 in [Inbound sequence checking](fix/inbound_sequence_checking.md); steps 1
-and 2 of 4 built, 2026-08-27 and 2026-08-28.** The note carries the full plan and the state of each
-step. **The venue now checks what a member sends**, which is the substance of this entry; what
-remains is the retry timer for an unanswered `ResendRequest` (step 3) and the scenarios (step 4),
-so this stays open until those land.
-
-Measured against a running venue with `scripts/fix_raw_client.py`: a gap produces
-`ResendRequest(expected, 0)` and nothing past it is processed; a number below expected without
-`PossDupFlag` ends the session with a Logout naming both numbers; the same marked `PossDupFlag=Y`
-is discarded and the session stays usable; a message with no `MsgSeqNum` is rejected without the
-counter moving; a Logon above expected completes **first** and is then asked about; a Logon below
-it never opens the session.
-
-**Three things about it were wrong first, and all three were found by testing rather than
-reasoning** -- the gap re-asking mid-resend, the venue starving the keepalive layer while it
-waited, and then deadlocking because a member's own `ResendRequest` arrives numbered inside the
-gap. See the design note.
-
-Decisions were taken, and one of them is the reason the design was written down
-before any code:
-
-- **The resume bias after an unclean gateway death is the opposite of the outbound one.** The
-  outbound number resumes deliberately high, because too low sends the member a fatal number. The
-  inbound number must resume deliberately **low**, because too high makes the venue treat an
-  innocent member as committing a serious error and disconnect it. The two fields will sit beside
-  each other on the same three PDUs, so the instinct to treat them alike is the trap.
-- **A message arriving while a gap is open is discarded, not buffered**, and the `ResendRequest`
-  names `EndSeqNo=0` so the member sends it again with the rest. Its later messages wait until the
-  gap is filled -- they have to, or a cancel is applied to an order the venue never received.
-- **An unanswered `ResendRequest` is repeated twice and then ends the session.** A member that
-  never answers would otherwise have its flow stopped for as long as it stayed connected, while
-  looking healthy to anyone not reading the log -- the shape of [BUG-0009](#bug_0009). It
-  reconnects against session state the venue still holds, so the disconnect is recoverable.
-- **Lower than expected without `PossDupFlag` ends the session**, as the specification requires.
-
-The note also records the awkward part: the venue does not know what to expect when a Logon
-arrives, because the expected number comes back asynchronously on `SessionBoundAck`. The existing
-`awaiting_sequence_state` window is where that check belongs.
-
-Testing is unusually well served: `f8test -S` sets the client's next *send* number, the mirror of
-the `-R` that manufactured the outbound gaps for BUG-0037.
-
 ### BUG-0040: The order-accounting check reports lost orders when it means it could not count them {#bug_0040}
 
 | | |
@@ -1172,6 +1115,118 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0038: Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed {#bug_0038}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-23 |
+| Recorded | 2026-08-23 (03ba5d8) |
+| How | Reading the gateway's session handling against FIXT.1.1 while writing docs/fix/sequence_numbers_and_gaps.md |
+| Impact | An order a member believes it placed can fail to reach the venue with neither side detecting it |
+| Fixed | 2026-08-28 -- the venue checks every inbound MsgSeqNum, asks for what is missing, and bounds the wait |
+
+`MsgSeqNum` (tag 34) on an inbound message is never compared against an expected value. The
+gateway keeps no expected-inbound counter, never detects a gap in what a member sends, and never
+sends a `ResendRequest` -- the only `ResendRequest` code in the gateway is the handler for
+receiving one from a member.
+
+**What this costs.** A member sends an order; the connection drops before it arrives; the member
+reconnects and continues numbering from the next value. The venue was expecting the missing
+number and receives the one after it, processes it, and carries on. The order that never arrived
+is not requested, not logged and not missed. The member has an order it believes is resting and
+the venue has never heard of it. Noticing exactly this is the purpose of the numbering.
+
+A message arriving with a number *lower* than expected is accepted for the same reason. FIXT.1.1
+calls that a serious error, on the grounds that the far side has gone backwards and its state
+can no longer be trusted.
+
+**A related defect with the same root.** `PossDupFlag` (tag 43) is written on the outbound
+resend path and never read on inbound. A member recovering a gap of its own retransmits with
+`PossDupFlag=Y`, meaning "you may already have this"; the gateway treats it as a new order.
+What prevents a duplicate order today is the matching engine rejecting a repeated ClOrdID
+within a session -- the application layer catching a session-layer failure. The member gets a
+rejection for an order that does exist, and under load the rejections arrive in bulk: a run has
+been observed producing 132,000 duplicate-ClOrdID warnings from a client retransmitting orders
+it had not been acknowledged.
+
+**What is needed.** An expected-inbound counter per session, checked on every message, with the
+three outcomes the specification defines: equal, process; higher, hold the message and send a
+`ResendRequest`; lower, a serious error unless `PossDupFlag=Y`, in which case the message has
+already been processed and should be discarded rather than forwarded. The counter has to
+survive a reconnect, since the series belongs to the session and not to the connection, and it
+has to survive a gateway failover for the same reason the outbound counter does.
+
+Not a small change, and it touches the session state that HA already carries across a failover.
+Worth sizing before starting.
+
+**Designed 2026-08-27 in [Inbound sequence checking](fix/inbound_sequence_checking.md); steps 1
+and 2 of 4 built, 2026-08-27 and 2026-08-28.** The note carries the full plan and the state of each
+step. **The venue now checks what a member sends**, which is the substance of this entry; what
+remains is the retry timer for an unanswered `ResendRequest` (step 3) and the scenarios (step 4),
+so this stays open until those land.
+
+Measured against a running venue with `scripts/fix_raw_client.py`: a gap produces
+`ResendRequest(expected, 0)` and nothing past it is processed; a number below expected without
+`PossDupFlag` ends the session with a Logout naming both numbers; the same marked `PossDupFlag=Y`
+is discarded and the session stays usable; a message with no `MsgSeqNum` is rejected without the
+counter moving; a Logon above expected completes **first** and is then asked about; a Logon below
+it never opens the session.
+
+**Three things about it were wrong first, and all three were found by testing rather than
+reasoning** -- the gap re-asking mid-resend, the venue starving the keepalive layer while it
+waited, and then deadlocking because a member's own `ResendRequest` arrives numbered inside the
+gap. See the design note.
+
+Decisions were taken, and one of them is the reason the design was written down
+before any code:
+
+- **The resume bias after an unclean gateway death is the opposite of the outbound one.** The
+  outbound number resumes deliberately high, because too low sends the member a fatal number. The
+  inbound number must resume deliberately **low**, because too high makes the venue treat an
+  innocent member as committing a serious error and disconnect it. The two fields will sit beside
+  each other on the same three PDUs, so the instinct to treat them alike is the trap.
+- **A message arriving while a gap is open is discarded, not buffered**, and the `ResendRequest`
+  names `EndSeqNo=0` so the member sends it again with the rest. Its later messages wait until the
+  gap is filled -- they have to, or a cancel is applied to an order the venue never received.
+- **An unanswered `ResendRequest` is repeated twice and then ends the session.** A member that
+  never answers would otherwise have its flow stopped for as long as it stayed connected, while
+  looking healthy to anyone not reading the log -- the shape of [BUG-0009](#bug_0009). It
+  reconnects against session state the venue still holds, so the disconnect is recoverable.
+- **Lower than expected without `PossDupFlag` ends the session**, as the specification requires.
+
+The note also records the awkward part: the venue does not know what to expect when a Logon
+arrives, because the expected number comes back asynchronously on `SessionBoundAck`. The existing
+`awaiting_sequence_state` window is where that check belongs.
+
+Testing is unusually well served: `f8test -S` sets the client's next *send* number, the mirror of
+the `-R` that manufactured the outbound gaps for BUG-0037.
+
+**Fixed 2026-08-28**, in four steps, designed first in
+[Inbound sequence checking](fix/inbound_sequence_checking.md), which carries the reasoning and the
+measurements. In outline: the venue keeps an expected-inbound number per session; checks every
+message against it on both inbound paths; asks for what is missing and processes nothing past a gap;
+discards a marked retransmission; ends a session whose numbering has gone backwards; repeats an
+unanswered request twice and then ends the session. The number survives a gateway failover on the
+same PDUs that already carried the outbound one.
+
+**The decision most likely to be got wrong** is written down where the two fields sit side by side:
+the inbound number resumes **low**, with no allowance, because the two errors are not symmetrical in
+the same direction as the outbound one. Too high there leaves a member a gap it can close; too high
+*here* makes the venue treat an innocent member as having gone backwards and disconnect it.
+
+**Verified by `ha_test.py` scenario 41, seen to fail first.** With the check stubbed out it fails on
+its first assertion -- *"an order numbered 43 arrived when the venue expected 3 and it asked for
+nothing"*, which is this entry restated by the test that catches it.
+
+**Four defects were found while building it**, none of them in the original scope, and all by
+running rather than reasoning: [BUG-0055](#bug_0055) (a member restarting its numbering left the
+sequencer remembering the old one, which also reached the provenance work committed the same day),
+[BUG-0056](#bug_0056), [BUG-0057](#bug_0057) and [BUG-0058](#bug_0058).
+
+**Still open around it:** the gap-age metric, BUG-0058, so a member halted by a gap is visible
+without reading a log.
 
 ### BUG-0055: A member restarting its numbering leaves the sequencer remembering the old one {#bug_0055}
 

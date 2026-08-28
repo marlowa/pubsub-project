@@ -40,6 +40,7 @@ import argparse
 import datetime
 import socket
 import sys
+import time
 
 SOH = "\x01"
 
@@ -143,10 +144,12 @@ class FixRawClient:
     # -- connection ------------------------------------------------------------------------
 
     def connect(self, timeout: float = 5.0) -> None:
+        """Open the TCP connection. No FIX is sent until logon() or send() is called."""
         self.sock = socket.create_connection((self.host, self.port), timeout=timeout)
         self.sock.settimeout(timeout)
 
     def close(self) -> None:
+        """Close the connection, abruptly: no Logout is sent unless a test sent one itself."""
         if self.sock is not None:
             try:
                 self.sock.close()
@@ -242,9 +245,13 @@ class FixRawClient:
         try:
             chunk = self.sock.recv(65536)
         except (socket.timeout, TimeoutError):
-            return []
+            # Still hand back anything already read but unclaimed: a caller asking "what has
+            # arrived" should not be told "nothing" because this particular read timed out.
+            claimed = self.pending
+            self.pending = []
+            return claimed
         if not chunk:
-            return []
+            return list(self.pending) if self.pending else []
         self.buffer += chunk
         messages, self.buffer = parse_messages(self.buffer)
         claimed = self.pending + messages
@@ -253,18 +260,24 @@ class FixRawClient:
 
     def receive_until(self, msg_type: str, timeout: float = 5.0) -> dict[int, str] | None:
         """Read until a message of this type arrives, or the timeout expires."""
-        import time as _time
-        deadline = _time.time() + timeout
+        deadline = time.time() + timeout
         while True:
             for index, message in enumerate(self.pending):
                 if message.get(MSG_TYPE) == msg_type:
                     del self.pending[index]
                     return message
-            remaining = deadline - _time.time()
+            remaining = deadline - time.time()
             if remaining <= 0:
                 return None
             # Anything not asked for is kept, not dropped, so a later call can still find it.
-            self.pending.extend(self.receive(timeout=min(0.5, max(0.05, remaining))))
+            #
+            # Through a local, and NOT as self.pending.extend(self.receive(...)). Python binds the
+            # extend method to the list self.pending names *before* evaluating the argument, and
+            # receive() rebinds self.pending to a fresh list -- so the messages would be appended
+            # to the orphaned old one and silently lost. That aliasing bug made this client drop
+            # messages intermittently, and cost real time chasing venue behaviour that was correct.
+            arrived = self.receive(timeout=min(0.5, max(0.05, remaining)))
+            self.pending.extend(arrived)
 
 
 def main() -> int:

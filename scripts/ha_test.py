@@ -300,6 +300,16 @@ _BOUNDED_RESEND_END           = 149
 # The client is asked for the range on its stdin -- f8test's 'R' reads BeginSeqNo then EndSeqNo --
 # and the reply comes back through the sequencer's WAL, so give it room.
 _BOUNDED_RESEND_SETTLE        = 5.0
+# Scenario 41, driven by the raw client. _RAW_SILENCE_TIMEOUT is how long the venue is watched for
+# something it must NOT send; it is short on purpose, because every assertion that expects silence
+# pays it.
+_RAW_CLIENT_SETTLE            = 2.0
+_RAW_LOGON_TIMEOUT            = 15.0
+_RAW_REPLY_TIMEOUT            = 10.0
+_RAW_SILENCE_TIMEOUT          = 2.0
+# Any past time will do: what matters is that OrigSendingTime is present on a retransmission, not
+# what it says.
+_RAW_ORIG_SENDING_TIME        = "20260101-00:00:00.000"
 # Scenario 23. The client that takes over on instance b after instance a is killed.
 _INFLIGHT_A_CFG               = "myfix_gateway_client_inflight_a.xml"
 _INFLIGHT_CFG                 = "myfix_gateway_client_inflight_b.xml"
@@ -607,6 +617,10 @@ class Scenario(NamedTuple):
     # history, and what comes back is compared against what it was originally sent under those
     # very numbers. See run_scenario's "bounded resend" block.
     assert_bounded_resend: bool = False
+    # When True, the venue's inbound sequence checking is driven with scripts/fix_raw_client.py --
+    # a client with no session layer, which will send what a conforming engine will not. See
+    # run_scenario's "inbound sequence" block and docs/fix/inbound_sequence_checking.md.
+    assert_inbound_sequence: bool = False
     # When True, kill the gateway with orders IN FLIGHT and then bring the client back on the
     # OTHER instance, asserting what the member can recover. See run_scenario's "in-flight"
     # block. Needs gateway_b, since the whole point is that the member returns elsewhere.
@@ -2388,6 +2402,40 @@ _SCENARIOS: list[Scenario] = [
                 description="the lone arbiter becomes active without a peer or a witness",
             ),
         ],
+    ),
+
+    # 41 -- what the venue does about a member that is WRONG.
+    #
+    # Driven by scripts/fix_raw_client.py rather than fix8, and that is the whole point. f8test is
+    # an engine: it always writes a valid MsgSeqNum and will not send below its own expected
+    # without marking it. Half the rules here are about members that do neither, and a client that
+    # refuses to misbehave cannot test them.
+    #
+    # Six rules, each asserted on what the member is handed rather than on a log line:
+    #
+    #   * a number above expected      -- ResendRequest, and the message is NOT processed
+    #   * a further message meanwhile  -- no second request; asked once
+    #   * the gap filled               -- processed, and the session carries on
+    #   * below expected, PossDupFlag  -- discarded, session kept usable
+    #   * below expected, unmarked     -- Logout naming both numbers, session ended
+    #   * no MsgSeqNum at all          -- Reject, and the counter does not advance
+    #
+    # The last is the one whose absence would be silent: if the counter advanced over a message the
+    # venue could not place, the NEXT message would look like a gap and the member would be asked
+    # to resend something it had already sent.
+    Scenario(
+        number=41,
+        short_name="inbound_sequence_checking",
+        description="What the venue does about a member whose sequence numbers are wrong",
+        expected_outcome=(
+            "a gap is asked about once and nothing past it is processed; a marked retransmission "
+            "is discarded; an unmarked low number ends the session; and a message with no "
+            "sequence number is rejected without moving the counter"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_inbound_sequence=True,
+        steps=[],
     ),
 
     # 40 -- a bounded resend, asked for out of the middle of the member's own history.
@@ -4314,6 +4362,134 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"cancel grace: {drained} cancel drain(s) ran despite the reconnect -- "
                     "the member's book was flattened anyway.")
             log("  cancel grace: no cancel was sent at any point in this scenario -- OK")
+
+        # ── What the venue does about a member that is wrong (scenario 41) ────
+        # Driven by the raw client, which has no session layer and will send what fix8 will not.
+        if scenario.assert_inbound_sequence:
+            log("=== Driving the venue's inbound sequence checking ===")
+            stop_f8test(f8proc)
+            f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            gateway_port = gateway_listen_port(prefix, "a")
+
+            def open_member() -> "FixRawClient":
+                """A logged-on member starting its numbering afresh, so the venue's expectation
+                is known exactly rather than inherited from whatever ran before."""
+                member = FixRawClient("127.0.0.1", gateway_port, FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+                member.connect()
+                member.logon(reset_seq_num=True)
+                if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                    member.close()
+                    die("inbound sequence: the raw client could not log on. Check the gateway is "
+                        f"listening on {gateway_port} and that credentials.toml has {FIX8_COMP_ID}.")
+                return member
+
+            # 1. A number above what the venue expects: asked about, and NOT processed.
+            member = open_member()
+            member.new_order_single("seq-base")
+            if member.receive_until("8", timeout=_RAW_REPLY_TIMEOUT) is None:
+                die("inbound sequence: an in-sequence order produced no ExecutionReport, so the "
+                    "session is not working and nothing below would mean anything.")
+            expected_next = member.next_send_seq_num  # the venue expects this from us now
+
+            member.new_order_single("seq-ahead", seq_num=expected_next + 40)
+            request = member.receive_until("2", timeout=_RAW_REPLY_TIMEOUT)
+            if request is None:
+                die(f"inbound sequence: an order numbered {expected_next + 40} arrived when the "
+                    f"venue expected {expected_next} and it asked for nothing. A member can lose "
+                    "messages without either side noticing -- this is BUG-0038 itself.")
+            if request.get(7) != str(expected_next):
+                die(f"inbound sequence: the venue asked from BeginSeqNo={request.get(7)}, not "
+                    f"{expected_next}. It must ask from the first number it is missing.")
+            if member.receive_until("8", timeout=_RAW_SILENCE_TIMEOUT) is not None:
+                die("inbound sequence: the order past the gap was processed. Nothing after a gap "
+                    "may be, or a cancel can be applied to an order the venue never received.")
+            log(f"  inbound sequence: a gap is asked about from {expected_next} and the message "
+                "past it is not processed -- OK")
+
+            # 2. A further message while the gap is open must not provoke a second request. A
+            #    member answering the first ignores a second, and the session then waits forever.
+            member.new_order_single("seq-ahead-2", seq_num=expected_next + 41)
+            if member.receive_until("2", timeout=_RAW_SILENCE_TIMEOUT) is not None:
+                die("inbound sequence: a second ResendRequest went out while the first was "
+                    "outstanding. A member answering one ignores the other, and both sides then "
+                    "wait on each other.")
+            log("  inbound sequence: a further message while the gap is open provokes no second "
+                "request -- OK")
+
+            # 3. Filling the gap: processed, and the session carries on.
+            for filled in range(expected_next, expected_next + 42):
+                member.new_order_single(f"seq-fill-{filled}", seq_num=filled, poss_dup=True,
+                                        orig_sending_time=_RAW_ORIG_SENDING_TIME)
+            time.sleep(_RAW_CLIENT_SETTLE)
+            filled_reports = [m for m in member.receive(timeout=_RAW_REPLY_TIMEOUT) if m.get(35) == "8"]
+            if not filled_reports:
+                die("inbound sequence: the member filled the gap and no order was processed. The "
+                    "messages that close a gap are the venue's own recovery -- discarding them "
+                    "leaves the session stuck.")
+            log(f"  inbound sequence: filling the gap processed {len(filled_reports)} order(s) -- OK")
+            member.close()
+
+            # 4. Below expected and marked PossDupFlag: discarded, session kept.
+            member = open_member()
+            member.new_order_single("dup-base")
+            member.receive_until("8", timeout=_RAW_REPLY_TIMEOUT)
+            member.new_order_single("dup-retransmit", seq_num=2, poss_dup=True,
+                                    orig_sending_time=_RAW_ORIG_SENDING_TIME)
+            if member.receive_until("8", timeout=_RAW_SILENCE_TIMEOUT) is not None:
+                die("inbound sequence: a retransmission below the expected number was forwarded as "
+                    "a new order. The matching engine's duplicate-ClOrdID rejection is then the "
+                    "only thing stopping it, which is the session layer's job -- see BUG-0038.")
+            if member.receive_until("5", timeout=_RAW_SILENCE_TIMEOUT) is not None:
+                die("inbound sequence: a retransmission marked PossDupFlag=Y ended the session. It "
+                    "is the member saying 'you may already have this', not an error.")
+            member.new_order_single("dup-after")
+            if member.receive_until("8", timeout=_RAW_REPLY_TIMEOUT) is None:
+                die("inbound sequence: the session stopped working after a marked retransmission.")
+            log("  inbound sequence: a marked retransmission is discarded and the session carries "
+                "on -- OK")
+            member.close()
+
+            # 5. Below expected and NOT marked: the session ends, and the member is told why.
+            member = open_member()
+            member.new_order_single("low-base")
+            member.receive_until("8", timeout=_RAW_REPLY_TIMEOUT)
+            member.new_order_single("low", seq_num=2)
+            logout = member.receive_until("5", timeout=_RAW_REPLY_TIMEOUT)
+            if logout is None:
+                die("inbound sequence: a number below expected with no PossDupFlag did not end the "
+                    "session. FIXT.1.1 calls it a serious error: the far side has gone backwards "
+                    "and its state cannot be trusted.")
+            if "too low" not in (logout.get(58) or ""):
+                die(f"inbound sequence: the Logout said {logout.get(58)!r}, which does not tell the "
+                    "member what was wrong with its numbering.")
+            log(f"  inbound sequence: an unmarked low number ends the session -- {logout.get(58)!r} -- OK")
+            member.close()
+
+            # 6. No MsgSeqNum at all: rejected, and the counter must NOT advance. If it did, the
+            #    next message would look like a gap and the member would be asked to resend
+            #    something it had already sent -- silently, and on every validation failure.
+            member = open_member()
+            member.new_order_single("noseq-base")
+            member.receive_until("8", timeout=_RAW_REPLY_TIMEOUT)
+            member.new_order_single("noseq", omit_seq_num=True)
+            if member.receive_until("3", timeout=_RAW_REPLY_TIMEOUT) is None:
+                die("inbound sequence: a message with no MsgSeqNum drew no Reject.")
+            member.new_order_single("noseq-after")
+            if member.receive_until("8", timeout=_RAW_REPLY_TIMEOUT) is None:
+                die("inbound sequence: the next in-sequence order was not processed, so the counter "
+                    "advanced over a message the venue could not place. Every validation failure "
+                    "would then cost the member a spurious resend.")
+            if member.receive_until("2", timeout=_RAW_SILENCE_TIMEOUT) is not None:
+                die("inbound sequence: the venue asked for a resend after a message with no "
+                    "sequence number, so its counter had moved when it should not have.")
+            log("  inbound sequence: a message with no MsgSeqNum is rejected and the counter does "
+                "not move -- OK")
+            member.close()
 
         # ── A bounded resend, out of the middle of the member's history ───────
         # Nothing is killed. The member asks for a range it is entitled to ask for, and what

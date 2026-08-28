@@ -104,7 +104,19 @@ the gateway that made it. Scenarios 22, 23 and 40 each failed on this until it w
 pass; on a failover the surviving instance replays a thousand real reports for a session it never
 served, where before it filled the range with whatever came back.
 
-Inbound validation, the half this item leads on, has not been started.
+**Inbound validation, the half this item leads on, is done -- 2026-08-28, BUG-0038 closed.** The
+venue checks every inbound `MsgSeqNum`, asks for what is missing, discards a marked retransmission,
+ends a session whose numbering has gone backwards, and bounds how long it waits before giving up.
+Designed first in [Inbound sequence checking](fix/inbound_sequence_checking.md).
+
+**So item 1 is complete**, and the framework question it was chosen to answer has been answered in
+the doing: which session state migrates on promotion, and by what mechanism. The inbound counter
+travels on the same three PDUs the outbound one already used -- and is resumed in the opposite
+direction, which is the part worth carrying to whatever migrates next.
+
+What it cost is worth recording alongside what it fixed. Four defects were found while building it,
+none in the original scope and all by running rather than reasoning: BUG-0055, BUG-0056, BUG-0057
+and BUG-0058. That ratio is the argument for the bug list as a way of working, not against it.
 
 **2. The order book grows without bound, and the venue does not say so.** Two bug list entries
 with one cause: nothing fills orders, so an order rests until it is cancelled and roughly nine

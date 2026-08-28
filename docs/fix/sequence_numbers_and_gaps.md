@@ -261,35 +261,32 @@ responsibility and not something the session layer can rescue.
 
 Three, in order of seriousness.
 
-### 1. Inbound sequence numbers are not checked at all
+### 1. Inbound sequence numbers — **closed 2026-08-28**
 
-`MsgSeqNum` on an inbound message is never compared against an expected value. There is no
-expected-inbound counter, no gap detection on what the member sends, and the gateway never
-sends a `ResendRequest` — the only `ResendRequest` code is the handler for receiving one.
+`MsgSeqNum` on an inbound message used to be compared against nothing. There was no
+expected-inbound counter, no gap detection, and the gateway never sent a `ResendRequest` — the only
+such code was the handler for receiving one. A member could lose an order with neither side
+noticing, which is what the numbering exists to prevent.
 
-The consequence is order loss that nobody observes. A member sends an order, the connection
-drops before it arrives, the member reconnects and carries on numbering from the next value.
-The venue was expecting the missing number and receives the one after it. Because nothing
-checks, the order is processed as though nothing were missing. **The member believes it has an
-order resting that the venue never received, and neither side has any reason to think
-otherwise.** Detecting exactly this is what the numbering is for.
+The venue now keeps an expected-inbound number per session, checks every message against it on both
+inbound paths, and acts: above, it asks and processes nothing past the gap; below and marked, it
+discards; below and unmarked, it ends the session. The number survives a gateway failover, resumed
+deliberately **low** — the opposite of the outbound one, because expecting too high a number from a
+member disconnects one that has done nothing wrong.
 
-A message arriving with a *lower* number than expected is likewise accepted, where the
-specification calls it a serious error.
+See [Inbound sequence checking](../availability/../fix/inbound_sequence_checking.md) and BUG-0038.
 
-### 2. `PossDupFlag` on inbound messages is ignored
+### 2. `PossDupFlag` on inbound messages — **closed 2026-08-28**
 
-`PossDupFlag` is only ever written, on the outbound resend path. It is never read.
+It used to be written on the outbound resend path and never read, so a member's legitimate
+retransmission was forwarded as a new order and the matching engine's duplicate-`ClOrdID` rejection
+was the only thing stopping it — the application layer catching a session-layer failure, and under
+load it produced 132,000 warnings in one run.
 
-A member recovering a gap of its own retransmits with `PossDupFlag=Y`, which means "you may
-already have this". The gateway treats it as a new order and forwards it. What prevents a
-duplicate order is the matching engine rejecting a repeated ClOrdID within a session — the
-application layer catching a session-layer failure.
-
-That backstop works, and it is the wrong answer twice over: the member receives a rejection for
-an order that does in fact exist, and under load the rejections arrive in volume. A run has
-been observed producing 132,000 duplicate-ClOrdID warnings from a client retransmitting orders
-it had not been acknowledged.
+It is now read. A number below what the venue expects, marked `PossDupFlag=Y`, is a retransmission
+of something already processed and is discarded silently. The same number **unmarked** is the
+serious error the specification calls it. And a marked message whose number *equals* what the venue
+expects is processed, because it is filling a genuine gap and is new to the venue.
 
 ### 3. `EndSeqNo` on a ResendRequest — **closed 2026-08-27**
 
