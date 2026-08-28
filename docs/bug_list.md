@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 66 |
-| Open | 30 (21 defects, 9 tasks) |
-| Closed | 36 |
+| Open | 28 (19 defects, 9 tasks) |
+| Closed | 38 |
 | Next id | BUG-0067 |
 
 ## Open bugs by severity
 
-11 high, 13 medium, 6 low.
+11 high, 11 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,10 +25,8 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
-| [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
-| [BUG-0018](#bug_0018) | medium | defect | The idle-connection reaper tears down the pre-warmed failover link |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
 | [BUG-0041](#bug_0041) | medium | defect | Five ways the venue will not start on a RHEL8 target host |
@@ -845,25 +843,6 @@ shutdown_timeout" still appear in timer test logs. **Root cause not identified.*
 `ThreadWithJoinTimeout` exists precisely because a raw `std::thread` terminates on an early return
 before join, so a join that times out is not obviously benign.
 
-### BUG-0002: The FIX order gateway's `process_message` exit paths are not audited {#bug_0002}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | before 2026-07 (carried over from the roadmap's Known Issues) |
-| Recorded | 2026-08-08 (8cc0ced) |
-| How | Code reading |
-| Impact | Possible false stuck-thread detection |
-
-`ApplicationThread::process_message` (`ApplicationThread.hpp:726`) is expected to update
-`time_event_finished_` before it returns. If any exit path from it skips that, the reactor
-watchdog reports the thread as stuck when it is not. **Not yet audited**, on the FIX order
-gateway thread or on any other.
-
-Given that the reactor watchdog is what made the order-book rehash stall diagnosable, false
-positives from it would be costly: a watchdog that cries wolf gets ignored, and it is the
-instrument that turned a year-old latency mystery into a measurement.
-
 ### BUG-0003: Environment placeholders are missing outside dev {#bug_0003}
 
 | | |
@@ -1188,38 +1167,6 @@ worth more than tidiness:
 
 Not urgent, but it should not sit indefinitely: the gate as it stands protects against the
 class of defect that stops a script dead, and nothing else.
-
-### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-09 |
-| Recorded | 2026-08-09 (d9b38e5) |
-| How | The trading-day load run — the sequencer logged `connection lost` at WARNING every ten minutes while both matching engines were healthy |
-| Impact | The secondary's order connection is absent for part of every ten-minute cycle, so failover latency depends on when the failure lands |
-
-`MatchingEngine.cpp` registers the order listener on both roles, and says why: *"Pre-warming
-this listener means the sequencer's connection is already established when the secondary is
-promoted, so WAL reconciliation can begin without a connect delay."* On the secondary that
-connection carries no data — the engine discards sequenced orders while in FOLLOWER mode — so
-`InboundConnectionManager::check_for_inactive_connections()` closes it after
-`socket_maximum_inactivity_interval_`, 600s. **Being idle is precisely what a standby link
-does**, so the reaper defeats the pre-warming it exists to provide.
-
-Twelve teardowns in the first 26 minutes of run 7 — two cycles of six connections, at 08:26:20
-and 08:36:23, exactly 600s after start and 600s after each other. All on
-`matching_engine_secondary`; none on the primary, whose connections carry orders and so never
-idle out. It recurs for the whole life of the process.
-
-The framework already has the mechanism: `register_inbound_listener()` takes an
-`IdleTimeoutFlag`, and `matching_engine_publisher` and `fix_order_gateway` already pass
-`BypassIdleTimeout` for their quiet infrastructure links. The matching engine's two listeners
-take the `UseIdleTimeout` default instead.
-
-**Second-order cost, and the more insidious one.** A WARNING that fires every ten minutes in a
-healthy system teaches a reader to skim past `connection lost` — which is the line that matters
-when a connection is genuinely lost.
 
 ### BUG-0028: Growing the order book by doubling needs more memory than the machine has {#bug_0028}
 
@@ -1752,6 +1699,106 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-09 |
+| Recorded | 2026-08-09 (d9b38e5) |
+| How | The trading-day load run — the sequencer logged `connection lost` at WARNING every ten minutes while both matching engines were healthy |
+| Impact | The secondary's order connection is absent for part of every ten-minute cycle, so failover latency depends on when the failure lands |
+| Fixed | 2026-08-09 (768d54b) -- the pre-warmed listeners are registered with IdleTimeoutFlag::BypassIdleTimeout. Verified 2026-08-28 |
+
+`MatchingEngine.cpp` registers the order listener on both roles, and says why: *"Pre-warming
+this listener means the sequencer's connection is already established when the secondary is
+promoted, so WAL reconciliation can begin without a connect delay."* On the secondary that
+connection carries no data — the engine discards sequenced orders while in FOLLOWER mode — so
+`InboundConnectionManager::check_for_inactive_connections()` closes it after
+`socket_maximum_inactivity_interval_`, 600s. **Being idle is precisely what a standby link
+does**, so the reaper defeats the pre-warming it exists to provide.
+
+Twelve teardowns in the first 26 minutes of run 7 — two cycles of six connections, at 08:26:20
+and 08:36:23, exactly 600s after start and 600s after each other. All on
+`matching_engine_secondary`; none on the primary, whose connections carry orders and so never
+idle out. It recurs for the whole life of the process.
+
+The framework already has the mechanism: `register_inbound_listener()` takes an
+`IdleTimeoutFlag`, and `matching_engine_publisher` and `fix_order_gateway` already pass
+`BypassIdleTimeout` for their quiet infrastructure links. The matching engine's two listeners
+take the `UseIdleTimeout` default instead.
+
+**Second-order cost, and the more insidious one.** A WARNING that fires every ten minutes in a
+healthy system teaches a reader to skim past `connection lost` — which is the line that matters
+when a connection is genuinely lost.
+
+#### Closed 2026-08-28, having been fixed on 2026-08-09 and left open
+
+`MatchingEngine.cpp` registers the order listener with
+`IdleTimeoutFlag::BypassIdleTimeout`, `InboundConnection::idle_timeout_exempt()` reports it, and
+`InboundConnectionManager::check_for_inactive_connections()` skips exempt connections before it
+looks at elapsed time. The commit is `768d54b`, *"keep the pre-warmed failover listeners out of the
+idle reaper"* -- which does not cite this entry, and so the entry stayed open for nineteen days.
+
+**Verified by the symptom rather than by the code**, because the code was already claiming to be
+fixed and a claim is not evidence. A venue was started and left completely idle for **11 minutes
+41 seconds**, past the 600-second inactivity interval: zero `connection lost` lines, with
+`ME-secondary standby connection 6 established (pre-warmed for failover)` in the log and eight live
+sockets to the engine pair. The absence was checked against the connection existing, since nothing
+tears down a link that was never made.
+
+**What this says about the bug list itself.** A grep for commits citing each open entry would not
+have found this one, and would have offered [BUG-0009](#bug_0009) instead -- which has five
+commits against it and is open because the fix was incomplete. Commit messages are claims by their
+authors, in both directions. The only sound check is whether the symptom still occurs.
+
+### BUG-0002: The FIX order gateway's `process_message` exit paths are not audited {#bug_0002}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | before 2026-07 (carried over from the roadmap's Known Issues) |
+| Recorded | 2026-08-08 (8cc0ced) |
+| How | Code reading |
+| Impact | Possible false stuck-thread detection |
+| Fixed | 2026-08-28 -- audited; no path skips the update while the thread keeps running, so the hazard is not reachable |
+
+`ApplicationThread::process_message` (`ApplicationThread.hpp:726`) is expected to update
+`time_event_finished_` before it returns. If any exit path from it skips that, the reactor
+watchdog reports the thread as stuck when it is not. **Not yet audited**, on the FIX order
+gateway thread or on any other.
+
+Given that the reactor watchdog is what made the order-book rehash stall diagnosable, false
+positives from it would be costly: a watchdog that cries wolf gets ignored, and it is the
+instrument that turned a year-old latency mystery into a measurement.
+
+#### Audited 2026-08-28: no reachable path, and two facts are why
+
+`ApplicationThread::process_message` is 122 lines with exactly one early `return`, and the audit is
+of that one function rather than of each thread, because every thread reaches the watchdog through
+it.
+
+**The early return is benign, and the reason is placement.** It drops an application event that
+arrives while the thread is winding down, and it sits *before* `time_event_started_` is assigned.
+Neither timestamp moves, so the pair the watchdog compares stays consistent. A path that skipped
+only `time_event_finished_` would be the hazard; this skips both, which is not the same thing at
+all.
+
+**An exception from a handler cannot cause it either.** That path would skip
+`time_event_finished_` with `time_event_started_` already set, which is exactly the failure this
+entry feared. But nothing catches between the handler and `ApplicationThread::run()`, whose
+outermost `catch` calls `reactor_.shutdown()` and marks the thread Terminated. The thread does not
+survive to be misjudged -- it takes the venue down instead, which is a different problem and not
+this one.
+
+So there is no path that skips the update **while leaving the thread running**, and a stopped
+thread is not what the watchdog reports on.
+
+**Closed.** What kept this open was the phrase "not yet audited" rather than any evidence of a
+fault, and the audit cost about ten minutes once someone did it. Worth remembering when an entry
+describes a possibility rather than an observation: the cost of confirming was far below the cost
+of carrying it.
 
 ### BUG-0011: `cmake --install` re-lays config templates unexpanded {#bug_0011}
 
