@@ -1497,6 +1497,35 @@ not the typing: the environment file was edited instead, which is a change that 
 un-picked, and which is how a host ends up running a profile against configuration nobody meant
 to keep.
 
+#### Four of the five fixed 2026-08-28; point 4 is still a choice
+
+**Points 1 and 3 had one cause and now have one answer.** `find_liquibase()` asks
+`shutil.which("liquibase")`, and both the driver check and the `liquibase_cmd` invocation use what
+it returns. The script no longer hardcodes `/usr/bin/liquibase` in one place and invokes a bare
+name in another. When it is absent the message says which PATH was searched -- the one this
+process was given, not the one a login shell builds from a profile -- and gives the two commands
+that tell those apart, which is the distinction that made this confusing on the host.
+
+**Point 2.** The driver is looked for in `<root>/internal/lib` *and* `<root>/lib`, so both the 4.x
+and 3.x layouts are found. The repair path no longer calls `mkdir(parents=True)` on a guess: it
+copies only into a directory that already exists, and if that fails for permissions it says to use
+`sudo` rather than leaving a plausible-looking empty `lib/` beside the real one. The error text
+names RHEL/Rocky packages alongside the Debian ones instead of assuming a single distribution.
+
+**Point 5.** `--env` and `--db-port` are attached to every subcommand as well as to the top-level
+parser, so `devenv.py start --db-port 5433` works and `devenv.py start --help` lists it. The two
+copies use `argparse.SUPPRESS` for their defaults, without which a subcommand copy would overwrite
+a value the top-level parser had already stored and `--db-port 5433 start` would silently become
+`None`. Verified in all three positions: before the subcommand, after it, and absent.
+
+**Point 4 is not fixed, because the entry is right that it is a choice.** `install_dir` varies by
+deployment environment and the install tree varies by target platform, and the three ways to settle
+that are set out above. Nothing here picks one.
+
+Confirmed on the host by Andrew: with the database created while logged in as `postgres`,
+everything came up. Prometheus did not start, which is the non-defect below -- it had not been set
+up on that machine.
+
 **Not a defect: Prometheus did not start.** `devenv.py:239` skips any component whose command is
 absent from `PATH` and prints that it is doing so. The comment above it gives the reason --
 refusing to start a trading system because a monitoring tool is absent gets the priority

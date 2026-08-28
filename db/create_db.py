@@ -137,6 +137,39 @@ def _database_exists(psql_prefix: list[str], host: str, port: int,
     return "1" in result.stdout
 
 
+def find_liquibase() -> str:
+    """The liquibase executable, or exit saying it is not on PATH.
+
+    Asked of the system rather than assumed. This used to hardcode
+    `/usr/bin/liquibase` and then, separately, invoke the bare name `liquibase` -- and on a RHEL8
+    host both failed, which was itself the clue: Liquibase was neither at /usr/bin nor on the PATH
+    the script sees, consistent with an /opt install reachable through a login shell's profile but
+    not through subprocess.run. See docs/bug_list.md, BUG-0041.
+
+    Both questions have the same answer, so they are now asked once, in one place, and the absence
+    is reported where it is discovered instead of several steps later on an invented path.
+    """
+    found = shutil.which("liquibase")
+    if found:
+        return found
+    print(
+        "\nerror: liquibase is not on PATH.\n"
+        "\n"
+        "It was looked for with shutil.which, which sees the PATH this process was given --\n"
+        "not the one an interactive login shell builds from your profile. An /opt install that\n"
+        "works when you type 'liquibase' can still be invisible here.\n"
+        "\n"
+        "Check what this process can see:\n"
+        "    command -v liquibase\n"
+        "    python3 -c 'import shutil; print(shutil.which(\"liquibase\"))'\n"
+        "\n"
+        "If the first prints a path and the second prints None, export PATH for this run or\n"
+        "symlink the launcher somewhere already on it.\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _check_jdbc_driver() -> Path:
     """
     Locate the PostgreSQL JDBC driver for Liquibase.
@@ -146,23 +179,41 @@ def _check_jdbc_driver() -> Path:
     lib directory automatically — so no manual setup is required on a fresh
     machine or Docker container.
     """
-    liquibase_real = Path(os.path.realpath("/usr/bin/liquibase"))
-    liquibase_lib  = liquibase_real.parent / "lib"
+    liquibase_exe = find_liquibase()
+    liquibase_root = Path(os.path.realpath(liquibase_exe)).parent
 
-    jars = sorted(liquibase_lib.glob("postgresql*.jar"))
-    if jars:
-        return jars[0]
+    # Both layouts, because Liquibase moved its bundled drivers. 3.x kept them in <root>/lib and
+    # 4.x and later use <root>/internal/lib, so looking in only one finds nothing on half the
+    # installations even when the driver is present and correct. Ordered with the modern layout
+    # first, and every candidate is searched before concluding there is no driver.
+    candidate_dirs = [liquibase_root / "internal" / "lib", liquibase_root / "lib"]
+    for candidate in candidate_dirs:
+        jars = sorted(candidate.glob("postgresql*.jar"))
+        if jars:
+            return jars[0]
 
-    # Fall back to the driver bundled in the repository.
+    # Fall back to the driver bundled in the repository, copied into a directory that ALREADY
+    # EXISTS. The previous version called mkdir(parents=True) on its guess, so on a wrong path it
+    # created a plausible-looking empty lib/ beside the real internal/lib, and on a system install
+    # it needed root to do it. A repair path that acts on an unchecked guess leaves the host in a
+    # state that looks deliberate, which is worse than failing.
     script_dir  = Path(__file__).resolve().parent
     bundled_jars = sorted((script_dir / "drivers").glob("postgresql*.jar"))
-    if bundled_jars:
+    target = next((d for d in candidate_dirs if d.is_dir()), None)
+    if bundled_jars and target is not None:
         src = bundled_jars[0]
-        dst = liquibase_lib / src.name
+        dst = target / src.name
         print(f"  copying bundled JDBC driver to {dst}")
-        liquibase_lib.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        try:
+            shutil.copy2(src, dst)
+        except OSError as error:
+            print(f"\nerror: could not install the bundled JDBC driver into {target}: {error}\n"
+                  f"       That directory usually belongs to root. Copy it by hand:\n"
+                  f"           sudo cp {src} {target}/\n", file=sys.stderr)
+            sys.exit(1)
         return dst
+
+    liquibase_lib = target if target is not None else candidate_dirs[0]
 
     print(
         "\nerror: PostgreSQL JDBC driver not found in the Liquibase lib directory.\n"
@@ -172,9 +223,11 @@ def _check_jdbc_driver() -> Path:
         f"Install it once as part of environment setup:\n"
         f"    sudo cp postgresql-42.x.x.jar {liquibase_lib}/\n"
         f"\n"
-        f"On Debian/Ubuntu you can get the JAR from the system package:\n"
-        f"    sudo apt install libpostgresql-jdbc-java\n"
-        f"    sudo cp /usr/share/java/postgresql.jar {liquibase_lib}/\n",
+        f"The JAR also ships with most distributions, under whichever name they use:\n"
+        f"    Debian/Ubuntu   sudo apt install libpostgresql-jdbc-java\n"
+        f"                    sudo cp /usr/share/java/postgresql.jar {liquibase_lib}/\n"
+        f"    RHEL/Rocky      sudo dnf install postgresql-jdbc\n"
+        f"                    sudo cp /usr/share/java/postgresql-jdbc.jar {liquibase_lib}/\n",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -292,7 +345,9 @@ def main() -> None:
     # as a filesystem absolute path.  Point the search path at db/ so that
     # changelog paths are relative to the same root used by liquibase.properties.
     liquibase_cmd = [
-        "liquibase",
+        # The located executable, not the bare name. Asking PATH once and then invoking a name
+        # PATH may not resolve is how this failed twice on the same host for the same reason.
+        find_liquibase(),
         f"--search-path={script_dir}",
         f"--url=jdbc:postgresql://{args.pg_host}:{args.pg_port}/{args.db_name}",
         f"--username={args.app_user}",

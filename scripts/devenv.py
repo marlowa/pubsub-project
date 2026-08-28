@@ -732,23 +732,49 @@ def cmd_restart(  # pylint: disable=too-many-arguments
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _add_shared_options(target, *, suppress_defaults: bool) -> None:
+    """Add the options that must work on either side of the subcommand.
+
+    Defined once and attached twice: to the top-level parser, and to every subcommand through a
+    parent parser. `--db-port` was global-only, so `devenv.py start --db-port 5433` failed with
+    "unrecognized arguments" and `devenv.py start --help` listed only `[-h] [name]` -- a flag that
+    exists, is documented in its own help text as the counterpart to deploy.py's, and is invisible
+    from the one place somebody needs it. On the host that found this, the environment file was
+    edited instead, which is a change that then has to be un-picked. See docs/bug_list.md,
+    BUG-0041.
+
+    suppress_defaults is what makes attaching it twice safe. A subcommand copy with an ordinary
+    default would overwrite the value the top-level parser had already stored, so
+    `--db-port 5433 start` would silently become None again. argparse.SUPPRESS leaves the
+    attribute alone when the option is absent, so whichever side supplies it wins and neither
+    erases the other.
+
+    Deliberately only these two. Every global option could be attached this way, and most of them
+    read oddly after a subcommand; these are the two a person types at the point of use.
+    """
+    def default(value):
+        return argparse.SUPPRESS if suppress_defaults else value
+
+    target.add_argument(
+        "--env", type=Path, default=default(_DEFAULT_ENV_FILE), metavar="PATH",
+        help=f"environment TOML file (default: {_DEFAULT_ENV_FILE})",
+    )
+    target.add_argument(
+        "--db-port", type=int, default=default(None), metavar="PORT",
+        help="PostgreSQL port, overriding the [db] section of the environment file. Used when "
+             "re-exporting credentials before the auth service starts, and matching deploy.py's "
+             "flag of the same name so a host with a non-default cluster names it the same way "
+             "at deploy time and at start time. Accepted before or after the subcommand.",
+    )
+
+
 def parse_args() -> argparse.Namespace:
     """Parse and return command-line arguments."""
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument(
-        "--env", type=Path, default=_DEFAULT_ENV_FILE, metavar="PATH",
-        help=f"environment TOML file (default: {_DEFAULT_ENV_FILE})",
-    )
-    parser.add_argument(
-        "--db-port", type=int, default=None, metavar="PORT",
-        help="PostgreSQL port, overriding the [db] section of the environment file. Used when "
-             "re-exporting credentials before the auth service starts, and matching deploy.py's "
-             "flag of the same name so a host with a non-default cluster names it the same way "
-             "at deploy time and at start time.",
-    )
+    _add_shared_options(parser, suppress_defaults=False)
     parser.add_argument(
         "--no-ha", action="store_true",
         help="skip components marked ha_only = true; refused unless [ha] enabled is already false",
@@ -773,19 +799,25 @@ def parse_args() -> argparse.Namespace:
         help=f"seconds between component starts (default: {_STARTUP_DELAY})",
     )
 
+    # Attached to every subcommand as well as to the parser above, so the options appear in
+    # `devenv.py <subcommand> --help` and work in the position a person naturally types them.
+    shared = argparse.ArgumentParser(add_help=False)
+    _add_shared_options(shared, suppress_defaults=True)
+
     subparsers = parser.add_subparsers(dest="subcommand", metavar="subcommand")
     subparsers.required = True
 
-    start_parser = subparsers.add_parser("start", help="start all components, or one named component")
+    start_parser = subparsers.add_parser("start", parents=[shared],
+                                         help="start all components, or one named component")
     start_parser.add_argument(
         "component", nargs="?", default=None, metavar="name",
         help="component to start (omit to start everything)",
     )
-    subparsers.add_parser("stop",   help="stop all running components")
-    subparsers.add_parser("status", help="show component status")
+    subparsers.add_parser("stop",   parents=[shared], help="stop all running components")
+    subparsers.add_parser("status", parents=[shared], help="show component status")
 
     restart_parser = subparsers.add_parser(
-        "restart", help="stop and re-start all components, or one named component",
+        "restart", parents=[shared], help="stop and re-start all components, or one named component",
     )
     restart_parser.add_argument(
         "component", nargs="?", default=None, metavar="name",
