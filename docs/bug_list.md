@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 67 |
-| Open | 26 (18 defects, 8 tasks) |
-| Closed | 41 |
+| Open | 24 (16 defects, 8 tasks) |
+| Closed | 43 |
 | Next id | BUG-0068 |
 
 ## Open bugs by severity
 
-11 high, 10 medium, 5 low.
+10 high, 9 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -18,13 +18,11 @@
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
-| [BUG-0057](#bug_0057) | high | defect | The sequencer segfaulted on 2026-08-21 and nothing recorded it |
 | [BUG-0061](#bug_0061) | high | defect | HA cannot actually be turned off, and the venue silently stops trading |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0064](#bug_0064) | high | defect | Deferred orders are never recovered, and the venue logs that they were |
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
-| [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -522,208 +520,6 @@ should use, and it is the whole of the "large list" problem.
 
 ---
 
-### BUG-0057: The sequencer segfaulted on 2026-08-21 and nothing recorded it {#bug_0057}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | Looking for a core dump while investigating [BUG-0056](#bug_0056), and finding several that had nothing to do with it |
-| Impact | Unknown, and that is the problem. The venue crashed, carried on being developed for a week, and no entry, session note or commit mentions it |
-
-**Not investigated. Deliberately parked** so it does not derail the FIX session-layer work, and
-recorded now because the artefact is perishable and the knowledge nearly was.
-
-`coredumpctl` lists **three crashes of this project's own binaries**, none of which appears in this
-file, in the session log, or in any commit message:
-
-| When | Signal | Binary | Core |
-|---|---|---|---|
-| 2026-07-24 11:17 | SIGABRT | `pubsub_itc_fw_integration_tests` | rotated away |
-| 2026-08-08 13:16 | SIGSEGV | `matching_engine` | rotated away |
-| **2026-08-21 19:04:44** | **SIGSEGV** | **`installed/bin/sequencer`** | **kept -- 227.7K** |
-
-**The timing of the third is the part to look at first.** It is four minutes before the OOM kill
-recorded in [BUG-0028](#bug_0028): *"matching_engine_primary OOM-killed at 19:08:41 with 10.3 GB
-resident"*. So during the trading-day run that ended in the OOM killer, **the sequencer segfaulted
-first**, and BUG-0028 records only the matching engine. Whether the two are the same story --
-memory exhaustion reaching the sequencer first -- or two separate faults is exactly what has not
-been established. A SIGSEGV is not how the OOM killer announces itself; it sends SIGKILL.
-
-**The core has been preserved** at `~/mystuff/cores/`, outside the repository, because
-systemd-coredump rotates these away and two of the three are already gone.
-
-**The matching binary is almost certainly lost**, which is the practical obstacle. `installed/bin/
-sequencer` has been rebuilt many times since; the tree as of that crash was around commit
-`b113fca`. A rebuild from there would be close but not necessarily byte-identical, so line numbers
-from a backtrace should be treated as indicative rather than exact.
-
-**Worth doing regardless of what the core says:** nothing noticed. The venue crashed during a
-measured run and the fact reached no log this file reads, no session note, and no commit. Whatever
-the cause, a crash that leaves no trace anyone would encounter is its own defect.
-
-#### Diagnosed 2026-08-28: a detached thread logging into a destroyed logger
-
-`systemd-coredump` captured a **symbolised stack trace at dump time**, which is what made this
-solvable a week later -- the executable it names has been rebuilt many times since and its symbols
-are long gone. Preserved outside the repository as
-`~/mystuff/cores/sequencer-25509-2026-08-21.coredumpctl-info.txt`.
-
-**The journal keeps the trace even after the core is reclaimed**, which is worth knowing before
-anyone tidies the list: an entry marked `missing` has lost its core file and still carries the
-backtrace. That is how [BUG-0067](#bug_0067) was recovered from a crash nearly three weeks old
-whose core was long gone. Deleting those entries would destroy the only surviving evidence of
-crashes nobody can reproduce, and there is no supported way to remove coredump entries selectively
-anyway -- they live in the journal, so `journalctl --vacuum-*` is the only lever and it takes other
-history with it. `coredumpctl list | grep bin/` reduces 93 entries to the two that are real.
-
-It was `sequencer_secondary`, SIGSEGV, and two threads together tell the whole story.
-
-**The main thread was already exiting:**
-
-```
-#3  std::basic_ostream<wchar_t>::flush()      (libstdc++)
-#4  std::ios_base::Init::~Init()              (libstdc++)
-#7  _dl_call_fini / _dl_fini
-#9  __run_exit_handlers
-#10 __GI_exit
-```
-
-**A worker thread was still running, and still logging:**
-
-```
-#0  std::atomic<quill::LogLevel>::load(std::memory_order)   (sequencer)
-#1  pubsub_itc_fw::ApplicationThread::process_message(EventMessage const&)
-#2  pubsub_itc_fw::ApplicationThread::run_internal()
-#4  pubsub_itc_fw::ThreadWithJoinTimeout::start<...>
-```
-
-**The mechanism, and it is not obscure.** `ThreadWithJoinTimeout::join_with_timeout()` uses
-`pthread_timedjoin_np()`, and **on timeout it detaches the worker** so that destruction can never
-block. The thread keeps running. `main()` then returns, exit handlers run, static destructors take
-down Quill's logger state and finalise libstdc++ -- and the detached thread, still inside
-`process_message`, reaches a log macro, loads the log level from an atomic that no longer exists,
-and dies.
-
-**This is [BUG-0001](#bug_0001) with its impact filled in.** That entry records
-*"failed to join within shutdown_timeout"* in the timer tests with the root cause unidentified, and
-observes that `ThreadWithJoinTimeout` exists precisely because *"a join that times out is not
-obviously benign"*. It is not benign. It is this crash. The two entries are one problem: the
-timeout path is unsound by construction, because detaching a live thread and then running exit
-handlers destroys the state that thread is still using.
-
-#### The fix, agreed 2026-08-28: abort rather than unwind
-
-**The detach stays.** `join_with_timeout` is deliberate and tested --
-`ReactorTest.RogueThreadBlocksInITCMessageReactorStillShutsDown` creates a thread that ignores
-Termination on purpose -- and a genuinely rogue thread cannot be joined. Nothing here is a fault in
-that mechanism.
-
-**What changes is only what happens after a thread has been abandoned.** Today the process returns
-from `main` and runs exit handlers, which destroy static state underneath a thread that is still
-executing. Instead: name the abandoned thread on stderr, then `abort()`.
-
-**`abort()` rather than `_exit()`, and the reason is the diagnostic rather than the tidiness.**
-Both are safe for the original problem, since neither runs static destructors. But an `abort()`
-core contains the **rogue thread's own stack** -- which thread it was and exactly where it was
-stuck -- and that is the information needed to fix the underlying cause. It is what this entry's own
-core supplied a week after the event. `_exit()` leaves nothing at all, so the next occurrence would
-be as invisible as this one was.
-
-**The reason goes out with `write(2)`, not through the logger.** Quill's production configuration
-is asynchronous -- `set_immediate_flush()` appears only in the test logger's construction -- so at
-abort time the backend may not have drained and there is nothing reliable to flush. A direct write
-to stderr needs no allocation and no logger, and it means the abandoned thread's name is visible
-without anybody having to open the core.
-
-**Abort at the end of shutdown, not at the point of the failed join.** The rogue thread is
-unstoppable either way, but the other threads are not: letting them stop cleanly first means the
-core shows a venue that shut down properly except for the one thread that would not, which is a far
-clearer picture than one taken mid-sequence.
-
-**Not chosen, and why.** Making an abandoned thread touch nothing with static lifetime is honest but
-unenforceable, because logging is everywhere and a future edit reintroduces the hazard silently.
-Blocking until the thread is genuinely dead is what the wrapper exists to avoid, and would hang the
-venue on exactly the rogue thread it was written for.
-
-**Quill is the victim, not the cause**, and this is worth stating because it points at the wrong
-fix. There is no race inside the logger. The worker would have died on whichever static-lifetime
-object it reached first; the log-level atomic simply came first. Making that check null-safe would
-relocate the crash rather than remove it, and the next site would look unrelated.
-
-#### Detection built 2026-08-28
-
-Two detectors, because they see different things.
-
-**`launch.py` is the primary one.** It already knew the exit status of every child; it reported
-`killed by signal 11` in the same words and at the same level as an ordinary stop, so a component
-that segfaulted looked exactly like one asked to exit. It now names the signal, explains it, says
-plainly that this is not a shutdown, and gives the `coredumpctl` commands to find and keep the
-backtrace. Crash signals only -- `SIGTERM`, `SIGINT` and `SIGKILL` are how the venue is stopped and
-say nothing. This works whether or not a core was written, which matters because `ulimit -c` is 0
-in some launch contexts.
-
-**`scripts/crash_reports.py` is the backstop**, run by `devenv.py start`, for what the launcher
-cannot see: a component started by hand, or a launcher that died with its child.
-
-**It warns once per crash and never again, and the ordering is what makes that safe.** It writes
-the symbolised backtrace to `var/crash_reports/` *first*, then prints the warning naming that file,
-then records the crash as seen. A one-shot warning is only defensible when missing it costs
-nothing, and here it costs nothing because the evidence is already on disk. A warning repeated on
-every start would be ignored within a day, and a venue is started many times a day.
-
-It reports only executables under the install prefix and skips test binaries: `coredumpctl` holds
-93 entries on this machine, 84 of them the unit test binary raising signals on purpose, and burying
-the real two under those on the first run is the fastest way to teach somebody to skip the message.
-The filter reduces 93 entries to 1 for this prefix.
-
-`var/` because it already holds the WAL and epoch state -- what survives a redeploy -- and because
-every host has one, so a machine keeps its own crash history beside its own state and nothing needs
-collecting centrally.
-
-Verified: a deliberately segfaulting child produces the named crash report from the launcher and an
-ordinary stop produces none; the scan finds the 2026-08-21 sequencer crash, preserves its
-backtrace, and is silent on the second run.
-
-#### The abort built 2026-08-28
-
-`Reactor` records the first thread a timed-out join forces it to detach, and each component calls
-`abort_if_thread_abandoned()` after `run()` returns. It writes to stderr with `write()` -- Quill's
-backend is asynchronous and may not have drained -- and calls `abort()`.
-
-**In the components, not in `Reactor::run()`.** The reactor's contract is unchanged and stays
-tested: it still shuts down despite a thread that ignores Termination, which is what
-`RogueThreadBlocksInITCMessageReactorStillShutsDown` asserts. What changes is what the *process*
-does afterwards, and a test never reaches that.
-
-**A timeout is not proof, so the thread is re-checked at the point of exit.** `shutdown_timeout_`
-says how long a thread was given, not whether it is still running now. Under a profiler everything
-is slow, and `perf` ends its subject with SIGTERM like any other shutdown -- so aborting on the
-earlier timeout alone would kill a sound venue at the end of a profiling run and blame the venue
-for the profiler. The abort fires only when the abandoned thread is *still executing* when the
-process would otherwise return.
-
-**That re-check was written against the wrong predicate, and the test caught it.** It first asked
-`is_running()`, which reports the lifecycle STATE -- and `finalize_threads_after_shutdown` promotes
-every thread to Terminated whether or not its OS thread stopped. So it was false for a stuck thread
-too, and **the abort could never have fired**. Inert, and it would have read as correct.
-`ApplicationThread::has_exited()` now answers the question that was actually being asked, set by
-the thread itself as the last thing `run()` does, on every path including both catch blocks.
-
-Two tests added: a stuck rogue is recorded as abandoned and still executing after shutdown; a clean
-shutdown abandons nothing and `abort_if_thread_abandoned()` returns normally. The second is the one
-that matters for a profiling run -- if it ever kills the test binary, every ordinary SIGTERM in
-production aborts too.
-
-Verified: 1025 unit and integration tests pass, and the full scenario suite is 47/47 with **zero**
-aborts across 47 venue shutdowns.
-
-**Separate, and still open: [BUG-0001](#bug_0001).** The timer tests carry no deliberate rogue
-fixture and hit the shutdown timeout anyway. That is a real unexplained case rather than a test
-observing its own scaffolding, and the fix above makes it abort visibly instead of crashing
-obscurely -- which turns an unexplained timeout into evidence rather than removing it.
-
 ### BUG-0058: A member halted by a sequence gap is invisible to monitoring {#bug_0058}
 
 | | |
@@ -1106,45 +902,6 @@ venue with many ad-hoc sessions over an extended period, rather than a burst of 
 should run for longer and vary the pacing, and **preserve `installed/log/` before anything else
 runs** -- the step that was missed the first time and honoured the second.
 
-
-### BUG-0001: Shutdown timeout errors in timer tests {#bug_0001}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | before 2026-07 (carried over from the roadmap's Known Issues) |
-| Recorded | 2026-08-08 (8cc0ced) |
-| How | Timer test logs |
-| Impact | A detached thread outlives the exit handlers that destroy the state it is using. Established 2026-08-28: this is what crashed the sequencer in [BUG-0057](#bug_0057) |
-
-After the timer SEGV fix, "did not stop within shutdown_timeout" and "failed to join within
-shutdown_timeout" still appear in timer test logs. **Root cause not identified.** Worth noting that
-`ThreadWithJoinTimeout` exists precisely because a raw `std::thread` terminates on an early return
-before join, so a join that times out is not obviously benign.
-
-#### The impact is known, 2026-08-28: it is BUG-0057's crash
-
-This entry recorded the symptom with *"root cause not identified"* and *"nothing is known to
-misbehave"*, while noting that `ThreadWithJoinTimeout` exists because a raw `std::thread` terminates
-on an early return, so **a join that times out is not obviously benign**.
-
-That caution was right. [BUG-0057](#bug_0057)'s captured stack trace shows what a timed-out join
-leads to: `join_with_timeout()` detaches the worker so destruction cannot block, `main()` returns,
-exit handlers destroy Quill's logger state, and the still-running thread segfaults on its next log
-call inside `process_message`.
-
-So the shutdown timeouts seen in the timer tests are not cosmetic. They are the same condition that
-crashed `sequencer_secondary` on 2026-08-21, reached from a different direction.
-
-**What is still this entry's own, after BUG-0057's fix is agreed.** The join-with-timeout mechanism
-is deliberate, and `ReactorTest.RogueThreadBlocksInITCMessageReactorStillShutsDown` exercises it
-with a thread written to ignore Termination. The timer tests carry **no such fixture** and reach
-the timeout anyway, so this is not a test observing its own scaffolding. Why an ordinary timer test
-thread fails to stop within `shutdown_timeout` is unexplained and remains the question here.
-
-BUG-0057's fix does not answer it, and is not meant to. Aborting rather than unwinding turns this
-from a crash into a visible, named abort with the stuck thread's stack in the core -- which is what
-makes the question answerable next time it happens rather than a week later.
 
 ### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
 
@@ -1949,6 +1706,289 @@ snapshot standing behind it, which is the case the invariant exists to prevent.
 Related: BUG-0046, since the WAL is what a member's resend is served from.
 
 ## Closed
+
+### BUG-0001: Shutdown timeout errors in timer tests {#bug_0001}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | before 2026-07 (carried over from the roadmap's Known Issues) |
+| Recorded | 2026-08-08 (8cc0ced) |
+| How | Timer test logs |
+| Fixed | 2026-08-28 -- the symptom does not reproduce, and the consequence it was feared for is now a deliberate abort |
+| Impact | A detached thread outlives the exit handlers that destroy the state it is using. Established 2026-08-28: this is what crashed the sequencer in [BUG-0057](#bug_0057) |
+
+After the timer SEGV fix, "did not stop within shutdown_timeout" and "failed to join within
+shutdown_timeout" still appear in timer test logs. **Root cause not identified.** Worth noting that
+`ThreadWithJoinTimeout` exists precisely because a raw `std::thread` terminates on an early return
+before join, so a join that times out is not obviously benign.
+
+#### The impact is known, 2026-08-28: it is BUG-0057's crash
+
+This entry recorded the symptom with *"root cause not identified"* and *"nothing is known to
+misbehave"*, while noting that `ThreadWithJoinTimeout` exists because a raw `std::thread` terminates
+on an early return, so **a join that times out is not obviously benign**.
+
+That caution was right. [BUG-0057](#bug_0057)'s captured stack trace shows what a timed-out join
+leads to: `join_with_timeout()` detaches the worker so destruction cannot block, `main()` returns,
+exit handlers destroy Quill's logger state, and the still-running thread segfaults on its next log
+call inside `process_message`.
+
+So the shutdown timeouts seen in the timer tests are not cosmetic. They are the same condition that
+crashed `sequencer_secondary` on 2026-08-21, reached from a different direction.
+
+**What is still this entry's own, after BUG-0057's fix is agreed.** The join-with-timeout mechanism
+is deliberate, and `ReactorTest.RogueThreadBlocksInITCMessageReactorStillShutsDown` exercises it
+with a thread written to ignore Termination. The timer tests carry **no such fixture** and reach
+the timeout anyway, so this is not a test observing its own scaffolding. Why an ordinary timer test
+thread fails to stop within `shutdown_timeout` is unexplained and remains the question here.
+
+BUG-0057's fix does not answer it, and is not meant to. Aborting rather than unwinding turns this
+from a crash into a visible, named abort with the stuck thread's stack in the core -- which is what
+makes the question answerable next time it happens rather than a week later.
+
+#### Closed 2026-08-28: the symptom is gone and the consequence is handled
+
+**It does not reproduce.** Five runs of the timer tests produced **zero** shutdown-timeout
+messages, and this entry's symptom is stated as errors in *timer test* logs. Three full runs of the
+unit suite produced exactly three each, identically: `BadThread`, `RogueThread` twice, and
+`Thread T` -- every one from a test that creates a misbehaving thread on purpose
+(`InitializationTimeoutTriggersShutdown`, `RogueThreadBlocksInITCMessageReactorStillShutsDown`, and
+`FinalizePromotesShuttingDownToTerminated`). `RogueThread` appears twice only because
+[BUG-0057](#bug_0057)'s work added a second test that uses it. **What remains is scaffolding
+exercising the mechanism deliberately, not a venue misbehaving.**
+
+**The consequence is handled.** This entry was reopened in substance on the morning of 2026-08-28
+when BUG-0057's stack trace showed what a timed-out join leads to. That path now ends in a
+deliberate abort with the stuck thread's stack in the core, rather than a segfault during static
+destruction.
+
+**And the premise was too strong.** A thread that will not stop is a possible outcome of
+subclassing `ApplicationThread`, which the framework does not control -- so "why did a join time
+out" has no single answer to find. `join_with_timeout` was written because that outcome is real.
+
+If an unexplained timeout ever appears again outside those three fixtures, it now arrives as a
+named abort naming the thread, which is a better starting point than this entry ever had.
+
+### BUG-0057: The sequencer segfaulted on 2026-08-21 and nothing recorded it {#bug_0057}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Looking for a core dump while investigating [BUG-0056](#bug_0056), and finding several that had nothing to do with it |
+| Fixed | 2026-08-28 -- the crash is prevented by aborting rather than unwinding, and a crash is now noticed and its backtrace kept |
+| Impact | Unknown, and that is the problem. The venue crashed, carried on being developed for a week, and no entry, session note or commit mentions it |
+
+**Not investigated. Deliberately parked** so it does not derail the FIX session-layer work, and
+recorded now because the artefact is perishable and the knowledge nearly was.
+
+`coredumpctl` lists **three crashes of this project's own binaries**, none of which appears in this
+file, in the session log, or in any commit message:
+
+| When | Signal | Binary | Core |
+|---|---|---|---|
+| 2026-07-24 11:17 | SIGABRT | `pubsub_itc_fw_integration_tests` | rotated away |
+| 2026-08-08 13:16 | SIGSEGV | `matching_engine` | rotated away |
+| **2026-08-21 19:04:44** | **SIGSEGV** | **`installed/bin/sequencer`** | **kept -- 227.7K** |
+
+**The timing of the third is the part to look at first.** It is four minutes before the OOM kill
+recorded in [BUG-0028](#bug_0028): *"matching_engine_primary OOM-killed at 19:08:41 with 10.3 GB
+resident"*. So during the trading-day run that ended in the OOM killer, **the sequencer segfaulted
+first**, and BUG-0028 records only the matching engine. Whether the two are the same story --
+memory exhaustion reaching the sequencer first -- or two separate faults is exactly what has not
+been established. A SIGSEGV is not how the OOM killer announces itself; it sends SIGKILL.
+
+**The core has been preserved** at `~/mystuff/cores/`, outside the repository, because
+systemd-coredump rotates these away and two of the three are already gone.
+
+**The matching binary is almost certainly lost**, which is the practical obstacle. `installed/bin/
+sequencer` has been rebuilt many times since; the tree as of that crash was around commit
+`b113fca`. A rebuild from there would be close but not necessarily byte-identical, so line numbers
+from a backtrace should be treated as indicative rather than exact.
+
+**Worth doing regardless of what the core says:** nothing noticed. The venue crashed during a
+measured run and the fact reached no log this file reads, no session note, and no commit. Whatever
+the cause, a crash that leaves no trace anyone would encounter is its own defect.
+
+#### Diagnosed 2026-08-28: a detached thread logging into a destroyed logger
+
+`systemd-coredump` captured a **symbolised stack trace at dump time**, which is what made this
+solvable a week later -- the executable it names has been rebuilt many times since and its symbols
+are long gone. Preserved outside the repository as
+`~/mystuff/cores/sequencer-25509-2026-08-21.coredumpctl-info.txt`.
+
+**The journal keeps the trace even after the core is reclaimed**, which is worth knowing before
+anyone tidies the list: an entry marked `missing` has lost its core file and still carries the
+backtrace. That is how [BUG-0067](#bug_0067) was recovered from a crash nearly three weeks old
+whose core was long gone. Deleting those entries would destroy the only surviving evidence of
+crashes nobody can reproduce, and there is no supported way to remove coredump entries selectively
+anyway -- they live in the journal, so `journalctl --vacuum-*` is the only lever and it takes other
+history with it. `coredumpctl list | grep bin/` reduces 93 entries to the two that are real.
+
+It was `sequencer_secondary`, SIGSEGV, and two threads together tell the whole story.
+
+**The main thread was already exiting:**
+
+```
+#3  std::basic_ostream<wchar_t>::flush()      (libstdc++)
+#4  std::ios_base::Init::~Init()              (libstdc++)
+#7  _dl_call_fini / _dl_fini
+#9  __run_exit_handlers
+#10 __GI_exit
+```
+
+**A worker thread was still running, and still logging:**
+
+```
+#0  std::atomic<quill::LogLevel>::load(std::memory_order)   (sequencer)
+#1  pubsub_itc_fw::ApplicationThread::process_message(EventMessage const&)
+#2  pubsub_itc_fw::ApplicationThread::run_internal()
+#4  pubsub_itc_fw::ThreadWithJoinTimeout::start<...>
+```
+
+**The mechanism, and it is not obscure.** `ThreadWithJoinTimeout::join_with_timeout()` uses
+`pthread_timedjoin_np()`, and **on timeout it detaches the worker** so that destruction can never
+block. The thread keeps running. `main()` then returns, exit handlers run, static destructors take
+down Quill's logger state and finalise libstdc++ -- and the detached thread, still inside
+`process_message`, reaches a log macro, loads the log level from an atomic that no longer exists,
+and dies.
+
+**This is [BUG-0001](#bug_0001) with its impact filled in.** That entry records
+*"failed to join within shutdown_timeout"* in the timer tests with the root cause unidentified, and
+observes that `ThreadWithJoinTimeout` exists precisely because *"a join that times out is not
+obviously benign"*. It is not benign. It is this crash. The two entries are one problem: the
+timeout path is unsound by construction, because detaching a live thread and then running exit
+handlers destroys the state that thread is still using.
+
+#### The fix, agreed 2026-08-28: abort rather than unwind
+
+**The detach stays.** `join_with_timeout` is deliberate and tested --
+`ReactorTest.RogueThreadBlocksInITCMessageReactorStillShutsDown` creates a thread that ignores
+Termination on purpose -- and a genuinely rogue thread cannot be joined. Nothing here is a fault in
+that mechanism.
+
+**What changes is only what happens after a thread has been abandoned.** Today the process returns
+from `main` and runs exit handlers, which destroy static state underneath a thread that is still
+executing. Instead: name the abandoned thread on stderr, then `abort()`.
+
+**`abort()` rather than `_exit()`, and the reason is the diagnostic rather than the tidiness.**
+Both are safe for the original problem, since neither runs static destructors. But an `abort()`
+core contains the **rogue thread's own stack** -- which thread it was and exactly where it was
+stuck -- and that is the information needed to fix the underlying cause. It is what this entry's own
+core supplied a week after the event. `_exit()` leaves nothing at all, so the next occurrence would
+be as invisible as this one was.
+
+**The reason goes out with `write(2)`, not through the logger.** Quill's production configuration
+is asynchronous -- `set_immediate_flush()` appears only in the test logger's construction -- so at
+abort time the backend may not have drained and there is nothing reliable to flush. A direct write
+to stderr needs no allocation and no logger, and it means the abandoned thread's name is visible
+without anybody having to open the core.
+
+**Abort at the end of shutdown, not at the point of the failed join.** The rogue thread is
+unstoppable either way, but the other threads are not: letting them stop cleanly first means the
+core shows a venue that shut down properly except for the one thread that would not, which is a far
+clearer picture than one taken mid-sequence.
+
+**Not chosen, and why.** Making an abandoned thread touch nothing with static lifetime is honest but
+unenforceable, because logging is everywhere and a future edit reintroduces the hazard silently.
+Blocking until the thread is genuinely dead is what the wrapper exists to avoid, and would hang the
+venue on exactly the rogue thread it was written for.
+
+**Quill is the victim, not the cause**, and this is worth stating because it points at the wrong
+fix. There is no race inside the logger. The worker would have died on whichever static-lifetime
+object it reached first; the log-level atomic simply came first. Making that check null-safe would
+relocate the crash rather than remove it, and the next site would look unrelated.
+
+#### Detection built 2026-08-28
+
+Two detectors, because they see different things.
+
+**`launch.py` is the primary one.** It already knew the exit status of every child; it reported
+`killed by signal 11` in the same words and at the same level as an ordinary stop, so a component
+that segfaulted looked exactly like one asked to exit. It now names the signal, explains it, says
+plainly that this is not a shutdown, and gives the `coredumpctl` commands to find and keep the
+backtrace. Crash signals only -- `SIGTERM`, `SIGINT` and `SIGKILL` are how the venue is stopped and
+say nothing. This works whether or not a core was written, which matters because `ulimit -c` is 0
+in some launch contexts.
+
+**`scripts/crash_reports.py` is the backstop**, run by `devenv.py start`, for what the launcher
+cannot see: a component started by hand, or a launcher that died with its child.
+
+**It warns once per crash and never again, and the ordering is what makes that safe.** It writes
+the symbolised backtrace to `var/crash_reports/` *first*, then prints the warning naming that file,
+then records the crash as seen. A one-shot warning is only defensible when missing it costs
+nothing, and here it costs nothing because the evidence is already on disk. A warning repeated on
+every start would be ignored within a day, and a venue is started many times a day.
+
+It reports only executables under the install prefix and skips test binaries: `coredumpctl` holds
+93 entries on this machine, 84 of them the unit test binary raising signals on purpose, and burying
+the real two under those on the first run is the fastest way to teach somebody to skip the message.
+The filter reduces 93 entries to 1 for this prefix.
+
+`var/` because it already holds the WAL and epoch state -- what survives a redeploy -- and because
+every host has one, so a machine keeps its own crash history beside its own state and nothing needs
+collecting centrally.
+
+Verified: a deliberately segfaulting child produces the named crash report from the launcher and an
+ordinary stop produces none; the scan finds the 2026-08-21 sequencer crash, preserves its
+backtrace, and is silent on the second run.
+
+#### The abort built 2026-08-28
+
+`Reactor` records the first thread a timed-out join forces it to detach, and each component calls
+`abort_if_thread_abandoned()` after `run()` returns. It writes to stderr with `write()` -- Quill's
+backend is asynchronous and may not have drained -- and calls `abort()`.
+
+**In the components, not in `Reactor::run()`.** The reactor's contract is unchanged and stays
+tested: it still shuts down despite a thread that ignores Termination, which is what
+`RogueThreadBlocksInITCMessageReactorStillShutsDown` asserts. What changes is what the *process*
+does afterwards, and a test never reaches that.
+
+**A timeout is not proof, so the thread is re-checked at the point of exit.** `shutdown_timeout_`
+says how long a thread was given, not whether it is still running now. Under a profiler everything
+is slow, and `perf` ends its subject with SIGTERM like any other shutdown -- so aborting on the
+earlier timeout alone would kill a sound venue at the end of a profiling run and blame the venue
+for the profiler. The abort fires only when the abandoned thread is *still executing* when the
+process would otherwise return.
+
+**That re-check was written against the wrong predicate, and the test caught it.** It first asked
+`is_running()`, which reports the lifecycle STATE -- and `finalize_threads_after_shutdown` promotes
+every thread to Terminated whether or not its OS thread stopped. So it was false for a stuck thread
+too, and **the abort could never have fired**. Inert, and it would have read as correct.
+`ApplicationThread::has_exited()` now answers the question that was actually being asked, set by
+the thread itself as the last thing `run()` does, on every path including both catch blocks.
+
+Two tests added: a stuck rogue is recorded as abandoned and still executing after shutdown; a clean
+shutdown abandons nothing and `abort_if_thread_abandoned()` returns normally. The second is the one
+that matters for a profiling run -- if it ever kills the test binary, every ordinary SIGTERM in
+production aborts too.
+
+Verified: 1025 unit and integration tests pass, and the full scenario suite is 47/47 with **zero**
+aborts across 47 venue shutdowns.
+
+**Separate, and still open: [BUG-0001](#bug_0001).** The timer tests carry no deliberate rogue
+fixture and hit the shutdown timeout anyway. That is a real unexplained case rather than a test
+observing its own scaffolding, and the fix above makes it abort visibly instead of crashing
+obscurely -- which turns an unexplained timeout into evidence rather than removing it.
+
+#### Closed 2026-08-28
+
+Both halves of the title are answered. **It segfaulted**: a component that has abandoned a thread
+now aborts instead of returning into the exit handlers, so nothing is destroyed underneath a
+thread still using it. **Nothing recorded it**: the launcher names a crash signal instead of
+reporting it in the same words as a clean stop, and a startup scan preserves the backtrace and
+says so once.
+
+**Not held open for [BUG-0001](#bug_0001).** Why a thread fails to stop is a different entry, and
+keeping this one open under a title whose defects are both fixed makes the list less honest rather
+than more careful -- the same error made with [BUG-0015](#bug_0015) earlier the same day.
+
+**And a rogue thread is not a library defect.** `ApplicationThread` is subclassed by code the
+framework does not control, so a subclass that will not stop is a possible outcome by construction,
+not a fault to be eliminated. `join_with_timeout` exists precisely because that outcome is real.
+What was wrong was never that the mechanism fired; it was what the process did afterwards.
 
 ### BUG-0003: Environment placeholders are missing outside dev {#bug_0003}
 
