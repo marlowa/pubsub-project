@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 66 |
-| Open | 31 (22 defects, 9 tasks) |
-| Closed | 35 |
+| Open | 30 (21 defects, 9 tasks) |
+| Closed | 36 |
 | Next id | BUG-0067 |
 
 ## Open bugs by severity
 
-11 high, 13 medium, 7 low.
+11 high, 13 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -40,7 +40,6 @@
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0004](#bug_0004) | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
-| [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0050](#bug_0050) | low | task | Doxygen 1.8.14 cannot build the documentation with warnings as errors |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -78,6 +77,59 @@ saying which it is.
 - **medium** -- degrades operation, costs a run or recovery time, or leaves a risk unbounded,
   without losing orders by itself.
 - **low** -- documentation, tooling ergonomics, or contained to a developer workflow.
+
+## Two shapes that keep coming back {#bug_list_shapes}
+
+Noticed on 2026-08-28, after a week in which the open count rose faster than it fell. Almost
+everything found was one of two shapes, which is worth saying because a habit can be fixed and
+thirty separate defects cannot.
+
+### A claim asserted, and never checked
+
+A component states a consequence it does not verify, and the statement is then believed -- by an
+operator reading a log, by a later reader of a document, by whoever wrote the next thing on top
+of it.
+
+| | |
+|---|---|
+| [BUG-0009](#bug_0009) | `dropped=0` stayed true while 924,000 orders went nowhere. Nothing was dropped; it just was not the question anybody needed answered |
+| [BUG-0064](#bug_0064) | The sequencer logs that deferred orders "are recovered by its WAL replay". Nothing checks, and on a cold start nothing recovers them |
+| [BUG-0066](#bug_0066) | A connection is treated as recovery. "Reachable again" says nothing about whether anything was applied |
+| [BUG-0015](#bug_0015) | `deploy.py` reported doing nothing in the same words as doing something |
+| [BUG-0063](#bug_0063) | `check_docs.py` reported the tree consistent while the build was failing on the very links it had approved |
+
+**What to do about it.** Do not state a consequence you have not checked. Either verify it -- the
+sequencer knows which sequence numbers it deferred and can ask whether they were applied -- or say
+only what was observed: "a matching engine has connected" is true and useful, where "the orders are
+recovered" is neither. The wording is not a detail; it is the whole of what the reader takes away.
+
+### Two things that must agree, and only one was changed
+
+The same value, or the same rule, kept in more than one place. Every instance was found by the two
+disagreeing in production rather than by anyone noticing the duplication.
+
+| | |
+|---|---|
+| [BUG-0061](#bug_0061) | Four places held `ha_enabled`. Turning high availability off changed one of them |
+| [BUG-0062](#bug_0062) | The reasoning was checked against the branch and not against the value reaching it, so "not split brain" was true of the code and false of the configuration |
+| [BUG-0063](#bug_0063) | Two gates disagreed about what a valid link is, and the cheap one granted what the expensive one withheld |
+| [BUG-0055](#bug_0055) | A member's sequence reset reached the gateway and not the sequencer |
+
+**What to do about it.** One value, one place, and everything else derives from it. BUG-0061's fix
+is the worked example: the venue-wide `[ha] enabled` already existed, and the repair was to make
+nine component configs expand it rather than to add a tenth place able to disagree. When a second
+place is genuinely unavoidable, the check that they still agree belongs in the build, not in
+somebody's memory.
+
+### Why both shapes are found late
+
+Neither produces an error. A venue reporting `dropped=0` through an outage, a gate reporting a
+consistent tree, a config saying high availability is on while the flag says off -- all of these
+look exactly like everything working. They are found by measuring something, and never by reading
+the code that contains them, which is why the entries above are dated to the days when somebody
+went looking.
+
+---
 
 ## See Also
 
@@ -1106,42 +1158,6 @@ its own headroom would, in run 8, have **wrongly declined** a promotion it went 
 complete successfully, because the headroom it needed did not exist until the moment the
 primary died.
 
-### BUG-0011: `cmake --install` re-lays config templates unexpanded {#bug_0011}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-08-08 |
-| Recorded | 2026-08-08 (8cc0ced) |
-| How | A trading-day run failed to start immediately after a rebuild |
-| Impact | `devenv.py` refuses to start until `deploy.py` is re-run |
-
-Every build re-installs the `${placeholder}` templates over the deployed, expanded configs, so
-**`deploy.py` must be re-run after every build**. `devenv.py` does detect it and says so clearly,
-which is why this is a trap rather than a fault — but it is easy to hit when iterating on a
-component and then starting the venue.
-
-#### Reworded 2026-08-28: this is the cost of skipping the release, not a defect
-
-The sequence that produces it is `cmake --install` followed by `deploy.py`, which is **not the
-project's deployment path**. That path is build, release, deploy, run -- `devsetup.sh` runs all
-four -- and `deploy.py --artefact` unpacks a release rather than expanding whatever happens to be
-sitting in the install tree.
-
-Nothing re-lays templates over deployed configs in that sequence, because the deployed configs come
-out of the artefact and the artefact is immutable. The trap exists only when the cmake install
-prefix is also used as the runtime tree, which is a development shortcut, not the design.
-
-**Kept open as a task rather than closed**, because the shortcut is easy to take -- it was taken
-throughout the 2026-08-28 session before the point was noticed -- and something should stop a
-person taking it silently. Either `devenv.py` should say that the install tree was laid by a build
-and not by a deployment, or the shortcut should be documented as one. What should NOT happen is
-`deploy.py` growing machinery to make the shortcut work; that was attempted and reverted the same
-day, because it moves configuration outside the artefact and destroys the property that makes a
-release worth having.
-
-See also BUG-0015, which is the converse and the more dangerous half.
-
 ### BUG-0014: Python style warnings across the top-level scripts, and a lint gate that ignores them {#bug_0014}
 
 | | |
@@ -1736,6 +1752,54 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0011: `cmake --install` re-lays config templates unexpanded {#bug_0011}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-08-08 |
+| Recorded | 2026-08-08 (8cc0ced) |
+| How | A trading-day run failed to start immediately after a rebuild |
+| Impact | `devenv.py` refuses to start until `deploy.py` is re-run |
+| Fixed | 2026-08-28 -- the refusal now names the deployment path instead of advising the shortcut |
+
+Every build re-installs the `${placeholder}` templates over the deployed, expanded configs, so
+**`deploy.py` must be re-run after every build**. `devenv.py` does detect it and says so clearly,
+which is why this is a trap rather than a fault — but it is easy to hit when iterating on a
+component and then starting the venue.
+
+#### Reworded 2026-08-28: this is the cost of skipping the release, not a defect
+
+The sequence that produces it is `cmake --install` followed by `deploy.py`, which is **not the
+project's deployment path**. That path is build, release, deploy, run -- `devsetup.sh` runs all
+four -- and `deploy.py --artefact` unpacks a release rather than expanding whatever happens to be
+sitting in the install tree.
+
+Nothing re-lays templates over deployed configs in that sequence, because the deployed configs come
+out of the artefact and the artefact is immutable. The trap exists only when the cmake install
+prefix is also used as the runtime tree, which is a development shortcut, not the design.
+
+**Closed 2026-08-28, and what it needed was a better sentence.** `devenv.py` already detected the
+condition and refused to start. What it then said was:
+
+> Run deploy.py to expand the configs for this environment before starting (cmake --install re-lays
+> the templates unexpanded, so re-deploy after every build).
+
+**That is advice to take the shortcut**, and it is almost certainly where the shortcut was learned
+-- it was followed throughout the 2026-08-28 session before anyone questioned it. Detection was
+never the problem. The message now says that the install tree was laid by a build rather than a
+deployment, and points at `scripts/devsetup.sh`, which is build, release, deploy, run.
+
+Advice that teaches a shortcut is how a shortcut spreads, and it spreads with the authority of the
+tool that gave it.
+
+What did NOT happen, and should not: `deploy.py` growing machinery to make expanding in place work
+properly. That was attempted the same day and reverted, because it moves configuration outside the
+artefact and destroys the property that makes a release worth having. See
+[BUG-0015](#bug_0015).
+
+See also BUG-0015, which is the converse and the more dangerous half.
 
 ### BUG-0015: `deploy.py` silently ignores a change to an environment file {#bug_0015}
 

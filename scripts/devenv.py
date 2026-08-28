@@ -537,13 +537,17 @@ _UNEXPANDED_PLACEHOLDER = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}")
 def check_configs_expanded(install_dir: Path) -> None:
     """Abort if any installed config still holds an unexpanded ${placeholder}.
 
-    cmake --install copies the config TEMPLATES into installed/etc verbatim; deploy.py
-    is what expands them for the target environment. Starting the components against
-    un-expanded configs makes each one crash on parse -- which looks like a mysterious
-    total outage (e.g. "no ER comes back") rather than a config problem. Fail loudly
-    here, naming the offending files and the fix, instead of letting the pipeline die
-    silently. This commonly happens after a rebuild: cmake --install re-lays the
-    templates, so deploy.py must be re-run before start.
+    Starting components against un-expanded configs makes each one crash on parse -- which looks
+    like a mysterious total outage ("no ER comes back") rather than a config problem. Fail loudly
+    here, naming the offending files and the fix, instead of letting the pipeline die silently.
+
+    Reaching this state means the install tree was laid by `cmake --install` rather than by a
+    deployment: the build copies the config TEMPLATES verbatim, and expanding them is a deployment
+    step. The fix is therefore to deploy a release, not to expand in place.
+
+    This message used to say "run deploy.py, and re-deploy after every build", which is the
+    development shortcut rather than the deployment path -- build, release, deploy, run -- and
+    advice that teaches a shortcut is how the shortcut spreads. See docs/bug_list.md, BUG-0011.
     """
     etc_dir = install_dir / "etc"
     offenders: list[tuple[Path, list[str]]] = []
@@ -561,8 +565,11 @@ def check_configs_expanded(install_dir: Path) -> None:
               "-- they have not been deployed:", file=sys.stderr)
         for rel, placeholders in offenders:
             print(f"  {rel}: {', '.join(placeholders)}", file=sys.stderr)
-        sys.exit("Run deploy.py to expand the configs for this environment before starting "
-                 "(cmake --install re-lays the templates unexpanded, so re-deploy after every build).")
+        sys.exit("This install tree was laid by a build, not by a deployment: cmake --install copies "
+                 "the templates verbatim and expanding them is a deployment step.\n"
+                 "Run scripts/devsetup.sh to build, release and deploy, which is the path these "
+                 "components expect. Expanding in place with deploy.py works and skips the release, "
+                 "so what runs is then no longer a release anybody can name.")
 
 
 def cmd_start(  # pylint: disable=too-many-arguments
