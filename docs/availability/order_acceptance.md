@@ -146,10 +146,17 @@ design whose safety rests on the watching that has already failed is not safer.
 - **Orders already deferred before the venue noticed.** This bounds how many join them; it does not
   rescue the ones already there.
 
-  **This bullet used to end "and are recovered by WAL replay, as now", and that was wrong.**
-  Measured on 2026-08-28: a restarted matching engine takes leadership and replays nothing, the
-  orders are never executed and never rejected, and the sequencer logs that they were recovered.
-  See [BUG-0064](../bug_list.md#bug_0064).
+  **This bullet used to end "and are recovered by WAL replay, as now", and that was half wrong.**
+  Measured on 2026-08-28. Across a *routine failover* they are recovered: the promoted secondary
+  reports where its replica reached and the sequencer sends everything after it, so 27 orders
+  deferred over a 14-second gap were all answered. Across a *cold start* they are not: an engine
+  that was never a follower adopts leadership without reconciling, applies nothing, and the orders
+  are never executed and never rejected — while the sequencer logs that they were recovered. See
+  [BUG-0064](../bug_list.md#bug_0064).
+
+  The distinction matters here because the cold-start case *is* this document's case. An outage
+  long enough to trip refusal is one where every engine has gone, and the engine that ends it
+  starts cold.
 
   It is recorded here rather than quietly corrected because the false version is *why* these orders
   were scoped out of this design at all. Scoping them out was reasonable if they were recovered.

@@ -95,8 +95,8 @@ saying which it is.
 | Severity | high |
 | Found | 2026-08-28 |
 | Recorded | 2026-08-28 |
-| How | Andrew asking what becomes of a deferred order if the matching engine never starts, while reviewing [BUG-0009](#bug_0009)'s fix |
-| Impact | Orders taken from a member are silently lost. No execution report, no rejection, nothing to cancel -- and the sequencer logs that they were recovered |
+| How | Andrew asking what becomes of a deferred order if the matching engine never starts, while reviewing [BUG-0009](#bug_0009)'s fix; scope then settled by measuring a routine failover |
+| Impact | Orders deferred while every matching engine is down are silently lost when one starts cold: no execution report, no rejection, nothing to cancel -- and the sequencer logs that they were recovered. A routine failover is unaffected (measured) |
 
 **Measured, not reasoned.** Three orders were placed into a venue with both matching engines
 killed. They were WAL-committed and deferred, as designed. A matching engine was then restarted; it
@@ -121,11 +121,9 @@ per-order message it replaced said `recovered via WAL replay on ME promotion`, a
 that as the reason deferring was safe. It is the assumption the whole policy stands on, and it was
 never true for this path.
 
-**Why nothing catches it.** A deferred order is never sent to any matching engine, so no engine has
-it and replication between the pair cannot supply it -- a promoting follower is no better placed
-than a cold-starting primary. The only route back is a WAL replay, and replay is a `replay_mode`
-flag on the sequencer with no operational plumbing: nothing in `devenv.py` or `launch.py` invokes
-it, and a starting engine does not trigger it. The mechanism exists; nothing calls it.
+**Why nothing catches it.** A deferred order is never sent to any matching engine, so no engine
+holds it and replication between the pair cannot supply it. The route back is the sequencer sending
+what the engine has not applied -- which happens on promotion and not on a start, as below.
 
 **And the member cannot act.** An order joins the gateway's open-order set only when an execution
 report arrives for it (`FixOrderGatewayThread.cpp:751`). A deferred order never produces one, so it
@@ -144,20 +142,56 @@ member has been told are dead. Any fix has to make the two agree -- either repla
 that reliably happens and is verified, or the deferred records are positively resolved before
 anything can replay them. The first question to settle is which of those the venue is promising.
 
-**The open question, and it is the important one: does a routine failover lose them too?** What was
-measured is both engines dead and one cold-started. In a normal failover the secondary is already
-running with replicated book state -- but a deferred order was never sent to any engine, and the
-sequencer released its payload rather than retaining it, so replay looks like the only route back
-there as well. Against that, `ha_test.py` kills the matching engine with 20,000 orders in flight
-and passes. Something is different between the two cases and it is not yet known what.
+**Measured 2026-08-28: a routine failover does NOT lose them.** This was the open question and it
+is now answered, which bounds the entry considerably. With the secondary already running, the
+primary was killed under a live FIX session and orders kept flowing across the gap. The sequencer
+deferred **27** of them over a 14-second outage, and every one of the 88 orders sent was answered:
 
-**This is the first thing to establish, before any fix is designed.** If routine failover recovers
-them, this entry is about the cold-start path and is serious. If it does not, then ordinary HA
-operation loses orders, which is a different and much larger problem. Measuring it is cheap: defer
-a known set of orders across a failover with the secondary already up, and see whether the member
-is ever told. Note that [BUG-0040](#bug_0040) is relevant to reading the answer -- the harness's
-order-accounting check reports lost orders when it means it could not count them, so a passing
-scenario is not by itself evidence that nothing was lost.
+```
+RESULT: sent=88  answered=88  never answered=0
+```
+
+The promoted secondary recovered them by **reconciliation**, not by anything resembling a replay
+run:
+
+```
+MatchingEngineThread: entering RECONCILING (last_replicated_seq_no=47549974, book_size=...)
+MatchingEngineThread: MePositionAck received -- book reconciled to seq_no=47550003
+```
+
+It reports where its replica reached and the sequencer sends everything after it -- 29 records,
+covering the 27 deferred orders.
+
+**Root cause: a cold start never enters reconciliation at all.** `MatchingEngineThread.cpp:1108`,
+in `handle_arbitration_decision`:
+
+```cpp
+if (ha_role_state_ == MeRole::Follower) {
+    begin_reconciliation();   // catch up on the WAL before accepting anything
+} else {
+    adopt_leader_role();      // "Nothing to take over. This is a start rather than a promotion"
+}
+```
+
+An instance that was never a Follower takes the second branch and applies nothing. The comment is
+right that no replica book was maintained there and wrong that this means there is nothing to take
+over: the WAL may hold orders no engine has ever seen, which is exactly the state a deferral
+creates.
+
+**The rule it follows was written on purpose, and undoing it needs care.** That branch is
+[BUG-0043](#bug_0043)'s fix -- a cold-start instance routed through reconciliation waited on a
+connection that never arrived and the venue came up with no matching engine leading. So the
+question is not whether to reconcile on a cold start but **what the test should be**. "Was I a
+Follower?" is a proxy for "is there anything I have not applied?", and it is the wrong proxy: those
+differ precisely when the venue deferred orders and then lost every engine. Note that
+`begin_reconciliation` already handles the arriving-connection case -- it waits for a sequencer
+order connection and re-enters when one appears -- so the stranding BUG-0043 describes may no
+longer be a consequence of reconciling on a start. That needs checking before anything is changed.
+
+**What this narrows.** Ordinary HA operation does not lose orders. What loses them is losing every
+matching engine and starting one cold -- which is exactly the incident behind
+[BUG-0009](#bug_0009), where an engine was promoted, died two minutes later, and nothing existed
+after that.
 
 Related: [BUG-0048](#bug_0048), since nothing truncates the WAL and these records live in it
 indefinitely. [BUG-0010](#bug_0010), since both concern a promotion assumed to put things right.
