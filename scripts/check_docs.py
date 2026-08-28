@@ -16,8 +16,16 @@ Checks implemented:
      page, so a document cannot be added and then be readable by nobody
   4. Every clickable target in the architecture diagram resolves to a declared Doxygen anchor
   5. No reference uses a path-derived Doxygen id (md_*), which a file move would silently break
-  6. Every anchor cited as file.md#anchor, or linked as (#anchor), resolves -- either to an
-     explicit {#anchor} declaration or to a heading whose GitHub slug matches
+  6. Every anchor cited as file.md#anchor, or linked as (#anchor), resolves to an explicit
+     {#anchor} declaration. A GitHub heading slug is NOT accepted: Doxygen cannot resolve one,
+     and accepting them is how the documentation build came to be broken on main while this
+     script reported the tree consistent
+  7. No document links to a bare README.md in its own directory, which Doxygen resolves against
+     the project root rather than the document's own
+
+This script reads the WORKING TREE, not the git index. An untracked file used to be checked by
+nothing at all, so a new document -- exactly when link checking is wanted -- was exactly what it
+could not see. See docs/bug_list.md, BUG-0063 for both faults.
 
 Reachability starts at the repository README and the documentation contents page, which is
 docs/README.md where that exists and docs/README.md otherwise. GitHub renders README.md when a
@@ -50,8 +58,38 @@ _HTML_LINK_RE = re.compile(r'<a\s+href="([^"]+)"')
 
 
 def tracked_markdown() -> list[str]:
-    result = subprocess.run(['git', 'ls-files', '*.md'], cwd=_PROJECT_ROOT, capture_output=True, text=True, check=True)
-    return [line for line in result.stdout.split() if not line.startswith(_IGNORED_PREFIXES)]
+    """Every markdown file in the WORKING TREE, tracked or not.
+
+    It used to be `git ls-files`, which is the index, so a file that had not been staged was not
+    checked at all -- a new document with broken links, unresolvable anchors and no inbound
+    reference passed in silence, and the only visible clue was that the count in this script's own
+    success message did not move. A new document is exactly when link checking is wanted and was
+    exactly when this was blind. See docs/bug_list.md, BUG-0063.
+    """
+    return _working_tree('*.md')
+
+
+def markdown_and_dox() -> list[str]:
+    """The same working-tree rule for the files that may DECLARE an anchor."""
+    return _working_tree('*.md', '*.dox')
+
+
+def _working_tree(*patterns: str) -> list[str]:
+    """Files matching these patterns that are tracked OR merely untracked, never ignored.
+
+    `--cached --others --exclude-standard` is the working tree minus what .gitignore excludes,
+    which is the set a person would call "the documentation". Walking the directory tree is not:
+    it drags in the third-party source under thirdparty/, which git ignores and nobody here wrote.
+    """
+    result = subprocess.run(['git', 'ls-files', '--cached', '--others', '--exclude-standard', *patterns],
+                            cwd=_PROJECT_ROOT, capture_output=True, text=True, check=True)
+    seen, names = set(), []
+    for name in result.stdout.split():
+        if name.startswith(_IGNORED_PREFIXES) or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return sorted(names)
 
 
 def without_code_blocks(text: str) -> str:
@@ -115,10 +153,8 @@ def check_citations_from_source() -> list[str]:
 
 def declared_anchors() -> dict[str, str]:
     """Doxygen ids declared anywhere: {#id} in markdown, and \\page / \\section in .dox."""
-    result = subprocess.run(['git', 'ls-files', '*.md', '*.dox'], cwd=_PROJECT_ROOT,
-                            capture_output=True, text=True, check=True)
     anchors = {}
-    for name in result.stdout.split():
+    for name in markdown_and_dox():
         text = (_PROJECT_ROOT / name).read_text(encoding='utf-8')
         for anchor in re.findall(r'\{#([A-Za-z0-9_]+)\}', text):
             anchors[anchor] = name
@@ -149,11 +185,18 @@ def check_doxygen() -> list[str]:
 
 
 def heading_slugs() -> set[str]:
-    """GitHub derives an anchor from every heading: lower-cased, punctuation dropped, spaces to
-    hyphens. Those are legitimate link targets even though nothing declares them."""
+    """The GitHub-style anchor derived from every heading: lower-cased, punctuation dropped,
+    spaces to hyphens.
+
+    Collected in order to REJECT them, not to accept them. GitHub resolves these and Doxygen does
+    not: a markdown `[text](#slug)` becomes a `\\ref slug` command, and a heading slug is not a
+    label Doxygen knows, so it is an error under WARN_AS_ERROR. This gate used to treat them as
+    valid targets, which is how the documentation build came to be broken on main for three
+    commits while every run of this script reported the tree consistent. See BUG-0063, and
+    docs/orientation/building.md for the rule.
+    """
     slugs = set()
-    result = subprocess.run(['git', 'ls-files', '*.md'], cwd=_PROJECT_ROOT, capture_output=True, text=True, check=True)
-    for name in result.stdout.split():
+    for name in tracked_markdown():
         if name.startswith('.claude/'):
             continue
         for heading in re.findall(r'^#{1,6} +(.*)$', (_PROJECT_ROOT / name).read_text(encoding='utf-8'), re.MULTILINE):
@@ -167,7 +210,8 @@ def check_anchor_citations() -> list[str]:
     """A section cited by anchor must exist. Section numbers used to be the identifier in the HA
     decision record, and 11a to 11e exist because inserting a section would have renumbered every
     citation of it. Anchors do not have that problem, which is why the citations now use them."""
-    known = set(declared_anchors()) | heading_slugs()
+    declared = set(declared_anchors())
+    slugs = heading_slugs()
     faults = []
     grep = subprocess.run(['git', 'grep', '-nE', r'(\.md#[A-Za-z0-9_-]+|\]\(#[A-Za-z0-9_-]+\))', '--',
                            ':!scripts/check_docs.py'],
@@ -182,8 +226,35 @@ def check_anchor_citations() -> list[str]:
             continue
         body = re.sub(r'`[^`]*`', '', body)
         cited = set(re.findall(r'\.md#([A-Za-z0-9_-]+)', body)) | set(re.findall(r'\]\(#([A-Za-z0-9_-]+)\)', body))
-        for anchor in sorted(cited - known):
-            faults.append(f'{location}:{number}: cites anchor #{anchor}, which is neither declared nor a heading')
+        for anchor in sorted(cited - declared):
+            if anchor in slugs:
+                faults.append(f'{location}:{number}: cites anchor #{anchor}, which is a heading slug. '
+                              'Doxygen cannot resolve one -- give the target heading an explicit '
+                              '{#label} and cite that instead')
+            else:
+                faults.append(f'{location}:{number}: cites anchor #{anchor}, which is not declared anywhere')
+    return faults
+
+
+def check_same_directory_readme() -> list[str]:
+    """A link to README.md in the document's own directory, which Doxygen resolves elsewhere.
+
+    Doxygen took a bare `README.md` to mean the one at the PROJECT ROOT rather than the one beside
+    the document, and the root README is not in its input set -- so the reference failed and the
+    build stopped. GitHub resolves it as written, which is why nothing noticed. An explicit
+    relative path, `../<section>/README.md`, is read the same way by both.
+    """
+    faults = []
+    for name in tracked_markdown():
+        if name.startswith(('.claude/', 'docs/history/')):
+            continue
+        text = without_code_blocks((_PROJECT_ROOT / name).read_text(encoding='utf-8'))
+        for number, line in enumerate(text.splitlines(), 1):
+            if re.search(r'\]\(README\.md(?:#[A-Za-z0-9_-]+)?\)', line):
+                section = Path(name).parent.name or '.'
+                faults.append(f'{name}:{number}: links to a bare README.md in its own directory. '
+                              f'Doxygen resolves that against the project root, not this one -- '
+                              f'write ../{section}/README.md instead')
     return faults
 
 
@@ -223,6 +294,7 @@ def main() -> int:
     faults += check_citations_from_source()
     faults += check_doxygen()
     faults += check_anchor_citations()
+    faults += check_same_directory_readme()
     if not args.links_only:
         faults += check_reachable(files, graph)
 

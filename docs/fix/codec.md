@@ -39,7 +39,7 @@ Replacing those with this library — and, in doing so, removing the per-message
 `std::string` allocation the current `FixParser::validate_checksum` incurs — is a
 later pass. The migration outline, and its knock-on effect on how much of a
 large message like NewOrderSingle the system exercises, is in
-[Order Gateway → Planned Migration to `fix_codec`](../venue/fix_order_gateway.md#planned-migration-to-fix_codec-not-yet-done).
+[Order Gateway → Planned Migration to `fix_codec`](../venue/fix_order_gateway.md#gw_fix_codec_migration).
 
 ---
 
@@ -304,7 +304,7 @@ Internally the reader's iterator consults the generated `is_data_length_tag(95)`
 
 ### What the gateway migration will look like
 
-The [FIX order gateway migration](../venue/fix_order_gateway.md#planned-migration-to-fix_codec-not-yet-done)
+The [FIX order gateway migration](../venue/fix_order_gateway.md#gw_fix_codec_migration)
 is precisely this reader replacing the hand-written parser. Populating the order
 PDU from an inbound NewOrderSingle becomes:
 

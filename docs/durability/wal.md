@@ -104,7 +104,7 @@ cross-machine durability protocol is a sequencer-HA concern; see
 
 ---
 
-## The cursor and replay model
+## The cursor and replay model {#wal_cursor_replay}
 
 A reader does not consume the WAL destructively; it holds a **cursor** — a position — and
 advances it. This is the single mechanism behind recovery, replication, and pub/sub replay.

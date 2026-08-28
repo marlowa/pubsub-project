@@ -233,11 +233,15 @@ numbers -- which is why that document has sections 11a to 11e, since inserting a
 would have renumbered every one of them. The other twelve sections have no label and are referred
 to in prose.
 
-**`scripts/check_docs.py` does not currently catch a violation of either rule** -- it validates
-links by its own rules, which are not Doxygen's, and it passed all sixty-eight documents while ten
-references across six of them were failing the build. See [BUG-0063](../bug_list.md#bug_0063).
-Until that is fixed, a clean `check_docs.py` is not evidence that the documentation builds; only
-building it is.
+**`scripts/check_docs.py` catches a violation of either rule, since 2026-08-28.** It used to
+accept a GitHub heading slug as a valid anchor and to enumerate documents with `git ls-files`, so
+it passed all sixty-eight documents while ten references across six of them were failing the build,
+and it could not see an untracked file at all. Both are fixed: it now rejects what Doxygen rejects
+and reads the working tree. See [BUG-0063](../bug_list.md#bug_0063).
+
+Building the documentation is still the authority, because it is Doxygen's opinion that decides.
+What changed is that a clean `check_docs.py` is now evidence rather than reassurance -- and it
+answers in a second, where the build answers one warning at a time.
 
 ---
 

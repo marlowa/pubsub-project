@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 66 |
-| Open | 33 (24 defects, 9 tasks) |
-| Closed | 33 |
+| Open | 32 (23 defects, 9 tasks) |
+| Closed | 34 |
 | Next id | BUG-0067 |
 
 ## Open bugs by severity
 
-11 high, 15 medium, 7 low.
+11 high, 14 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -39,7 +39,6 @@
 | [BUG-0048](#bug_0048) | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
-| [BUG-0063](#bug_0063) | medium | defect | `check_docs.py` passes links the documentation build rejects |
 | [BUG-0004](#bug_0004) | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
@@ -353,60 +352,6 @@ deferred, and a venue that resumes automatically conceals it.
 Related: [BUG-0009](#bug_0009), whose refusal this defeats. [BUG-0064](#bug_0064), which is why the
 repetition costs orders rather than merely time. [BUG-0029](#bug_0029), on the supervision grace
 period.
-
----
-
-### BUG-0063: `check_docs.py` passes links the documentation build rejects {#bug_0063}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | The build failing on `doxygen_docs` while starting BUG-0009 step 3, and `git stash` showing it already failed at HEAD |
-| Impact | The documentation gate can be landed broken and stay broken, and it does not see untracked files at all. Nobody notices until the next person runs a full build, and it is not their change that caused it |
-
-**The documentation build was already failing on `main`.** Commit `4d91263` turned on
-`WARN_AS_ERROR` for Doxygen, and the three commits after it added documents the gate rejects.
-Confirmed by stashing the working tree and rebuilding: `doxygen_docs` fails at HEAD with nothing
-of mine in it.
-
-Ten unresolvable references across six documents, in two classes:
-
-- **Markdown heading slugs.** `[Implementation order](#implementation-order)` becomes a
-  `\ref implementation-order` command, and a GitHub-style slug is not a label Doxygen knows.
-  Fixed by giving each target heading an explicit `{#label}`, the mechanism the tree already
-  uses a hundred times.
-- **Same-directory `README.md` links.** Doxygen resolved a bare `README.md` against the *project
-  root* rather than the document's own directory, landing on a file outside its input set.
-  `../availability/README.md` resolves correctly.
-
-**`check_docs.py` reported all sixty-eight documents consistent, every link resolving, throughout.**
-It validates links by its own rules, and its rules are not Doxygen's. Two gates that disagree about
-what a valid link is means the cheap one gives permission the expensive one withholds -- and the
-expensive one runs late, so the breakage is attributed to whoever next builds rather than to
-whoever introduced it.
-
-`docs/orientation/building.md` already documents both rules. It says to name the target section in
-bold rather than link to it; an explicit `{#label}` is the better answer, keeps the navigation, and
-is what the rest of the tree does. That document should be corrected too.
-
-**A second way it gives false assurance, found 2026-08-28.** It enumerates documents with
-`git ls-files '*.md'`, so an **untracked** file is not checked at all. A new document with broken
-links, unresolvable anchors and no inbound reference passes silently until someone stages it --
-and the count in its own success message does not move, which is the only visible clue. Confirmed
-by staging one file: "68 documents" became "69 documents" with no other change. A new document is
-exactly when link checking is most wanted, and is precisely when this gate is blind.
-
-**What would fix this:** `check_docs.py` should check the working tree rather than the index, and
-reject what Doxygen rejects -- a `](#target)`
-reference with no matching `{#target}` anywhere in the tree, and a same-directory `README.md`
-link. Both are mechanical. Writing that check needs care: the first attempt at finding these by
-pattern produced a false negative on single-word anchors like `#retention` and a false positive on
-`building.md`, where the offending form appears inside backticks as an example of the rule.
-
-Related: [BUG-0004](#bug_0004) and [BUG-0050](#bug_0050), which are about what Doxygen 1.8.14
-cannot do. This one is about the gate not being checked, and applies whichever version is in use.
 
 ---
 
@@ -1801,6 +1746,72 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0063: `check_docs.py` passes links the documentation build rejects {#bug_0063}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | The build failing on `doxygen_docs` while starting BUG-0009 step 3, and `git stash` showing it already failed at HEAD |
+| Impact | The documentation gate can be landed broken and stay broken, and it does not see untracked files at all. Nobody notices until the next person runs a full build, and it is not their change that caused it |
+| Fixed | 2026-08-28 -- check_docs.py rejects what Doxygen rejects and reads the working tree instead of the index |
+
+**The documentation build was already failing on `main`.** Commit `4d91263` turned on
+`WARN_AS_ERROR` for Doxygen, and the three commits after it added documents the gate rejects.
+Confirmed by stashing the working tree and rebuilding: `doxygen_docs` fails at HEAD with nothing
+of mine in it.
+
+Ten unresolvable references across six documents, in two classes:
+
+- **Markdown heading slugs.** `[Implementation order](#implementation-order)` becomes a
+  `\ref implementation-order` command, and a GitHub-style slug is not a label Doxygen knows.
+  Fixed by giving each target heading an explicit `{#label}`, the mechanism the tree already
+  uses a hundred times.
+- **Same-directory `README.md` links.** Doxygen resolved a bare `README.md` against the *project
+  root* rather than the document's own directory, landing on a file outside its input set.
+  `../availability/README.md` resolves correctly.
+
+**`check_docs.py` reported all sixty-eight documents consistent, every link resolving, throughout.**
+It validates links by its own rules, and its rules are not Doxygen's. Two gates that disagree about
+what a valid link is means the cheap one gives permission the expensive one withholds -- and the
+expensive one runs late, so the breakage is attributed to whoever next builds rather than to
+whoever introduced it.
+
+`docs/orientation/building.md` already documents both rules. It says to name the target section in
+bold rather than link to it; an explicit `{#label}` is the better answer, keeps the navigation, and
+is what the rest of the tree does. That document should be corrected too.
+
+**A second way it gives false assurance, found 2026-08-28.** It enumerates documents with
+`git ls-files '*.md'`, so an **untracked** file is not checked at all. A new document with broken
+links, unresolvable anchors and no inbound reference passes silently until someone stages it --
+and the count in its own success message does not move, which is the only visible clue. Confirmed
+by staging one file: "68 documents" became "69 documents" with no other change. A new document is
+exactly when link checking is most wanted, and is precisely when this gate is blind.
+
+**Fixed 2026-08-28.** `check_docs.py` reads the working tree -- `git ls-files --cached --others
+--exclude-standard`, which is everything not ignored, so an unstaged document is checked like any
+other. Rule 6 no longer accepts a heading slug as a valid anchor, and a new rule 7 rejects a bare
+`README.md` link in a document's own directory. Both messages name the fix rather than only the
+fault.
+
+Applying it immediately found **eleven** slug citations across seven documents that Doxygen would
+have rejected one build at a time, all now carrying explicit `{#label}` anchors. Each rule was then
+shown to fire against a deliberate violation, because a check that has never failed is not known to
+work.
+
+The original wording of this section, kept because it was the plan: `check_docs.py` should check
+the working tree rather than the index, and reject what Doxygen rejects -- a `](#target)`
+reference with no matching `{#target}` anywhere in the tree, and a same-directory `README.md`
+link. Both are mechanical. Writing that check needs care: the first attempt at finding these by
+pattern produced a false negative on single-word anchors like `#retention` and a false positive on
+`building.md`, where the offending form appears inside backticks as an example of the rule.
+
+Related: [BUG-0004](#bug_0004) and [BUG-0050](#bug_0050), which are about what Doxygen 1.8.14
+cannot do. This one is about the gate not being checked, and applies whichever version is in use.
+
+---
 
 ### BUG-0038: Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed {#bug_0038}
 

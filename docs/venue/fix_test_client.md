@@ -45,10 +45,10 @@ All pages display a persistent nav bar and a live session status strip.
 | **Config** | Read-only display of `app.toml` |
 | **Logs** | SSE log stream with Pause/Resume; last 1000 lines shown on load |
 
-## Proposed: Advanced NOS Fields (not yet built)
+## Proposed: Advanced NOS Fields (not yet built) {#ftc_advanced_nos}
 
 This is a design sketch, not an implemented feature. It is the UI-side follow-up to the
-gateway's [migration to `fix_codec`](fix_order_gateway.md#planned-migration-to-fix_codec-not-yet-done): once
+gateway's [migration to `fix_codec`](fix_order_gateway.md#gw_fix_codec_migration): once
 the gateway can accept the fuller NewOrderSingle cheaply, the entry form becomes the thing
 that can no longer drive it.
 
@@ -168,7 +168,7 @@ Opens on `http://localhost:8081`.
 - FIX Test Client detailed design — see `java/fix-test-client/DESIGN.md` in the source tree
 - [Secure Communications](../operations/secure_comms.md) — TLS 1.2 cap and its cause
 - [Order Gateway](fix_order_gateway.md) — the gateway this client connects to; its
-  [`fix_codec` migration](fix_order_gateway.md#planned-migration-to-fix_codec-not-yet-done) is what motivates
+  [`fix_codec` migration](fix_order_gateway.md#gw_fix_codec_migration) is what motivates
   the proposed Advanced NOS Fields form
 - [FIX Codec](../fix/codec.md) — the codec library behind that migration
 

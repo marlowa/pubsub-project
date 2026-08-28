@@ -30,7 +30,7 @@ the primary and secondary sequencer connections when `ha_enabled = true`. With
 `ha_enabled = false` (the default for single-instance dev runs) only the primary connection
 is used.
 
-## Planned Migration to `fix_codec` (not yet done)
+## Planned Migration to `fix_codec` (not yet done) {#gw_fix_codec_migration}
 
 The gateway currently carries its own hand-written FIX layer: `FixMessage.hpp` (which also
 holds the `Tag::` and `MsgType::` tables), `FixParser`, `FixSerialiser`, and `FixErEncoder`.
@@ -149,7 +149,7 @@ tracked as a follow-up to the migration rather than part of it:
   malformed-input coverage, so the UI does not have to grow a control for every tag.
 
 This form change is sketched in
-[FIX Test Client → Proposed: Advanced NOS Fields](fix_test_client.md#proposed-advanced-nos-fields-not-yet-built).
+[FIX Test Client → Proposed: Advanced NOS Fields](fix_test_client.md#ftc_advanced_nos).
 
 The sequencing that falls out of this: migrate the gateway to `fix_codec` first (mechanism and
 full-dictionary access), then widen NOS field coverage as a coordinated change across the

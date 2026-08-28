@@ -11,7 +11,7 @@ must never leak into each other.
 
 ---
 
-## HA Is Component-Specific
+## HA Is Component-Specific {#ha_component_specific}
 
 There is **no single, generic HA mechanism** in this framework. Each component has a
 different failure model, so each composes HA differently. The framework provides
@@ -461,7 +461,7 @@ transparent.
 
 ---
 
-## Authentication Service HA
+## Authentication Service HA {#ha_auth_service}
 
 The authentication service is **active/active, caller-selected** — not an arbiter-elected
 pair. Two instances, named `a` and `b`, both run and both serve the gateway; neither is a

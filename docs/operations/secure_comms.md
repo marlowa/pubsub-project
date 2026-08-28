@@ -188,7 +188,7 @@ service is its single writer: it updates the database and fans every credential 
 both instances (`SetCredential`/`RemoveCredential` PDUs) so their in-memory copies stay in
 sync. So the instances *do* require synchronisation — via the admin fan-out — even though no
 individual auth exchange carries state. See
-[WAL and High Availability → Authentication Service HA](../availability/wal_and_ha.md#authentication-service-ha)
+[WAL and High Availability → Authentication Service HA](../availability/wal_and_ha.md#ha_auth_service)
 for the full model.
 
 ### PDU Protocol

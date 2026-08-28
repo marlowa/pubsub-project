@@ -69,7 +69,7 @@ to the auth service over the TLS **admin port** as a `SetCredential` / `RemoveCr
 
 Because HA is active/active, the admin service fans each change out to **both** auth instances
 so neither drifts stale (see [admin service](admin_service.md) and
-[WAL and HA → Authentication Service HA](../availability/wal_and_ha.md#authentication-service-ha)).
+[WAL and HA → Authentication Service HA](../availability/wal_and_ha.md#ha_auth_service)).
 On startup, each instance loads the full credential set from `credentials.toml` (a database
 export produced by `db/export_credentials.py`), so a restarted instance is current as of that
 export.
@@ -77,7 +77,7 @@ export.
 ## HA and Failover
 
 Active/active, caller-selected — see
-[WAL and HA → Authentication Service HA](../availability/wal_and_ha.md#authentication-service-ha)
+[WAL and HA → Authentication Service HA](../availability/wal_and_ha.md#ha_auth_service)
 for the full model. In short:
 
 - Both instances (`a`, `b`) run and serve simultaneously; neither is elected, neither is
@@ -119,6 +119,6 @@ the `[auth_service_a]` / `[auth_service_b]` sections of the environment TOML by 
 ## See Also
 
 - [Secure Comms](../operations/secure_comms.md) — SCRAM design, TLS, and the auth PDU protocol
-- [WAL and High Availability](../availability/wal_and_ha.md#authentication-service-ha) — the active/active HA model
+- [WAL and High Availability](../availability/wal_and_ha.md#ha_auth_service) — the active/active HA model
 - [Admin Service](admin_service.md) — the single writer of credential state
 - [Order Gateway](fix_order_gateway.md) — the caller that runs the SCRAM exchange per logon

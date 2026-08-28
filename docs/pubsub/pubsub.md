@@ -53,7 +53,7 @@ reflects how fast the subscriber consumes, not merely network speed.
 
 ### D2 — The WAL is the backlog; a lagging subscriber costs a cursor, not RAM.
 
-Each subscriber has its own [WAL cursor](../durability/wal.md#the-cursor-and-replay-model). Catch-up and live
+Each subscriber has its own [WAL cursor](../durability/wal.md#wal_cursor_replay). Catch-up and live
 delivery are the *same* path: the publisher reads the next record after the cursor, whether that
 record is a year old or a microsecond old. A subscriber that falls behind does not cause the
 publisher to buffer anything in memory — it simply holds an older cursor position over the same
