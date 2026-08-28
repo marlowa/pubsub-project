@@ -652,6 +652,43 @@ fix. There is no race inside the logger. The worker would have died on whichever
 object it reached first; the log-level atomic simply came first. Making that check null-safe would
 relocate the crash rather than remove it, and the next site would look unrelated.
 
+#### Detection built 2026-08-28
+
+Two detectors, because they see different things.
+
+**`launch.py` is the primary one.** It already knew the exit status of every child; it reported
+`killed by signal 11` in the same words and at the same level as an ordinary stop, so a component
+that segfaulted looked exactly like one asked to exit. It now names the signal, explains it, says
+plainly that this is not a shutdown, and gives the `coredumpctl` commands to find and keep the
+backtrace. Crash signals only -- `SIGTERM`, `SIGINT` and `SIGKILL` are how the venue is stopped and
+say nothing. This works whether or not a core was written, which matters because `ulimit -c` is 0
+in some launch contexts.
+
+**`scripts/crash_reports.py` is the backstop**, run by `devenv.py start`, for what the launcher
+cannot see: a component started by hand, or a launcher that died with its child.
+
+**It warns once per crash and never again, and the ordering is what makes that safe.** It writes
+the symbolised backtrace to `var/crash_reports/` *first*, then prints the warning naming that file,
+then records the crash as seen. A one-shot warning is only defensible when missing it costs
+nothing, and here it costs nothing because the evidence is already on disk. A warning repeated on
+every start would be ignored within a day, and a venue is started many times a day.
+
+It reports only executables under the install prefix and skips test binaries: `coredumpctl` holds
+93 entries on this machine, 84 of them the unit test binary raising signals on purpose, and burying
+the real two under those on the first run is the fastest way to teach somebody to skip the message.
+The filter reduces 93 entries to 1 for this prefix.
+
+`var/` because it already holds the WAL and epoch state -- what survives a redeploy -- and because
+every host has one, so a machine keeps its own crash history beside its own state and nothing needs
+collecting centrally.
+
+Verified: a deliberately segfaulting child produces the named crash report from the launcher and an
+ordinary stop produces none; the scan finds the 2026-08-21 sequencer crash, preserves its
+backtrace, and is silent on the second run.
+
+**Still to build: the `abort()` itself**, described above. Detection tells you a crash happened;
+aborting rather than unwinding is what stops this particular crash happening.
+
 **Separate, and still open: [BUG-0001](#bug_0001).** The timer tests carry no deliberate rogue
 fixture and hit the shutdown timeout anyway. That is a real unexplained case rather than a test
 observing its own scaffolding, and the fix above makes it abort visibly instead of crashing

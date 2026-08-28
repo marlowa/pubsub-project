@@ -55,6 +55,13 @@ try:
 except ImportError:  # pragma: no cover -- running from a deployed release
     deployment_freshness = None
 
+# Likewise a sandbox aid. On a target host the launcher's own crash reporting is what matters, and
+# coredumpctl may not be readable by the account the venue runs as. See scripts/crash_reports.py.
+try:
+    import crash_reports
+except ImportError:  # pragma: no cover -- running from a deployed release
+    crash_reports = None
+
 try:
     import tomllib
 except ImportError:
@@ -599,6 +606,11 @@ def cmd_start(  # pylint: disable=too-many-arguments
     # only warns: running an older release on purpose is legitimate. See BUG-0015.
     if deployment_freshness is not None:
         deployment_freshness.report(install_dir)
+    # Said once per crash, never repeated, because the backtrace is written to disk before the
+    # message is printed. A warning that repeated on every start would be ignored within a day,
+    # and a venue is started many times a day. See BUG-0057.
+    if crash_reports is not None:
+        crash_reports.report(install_dir)
 
     if component is not None:
         if component not in env["components"]:
@@ -710,6 +722,11 @@ def cmd_restart(  # pylint: disable=too-many-arguments
     # only warns: running an older release on purpose is legitimate. See BUG-0015.
     if deployment_freshness is not None:
         deployment_freshness.report(install_dir)
+    # Said once per crash, never repeated, because the backtrace is written to disk before the
+    # message is printed. A warning that repeated on every start would be ignored within a day,
+    # and a venue is started many times a day. See BUG-0057.
+    if crash_reports is not None:
+        crash_reports.report(install_dir)
 
     if component is not None:
         if component not in env["components"]:

@@ -217,14 +217,51 @@ class Launcher:
         log(f"started pid {self.child.pid}")
         return True
 
+    # Signals that mean the process broke, as distinct from ones that mean somebody stopped it.
+    # SIGTERM and SIGINT are how this launcher and devenv.py ask a component to go, and SIGKILL is
+    # how ha_test.py kills one on purpose -- none of those is news. The rest are.
+    CRASH_SIGNALS = {
+        signal.SIGSEGV: "invalid memory access",
+        signal.SIGBUS: "bad memory alignment or a truncated mapping",
+        signal.SIGABRT: "abort() -- a deliberate stop, an assertion, or an uncaught exception",
+        signal.SIGFPE: "arithmetic fault",
+        signal.SIGILL: "illegal instruction",
+        signal.SIGSYS: "bad system call",
+        signal.SIGTRAP: "trap",
+    }
+
     def wait_for_child(self) -> tuple:
-        """Wait for the child, returning (exit status description, seconds it ran)."""
+        """Wait for the child, returning (exit status description, seconds it ran).
+
+        A crash signal is named and explained rather than reported as a number. This used to say
+        "killed by signal 11" in the same words and at the same level as an ordinary stop, so a
+        component that segfaulted looked exactly like one that had been asked to exit -- which is
+        how a sequencer crash went unnoticed for a week. See docs/bug_list.md, BUG-0057.
+
+        This is the primary detector, not the coredumpctl scan that devenv.py runs at start: the
+        exit status is here whether or not a core was written, and `ulimit -c` is 0 in some launch
+        contexts. A crash with no core still gets reported.
+        """
         started_at = time.monotonic()
         returncode = self.child.wait()
         ran_for = time.monotonic() - started_at
-        if returncode < 0:
-            return (f"killed by signal {-returncode}", ran_for)
-        return (f"exit status {returncode}", ran_for)
+        if returncode >= 0:
+            return (f"exit status {returncode}", ran_for)
+
+        signal_number = -returncode
+        try:
+            name = signal.Signals(signal_number).name
+        except ValueError:
+            name = f"signal {signal_number}"
+        meaning = self.CRASH_SIGNALS.get(signal_number)
+        if meaning is None:
+            return (f"killed by {name}", ran_for)
+
+        log(f"*** {self.name} CRASHED: {name} -- {meaning}")
+        log(f"*** This is not a shutdown. A core may have been written; look for it with:")
+        log(f"***     coredumpctl list | grep {self.name}")
+        log(f"*** and keep the backtrace, which outlives the binary: coredumpctl info <pid>")
+        return (f"CRASHED with {name}", ran_for)
 
     def run(self) -> int:
         """Set up, supervise until stood down, and clean up the pid files whatever happens.
