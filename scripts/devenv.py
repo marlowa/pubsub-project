@@ -47,6 +47,14 @@ import sys
 import time
 from pathlib import Path
 
+# A sandbox aid, and deliberately not staged into a release: on a target host there is no source
+# tree to compare against and the check would be a no-op anyway. Absent means silent rather than
+# broken. See scripts/deployment_freshness.py and docs/bug_list.md, BUG-0015.
+try:
+    import deployment_freshness
+except ImportError:  # pragma: no cover -- running from a deployed release
+    deployment_freshness = None
+
 try:
     import tomllib
 except ImportError:
@@ -579,6 +587,11 @@ def cmd_start(  # pylint: disable=too-many-arguments
     # Refuse to start against un-deployed (still-templated) configs -- see the function
     # docstring. Guards both the full-stack and single-component paths.
     check_configs_expanded(install_dir)
+    # Say so when the venue about to start was not built from this tree. Reported at start rather
+    # than at deploy because this is the moment somebody begins trusting what is running, and it
+    # only warns: running an older release on purpose is legitimate. See BUG-0015.
+    if deployment_freshness is not None:
+        deployment_freshness.report(install_dir)
 
     if component is not None:
         if component not in env["components"]:
@@ -685,6 +698,11 @@ def cmd_restart(  # pylint: disable=too-many-arguments
     # so guard the still-templated-config case here too (the full restart re-checks via
     # cmd_start, which is a cheap no-op).
     check_configs_expanded(install_dir)
+    # Say so when the venue about to start was not built from this tree. Reported at start rather
+    # than at deploy because this is the moment somebody begins trusting what is running, and it
+    # only warns: running an older release on purpose is legitimate. See BUG-0015.
+    if deployment_freshness is not None:
+        deployment_freshness.report(install_dir)
 
     if component is not None:
         if component not in env["components"]:

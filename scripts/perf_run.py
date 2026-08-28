@@ -1399,6 +1399,18 @@ def main() -> None:
     gw_config = prefix / "etc" / "fix_order_gateway" / f"fix_order_gateway_{args.gateway_instance}.toml"
 
     preflight(prefix)
+
+    # A performance figure measured against a venue built before the current edits is a figure
+    # about the older code, and the report would not say so. This is the run where that matters
+    # most: a number gets quoted long after the run that produced it. See BUG-0015.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import deployment_freshness  # noqa: PLC0415  -- deferred: needs the path set above
+    stale = deployment_freshness.staleness_warnings(prefix)
+    if stale:
+        log("WARNING: the deployed venue predates changes in this tree, so this run measures the older code")
+        for line in stale:
+            log(f"  {line.strip()}")
+
     log_dir.mkdir(parents=True, exist_ok=True)
     perf_dir.mkdir(parents=True, exist_ok=True)
 

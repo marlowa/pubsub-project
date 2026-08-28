@@ -6017,6 +6017,18 @@ def main() -> None:
     except TestFailure:
         sys.exit(1)
 
+    # A scenario run against a venue built before the current edits produces a result about the
+    # older code, and nothing in the output would say so. Warns rather than refuses: running an
+    # older release deliberately -- bisecting, or reproducing an incident -- is a real thing to do.
+    # See scripts/deployment_freshness.py and docs/bug_list.md, BUG-0015.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import deployment_freshness  # noqa: PLC0415  -- deferred: needs the path set above
+    stale = deployment_freshness.staleness_warnings(prefix)
+    if stale:
+        log("WARNING: the deployed venue predates changes in this tree, so this run measures the older code")
+        for line in stale:
+            log(f"  {line.strip()}")
+
     lib_dir  = str(prefix / "lib")
     existing = os.environ.get("LD_LIBRARY_PATH", "")
     os.environ["LD_LIBRARY_PATH"] = f"{lib_dir}:{existing}" if existing else lib_dir

@@ -1227,6 +1227,32 @@ indistinguishable from a successful deployment, and it is worth distinguishing e
 nothing is the correct outcome -- it read as success twice in one session. Saying "nothing to
 expand; these configs already match the artefact" costs a line and removes the ambiguity.
 
+#### Answered 2026-08-28: the tools say when the deployment predates the source
+
+Blaming a person for a mistake the layout produces is not an answer, and neither is a rule they
+have to remember. `scripts/deployment_freshness.py` compares the deployed tree's `built_at`
+against the modification times of tracked files, and `devenv.py start`, `ha_test.py` and
+`perf_run.py` report what it finds. It warns and never blocks -- deploying an older release on
+purpose is legitimate -- and it disables itself outside a git work tree, so a real target host
+never sees it.
+
+**Its first version was wrong, in the way worth recording.** It compared the artefact's git hash
+against HEAD, on the assumption that a release is built from a commit. **It is not: a release is
+built from the working tree as it stands**, uncommitted changes included, which is the normal case
+here because changes are tested before they are committed. So the hash could match perfectly while
+the deployed venue lacked every edit made since -- silent in exactly the workflow it was written
+for. The comparison is now `built_at` against file modification times, which asks the question that
+matters: *was this built after my last edit?*
+
+Timestamps were rejected in the first design for being noisy, and they are: a `git checkout`
+rewrites them without changing content. That cost is accepted, because the alternative was a check
+that answered a question nobody was asking.
+
+**One case it cannot catch, and will not try to.** Entirely new code that no existing file
+references is invisible, because only tracked files are read. Whether a new file belongs to the
+project is a decision the developer makes with `git add`, and a check that guessed would warn about
+working notes on every run for ever -- which is how a warning stops being read.
+
 ### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
 
 | | |
