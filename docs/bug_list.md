@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 58 |
-| Open | 25 (19 defects, 6 tasks) |
+| Bugs recorded | 60 |
+| Open | 27 (19 defects, 8 tasks) |
 | Closed | 33 |
-| Next id | BUG-0059 |
+| Next id | BUG-0061 |
 
 ## Open bugs by severity
 
-6 high, 12 medium, 7 low.
+6 high, 14 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -32,6 +32,8 @@
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
 | [BUG-0047](#bug_0047) | medium | task | Disaster recovery is not modelled |
 | [BUG-0048](#bug_0048) | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
+| [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
+| [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0004](#bug_0004) | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0011](#bug_0011) | low | defect | `cmake --install` re-lays config templates unexpanded |
@@ -152,6 +154,63 @@ constant in `GatewayMetrics.hpp`, which is where the gateway's existing metrics 
 that is a larger change than the checking it would observe. See
 [Inbound sequence checking](fix/inbound_sequence_checking.md).
 
+### BUG-0059: No defence against a member reconnecting in a loop with the wrong protocol {#bug_0059}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a class of abuse the venue has no answer for |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Raised from operational experience: members really do this, repeatedly |
+| Impact | A misconfigured member can open connections as fast as it likes, and each one costs the venue accept, session setup and teardown |
+
+A member configured for **FIX 4.x against a FIX 5.0 / FIXT.1.1 venue** fails the preamble check and
+is disconnected, which is correct. What it then does in practice is **reconnect immediately, and
+keep doing so**, because the misconfiguration is on its side and nothing tells it to stop.
+
+The venue has no answer for that. Each attempt costs an accept, a `FixSession` construction, a
+logon timer, and a teardown; nothing counts attempts per peer, nothing backs off, and nothing
+refuses a source that has just failed the same way fifty times. It is not malicious and does not
+need to be -- an ordinary misconfiguration produces it, and the effect on a venue is the same.
+
+**This is a denial-of-service question, not a FIX one**, and it belongs with two others of the same
+kind: a connection that opens and sends nothing (the logon timeout covers that one), and a member
+that connects and then does not read (measured 2026-08-28 as harmless up to 6,000 unread messages,
+so the venue does not block on it -- but the buffering is not free either).
+
+Worth designing as a piece: what the venue counts per peer, what it does when a count is exceeded,
+and how an operator sees it. Nothing here is built.
+
+### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a performance characteristic nothing currently reports |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Raised from operational experience: short intense bursts degrade the requests that follow them |
+| Impact | Latency for orders arriving just after a burst is worse than any figure the venue reports, and nothing shows it |
+
+A **microburst** is a short, intense arrival spike -- far above the average rate, over in
+milliseconds. Its cost is not paid by the burst itself but by **what arrives just afterwards**:
+queues are still draining, caches and allocators are still recovering, and an order that arrives in
+that shadow is served worse than the same order a second later.
+
+**Nothing in the venue reports this.** Averages hide it by construction, and even a latency
+histogram over a whole run mixes the shadow in with everything else, so the tail it produces is
+attributed to nothing in particular. The trading-day runs measure throughput and totals; a burst
+that doubled the latency of the next two hundred orders would leave no mark on either.
+
+Related to, but not the same as, the Prometheus work in the roadmap's item 16. That gives per-phase
+histograms, which is the instrument -- this is the question to ask with it: **latency conditioned
+on recent arrival rate**, rather than latency overall.
+
+Two things worth settling when it is picked up: how a burst is defined for this venue (a rate over
+a window, and which window), and whether the venue should do anything about one or merely report
+it. Reporting first is the safer order.
+
 ### BUG-0056: The FIX gateway stopped completing logons while still running {#bug_0056}
 
 | | |
@@ -202,10 +261,36 @@ unlikely to be a one-off.
   by the venue's own sequence checking. `end_session_on_sequence_error` sets
   `session_established = false` and then disconnects, which is a path nothing else takes.
 
-**To reproduce:** drive repeated sessions that the venue ends -- a too-low `MsgSeqNum`, then an
-unanswered `ResendRequest` -- against one gateway, closing some client sockets abruptly, and watch
-for the application thread going quiet while the reactor continues. **Preserve `installed/log/`
-before anything else runs**, which is the step that was missed this time.
+#### Two hypotheses tried and disproven, 2026-08-28
+
+Attempted with logs preserved. **Not reproduced**, and two of the three hypotheses above are now
+ruled out.
+
+- **Repeated sessions the venue ends.** 75 sessions across 25 rounds -- a too-low `MsgSeqNum`, an
+  abrupt socket close with an order still open, and a gap opened then abandoned -- with a fresh
+  logon attempted after every round. The application thread stayed up and every logon succeeded.
+  So neither the sequence-error path nor the cancel-on-disconnect grace queue leaks on its own.
+- **A member that stops reading.** 6,000 orders sent by a member that never read a byte, its socket
+  held open throughout. All six threads stayed idle in `ep_poll`, and the gateway kept serving. So
+  the venue does not block writing to a member that has stopped reading, which was the most
+  plausible mechanism and is now excluded.
+
+**A false positive on the way, worth recording because it nearly became a finding.** The first
+slow-reader run reported the gateway wedged after 250 messages. It was not: the probe used comp id
+`CLIENT-RECOVERY`, which is not in `credentials.toml` -- only `APM001`, `CLIENT` and `test2a001`
+are -- so the venue accepted the connection, saw an unknown member and disconnected it, exactly as
+it should. The probe was rewritten to use `CLIENT` and the wedge disappeared. **A test that cannot
+log on looks identical to a venue that will not answer.**
+
+**What remains untried** is the third hypothesis: that the application thread exited or blocked for
+a reason specific to the state that day. The original observation stands -- the thread had gone
+quiet while the reactor continued -- but nothing yet reproduces it, and the logs from that instance
+were lost before they were kept.
+
+**To reproduce:** the recipes above did not do it. What differed on the day was a long-running
+venue with many ad-hoc sessions over an extended period, rather than a burst of them. Next attempt
+should run for longer and vary the pacing, and **preserve `installed/log/` before anything else
+runs** -- the step that was missed the first time and honoured the second.
 
 
 ### BUG-0001: Shutdown timeout errors in timer tests {#bug_0001}
