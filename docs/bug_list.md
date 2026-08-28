@@ -301,7 +301,8 @@ What a design has to settle:
 - **What lifts it.** A person, on the argument in design notes 15. Whether anything may lift it
   automatically is a separate decision and the answer is probably no.
 - **Scope.** Venue-wide, or per instrument. Real exchanges do both, and per-instrument is what an
-  instrument suspension needs.
+  instrument suspension needs. Settled far enough to matter below: whatever is chosen has to be
+  chosen before the technical event has a shape.
 - **Where the state lives, which is not obvious here.** Holding it in the matching engine is natural
   when the engine is up and the halt is a trading decision. It cannot be the whole answer for this
   venue: the condition that prompted the ladder is *there is no matching engine*, so a halt entered
@@ -309,13 +310,81 @@ What a design has to settle:
   both -- or it vanishes exactly when it is needed.
 - **What a halted venue does with an order.** Reject with a halt reason is the obvious answer, but
   a member's cancels are a different case: a member may reasonably want to withdraw orders during a
-  halt, and whether the venue can honour that depends on why it halted.
+  halt, and whether the venue can honour that depends on why it halted. Sharpened by the resting-
+  order rule below -- the long orders a halt deliberately keeps alive are exactly the ones a member
+  might most want to cancel while it lasts.
 - **What members are told on logon during a halt**, so a member connecting into one is not left to
   discover it by sending an order.
 
+#### What a halt does to resting orders, agreed 2026-08-28
+
+**On halt, cancel everything except the long orders.** A long order is one meant to outlive the day:
+good-till-cancel and good-till-date. Everything else -- day orders above all -- is cancelled, which
+is what the venue Andrew works on does.
+
+The reasoning is the same one already written into cancel-on-disconnect, and **the venue already has
+the predicate**: `open_orders::is_persistent_time_in_force()` in `applications/fix_common/OpenOrderEntry.hpp`
+returns true for `'1'` (good-till-cancel) and `'6'` (good-till-date), with the comment that *"a
+member that asked for good-till-cancel did not ask for 'until my socket drops'"*. A halt is the same
+argument at venue scope: a member that asked for good-till-cancel did not ask for "until the venue
+next stops", while a day order has no meaning across a halt that may outlast the day.
+
+So this needs no new concept, and it should not grow one. Reusing that predicate keeps the two
+behaviours defined in one place -- and if the rule ever changes, cancel-on-disconnect and
+cancel-on-halt change together instead of drifting apart, which is the shape recorded in
+[Two shapes that keep coming back](#bug_list_shapes).
+
+Three things a design has to settle beyond the predicate:
+
+- **Who cancels, and where the cancels come from.** `cancel-on-failover` already cancels a whole
+  book on promotion and emits sequenced cancel execution reports, so the machinery exists. But a
+  halt declared *because there is no matching engine* has no engine to do the cancelling, which is
+  the same difficulty as where the halt state lives.
+- **What the member is told.** A cancel execution report per order is correct and may be a great
+  many of them at once, which is [BUG-0060](#bug_0060)'s microburst territory pointed inward.
+- **What happens to the long orders on resume**, and whether a member can cancel one *during* a
+  halt. Refusing that is defensible -- a cancel needs the engine -- but it leaves a member unable
+  to act on an order the venue is deliberately keeping alive.
+
+#### Publishing it as a technical event, agreed 2026-08-28
+
+A halt should also be published on the topic bus as a **technical event**: an enumerated kind, so
+that other kinds can follow, carried to anything that subscribes. Market data is the first
+consumer, and monitoring, dashboards and external consumers follow.
+
+**Gateways are the exception, and must not learn it this way.** The matching engine publisher
+subscribes to the sequencer's WAL and publishes topics; nothing in the venue depends on it. Making
+a gateway depend on it for halt state inverts that, so a publisher outage would leave every gateway
+believing the market is open while it is not -- a market-data component placed in the trading
+control plane, which is the objection that keeps Prometheus out of it. Gateways should be told down
+the link they already depend on, the way `OrderAcceptance` (127) already travels sequencer to
+gateway.
+
+**Two audiences, two paths, one source of truth.** Whoever owns the halt state publishes both ways.
+
+Four things the event's shape has to get right:
+
+- **Carry the state, not two separate events.** "Halted" and "available" as distinct kinds invites
+  *which arrived last?*, and a missed one leaves a subscriber permanently wrong. One event carrying
+  the current status is idempotent: receiving it twice is harmless and the latest wins. The same
+  reason `OrderAcceptance` carries a flag rather than having separate Refuse and Resume messages.
+- **A late subscriber must learn the current state.** A component that starts *during* a halt must
+  not inherit a default of "open" -- that is [BUG-0009](#bug_0009)'s shape arriving by another road,
+  and it has now caught this project more than once. The cursor model supports replay-from-last, so
+  this is a decision rather than new machinery.
+- **A reason beside the enum.** A scheduled pause, a market-wide event, an instrument suspension
+  and "the matching engine died" are different things to a subscriber and very different to an
+  operator. The enum says what; the reason says why.
+- **Decide instrument scope early.** If a halt can be per instrument, the event needs an instrument
+  field or the topic needs to be per instrument, and that is painful to retrofit.
+
+**Resuming is not automatic even here.** Per [design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss),
+a venue that reopens quietly after losing orders conceals the loss, so the event that lifts a halt
+is published because a person decided it was safe, never because an engine reconnected.
+
 Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the top of the ladder
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
-these states differently.
+these states differently. [BUG-0060](#bug_0060), for the burst of cancels a halt produces.
 
 ---
 
