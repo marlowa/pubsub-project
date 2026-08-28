@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 60 |
-| Open | 27 (19 defects, 8 tasks) |
+| Bugs recorded | 61 |
+| Open | 28 (20 defects, 8 tasks) |
 | Closed | 33 |
-| Next id | BUG-0061 |
+| Next id | BUG-0062 |
 
 ## Open bugs by severity
 
-6 high, 14 medium, 7 low.
+7 high, 14 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -19,6 +19,7 @@
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0057](#bug_0057) | high | defect | The sequencer segfaulted on 2026-08-21 and nothing recorded it |
+| [BUG-0061](#bug_0061) | high | defect | HA cannot actually be turned off, and the venue silently stops trading |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
@@ -153,6 +154,89 @@ Not built because it needs a gauge registered through the reactor's metrics regi
 constant in `GatewayMetrics.hpp`, which is where the gateway's existing metrics constants live, and
 that is a larger change than the checking it would observe. See
 [Inbound sequence checking](fix/inbound_sequence_checking.md).
+
+### BUG-0061: HA cannot actually be turned off, and the venue silently stops trading {#bug_0061}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Using `devenv.py --no-ha` to set up a matching-engine outage while building BUG-0009's step 1, and finding no orders moved |
+| Impact | A venue started with HA disabled accepts orders, acknowledges them, and forwards none. It looks healthy: every process is up and nothing is logged as wrong |
+
+**`devenv.py --no-ha` produces a venue that cannot trade**, and the way it fails is quiet.
+
+The flag decides *which components to launch* and nothing else. It skips everything marked
+`ha_only`, so the arbiters do not start -- and it never touches the deployed configuration, which
+still says `ha_enabled = true`. The sequencer therefore takes its HA path, arms a startup election
+timeout, and waits for an arbiter that will never exist. It never becomes leader, so every order
+returns on the `role_ != leader` branch and is never forwarded. The member is acknowledged
+regardless.
+
+**There is no way to turn HA off properly either**, which is the part that makes this more than a
+flag bug. The mechanism exists and the sequencer was simply never wired to it:
+
+| | |
+|---|---|
+| Matching engine | `applications/matching_engine/matching_engine_primary.toml` has `enabled = ${matching_engine_ha_enabled}`, filled from `[matching_engine] ha_enabled` in the environment file |
+| Sequencer | `applications/sequencer/sequencer_primary.toml` has `ha_enabled = true`, hardcoded. There is no `[sequencer]` section in `environments/dev.toml` at all |
+
+So an operator can turn HA off for the matching engine by editing the environment and redeploying,
+and cannot do the same for the sequencer by any means short of editing the installed file by hand.
+
+**The sequencer already has the behaviour that is wanted.** `SequencerThread` reads
+`config_.ha_enabled` and, when it is false, logs *"ha_enabled=false -- starting as leader
+immediately"*. Nothing needs designing; the value simply never arrives. With no peer and no
+arbiter, a lone primary leading immediately is the obviously correct thing, and the code already
+says so.
+
+**Fix, in the order that makes each step useful:** give the sequencer template a
+`${sequencer_ha_enabled}` placeholder and the environment a `[sequencer]` section to fill it, so HA
+can be turned off deliberately. Then make `devenv.py --no-ha` consistent -- either by having it
+refuse to start a venue whose deployed configuration disagrees with it, or by removing the flag in
+favour of the environment file, which is the single source of truth everything else already uses.
+
+**Related in shape to several found this week:** two places that have to agree, only one of which
+is updated. See [BUG-0055](#bug_0055), where a member's sequence reset reached the gateway and not
+the sequencer.
+
+#### What "HA off" should mean, agreed 2026-08-28
+
+Settled while recording this, because the fix above is not worth building without knowing what it
+is aiming at. **None of it is built.**
+
+- **Every primary starts, sees that it is primary and that HA is off, and leads immediately.** The
+  sequencer already does exactly this; it is only the configuration that never reaches it.
+- **A secondary started with HA off also leads, and says loudly that it is doing so.** Role stops
+  meaning anything without a peer or an arbiter -- "secondary" then names only which file was used
+  to start it. Refusing would block the case someone actually reaches for HA off to do: run a venue
+  on the surviving machine after the primary's hardware has died.
+- **The arbiter and the witness refuse to start with HA off, and say why.** A running arbiter in a
+  venue that has disowned arbitration is something an operator will later trust.
+
+**Two instances leading at once is not split brain, and is still a trap.** With HA off the gateway
+reaches only one sequencer -- `forward_pdu_to_sequencers` sends to the secondary only inside
+`if (config_.ha_enabled)` -- so the same order cannot enter two books. But both instances advance
+state independently: each grows its own WAL, and each burns leadership epochs from the
+`epoch_state_file` that exists precisely so a restart cannot reuse a spent generation. Nothing is
+wrong while it lasts. The damage is deferred to the next time someone starts them together under
+HA.
+
+**And a secondary started while the gateway still points at the primary trades nothing at all.**
+The gateway logs *"primary sequencer not connected"* and the orders go nowhere -- accepted,
+acknowledged, forwarded to no one, which is [BUG-0009](#bug_0009) arriving by another road.
+
+#### Scenarios that should exist and do not
+
+`ha_test.py` has no HA-off coverage at all, which is why this survived. Wanted:
+
+- HA off: every primary starts, leads, and the venue trades end to end.
+- HA off: the arbiter refuses to start, with a message naming the reason.
+- HA off: the witness refuses likewise.
+- HA off: a secondary started alone leads and trades.
+- HA off: a secondary started while a primary is already leading -- both lead, and the venue says
+  so loudly enough that an operator would notice before the next HA start.
 
 ### BUG-0059: No defence against a member reconnecting in a loop with the wrong protocol {#bug_0059}
 

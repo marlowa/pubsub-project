@@ -1,6 +1,8 @@
 # Refusing orders the venue cannot process {#ha_order_acceptance}
 
-**Status: designed 2026-08-28, not built.** It addresses [BUG-0009](../bug_list.md#bug_0009).
+**Status: step 1 of 5 built, 2026-08-28.** It addresses [BUG-0009](../bug_list.md#bug_0009), which
+stays open until the member is told — the sequencer now reports the condition properly, and nothing
+yet reaches the gateway. See [Implementation order](#implementation-order).
 
 ## The problem
 
@@ -136,8 +138,30 @@ design whose safety rests on the watching that has already failed is not safer.
 
 Each step leaves the venue working.
 
-1. **The sequencer's own accounting** — count, age, rate-limited WARNING, recovery line. Nothing
-   else changes, and the venue immediately stops emitting a million INFO lines.
+1. **The sequencer's own accounting** — count, age, rate-limited WARNING, recovery line.
+   **Done 2026-08-28.**
+
+   `note_order_deferred` and `note_matching_engine_reachable` in `SequencerThread`, with a
+   `steady_clock` because this measures an interval rather than naming a moment — a wall-clock
+   adjustment mid-outage would otherwise change how long the venue believed it had been degraded.
+   The warning interval is five seconds.
+
+   Measured, both engines killed and one brought back:
+
+   ```
+   no matching engine reachable -- orders are being accepted and deferred, starting at seq=42009043
+   still no matching engine after  6s --  41 order(s) deferred so far
+   still no matching engine after 12s --  81 order(s) deferred so far
+   a matching engine is reachable again after 19s -- 120 order(s) were deferred and are recovered by its WAL replay
+   ```
+
+   **120 deferred orders, four lines.** Before, that was 120 lines at INFO.
+
+   **The recovery line was wrong first, and the way it failed is worth keeping.** It was reported
+   from the forward path, so the venue noticed it had recovered only when the *next order* arrived.
+   A venue that recovered while nothing was trading said nothing at all, leaving an operator with
+   the last warning and silence — which is the same shape as the defect this is fixing. It is now
+   reported when the engine reconnects.
 2. **The health line** — timer-based emission and the accepted-versus-accounted gap. Independent of
    everything else, and the thing an operator would have wanted first.
 3. **`OrderAcceptance` (127)** — carried and logged, acted on by nobody.

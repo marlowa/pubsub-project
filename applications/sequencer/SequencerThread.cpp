@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <deque>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -248,6 +249,14 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
             try_dispatch_replay();
         }
     }
+
+    // Report the end of an outage when the engine comes BACK, not when the next order happens to
+    // arrive. The first version noticed recovery only on the forward path, so a venue that
+    // recovered while nothing was trading never said so -- the operator was left with the last
+    // warning and silence, which is the shape of the defect this is fixing.
+    if (me_outbound_order_conn_id_.is_valid()) {
+        note_matching_engine_reachable();
+    }
 }
 
 void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
@@ -444,19 +453,24 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         }
 
         if (!me_outbound_order_conn_id_.is_valid()) {
-            // The order is already durably WAL-committed above; we simply cannot
-            // forward it right now because no matching engine is connected (e.g.
-            // during ME failover, before the promoted secondary reconnects). The
-            // forward is deferred, NOT the order lost: on promotion the ME replays
-            // the WAL from its last-applied seq up to the head, so this order is
-            // recovered. Hence Info, not an alarming "dropped".
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: no matching engine connected -- order seq={} WAL-committed, "
-                       "forward deferred until an ME reconnects (recovered via WAL replay on ME promotion)",
-                       seq);
+            // The order is already durably WAL-committed above; we simply cannot forward it right
+            // now because no matching engine is connected (during ME failover, before the promoted
+            // secondary reconnects). The forward is deferred, NOT the order lost: on promotion the
+            // ME replays the WAL from its last-applied seq to the head, so this order is recovered.
+            //
+            // It costs the venue nothing to defer -- the payload is released here and the WAL is
+            // the whole mechanism. It costs the MEMBER a great deal: it has been acknowledged, so
+            // it believes the order is live, and it cannot cancel it because a cancel needs the
+            // same matching engine. That is the asymmetry BUG-0009 is about, and why this is
+            // reported by how long it has gone on rather than once per order.
+            note_order_deferred(seq);
             release_pdu_payload(message);
             return;
         }
+
+        // Reachable again. Anything deferred is about to be recovered by the promoted engine's
+        // WAL replay, and an operator wants one line saying what the outage cost.
+        note_matching_engine_reachable();
 
         // Record seq_no -> the session that placed this order, so its execution reports can
         // be routed back to it. seq_no is globally unique, unlike a ClOrdID.
@@ -1516,6 +1530,44 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
 const fix_common::SessionDestination* SequencerThread::session_destination(const fix_common::SessionIdentity& identity) const {
     const auto it = session_destinations_.find(identity);
     return it == session_destinations_.end() ? nullptr : &it->second;
+}
+
+void SequencerThread::note_order_deferred(int64_t seq_no) {
+    const auto now = std::chrono::steady_clock::now();
+    ++deferred_order_count_;
+
+    if (!deferring_orders_) {
+        deferring_orders_ = true;
+        deferral_began_ = now;
+        last_deferral_warning_ = now;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: no matching engine reachable -- orders are being accepted and deferred, starting at seq={}. They are WAL-committed and "
+                   "recovered on promotion, but every member that placed one believes it is live and cannot cancel it",
+                   seq_no);
+        return;
+    }
+
+    if (now - last_deferral_warning_ < order_deferral_warning_interval) {
+        return;
+    }
+    last_deferral_warning_ = now;
+    const auto degraded_for = std::chrono::duration_cast<std::chrono::seconds>(now - deferral_began_);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "SequencerThread: still no matching engine after {}s -- {} order(s) deferred so far, latest seq={}. Members are being told these orders are "
+               "live",
+               degraded_for.count(), deferred_order_count_, seq_no);
+}
+
+void SequencerThread::note_matching_engine_reachable() {
+    if (!deferring_orders_) {
+        return;
+    }
+    const auto degraded_for = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: a matching engine is reachable again after {}s -- {} order(s) were deferred and are recovered by its WAL replay",
+               degraded_for.count(), deferred_order_count_);
+    deferring_orders_ = false;
+    deferred_order_count_ = 0;
 }
 
 void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {

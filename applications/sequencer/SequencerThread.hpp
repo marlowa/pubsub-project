@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <string>
 #include <unordered_map>
@@ -463,6 +464,32 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     /// requires it to treat as fatal. The two errors are not symmetrical.
     static constexpr int32_t unclean_resume_admin_allowance = 64;
     std::unordered_map<fix_common::SessionIdentity, SessionSequenceState, fix_common::SessionIdentityHash> session_sequence_state_;
+
+    /**
+     * @brief How often the venue says out loud that it is deferring orders.
+     *
+     * It used to say so once per order, at Info, which produced 1,087,912 lines in one incident
+     * and hid the condition rather than reporting it. See BUG-0009 and
+     * docs/availability/order_acceptance.md.
+     */
+    static constexpr auto order_deferral_warning_interval = std::chrono::seconds{5};
+
+    /// Orders deferred since the matching engine was last reachable, and when that began.
+    ///
+    /// A steady clock because this measures an interval rather than naming a moment: a wall clock
+    /// adjustment mid-outage would otherwise change how long the venue believes it has been
+    /// degraded. The same reasoning as the slab allocator's drain tripwire.
+    int64_t deferred_order_count_{0};
+    std::chrono::steady_clock::time_point deferral_began_{};
+    std::chrono::steady_clock::time_point last_deferral_warning_{};
+    bool deferring_orders_{false};
+
+    /// Records one order deferred because no matching engine is reachable, and says so at a rate
+    /// a reader can follow.
+    void note_order_deferred(int64_t seq_no);
+
+    /// Reports what the outage cost, once the venue can forward again.
+    void note_matching_engine_reachable();
 
     void handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_session_unbound(const pubsub_itc_fw::EventMessage& message);
