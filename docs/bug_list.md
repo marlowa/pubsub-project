@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 67 |
-| Open | 24 (16 defects, 8 tasks) |
-| Closed | 43 |
+| Open | 23 (15 defects, 8 tasks) |
+| Closed | 44 |
 | Next id | BUG-0068 |
 
 ## Open bugs by severity
 
-10 high, 9 medium, 5 low.
+10 high, 9 medium, 4 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -36,7 +36,6 @@
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
-| [BUG-0067](#bug_0067) | low | defect | The matching engine segfaulted in the order book during reconciliation, 2026-08-08 |
 
 ---
 
@@ -239,6 +238,13 @@ longer be a consequence of reconciling on a start. That needs checking before an
 not fix this entry -- a cold start still applies nothing -- but it reduces how many orders reach
 this state, by letting the sequencer learn from the arbiter that no engine exists instead of
 waiting 45 seconds to guess.
+
+**One thing to carry into the fix: this path has crashed before.** A matching engine segfaulted
+inside the order book while handling `MePositionAck` on 2026-08-08 -- the same reconciliation path,
+recorded and closed as [BUG-0067](#bug_0067). The container has since been replaced, so that exact
+crash cannot recur, but the fix proposed here makes cold-starting engines reconcile *more often
+than they do today*, which exercises this path harder than anything has yet. Worth knowing before,
+rather than discovering after.
 
 **What this narrows.** Ordinary HA operation does not lose orders. What loses them is losing every
 matching engine and starting one cold -- which is exactly the incident behind
@@ -466,57 +472,6 @@ deferred, and a venue that resumes automatically conceals it.
 Related: [BUG-0009](#bug_0009), whose refusal this defeats. [BUG-0064](#bug_0064), which is why the
 repetition costs orders rather than merely time. [BUG-0029](#bug_0029), on the supervision grace
 period.
-
----
-
-### BUG-0067: The matching engine segfaulted in the order book during reconciliation, 2026-08-08 {#bug_0067}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-08-28, in a crash dated 2026-08-08 |
-| Recorded | 2026-08-28 |
-| How | Reviewing `coredumpctl` while deciding how to manage its list, after [BUG-0057](#bug_0057) was diagnosed from a captured stack trace |
-| Impact | A promoting matching engine died while applying the records it had been sent to catch up. Never noticed at the time, and never recorded until now |
-
-`matching_engine_secondary`, SIGSEGV, 2026-08-08 13:16, in the pre-move tree
-(`pubsub-project-10-copilot`). The core file is long gone; the journal kept the symbolised trace:
-
-```
-#0  tsl::detail_robin_hash::bucket_entry<pair<OrderKey, OrderEntry>>::last_bucket()
-#1  MatchingEngineThread::handle_me_position_ack(EventMessage const&)
-#2  MatchingEngineThread::on_framework_pdu_message(EventMessage const&)
-#3  pubsub_itc_fw::ApplicationThread::process_message(EventMessage const&)
-```
-
-**That is the reconciliation path.** A promoting engine sends `MePositionRequest`, the sequencer
-replies with everything it has not applied, and the engine puts those records into its order book.
-It died inside the book's hash map doing exactly that.
-
-**The container has since been replaced, so the exact crash cannot recur in that form.** The book
-is now `IncrementalRehashMap` rather than `tsl::robin_map` -- changed on 2026-08-21 for the growth
-stall, which is a different problem -- so the frames above no longer exist.
-`handle_me_position_ack` does still apply records to the book, so the *path* is live under a new
-container.
-
-**Recorded as low, and as evidence rather than as a defect to chase.** It is not reproducible, the
-code it names is gone, and nothing suggests the replacement inherits the fault. What makes it worth
-keeping is where it happened:
-
-- **Reconciliation can drive the book hard enough to break a map.** That bears on
-  [BUG-0064](#bug_0064), which is about making a cold-starting engine reconcile *more* often than
-  it does today, and on [BUG-0028](#bug_0028), which is about what the book costs as it grows.
-- **If the current container ever fails the same way, this is the precedent** and the trace is
-  already written down.
-
-**What would close it:** evidence that the reconciliation path cannot corrupt the current map, or
-simply a long enough run of promotions without recurrence. Not worth hunting on its own.
-
-**A note on how it was found, which is the more useful half.** It sat in `coredumpctl` for nearly
-three weeks with nobody aware of it, alongside 84 deliberate death-test cores that made the list
-look like noise. Filtering that list by executable -- excluding `*_tests` -- reduces 93 entries to
-the two real venue crashes, this one and [BUG-0057](#bug_0057). That filter is what a startup scan
-should use, and it is the whole of the "large list" problem.
 
 ---
 
@@ -1706,6 +1661,75 @@ snapshot standing behind it, which is the case the invariant exists to prevent.
 Related: BUG-0046, since the WAL is what a member's resend is served from.
 
 ## Closed
+
+### BUG-0067: The matching engine segfaulted in the order book during reconciliation, 2026-08-08 {#bug_0067}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-08-28, in a crash dated 2026-08-08 |
+| Recorded | 2026-08-28 |
+| How | Reviewing `coredumpctl` while deciding how to manage its list, after [BUG-0057](#bug_0057) was diagnosed from a captured stack trace |
+| Impact | A promoting matching engine died while applying the records it had been sent to catch up. Never noticed at the time, and never recorded until now |
+| Fixed | 2026-08-28 -- the container it crashed in is gone, and a recurrence would now be reported at the time rather than found weeks later |
+
+`matching_engine_secondary`, SIGSEGV, 2026-08-08 13:16, in the pre-move tree
+(`pubsub-project-10-copilot`). The core file is long gone; the journal kept the symbolised trace:
+
+```
+#0  tsl::detail_robin_hash::bucket_entry<pair<OrderKey, OrderEntry>>::last_bucket()
+#1  MatchingEngineThread::handle_me_position_ack(EventMessage const&)
+#2  MatchingEngineThread::on_framework_pdu_message(EventMessage const&)
+#3  pubsub_itc_fw::ApplicationThread::process_message(EventMessage const&)
+```
+
+**That is the reconciliation path.** A promoting engine sends `MePositionRequest`, the sequencer
+replies with everything it has not applied, and the engine puts those records into its order book.
+It died inside the book's hash map doing exactly that.
+
+**The container has since been replaced, so the exact crash cannot recur in that form.** The book
+is now `IncrementalRehashMap` rather than `tsl::robin_map` -- changed on 2026-08-21 for the growth
+stall, which is a different problem -- so the frames above no longer exist.
+`handle_me_position_ack` does still apply records to the book, so the *path* is live under a new
+container.
+
+**Recorded as low, and as evidence rather than as a defect to chase.** It is not reproducible, the
+code it names is gone, and nothing suggests the replacement inherits the fault. What makes it worth
+keeping is where it happened:
+
+- **Reconciliation can drive the book hard enough to break a map.** That bears on
+  [BUG-0064](#bug_0064), which is about making a cold-starting engine reconcile *more* often than
+  it does today, and on [BUG-0028](#bug_0028), which is about what the book costs as it grows.
+- **If the current container ever fails the same way, this is the precedent** and the trace is
+  already written down.
+
+**Closed 2026-08-28.** The original wording asked for evidence that the reconciliation path cannot
+corrupt the current map, or a long run of promotions without recurrence. Neither is obtainable and
+neither is what the entry is for.
+
+Nothing here is actionable: the container is gone, the core is gone, the binary is gone, and the
+crash predates a move between trees. An entry with no available action, left open, is a reader's
+time spent for nothing -- and the same reasoning closed [BUG-0057](#bug_0057) and
+[BUG-0001](#bug_0001) the same day.
+
+**What makes closing it safe is the detection built alongside it.** Before 2026-08-28 this crash
+had gone unrecorded for nearly three weeks and was found by accident. Now `launch.py` names a crash
+signal at the moment a component dies, and `crash_reports.py` preserves its backtrace at the next
+start. A recurrence in the current container arrives as evidence at the time, with a trace, rather
+than as an archaeology exercise. That is the difference between "we may never know" and "we will be
+told", and it is what turns this from an open question into a closed record.
+
+The observation it carries has been moved to where it will be read: [BUG-0064](#bug_0064) now
+records that its fix makes cold-starting engines reconcile more often than they do today, and that
+this path has crashed before.
+
+**A note on how it was found, which is the more useful half.** It sat in `coredumpctl` for nearly
+three weeks with nobody aware of it, alongside 84 deliberate death-test cores that made the list
+look like noise. Filtering that list by executable -- excluding `*_tests` -- reduces 93 entries to
+the two real venue crashes, this one and [BUG-0057](#bug_0057). That filter is what a startup scan
+should use, and it is the whole of the "large list" problem.
+
+---
 
 ### BUG-0001: Shutdown timeout errors in timer tests {#bug_0001}
 
