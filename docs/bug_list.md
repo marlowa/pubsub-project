@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 56 |
-| Open | 24 (19 defects, 5 tasks) |
+| Bugs recorded | 57 |
+| Open | 25 (20 defects, 5 tasks) |
 | Closed | 32 |
-| Next id | BUG-0057 |
+| Next id | BUG-0058 |
 
 ## Open bugs by severity
 
-6 high, 12 medium, 6 low.
+7 high, 12 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -19,6 +19,7 @@
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0038](#bug_0038) | high | defect | Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
+| [BUG-0057](#bug_0057) | high | defect | The sequencer segfaulted on 2026-08-21 and nothing recorded it |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
@@ -80,6 +81,47 @@ saying which it is.
 ---
 
 ## Open
+
+### BUG-0057: The sequencer segfaulted on 2026-08-21 and nothing recorded it {#bug_0057}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Looking for a core dump while investigating [BUG-0056](#bug_0056), and finding several that had nothing to do with it |
+| Impact | Unknown, and that is the problem. The venue crashed, carried on being developed for a week, and no entry, session note or commit mentions it |
+
+**Not investigated. Deliberately parked** so it does not derail the FIX session-layer work, and
+recorded now because the artefact is perishable and the knowledge nearly was.
+
+`coredumpctl` lists **three crashes of this project's own binaries**, none of which appears in this
+file, in the session log, or in any commit message:
+
+| When | Signal | Binary | Core |
+|---|---|---|---|
+| 2026-07-24 11:17 | SIGABRT | `pubsub_itc_fw_integration_tests` | rotated away |
+| 2026-08-08 13:16 | SIGSEGV | `matching_engine` | rotated away |
+| **2026-08-21 19:04:44** | **SIGSEGV** | **`installed/bin/sequencer`** | **kept -- 227.7K** |
+
+**The timing of the third is the part to look at first.** It is four minutes before the OOM kill
+recorded in [BUG-0028](#bug_0028): *"matching_engine_primary OOM-killed at 19:08:41 with 10.3 GB
+resident"*. So during the trading-day run that ended in the OOM killer, **the sequencer segfaulted
+first**, and BUG-0028 records only the matching engine. Whether the two are the same story --
+memory exhaustion reaching the sequencer first -- or two separate faults is exactly what has not
+been established. A SIGSEGV is not how the OOM killer announces itself; it sends SIGKILL.
+
+**The core has been preserved** at `~/mystuff/cores/`, outside the repository, because
+systemd-coredump rotates these away and two of the three are already gone.
+
+**The matching binary is almost certainly lost**, which is the practical obstacle. `installed/bin/
+sequencer` has been rebuilt many times since; the tree as of that crash was around commit
+`b113fca`. A rebuild from there would be close but not necessarily byte-identical, so line numbers
+from a backtrace should be treated as indicative rather than exact.
+
+**Worth doing regardless of what the core says:** nothing noticed. The venue crashed during a
+measured run and the fact reached no log this file reads, no session note, and no commit. Whatever
+the cause, a crash that leaves no trace anyone would encounter is its own defect.
 
 ### BUG-0056: The FIX gateway stopped completing logons while still running {#bug_0056}
 
