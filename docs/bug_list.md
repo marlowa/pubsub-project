@@ -847,6 +847,11 @@ so the sequencer should ask it -- a query, not a subscription, which is the shap
 [section 11b](availability/design_notes.md#ha_arbiter_only_arbitrates) requires. The threshold then
 becomes the fallback where an arbiter exists, and stays the only mechanism where one does not.
 
+The startup race that design turns on is settled: **a negative answer requires positive evidence.**
+The arbiter reports absence only when it has seen an instance and seen it go, never from elapsed
+time, and every reachable arbiter must agree. See
+[the decision](availability/matching_engine_presence.md#ha_me_presence_race).
+
 When the matching engine connection drops, the sequencer commits each order to the WAL and
 defers forwarding it:
 

@@ -1,6 +1,6 @@
 # Knowing there is no matching engine {#ha_me_presence}
 
-**Status: designed, not built. 2026-08-28.** It is the next step for
+**Status: designed, not built. 2026-08-28; the startup race settled the same day.** It is the next step for
 [BUG-0009](../bug_list.md#bug_0009) and is what makes
 [BUG-0064](../bug_list.md#bug_0064)'s cold-start case tractable.
 
@@ -84,8 +84,8 @@ Three states, where today there is one:
 | The arbiter says | What it means | The sequencer |
 |---|---|---|
 | An instance is registered | A failover is in progress, or an engine is about to reconnect | Defers, as now. This is the case deferral was designed for and it is correct |
-| No instance is registered | There is no matching engine service | **Refuses at once**, and says so |
-| It cannot answer | No arbiter is reachable, or it has just started | Falls back on the age threshold |
+| Every arbiter says `all_gone` | There is no matching engine service | **Refuses at once**, and says so |
+| It cannot answer (`unknown`) | No arbiter is reachable, or none has heard of the group since starting | Falls back on the age threshold |
 
 The 45-second threshold does not go away. **Where an arbiter exists it stops being the mechanism and
 becomes the backstop**, which is the right job for a number chosen out of ignorance: it covers the
@@ -96,7 +96,7 @@ along. Where no arbiter exists it remains the only mechanism there is — see
 The member's rejection can then say what is true from the first order, rather than after 45 seconds
 of silence.
 
-## The startup race, which is the hard part
+## The startup race, which was the hard part {#ha_me_presence_race}
 
 **A freshly started arbiter cannot distinguish "no matching engine exists" from "nobody has checked
 in with me yet".** Both look like an empty membership list, and
@@ -108,21 +108,58 @@ Getting this wrong is not a small error. **An arbiter restart would refuse every
 perfectly healthy venue.** That is worse than the bug being fixed, and it is the failure mode this
 design has to be judged on.
 
-Three ways out, and the choice is open:
+### Decided 2026-08-28: a negative answer requires positive evidence
 
-- **The answer carries how long the arbiter has been up.** The sequencer treats a negative answer
-  from an arbiter younger than the registration interval as "cannot answer" and falls back. Simple,
-  and it turns the race into a bounded window rather than removing it.
-- **The answer distinguishes "never seen" from "seen and gone".** Only the second is evidence.
-  Stronger, and it fails safe across an arbiter restart — but after one, an engine that died before
-  the restart reads as "never seen", so a true negative is downgraded to "cannot answer" exactly
-  when it matters.
-- **Both arbiters must agree.** A negative is only acted on when both say so. Costly in latency,
-  and it does not help when both restarted together.
+**The arbiter never infers absence from the passage of time. It reports absence only when it has
+seen an instance and seen it go.**
 
-**Not chosen here.** The first is the smallest thing that could work and the third is the most
-conservative; the second is the most informative and the least reliable after a restart. This wants
-deciding before code, because it is the whole safety argument.
+Three answers, where the middle one is the whole point:
+
+| Answer | Means |
+|---|---|
+| `registered` | An instance is connected to this arbiter now |
+| `unknown` | This arbiter has heard nothing about the group since it started |
+| `all_gone` | This arbiter saw one or more instances and every one has disconnected |
+
+Only `all_gone` is evidence. `unknown` is declined, not negative, and the sequencer treats it
+exactly as it treats an unreachable arbiter: fall back on the age threshold.
+
+**Why this and not a settling timer.** A timer — "treat a negative from an arbiter younger than the
+registration interval as unknown" — was the obvious option and is the wrong one, because it
+reintroduces the thing this design exists to remove. It infers a negative from elapsed time, so it
+needs a tuned duration, and it can still be wrong in the dangerous direction: an arbiter up for
+longer than the interval whose engine is merely slow to register produces a false `all_gone`, and
+the venue refuses orders it could have processed. **A rule that cannot produce a false negative by
+construction beats one that makes false negatives unlikely.**
+
+**This is not a new mechanism.** The arbiter already declines to speak about a group it has heard
+nothing about since starting — `ArbiterThread.hpp` keeps `started_at_` for exactly this, and
+[section 11c](design_notes.md#ha_arbiter_relearns) is the same reasoning applied to leadership: a
+restarted arbiter that knows nothing must not decide as though it knew something. This question gets
+the same answer because it is the same problem.
+
+**Both arbiters must say `all_gone`.** A single arbiter's view is "is it connected to *me*", not
+"does it exist" — an arbiter that has lost its own link to a healthy engine would report `all_gone`
+truthfully and mislead completely. Requiring agreement makes the conservative direction the default:
+any arbiter still seeing an instance means defer.
+
+An earlier draft called this option "the most informative and the least reliable after a restart".
+That was wrong, and the correction is the reason it was chosen. **It is less *available* after a
+restart, not less reliable.** Its unavailability degrades to the age threshold, which is what the
+venue does today, so the failure mode is "no improvement" rather than "wrong answer". The timer's
+failure mode is a wrong answer.
+
+### What the sequencer counts as evidence
+
+Worth stating because it changes how strong the conclusion is. The sequencer is not asking a
+disinterested question: **it only asks while it is deferring, which means it already cannot reach an
+engine itself.** The arbiters supply a second and third independent observation of the same
+component. Two or three independent failures to reach an engine is a far stronger basis for refusing
+than any one of them alone, and it is why this can act immediately where a timer had to wait.
+
+The rule, in full: **refuse at once when the sequencer cannot reach an engine, it can reach at least
+one arbiter, and every arbiter it can reach answers `all_gone`.** Otherwise defer, with the age
+threshold behind it.
 
 ## With high availability turned off {#ha_me_presence_no_ha}
 
