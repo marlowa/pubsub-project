@@ -1,0 +1,158 @@
+# Refusing orders the venue cannot process {#ha_order_acceptance}
+
+**Status: designed 2026-08-28, not built.** It addresses [BUG-0009](../bug_list.md#bug_0009).
+
+## The problem
+
+When the matching engine connection drops, the sequencer commits each order to the WAL and defers
+forwarding it:
+
+```
+SequencerThread: no matching engine connected -- order seq=59678842 WAL-committed,
+forward deferred until an ME reconnects (recovered via WAL replay on ME promotion)
+```
+
+**That policy is right for a brief failover.** The order is durable, and a promoted matching engine
+replays the WAL and picks it up. Three things about it are not.
+
+**The assumption can stop holding, and nothing notices.** A matching engine was promoted, did
+reconcile, and then died two minutes later. The sequencer went on deferring for another five
+minutes, waiting for a recovery that could no longer happen because no matching engine existed at
+all.
+
+**It is logged at INFO, once per order — 1,087,912 times.** A million lines saying the venue is
+degraded, at the level used for routine progress.
+
+**Nothing reaches the member.** The sequencer knew for seven minutes that there was no matching
+engine. The gateway kept accepting orders and acknowledging them, reporting `dropped=0` throughout,
+and the member saw no difference. **The sequencer has the knowledge and the gateway has the member
+relationship, and there is no path between them.**
+
+## Deferring is cheap for the venue and expensive for the member
+
+Worth stating plainly, because it explains where the harm actually falls and therefore what the
+limits are protecting.
+
+A deferred order costs the venue almost nothing: `release_pdu_payload` is called and the handler
+returns, so nothing is retained in memory. The order is in the WAL and that is enough.
+
+The member is in a different position entirely. It has been **acknowledged**, so as far as it and
+its risk systems are concerned the order is live and working. It may hedge against it. It cannot
+cancel it, because a cancel needs the same matching engine. Every second of deferral widens a gap
+between what the member believes and what is true.
+
+So the limits below are not about protecting the venue's memory. **They bound how far a member's
+picture of its own position is allowed to drift from reality.**
+
+## What is built
+
+### 1. The sequencer escalates rather than repeats
+
+A deferred order no longer logs. Instead the sequencer counts them and records when the condition
+began, and emits a **rate-limited WARNING** naming the count and the age. On recovery, one INFO
+saying how many orders were deferred and for how long — which is the line an operator wants and
+which no amount of per-order logging provided.
+
+### 2. The sequencer tells the gateways
+
+A new PDU, `OrderAcceptance` (127), from the leader to every gateway it holds a connection to. The
+sequencer already opens those connections, so there is no new channel.
+
+Sent **on transition** in both directions, and **repeated while degraded**, so that a gateway which
+connects during an outage learns the state rather than inheriting a default of "fine".
+
+### 3. The gateway refuses, and says why
+
+While the venue is not accepting, a `NewOrderSingle` is answered with an **ExecutionReport carrying
+`OrdStatus=Rejected`** and a reason. That is the FIX-correct answer: the member gets an ordinary
+order lifecycle response it already handles, and its risk systems see the order as dead rather than
+pending. A `BusinessReject` would be read by many members as a protocol fault rather than an order
+outcome.
+
+**Cancels are refused too**, and that deserves saying out loud because it sounds wrong. A cancel
+needs the matching engine exactly as an order does. Accepting one the venue cannot act on would
+repeat this bug in a worse place: a member believing it had cancelled would be more dangerously
+wrong than one believing it had traded.
+
+### 4. The health line gets a clock
+
+`GW-PROGRESS` is emitted per *N* orders accounted, so when accounting stalls the reporting stalls
+with it. Across the incident it went silent for **2 minutes 19 seconds** and then caught up in three
+lines inside 0.2 seconds. **A line driven by progress cannot report the absence of progress.**
+
+It is emitted on a timer as well, and it reports the gap between `nos_received` and `accounted` —
+which already carries "accepted and going nowhere" and is currently thrown away. `dropped=0` stays
+true and stops being the only thing an operator can watch.
+
+## When deferring becomes refusing
+
+**Age first, with a count as backstop.**
+
+| | |
+|---|---|
+| Age | the condition has lasted longer than a failover plausibly takes |
+| Count | more orders have been deferred than a member should be allowed to be wrong about |
+
+Age is the honest measure, because it is the member's exposure that matters and exposure is
+measured in time. The count is a backstop for the case age alone handles badly: a burst can defer
+tens of thousands of orders in the seconds *before* the age threshold trips.
+
+The age threshold must clear a **normal** failover, or the venue rejects orders during routine
+recovery that members currently survive. The matching engine pair uses a 15-second peer heartbeat
+timeout, then promotion, reconnection and WAL reconciliation. So the threshold is set comfortably
+above that, not at it.
+
+**Both are constants with their reasoning beside them**, not configuration, for the same argument
+made in [Inbound sequence checking](../fix/inbound_sequence_checking.md): a figure no operator has
+a reason to change is a field to keep in step for nothing. If one ever does, the sequencer's
+configuration is where it goes.
+
+## Automatic, and automatic to resume
+
+The venue refuses on its own and resumes on its own when a matching engine returns.
+
+This is **not** the graduated, operator-involved judgement that
+[BUG-0059](../bug_list.md#bug_0059) argues for. That one is about a member's behaviour, where being
+wrong means wrongly locking out someone's trading connection. This is about the venue's own
+capacity: there is no matching engine, the fact is not a matter of interpretation, and continuing
+to accept orders is the harm.
+
+Requiring an operator to re-enable acceptance was considered and rejected. It protects against a
+flapping matching engine reopening the venue repeatedly — but it makes recovery depend on someone
+being present, and BUG-0009 is precisely a case where nobody was watching for seven minutes. A
+design whose safety rests on the watching that has already failed is not safer.
+
+## What this does not solve
+
+- **A matching engine that is connected but not working.** Everything here keys on the connection.
+  An engine that accepts orders and does nothing with them looks healthy throughout, which is
+  closer to [BUG-0010](../bug_list.md#bug_0010)'s territory.
+- **Orders already acknowledged before the venue noticed.** They stay deferred and are recovered by
+  WAL replay, as now. This bounds how many join them; it does not rescue the ones already there.
+- **Telling the member when acceptance resumes.** Nothing pushes that; a member discovers it by
+  sending an order that is not rejected. Worth revisiting if it proves awkward in practice.
+
+## Implementation order
+
+Each step leaves the venue working.
+
+1. **The sequencer's own accounting** — count, age, rate-limited WARNING, recovery line. Nothing
+   else changes, and the venue immediately stops emitting a million INFO lines.
+2. **The health line** — timer-based emission and the accepted-versus-accounted gap. Independent of
+   everything else, and the thing an operator would have wanted first.
+3. **`OrderAcceptance` (127)** — carried and logged, acted on by nobody.
+4. **The gateway refuses**, orders and cancels, with a rejected ExecutionReport.
+5. **The scenarios**, written to fail first: a matching engine killed and not restarted must produce
+   refusals rather than acknowledgements, and the health line must keep reporting while nothing
+   progresses.
+
+## See also
+
+- [BUG-0009](../bug_list.md#bug_0009) — the defect, and the run that found it
+- [BUG-0010](../bug_list.md#bug_0010) — the deferral policy assumes a promotion that will succeed
+- [WAL and High Availability](wal_and_ha.md) — why a deferred order is durable in the first place
+- [Inbound sequence checking](../fix/inbound_sequence_checking.md) — the same argument for constants over configuration
+
+---
+
+Back to [High availability](README.md).

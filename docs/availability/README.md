@@ -8,6 +8,7 @@ different time budgets, and conflating them is the subject of a bug entry.
 - [gateway_ha.md](gateway_ha.md) — Session identity, cancel-on-disconnect, and what a member sees across a failover
 - [session_binding.md](session_binding.md) — how a session outlives its connection: the gateway/sequencer protocol, and what each message is for
 - [resend_provenance.md](resend_provenance.md) — which outbound number carried what, and why a resend cannot currently say
+- [order_acceptance.md](order_acceptance.md) — refusing orders the venue cannot process, and telling the member so
 - [process_death.md](process_death.md) — the inner loop: what is settled, what `launch.py` already does, and the measurement that ruled out a shared-memory journal
 
 ---

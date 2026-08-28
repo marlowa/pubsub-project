@@ -465,6 +465,24 @@ WARNING, a metric for deferred-order count and age, and ultimately a signal that
 gateways stop accepting. **A venue that takes orders it cannot process is worse than one
 that refuses them.**
 
+**Designed 2026-08-28 in [Refusing orders the venue cannot process](availability/order_acceptance.md),
+not built.** Three decisions were taken: refusal is triggered by **age first with a count as
+backstop**, because the harm is the member's exposure and exposure is measured in time; the refusal
+is a **rejected ExecutionReport**, which is an order outcome the member already handles rather than
+a protocol fault; and the venue **refuses and resumes automatically**, because this is its own
+capacity rather than a judgement about a member — and a design whose safety depends on someone
+watching is no safer, this being a case where nobody watched for seven minutes.
+
+One thing the design note records that changes the framing: **deferring costs the venue nothing.**
+The handler calls `release_pdu_payload` and returns, so no order is held in memory; the WAL is the
+whole mechanism. The cost falls entirely on the member, which has been acknowledged, believes the
+order is live, may have hedged against it, and cannot cancel it because a cancel needs the same
+matching engine. So the thresholds do not protect the venue's memory — they bound how far a
+member's picture of its own position may drift from the truth.
+
+Cancels are refused alongside orders, which sounds wrong and is not: a member believing it had
+cancelled would be more dangerously wrong than one believing it had traded.
+
 Related: BUG-0010, since the deferral policy assumes a promotion that will
 succeed.
 
