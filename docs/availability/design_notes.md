@@ -706,3 +706,90 @@ failure is **covered, loud, or safe**.
   Local, exact, free, no infrastructure. The pair watch each other and the regress closes at
   two. Worth doing because it removes the one silent failure the launcher design would otherwise
   introduce -- a component running unsupervised with nothing saying so.
+
+
+## 15. Automatic recovery ends where loss begins {#ha_recovery_ends_at_loss}
+
+Decided 2026-08-28, after [BUG-0064](../bug_list.md#bug_0064) showed that a venue which has lost
+orders resumes trading without saying so.
+
+[Refusing orders the venue cannot process](order_acceptance.md) rejected requiring an operator to
+re-enable acceptance, and the argument was good: BUG-0009 is a case where nobody watched for seven
+minutes, and a design whose safety rests on the watching that has already failed is not safer. That
+still holds. **It holds for a brief outage and not for a long one**, and the distinction is not
+duration -- it is whether anything was lost.
+
+**The principle: automate recovery from conditions where nothing was lost; require a person where
+something was.**
+
+Resuming automatically is safe when the venue comes back with everything it took. It is wrong when
+it does not. Today, after every matching engine has gone and one starts cold, the orders deferred
+before refusal began are stranded -- never applied, never answered -- and the venue starts accepting
+again and says nothing to anybody. **Automatic recovery there does not merely fail to help; it
+conceals the damage.** A venue that reopens quietly having lost orders is worse than one that stays
+shut.
+
+### What was missing: the venue could not get louder
+
+Before this, an outage of thirty seconds and one of three hours were indistinguishable. The same
+warning every five seconds, the same rejection text, indefinitely. The venue could heal itself and
+could not **escalate** -- it had no way to say "this has stopped being a blip", and no state beyond
+"not accepting" to move into.
+
+That is also what a member experiences. A stream of per-order rejections is the wrong way to tell
+anyone the venue is down: it is repeated for every order, it invites retries, and it never says
+*stop asking*. Members will not tolerate it indefinitely, and they should not have to.
+
+### Three states, and only the last needs a person
+
+| State | Entered when | Left by |
+|---|---|---|
+| **Defer** | An engine is gone and a failover is plausible | Itself. Measured: 27 orders deferred over a 14-second gap, all answered |
+| **Refuse** | The outage outlives a failover, or the arbiter reports no engine registered | Itself, when an engine returns |
+| **Halt** | No matching engine service exists, or orders are known to have been stranded | **A person** |
+
+The first two are automatic because they are cheap to get wrong in the safe direction: refusing an
+order the venue could have taken costs a member one rejection it can retry. The third is not. By the
+time it is reached somebody has to answer *what became of the orders we took*, and that is a
+judgement rather than a timer.
+
+### A halt is declared, not inferred
+
+The venue has no notion of a trading halt --
+[BUG-0065](../bug_list.md#bug_0065). It should, and it should be a first-class state rather than a
+side effect of refusing everything.
+
+**A member learns of it from the reply to the order it sent.** That is how it works on a venue
+Andrew has operated: the matching engine holds a halted state, and a member placing an order is told
+so in the FIX response. It is the mechanism that must exist, because it is the answer to the
+question the member actually asked, and it reaches a member that is trading -- which is the member
+who needs to know.
+
+**A broadcast should exist as well, and does not replace it.** `TradingSessionStatus` (35=h)
+carrying `TradSesStatus=2` (Halted), and `1` (Open) when it lifts. The reply alone leaves a
+connected but idle member unaware, leaves a member reconnecting into a halt to discover it by
+trial, and gives nothing to a member that has stopped sending. One message with a defined exit is
+what stops a halt being something members work out.
+
+**A halt must be rare, and the ladder is built to keep it so.** Observed in practice: halts get
+declared at the drop of a hat, and a venue that halts readily trains its members to ignore the
+signal. The wish to automate that away is right; the error would be automating it so completely
+that no halt is possible. Deferring and refusing are automatic and self-clearing precisely so that
+the halt below them is reached rarely -- everything recoverable is recovered before it, and what
+remains is the class of condition where a person genuinely must decide.
+
+**Where the state lives matters here in a way it may not elsewhere.** Holding it in the matching
+engine is natural when the engine is up and the halt is a trading decision. It cannot be the whole
+answer for this venue, because the condition that drove this design is *there is no matching
+engine*. A halt entered because no engine exists has to be held by something that outlives the
+engine -- the sequencer, or the gateways, or both -- or the state disappears exactly when it is
+needed.
+
+It is worth having independently of any of this. A venue needs to halt for reasons that have nothing
+to do with a failure -- a scheduled pause, a market-wide event, an instrument suspension -- and
+today it cannot express any of them.
+
+**Halting is not the same as refusing**, and conflating them would be a mistake. Refusing is a
+statement about capacity: the venue cannot process this order now, and will accept again by itself.
+Halting is a statement about the venue's condition: trading has stopped, it will not restart on its
+own, and a person is dealing with it.

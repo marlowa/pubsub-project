@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 64 |
-| Open | 31 (23 defects, 8 tasks) |
+| Bugs recorded | 65 |
+| Open | 32 (23 defects, 9 tasks) |
 | Closed | 33 |
-| Next id | BUG-0065 |
+| Next id | BUG-0066 |
 
 ## Open bugs by severity
 
-9 high, 15 medium, 7 low.
+10 high, 15 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,6 +22,7 @@
 | [BUG-0061](#bug_0061) | high | defect | HA cannot actually be turned off, and the venue silently stops trading |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0064](#bug_0064) | high | defect | Deferred orders are never recovered, and the venue logs that they were |
+| [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
@@ -201,6 +202,74 @@ after that.
 
 Related: [BUG-0048](#bug_0048), since nothing truncates the WAL and these records live in it
 indefinitely. [BUG-0010](#bug_0010), since both concern a promotion assumed to put things right.
+
+---
+
+### BUG-0065: The venue has no way to declare a trading halt {#bug_0065}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Andrew observing that members will not put up with "service not available" indefinitely, while reviewing the escalation design for [BUG-0009](#bug_0009) |
+| Impact | The venue cannot tell members trading has stopped, for any reason. A prolonged outage reaches them only as an unbounded stream of per-order rejections, which invites retries and never says "stop asking" |
+
+There is no notion of a trading halt anywhere in this project -- not in the code, not in the
+documentation. `TradingSessionStatus` (FIX 35=h) is neither sent nor understood, and the venue has
+no state meaning "trading has stopped" as distinct from "this order cannot be processed".
+
+**How it works in practice, from a venue Andrew has operated:** the matching engine holds a halted
+state, and a member placing an order is told so in the FIX reply. That is the mechanism that must
+exist here too -- it answers the question the member actually asked, and it reaches the member who
+is trading. A broadcast should exist as well rather than instead: the reply leaves a connected but
+idle member unaware, and leaves a member reconnecting into a halt to find out by trial.
+
+**A halt must be rare.** Also from practice: halts get declared at the drop of a hat, and a venue
+that halts readily trains its members to ignore the signal. That is the reason the escalation ladder
+puts two automatic, self-clearing states beneath it -- everything recoverable is recovered before a
+halt is reached. The error to avoid is not automating too little but automating so completely that
+no halt is possible.
+
+**It is needed for ordinary reasons before it is needed for failures.** A venue halts for a
+scheduled pause, a market-wide event, an instrument suspension, an operator decision. None of those
+can be expressed today.
+
+**And it is what the escalation ladder needs at the top.** See
+[design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss). Deferring and refusing are
+both automatic and both self-clearing, which is right while nothing has been lost. Once orders have
+been stranded -- [BUG-0064](#bug_0064) -- resuming automatically conceals the damage, and the venue
+needs a state that does not lift by itself.
+
+**Halting is not refusing, and the two must not be conflated.** Refusing is a statement about
+capacity: this order cannot be processed now, and the venue will accept again on its own. Halting is
+a statement about the venue's condition: trading has stopped, it will not restart by itself, and a
+person is dealing with it. A member reads them differently and should.
+
+What a design has to settle:
+
+- **What declares it.** An operator certainly. Automatically on a condition -- no matching engine
+  service, orders known stranded -- is the harder question, and it is the one that decides whether
+  a halt can ever be entered without a person.
+- **What lifts it.** A person, on the argument in design notes 15. Whether anything may lift it
+  automatically is a separate decision and the answer is probably no.
+- **Scope.** Venue-wide, or per instrument. Real exchanges do both, and per-instrument is what an
+  instrument suspension needs.
+- **Where the state lives, which is not obvious here.** Holding it in the matching engine is natural
+  when the engine is up and the halt is a trading decision. It cannot be the whole answer for this
+  venue: the condition that prompted the ladder is *there is no matching engine*, so a halt entered
+  for that reason must be held by something outliving the engine -- the sequencer, the gateways, or
+  both -- or it vanishes exactly when it is needed.
+- **What a halted venue does with an order.** Reject with a halt reason is the obvious answer, but
+  a member's cancels are a different case: a member may reasonably want to withdraw orders during a
+  halt, and whether the venue can honour that depends on why it halted.
+- **What members are told on logon during a halt**, so a member connecting into one is not left to
+  discover it by sending an order.
+
+Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the top of the ladder
+necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
+these states differently.
 
 ---
 

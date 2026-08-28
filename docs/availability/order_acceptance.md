@@ -127,6 +127,13 @@ configuration is where it goes.
 
 The venue refuses on its own and resumes on its own when a matching engine returns.
 
+**Narrowed on 2026-08-28 by [design notes 15](design_notes.md#ha_recovery_ends_at_loss).** Resuming
+without a person is right *while nothing has been lost*, which is the case this section was written
+for. It is wrong once orders have been stranded — see [BUG-0064](../bug_list.md#bug_0064) — because
+a venue that reopens quietly having lost orders conceals the damage rather than recovering from it.
+That case belongs to a declared halt, [BUG-0065](../bug_list.md#bug_0065), which does not lift by
+itself. Everything below still holds for the condition described here.
+
 This is **not** the graduated, operator-involved judgement that
 [BUG-0059](../bug_list.md#bug_0059) argues for. That one is about a member's behaviour, where being
 wrong means wrongly locking out someone's trading connection. This is about the venue's own
