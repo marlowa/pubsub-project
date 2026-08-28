@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 66 |
-| Open | 25 (17 defects, 8 tasks) |
+| Bugs recorded | 67 |
+| Open | 26 (18 defects, 8 tasks) |
 | Closed | 41 |
-| Next id | BUG-0067 |
+| Next id | BUG-0068 |
 
 ## Open bugs by severity
 
-11 high, 10 medium, 4 low.
+11 high, 10 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -38,6 +38,7 @@
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
+| [BUG-0067](#bug_0067) | low | defect | The matching engine segfaulted in the order book during reconciliation, 2026-08-08 |
 
 ---
 
@@ -470,6 +471,57 @@ period.
 
 ---
 
+### BUG-0067: The matching engine segfaulted in the order book during reconciliation, 2026-08-08 {#bug_0067}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-08-28, in a crash dated 2026-08-08 |
+| Recorded | 2026-08-28 |
+| How | Reviewing `coredumpctl` while deciding how to manage its list, after [BUG-0057](#bug_0057) was diagnosed from a captured stack trace |
+| Impact | A promoting matching engine died while applying the records it had been sent to catch up. Never noticed at the time, and never recorded until now |
+
+`matching_engine_secondary`, SIGSEGV, 2026-08-08 13:16, in the pre-move tree
+(`pubsub-project-10-copilot`). The core file is long gone; the journal kept the symbolised trace:
+
+```
+#0  tsl::detail_robin_hash::bucket_entry<pair<OrderKey, OrderEntry>>::last_bucket()
+#1  MatchingEngineThread::handle_me_position_ack(EventMessage const&)
+#2  MatchingEngineThread::on_framework_pdu_message(EventMessage const&)
+#3  pubsub_itc_fw::ApplicationThread::process_message(EventMessage const&)
+```
+
+**That is the reconciliation path.** A promoting engine sends `MePositionRequest`, the sequencer
+replies with everything it has not applied, and the engine puts those records into its order book.
+It died inside the book's hash map doing exactly that.
+
+**The container has since been replaced, so the exact crash cannot recur in that form.** The book
+is now `IncrementalRehashMap` rather than `tsl::robin_map` -- changed on 2026-08-21 for the growth
+stall, which is a different problem -- so the frames above no longer exist.
+`handle_me_position_ack` does still apply records to the book, so the *path* is live under a new
+container.
+
+**Recorded as low, and as evidence rather than as a defect to chase.** It is not reproducible, the
+code it names is gone, and nothing suggests the replacement inherits the fault. What makes it worth
+keeping is where it happened:
+
+- **Reconciliation can drive the book hard enough to break a map.** That bears on
+  [BUG-0064](#bug_0064), which is about making a cold-starting engine reconcile *more* often than
+  it does today, and on [BUG-0028](#bug_0028), which is about what the book costs as it grows.
+- **If the current container ever fails the same way, this is the precedent** and the trace is
+  already written down.
+
+**What would close it:** evidence that the reconciliation path cannot corrupt the current map, or
+simply a long enough run of promotions without recurrence. Not worth hunting on its own.
+
+**A note on how it was found, which is the more useful half.** It sat in `coredumpctl` for nearly
+three weeks with nobody aware of it, alongside 84 deliberate death-test cores that made the list
+look like noise. Filtering that list by executable -- excluding `*_tests` -- reduces 93 entries to
+the two real venue crashes, this one and [BUG-0057](#bug_0057). That filter is what a startup scan
+should use, and it is the whole of the "large list" problem.
+
+---
+
 ### BUG-0057: The sequencer segfaulted on 2026-08-21 and nothing recorded it {#bug_0057}
 
 | | |
@@ -517,6 +569,14 @@ the cause, a crash that leaves no trace anyone would encounter is its own defect
 solvable a week later -- the executable it names has been rebuilt many times since and its symbols
 are long gone. Preserved outside the repository as
 `~/mystuff/cores/sequencer-25509-2026-08-21.coredumpctl-info.txt`.
+
+**The journal keeps the trace even after the core is reclaimed**, which is worth knowing before
+anyone tidies the list: an entry marked `missing` has lost its core file and still carries the
+backtrace. That is how [BUG-0067](#bug_0067) was recovered from a crash nearly three weeks old
+whose core was long gone. Deleting those entries would destroy the only surviving evidence of
+crashes nobody can reproduce, and there is no supported way to remove coredump entries selectively
+anyway -- they live in the journal, so `journalctl --vacuum-*` is the only lever and it takes other
+history with it. `coredumpctl list | grep bin/` reduces 93 entries to the two that are real.
 
 It was `sequencer_secondary`, SIGSEGV, and two threads together tell the whole story.
 
