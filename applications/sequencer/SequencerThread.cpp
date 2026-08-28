@@ -463,8 +463,12 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         if (!me_outbound_order_conn_id_.is_valid()) {
             // The order is already durably WAL-committed above; we simply cannot forward it right
             // now because no matching engine is connected (during ME failover, before the promoted
-            // secondary reconnects). The forward is deferred, NOT the order lost: on promotion the
-            // ME replays the WAL from its last-applied seq to the head, so this order is recovered.
+            // secondary reconnects). The forward is deferred rather than the order lost -- but only
+            // where a PROMOTION follows. A promoting follower reports where its replica reached and
+            // is sent everything after it, which recovers this order; an engine that starts COLD
+            // never reconciles at all and this order is never applied and never answered. That is
+            // BUG-0064, and it is why the reassurance this comment used to give without
+            // qualification was wrong.
             //
             // It costs the venue nothing to defer -- the payload is released here and the WAL is
             // the whole mechanism. It costs the MEMBER a great deal: it has been acknowledged, so

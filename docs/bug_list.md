@@ -188,6 +188,12 @@ differ precisely when the venue deferred orders and then lost every engine. Note
 order connection and re-enters when one appears -- so the stranding BUG-0043 describes may no
 longer be a consequence of reconciling on a start. That needs checking before anything is changed.
 
+**Designed around, 2026-08-28, in
+[Knowing there is no matching engine](availability/matching_engine_presence.md).** That note does
+not fix this entry -- a cold start still applies nothing -- but it reduces how many orders reach
+this state, by letting the sequencer learn from the arbiter that no engine exists instead of
+waiting 45 seconds to guess.
+
 **What this narrows.** Ordinary HA operation does not lose orders. What loses them is losing every
 matching engine and starting one cold -- which is exactly the incident behind
 [BUG-0009](#bug_0009), where an engine was promoted, died two minutes later, and nothing existed
@@ -206,7 +212,7 @@ indefinitely. [BUG-0010](#bug_0010), since both concern a promotion assumed to p
 | Found | 2026-08-28 |
 | Recorded | 2026-08-28 |
 | How | The build failing on `doxygen_docs` while starting BUG-0009 step 3, and `git stash` showing it already failed at HEAD |
-| Impact | The documentation gate can be landed broken and stay broken. Nobody notices until the next person runs a full build, and it is not their change that caused it |
+| Impact | The documentation gate can be landed broken and stay broken, and it does not see untracked files at all. Nobody notices until the next person runs a full build, and it is not their change that caused it |
 
 **The documentation build was already failing on `main`.** Commit `4d91263` turned on
 `WARN_AS_ERROR` for Doxygen, and the three commits after it added documents the gate rejects.
@@ -233,7 +239,15 @@ whoever introduced it.
 bold rather than link to it; an explicit `{#label}` is the better answer, keeps the navigation, and
 is what the rest of the tree does. That document should be corrected too.
 
-**What would fix this:** `check_docs.py` should reject what Doxygen rejects -- a `](#target)`
+**A second way it gives false assurance, found 2026-08-28.** It enumerates documents with
+`git ls-files '*.md'`, so an **untracked** file is not checked at all. A new document with broken
+links, unresolvable anchors and no inbound reference passes silently until someone stages it --
+and the count in its own success message does not move, which is the only visible clue. Confirmed
+by staging one file: "68 documents" became "69 documents" with no other change. A new document is
+exactly when link checking is most wanted, and is precisely when this gate is blind.
+
+**What would fix this:** `check_docs.py` should check the working tree rather than the index, and
+reject what Doxygen rejects -- a `](#target)`
 reference with no matching `{#target}` anywhere in the tree, and a same-directory `README.md`
 link. Both are mechanical. Writing that check needs care: the first attempt at finding these by
 pattern produced a false negative on single-word anchors like `#retention` and a false positive on
@@ -446,6 +460,14 @@ acknowledged, forwarded to no one, which is [BUG-0009](#bug_0009) arriving by an
 - HA off: a secondary started alone leads and trades.
 - HA off: a secondary started while a primary is already leading -- both lead, and the venue says
   so loudly enough that an operator would notice before the next HA start.
+
+**It gates more than itself, noted 2026-08-28.** With high availability off there is no arbiter, so
+[Knowing there is no matching engine](availability/matching_engine_presence.md) falls back on the
+45-second age threshold -- which is how a member would find out that the venue cannot process its
+orders. But deferral is counted inside the leader branch of the sequencer's forward path, so a
+sequencer that never adopts leadership never defers, never refuses, and tells nobody anything. Until
+this entry is fixed, a non-HA venue that loses its matching engine informs its members of nothing at
+all.
 
 ### BUG-0059: No defence against a member reconnecting in a loop with the wrong protocol {#bug_0059}
 
@@ -747,6 +769,14 @@ premise is not a valid scope decision**, so the ground for closing this went awa
 What remains here is the member-facing half: an order this venue took and cannot process must end
 in an answer, whatever happens to the engine. The mechanism is BUG-0064's to settle, because
 nothing can be promised to the member until it is known whether replay happens at all.
+
+**Next step designed 2026-08-28 in
+[Knowing there is no matching engine](availability/matching_engine_presence.md), not built.** The
+45-second threshold exists only because the sequencer cannot tell a failover in progress from a
+matching engine service that no longer exists. The arbiter already holds that fact and discards it,
+so the sequencer should ask it -- a query, not a subscription, which is the shape
+[section 11b](availability/design_notes.md#ha_arbiter_only_arbitrates) requires. The threshold then
+becomes the fallback where an arbiter exists, and stays the only mechanism where one does not.
 
 When the matching engine connection drops, the sequencer commits each order to the WAL and
 defers forwarding it:
