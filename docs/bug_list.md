@@ -686,8 +686,38 @@ Verified: a deliberately segfaulting child produces the named crash report from 
 ordinary stop produces none; the scan finds the 2026-08-21 sequencer crash, preserves its
 backtrace, and is silent on the second run.
 
-**Still to build: the `abort()` itself**, described above. Detection tells you a crash happened;
-aborting rather than unwinding is what stops this particular crash happening.
+#### The abort built 2026-08-28
+
+`Reactor` records the first thread a timed-out join forces it to detach, and each component calls
+`abort_if_thread_abandoned()` after `run()` returns. It writes to stderr with `write()` -- Quill's
+backend is asynchronous and may not have drained -- and calls `abort()`.
+
+**In the components, not in `Reactor::run()`.** The reactor's contract is unchanged and stays
+tested: it still shuts down despite a thread that ignores Termination, which is what
+`RogueThreadBlocksInITCMessageReactorStillShutsDown` asserts. What changes is what the *process*
+does afterwards, and a test never reaches that.
+
+**A timeout is not proof, so the thread is re-checked at the point of exit.** `shutdown_timeout_`
+says how long a thread was given, not whether it is still running now. Under a profiler everything
+is slow, and `perf` ends its subject with SIGTERM like any other shutdown -- so aborting on the
+earlier timeout alone would kill a sound venue at the end of a profiling run and blame the venue
+for the profiler. The abort fires only when the abandoned thread is *still executing* when the
+process would otherwise return.
+
+**That re-check was written against the wrong predicate, and the test caught it.** It first asked
+`is_running()`, which reports the lifecycle STATE -- and `finalize_threads_after_shutdown` promotes
+every thread to Terminated whether or not its OS thread stopped. So it was false for a stuck thread
+too, and **the abort could never have fired**. Inert, and it would have read as correct.
+`ApplicationThread::has_exited()` now answers the question that was actually being asked, set by
+the thread itself as the last thing `run()` does, on every path including both catch blocks.
+
+Two tests added: a stuck rogue is recorded as abandoned and still executing after shutdown; a clean
+shutdown abandons nothing and `abort_if_thread_abandoned()` returns normally. The second is the one
+that matters for a profiling run -- if it ever kills the test binary, every ordinary SIGTERM in
+production aborts too.
+
+Verified: 1025 unit and integration tests pass, and the full scenario suite is 47/47 with **zero**
+aborts across 47 venue shutdowns.
 
 **Separate, and still open: [BUG-0001](#bug_0001).** The timer tests carry no deliberate rogue
 fixture and hit the shutdown timeout anyway. That is a real unexplained case rather than a test

@@ -14,6 +14,7 @@
 #include <cstdint>
 
 #include <csignal>
+#include <cstdlib>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
@@ -324,6 +325,13 @@ void Reactor::finalize_threads_after_shutdown() {
                        "The thread is still running and cannot be safely destroyed. "
                        "This is a fatal condition in production -- the process should be terminated.",
                        thread->get_thread_name());
+            // Recorded rather than only logged. That message has said "the process should be
+            // terminated" since it was written, and nothing terminated it -- the process returned
+            // from main, ran the exit handlers, and the abandoned thread died on the first
+            // static-lifetime object it touched. abort_if_thread_abandoned() is what acts on it.
+            if (abandoned_thread_ == nullptr) {
+                abandoned_thread_ = thread;
+            }
         }
     }
 
@@ -355,6 +363,36 @@ void Reactor::finalize_threads_after_shutdown() {
         }
     }
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "finalize_threads_after_shutdown finished");
+}
+
+void Reactor::abort_if_thread_abandoned() const {
+    if (abandoned_thread_ == nullptr) {
+        return;
+    }
+
+    // The timeout said how long the thread was given, not whether it is still running now. Under a
+    // profiler a healthy thread can miss the deadline and finish moments later, and aborting on
+    // the earlier timeout alone would kill a sound venue at the end of a profiling run. Only a
+    // thread STILL running makes returning unsafe, because only then is there something to be
+    // destroyed underneath.
+    if (!abandoned_thread_->is_running()) {
+        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {} missed shutdown_timeout but has since finished -- exiting normally",
+                   abandoned_thread_->get_thread_name());
+        return;
+    }
+
+    // write() rather than the logger: Quill's backend is asynchronous and may not have drained,
+    // and rather than std::cerr, which can itself be torn down. This has to reach the terminal.
+    const std::string message = "\n*** FATAL: shutdown abandoned thread '" + abandoned_thread_->get_thread_name() +
+                                "', which is still running.\n"
+                                "*** The process is aborting rather than returning, because returning would run the exit\n"
+                                "*** handlers and destroy state that thread is still using. See docs/bug_list.md BUG-0057.\n"
+                                "*** The core contains that thread's stack, which is what says where it was stuck:\n"
+                                "***     coredumpctl info <pid>\n";
+    const ssize_t written = ::write(STDERR_FILENO, message.data(), message.size());
+    static_cast<void>(written); // nothing useful to do if even this fails
+
+    std::abort();
 }
 
 void Reactor::register_thread(std::shared_ptr<ApplicationThread> thread) {

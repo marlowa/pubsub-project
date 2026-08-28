@@ -127,7 +127,12 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
 
 int Sequencer::run() const {
     PUBSUB_LOG_STR((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: starting reactor");
-    return reactor_->run();
+    const int status = reactor_->run();
+    // Does not return if shutdown had to abandon a thread that would not stop: returning
+    // would run the exit handlers and destroy state that thread is still using, which is
+    // how a sequencer segfaulted on 2026-08-21. See docs/bug_list.md, BUG-0057.
+    reactor_->abort_if_thread_abandoned();
+    return status;
 }
 
 } // namespaces

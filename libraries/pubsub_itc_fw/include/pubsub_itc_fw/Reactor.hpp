@@ -308,6 +308,67 @@ class Reactor : public ThreadLookupInterface {
 
     // Made public for unit test purposes only.
     void finalize_threads_after_shutdown();
+
+    /**
+     * @brief Whether shutdown had to abandon a thread that would not stop.
+     *
+     * `finalize_threads_after_shutdown()` gives each thread `shutdown_timeout_` to join and, when
+     * one will not, detaches it so that destruction cannot block. That is deliberate -- a rogue
+     * thread cannot be joined and the alternative is hanging for ever -- but it leaves a thread
+     * running with the process about to tear itself down around it.
+     */
+    [[nodiscard]] bool abandoned_a_thread() const {
+        return abandoned_thread_ != nullptr;
+    }
+
+    /** @brief Whether an abandoned thread is STILL running, which is the dangerous case. */
+    [[nodiscard]] bool abandoned_thread_still_running() const {
+        // has_exited(), not is_running(). The latter reports the lifecycle state, which shutdown
+        // sets to Terminated for every thread whether or not it stopped -- so it is false here even
+        // for a thread still executing, and using it made this check inert. Found by the test that
+        // asserts a stuck rogue is still running after shutdown.
+        return abandoned_thread_ != nullptr && !abandoned_thread_->has_exited();
+    }
+
+    /**
+     * @brief End the process now if shutdown abandoned a thread, rather than returning.
+     *
+     * Called by each component after `run()` returns. It does not return when a thread was
+     * abandoned: it writes to stderr and calls `abort()`.
+     *
+     * **Why the process must not simply return.** Returning from `main()` runs the exit handlers,
+     * which destroy objects with static lifetime -- Quill's logger state among them. An abandoned
+     * thread is still executing, and the first such object it touches is gone. On 2026-08-21 a
+     * sequencer died exactly this way: the main thread was in `__run_exit_handlers` while a worker
+     * was in `process_message` loading a log level from an atomic that no longer existed. See
+     * docs/bug_list.md, BUG-0057.
+     *
+     * **`abort()` rather than `_exit()`, for the diagnostic.** Neither runs static destructors, so
+     * both avoid the crash. But an abort core contains the abandoned thread's own stack -- which
+     * thread it was, and where it was stuck -- which is what makes the underlying cause findable.
+     * `_exit()` would leave the next occurrence as invisible as that one was.
+     *
+     * **The message goes out with `write()`, not the logger.** Quill's production configuration is
+     * asynchronous, so at this point the backend may not have drained and there is nothing
+     * reliable to flush.
+     *
+     * **A timeout is not proof, so the thread is re-checked here.** `shutdown_timeout_` says how
+     * long a thread was given, not whether it is still running now. Under a profiler everything is
+     * slow -- callgrind by a factor of tens -- so a healthy thread can miss that deadline and then
+     * finish moments later. Aborting on the earlier timeout alone would kill a sound venue at the
+     * end of a profiling run and blame it for the profiler. This aborts only when the abandoned
+     * thread is *still* running at the point the process would otherwise exit, which is exactly
+     * when returning would be unsafe.
+     *
+     * A deliberate shutdown that stops cleanly never reaches any of this: nothing is recorded
+     * unless a join actually timed out.
+     *
+     * Deliberately not called from `run()` itself. `ReactorTest` exercises the abandonment path on
+     * purpose -- `RogueThreadBlocksInITCMessageReactorStillShutsDown` asserts that the reactor
+     * shuts down despite a thread that ignores Termination -- and that remains true. What changes
+     * is only what the *process* does afterwards, which a test never reaches.
+     */
+    void abort_if_thread_abandoned() const;
     void check_for_exited_threads();
     void check_for_stuck_threads();
     void dispatch_events(int nfds, epoll_event* events);
@@ -502,6 +563,12 @@ class Reactor : public ThreadLookupInterface {
     LockFreeMessageQueue<ReactorControlCommand> command_queue_;
 
     std::string shutdown_reason_;
+
+    // Set by finalize_threads_after_shutdown() when a join times out and the thread is detached.
+    // The thread itself rather than its name, so that abort_if_thread_abandoned() can ask whether
+    // it is still running rather than trusting a timeout that may only have measured a profiler.
+    // Holding the shared_ptr also keeps the object alive while its detached thread still runs.
+    std::shared_ptr<ApplicationThread> abandoned_thread_;
 
     /**
      * Monotonically increasing counter for ConnectionID assignment.

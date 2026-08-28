@@ -338,6 +338,9 @@ void ApplicationThread::run() {
         reactor_.shutdown(fmt::format("Thread {} [{}] terminated due to unknown exception", thread_name_, thread_id_.get_value()));
         set_lifecycle_state(ThreadLifecycleState::Terminated);
     }
+    // Last thing, on every path including both catches, which do not rethrow. Anybody asking
+    // whether this thread is still executing is asking about exactly this.
+    thread_exited_.store(true, std::memory_order_release);
 }
 
 void ApplicationThread::run_internal() {

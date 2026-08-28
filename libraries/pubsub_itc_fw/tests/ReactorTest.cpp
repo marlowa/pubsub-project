@@ -372,6 +372,84 @@ TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown) {
     EXPECT_TRUE(rogue->is_running()); // Rogue thread never exited
 }
 
+// A thread that would not stop is recorded, and the process must not return past it.
+//
+// The reactor's own behaviour is unchanged and deliberately so: it still shuts down despite a rogue
+// thread, which is what the test above asserts. What these add is the decision a COMPONENT makes
+// afterwards. Returning from main would run the exit handlers and destroy static state -- Quill's
+// logger among it -- while the abandoned thread is still executing, which is how a sequencer
+// segfaulted on 2026-08-21. See docs/bug_list.md, BUG-0057.
+TEST_F(ReactorTest, AbandonedRogueThreadIsRecordedAsStillRunning) {
+    auto rogue = ApplicationThread::create<RogueITCThread>(logger_with_sink_.logger, *reactor_, "RogueThread", ThreadID{779}, make_queue_config(),
+                                                           make_allocator_config());
+    reactor_->register_thread(rogue);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    {
+        BackoffWithYield backoff;
+        auto start = MillisecondClock::now();
+        while (!reactor_->is_initialized()) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
+                FAIL() << "Reactor did not complete initialization";
+            }
+            backoff.pause();
+        }
+    }
+
+    {
+        const uint8_t dummy_payload[1] = {42};
+        EventMessage itc = EventMessage::create_itc_message(rogue->get_thread_id(), dummy_payload, 1);
+        rogue->post_message(rogue->get_thread_id(), std::move(itc));
+    }
+    // Long enough that the rogue is certainly inside on_itc_message, which sleeps in 10ms steps.
+    // At 20ms this test was intermittently racing the thread into its loop, and when it lost the
+    // thread stopped normally -- proving the re-check below rather than the abandonment above.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    reactor_->shutdown("test shutdown");
+    ASSERT_TRUE(reactor_thread_->join_with_timeout(std::chrono::seconds(10)));
+
+    // has_exited(), not is_running(): shutdown promotes every thread's lifecycle state to
+    // Terminated, so is_running() is false here even for a thread still executing. Asserting on
+    // it is what revealed that the abort check had been written against the wrong predicate and
+    // could never have fired.
+    ASSERT_FALSE(rogue->has_exited()) << "the rogue stopped on its own, so this run tests nothing";
+    EXPECT_TRUE(reactor_->abandoned_a_thread());
+    // The question a component actually asks. A timeout says how long a thread was given; this
+    // says whether it is still running now, which is the only state that makes exiting unsafe.
+    EXPECT_TRUE(reactor_->abandoned_thread_still_running());
+}
+
+// The case that must stay silent, and the one a profiling run depends on: an ordinary shutdown,
+// ended by SIGTERM in production, abandons nothing and the component returns normally.
+TEST_F(ReactorTest, CleanShutdownAbandonsNothing) {
+    auto thread = ApplicationThread::create<TestApplicationThread>(logger_with_sink_.logger, *reactor_, "well_behaved", ThreadID{781}, make_queue_config(),
+                                                                   make_allocator_config());
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    {
+        BackoffWithYield backoff;
+        auto start = MillisecondClock::now();
+        while (!reactor_->is_initialized()) {
+            if (MillisecondClock::now() - start > MillisecondClock::duration{2000}) {
+                FAIL() << "Reactor did not complete initialization";
+            }
+            backoff.pause();
+        }
+    }
+
+    reactor_->shutdown("test shutdown");
+    ASSERT_TRUE(reactor_thread_->join_with_timeout(std::chrono::seconds(10)));
+
+    EXPECT_FALSE(reactor_->abandoned_a_thread());
+    EXPECT_FALSE(reactor_->abandoned_thread_still_running());
+    // Returns rather than aborting. If this ever kills the test binary, every clean shutdown in
+    // production aborts too -- including the SIGTERM that ends a perf run.
+    reactor_->abort_if_thread_abandoned();
+    SUCCEED();
+}
+
 TEST_F(ReactorTest, ThreadThrowsDuringTerminationReactorStillShutsDown) {
     auto bad_thread = ApplicationThread::create<ThrowingTerminationThread>(logger_with_sink_.logger, *reactor_, "ThrowingThread", ThreadID{888},
                                                                            make_queue_config(), make_allocator_config());

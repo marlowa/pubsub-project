@@ -502,6 +502,22 @@ class ApplicationThread {
         return tag >= ThreadLifecycleState::Started && tag < ThreadLifecycleState::ShuttingDown;
     }
 
+    /**
+     * @brief Whether run() has actually returned, as opposed to the lifecycle state saying so.
+     *
+     * `is_running()` reports the lifecycle STATE, and shutdown promotes every thread to Terminated
+     * whether or not its OS thread stopped -- so after `finalize_threads_after_shutdown()` it is
+     * false for a thread that is still executing. That distinction is the whole point here: a
+     * thread abandoned by a timed-out join is dangerous precisely because it is still running while
+     * the state says otherwise.
+     *
+     * Set once, by the thread itself, as the last thing `run()` does. See docs/bug_list.md,
+     * BUG-0057.
+     */
+    [[nodiscard]] bool has_exited() const {
+        return thread_exited_.load(std::memory_order_acquire);
+    }
+
     bool is_operational() const {
         auto tag = get_lifecycle_state().as_tag();
         return tag == ThreadLifecycleState::Operational;
@@ -812,6 +828,11 @@ class ApplicationThread {
      * @param[in] id The ConnectionID that can accept another frame.
      */
     virtual void on_connection_writable([[maybe_unused]] ConnectionID id) {}
+
+  protected:
+    // Set by run() on the way out, so that somebody asking "is this thread still executing?" gets
+    // an answer about the thread rather than about its lifecycle label.
+    std::atomic<bool> thread_exited_{false};
 
   private:
     QuillLogger& logger_;
