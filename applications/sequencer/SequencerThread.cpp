@@ -172,6 +172,14 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         gateway_conn_ids_[gateway_key(endpoint->protocol, endpoint->instance)] = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway protocol={} instance={} connection {} established",
                    endpoint->protocol, endpoint->instance, id.get_value());
+        // Tell it the acceptance state straight away. A transition-only design gets exactly
+        // this case wrong: a gateway starting during an outage would otherwise assume the
+        // venue was fine, which is the default that caused BUG-0009 in the first place.
+        // refresh_order_acceptance() broadcasts when it changes anything, and this connection
+        // is already in the map by then, so sending again here would duplicate it.
+        if (!refresh_order_acceptance()) {
+            send_order_acceptance(id);
+        }
     } else if (svc == "matching_engine") {
         // Claim the order connection only if nothing else currently holds it. An engine that
         // connects here is the one configured as primary, which is not the same thing as the
@@ -844,6 +852,12 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         // leadership and the arbiter hearing about it is exactly the window in
         // which the arbiter could issue a competing generation.
         send_leadership_lease();
+        // And tell the gateways where this venue now stands on accepting orders. They may be
+        // holding what the previous leader last said, which was true of a process that is no
+        // longer running. This instance has deferred nothing, so it accepts -- but that has to
+        // be said rather than assumed, because silence here leaves a refusal in place that
+        // nothing will ever lift.
+        broadcast_order_acceptance();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         cancel_timer(peer_heartbeat_timer_id_);
         peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
@@ -852,6 +866,16 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: now FOLLOWER -- heartbeat timer started, timeout armed ({}s)",
                    config_.heartbeat_timeout_seconds);
+        // A follower forwards nothing to a matching engine, so it defers nothing. Clearing the
+        // bookkeeping matters for what happens if this instance leads AGAIN: a deferral begun in
+        // a previous leadership would otherwise still be open, because the recovery that would
+        // have closed it happened while this instance was not the one watching for it. It would
+        // then be re-promoted already refusing orders, with an age measured from an outage that
+        // ended long ago, and nothing would lift it unless a matching engine happened to
+        // reconnect afterwards.
+        deferring_orders_ = false;
+        deferred_order_count_ = 0;
+        accepting_orders_ = true;
     }
 }
 
@@ -1544,10 +1568,15 @@ void SequencerThread::note_order_deferred(int64_t seq_no) {
                    "SequencerThread: no matching engine reachable -- orders are being accepted and deferred, starting at seq={}. They are WAL-committed and "
                    "recovered on promotion, but every member that placed one believes it is live and cannot cancel it",
                    seq_no);
+        refresh_order_acceptance();
         return;
     }
 
     if (now - last_deferral_warning_ < order_deferral_warning_interval) {
+        // Acceptance is still evaluated on every deferred order, because a threshold crossed
+        // between two warnings must take effect when it is crossed rather than at the next
+        // warning. Only the log is rate-limited; the decision is not.
+        refresh_order_acceptance();
         return;
     }
     last_deferral_warning_ = now;
@@ -1556,6 +1585,13 @@ void SequencerThread::note_order_deferred(int64_t seq_no) {
                "SequencerThread: still no matching engine after {}s -- {} order(s) deferred so far, latest seq={}. Members are being told these orders are "
                "live",
                degraded_for.count(), deferred_order_count_, seq_no);
+
+    // Repeat the state on the same interval while the venue is not accepting, so a gateway
+    // that missed the transition -- or reconnected without one happening since -- converges on
+    // the truth rather than sitting on a stale "fine".
+    if (!refresh_order_acceptance() && !accepting_orders_) {
+        broadcast_order_acceptance();
+    }
 }
 
 void SequencerThread::note_matching_engine_reachable() {
@@ -1568,6 +1604,76 @@ void SequencerThread::note_matching_engine_reachable() {
                degraded_for.count(), deferred_order_count_);
     deferring_orders_ = false;
     deferred_order_count_ = 0;
+
+    // Resuming is automatic, and deliberately so. Requiring an operator to re-enable
+    // acceptance was considered and rejected: BUG-0009 is precisely a case where nobody was
+    // watching, and a design whose recovery depends on the watching that has already failed
+    // is not safer. See docs/availability/order_acceptance.md.
+    refresh_order_acceptance();
+}
+
+bool SequencerThread::refresh_order_acceptance() {
+    // Evaluated where it is needed rather than on a timer. The two things that consume this
+    // state are an order arriving, which is exactly when refusing matters, and a gateway
+    // connecting, which must not be left assuming the venue is fine. A venue with no traffic
+    // has nothing to refuse, so there is nothing for a timer to discover.
+    bool accepting = true;
+    std::chrono::seconds degraded_for{0};
+    if (deferring_orders_) {
+        degraded_for = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_);
+        accepting = degraded_for < order_deferral_refusal_age && deferred_order_count_ < order_deferral_refusal_count;
+    }
+    if (accepting == accepting_orders_) {
+        return false;
+    }
+    accepting_orders_ = accepting;
+
+    if (accepting) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: accepting orders again -- gateways told the venue can process what they are given");
+    } else {
+        // Name which threshold spoke. An operator reading this wants to know whether the venue
+        // stopped because an outage ran long or because a burst filled it, and those call for
+        // different responses.
+        const char* const because = degraded_for >= order_deferral_refusal_age ? "the outage has run longer than a failover plausibly takes"
+                                                                               : "more orders are deferred than a member should be left wrong about";
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: no longer accepting orders -- {} ({} order(s) deferred over {}s, thresholds {}s / {}). Deferred orders are still "
+                   "WAL-committed and recovered on promotion; what stops is taking on new ones the venue cannot act upon",
+                   because, deferred_order_count_, degraded_for.count(), order_deferral_refusal_age.count(), order_deferral_refusal_count);
+    }
+    broadcast_order_acceptance();
+    return true;
+}
+
+void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& conn_id) {
+    // Only the leader has an opinion worth sending. A follower forwards nothing to a matching
+    // engine, so it never defers and its state is permanently "accepting" -- and the gateway
+    // holds a connection to BOTH sequencers and cannot tell which of them leads.
+    //
+    // Measured before this guard existed: a gateway restarted during an outage was correctly
+    // told "not accepting" by the leader, and two seconds later told "accepting again" by the
+    // follower, on a venue with no matching engine running at all. The follower was not lying
+    // about itself; it was answering a question that was never about it.
+    if (role_ != pubsub_itc_fw_app::Role::leader) {
+        return;
+    }
+
+    pubsub_itc_fw_app::OrderAcceptance state{};
+    state.accepting = accepting_orders_;
+    state.deferred_order_count = deferring_orders_ ? deferred_order_count_ : 0;
+    state.degraded_for_seconds =
+        deferring_orders_ ? static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_).count())
+                          : 0;
+    send_pdu(conn_id, pubsub_itc_fw_app::OrderAcceptance::message_pdu_id, 0, state);
+}
+
+void SequencerThread::broadcast_order_acceptance() {
+    for (const auto& [gateway, conn_id] : gateway_conn_ids_) {
+        if (conn_id.is_valid()) {
+            send_order_acceptance(conn_id);
+        }
+    }
 }
 
 void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {

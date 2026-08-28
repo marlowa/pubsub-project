@@ -405,6 +405,30 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // so the member's numbering continues across a reconnect instead of restarting at 1.
     void handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message);
 
+    /**
+     * @brief The sequencer saying whether the venue can process the orders it is being given.
+     *
+     * The sequencer knows there is no matching engine and this gateway holds the member
+     * relationship; before this PDU there was no path between the two, so the venue went on
+     * acknowledging orders it could not act upon. See BUG-0009 and
+     * docs/availability/order_acceptance.md.
+     *
+     * Repeated while the venue is degraded, so it arrives far more often than it changes.
+     */
+    void handle_order_acceptance(const pubsub_itc_fw::EventMessage& message);
+
+    /**
+     * @brief Whether the venue last said it could process orders.
+     *
+     * Recorded and reported; nothing yet refuses on it. Refusing is step 4 of BUG-0009, and
+     * landing the transport on its own means a fault in either half shows up by itself rather
+     * than tangled with the other.
+     *
+     * Starts true, which is the assumption that caused the bug -- it is safe here only because
+     * the sequencer sends the state on connection rather than waiting for a transition.
+     */
+    bool venue_accepting_orders_{true};
+
     /// Sends the FIX Logon reply and opens the session, once its numbering is settled.
     void complete_session_establishment(FixSession& session);
 

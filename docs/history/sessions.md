@@ -11,11 +11,11 @@ For design documentation see `docs/README.md`.
 
 ## Development Sessions
 
-This project has been developed incrementally across a series of numbered work sessions. Each session focused on a specific area — a new feature, a bug fix, a performance investigation, or an infrastructure improvement. Many sections of this document refer to sessions by number (e.g. "session 16", "session 25") to indicate when a piece of work was completed or when a particular design decision was made. The full narrative of each session is recorded in the [Session Accomplishments](#session-accomplishments) section below, which forms a detailed change log.
+This project has been developed incrementally across a series of numbered work sessions. Each session focused on a specific area — a new feature, a bug fix, a performance investigation, or an infrastructure improvement. Many sections of this document refer to sessions by number (e.g. "session 16", "session 25") to indicate when a piece of work was completed or when a particular design decision was made. The full narrative of each session is recorded in the [Session Accomplishments](#history_session_work) section below, which forms a detailed change log.
 
 ---
 
-## Session Accomplishments
+## Session Accomplishments {#history_session_work}
 
 ### Session 27 (current)
 

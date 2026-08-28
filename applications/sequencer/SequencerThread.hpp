@@ -491,6 +491,63 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     /// Reports what the outage cost, once the venue can forward again.
     void note_matching_engine_reachable();
 
+    /**
+     * @brief How long the venue defers orders before it stops accepting new ones.
+     *
+     * Age is the honest measure, because what is at stake is a member's exposure and exposure
+     * is measured in time. The threshold has to clear a NORMAL failover, or the venue would
+     * refuse orders during a routine recovery that members currently survive: the
+     * matching-engine pair uses a 15-second peer heartbeat timeout, and promotion,
+     * reconnection and WAL reconciliation follow it. Three times that timeout is comfortably
+     * above a normal failover rather than level with it, and still short enough that a member
+     * is wrong about its own position for under a minute.
+     */
+    static constexpr auto order_deferral_refusal_age = std::chrono::seconds{45};
+
+    /**
+     * @brief How many orders may be deferred before the venue stops accepting, whatever the age.
+     *
+     * A backstop for the case age alone handles badly: a burst defers a great many orders in the
+     * seconds *before* the age threshold trips. Age bounds the outage in time; without this,
+     * nothing bounds it in volume. At the peak rate measured on this venue, ~34,500 orders/s, the
+     * age threshold alone would allow about 1.55 million orders to be accepted and not processed
+     * before it spoke. This caps that at roughly a sixth.
+     *
+     * At the measured trading-day rate of ~1,926 orders/s it takes over two minutes to reach, so
+     * at ordinary rates the age always speaks first, which is the intent. At peak it is reached
+     * in about seven seconds, inside a normal failover, and that is deliberate rather than an
+     * oversight: a burst is exactly when the volume the venue is taking on runs away from it.
+     *
+     * **This counts orders, not members, and the harm is per member.** A venue has a few hundred
+     * to a few thousand comp ids, not a few hundred thousand; each posts continuously and one
+     * member holds several. So this figure is a proxy -- what it really bounds is how much of any
+     * one member's position can be wrong, and the venue-wide total stands in for that because
+     * deferrals are counted globally rather than per session. A per-session count would model the
+     * harm directly and is the better answer if this proxy ever proves too blunt.
+     */
+    static constexpr int64_t order_deferral_refusal_count = 250000;
+
+    /**
+     * @brief Whether the venue is currently telling its gateways it can take new orders.
+     *
+     * Starts true: a sequencer that has just come up and has not yet failed to forward
+     * anything is accepting. Moved only by refresh_order_acceptance().
+     */
+    bool accepting_orders_{true};
+
+    /**
+     * @brief Recomputes acceptance from the age and size of the current deferral.
+     *
+     * @return true if the state changed, in which case every connected gateway has been told.
+     */
+    bool refresh_order_acceptance();
+
+    /// Sends the current acceptance state to one gateway connection.
+    void send_order_acceptance(const pubsub_itc_fw::ConnectionID& conn_id);
+
+    /// Sends the current acceptance state to every connected gateway.
+    void broadcast_order_acceptance();
+
     void handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_session_unbound(const pubsub_itc_fw::EventMessage& message);
     void handle_session_replay_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);

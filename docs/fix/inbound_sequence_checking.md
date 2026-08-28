@@ -3,7 +3,7 @@
 **Status: built, 2026-08-28. All four steps.** The venue checks what a member sends, bounds how
 long it waits, and has scenarios that fail without the checks. One piece of observability is
 tracked separately as [BUG-0058](../bug_list.md#bug_0058). See
-[Implementation order](#implementation-order) for what is done and what is not. It addresses
+[Implementation order](#fix_inbound_seq_steps) for what is done and what is not. It addresses
 [BUG-0038](../bug_list.md#bug_0038), and items 1 and 2 of the departures in
 [FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md), which are one piece of
 work and cannot be split.
@@ -112,7 +112,7 @@ keep flowing outbound, and the wait is one round trip.
 **The decision is what to do when that round trip does not come back.** A member whose engine is
 faulty, or which has lost its own store, may never answer the `ResendRequest` — and then its order
 flow really does stop, with the venue sitting silent and nothing saying why. The venue re-asks twice
-and then disconnects — see [An unanswered ResendRequest](#an-unanswered-resendrequest-re-ask-twice-then-logout).
+and then disconnects — see [An unanswered ResendRequest](#fix_inbound_seq_unanswered).
 
 ### Lower without `PossDupFlag` ends the session
 
@@ -242,7 +242,7 @@ and neither side has any reason to think something is missing. The third is the 
 `MsgSeqNum` is a required header field, so a message without it already fails validation and gets a
 Reject. Step 2's work there was only to make sure the counter is **not** advanced for it.
 
-## Testing
+## Testing {#fix_inbound_seq_testing}
 
 **Two clients, for two jobs.**
 
@@ -284,7 +284,7 @@ Scenarios worth having, and each should be seen to fail before the code exists:
   the shape of [BUG-0055](../bug_list.md#bug_0055): the common case in this project's own testing
   was the one that was wrong, and nothing yet asserts on it.
 
-## An unanswered ResendRequest: re-ask twice, then Logout
+## An unanswered ResendRequest: re-ask twice, then Logout {#fix_inbound_seq_unanswered}
 
 A member that never answers has its flow stopped for as long as it stays connected, which is the
 failure mode most likely to reach the venue as "you have stopped taking my orders". So the wait is
@@ -323,7 +323,7 @@ visible without reading logs.
   than per session — a field on the WAL envelope, which is a hot-path cost and was not taken.
 - **BUG-0006**, `ResendRequest` under load, which is about the outbound path and stays open.
 
-## Implementation order
+## Implementation order {#fix_inbound_seq_steps}
 
 Each step leaves the venue working.
 
@@ -428,7 +428,7 @@ gap is visible without reading a log — [BUG-0058](../bug_list.md#bug_0058). It
 registered through the reactor's metrics registry, which is a larger change than the checking it
 would observe.
 
-Driven by `f8test -S`, per [Testing](#testing). Including the member that goes silent instead of
+Driven by `f8test -S`, per [Testing](#fix_inbound_seq_testing). Including the member that goes silent instead of
 answering, which is the one whose absence would not otherwise be noticed.
 
 ## An adjacent behaviour this does not change
@@ -451,4 +451,4 @@ there on purpose.
 
 ---
 
-Back to [FIX](README.md).
+Back to [FIX](../fix/README.md).

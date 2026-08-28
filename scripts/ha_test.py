@@ -5432,7 +5432,13 @@ def main() -> None:
         if not Path(raw_prefix).is_absolute()
         else raw_prefix
     )
-    preflight(prefix)
+    # die() raises, and outside a scenario there is no handler for it. A traceback here would
+    # bury the one line that says what to do -- and these failures are the ones a reader is most
+    # likely to be reading in a hurry.
+    try:
+        preflight(prefix)
+    except TestFailure:
+        sys.exit(1)
 
     lib_dir  = str(prefix / "lib")
     existing = os.environ.get("LD_LIBRARY_PATH", "")

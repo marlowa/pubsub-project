@@ -156,4 +156,4 @@ that sent the messages. See [Resend provenance](resend_provenance.md).
 
 ---
 
-Back to [High availability](README.md).
+Back to [High availability](../availability/README.md).

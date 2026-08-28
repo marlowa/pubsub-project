@@ -609,6 +609,11 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::OrderAcceptance::message_pdu_id) {
+        handle_order_acceptance(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (pdu_id == pubsub_itc_fw_app::SessionReplayRecord::message_pdu_id) {
         handle_session_replay_record(message);
         release_pdu_payload(message);
@@ -1383,6 +1388,42 @@ void FixOrderGatewayThread::handle_resend_request(FixSession& session, const Par
     // numbers asked for -- BUG-0053.
     request.skip_most_recent = fix_common::seq_num_ranges::count_in(session.report_seq_nums, session.replay_end_seq_num + 1, session.replay_resume_seq_num - 1);
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionReplayRequest::message_pdu_id, request);
+}
+
+void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    arena.reset();
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+
+    pubsub_itc_fw_app::OrderAcceptanceView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: failed to decode OrderAcceptance -- dropping");
+        return;
+    }
+
+    if (view.accepting == venue_accepting_orders_) {
+        // The sequencer repeats this while the venue is degraded, so most arrivals say nothing
+        // new. Logged on the change, not on the arrival -- the same rule the heartbeats follow,
+        // and for the same reason: a line per arrival buries the one that matters.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "FixOrderGatewayThread: OrderAcceptance unchanged accepting={} deferred={} degraded_for={}s",
+                   view.accepting, view.deferred_order_count, view.degraded_for_seconds);
+        return;
+    }
+    venue_accepting_orders_ = view.accepting;
+
+    if (view.accepting) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: the venue is accepting orders again");
+        return;
+    }
+    // Warning rather than Error: nothing is lost and nothing has failed. The venue has stopped
+    // taking on work it cannot do, which is the correct response to the condition, and the
+    // orders already deferred are WAL-committed.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "FixOrderGatewayThread: the venue is no longer accepting orders -- {} order(s) deferred over {}s. Members are still being acknowledged; "
+               "refusing them is not built yet (BUG-0009 step 4)",
+               view.deferred_order_count, view.degraded_for_seconds);
 }
 
 void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventMessage& message) {

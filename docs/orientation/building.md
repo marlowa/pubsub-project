@@ -215,20 +215,29 @@ inside the level above; it will not infer that from a page title. Every document
 markdown headings therefore produces warnings under it -- 893 across the tree, 771 of them that
 one complaint. The documents are correct and 1.9.8 builds them with none. See BUG-0050.
 
-**No intra-document anchor links to a heading slug.** A markdown `[text](#anchor)` link becomes a
+**No anchor links to a heading slug.** A markdown `[text](#anchor)` link becomes a
 `\ref anchor` command, and a GitHub-style heading slug is not a label Doxygen knows, so it is an
-error under `WARN_AS_ERROR` on 1.9.x. `MARKDOWN_ID_STYLE = GITHUB` does not exist in 1.8.14.
-Name the target section in bold instead.
+error under `WARN_AS_ERROR`. `MARKDOWN_ID_STYLE = GITHUB` does not exist in 1.8.14. This holds
+inside a document as much as across documents: `[Implementation order](#implementation-order)`
+fails exactly as a cross-document citation of a slug would.
 
-**The one exception is a section cited from outside the document**, where an explicit `{#label}`
-on the heading is the right answer and the link resolves under both Doxygen and GitHub. The cost
+**Give the target heading an explicit `{#label}` and link to that**, which resolves under both
+Doxygen and GitHub, whether the citation comes from this document or another one. Naming the
+section in bold and dropping the link is the alternative, and it is the right answer only when the
+link was not earning its place. The cost
 is that GitHub has no such extension and renders the braces literally in the heading, so pay it
 only where it buys something. `docs/availability/design_notes.md` is the worked example: seven of
 its nineteen sections carry a label because `ArbiterThread`, `MatchingEngineThread`,
 `SequencerThread`, `launch.py` and the bug list cite them, and those citations used to be section
 numbers -- which is why that document has sections 11a to 11e, since inserting a real section 12
 would have renumbered every one of them. The other twelve sections have no label and are referred
-to in prose. `scripts/check_docs.py` verifies that every anchor cited anywhere resolves.
+to in prose.
+
+**`scripts/check_docs.py` does not currently catch a violation of either rule** -- it validates
+links by its own rules, which are not Doxygen's, and it passed all sixty-eight documents while ten
+references across six of them were failing the build. See [BUG-0063](../bug_list.md#bug_0063).
+Until that is fixed, a clean `check_docs.py` is not evidence that the documentation builds; only
+building it is.
 
 ---
 

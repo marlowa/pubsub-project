@@ -36,7 +36,7 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 ---
 
-> For instructions on building, deploying and running the system, see [Running and Testing the System](#running-and-testing-the-system) below.
+> For instructions on building, deploying and running the system, see [Running and Testing the System](#fw_running_and_testing) below.
 
 ## Architectural Goals
 
@@ -49,7 +49,7 @@ Target environment is **low-latency** (sub-100ns encode/decode). Heap allocation
 
 ---
 
-## Running and Testing the System
+## Running and Testing the System {#fw_running_and_testing}
 
 ### Scripts
 

@@ -1,8 +1,9 @@
 # Refusing orders the venue cannot process {#ha_order_acceptance}
 
-**Status: steps 1 and 2 of 5 built, 2026-08-28.** It addresses [BUG-0009](../bug_list.md#bug_0009), which
-stays open until the member is told — the sequencer now reports the condition properly, and nothing
-yet reaches the gateway. See [Implementation order](#implementation-order).
+**Status: steps 1 to 3 of 5 built, 2026-08-28.** It addresses [BUG-0009](../bug_list.md#bug_0009),
+which stays open until the member is told — the condition now travels from the sequencer to the
+gateway, and the gateway still acknowledges every order it is given. See
+[Implementation order](#ha_order_acceptance_steps).
 
 ## The problem
 
@@ -134,7 +135,7 @@ design whose safety rests on the watching that has already failed is not safer.
 - **Telling the member when acceptance resumes.** Nothing pushes that; a member discovers it by
   sending an order that is not rejected. Worth revisiting if it proves awkward in practice.
 
-## Implementation order
+## Implementation order {#ha_order_acceptance_steps}
 
 Each step leaves the venue working.
 
@@ -195,6 +196,66 @@ Each step leaves the venue working.
    -- the format was appended to, never reordered. **The wording turned out not to be the whole
    contract.** When it is emitted mattered too, and nothing said so. Both comments now do.
 3. **`OrderAcceptance` (127)** — carried and logged, acted on by nobody.
+   **Done 2026-08-28.**
+
+   The leader evaluates acceptance from the age and size of the current deferral, and sends the
+   result to every gateway it holds a connection to: on transition in both directions, repeated on
+   the same five-second interval as the warning while the venue is not accepting, and to a gateway
+   at the moment it connects. The gateway records it and logs the changes; nothing refuses yet.
+
+   The thresholds are `order_deferral_refusal_age` (45 seconds) and
+   `order_deferral_refusal_count` (250,000), with the reasoning beside them in
+   `SequencerThread.hpp`. Age bounds the outage in time; the count bounds it in volume, because at
+   the peak rate measured on this venue the age alone would allow about 1.55 million orders to be
+   accepted and not processed before it spoke. **The count is deliberately reachable inside a
+   normal failover at peak rate** — a burst is exactly when the volume runs away.
+
+   **The count counts orders, not members**, and the harm this document describes is per member. A
+   venue has a few hundred to a few thousand comp ids, and one member holds several; each posts
+   continuously, which is how tens of millions of orders a day come from a few thousand sessions.
+   So a venue-wide total is a *proxy* for the thing that matters — how far any one member's
+   picture of its own position has drifted. It stands in because the sequencer counts deferrals
+   globally rather than per session.
+
+   **A per-session count was considered and deferred, 2026-08-28.** Counting deferred orders per
+   `SessionIdentity` would model the harm directly, and would stop a quiet member being refused
+   because a busy one filled the venue — traffic is nowhere near uniform across comp ids. It was
+   not taken because it adds per-session state to the sequencer for a threshold that the age
+   almost always reaches first, and the count only has to be a sane bound on volume rather than an
+   exact model of exposure. If the proxy proves too blunt, this is the change to make, and the
+   threshold that comes with it is a figure to choose rather than derive.
+
+   Acceptance is evaluated on every deferred order rather than on a timer. Only the *log* is
+   rate-limited; a threshold crossed between two warnings takes effect when it is crossed. A venue
+   with no traffic has nothing to refuse, so there is nothing a timer would discover.
+
+   Measured, both engines killed and orders sent in bursts across the threshold:
+
+   ```
+   SequencerThread: still no matching engine after 132s -- 6 order(s) deferred so far
+   SequencerThread: no longer accepting orders -- the outage has run longer than a failover
+                    plausibly takes (6 order(s) deferred over 132s, thresholds 45s / 250000)
+   FixOrderGatewayThread: the venue is no longer accepting orders -- 6 order(s) deferred over 132s
+   ```
+
+   The gateway's line lands **400 microseconds** after the sequencer's. Restarting an engine
+   produced the matching pair in the other direction.
+
+   **A follower contradicted the leader, and only measurement found it.** A gateway restarted
+   during an outage was correctly told "not accepting", and two seconds later told "accepting
+   again" — on a venue with no matching engine running at all. The gateway holds a connection to
+   *both* sequencers and cannot tell which of them leads. A follower forwards nothing to a matching
+   engine, so it never defers, so its state is permanently "accepting"; it was not wrong about
+   itself, it was answering a question that was never about it. `send_order_acceptance` now returns
+   early unless this instance leads.
+
+   That guard creates two obligations, both met in `adopt_role`. **A newly promoted leader must
+   broadcast**, because the gateways may still be holding what the previous leader said before it
+   died, and silence would leave a refusal in place that nothing would ever lift. And **an
+   instance adopting follower must clear its deferral bookkeeping**, because a deferral begun in
+   a previous leadership would otherwise still be open — the recovery that would have closed it
+   happened while this instance was not the one watching for it. Without that, a re-promoted
+   instance comes back already refusing, with an age measured from an outage that ended long ago.
 4. **The gateway refuses**, orders and cancels, with a rejected ExecutionReport.
 5. **The scenarios**, written to fail first: a matching engine killed and not restarted must produce
    refusals rather than acknowledgements, and the health line must keep reporting while nothing
@@ -209,4 +270,4 @@ Each step leaves the venue working.
 
 ---
 
-Back to [High availability](README.md).
+Back to [High availability](../availability/README.md).

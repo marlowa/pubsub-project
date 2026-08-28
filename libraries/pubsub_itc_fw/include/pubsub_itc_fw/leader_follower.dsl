@@ -648,6 +648,45 @@ message SessionSequenceUpdate (id=126, version=1)
 end
 
 # ------------------------------------------------------------
+#  127 -- OrderAcceptance
+#  Sent by the leading sequencer to every gateway it holds a
+#  connection to, saying whether the venue can currently process
+#  the orders it is being given.
+#
+#  It exists because the two facts lived in different processes.
+#  The sequencer knows there is no matching engine; the gateway
+#  holds the member relationship. With no path between them the
+#  sequencer knew for seven minutes that nothing could be
+#  processed while the gateway went on acknowledging orders and
+#  reporting dropped=0. See BUG-0009 and
+#  docs/availability/order_acceptance.md.
+#
+#  Sent on transition in both directions, repeated while the
+#  venue is not accepting, and sent to a gateway when it
+#  connects. That last case is the one a transition-only design
+#  gets wrong: a gateway starting up during an outage would
+#  otherwise assume the venue was fine, which is the default
+#  that caused this bug.
+#
+#  accepting=false does NOT mean orders are being lost. Deferred
+#  orders are WAL-committed and recovered on promotion. It means
+#  the venue will no longer take on new ones it cannot act upon,
+#  because a member holding an acknowledged order it cannot
+#  cancel is worse off than one whose order was refused.
+#
+#  The counts travel so a gateway can say something specific to
+#  a member and to a log reader, rather than only "no". They are
+#  a snapshot at send time, not a running total the gateway is
+#  expected to reconcile.
+# ------------------------------------------------------------
+
+message OrderAcceptance (id=127, version=1)
+    bool accepting                  # false: the venue will not take new orders it cannot process
+    i64  deferred_order_count       # orders accepted and not yet forwarded, at send time
+    i32  degraded_for_seconds       # how long the venue has been unable to forward, 0 when accepting
+end
+
+# ------------------------------------------------------------
 #  200 — ArbitrationReport
 #  Sent by a component (sequencer or ME) to the active arbiter
 #  when arbitration is required (startup or after peer heartbeat

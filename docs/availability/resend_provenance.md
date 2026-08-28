@@ -10,7 +10,7 @@ protocol they belong to and only adds a field to it.
 
 **One thing was built differently from the design.** Retention is a named constant,
 `fix_common::seq_num_ranges::max_remembered`, rather than configuration — see
-[Retention](#retention). A working gateway-local mechanism was written on 2026-08-27 and
+[Retention](#ha_resend_retention). A working gateway-local mechanism was written on 2026-08-27 and
 deliberately reverted; the reasons are at the end, because they are the argument for the design
 below rather than against building anything.
 
@@ -152,7 +152,7 @@ resend needs is derived from it, and nothing else has to be maintained alongside
 The gateway is the only component that can record it. The sequencer never sees the FIX numbering,
 and the WAL is numbered by the venue's own sequence.
 
-### Naming the reports, not counting them
+### Naming the reports, not counting them {#ha_resend_naming}
 
 Recording the numbers is not by itself enough, because of the way the gateway currently asks for
 the reports: it sends a count, and the sequencer returns *the most recent* that many. For a
@@ -211,7 +211,7 @@ is lost, and those numbers are then simply uncovered — gap-filled rather than 
 already accepts an approximation there: it biases the resumed number high after an unclean death
 for the same reason.
 
-### Retention
+### Retention {#ha_resend_retention}
 
 **Bounded to the most recent *K* outbound numbers per session**, and *K* is tied to the
 sequencer's replay cap rather than chosen separately.
@@ -251,7 +251,7 @@ it can serve.
 
 The sequencer half of this design is not FIX. `SessionReplayRequest`, the session state that
 crosses a failover, and the contract change under
-[Naming the reports](#naming-the-reports-not-counting-them) are all protocol-independent, and
+[Naming the reports](#ha_resend_naming) are all protocol-independent, and
 [BUG-0046](../bug_list.md#bug_0046) -- in-flight report recovery for the binary gateway -- will
 have to consume the same contract. **The two should be designed together**, or the contract gets
 specified twice and the second specification discovers the first was not quite right.
@@ -325,4 +325,4 @@ sequencer rather than kept.
 
 ---
 
-Back to [High availability](README.md).
+Back to [High availability](../availability/README.md).
