@@ -178,16 +178,20 @@ Options:
     --failover-timeout S  Max seconds per failover step (default: 30)
     --recovery-timeout S  Max seconds for recovery orders (default: 30)
 
-Startup order (the same dependency order devenv.py uses):
-  1. witness                          -- arbiters connect outbound to it (port 7100)
-  2. arbiter_primary                  -- component listener 7200, peer listener 7203
-  3. arbiter_secondary                -- component listener 7201, peer listener 7204
-  4. authentication_service_a   -- listens on port 7070
-  5. authentication_service_b -- listens on port 7071
-  6. fix_order_gateway           -- FIX client port 9879, ER inbound port 7010
-  7. sequencer_primary                -- listens on port 7001
-  8. sequencer_secondary              -- listens on port 7002
-  9. matching_engine                  -- connects outbound to sequencer ER listeners 7021/7022
+Startup order (the same dependency order devenv.py uses), with the dev environment's ports.
+These orient a reader; they are not the authority.  The ports come from the environment file
+and are expanded into installed/etc, and preflight_ports() reads that deployed set rather than
+any list kept here -- which is just as well, because every port below except the gateway's FIX
+port had drifted by exactly 4000 before that check was written and read the real ones.
+  1. witness                  -- arbiters connect outbound to it (listens on 11100)
+  2. arbiter_primary          -- component listener 11200, peer listener 11203
+  3. arbiter_secondary        -- component listener 11201, peer listener 11204
+  4. authentication_service_a -- listens on 11070 (administration listener 11072)
+  5. authentication_service_b -- listens on 11071 (administration listener 11073)
+  6. fix_order_gateway_a      -- FIX 9879 (TLS 9880), execution reports inbound on 11010
+  7. sequencer_primary        -- listens on 11001, execution-report listener 11021, peer 11003
+  8. sequencer_secondary      -- listens on 11002, execution-report listener 11022, peer 11004
+  9. matching_engine          -- order listener 11020; connects out to the sequencers' 11021/11022
 
 Failover timing:
   Both the sequencer and arbiter followers arm a 15 s peer_heartbeat_timeout
@@ -2496,6 +2500,160 @@ def resolve_prefix(raw: str) -> Path:
     return p
 
 
+# The venue binds exactly the *_listen_port settings of the deployed configs. Every other
+# port in there is one a component connects *out* to, and is bound by another member of the
+# same set -- so checking the listen ports covers the lot without flagging our own peers.
+_LISTEN_PORT_SETTING = re.compile(r"^\s*(\w*listen_port)\s*=\s*(\d+)", re.MULTILINE)
+
+# The hex state /proc/net/tcp gives a listening socket.
+_TCP_STATE_LISTEN = "0A"
+
+# How long to wait for ports held by a previous run to clear. A run started before the last
+# one's sockets have gone dies during startup with nothing but an exit code -- it cost a whole
+# 19-minute suite to find that the cause was starting too soon after a stop, because the
+# message named the process that could not bind rather than the process still holding the port.
+# Sockets go within a second or so once the holder has actually exited, so the wait is free
+# except in the case it exists to catch.
+PORT_CLEAR_TIMEOUT = 15.0
+
+
+def deployed_listen_ports(prefix: Path) -> dict[int, str]:
+    """Map each port the deployed configs will bind to the setting that asks for it."""
+    ports: dict[int, str] = {}
+    for toml_path in sorted((prefix / "etc").rglob("*.toml")):
+        try:
+            text = toml_path.read_text(errors="replace")
+        except OSError:
+            continue
+        for match in _LISTEN_PORT_SETTING.finditer(text):
+            ports.setdefault(int(match.group(2)), f"{toml_path.name}:{match.group(1)}")
+    return ports
+
+
+class PortHolder(NamedTuple):
+    """The process holding a listening port: its pid, its executable, and its command line."""
+    pid:        int
+    executable: str
+    command:    str
+
+    def describe(self) -> str:
+        what = self.executable or "an executable this user may not read"
+        return f"pid {self.pid} — {what}" + (f"  [{self.command}]" if self.command else "")
+
+
+def _executable_of(pid_dir: Path) -> str:
+    """Absolute path of the running executable, from /proc/<pid>/exe, or "" if unreadable.
+
+    Read the exe link rather than comm: comm is the thread name, truncated to 15 characters,
+    and for anything started through an interpreter it says "python3" rather than naming the
+    program. The exe link is what tells one of our own binaries apart from a stranger.
+    """
+    try:
+        return os.readlink(pid_dir / "exe")
+    except OSError:
+        return ""
+
+
+def _command_line_of(pid_dir: Path, limit: int = 100) -> str:
+    """The process's command line on one line, truncated, or "" if unreadable.
+
+    Worth having beside the executable because an interpreter's executable is the same for
+    every script: it is the arguments that say which one is holding the port.
+    """
+    try:
+        raw = pid_dir.joinpath("cmdline").read_bytes()
+    except OSError:
+        return ""
+    line = " ".join(raw.decode("utf-8", "replace").split("\0")).strip()
+    return line if len(line) <= limit else line[:limit - 3] + "..."
+
+
+def listening_ports() -> dict[int, PortHolder]:
+    """Every TCP port in the LISTEN state right now, mapped to a description of its holder.
+
+    Read out of /proc rather than by running ss or netstat: neither is installed on every host
+    this harness runs on, and the shape of their output has changed between versions. The
+    socket inode from /proc/net/tcp identifies the owner -- it is the process carrying that
+    inode among its file descriptors. Only processes this user owns can be read, which is
+    enough: a port held over from a previous run is held by one of ours.
+    """
+    inode_to_port: dict[str, int] = {}
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            rows = Path(table).read_text(errors="replace").splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            if len(fields) < 10 or fields[3] != _TCP_STATE_LISTEN:
+                continue
+            try:
+                inode_to_port[fields[9]] = int(fields[1].rsplit(":", 1)[1], 16)
+            except (IndexError, ValueError):
+                continue
+
+    held = {port: PortHolder(0, "", "") for port in inode_to_port.values()}
+    inode_of_link = {f"socket:[{inode}]": inode for inode in inode_to_port}
+    for pid_dir in Path("/proc").glob("[0-9]*"):
+        try:
+            descriptors = list(pid_dir.joinpath("fd").iterdir())
+        except OSError:
+            continue                      # another user's, or it exited while we looked
+        for descriptor in descriptors:
+            try:
+                inode = inode_of_link.get(os.readlink(descriptor))
+            except OSError:
+                continue
+            if inode is None:
+                continue
+            held[inode_to_port[inode]] = PortHolder(int(pid_dir.name),
+                                                    _executable_of(pid_dir),
+                                                    _command_line_of(pid_dir))
+    return held
+
+
+def preflight_ports(prefix: Path, timeout: float = PORT_CLEAR_TIMEOUT) -> None:
+    """Refuse to start while anything still holds a port the venue has to bind.
+
+    Naming the executable matters as much as naming the port, because the two cases want
+    opposite responses: a venue binary under the install prefix means the last run has not
+    finished shutting down and the fix is to stop it, while anything else means a stranger has
+    taken a port the venue needs and no amount of stopping our own processes will free it.
+    """
+    wanted = deployed_listen_ports(prefix)
+    if not wanted:
+        die(f"no *_listen_port settings found under {prefix / 'etc'} — run deploy.py first")
+
+    venue_bin = str(prefix / "bin") + os.sep
+    deadline  = time.monotonic() + timeout
+    announced = False
+    while True:
+        clashes = {port: holder for port, holder in listening_ports().items() if port in wanted}
+        if not clashes:
+            if announced:
+                log("  ports clear")
+            return
+        if time.monotonic() >= deadline:
+            break
+        if not announced:
+            log(f"{len(clashes)} of the {len(wanted)} ports the venue binds are still held; "
+                f"waiting up to {timeout:.0f}s for them to clear ...")
+            announced = True
+        time.sleep(LOG_POLL_INTERVAL)
+
+    ours = 0
+    for port in sorted(clashes):
+        holder = clashes[port]
+        if holder.executable.startswith(venue_bin):
+            ours += 1
+        log(f"  port {port} ({wanted[port]}) is held by {holder.describe()}")
+    if ours == len(clashes):
+        die(f"{len(clashes)} port(s) are held by a venue that is still running — stop it with "
+            f"'scripts/devenv.py stop' before starting this run")
+    die(f"{len(clashes)} port(s) still held after {timeout:.0f}s, {len(clashes) - ours} of them by "
+        f"something that is not a venue binary — see the lines above for what to go and stop")
+
+
 def preflight(prefix: Path) -> None:
     if not FIX8_BIN.is_file() or not os.access(FIX8_BIN, os.X_OK):
         die(f"f8test not found or not executable: {FIX8_BIN}")
@@ -2505,6 +2663,7 @@ def preflight(prefix: Path) -> None:
         exe = prefix / "bin" / name
         if not exe.is_file() or not os.access(exe, os.X_OK):
             die(f"binary not found or not executable: {exe}")
+    preflight_ports(prefix)
 
 
 def file_end(path: Path) -> int:
