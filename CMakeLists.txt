@@ -273,6 +273,26 @@ if(DOXYGEN_FOUND AND ENABLE_DOXYGEN)
                     "${DOXYGEN_OUTPUT_DIR}/html")
     endif()
 
+    # Doxygen 1.8.14, the newest packaged for RHEL8, emits 893 warnings on documents that 1.9.8
+    # builds with none -- 393 of them "found subsection command outside of section context", which
+    # is its older reading of markdown headings rather than anything wrong with the documents. With
+    # WARN_AS_ERROR = YES it stops at the first, so the RHEL8 documentation build produces nothing
+    # at all unless somebody remembers to pass WARN_AS_ERROR=NO by hand.
+    #
+    # The documentation has to BUILD on RHEL8 -- it is demonstrated from there -- and the warnings
+    # are noise rather than failure, so the gate is turned off where it cannot pass and left on
+    # where it can. The gate still does its job: documents are authored on the development host,
+    # where 1.9.8 reports zero warnings and any new fault fails the build.
+    #
+    # Version-conditional rather than a second Doxyfile, which is the same shape as
+    # DOXYGEN_DISABLE_DOT above: one committed configuration, overridden per platform.
+    # See docs/bug_list.md, BUG-0050.
+    if(DOXYGEN_VERSION VERSION_LESS 1.9)
+        list(APPEND _pubsub_doxyfile_overrides "WARN_AS_ERROR = NO\n")
+        message(STATUS "Doxygen ${DOXYGEN_VERSION}: warnings-as-errors disabled -- it predates the "
+                       "markdown handling these documents use. The gate runs on 1.9+ hosts.")
+    endif()
+
     string(JOIN "" _pubsub_doxyfile_content ${_pubsub_doxyfile_overrides})
     file(WRITE "${_pubsub_doxyfile}" "${_pubsub_doxyfile_content}")
 

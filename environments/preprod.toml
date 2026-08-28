@@ -12,6 +12,25 @@
 # Consumed by:
 #   deploy.py --env environments/preprod.toml --artefact pubsub-<ver>.tar.gz \
 #             --install-dir /opt/pubsub --skip-certs
+#
+# ---------------------------------------------------------------------------
+# THIS FILE IS AN EXAMPLE, NOT A DEPLOYABLE ENVIRONMENT.
+#
+# It shows how an environment of this kind is laid out -- which sections exist,
+# which values a component template expects, and how they relate. It is not
+# meant to be taken literally, and it is not expected to deploy: several of the
+# placeholder values a component template requires are deliberately absent,
+# because they are real hostnames, ports and certificate paths for an
+# environment that does not exist yet.
+#
+# deploy.py will therefore stop on this file, naming the values it cannot
+# resolve. That is the intended behaviour. Inventing plausible values would
+# produce a file that deploys and then fails at run time, which is worse than
+# one that refuses to deploy and says why.
+#
+# environments/dev.toml is the complete, working example.
+# See docs/bug_list.md, BUG-0003.
+# ---------------------------------------------------------------------------
 
 [env]
 name        = "preprod"

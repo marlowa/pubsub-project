@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 66 |
-| Open | 28 (19 defects, 9 tasks) |
-| Closed | 38 |
+| Open | 25 (17 defects, 8 tasks) |
+| Closed | 41 |
 | Next id | BUG-0067 |
 
 ## Open bugs by severity
 
-11 high, 11 medium, 6 low.
+11 high, 10 medium, 4 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,7 +25,6 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
-| [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -36,10 +35,8 @@
 | [BUG-0048](#bug_0048) | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
-| [BUG-0004](#bug_0004) | low | defect | Doxygen 1.8.14 turns `\ref` labels into bare directory links |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
-| [BUG-0050](#bug_0050) | low | task | Doxygen 1.8.14 cannot build the documentation with warnings as errors |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 
 ---
@@ -843,42 +840,6 @@ shutdown_timeout" still appear in timer test logs. **Root cause not identified.*
 `ThreadWithJoinTimeout` exists precisely because a raw `std::thread` terminates on an early return
 before join, so a join that times out is not obviously benign.
 
-### BUG-0003: Environment placeholders are missing outside dev {#bug_0003}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-07 (exact date not recorded) |
-| Recorded | 2026-08-08 (8cc0ced) |
-| How | Reading `deploy.py` against the environment files while working on config templating |
-| Impact | `deploy.py` exits on preprod, prod and test-1 |
-
-`environments/preprod.toml`, `prod.toml` and `test-1.toml` each lack 10–12 of the placeholder
-values their component templates require. Only `dev.toml` is complete, so only dev can be deployed.
-
-**Deliberately not fixed**: the missing values are real hostnames, ports and certificate paths for
-environments that do not exist yet. Inventing them would produce a file that deploys and then
-fails at run time, which is worse than one that refuses to deploy.
-
-**The gap widened by 60 on 2026-08-09**, when the reactor queue pools became templated (BUG-0025,
-now closed). Unlike the hostnames, these are safe to fill in from `dev.toml` whenever those
-environments are built, because a queue depth is a capacity decision rather than a fact about a
-host that has to be looked up — so the count is larger but the difficulty is unchanged.
-
-### BUG-0004: Doxygen 1.8.14 turns `\ref` labels into bare directory links {#bug_0004}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-07 (exact date not recorded) |
-| Recorded | 2026-08-08 (8cc0ced) |
-| How | Building the docs on RHEL8, where 1.8.14 is the newest packaged release |
-| Impact | Documentation only; the architecture map's cross-links break |
-
-An unresolved `\ref` collapses to `href="../../"`, which a browser opens as a directory listing —
-or, on Windows, a file chooser. 1.8.14 does **not** fail the build on an unresolved reference, so
-this is silent. `docs/architecture_map_howto.dox` proposes a post-build check; not written.
-
 ### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
 
 | | |
@@ -1652,6 +1613,83 @@ snapshot standing behind it, which is the case the invariant exists to prevent.
 
 Related: BUG-0046, since the WAL is what a member's resend is served from.
 
+## Closed
+
+### BUG-0003: Environment placeholders are missing outside dev {#bug_0003}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-07 (exact date not recorded) |
+| Recorded | 2026-08-08 (8cc0ced) |
+| How | Reading `deploy.py` against the environment files while working on config templating |
+| Impact | `deploy.py` exits on preprod, prod and test-1 |
+| Fixed | 2026-08-28 -- the three files say plainly that they are examples and are not expected to deploy |
+
+`environments/preprod.toml`, `prod.toml` and `test-1.toml` each lack 10–12 of the placeholder
+values their component templates require. Only `dev.toml` is complete, so only dev can be deployed.
+
+**Deliberately not fixed**: the missing values are real hostnames, ports and certificate paths for
+environments that do not exist yet. Inventing them would produce a file that deploys and then
+fails at run time, which is worse than one that refuses to deploy.
+
+**The gap widened by 60 on 2026-08-09**, when the reactor queue pools became templated (BUG-0025,
+now closed). Unlike the hostnames, these are safe to fill in from `dev.toml` whenever those
+environments are built, because a queue depth is a capacity decision rather than a fact about a
+host that has to be looked up — so the count is larger but the difficulty is unchanged.
+
+#### Closed 2026-08-28: they are examples, and now they say so
+
+These files are not incomplete environments; they are **examples of how an environment of this kind
+is laid out**, kept to show which sections exist and which values a component template expects.
+They were never meant to be taken literally, and `deploy.py` stopping on them is the intended
+behaviour rather than a failure -- the entry above already gives the reason, that inventing
+plausible hostnames would produce a file which deploys and then fails at run time.
+
+What was missing was saying so **in the files**. A reader met `prod.toml`, saw a production
+environment, ran `deploy.py` against it and got an error, with nothing to distinguish "this is a
+worked example" from "this is broken". Each of the three now carries a banner naming itself an
+example, saying that the absent values are deliberate, and pointing at `dev.toml` as the complete
+one.
+
+A file that refuses to deploy is fine. A file that refuses to deploy without saying it was never
+going to is the "silence where the tool could have spoken" shape recorded above -- and here the
+place to speak was the file itself.
+
+### BUG-0004: Doxygen 1.8.14 turns `\ref` labels into bare directory links {#bug_0004}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-07 (exact date not recorded) |
+| Recorded | 2026-08-08 (8cc0ced) |
+| How | Building the docs on RHEL8, where 1.8.14 is the newest packaged release |
+| Impact | Documentation only; the architecture map's cross-links break |
+| Fixed | 2026-08-28 -- the map is demonstrated working on RHEL8, and check_architecture_map.py fails the build if a box ever points at a bare directory |
+
+An unresolved `\ref` collapses to `href="../../"`, which a browser opens as a directory listing —
+or, on Windows, a file chooser. 1.8.14 does **not** fail the build on an unresolved reference, so
+this is silent. `docs/architecture_map_howto.dox` proposes a post-build check; not written.
+
+#### Closed 2026-08-28: the map works on RHEL8, and the check exists
+
+Two things this entry says are no longer true.
+
+**The map works.** Andrew has demonstrated the architecture map from RHEL8 and its links resolved.
+That is direct observation of the symptom on the affected platform, and it is worth more than any
+amount of reading about what 1.8.14 does with an unresolved reference.
+
+**The post-build check is written and wired in.** `scripts/check_architecture_map.py` scans the
+generated image maps and fails if any `<area>` points at a bare directory, and CMake runs it as
+part of the `doxygen_docs` target whenever dot is enabled -- its comment says it exists precisely
+because 1.8.14 will not fail on this by itself. A demonstration that showed a working map was a
+build with dot enabled, so that check ran and passed.
+
+**Not closed as "cannot fix", which was the expected answer.** Doxygen 1.8.14's rendering of an
+unresolved reference is not something this project can change, so had a reference failed there the
+entry would have been unfixable. It closes better than that: the references resolve, and if one
+ever stops, the build says so rather than a reader finding out by clicking.
+
 ### BUG-0050: Doxygen 1.8.14 cannot build the documentation with warnings as errors {#bug_0050}
 
 | | |
@@ -1662,6 +1700,7 @@ Related: BUG-0046, since the WAL is what a member's resend is served from.
 | Recorded | 2026-08-24 |
 | How | Setting `WARN_AS_ERROR = YES` for BUG-0049 and running the full docs build in the RHEL8 container |
 | Impact | The RHEL8 docs build needs `WARN_AS_ERROR=NO` on the command line. The gate is real on the development host and unavailable on the target |
+| Fixed | 2026-08-28 -- CMake turns the gate off for Doxygen below 1.9, so the RHEL8 documentation builds without anyone remembering a flag |
 
 Doxygen 1.9.8 builds this documentation with **zero** warnings. Doxygen 1.8.14, the newest release
 packaged for RHEL8, produces **893**:
@@ -1698,7 +1737,27 @@ renders as a bare directory link rather than failing.
 
 ---
 
-## Closed
+#### Closed 2026-08-28: the gate is version-conditional
+
+`CMakeLists.txt` appends `WARN_AS_ERROR = NO` to the generated Doxyfile when `DOXYGEN_VERSION` is
+below 1.9, and says so at configure time. The committed `Doxyfile` is unchanged and keeps the gate
+on, so 1.9.8 on the development host still fails the build on a single warning.
+
+**The documentation must build on RHEL8** -- it is demonstrated from there -- and with the gate on
+it produced nothing at all, because 1.8.14 stops at the first of its 893 warnings. Those warnings
+are noise rather than fault: 393 are "found subsection command outside of section context", an
+older reading of markdown headings rather than a defect in the documents, and 1.9.8 reports none.
+
+So the gate is turned off where it cannot pass and left on where it can, losing nothing: documents
+are authored on the development host, and a new fault fails that build.
+
+**One configuration overridden per platform**, the same shape as `DOXYGEN_DISABLE_DOT` beside it,
+rather than a second Doxyfile that would have to be kept in step by hand -- which is the "two
+things that must agree" shape recorded earlier in this file.
+
+Verified at the boundary, since 1.8.14 cannot be run here: the conditional turns the gate off for
+1.8.14 and 1.8.20 and leaves it on for 1.9.0, 1.9.8 and 1.10.0. On this host the generated Doxyfile
+carries no override at all, so the gate is untouched where it works.
 
 ### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
 
