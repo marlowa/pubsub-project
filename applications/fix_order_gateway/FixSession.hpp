@@ -213,6 +213,22 @@ struct FixSession {
     int inbound_gap_through{0};
 
     /**
+     * @brief The retry timer for an unanswered `ResendRequest`, and how many have gone out.
+     *
+     * A member that never answers would otherwise have its flow stopped for as long as it stayed
+     * connected -- and looking healthy to anyone not reading the log, which is the shape of
+     * BUG-0009. So the wait is bounded: the request is repeated on a timer, and the session ends
+     * if the gap is still open after the last attempt.
+     *
+     * Repeating covers the ordinary case of a request lost in flight, or a member that was slow
+     * rather than broken. Only one genuinely not answering reaches the Logout -- and that is
+     * recoverable, because the venue keeps the session's numbering, so the member reconnects and
+     * resynchronises from it.
+     */
+    pubsub_itc_fw::TimerID resend_request_timer_id{};
+    int resend_requests_sent{0};
+
+    /**
      * @brief The `MsgSeqNum` on the Logon that bound this session, and whether it was a possible
      *        duplicate. Zero means the Logon carried no readable number.
      *

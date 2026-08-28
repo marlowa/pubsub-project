@@ -137,6 +137,12 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     /// Asks the member for everything from the expected number on, once per gap.
     void request_missing_messages(FixSession& session, int revealed_by_seq_num);
 
+    /// Sends one ResendRequest and arms the timer that bounds the wait for an answer.
+    void send_resend_request(FixSession& session);
+
+    /// On that timer: asks again, or ends a session whose member is not answering.
+    void retry_or_abandon_resend_request(FixSession& session);
+
     /// Ends a session whose numbering the venue can no longer believe, telling the member why.
     void end_session_on_sequence_error(FixSession& session, int received_seq_num);
 

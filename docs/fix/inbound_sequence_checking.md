@@ -1,7 +1,7 @@
 # Inbound sequence checking {#fix_inbound_sequence_checking}
 
-**Status: steps 1 and 2 of 4 built; the venue now checks what a member sends. Nothing in the
-design is open.** See
+**Status: steps 1, 2 and 3 of 4 built. The venue checks what a member sends and bounds how long
+it waits. Nothing in the design is open.** See
 [Implementation order](#implementation-order) for what is done and what is not. It addresses
 [BUG-0038](../bug_list.md#bug_0038), and items 1 and 2 of the departures in
 [FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md), which are one piece of
@@ -373,12 +373,38 @@ judge, then reply, then ask — or end the session without opening it.
 `FixSession` gained `inbound_gap_open`, and `logon_seq_num`/`logon_poss_dup` for the retrospective
 check. Measured results above.
 
-### Step 3 — the retry timer and the Logout. **Not started.**
+### Step 3 — the retry timer and the Logout. **Done 2026-08-28.**
 
-Five seconds, two retries, then Logout; a named constant beside the logon and SCRAM timeouts.
-Needs step 2 above it to have anything to time. Also the WARNING and the gap-age metric.
+`send_resend_request` arms a five-second timer every time it asks;
+`retry_or_abandon_resend_request` runs on it and either asks again or ends the session.
+`max_resend_requests` is 3, so a member has about fifteen seconds. The timer is cancelled wherever
+the gap is declared closed, and on connection loss beside the other per-session timers.
+
+Measured against a running venue with a member that opens a gap and then says nothing:
+
+```
+ResendRequests at t+0.0s, t+5.0s, t+10.0s, all BeginSeqNo=3
+Logout at t+15.0s -- "ResendRequest from 3 unanswered after 3 attempts"
+connection closed by the venue
+```
+
+And with a member that answers: the missing numbers are processed, no further request goes out,
+no Logout, and the session keeps trading. **Note the gap closes only when the counter passes the
+number that revealed it** -- filling one number of a ninety-six-number gap leaves it open, and the
+retries correctly run out. That is the design, and it caught out an ad-hoc test before it caught
+out anything real.
+
+The gap-age metric is **not** built. `GatewayMetrics` is where it goes.
 
 ### Step 4 — the scenarios, written to fail first. **Not started.**
+
+Also outstanding, and both found while building the steps above:
+
+- **The gap-age metric**, so a member sitting in this state is visible without reading logs.
+- **`scripts/fix_raw_client.py` misses messages it should see** under some interleavings -- it
+  reported no Logon for a session that had demonstrably established. Every venue behaviour above
+  was confirmed from the gateway's own logs as well, but a test client whose reads cannot be
+  trusted is not a foundation for step 4's assertions and needs tightening first.
 
 Driven by `f8test -S`, per [Testing](#testing). Including the member that goes silent instead of
 answering, which is the one whose absence would not otherwise be noticed.

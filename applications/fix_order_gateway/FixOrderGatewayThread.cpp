@@ -130,6 +130,18 @@ constexpr auto cancel_drain_interval = std::chrono::milliseconds{1};
 // bounded by session count rather than by traffic.
 constexpr auto sequence_report_interval = std::chrono::seconds{2};
 
+// How long the venue waits for a member to answer a ResendRequest before asking again, and how
+// many times it asks in total. Two attempts after the first, so a member has about fifteen
+// seconds before it loses the session.
+//
+// A constant rather than configuration, deliberately: nothing yet suggests members need different
+// values, and a figure in a TOML that no operator has a reason to change is a field to keep in
+// step for nothing. If one ever does, the gateway configuration is where it goes, and the
+// per-comp-id route cancel-on-disconnect takes is the step beyond that.
+// See docs/fix/inbound_sequence_checking.md.
+constexpr auto resend_request_retry_interval = std::chrono::seconds{5};
+constexpr int max_resend_requests = 3;
+
 // How long a logon waits for the venue to say where the session's numbering stands.
 //
 // A bound must be there: the sequencer may be mid-failover, or not connected at all, and a
@@ -236,6 +248,7 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
         FixSession& session = it->second;
         cancel_timer(session.logon_timeout_timer_id);
         cancel_timer(session.scram_auth_timeout_timer_id);
+        cancel_timer(session.resend_request_timer_id);
         // Told before the session object goes: the sequencer addresses reports at this
         // connection, and once it is gone there is nothing here to receive them. Announced
         // rather than inferred because the sequencer cannot see a client socket close.
@@ -354,6 +367,8 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                                 ++session.expected_inbound_seq_num;
                                 if (session.inbound_gap_open && session.expected_inbound_seq_num > session.inbound_gap_through) {
                                     session.inbound_gap_open = false;
+                                    cancel_timer(session.resend_request_timer_id);
+                                    session.resend_request_timer_id = pubsub_itc_fw::TimerID{};
                                     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                                                "FixOrderGatewayThread: connection {} comp_id='{}' the gap is closed -- caught up to MsgSeqNum={}",
                                                conn_id.get_value(), session.client_comp_id, session.inbound_gap_through);
@@ -422,6 +437,8 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                                 ++session.expected_inbound_seq_num;
                                 if (session.inbound_gap_open && session.expected_inbound_seq_num > session.inbound_gap_through) {
                                     session.inbound_gap_open = false;
+                                    cancel_timer(session.resend_request_timer_id);
+                                    session.resend_request_timer_id = pubsub_itc_fw::TimerID{};
                                 }
                                 break; // fall through to the Reject below: it consumed its number
                             case InboundSequence::Gap:
@@ -872,6 +889,10 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
                            id.get_value(), session.client_comp_id, sequence_state_timeout.count(), session.outbound_seq_num);
                 complete_session_establishment(session);
             }
+            return;
+        }
+        if (timer_id == session.resend_request_timer_id) {
+            retry_or_abandon_resend_request(session);
             return;
         }
         if (timer_id == session.scram_auth_timeout_timer_id) {
@@ -2274,7 +2295,17 @@ void FixOrderGatewayThread::request_missing_messages(FixSession& session, int re
     }
     session.inbound_gap_open = true;
     session.inbound_gap_through = revealed_by_seq_num;
+    session.resend_requests_sent = 0;
 
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "FixOrderGatewayThread: connection {} comp_id='{}' expected MsgSeqNum={} from the member and received {} -- messages are missing, asking for "
+               "everything from {} on. No further orders from this member are processed until it answers",
+               session.conn_id.get_value(), session.client_comp_id, session.expected_inbound_seq_num, revealed_by_seq_num, session.expected_inbound_seq_num);
+
+    send_resend_request(session);
+}
+
+void FixOrderGatewayThread::send_resend_request(FixSession& session) {
     // EndSeqNo=0 -- everything from here on. The message that revealed the gap was discarded
     // rather than held, so it has to come again, and it will, in order behind what preceded it.
     FixMessage request;
@@ -2282,11 +2313,42 @@ void FixOrderGatewayThread::request_missing_messages(FixSession& session, int re
     request.set(Tag::BeginSeqNo, std::to_string(session.expected_inbound_seq_num));
     request.set(Tag::EndSeqNo, std::string("0"));
     send_fix_to_session(session, request);
+    ++session.resend_requests_sent;
+
+    // Armed every time, so an unanswered request is bounded rather than waited on forever. A
+    // member that never answers would otherwise have its flow stopped for as long as it stayed
+    // connected, while looking healthy to anyone not reading the log.
+    cancel_timer(session.resend_request_timer_id);
+    session.resend_request_timer_id = start_one_off_timer(resend_request_retry_interval);
+}
+
+void FixOrderGatewayThread::retry_or_abandon_resend_request(FixSession& session) {
+    if (!session.inbound_gap_open) {
+        return; // answered while the timer was running
+    }
+
+    if (session.resend_requests_sent >= max_resend_requests) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixOrderGatewayThread: connection {} comp_id='{}' asked {} times for everything from MsgSeqNum={} and was not answered in {}s -- ending "
+                   "the session. The member reconnects against the numbering the venue still holds, so this is recoverable",
+                   session.conn_id.get_value(), session.client_comp_id, session.resend_requests_sent, session.expected_inbound_seq_num,
+                   resend_request_retry_interval.count() * max_resend_requests);
+
+        FixMessage logout;
+        logout.set(Tag::MsgType, MsgType::Logout);
+        logout.set(Tag::Text,
+                   fmt::format("ResendRequest from {} unanswered after {} attempts", session.expected_inbound_seq_num, session.resend_requests_sent));
+        send_fix_to_session(session, logout);
+        session.session_established = false;
+        disconnect_session(session, "ResendRequest unanswered");
+        return;
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "FixOrderGatewayThread: connection {} comp_id='{}' expected MsgSeqNum={} from the member and received a higher one -- messages are missing, "
-               "asking for everything from {} on. Nothing further from this member is processed until it answers",
-               session.conn_id.get_value(), session.client_comp_id, session.expected_inbound_seq_num, session.expected_inbound_seq_num);
+               "FixOrderGatewayThread: connection {} comp_id='{}' still waiting for MsgSeqNum={} after {}s -- asking again (attempt {} of {})",
+               session.conn_id.get_value(), session.client_comp_id, session.expected_inbound_seq_num, resend_request_retry_interval.count(),
+               session.resend_requests_sent + 1, max_resend_requests);
+    send_resend_request(session);
 }
 
 void FixOrderGatewayThread::end_session_on_sequence_error(FixSession& session, int received_seq_num) {

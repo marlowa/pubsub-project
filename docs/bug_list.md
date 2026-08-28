@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 55 |
-| Open | 23 (18 defects, 5 tasks) |
+| Bugs recorded | 56 |
+| Open | 24 (19 defects, 5 tasks) |
 | Closed | 32 |
-| Next id | BUG-0056 |
+| Next id | BUG-0057 |
 
 ## Open bugs by severity
 
-5 high, 12 medium, 6 low.
+6 high, 12 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -18,6 +18,7 @@
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0038](#bug_0038) | high | defect | Inbound FIX sequence numbers are never checked, so a member's lost order is not noticed |
+| [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
@@ -79,6 +80,62 @@ saying which it is.
 ---
 
 ## Open
+
+### BUG-0056: The FIX gateway stopped completing logons while still running {#bug_0056}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Ad-hoc sessions driven by `scripts/fix_raw_client.py` while building BUG-0038's step 3 |
+| Impact | The gateway accepted TCP connections and answered none of them. It looked healthy: the process was up, the reactor was running, and nothing was logged as wrong |
+
+**Not reproduced, and the evidence is gone** -- the logs were overwritten by a later run before
+they were preserved. What follows is what was observed at the time, recorded because a defect that
+is known and invisible is worse than one nobody has found, and because the venue looked *fine*
+throughout.
+
+**What was seen.** After a series of ad-hoc client sessions -- several of which the venue itself
+ended (a too-low sequence number, an unanswered `ResendRequest`), and several of which exited on a
+Python exception without closing the socket -- a new client could open a TCP connection and then
+got nothing. No Logon reply, and **no `FIX client connection N established` line in the gateway
+log at all**, so the connection never reached the application thread.
+
+**The process was alive and did not crash.** `devenv.py status` showed `fix_order_gateway_a`
+running. There is no core dump: the newest on the machine is from 2026-08-21. The reactor thread
+was still logging `Reactor created timer` every two seconds throughout.
+
+**The application thread had gone quiet.** The last line from the `FixOrderGatewayThread` thread
+was a connection-lost and session-unbind at 08:05:23; after that only reactor-thread lines
+appeared. So the reactor kept running while the thread that accepts sessions produced nothing.
+
+**The reactor watchdog did not report a stuck thread**, which is worth its own attention: that
+watchdog is what made the order-book rehash stall diagnosable, and a thread that stops without it
+noticing is the case [BUG-0002](#bug_0002) is about -- `process_message` exit paths that may skip
+updating `time_event_finished_` have never been audited.
+
+**A restart cleared it, and it recurred once more** after further ad-hoc sessions, so it is
+unlikely to be a one-off.
+
+**Hypotheses, in the order worth testing:**
+
+- **The application thread exited or blocked.** `ThreadWithJoinTimeout` exists precisely because a
+  raw `std::thread` terminates on an early return; a handler that threw would take the thread down.
+  Nothing was logged, which fits an exit more than a block.
+- **A session or connection leak.** Several sessions ended in the cancel-on-disconnect grace path
+  -- the log recorded *"disconnected with 1 open order(s) -- holding 90s for reconnect"* -- and
+  sockets were left unclosed by scripts that died. An exhausted connection or session table would
+  refuse new work without any single thing looking wrong.
+- **Something specific to the new inbound paths**, since these were the first sessions ever ended
+  by the venue's own sequence checking. `end_session_on_sequence_error` sets
+  `session_established = false` and then disconnects, which is a path nothing else takes.
+
+**To reproduce:** drive repeated sessions that the venue ends -- a too-low `MsgSeqNum`, then an
+unanswered `ResendRequest` -- against one gateway, closing some client sockets abruptly, and watch
+for the application thread going quiet while the reactor continues. **Preserve `installed/log/`
+before anything else runs**, which is the step that was missed this time.
+
 
 ### BUG-0001: Shutdown timeout errors in timer tests {#bug_0001}
 
