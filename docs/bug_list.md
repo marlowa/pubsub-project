@@ -511,6 +511,59 @@ from a backtrace should be treated as indicative rather than exact.
 measured run and the fact reached no log this file reads, no session note, and no commit. Whatever
 the cause, a crash that leaves no trace anyone would encounter is its own defect.
 
+#### Diagnosed 2026-08-28: a detached thread logging into a destroyed logger
+
+`systemd-coredump` captured a **symbolised stack trace at dump time**, which is what made this
+solvable a week later -- the executable it names has been rebuilt many times since and its symbols
+are long gone. Preserved outside the repository as
+`~/mystuff/cores/sequencer-25509-2026-08-21.coredumpctl-info.txt`.
+
+It was `sequencer_secondary`, SIGSEGV, and two threads together tell the whole story.
+
+**The main thread was already exiting:**
+
+```
+#3  std::basic_ostream<wchar_t>::flush()      (libstdc++)
+#4  std::ios_base::Init::~Init()              (libstdc++)
+#7  _dl_call_fini / _dl_fini
+#9  __run_exit_handlers
+#10 __GI_exit
+```
+
+**A worker thread was still running, and still logging:**
+
+```
+#0  std::atomic<quill::LogLevel>::load(std::memory_order)   (sequencer)
+#1  pubsub_itc_fw::ApplicationThread::process_message(EventMessage const&)
+#2  pubsub_itc_fw::ApplicationThread::run_internal()
+#4  pubsub_itc_fw::ThreadWithJoinTimeout::start<...>
+```
+
+**The mechanism, and it is not obscure.** `ThreadWithJoinTimeout::join_with_timeout()` uses
+`pthread_timedjoin_np()`, and **on timeout it detaches the worker** so that destruction can never
+block. The thread keeps running. `main()` then returns, exit handlers run, static destructors take
+down Quill's logger state and finalise libstdc++ -- and the detached thread, still inside
+`process_message`, reaches a log macro, loads the log level from an atomic that no longer exists,
+and dies.
+
+**This is [BUG-0001](#bug_0001) with its impact filled in.** That entry records
+*"failed to join within shutdown_timeout"* in the timer tests with the root cause unidentified, and
+observes that `ThreadWithJoinTimeout` exists precisely because *"a join that times out is not
+obviously benign"*. It is not benign. It is this crash. The two entries are one problem: the
+timeout path is unsound by construction, because detaching a live thread and then running exit
+handlers destroys the state that thread is still using.
+
+**Four ways out, none chosen here:**
+
+- Make an abandoned thread's continued execution safe, touching nothing with static lifetime.
+  Honest but hard, because logging is everywhere.
+- Do not return from `main` until the thread is genuinely dead, which is what the wrapper exists to
+  avoid.
+- `_exit()` once a thread has been abandoned, after flushing the log, so no destructor runs
+  underneath it. Crude, and sound: the process is going down anyway and running static destructors
+  is the dangerous act.
+- Treat a join timeout as a deliberate abort with a message, rather than detaching and hoping.
+
 ### BUG-0058: A member halted by a sequence gap is invisible to monitoring {#bug_0058}
 
 | | |
@@ -902,12 +955,27 @@ runs** -- the step that was missed the first time and honoured the second.
 | Found | before 2026-07 (carried over from the roadmap's Known Issues) |
 | Recorded | 2026-08-08 (8cc0ced) |
 | How | Timer test logs |
-| Impact | Unknown — the errors appear but nothing is known to misbehave |
+| Impact | A detached thread outlives the exit handlers that destroy the state it is using. Established 2026-08-28: this is what crashed the sequencer in [BUG-0057](#bug_0057) |
 
 After the timer SEGV fix, "did not stop within shutdown_timeout" and "failed to join within
 shutdown_timeout" still appear in timer test logs. **Root cause not identified.** Worth noting that
 `ThreadWithJoinTimeout` exists precisely because a raw `std::thread` terminates on an early return
 before join, so a join that times out is not obviously benign.
+
+#### The impact is known, 2026-08-28: it is BUG-0057's crash
+
+This entry recorded the symptom with *"root cause not identified"* and *"nothing is known to
+misbehave"*, while noting that `ThreadWithJoinTimeout` exists because a raw `std::thread` terminates
+on an early return, so **a join that times out is not obviously benign**.
+
+That caution was right. [BUG-0057](#bug_0057)'s captured stack trace shows what a timed-out join
+leads to: `join_with_timeout()` detaches the worker so destruction cannot block, `main()` returns,
+exit handlers destroy Quill's logger state, and the still-running thread segfaults on its next log
+call inside `process_message`.
+
+So the shutdown timeouts seen in the timer tests are not cosmetic. They are the same condition that
+crashed `sequencer_secondary` on 2026-08-21, reached from a different direction. The two entries
+should be fixed together, and BUG-0057 carries the design options.
 
 ### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
 
