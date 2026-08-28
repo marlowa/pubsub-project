@@ -1704,6 +1704,27 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
         return;
     }
 
+    // The venue has told this gateway it cannot process what it is given. Refuse rather than
+    // acknowledge: a member holding an order it believes is live, cannot cancel, and may have
+    // hedged against is worse off than one whose order was turned away. The order never enters
+    // the venue, so nothing has to be recovered for it.
+    //
+    // An ExecutionReport with OrdStatus=Rejected, not a BusinessReject: this is an outcome for
+    // the order, not a fault in the member's message. Its risk systems see the order as dead
+    // rather than pending, and it is a response every member already handles.
+    //
+    // Logged at Debug. The condition is reported once, at Warning, when it changes -- see
+    // handle_order_acceptance -- and the running count rides on GW-PROGRESS every five seconds.
+    // A line per refused order would reproduce the 1,087,912-line flood this bug is about.
+    if (!venue_accepting_orders_) {
+        ++orders_refused_;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused -- the venue is not accepting orders ({} refused so far)",
+                   session.conn_id.get_value(), cl_ord_id, orders_refused_);
+        send_reject_execution_report(session, msg, "Venue is not accepting orders: no matching engine available", /*is_cancel=*/false);
+        return;
+    }
+
     // Build the DSL struct. All string fields use string_view pointing into
     // the FIX message -- safe because the struct is only live for this call.
     pubsub_itc_fw_app::NewOrderSingle nos{};
@@ -1859,6 +1880,25 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
         return;
     }
 
+    // Cancels are refused too, and that deserves saying out loud because it reads as the wrong
+    // way round -- surely a member should always be allowed to reduce its exposure. A cancel
+    // needs the matching engine exactly as an order does. Accepting one the venue cannot act on
+    // would repeat this bug in a worse place: a member believing it had cancelled would be more
+    // dangerously wrong than one believing it had traded, because it would stop watching.
+    //
+    // The original order is untouched by this, and the text says so. Whether it is resting in the
+    // book or still deferred, the refusal changes nothing about it.
+    if (!venue_accepting_orders_) {
+        ++cancels_refused_;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused -- the venue is not accepting orders "
+                   "({} cancels refused so far)",
+                   session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, cancels_refused_);
+        send_reject_execution_report(session, msg, "Venue cannot process cancels: no matching engine available. The order is unchanged",
+                                     /*is_cancel=*/true);
+        return;
+    }
+
     pubsub_itc_fw_app::OrderCancelRequest ocr{};
     ocr.orig_cl_ord_id = orig_cl_ord_id;
     ocr.cl_ord_id = cl_ord_id;
@@ -1993,10 +2033,15 @@ void FixOrderGatewayThread::send_fix_reject(FixSession& session, const ParsedFix
 // connection the follower will resync from the leader's state.
 
 void FixOrderGatewayThread::report_order_progress() {
-    // Every execution report is either delivered or dropped because its client has gone, so
-    // the two together account for every order. That total is what tells a reader -- or the
-    // perf harness -- how far a run has got.
-    const int64_t accounted = execution_reports_sent_ + execution_reports_dropped_;
+    // Every execution report is either delivered or dropped because its client has gone, and
+    // since BUG-0009 step 4 an order may also be refused outright. The three together account
+    // for every order. That total is what tells a reader -- or the perf harness -- how far a run
+    // has got.
+    //
+    // A refused order counts here because the member has a definitive answer, which is exactly
+    // what refusing buys over deferring. Leaving it out would make `awaiting` grow for the life
+    // of the outage and claim orders were pending when they had been turned away.
+    const int64_t accounted = execution_reports_sent_ + execution_reports_dropped_ + orders_refused_;
     if (accounted % order_progress_interval != 0) {
         return;
     }
@@ -2016,29 +2061,35 @@ void FixOrderGatewayThread::report_order_progress_on_timer() {
     if (std::chrono::steady_clock::now() - last_order_progress_report_ < order_progress_report_interval) {
         return;
     }
-    emit_order_progress(execution_reports_sent_ + execution_reports_dropped_);
+    emit_order_progress(execution_reports_sent_ + execution_reports_dropped_ + orders_refused_);
 }
 
 void FixOrderGatewayThread::emit_order_progress(int64_t accounted) {
     last_order_progress_report_ = std::chrono::steady_clock::now();
 
-    // awaiting = orders taken from members and acknowledged, for which no execution report has yet
-    // been accounted. It is the figure that was missing when it mattered most: `dropped` stayed at
-    // zero throughout the incident and was not lying -- nothing was dropped, the orders were queued
-    // behind a matching engine that no longer existed. The gap between what arrived and what has
+    // awaiting = orders taken from members and not yet resolved -- no execution report accounted
+    // for them, and not refused either. A refused order leaves this pool at the moment it is
+    // refused, which is the point: it has a definitive answer and nobody is waiting on it.
+    //
+    // It is the figure that was missing when it mattered most: `dropped` stayed at zero throughout
+    // the incident and was not lying -- nothing was dropped, the orders were queued behind a
+    // matching engine that no longer existed. The gap between what arrived and what has
     // been accounted for already carried that, and was thrown away.
     const int64_t awaiting = orders_received_ - accounted;
 
     // TEST CONTRACT -- ha_test.py and perf_run.py match this text. The wording is an interface:
     // change it and the test breaks, silently and elsewhere. Both read a PREFIX of the line, so a
-    // field may be appended without breaking them; the existing four may not be reordered.
+    // field may be appended without breaking them; the existing ones may not be reordered.
+    // `awaiting` was appended by step 2 of BUG-0009 and `refused`/`refused_cancels` by step 4, on
+    // that rule.
     //
     // And the wording is not the whole contract: WHEN this is emitted is part of it too. Adding
     // the timer above broke scenario 18, which had used the presence of a line as evidence that a
     // gateway had handled traffic -- true while the only trigger was N orders accounted, false the
     // moment an idle gateway started reporting. That scenario now reads the figures instead.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} awaiting={}", accounted,
-               execution_reports_sent_, execution_reports_dropped_, orders_received_, awaiting);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} awaiting={} refused={} refused_cancels={}", accounted, execution_reports_sent_,
+               execution_reports_dropped_, orders_received_, awaiting, orders_refused_, cancels_refused_);
 }
 
 void FixOrderGatewayThread::queue_session_for_cleanup(FixSession& session) {

@@ -234,6 +234,18 @@ class FixRawClient:
                 (38, quantity), (40, ord_type), (44, price), (59, time_in_force)]
         return self.send("D", body, **send_args)  # type: ignore[arg-type]
 
+    def order_cancel_request(self, cl_ord_id: str, orig_cl_ord_id: str, *, symbol: str = "BHP",
+                             side: str = "1", quantity: str = "100", **send_args: object) -> bytes:
+        """An OrderCancelRequest carrying the five fields the gateway requires.
+
+        Here because a venue that refuses orders must be shown to refuse cancels too, and for the
+        reason that is the harder half to believe: a member told its cancel was rejected has to
+        keep watching the order, whereas one wrongly told the cancel succeeded stops. See
+        docs/availability/order_acceptance.md."""
+        body = [(11, cl_ord_id), (41, orig_cl_ord_id), (55, symbol), (54, side),
+                (60, utc_timestamp()), (38, quantity)]
+        return self.send("F", body, **send_args)  # type: ignore[arg-type]
+
     # -- receiving -------------------------------------------------------------------------
 
     def receive(self, timeout: float = 2.0) -> list[dict[int, str]]:
@@ -258,12 +270,17 @@ class FixRawClient:
         self.pending = []
         return claimed
 
-    def receive_until(self, msg_type: str, timeout: float = 5.0) -> dict[int, str] | None:
-        """Read until a message of this type arrives, or the timeout expires."""
+    def receive_until(self, *msg_types: str, timeout: float = 5.0) -> dict[int, str] | None:
+        """Read until a message of one of these types arrives, or the timeout expires.
+
+        Several types rather than one because some requests have more than one legitimate answer
+        and a test must not decide in advance which it will be: a cancel may be answered with an
+        ExecutionReport (35=8) or an OrderCancelReject (35=9), and waiting for only one of them
+        would report a timeout when the venue had in fact replied."""
         deadline = time.time() + timeout
         while True:
             for index, message in enumerate(self.pending):
-                if message.get(MSG_TYPE) == msg_type:
+                if message.get(MSG_TYPE) in msg_types:
                     del self.pending[index]
                     return message
             remaining = deadline - time.time()
@@ -293,6 +310,8 @@ def main() -> int:
     parser.add_argument("--reset-seq-num", action="store_true",
                         help="set ResetSeqNumFlag=Y on the Logon")
     parser.add_argument("--orders", type=int, default=1, help="orders to send after logon")
+    parser.add_argument("--cancels", type=int, default=0,
+                        help="cancels to send after the orders, each naming one of them as OrigClOrdID")
     args = parser.parse_args()
 
     client = FixRawClient(args.host, args.port, args.comp_id, args.target_comp_id, args.password)
@@ -314,6 +333,19 @@ def main() -> int:
                 return 1
             print(f"execution report: MsgSeqNum={report.get(MSG_SEQ_NUM)} "
                   f"ClOrdID={report.get(11)} OrdStatus={report.get(39)}")
+
+        for index in range(args.cancels):
+            # Cancels the order of the same number, so OrigClOrdID names something the venue has
+            # actually been sent rather than an invented id -- a cancel for an unknown order can
+            # be refused for that reason instead of the one under test.
+            client.order_cancel_request(f"rawcxl{index + 1}", f"raw{index + 1}")
+        for _ in range(args.cancels):
+            reply = client.receive_until("8", "9", timeout=10.0)
+            if reply is None:
+                print("no reply to cancel", file=sys.stderr)
+                return 1
+            print(f"cancel reply: MsgType={reply.get(35)} MsgSeqNum={reply.get(MSG_SEQ_NUM)} "
+                  f"ClOrdID={reply.get(11)} OrdStatus={reply.get(39)} Text={reply.get(58)}")
     finally:
         client.close()
     return 0

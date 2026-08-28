@@ -1,8 +1,9 @@
 # Refusing orders the venue cannot process {#ha_order_acceptance}
 
-**Status: steps 1 to 3 of 5 built, 2026-08-28.** It addresses [BUG-0009](../bug_list.md#bug_0009),
-which stays open until the member is told — the condition now travels from the sequencer to the
-gateway, and the gateway still acknowledges every order it is given. See
+**Status: steps 1 to 4 of 5 built, 2026-08-28.** It addresses
+[BUG-0009](../bug_list.md#bug_0009). The member is now told: a venue that cannot process orders
+refuses them with a rejected ExecutionReport rather than acknowledging them. What remains is
+step 5, the scenarios that hold the behaviour in place. See
 [Implementation order](#ha_order_acceptance_steps).
 
 ## The problem
@@ -257,6 +258,51 @@ Each step leaves the venue working.
    happened while this instance was not the one watching for it. Without that, a re-promoted
    instance comes back already refusing, with an age measured from an outage that ended long ago.
 4. **The gateway refuses**, orders and cancels, with a rejected ExecutionReport.
+   **Done 2026-08-28.**
+
+   While `venue_accepting_orders_` is false, a `NewOrderSingle` and an `OrderCancelRequest` are
+   both answered with an ExecutionReport carrying `ExecType=8` and `OrdStatus=8`, and a reason in
+   `Text`. Measured on the wire:
+
+   ```
+   35=8|37=GW-ORD-1|17=GW-EXEC-1|150=8|39=8|11=raw1|55=BHP|54=1|38=100|151=0|14=0|103=99|
+        58=Venue is not accepting orders: no matching engine available
+
+   35=8|11=rawcxl1|41=raw1|150=8|39=8|103=99|
+        58=Venue cannot process cancels: no matching engine available. The order is unchanged
+   ```
+
+   The path was already there: `send_reject_execution_report` has served the "no sequencer
+   connected" case since before this bug, and the reasoning for using an ExecutionReport rather
+   than a `BusinessReject` is the same — it is an outcome for the order, not a fault in the
+   member's message.
+
+   **The refusal is logged at Debug, and that is not an oversight.** The condition is reported
+   once at Warning when it changes, and the running count rides on `GW-PROGRESS` every five
+   seconds. A line per refused order would reproduce the 1,087,912-line flood that is half of
+   what this bug is about — the fix must not re-commit the original sin at the other end.
+
+   **Refused orders had to be taken out of `awaiting`.** `orders_received_` counts every
+   `NewOrderSingle`, and `awaiting` is what has not yet been resolved; without counting refusals
+   as resolved it would have grown for the life of the outage, claiming orders were pending when
+   the member had already been told they were dead. So `orders_refused_` joins sent and dropped
+   in `accounted`. **`cancels_refused_` deliberately does not**: a cancel never entered
+   `orders_received_`, and adding it to the same total would drive `awaiting` negative. Two
+   counters, for that reason and no other.
+
+   Measured across a full cycle — deferral, refusal, recovery:
+
+   ```
+   GW-PROGRESS accounted=8 sent=2 dropped=0 nos_received=15 awaiting=7 refused=6 refused_cancels=2
+   ```
+
+   `awaiting=7` is the seven orders deferred before refusal began. They are in the WAL and
+   genuinely pending, and they stay counted while refusals climb past them, which is the
+   distinction the line now draws: **deferred and refused are different states, and only one of
+   them is somebody's problem later.**
+
+   `scripts/fix_raw_client.py` gained `--cancels` for this, because the cancel half is the part
+   that has to be demonstrated rather than asserted.
 5. **The scenarios**, written to fail first: a matching engine killed and not restarted must produce
    refusals rather than acknowledgements, and the health line must keep reporting while nothing
    progresses.

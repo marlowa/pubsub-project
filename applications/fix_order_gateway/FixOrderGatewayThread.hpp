@@ -569,6 +569,21 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     int64_t execution_reports_sent_{0};
     int64_t execution_reports_dropped_{0};
 
+    /**
+     * @brief Orders refused because the venue said it could not process them, and cancels likewise.
+     *
+     * Two counters rather than one, because only the first belongs in the accounted total.
+     * `orders_received_` counts NewOrderSingle and nothing else, so a refused order has to leave
+     * the awaiting pool it entered -- while a refused cancel never entered it, and adding one to
+     * the same total would drive `awaiting` negative.
+     *
+     * A refused order IS accounted for: the member has a definitive answer, which is the whole
+     * point of refusing rather than deferring. See BUG-0009 and
+     * docs/availability/order_acceptance.md.
+     */
+    int64_t orders_refused_{0};
+    int64_t cancels_refused_{0};
+
     // Cancels sent since this drain began, so the completion line can report the whole
     // drain rather than whatever the final tick happened to do.
     int64_t cancels_sent_this_drain_{0};
