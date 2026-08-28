@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 65 |
-| Open | 32 (23 defects, 9 tasks) |
+| Bugs recorded | 66 |
+| Open | 33 (24 defects, 9 tasks) |
 | Closed | 33 |
-| Next id | BUG-0066 |
+| Next id | BUG-0067 |
 
 ## Open bugs by severity
 
-10 high, 15 medium, 7 low.
+11 high, 15 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -23,6 +23,7 @@
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0064](#bug_0064) | high | defect | Deferred orders are never recovered, and the venue logs that they were |
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
+| [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0001](#bug_0001) | medium | defect | Shutdown timeout errors in timer tests |
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
@@ -270,6 +271,70 @@ What a design has to settle:
 Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the top of the ladder
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
 these states differently.
+
+---
+
+### BUG-0066: A flapping matching engine resets the deferral clock, so the venue never stops accepting {#bug_0066}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Andrew asking what happens when the launcher restarts a component that keeps dying, then measuring it |
+| Impact | [BUG-0009](#bug_0009)'s refusal never fires against an engine that dies and restarts repeatedly. The venue takes orders it cannot process for as long as the flapping lasts, and reports recovery on every cycle |
+
+**Measured.** A matching engine was killed and restarted on a 24-second cycle, eight times, with
+orders flowing. The sequencer's deferral clock restarted on every reconnect:
+
+```
+a matching engine is reachable again after 7s ... after 10s ... after 2s ... after 5s
+                                  after 8s ... after 11s ... after 3s ... after 6s
+```
+
+It never approached the 45-second refusal threshold. **Across roughly 190 seconds in which the venue
+could not process a single order, it refused nothing** -- `refused=0` -- and finished with
+`awaiting=16`: sixteen orders taken from a member and never answered.
+
+`note_matching_engine_reachable` clears `deferring_orders_` and zeroes `deferred_order_count_` when
+a connection is established. **Connectivity is treated as recovery.** For a real promotion that is
+right, and it was measured working. For a flap it is false, and it resets the only mechanism that
+would eventually have told the member anything.
+
+**Every one of those eight cycles also lied.** The recovery line says the deferred orders "are
+recovered by its WAL replay". Each restart is a cold start, and per [BUG-0064](#bug_0064) a cold
+start reconciles nothing -- so the orders were not recovered, eight times, in writing.
+
+**The launcher does not catch this either, and its definition of flapping is why.**
+`launch.py --minimum-runtime` defaults to 2 seconds: a child dying inside that counts as a failed
+start and earns a `--failure-sleep`. A child that survives ten seconds and then dies is not a failed
+start at all -- `consecutive_failures` resets to zero and it is restarted at once, indefinitely.
+**Flapping on any period longer than two seconds is invisible to the supervisor.**
+
+#### The fix, in two parts
+
+**Recovery must be evidenced by progress, not by connectivity.** The deferral should end when an
+order is successfully forwarded, not when a socket appears. A flapping engine that forwards nothing
+then shows an age that only grows, and the threshold trips as intended. This needs no new constant,
+no help from the launcher, and no way for the two to disagree -- and the clock still does not run on
+a healthy venue, because `deferring_orders_` is only set when something has actually been deferred.
+
+It is the same lesson as `GW-PROGRESS` in BUG-0009 step 2, one level up: **a signal driven by
+connection state cannot report the absence of processing**, just as a line driven by progress could
+not report the absence of progress.
+
+**And the launcher's flap detection should widen** to restarts within a rolling window rather than
+consecutive starts shorter than `--minimum-runtime`. It already writes a restart count to
+`<name>.launcher.state`, so the raw material is there.
+
+**With high availability off this should halt the venue** rather than merely refuse. See
+[design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss) and
+[BUG-0065](#bug_0065): with no peer, every restart is a cold start, so every cycle strands what was
+deferred, and a venue that resumes automatically conceals it.
+
+Related: [BUG-0009](#bug_0009), whose refusal this defeats. [BUG-0064](#bug_0064), which is why the
+repetition costs orders rather than merely time. [BUG-0029](#bug_0029), on the supervision grace
+period.
 
 ---
 
