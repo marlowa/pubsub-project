@@ -115,9 +115,38 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void disconnect_session(const FixSession& session, const std::string& reason);
     void send_fix_to_session(FixSession& session, const FixMessage& msg);
 
-    /// Records where the member's numbering has reached, from either inbound path. Observed only:
-    /// nothing acts on it yet. See FixSession::expected_inbound_seq_num and BUG-0038.
-    static void note_inbound_seq_num(FixSession& session, const ParsedFixMessage& msg);
+    /**
+     * @brief Where an inbound message sits relative to what the venue expects from this member.
+     *
+     * The FIX session layer's whole answer to "may this message be processed". See
+     * docs/fix/inbound_sequence_checking.md; classify_inbound_sequence has no side effects, so
+     * both inbound paths can ask the same question and then do different things about it.
+     */
+    enum class InboundSequence {
+        InSequence, ///< the number expected: process it, and the counter advances
+        Duplicate,  ///< below expected but marked PossDupFlag: already processed, discard
+        Gap,        ///< above expected: messages are missing, ask for them and process nothing
+        TooLow,     ///< below expected and not marked: the far side has gone backwards
+        Unnumbered, ///< no readable MsgSeqNum: nothing to place it by
+    };
+    static InboundSequence classify_inbound_sequence(const FixSession& session, const ParsedFixMessage& msg);
+
+    /// Reads a message's MsgSeqNum, or 0 when it carries none that can be read.
+    static int inbound_seq_num_of(const ParsedFixMessage& msg);
+
+    /// Asks the member for everything from the expected number on, once per gap.
+    void request_missing_messages(FixSession& session, int revealed_by_seq_num);
+
+    /// Ends a session whose numbering the venue can no longer believe, telling the member why.
+    void end_session_on_sequence_error(FixSession& session, int received_seq_num);
+
+    /// What the Logon's own number turned out to be, judged once the venue knows what to expect.
+    enum class LogonSequence { Proceed, ProceedThenAskForGap, EndSession };
+    LogonSequence judge_logon_sequence(FixSession& session);
+
+    /// Opens the session, in the order the specification requires when its Logon was out of
+    /// sequence: judge, then reply, then ask -- or end the session without opening it.
+    void establish_session_after_logon_sequence(FixSession& session);
 
     /// The session's report-number ranges not yet reported to the sequencer, ready for the wire.
     static std::vector<pubsub_itc_fw_app::SeqNumRange> unreported_report_seq_nums(const FixSession& session);

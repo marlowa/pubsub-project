@@ -2742,6 +2742,24 @@ def _client_highest_seq_num(client_output: Path) -> int | None:
     return max(numbers) if numbers else None
 
 
+def _inherited_report_range_count(log_path: Path, from_byte: int = 0) -> int | None:
+    """How many outbound numbers the gateway was told had held execution reports, on binding.
+
+    The record travels in the sequencer's session state, so a gateway that never sent those
+    messages still knows which numbers carried one. None means the line was not found.
+    """
+    try:
+        with log_path.open("r", errors="replace") as handle:
+            handle.seek(from_byte)
+            for line in handle:
+                match = re.search(r"report range\(s\) covering (\d+) number\(s\)", line)
+                if match:
+                    return int(match.group(1))
+    except OSError:
+        return None
+    return None
+
+
 def _resend_resume_point(log_path: Path, from_byte: int = 0) -> int | None:
     """The outbound number the gateway said it would resume at after the resend, or None.
 
@@ -3074,7 +3092,8 @@ def gateway_listen_port(prefix: Path, instance: str) -> int:
 
 def write_fix8_variant(filename: str, *, listen_port: int | None = None,
                        keep_sequence_numbers: bool = False,
-                       ignore_logon_sequence_check: bool = False) -> str:
+                       ignore_logon_sequence_check: bool = False,
+                       persist_to_disk: str | None = None) -> str:
     """Generate an f8test config from the stock one with specific attributes rewritten.
 
     Generated rather than checked in because it must track the stock config: a divergence
@@ -3094,16 +3113,24 @@ def write_fix8_variant(filename: str, *, listen_port: int | None = None,
     venue that resumed its numbering correctly by dropping the session. Set for the resend
     scenario only, because it is a property of that client, not of the venue.
 
-    The session store is deliberately left in MEMORY, so a restarted client forgets its
-    sequence numbers and expects to begin at 1.
+    persist_to_disk names a file-backed session store, so a restarted client CONTINUES its own
+    numbering instead of beginning again at 1.
 
-    Persisting it to disk was tried and reverted, which is worth recording because it sounds
-    like the more realistic choice. It is -- and it removes the very thing these scenarios
-    test. A client that remembers, talking to a venue that also remembers, agrees with it:
-    there is no gap, so no ResendRequest, so no replay, and the recovery machinery is never
-    exercised. The case that matters here is a client that has lost its state reconnecting to
-    a venue that has not -- which is what a process restart actually looks like, and the only
-    arrangement in which the venue's memory does any work.
+    Memory persistence was the original choice and the reasoning was recorded here: a client that
+    remembers, talking to a venue that also remembers, agrees with it -- no gap, no ResendRequest,
+    no replay, and the recovery machinery never exercised. **That reasoning was right about the
+    outbound gap and has been overtaken.** The gap is now manufactured explicitly with -R, so it
+    no longer depends on the client having forgotten anything.
+
+    What memory persistence did instead was make the client a member that no venue would accept.
+    It restarted its own numbering at 1 while `reset_sequence_numbers="false"` told the venue not
+    to reset -- a member saying "keep our numbering" while abandoning its own. That passed only
+    while nothing checked; inbound sequence checking (BUG-0038) logs such a member out, and
+    rightly. A file store makes the client behave the way a real member with a persistent store
+    behaves, which is what these scenarios were always meant to be about.
+
+    The store must be deleted before a run, or a client resumes from where the PREVIOUS run left
+    it while the venue starts fresh -- see clear_fix8_persisted_state.
     """
     source = FIX8_DIR / FIX8_CFG
     if not source.is_file():
@@ -3121,6 +3148,17 @@ def write_fix8_variant(filename: str, *, listen_port: int | None = None,
                               text, count=1)
         if count == 0:
             die(f"nowhere to add ignore_logon_sequence_check in {source}")
+    if persist_to_disk is not None:
+        text, count = re.subn(r'persist="[^"]*"', 'persist="ha_test_file_persist"', text, count=1)
+        if count == 0:
+            die(f"no persist attribute to rewrite in {source}")
+        store = (f'    <persist name="ha_test_file_persist"\n'
+                 f'                type="file" dir="./run"\n'
+                 f'                use_session_id="true"\n'
+                 f'                db="{persist_to_disk}" />\n')
+        text, count = re.subn(r'(\n\s*<persist\b)', "\n" + store + r"\1", text, count=1)
+        if count == 0:
+            die(f"nowhere to add a file persister in {source}")
     if listen_port is not None:
         text, count = re.subn(r'port="\d+"', f'port="{listen_port}"', text, count=1)
         if count == 0:
@@ -3130,10 +3168,35 @@ def write_fix8_variant(filename: str, *, listen_port: int | None = None,
     return filename
 
 
+# The file-backed session store the reconnecting clients share, so one continues where the last
+# left off -- which is what a real member with a persistent store does, and what the venue's
+# inbound sequence checking now requires. Written under FIX8_DIR/run by fix8 itself.
+_FIX8_PERSIST_DB = "ha_test_session"
+
+
+def clear_fix8_persisted_state() -> None:
+    """Delete the clients' session store before a run.
+
+    Without this a client resumes from where the PREVIOUS run left it while the venue starts
+    fresh, so the member's numbering is a thousand ahead of the venue's and every scenario fails
+    for a reason that has nothing to do with what it tests.
+    """
+    run_dir = FIX8_DIR / "run"
+    if not run_dir.is_dir():
+        return
+    for path in run_dir.glob(f"{_FIX8_PERSIST_DB}*"):
+        try:
+            path.unlink()
+        except OSError as error:
+            die(f"could not clear the fix8 session store at {path}: {error}")
+
+
 def write_no_reset_fix8_config() -> None:
     """The resend scenario's client: instance a, not asking the venue to forget the session,
-    and prepared to ask for a gap it first sees on the Logon rather than logging off over it."""
-    write_fix8_variant(FIX8_NO_RESET_CFG, keep_sequence_numbers=True, ignore_logon_sequence_check=True)
+    prepared to ask for a gap it first sees on the Logon rather than logging off over it, and
+    remembering its own numbering across a reconnect as a real member does."""
+    write_fix8_variant(FIX8_NO_RESET_CFG, keep_sequence_numbers=True, ignore_logon_sequence_check=True,
+                       persist_to_disk=_FIX8_PERSIST_DB)
 
 
 def write_recovery_fix8_config() -> None:
@@ -3557,11 +3620,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # Likewise for session provisioning: the comp id is pinned to the instance this
         # harness runs, so the baseline session is admitted and the gateway has real
         # numbers to name. The scenario then moves it elsewhere and requires a refusal.
+        # Always, not only for the scenarios that use it: a store left by an earlier run would
+        # have a client resume a thousand messages ahead of a venue that has just started.
+        clear_fix8_persisted_state()
+
         if scenario.assert_resend_recovery:
             write_no_reset_fix8_config()
 
         if scenario.assert_inflight_recovery:
-            write_fix8_variant(_INFLIGHT_A_CFG, keep_sequence_numbers=True)
+            write_fix8_variant(_INFLIGHT_A_CFG, keep_sequence_numbers=True, ignore_logon_sequence_check=True,
+                               persist_to_disk=_FIX8_PERSIST_DB)
 
         if scenario.fresh_logon_in_recovery:
             write_recovery_fix8_config()
@@ -4711,6 +4779,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 listen_port=gateway_listen_port(prefix, "b"),
                 keep_sequence_numbers=True,
                 ignore_logon_sequence_check=True,
+                # The same store instance a used, so the member arrives on b continuing its own
+                # numbering rather than restarting it -- which the venue would now, correctly,
+                # treat as the member having gone backwards.
+                persist_to_disk=_FIX8_PERSIST_DB,
             )
             f8proc = send_burst(0, gw_b_log, instance_b_config, client_output)
 
@@ -4795,16 +4867,32 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #     sequencer's session state rather than in the gateway. Without it, b has no
             #     provenance, correctly declines to guess, and gap-fills everything: the member
             #     keeps its session and loses every report it missed.
+            # 6a. Instance b inherited the record of which numbers held reports.
+            #
+            #     NOT "it replayed real reports", which is what this asserted first and which was
+            #     measuring an artefact. That held only while the client had amnesia: with a
+            #     memory store it reconnected believing it had received nothing, asked from the
+            #     beginning, and the whole of the real history fell inside the range. A client
+            #     that remembers correctly asks from where it actually got to -- and everything
+            #     above that is the venue's deliberate high bias after an unclean death, numbers
+            #     NOBODY ever sent. Gap-filling those is the right answer, so requiring real
+            #     reports would be requiring the venue to invent them.
+            #
+            #     What matters, and is asserted here, is that the record crossed the instance
+            #     boundary at all. Without it instance b cannot tell a number that held a report
+            #     from one that held a heartbeat, which is BUG-0051 in the case a gateway-local
+            #     record cannot reach.
+            inherited = _inherited_report_range_count(gw_b_log, from_byte=gw_b_pos)
+            if inherited is None or inherited == 0:
+                die("in-flight: instance b inherited no record of which of this session's numbers "
+                    "held execution reports. It never sent them itself, so without that record it "
+                    "cannot tell a report's number from a heartbeat's, and a resend would refill "
+                    "both -- see BUG-0051. The gateway reports the record on SessionSequenceUpdate "
+                    "every 2s; a session that lives and dies inside one interval reports nothing.")
             resent = _resent_report_count(gw_b_log, from_byte=gw_b_pos)
-            if not resent or resent <= 1:
-                die(f"in-flight: instance b resent {resent} report(s) -- it gap-filled the range "
-                    "instead of replaying it. The member kept its session and lost everything it "
-                    "missed. That is what the venue does when it has no record of which of the "
-                    "member's numbers held a report, so check that the sequencer was given one: "
-                    "the gateway reports it on SessionSequenceUpdate every 2s, and a session that "
-                    "lives and dies inside one interval never reports at all.")
-            log(f"  in-flight: instance b resent {resent} real report(s) for a session it never "
-                "served -- the record outlived the instance that made it -- OK")
+            log(f"  in-flight: instance b inherited a record covering {inherited} number(s) for a "
+                f"session it never served, and replayed {resent} report(s) into the range asked "
+                "for -- the rest of that range is the venue's own high bias, which nobody sent -- OK")
 
             resume_at = _resend_resume_point(gw_b_log, from_byte=gw_b_pos)
             if resume_at is None:

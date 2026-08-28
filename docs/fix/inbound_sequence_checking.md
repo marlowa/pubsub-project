@@ -1,6 +1,7 @@
 # Inbound sequence checking {#fix_inbound_sequence_checking}
 
-**Status: step 1 of 4 built, 2026-08-27. Nothing in the design is open.** See
+**Status: steps 1 and 2 of 4 built; the venue now checks what a member sends. Nothing in the
+design is open.** See
 [Implementation order](#implementation-order) for what is done and what is not. It addresses
 [BUG-0038](../bug_list.md#bug_0038), and items 1 and 2 of the departures in
 [FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md), which are one piece of
@@ -54,7 +55,7 @@ definition wrong by one is the whole game, so it is stated rather than implied.
 | Received | What it means | What the venue does |
 |---|---|---|
 | **equal** | in sequence | process it, then increment |
-| **higher** | the member skipped numbers | do not process; send `ResendRequest(expected, 0)` |
+| **higher** | the member skipped numbers | send `ResendRequest(expected, 0)`; process it only if it is session-level |
 | **lower**, `PossDupFlag=Y` | a retransmission of something already processed | discard silently |
 | **lower**, no `PossDupFlag` | the far side has gone backwards | Logout and disconnect |
 
@@ -72,9 +73,30 @@ The alternative — hold it and process it once the gap fills — is what QuickF
 wrong, but it buys little here and costs a buffer whose exhaustion behaviour would need designing.
 Asking the member to send it again is cheaper than deciding what to do when the buffer is full.
 
-### While a gap is open, that member's later messages wait
+### While a gap is open, that member's later APPLICATION messages wait
 
-**Nothing from that member may be processed while the gap is open**, not merely the message that
+**Session-level messages are still acted on** — Heartbeat, TestRequest, ResendRequest and
+SequenceReset. None of them is an order or a cancel, so none carries the ordering risk the wait
+exists to prevent, and holding them back breaks the very recovery the gap is waiting for. Logout is
+deliberately not among them: it ends a session, so a badly numbered one should be questioned like
+anything else.
+
+Both halves of that were measured rather than reasoned, and both were wrong first:
+
+- With **everything** blocked, a member recovering a gap saw silence, sent a `TestRequest`, got no
+  answer, and aborted the session. The venue had stopped answering the layer that keeps the
+  connection alive.
+- With only **Heartbeat and TestRequest** let through, it deadlocked instead. A member's own
+  `ResendRequest` is sent at *its* current number, which during a venue-side gap is by definition
+  above what the venue expects — so it was discarded as part of the gap. The venue then waited for
+  messages the member could not send until the venue answered a request it had thrown away.
+
+The second is the one worth remembering: the rule "nothing from that member may be processed"
+sounds safe and is not, because the messages that end a gap arrive numbered inside it.
+
+### Why the application messages wait
+
+No application message from that member is processed while the gap is open, not merely the one that
 revealed it.
 
 This is not the venue imposing anything. It cannot process message 101 because it does not have
@@ -180,10 +202,24 @@ numbered 1 has been processed. The venue already honours the flag for the outbou
 inbound side follows it for the same reason, and the two must reset together or the session is
 half-reset.
 
-## What the venue does today, measured
+## Measured, before and after
 
-Taken on 2026-08-27 with `scripts/fix_raw_client.py` against a running venue, as the "before" this
-work changes. The member logs on, sends one order in sequence, and then misbehaves:
+### After step 2, 2026-08-28
+
+Six cases, each driven with `scripts/fix_raw_client.py` against a running venue:
+
+| The member does | The venue does |
+|---|---|
+| order numbered 50, expecting 3 | `ResendRequest BeginSeqNo=3 EndSeqNo=0`; the order is **not** processed |
+| another message while that gap is open | no second request — asked once |
+| resends 3 with `PossDupFlag=Y` | **processed**: it fills a real gap, so it is new to the venue |
+| order numbered 2, expecting 4, unmarked | `Logout` — *MsgSeqNum too low, expecting 4 but received 2* — and disconnect |
+| order numbered 2, expecting 4, `PossDupFlag=Y` | discarded silently; the session stays open and usable |
+| order with no `MsgSeqNum` | `Reject`, and the counter does **not** advance: the next in-sequence order still works |
+| Logon numbered 25, expecting 5 | Logon **completed first**, then `ResendRequest BeginSeqNo=5` |
+| Logon numbered 2, expecting 5, unmarked | `Logout` with the reason, and the session never opens |
+
+### Before, 2026-08-27
 
 ```
 in-sequence order  -> ExecutionReport ClOrdID=base1   (venue expects 3 next)
@@ -203,7 +239,7 @@ in-sequence order  -> ExecutionReport ClOrdID=base1   (venue expects 3 next)
 The first is BUG-0038 in one line: forty-seven numbers were skipped, the order was accepted anyway,
 and neither side has any reason to think something is missing. The third is the encouraging one --
 `MsgSeqNum` is a required header field, so a message without it already fails validation and gets a
-Reject. Step 2's work there is only to make sure the counter is **not** advanced for it.
+Reject. Step 2's work there was only to make sure the counter is **not** advanced for it.
 
 ## Testing
 
@@ -325,12 +361,17 @@ be: reaching it needs a member whose Logon number is at or above what the venue 
 every client in the harness uses a memory persister, so each reconnects with its own numbering
 restarted at 1. That case is in step 4's list.
 
-### Step 2 — the counter and the checks. **Not started.**
+### Step 2 — the counter and the checks. **Done 2026-08-28.**
 
-In the gateway, on both the parse and the reject paths, per [The rule](#the-rule). The Logon path
-last, because it is the one with the ordering subtlety — the expected number arrives
-asynchronously on `SessionBoundAck`, so the Logon's own number is checked retrospectively in the
-existing `awaiting_sequence_state` window.
+`classify_inbound_sequence` decides a message's place with no side effects, so both inbound paths
+ask the same question and then do different things about the answer; `request_missing_messages`
+asks once per gap rather than once per message; `end_session_on_sequence_error` sends the Logout
+and disconnects. The Logon is judged in `judge_logon_sequence`, called from
+`establish_session_after_logon_sequence`, which enforces the order the specification requires:
+judge, then reply, then ask — or end the session without opening it.
+
+`FixSession` gained `inbound_gap_open`, and `logon_seq_num`/`logon_poss_dup` for the retrospective
+check. Measured results above.
 
 ### Step 3 — the retry timer and the Logout. **Not started.**
 

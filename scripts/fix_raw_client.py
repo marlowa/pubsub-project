@@ -132,6 +132,10 @@ class FixRawClient:
         self.password = password
         self.sock: socket.socket | None = None
         self.buffer = b""
+        # Messages read but not yet claimed. receive_until() must not throw away what it was not
+        # looking for: a test waiting for a Logon that never comes would otherwise swallow the
+        # Logout explaining why, and report the venue as silent when it had answered.
+        self.pending: list[dict[int, str]] = []
         # What this client will put on the next message unless told otherwise. It is NOT an
         # expected-receive counter: nothing here reacts to what the venue sends.
         self.next_send_seq_num = 1
@@ -188,11 +192,22 @@ class FixRawClient:
 
         wire = build_message(fields, bad_body_length=bad_body_length, bad_check_sum=bad_check_sum)
         self.sock.sendall(wire)
+
+        # An explicit seq_num is a ONE-OFF override and leaves the running counter alone. Injecting
+        # a duplicate at number 2 does not mean the client now believes it is at 3 -- it means it
+        # sent one message out of position and carries on where it was. The first version advanced
+        # here, and the effect was that a test injecting a duplicate then sent its next ordinary
+        # message at a number the venue had already seen, which the venue correctly treated as the
+        # member going backwards. The test looked like a venue defect and was not.
+        #
+        # Use set_next_send_seq_num() for a test that really does mean "continue from here".
         if advance and seq_num is None and not omit_seq_num:
             self.next_send_seq_num = number + 1
-        elif advance and seq_num is not None:
-            self.next_send_seq_num = number + 1
         return wire
+
+    def set_next_send_seq_num(self, seq_num: int) -> None:
+        """Continue from this number, as a member with a persistent store would after a restart."""
+        self.next_send_seq_num = seq_num
 
     def logon(self, *, seq_num: int | None = None, reset_seq_num: bool = False,
               heartbeat_interval: int = 30) -> bytes:
@@ -232,17 +247,24 @@ class FixRawClient:
             return []
         self.buffer += chunk
         messages, self.buffer = parse_messages(self.buffer)
-        return messages
+        claimed = self.pending + messages
+        self.pending = []
+        return claimed
 
     def receive_until(self, msg_type: str, timeout: float = 5.0) -> dict[int, str] | None:
         """Read until a message of this type arrives, or the timeout expires."""
         import time as _time
         deadline = _time.time() + timeout
-        while _time.time() < deadline:
-            for message in self.receive(timeout=min(0.5, max(0.05, deadline - _time.time()))):
+        while True:
+            for index, message in enumerate(self.pending):
                 if message.get(MSG_TYPE) == msg_type:
+                    del self.pending[index]
                     return message
-        return None
+            remaining = deadline - _time.time()
+            if remaining <= 0:
+                return None
+            # Anything not asked for is kept, not dropped, so a later call can still find it.
+            self.pending.extend(self.receive(timeout=min(0.5, max(0.05, remaining))))
 
 
 def main() -> int:

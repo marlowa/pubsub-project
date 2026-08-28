@@ -183,6 +183,48 @@ struct FixSession {
     int expected_inbound_seq_num{1};
 
     /**
+     * @brief True while the venue is waiting for a member to fill a gap it has asked about.
+     *
+     * Set when a message arrives numbered above what was expected, cleared when one arrives in
+     * sequence. Its job is to stop a second `ResendRequest` going out for every further message
+     * that arrives while the first is still being answered -- the member's later messages keep
+     * coming until it acts on the request, and each of them looks like the same gap.
+     *
+     * While it is set, nothing from this member is processed. That is not a policy: the venue
+     * cannot process a message when it does not have the one before it, and applying a cancel to
+     * an order the venue never received is worse than waiting a round trip.
+     */
+    bool inbound_gap_open{false};
+
+    /**
+     * @brief The number that revealed the gap; the gap is not closed until the venue passes it.
+     *
+     * Clearing `inbound_gap_open` on the first in-sequence message is not enough, and the way it
+     * fails is worth recording. A member answering a `ResendRequest` sends the missing messages in
+     * order, so the first of them IS in sequence -- the flag would clear on it, and any further
+     * gap inside the same resend would provoke a second request while the first was still being
+     * answered. A member that receives one mid-resend ignores it, and the session then sits
+     * waiting on an answer that will never come.
+     *
+     * So the gap stays open until the counter has passed the number that revealed it. If the
+     * resend does not close it, the retry timer is what re-asks -- not the arrival of each
+     * further message.
+     */
+    int inbound_gap_through{0};
+
+    /**
+     * @brief The `MsgSeqNum` on the Logon that bound this session, and whether it was a possible
+     *        duplicate. Zero means the Logon carried no readable number.
+     *
+     * Stashed rather than checked on arrival, because the venue does not yet know what to expect:
+     * the expected number comes back asynchronously on `SessionBoundAck`. So the Logon is judged
+     * retrospectively, in the window where the session is authenticated but nothing may be sent to
+     * the member yet. See docs/fix/inbound_sequence_checking.md.
+     */
+    int logon_seq_num{0};
+    bool logon_poss_dup{false};
+
+    /**
      * @brief True when the member asked, on Logon, for both sides to restart at 1.
      *
      * ResetSeqNumFlag=Y is the standard way a member says "forget where we were". A venue

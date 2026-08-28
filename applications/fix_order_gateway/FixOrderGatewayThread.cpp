@@ -321,10 +321,64 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                     FixSession& session = sit->second;
                     const std::string_view type = msg.msg_type();
 
-                    // Before the branch on type, so no message reaches a handler without the
-                    // member's numbering being noted. Step 2 turns this into the gate that
-                    // decides whether the message may be processed at all.
-                    note_inbound_seq_num(session, msg);
+                    // The gate, before the branch on type, so no message reaches a handler
+                    // without its place in the member's stream being decided first. The Logon is
+                    // the exception and is judged later: when it arrives the venue does not yet
+                    // know what to expect, because that comes back on SessionBoundAck.
+                    // Session-level messages are acted on even while a gap is open. The ordering
+                    // rule below exists so that a cancel cannot overtake the order it cancels;
+                    // none of these is an order or a cancel, and holding them back does not
+                    // protect anything -- it breaks the very thing the gap is waiting for.
+                    //
+                    // Both halves of that were measured rather than reasoned. With everything
+                    // blocked, a member recovering a gap saw silence, sent a TestRequest, got no
+                    // answer and aborted the session. With only Heartbeat and TestRequest let
+                    // through it deadlocked instead: the member's own ResendRequest is sent at ITS
+                    // current number, which during a venue-side gap is by definition above what
+                    // the venue expects, so it was discarded as part of the gap -- the venue
+                    // waiting for messages the member could not send until the venue answered a
+                    // request it had thrown away.
+                    //
+                    // Logout is deliberately NOT here. It ends a session, so a badly numbered one
+                    // should be questioned like any other message.
+                    //
+                    // They still pass through the gate: their numbers are checked, the counter
+                    // advances, and a too-low one still ends the session. What they do not do is
+                    // wait.
+                    const bool is_session_level =
+                        (type == MsgType::Heartbeat || type == MsgType::TestRequest || type == MsgType::ResendRequest || type == MsgType::SequenceReset);
+
+                    if (type != MsgType::Logon && session.session_established) {
+                        switch (classify_inbound_sequence(session, msg)) {
+                            case InboundSequence::InSequence:
+                                ++session.expected_inbound_seq_num;
+                                if (session.inbound_gap_open && session.expected_inbound_seq_num > session.inbound_gap_through) {
+                                    session.inbound_gap_open = false;
+                                    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                                               "FixOrderGatewayThread: connection {} comp_id='{}' the gap is closed -- caught up to MsgSeqNum={}",
+                                               conn_id.get_value(), session.client_comp_id, session.inbound_gap_through);
+                                }
+                                break;
+                            case InboundSequence::Gap:
+                                request_missing_messages(session, inbound_seq_num_of(msg));
+                                if (!is_session_level) {
+                                    return; // the venue does not have what came before it
+                                }
+                                break; // acted on anyway: recovery is made of these messages
+                            case InboundSequence::Duplicate:
+                                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                                           "FixOrderGatewayThread: connection {} discarding MsgType='{}' MsgSeqNum={} marked PossDupFlag -- already processed",
+                                           conn_id.get_value(), type, inbound_seq_num_of(msg));
+                                return;
+                            case InboundSequence::TooLow:
+                                end_session_on_sequence_error(session, inbound_seq_num_of(msg));
+                                return;
+                            case InboundSequence::Unnumbered:
+                                // A required header field, so this cannot normally arrive here; the
+                                // reject path is where a message without one lands.
+                                return;
+                        }
+                    }
 
                     if (type == MsgType::Logon) {
                         handle_logon(session, msg);
@@ -356,10 +410,39 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
                         return;
                     }
                     FixSession& session = sit->second;
-                    // A rejected message has still consumed its sequence number. A counter that
-                    // skipped this path would sit below where the member actually is, and the
-                    // checking built on it would see a gap that is not there.
-                    note_inbound_seq_num(session, msg);
+
+                    // Sequence position is decided here too, and first. A rejected message has
+                    // still consumed its number, so a counter that skipped this path would sit
+                    // below where the member actually is and see gaps that are not there. And a
+                    // message whose place in the stream is unknown cannot be trusted whatever
+                    // else is wrong with it.
+                    if (session.session_established && msg.msg_type() != MsgType::Logon) {
+                        switch (classify_inbound_sequence(session, msg)) {
+                            case InboundSequence::InSequence:
+                                ++session.expected_inbound_seq_num;
+                                if (session.inbound_gap_open && session.expected_inbound_seq_num > session.inbound_gap_through) {
+                                    session.inbound_gap_open = false;
+                                }
+                                break; // fall through to the Reject below: it consumed its number
+                            case InboundSequence::Gap:
+                                // No Reject. It arrives again inside the resend and is rejected then,
+                                // at the point the venue can place it -- rather than a Reject naming
+                                // a message the venue is simultaneously asking to be sent again.
+                                request_missing_messages(session, inbound_seq_num_of(msg));
+                                return;
+                            case InboundSequence::Duplicate:
+                                return;
+                            case InboundSequence::TooLow:
+                                end_session_on_sequence_error(session, inbound_seq_num_of(msg));
+                                return;
+                            case InboundSequence::Unnumbered:
+                                // Reject it, but do not advance: it consumed some number and the
+                                // venue cannot know which, and assuming is how a counter drifts. The
+                                // next message reveals a gap and the resend repairs it.
+                                break;
+                        }
+                    }
+
                     char text[128];
                     const std::string_view description = reject.describe(text, sizeof(text));
                     // A message that fails validation before the session is established, or an
@@ -1071,6 +1154,13 @@ void FixOrderGatewayThread::handle_logon(FixSession& session, const ParsedFixMes
 
     // ResetSeqNumFlag=Y: the member wants both sides to restart at 1. Read here, acted on
     // when the venue's remembered numbering arrives -- see handle_session_bound_ack.
+    // Stashed, not checked. The venue does not yet know what to expect from this member -- that
+    // comes back on SessionBoundAck -- so the Logon's own number is judged retrospectively, in
+    // judge_logon_sequence. See docs/fix/inbound_sequence_checking.md.
+    session.logon_seq_num = inbound_seq_num_of(msg);
+    const std::string_view logon_poss_dup = msg.get(Tag::PossDupFlag);
+    session.logon_poss_dup = (logon_poss_dup == "Y" || logon_poss_dup == "y");
+
     const std::string_view reset_flag = msg.get(Tag::ResetSeqNumFlag);
     session.reset_seq_num_requested = (reset_flag == "Y" || reset_flag == "y");
     if (session.reset_seq_num_requested) {
@@ -1282,7 +1372,7 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
     if (!view.known) {
         // First time the venue has seen this session, so the defaults already apply -- but
         // the reply is still owed, and the session is not open until it goes out.
-        complete_session_establishment(*session);
+        establish_session_after_logon_sequence(*session);
         return;
     }
     if (session->reset_seq_num_requested) {
@@ -1295,7 +1385,7 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: comp_id='{}' asked for a sequence reset -- discarding the venue's remembered outbound={}", session->client_comp_id,
                    view.outbound_seq_num);
-        complete_session_establishment(*session);
+        establish_session_after_logon_sequence(*session);
         return;
     }
 
@@ -1330,7 +1420,25 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
                "range(s) covering {} number(s)",
                session->client_comp_id, view.outbound_seq_num, session->expected_inbound_seq_num, view.inbound_seq_num, session->report_seq_nums.size(),
                fix_common::seq_num_ranges::count_in(session->report_seq_nums, 1, view.outbound_seq_num));
-    complete_session_establishment(*session);
+    establish_session_after_logon_sequence(*session);
+}
+
+void FixOrderGatewayThread::establish_session_after_logon_sequence(FixSession& session) {
+    // The order here is the specification's and matters. A Logon numbered above what the venue
+    // expects is not grounds for refusing it: the logon completes, the reply goes out, and only
+    // then is the gap asked about -- because a member that has lost messages is exactly the one
+    // that needs the session in order to recover them.
+    const LogonSequence outcome = judge_logon_sequence(session);
+    if (outcome == LogonSequence::EndSession) {
+        end_session_on_sequence_error(session, session.logon_seq_num);
+        return;
+    }
+
+    complete_session_establishment(session);
+
+    if (outcome == LogonSequence::ProceedThenAskForGap) {
+        request_missing_messages(session, session.logon_seq_num);
+    }
 }
 
 void FixOrderGatewayThread::handle_session_replay_record(const pubsub_itc_fw::EventMessage& message) {
@@ -2116,28 +2224,118 @@ void FixOrderGatewayThread::retry_pending_session_binds(pubsub_itc_fw::Connectio
     }
 }
 
-void FixOrderGatewayThread::note_inbound_seq_num(FixSession& session, const ParsedFixMessage& msg) {
-    // Observe where the member's numbering has reached. Nothing acts on it yet: this is step 1 of
-    // BUG-0038, which puts the number in the session state and carries it to the sequencer so the
-    // checking built on top of it has something to start from after a gateway change.
-    //
-    // Called from both inbound paths -- the message callback and the reject callback -- because a
-    // message that fails FIX validation has still consumed its sequence number, and a counter that
-    // missed those would report a figure below where the member actually is.
-    const std::string_view seq_num_field = msg.get(Tag::MsgSeqNum);
-    if (seq_num_field.empty()) {
-        return; // no readable number: there is no position to record
+int FixOrderGatewayThread::inbound_seq_num_of(const ParsedFixMessage& msg) {
+    const std::string_view field = msg.get(Tag::MsgSeqNum);
+    if (field.empty()) {
+        return 0;
     }
     int seq_num = 0;
-    if (std::from_chars(seq_num_field.data(), seq_num_field.data() + seq_num_field.size(), seq_num).ec != std::errc{}) {
-        return;
+    if (std::from_chars(field.data(), field.data() + field.size(), seq_num).ec != std::errc{} || seq_num <= 0) {
+        return 0;
+    }
+    return seq_num;
+}
+
+FixOrderGatewayThread::InboundSequence FixOrderGatewayThread::classify_inbound_sequence(const FixSession& session, const ParsedFixMessage& msg) {
+    // No side effects, so both inbound paths can ask the same question and then do different
+    // things about the answer. See docs/fix/inbound_sequence_checking.md.
+    const int seq_num = inbound_seq_num_of(msg);
+    if (seq_num == 0) {
+        return InboundSequence::Unnumbered;
+    }
+    if (seq_num == session.expected_inbound_seq_num) {
+        return InboundSequence::InSequence;
+    }
+    if (seq_num > session.expected_inbound_seq_num) {
+        // Missing, not late. A single connection is already ordered by TCP, so a number above
+        // what was expected means the member skipped those numbers rather than that they are
+        // still in flight behind this one.
+        return InboundSequence::Gap;
     }
 
-    // Never lowered. A number below what has been seen describes a message already processed, and
-    // winding back would have the venue ask for messages it already holds.
-    if (seq_num >= session.expected_inbound_seq_num) {
-        session.expected_inbound_seq_num = seq_num + 1;
+    // Below what was expected. PossDupFlag=Y is the member saying "you may already have this",
+    // which is a retransmission of something the venue has processed and can simply be dropped.
+    // Without it, the member has gone backwards, and FIXT.1.1 calls that a serious error: its
+    // state can no longer be trusted, whatever the message says.
+    const std::string_view poss_dup = msg.get(Tag::PossDupFlag);
+    return (poss_dup == "Y" || poss_dup == "y") ? InboundSequence::Duplicate : InboundSequence::TooLow;
+}
+
+void FixOrderGatewayThread::request_missing_messages(FixSession& session, int revealed_by_seq_num) {
+    // Once per gap, not once per message. The member's later messages keep arriving until it
+    // acts on the request, and every one of them looks like the same gap; asking again for each
+    // would flood a member that is already doing what was asked.
+    if (session.inbound_gap_open) {
+        // Still open until the counter passes what revealed it, so a further message arriving
+        // mid-resend does not provoke a second request. A member that gets one while answering
+        // the first ignores it, and the session then waits on an answer that never comes.
+        session.inbound_gap_through = std::max(session.inbound_gap_through, revealed_by_seq_num);
+        return;
     }
+    session.inbound_gap_open = true;
+    session.inbound_gap_through = revealed_by_seq_num;
+
+    // EndSeqNo=0 -- everything from here on. The message that revealed the gap was discarded
+    // rather than held, so it has to come again, and it will, in order behind what preceded it.
+    FixMessage request;
+    request.set(Tag::MsgType, MsgType::ResendRequest);
+    request.set(Tag::BeginSeqNo, std::to_string(session.expected_inbound_seq_num));
+    request.set(Tag::EndSeqNo, std::string("0"));
+    send_fix_to_session(session, request);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "FixOrderGatewayThread: connection {} comp_id='{}' expected MsgSeqNum={} from the member and received a higher one -- messages are missing, "
+               "asking for everything from {} on. Nothing further from this member is processed until it answers",
+               session.conn_id.get_value(), session.client_comp_id, session.expected_inbound_seq_num, session.expected_inbound_seq_num);
+}
+
+void FixOrderGatewayThread::end_session_on_sequence_error(FixSession& session, int received_seq_num) {
+    // FIXT.1.1 treats a number below what was expected, unmarked, as a serious error: the far
+    // side has gone backwards and its state cannot be trusted. Ending the session is recoverable
+    // -- the venue keeps the session's numbering, so the member reconnects and resynchronises
+    // from it -- whereas continuing to accept orders through a session whose numbering the venue
+    // does not believe is not.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "FixOrderGatewayThread: connection {} comp_id='{}' received MsgSeqNum={} when expecting {}, with no PossDupFlag -- the member's numbering has "
+               "gone backwards, ending the session",
+               session.conn_id.get_value(), session.client_comp_id, received_seq_num, session.expected_inbound_seq_num);
+
+    FixMessage logout;
+    logout.set(Tag::MsgType, MsgType::Logout);
+    logout.set(Tag::Text, fmt::format("MsgSeqNum too low, expecting {} but received {}", session.expected_inbound_seq_num, received_seq_num));
+    send_fix_to_session(session, logout);
+    session.session_established = false;
+    disconnect_session(session, "inbound MsgSeqNum below expected without PossDupFlag");
+}
+
+FixOrderGatewayThread::LogonSequence FixOrderGatewayThread::judge_logon_sequence(FixSession& session) {
+    // The Logon is judged here rather than on arrival because the venue did not know what to
+    // expect when it arrived: the expected number comes back on SessionBoundAck, which is what
+    // has just happened. Everything below runs before the Logon reply goes out, so a session that
+    // must not open never opens.
+    if (session.logon_seq_num == 0) {
+        // A Logon with no readable number would have failed validation before reaching here, so
+        // this is defensive. Nothing to place it by, so nothing to conclude.
+        return LogonSequence::Proceed;
+    }
+    if (session.logon_seq_num == session.expected_inbound_seq_num) {
+        session.expected_inbound_seq_num = session.logon_seq_num + 1;
+        return LogonSequence::Proceed;
+    }
+    if (session.logon_seq_num > session.expected_inbound_seq_num) {
+        // Explicitly NOT grounds for refusing the logon. FIXT.1.1 says to complete it and then
+        // ask for the gap, and a venue that refused here would lock out precisely the member
+        // that has lost messages and needs to recover them.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "FixOrderGatewayThread: connection {} comp_id='{}' Logon carried MsgSeqNum={} when {} was expected -- completing the logon first, then "
+                   "asking for what is missing",
+                   session.conn_id.get_value(), session.client_comp_id, session.logon_seq_num, session.expected_inbound_seq_num);
+        return LogonSequence::ProceedThenAskForGap;
+    }
+    if (session.logon_poss_dup) {
+        return LogonSequence::Proceed; // a retransmitted Logon; the venue has already had it
+    }
+    return LogonSequence::EndSession;
 }
 
 void FixOrderGatewayThread::gap_fill_unreplayable_run(FixSession& session) {

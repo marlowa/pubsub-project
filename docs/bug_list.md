@@ -714,12 +714,23 @@ has to survive a gateway failover for the same reason the outbound counter does.
 Not a small change, and it touches the session state that HA already carries across a failover.
 Worth sizing before starting.
 
-**Designed 2026-08-27 in [Inbound sequence checking](fix/inbound_sequence_checking.md); step 1 of
-4 built the same day.** The note carries the full plan and the state of each step, so this entry
-does not repeat it: in short, the `inbound_seq_num` field is on PDUs 121, 122 and 126 and is
-observed, carried and resumed, and **nothing checks it yet** -- so this defect is still fully
-open. Verified surviving a gateway death in `ha_test.py` scenario 23, which resumed the member on
-the surviving instance at `outbound=4140 inbound=1002`.
+**Designed 2026-08-27 in [Inbound sequence checking](fix/inbound_sequence_checking.md); steps 1
+and 2 of 4 built, 2026-08-27 and 2026-08-28.** The note carries the full plan and the state of each
+step. **The venue now checks what a member sends**, which is the substance of this entry; what
+remains is the retry timer for an unanswered `ResendRequest` (step 3) and the scenarios (step 4),
+so this stays open until those land.
+
+Measured against a running venue with `scripts/fix_raw_client.py`: a gap produces
+`ResendRequest(expected, 0)` and nothing past it is processed; a number below expected without
+`PossDupFlag` ends the session with a Logout naming both numbers; the same marked `PossDupFlag=Y`
+is discarded and the session stays usable; a message with no `MsgSeqNum` is rejected without the
+counter moving; a Logon above expected completes **first** and is then asked about; a Logon below
+it never opens the session.
+
+**Three things about it were wrong first, and all three were found by testing rather than
+reasoning** -- the gap re-asking mid-resend, the venue starving the keepalive layer while it
+waited, and then deadlocking because a member's own `ResendRequest` arrives numbered inside the
+gap. See the design note.
 
 Decisions were taken, and one of them is the reason the design was written down
 before any code:
