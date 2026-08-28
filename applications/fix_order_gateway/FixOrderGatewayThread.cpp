@@ -135,6 +135,13 @@ constexpr auto sequence_report_interval = std::chrono::seconds{2};
 // log is not made of these. See BUG-0009.
 constexpr auto order_progress_report_interval = std::chrono::seconds{5};
 
+// The timer that drives it ticks faster than the interval, and it has to. With the two equal, each
+// tick arrives a hair under five seconds after the last report -- scheduling is never exact -- so
+// the "has the interval elapsed?" guard rejects it, and the line lands every TEN seconds instead
+// of every five. Measured at exactly 10.000s apart by ha_test.py scenario 42, which is how it was
+// found: the guard is a floor and a floor needs to be tested more often than it is set.
+constexpr auto order_progress_timer_interval = order_progress_report_interval / 5;
+
 // How long the venue waits for a member to answer a ResendRequest before asking again, and how
 // many times it asks in total. Two attempts after the first, so a member has about fifteen
 // seconds before it loses the session.
@@ -206,7 +213,7 @@ void FixOrderGatewayThread::on_app_ready_event() {
     // allocator maintains as it goes rather than traversing a free list.
     open_order_pool_metrics_.register_metrics(get_reactor().metrics(), gateway_metrics::open_order_pool_metrics_scope);
     pool_metrics_timer_id_ = start_recurring_timer(gateway_metrics::pool_metrics_sample_interval);
-    order_progress_timer_id_ = start_recurring_timer(order_progress_report_interval);
+    order_progress_timer_id_ = start_recurring_timer(order_progress_timer_interval);
 
     connect_to_service("authentication_service_primary");
     if (config_.ha_enabled) {

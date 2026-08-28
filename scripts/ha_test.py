@@ -311,6 +311,23 @@ _RAW_CLIENT_SETTLE            = 2.0
 _RAW_LOGON_TIMEOUT            = 15.0
 _RAW_REPLY_TIMEOUT            = 10.0
 _RAW_SILENCE_TIMEOUT          = 2.0
+
+# Scenario 42. The venue stops accepting when a deferral outlives order_deferral_refusal_age in
+# SequencerThread.hpp, currently 45s. This is NOT a copy of that constant to assert against: the
+# scenario asserts that refusal happens within the deadline and did not happen on the first order,
+# which holds whatever the threshold is set to. The deadline is generous for that reason -- a
+# tighter one would turn a change to the venue's policy into a mysterious test failure.
+_REFUSAL_DEADLINE             = 120.0
+# How often an order is offered while waiting for the venue to start refusing. Acceptance is
+# re-evaluated when an order arrives, so something has to keep arriving or nothing decides.
+_REFUSAL_PROBE_INTERVAL       = 5.0
+# How long an order is watched for an answer before it is taken as deferred. A deferred order gets
+# no ExecutionReport at all -- the report is the matching engine's to send and there is none -- so
+# this is a silence window, and it only has to outlast the round trip a real answer would take.
+_REFUSAL_DEFERRED_SILENCE     = 3.0
+# Long enough for at least two of the gateway's five-second progress lines to land, so "it kept
+# reporting" is a claim about a sequence rather than about one line that happened to be there.
+_REFUSAL_QUIET_WATCH          = 12.0
 # Any past time will do: what matters is that OrigSendingTime is present on a retransmission, not
 # what it says.
 _RAW_ORIG_SENDING_TIME        = "20260101-00:00:00.000"
@@ -629,6 +646,10 @@ class Scenario(NamedTuple):
     # OTHER instance, asserting what the member can recover. See run_scenario's "in-flight"
     # block. Needs gateway_b, since the whole point is that the member returns elsewhere.
     assert_inflight_recovery: bool = False
+    # When True, kill the matching engine and DO NOT restart it, then prove the venue stops
+    # accepting orders it cannot process rather than acknowledging them forever. See
+    # run_scenario's "order refusal" block and docs/availability/order_acceptance.md.
+    assert_order_refusal: bool = False
 
 
 # ── helpers shared by scenario definitions ────────────────────────────────────
@@ -2473,6 +2494,38 @@ _SCENARIOS: list[Scenario] = [
         assert_bounded_resend=True,
         steps=[],
     ),
+
+    # 42 -- the venue refuses what it cannot process, and starts again on its own.
+    #
+    # The matching engine is killed and NOT restarted, which is the case the deferral policy was
+    # never written for. Deferring is right for a failover: the order is in the WAL and a promoted
+    # engine replays it. It is wrong when there is no engine to promote, and the venue could not
+    # tell the two apart -- it deferred 1,087,912 orders across seven minutes, acknowledged every
+    # one of them, and reported dropped=0 throughout.
+    #
+    # What makes this scenario worth having is that the OLD behaviour passes every obvious check.
+    # The session is up, orders are acknowledged, nothing is dropped, no error is logged above
+    # Info. A test that asks "did the venue answer?" cannot see the defect at all. So this asks a
+    # harder question: does the answer CHANGE when the venue can no longer do what it is promising?
+    #
+    # Both halves are asserted, and the first is not padding. A venue that refused from the first
+    # order would pass a refusal-only test while being badly wrong -- it would reject orders during
+    # every routine failover, which members currently survive. The scenario therefore proves the
+    # order is accepted first and refused later, which is the whole of the design.
+    Scenario(
+        number=42,
+        short_name="order_refusal",
+        description="A venue with no matching engine refuses orders instead of acknowledging them",
+        expected_outcome=(
+            "an order is accepted while a failover is still plausible and refused once it is not; "
+            "cancels are refused too; the health line keeps reporting while nothing progresses; "
+            "and acceptance resumes on its own when an engine returns"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_order_refusal=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -3021,15 +3074,48 @@ def _gateway_progress_lines(log_path: Path) -> list[dict[str, int]]:
     still writes one every few seconds -- the whole point of BUG-0009's change, and the reason a
     caller must read what a line SAYS rather than count how many there are.
     """
-    lines: list[dict[str, int]] = []
     try:
-        text = log_path.read_text(errors="replace")
+        return _progress_figures(log_path.read_text(errors="replace"))
     except OSError:
-        return lines
-    for match in re.finditer(r"GW-PROGRESS accounted=(\d+) sent=(\d+) dropped=(\d+) nos_received=(\d+)", text):
-        lines.append({"accounted": int(match.group(1)), "sent": int(match.group(2)),
-                      "dropped": int(match.group(3)), "nos_received": int(match.group(4))})
+        return []
+
+
+# The trailing fields are optional here, not because the gateway ever omits them, but so that
+# appending the next one does not silently stop every line from matching at all -- a parser that
+# returns nothing looks exactly like a gateway that logged nothing. Fields are appended for the
+# same reason: see the TEST CONTRACT note beside the line in FixOrderGatewayThread.cpp.
+_GW_PROGRESS_PATTERN = re.compile(
+    r"GW-PROGRESS accounted=(\d+) sent=(\d+) dropped=(\d+) nos_received=(\d+)"
+    r"(?: awaiting=(\d+))?(?: refused=(\d+))?(?: refused_cancels=(\d+))?")
+
+
+def _progress_figures(text: str) -> list[dict[str, int]]:
+    """Parse every GW-PROGRESS line in some log text into its figures."""
+    lines: list[dict[str, int]] = []
+    for match in _GW_PROGRESS_PATTERN.finditer(text):
+        figures = {"accounted": int(match.group(1)), "sent": int(match.group(2)),
+                   "dropped": int(match.group(3)), "nos_received": int(match.group(4))}
+        for index, name in ((5, "awaiting"), (6, "refused"), (7, "refused_cancels")):
+            if match.group(index) is not None:
+                figures[name] = int(match.group(index))
+        lines.append(figures)
     return lines
+
+
+def _gateway_progress_lines_since(log_path: Path, from_byte: int) -> list[dict[str, int]]:
+    """The GW-PROGRESS lines written after from_byte, as their figures.
+
+    Reading from an offset rather than the whole file is what lets a caller ask "did it keep
+    reporting DURING this window", which is a different question from "has it ever reported".
+    The second is answered by a run that was healthy an hour ago.
+    """
+    try:
+        with open(log_path, "r", errors="replace") as handle:
+            handle.seek(from_byte)
+            text = handle.read()
+    except OSError:
+        return []
+    return _progress_figures(text)
 
 
 def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
@@ -4676,6 +4762,175 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "sequence number, so its counter had moved when it should not have.")
             log("  inbound sequence: a message with no MsgSeqNum is rejected and the counter does "
                 "not move -- OK")
+            member.close()
+
+        # ── The venue refuses what it cannot process ──────────────────────────
+        # The matching engine is killed and not restarted. What is being tested is not that the
+        # venue notices -- step 1 made it notice -- but that the noticing reaches the member.
+        if scenario.assert_order_refusal:
+            log("=== Refusing orders the venue cannot process ===")
+            stop_f8test(f8proc)
+            f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            gateway_port = gateway_listen_port(prefix, "a")
+
+            me_proc = proc_by_name.get("matching_engine")
+            if me_proc is None or me_proc.poll() is not None:
+                die("order refusal: the matching engine is not running, so there is nothing to "
+                    "take away and the scenario would pass without testing anything.")
+            log(f"  SIGKILL -> matching_engine (PID {me_proc.pid}) -- and it will NOT be restarted")
+            me_proc.kill()
+            me_proc.wait()
+
+            member = FixRawClient("127.0.0.1", gateway_port, FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("order refusal: the raw client could not log on. A test that cannot log on "
+                    "looks identical to a venue that will not answer, so this is checked first.")
+
+            def report_for(cl_ord_id: str, timeout: float) -> dict[str, str] | None:
+                """Wait for the ExecutionReport belonging to this order, or None.
+
+                Matched on ClOrdID rather than taking the first report to arrive, because the
+                orders deferred earlier are still in the WAL: the moment an engine comes back it
+                replays them and their reports land in the middle of this conversation. A test
+                that took the next report would read one of those and conclude whatever it liked.
+                """
+                deadline = time.monotonic() + timeout
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    report = member.receive_until("8", timeout=min(1.0, remaining))
+                    if report is None:
+                        continue
+                    if report.get(11) == cl_ord_id:
+                        return report
+
+            def send_and_wait(cl_ord_id: str, timeout: float) -> dict[str, str] | None:
+                member.new_order_single(cl_ord_id)
+                return report_for(cl_ord_id, timeout)
+
+            # 1. While a failover is still plausible the order is DEFERRED, and the member is told
+            #    nothing at all.
+            #
+            #    Not "acknowledged": measured on 2026-08-28, a NewOrderSingle placed with no
+            #    matching engine reachable produces no ExecutionReport whatsoever. The report is
+            #    the engine's to send and there is no engine. The member is left holding an order
+            #    in an unknown state, which it cannot cancel because a cancel needs the same
+            #    engine -- worse than an acknowledgement, not better, because silence is not a
+            #    state a risk system can reason about.
+            #
+            #    This half also guards the opposite defect. A venue that refused from the first
+            #    order would pass a refusal-only test while rejecting orders during every routine
+            #    failover, which members survive today. That would be a regression dressed as a fix.
+            if send_and_wait("refuse-early", _REFUSAL_DEFERRED_SILENCE) is not None:
+                die("order refusal: the first order after the engine died was answered. Deferring "
+                    "is the RIGHT behaviour for the first seconds -- a promoted engine replays the "
+                    "WAL and picks the order up -- so an immediate answer means either the venue "
+                    "refused far too eagerly, or an engine is still alive and this scenario is "
+                    "testing nothing.")
+            log("  order refusal: the first order is deferred and the member is told nothing -- OK")
+
+            # 2. Refused once the outage has outlived any failover.
+            deadline = time.monotonic() + _REFUSAL_DEADLINE
+            probe = 0
+            refusal_text = ""
+            began = time.monotonic()
+            while True:
+                probe += 1
+                cl_ord_id = f"refuse-probe-{probe}"
+                report = send_and_wait(cl_ord_id, _REFUSAL_DEFERRED_SILENCE)
+                if report is not None:
+                    if report.get(39) != "8":
+                        die(f"order refusal: probe {probe} was answered with OrdStatus="
+                            f"{report.get(39)}. The only answer a venue with no matching engine "
+                            "can honestly give is a rejection.")
+                    refusal_text = report.get(58, "")
+                    break
+                if time.monotonic() >= deadline:
+                    member.close()
+                    die(f"order refusal: {probe} orders were taken over "
+                        f"{_REFUSAL_DEADLINE:.0f}s with no matching engine in existence, and the "
+                        "member was told nothing about a single one of them. It cannot cancel "
+                        "them either, because a cancel needs the engine that does not exist, so "
+                        "it is left holding orders it can neither confirm nor withdraw. This is "
+                        "BUG-0009 itself.")
+                time.sleep(_REFUSAL_PROBE_INTERVAL)
+            log(f"  order refusal: orders are refused after {time.monotonic() - began:.0f}s "
+                f"({probe} probes), Text='{refusal_text}' -- OK")
+            if not refusal_text:
+                die("order refusal: the rejection carried no Text. A member told only that its "
+                    "order was rejected cannot tell a venue outage from a bad order, and will "
+                    "retry the one and not the other.")
+
+            # 3. Cancels are refused too -- the half that reads as the wrong way round.
+            member.order_cancel_request("refuse-cancel", "refuse-early")
+            reply = member.receive_until("8", "9", timeout=_RAW_REPLY_TIMEOUT)
+            if reply is None:
+                die("order refusal: the cancel got no answer at all.")
+            if reply.get(39) != "8" and reply.get(35) != "9":
+                die(f"order refusal: the cancel came back OrdStatus={reply.get(39)} on MsgType="
+                    f"{reply.get(35)}, which reads as accepted. A cancel needs the matching engine "
+                    "exactly as an order does, and a member wrongly told its cancel succeeded "
+                    "STOPS WATCHING the order -- worse off than one told it was refused.")
+            log(f"  order refusal: cancels are refused too, Text='{reply.get(58, '')}' -- OK")
+
+            # 4. The health line keeps reporting while nothing progresses.
+            #
+            # Before BUG-0009 step 2 this line was emitted once per N orders accounted, so when
+            # accounting stalled the reporting stalled with it. It went quiet for 2m19s during the
+            # incident. A line driven by progress cannot report the absence of progress.
+            quiet_from = file_end(gw_log)
+            log(f"  watching the gateway for {_REFUSAL_QUIET_WATCH:.0f}s with nothing in flight ...")
+            time.sleep(_REFUSAL_QUIET_WATCH)
+            quiet_lines = _gateway_progress_lines_since(gw_log, quiet_from)
+            if len(quiet_lines) < 2:
+                die(f"order refusal: only {len(quiet_lines)} GW-PROGRESS line(s) in "
+                    f"{_REFUSAL_QUIET_WATCH:.0f}s of a degraded venue. The line has to be driven "
+                    "by a clock, not by progress, or it goes silent exactly when it matters.")
+            latest = quiet_lines[-1]
+            if latest.get("refused", 0) < 1:
+                die(f"order refusal: the progress line reports refused={latest.get('refused')} "
+                    "after orders were demonstrably refused. The count an operator would watch "
+                    "does not reflect what the members were told.")
+            if latest.get("awaiting", 0) < 1:
+                die("order refusal: awaiting=0 while orders deferred before the refusal began are "
+                    "still unprocessed. Deferred and refused are different states and the line "
+                    "must not fold them together -- only one of them is somebody's problem later.")
+            log(f"  order refusal: {len(quiet_lines)} progress lines while nothing progressed, "
+                f"awaiting={latest.get('awaiting')} refused={latest.get('refused')} "
+                f"refused_cancels={latest.get('refused_cancels')} -- OK")
+
+            # 5. Acceptance resumes on its own.
+            #
+            # No operator action. Requiring one was considered and rejected: this bug is precisely
+            # a case where nobody was watching, and a recovery that depends on the watching which
+            # has already failed is not safer.
+            log("  restarting the matching engine -- nothing else is done")
+            do_restart_step(_me_restart_step(), proc_by_name, app_procs, launch_table,
+                            bin_dir, log_dir)
+            resumed_by = time.monotonic() + _REFUSAL_DEADLINE
+            attempt = 0
+            while True:
+                attempt += 1
+                report = send_and_wait(f"resume-{attempt}", _RAW_REPLY_TIMEOUT)
+                if report is not None and report.get(39) == "0":
+                    break
+                if time.monotonic() >= resumed_by:
+                    member.close()
+                    die(f"order refusal: the venue was still refusing {_REFUSAL_DEADLINE:.0f}s "
+                        "after a matching engine came back. Refusing has to lift by itself, or "
+                        "the fix has turned a transient outage into one that needs a human.")
+                time.sleep(_REFUSAL_PROBE_INTERVAL)
+            log(f"  order refusal: acceptance resumed on its own after {attempt} probe(s), with no "
+                "operator action -- OK")
             member.close()
 
         # ── A bounded resend, out of the middle of the member's history ───────

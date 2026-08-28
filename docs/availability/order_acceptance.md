@@ -1,10 +1,9 @@
 # Refusing orders the venue cannot process {#ha_order_acceptance}
 
-**Status: steps 1 to 4 of 5 built, 2026-08-28.** It addresses
-[BUG-0009](../bug_list.md#bug_0009). The member is now told: a venue that cannot process orders
-refuses them with a rejected ExecutionReport rather than acknowledging them. What remains is
-step 5, the scenarios that hold the behaviour in place. See
-[Implementation order](#ha_order_acceptance_steps).
+**Status: built, 2026-08-28.** All five steps of [BUG-0009](../bug_list.md#bug_0009). A venue that
+cannot process orders now says so, refuses them with a rejected ExecutionReport, and starts
+accepting again on its own when an engine returns — and `ha_test.py` scenario 42 holds all of it in
+place. See [Implementation order](#ha_order_acceptance_steps).
 
 ## The problem
 
@@ -28,8 +27,8 @@ all.
 degraded, at the level used for routine progress.
 
 **Nothing reaches the member.** The sequencer knew for seven minutes that there was no matching
-engine. The gateway kept accepting orders and acknowledging them, reporting `dropped=0` throughout,
-and the member saw no difference. **The sequencer has the knowledge and the gateway has the member
+engine. The gateway kept taking orders and reporting `dropped=0` throughout, and the member saw no
+difference — because there was nothing to see: it received no answer either way. **The sequencer has the knowledge and the gateway has the member
 relationship, and there is no path between them.**
 
 ## Deferring is cheap for the venue and expensive for the member
@@ -40,10 +39,20 @@ limits are protecting.
 A deferred order costs the venue almost nothing: `release_pdu_payload` is called and the handler
 returns, so nothing is retained in memory. The order is in the WAL and that is enough.
 
-The member is in a different position entirely. It has been **acknowledged**, so as far as it and
-its risk systems are concerned the order is live and working. It may hedge against it. It cannot
-cancel it, because a cancel needs the same matching engine. Every second of deferral widens a gap
-between what the member believes and what is true.
+The member is in a different position entirely. **It is told nothing at all.**
+
+That was measured on 2026-08-28 while writing step 5's scenario, and it corrects what this document
+and [BUG-0009](../bug_list.md#bug_0009) previously said. Both described the order as *acknowledged*.
+It is not: the ExecutionReport is the matching engine's to send, and there is no matching engine, so
+a `NewOrderSingle` placed into a deferral receives no reply whatsoever. The incident's own figures
+say so plainly once read with this in mind — 230,572 orders arrived in one window and 14,000 were
+accounted for.
+
+**The truth is worse than the claim it replaces.** An acknowledgement is at least a state a risk
+system can reason about. Silence is not: the member cannot tell a deferred order from a slow one
+from a lost one, cannot cancel it because a cancel needs the same matching engine, and has to
+assume it may be live because it may be. Every second of deferral widens a gap between what the
+member believes and what is true, and it does so without giving the member anything to act on.
 
 So the limits below are not about protecting the venue's memory. **They bound how far a member's
 picture of its own position is allowed to drift from reality.**
@@ -171,8 +180,8 @@ Each step leaves the venue working.
    count-driven line has just spoken — so a busy venue is not reported twice and a quiet one is
    still reported at all. Both paths write through `emit_order_progress`.
 
-   The line gains **`awaiting`**: orders taken from members and acknowledged for which no execution
-   report has been accounted. It is appended rather than inserted, because `ha_test.py` and
+   The line gains **`awaiting`**: orders taken from members for which no execution report has been
+   accounted. It is appended rather than inserted, because `ha_test.py` and
    `perf_run.py` both read a prefix of it — a field may be added, the existing four may not be
    reordered.
 
@@ -303,9 +312,40 @@ Each step leaves the venue working.
 
    `scripts/fix_raw_client.py` gained `--cancels` for this, because the cancel half is the part
    that has to be demonstrated rather than asserted.
-5. **The scenarios**, written to fail first: a matching engine killed and not restarted must produce
-   refusals rather than acknowledgements, and the health line must keep reporting while nothing
-   progresses.
+5. **The scenarios**, written to fail first.
+   **Done 2026-08-28.**
+
+   `ha_test.py` scenario 42, `order_refusal`. The matching engine is killed and not restarted —
+   the case the deferral policy was never written for — and five things are asserted in order: the
+   first order is deferred and unanswered; orders are refused once the outage outlives any
+   plausible failover; cancels are refused too; the health line keeps reporting while nothing
+   progresses; and acceptance resumes with no operator action when an engine returns.
+
+   **It was shown to fail first, not merely written to.** With the two refusal branches disabled
+   and everything else left alone, it fails in the way the incident did:
+
+   ```
+   FAIL: order refusal: 16 orders were taken over 120s with no matching engine in existence,
+         and the member was told nothing about a single one of them. It cannot cancel them
+         either... This is BUG-0009 itself.
+   ```
+
+   With them restored it passes in about 70 seconds.
+
+   **The first assertion is not padding.** A venue that refused from the first order would pass a
+   refusal-only test while rejecting orders during every routine failover, which members survive
+   today — a regression dressed as a fix. The scenario proves the order is deferred first and
+   refused later, which is the whole of the design rather than half of it.
+
+   **Writing it found two things.** That a deferred order gets no reply at all, correcting
+   "acknowledged" in this document and in the bug entry. And that `GW-PROGRESS` was landing every
+   **ten** seconds rather than the five it was designed for: the timer period equalled the
+   interval it was tested against, so each tick arrived a hair short of the guard and was skipped,
+   and only every second one survived. Measured at exactly 10.000s apart. The timer now ticks at a
+   fifth of the interval — **a floor has to be tested more often than it is set.**
+
+   The original wording of this step asked for refusals rather than acknowledgements. Both halves
+   are asserted; the word *acknowledgements* was wrong, and finding that out was the work.
 
 ## See also
 
