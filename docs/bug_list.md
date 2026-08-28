@@ -179,8 +179,42 @@ kind: a connection that opens and sends nothing (the logon timeout covers that o
 that connects and then does not read (measured 2026-08-28 as harmless up to 6,000 unread messages,
 so the venue does not block on it -- but the buffering is not free either).
 
-Worth designing as a piece: what the venue counts per peer, what it does when a count is exceeded,
-and how an operator sees it. Nothing here is built.
+#### The answer is graduated, not a blacklist
+
+Worth stating before anyone builds a switch, because "block the member" is the obvious response and
+is the wrong first one.
+
+Real venues escalate, roughly in this order:
+
+| | |
+|---|---|
+| **Throttle** | per-session message rate limits -- orders per second, often with a separate cap on session-level messages. Exceeding it earns rejects, then disconnection |
+| **Order-to-trade ratios** | charging for or penalising messaging out of proportion to executions; the main economic lever against a member that floods |
+| **Logon attempt limits** | refusing further logons for a period after repeated failures; a configuration option in most FIX engines |
+| **Comp id suspension** | disabling a member's credentials -- normally an operations action, not an automatic one |
+| **Kill functionality** | cutting the member off *and* pulling its resting orders |
+
+**It is also a regulatory obligation for a real venue, not merely good engineering.** MiFID II
+requires trading venues to throttle, to limit order-to-trade ratios, and to have kill
+functionality; the SEC's Market Access Rule puts pre-trade risk controls on brokers providing
+market access. The shape of that is solid; the specific article numbers are not stated here on
+purpose, because they were not checked.
+
+**Why graduation matters for the case this entry is about.** A member configured for FIX 4.x is not
+attacking anything. It is misconfigured, and it is someone's real trading connection. So: count per
+peer, back off, log loudly, expose it as a metric -- and make a hard block a deliberate act by an
+operator rather than something the venue decides on its own. Wrongly locking out a legitimate
+member is its own serious event.
+
+**The deliberate act already has a route through this venue, which makes the operations half much
+cheaper than it sounds.** Per-comp-id settings already travel from the database through
+`export_credentials` into `credentials.toml`, reach the authentication service, and arrive at the
+gateway on `AuthenticationResult` -- that is how cancel-on-disconnect settings and gateway pinning
+work today. *"This comp id is suspended"* rides the same path, and the gateway already refuses a
+session whose provisioning does not name it -- `ha_test.py` scenario 20 tests exactly that refusal.
+
+What is genuinely missing is the automatic half: something that counts per peer, decides when a
+count is excessive, and acts on it without an operator watching. Nothing here is built.
 
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 
