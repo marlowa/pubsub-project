@@ -91,6 +91,45 @@ def _find_tarball() -> Path:
     return tarballs[0]
 
 
+def _prune_old_artefacts(keep: int) -> None:
+    """Delete this platform's older release tarballs, keeping the newest `keep` of them.
+
+    The sandbox loop makes one artefact per cycle and each is around 94 MB, so a day of
+    rapid iteration leaves a gigabyte of tarballs nobody will deploy again. Pruning before
+    the release step means the disk holds what the loop needs and no more.
+
+    Only this platform's artefacts, for the reason _find_tarball gives: release/ is shared
+    with the Rocky container through a bind mount, and a host cycle must not delete the
+    gcc-8.5 tree's artefact just because it is older.
+
+    Only in devsetup.py, which is the developer sandbox. release.py is also how a real
+    release is cut, and deleting previous artefacts there would throw away the thing
+    somebody may need to roll back to.
+    """
+    if keep < 0:
+        return
+    import build  # noqa: PLC0415  -- deferred: matches _staging_dir() above
+    release_dir = _PROJECT_ROOT / "release"
+    if not release_dir.is_dir():
+        return
+    mine = sorted(
+        (p for p in release_dir.glob("pubsub-*.tar.gz")
+         if build.artefact_belongs_to_this_platform(p.name)),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    # The release about to be made is not among these, so `keep` counts what survives
+    # alongside it: keep=1 leaves one to roll back to.
+    doomed = mine[keep:]
+    if not doomed:
+        return
+    freed = sum(p.stat().st_size for p in doomed)
+    for path in doomed:
+        path.unlink()
+    print(f"  pruned {len(doomed)} old artefact(s), {freed / 1_000_000:.0f} MB "
+          f"({len(mine) - len(doomed)} kept)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -148,6 +187,11 @@ def main() -> None:
     deploy_group.add_argument("--sudo-postgres", action="store_true",
         help="prefix psql commands with 'sudo -u postgres'")
 
+    parser.add_argument("--keep-releases", type=int, default=1, metavar="N",
+        help="how many of this platform's previous release tarballs to keep, deleted before the "
+             "release step (default: 1; use -1 to keep every one). Each is around 94 MB and the "
+             "sandbox loop makes one per cycle")
+
     args = parser.parse_args()
 
     # Step 1: build
@@ -176,7 +220,8 @@ def main() -> None:
         build_cmd += ["--build-dir", args.build_dir]
     _run(build_cmd, "Step 1/4: build")
 
-    # Step 2: release
+    # Step 2: release, after clearing out artefacts the loop has finished with.
+    _prune_old_artefacts(args.keep_releases)
     _run([sys.executable, str(_SCRIPT_DIR / "release.py")], "Step 2/4: release")
 
     tarball = _find_tarball()

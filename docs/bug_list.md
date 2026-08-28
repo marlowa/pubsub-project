@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Bugs recorded | 66 |
-| Open | 32 (23 defects, 9 tasks) |
+| Open | 32 (22 defects, 10 tasks) |
 | Closed | 34 |
 | Next id | BUG-0067 |
 
@@ -28,7 +28,7 @@
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
-| [BUG-0015](#bug_0015) | medium | defect | `deploy.py` silently ignores a change to an environment file |
+| [BUG-0015](#bug_0015) | medium | task | `deploy.py` silently ignores a change to an environment file |
 | [BUG-0018](#bug_0018) | medium | defect | The idle-connection reaper tears down the pre-warmed failover link |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -1122,6 +1122,25 @@ Every build re-installs the `${placeholder}` templates over the deployed, expand
 which is why this is a trap rather than a fault — but it is easy to hit when iterating on a
 component and then starting the venue.
 
+#### Reworded 2026-08-28: this is the cost of skipping the release, not a defect
+
+The sequence that produces it is `cmake --install` followed by `deploy.py`, which is **not the
+project's deployment path**. That path is build, release, deploy, run -- `devsetup.sh` runs all
+four -- and `deploy.py --artefact` unpacks a release rather than expanding whatever happens to be
+sitting in the install tree.
+
+Nothing re-lays templates over deployed configs in that sequence, because the deployed configs come
+out of the artefact and the artefact is immutable. The trap exists only when the cmake install
+prefix is also used as the runtime tree, which is a development shortcut, not the design.
+
+**Kept open as a task rather than closed**, because the shortcut is easy to take -- it was taken
+throughout the 2026-08-28 session before the point was noticed -- and something should stop a
+person taking it silently. Either `devenv.py` should say that the install tree was laid by a build
+and not by a deployment, or the shortcut should be documented as one. What should NOT happen is
+`deploy.py` growing machinery to make the shortcut work; that was attempted and reverted the same
+day, because it moves configuration outside the artefact and destroys the property that makes a
+release worth having.
+
 See also BUG-0015, which is the converse and the more dangerous half.
 
 ### BUG-0014: Python style warnings across the top-level scripts, and a lint gate that ignores them {#bug_0014}
@@ -1163,7 +1182,8 @@ class of defect that stops a script dead, and nothing else.
 | Found | 2026-08-09 |
 | Recorded | 2026-08-09 (d9b38e5) |
 | How | Raising the binary gateway's open-order pool in `environments/dev.toml` before a load run; the deployed config still held the old value after `deploy.py` reported success |
-| Impact | A run can execute a whole profile against the *old* configuration while every command in the runbook appears to have succeeded |
+| Kind | task -- the defect it described was a misreading of deploy.py's contract; what remains is an ambiguous message |
+| Impact | A run can execute a whole profile against the *old* configuration while every command in the runbook appears to have succeeded. Reworded 2026-08-28: only reachable by skipping the release step |
 
 `deploy.py` substitutes `${placeholder}` values into the deployed configs; it does not re-copy the
 templates. Once a config has been expanded it contains no placeholder, so a later edit to
@@ -1182,6 +1202,30 @@ run. Either re-copy a template when it or the environment file is newer than the
 or refuse to report success when a deployment expanded nothing — `0 template(s) expanded` is
 almost never what the caller intended, and it is the one case that currently looks identical to
 success.
+
+#### Reworded 2026-08-28: the premise was wrong, and only the last sentence survives
+
+**`deploy.py` deploys a release. It does not deploy an environment file.** The four environment
+TOMLs are packaged *into* the artefact by `release.py`, and `--env` selects which of them to expand
+from. So changing a value in `environments/dev.toml` and expecting a redeploy to pick it up is
+asking deploy to use an input the release never carried. **The answer is to cut a new release**, and
+the behaviour recorded above is the contract working rather than failing.
+
+That was not obvious from this entry, because the "working sequence" it recommends -- `cmake
+--install` then `deploy.py` -- is the development shortcut described in
+[BUG-0011](#bug_0011) and not the deployment path. The entry documented the workaround and was then
+read as documenting the contract.
+
+A fix along the lines the paragraph above proposes was built on 2026-08-28 and reverted the same
+day. Keeping a pristine copy of each template so an environment edit always takes effect does work,
+and what it costs is the reason not to have it: configuration would reach a running venue without
+passing through a release, so "what is deployed" would no longer be answerable from the artefact.
+**The immutability is the feature.**
+
+**What survives is the last sentence.** `0 template(s) expanded` followed by exit zero is
+indistinguishable from a successful deployment, and it is worth distinguishing even when doing
+nothing is the correct outcome -- it read as success twice in one session. Saying "nothing to
+expand; these configs already match the artefact" costs a line and removes the ambiguity.
 
 ### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
 

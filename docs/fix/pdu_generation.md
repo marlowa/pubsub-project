@@ -74,8 +74,8 @@ does).
 
 The demo grows up to carry the **full** FIX `NewOrderSingle` — all ~50 fields and its
 repeating groups. A full order packet is ~1 KB; that is a normal order, not something to trim.
-So the generator runs against the standard `FIX50SP2.xml` here just as it will against a
-curated exchange DD at work; the pipeline (gateway parse, PDU, WAL, ME, MEP, topic_probe, ER)
+So the generator runs against the standard `FIX50SP2.xml` here just as it would against a
+venue's own curated data dictionary; the pipeline (gateway parse, PDU, WAL, ME, MEP, topic_probe, ER)
 is expanded to handle the full message. The ergonomic problem this creates lives in the **UI**
 (see §3), not in the message.
 
