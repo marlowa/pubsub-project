@@ -553,16 +553,49 @@ obviously benign"*. It is not benign. It is this crash. The two entries are one 
 timeout path is unsound by construction, because detaching a live thread and then running exit
 handlers destroys the state that thread is still using.
 
-**Four ways out, none chosen here:**
+#### The fix, agreed 2026-08-28: abort rather than unwind
 
-- Make an abandoned thread's continued execution safe, touching nothing with static lifetime.
-  Honest but hard, because logging is everywhere.
-- Do not return from `main` until the thread is genuinely dead, which is what the wrapper exists to
-  avoid.
-- `_exit()` once a thread has been abandoned, after flushing the log, so no destructor runs
-  underneath it. Crude, and sound: the process is going down anyway and running static destructors
-  is the dangerous act.
-- Treat a join timeout as a deliberate abort with a message, rather than detaching and hoping.
+**The detach stays.** `join_with_timeout` is deliberate and tested --
+`ReactorTest.RogueThreadBlocksInITCMessageReactorStillShutsDown` creates a thread that ignores
+Termination on purpose -- and a genuinely rogue thread cannot be joined. Nothing here is a fault in
+that mechanism.
+
+**What changes is only what happens after a thread has been abandoned.** Today the process returns
+from `main` and runs exit handlers, which destroy static state underneath a thread that is still
+executing. Instead: name the abandoned thread on stderr, then `abort()`.
+
+**`abort()` rather than `_exit()`, and the reason is the diagnostic rather than the tidiness.**
+Both are safe for the original problem, since neither runs static destructors. But an `abort()`
+core contains the **rogue thread's own stack** -- which thread it was and exactly where it was
+stuck -- and that is the information needed to fix the underlying cause. It is what this entry's own
+core supplied a week after the event. `_exit()` leaves nothing at all, so the next occurrence would
+be as invisible as this one was.
+
+**The reason goes out with `write(2)`, not through the logger.** Quill's production configuration
+is asynchronous -- `set_immediate_flush()` appears only in the test logger's construction -- so at
+abort time the backend may not have drained and there is nothing reliable to flush. A direct write
+to stderr needs no allocation and no logger, and it means the abandoned thread's name is visible
+without anybody having to open the core.
+
+**Abort at the end of shutdown, not at the point of the failed join.** The rogue thread is
+unstoppable either way, but the other threads are not: letting them stop cleanly first means the
+core shows a venue that shut down properly except for the one thread that would not, which is a far
+clearer picture than one taken mid-sequence.
+
+**Not chosen, and why.** Making an abandoned thread touch nothing with static lifetime is honest but
+unenforceable, because logging is everywhere and a future edit reintroduces the hazard silently.
+Blocking until the thread is genuinely dead is what the wrapper exists to avoid, and would hang the
+venue on exactly the rogue thread it was written for.
+
+**Quill is the victim, not the cause**, and this is worth stating because it points at the wrong
+fix. There is no race inside the logger. The worker would have died on whichever static-lifetime
+object it reached first; the log-level atomic simply came first. Making that check null-safe would
+relocate the crash rather than remove it, and the next site would look unrelated.
+
+**Separate, and still open: [BUG-0001](#bug_0001).** The timer tests carry no deliberate rogue
+fixture and hit the shutdown timeout anyway. That is a real unexplained case rather than a test
+observing its own scaffolding, and the fix above makes it abort visibly instead of crashing
+obscurely -- which turns an unexplained timeout into evidence rather than removing it.
 
 ### BUG-0058: A member halted by a sequence gap is invisible to monitoring {#bug_0058}
 
@@ -974,8 +1007,17 @@ exit handlers destroy Quill's logger state, and the still-running thread segfaul
 call inside `process_message`.
 
 So the shutdown timeouts seen in the timer tests are not cosmetic. They are the same condition that
-crashed `sequencer_secondary` on 2026-08-21, reached from a different direction. The two entries
-should be fixed together, and BUG-0057 carries the design options.
+crashed `sequencer_secondary` on 2026-08-21, reached from a different direction.
+
+**What is still this entry's own, after BUG-0057's fix is agreed.** The join-with-timeout mechanism
+is deliberate, and `ReactorTest.RogueThreadBlocksInITCMessageReactorStillShutsDown` exercises it
+with a thread written to ignore Termination. The timer tests carry **no such fixture** and reach
+the timeout anyway, so this is not a test observing its own scaffolding. Why an ordinary timer test
+thread fails to stop within `shutdown_timeout` is unexplained and remains the question here.
+
+BUG-0057's fix does not answer it, and is not meant to. Aborting rather than unwinding turns this
+from a crash into a visible, named abort with the stuck thread's stack in the core -- which is what
+makes the question answerable next time it happens rather than a week later.
 
 ### BUG-0005: fix-test-client reports a dead gateway poorly {#bug_0005}
 
