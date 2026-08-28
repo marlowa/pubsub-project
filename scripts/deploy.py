@@ -180,7 +180,9 @@ def expand_templates(install_dir: Path, namespace: dict[str, str], config_owners
 
     owners = config_owners or {}
     expanded = 0
+    seen = 0
     for toml_path in sorted(etc_dir.rglob("*.toml")):
+        seen += 1
         text = toml_path.read_text(encoding="utf-8")
         # A config file with no owner is one no component in *this* environment
         # declares as its config -- the release artefact ships the templates for
@@ -202,7 +204,24 @@ def expand_templates(install_dir: Path, namespace: dict[str, str], config_owners
         if result != text:
             toml_path.write_text(result, encoding="utf-8")
             expanded += 1
-    print(f"  {expanded} template(s) expanded in {etc_dir.relative_to(install_dir.parent)}/")
+    where = etc_dir.relative_to(install_dir.parent)
+    if expanded:
+        print(f"  {expanded} of {seen} template(s) expanded in {where}/")
+    elif seen:
+        # Nothing to expand is a legitimate outcome and it used to look exactly like a successful
+        # deployment: "0 template(s) expanded", exit zero, no other difference. It was read as
+        # success twice in one session. Saying which of the two happened costs a line.
+        #
+        # Reaching here means the deployed configs held no placeholders, so they were expanded by
+        # an earlier run. Deploying an artefact always unpacks fresh templates and expands them,
+        # so this is the in-place path -- and if the caller was expecting a change to take effect,
+        # that is the thing to say. See docs/bug_list.md, BUG-0015.
+        print(f"  0 of {seen} template(s) expanded in {where}/ -- they were already expanded by an "
+              f"earlier deployment, so nothing in them changed.")
+        print(f"  If you expected an edit to take effect, deploy a release built since that edit: "
+              f"scripts/devsetup.sh, or deploy.py --artefact.")
+    else:
+        print(f"  no templates found in {where}/ -- nothing was deployed here")
 
 
 # ── JAR property patching ─────────────────────────────────────────────────────

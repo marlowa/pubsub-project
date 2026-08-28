@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 66 |
-| Open | 32 (22 defects, 10 tasks) |
-| Closed | 34 |
+| Open | 31 (22 defects, 9 tasks) |
+| Closed | 35 |
 | Next id | BUG-0067 |
 
 ## Open bugs by severity
 
-11 high, 14 medium, 7 low.
+11 high, 13 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -28,7 +28,6 @@
 | [BUG-0002](#bug_0002) | medium | defect | The FIX order gateway's `process_message` exit paths are not audited |
 | [BUG-0003](#bug_0003) | medium | defect | Environment placeholders are missing outside dev |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
-| [BUG-0015](#bug_0015) | medium | task | `deploy.py` silently ignores a change to an environment file |
 | [BUG-0018](#bug_0018) | medium | defect | The idle-connection reaper tears down the pre-warmed failover link |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -1174,85 +1173,6 @@ worth more than tidiness:
 Not urgent, but it should not sit indefinitely: the gate as it stands protects against the
 class of defect that stops a script dead, and nothing else.
 
-### BUG-0015: `deploy.py` silently ignores a change to an environment file {#bug_0015}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-08-09 |
-| Recorded | 2026-08-09 (d9b38e5) |
-| How | Raising the binary gateway's open-order pool in `environments/dev.toml` before a load run; the deployed config still held the old value after `deploy.py` reported success |
-| Kind | task -- the defect it described was a misreading of deploy.py's contract; what remains is an ambiguous message |
-| Impact | A run can execute a whole profile against the *old* configuration while every command in the runbook appears to have succeeded. Reworded 2026-08-28: only reachable by skipping the release step |
-
-`deploy.py` substitutes `${placeholder}` values into the deployed configs; it does not re-copy the
-templates. Once a config has been expanded it contains no placeholder, so a later edit to
-`environments/dev.toml` has no effect: `deploy.py` reports `0 template(s) expanded` and exits
-zero. Nothing warns, and the venue starts happily on the previous values.
-
-The working sequence is a re-install first, so there is something left to expand:
-
-```bash
-cmake --install build                     # re-lay the templates, unexpanded
-python3 scripts/deploy.py --skip-db --skip-certs  # expand them from environments/dev.toml
-```
-
-**Worth fixing rather than documenting**, because the failure is silent and the cost is a whole
-run. Either re-copy a template when it or the environment file is newer than the deployed config,
-or refuse to report success when a deployment expanded nothing — `0 template(s) expanded` is
-almost never what the caller intended, and it is the one case that currently looks identical to
-success.
-
-#### Reworded 2026-08-28: the premise was wrong, and only the last sentence survives
-
-**`deploy.py` deploys a release. It does not deploy an environment file.** The four environment
-TOMLs are packaged *into* the artefact by `release.py`, and `--env` selects which of them to expand
-from. So changing a value in `environments/dev.toml` and expecting a redeploy to pick it up is
-asking deploy to use an input the release never carried. **The answer is to cut a new release**, and
-the behaviour recorded above is the contract working rather than failing.
-
-That was not obvious from this entry, because the "working sequence" it recommends -- `cmake
---install` then `deploy.py` -- is the development shortcut described in
-[BUG-0011](#bug_0011) and not the deployment path. The entry documented the workaround and was then
-read as documenting the contract.
-
-A fix along the lines the paragraph above proposes was built on 2026-08-28 and reverted the same
-day. Keeping a pristine copy of each template so an environment edit always takes effect does work,
-and what it costs is the reason not to have it: configuration would reach a running venue without
-passing through a release, so "what is deployed" would no longer be answerable from the artefact.
-**The immutability is the feature.**
-
-**What survives is the last sentence.** `0 template(s) expanded` followed by exit zero is
-indistinguishable from a successful deployment, and it is worth distinguishing even when doing
-nothing is the correct outcome -- it read as success twice in one session. Saying "nothing to
-expand; these configs already match the artefact" costs a line and removes the ambiguity.
-
-#### Answered 2026-08-28: the tools say when the deployment predates the source
-
-Blaming a person for a mistake the layout produces is not an answer, and neither is a rule they
-have to remember. `scripts/deployment_freshness.py` compares the deployed tree's `built_at`
-against the modification times of tracked files, and `devenv.py start`, `ha_test.py` and
-`perf_run.py` report what it finds. It warns and never blocks -- deploying an older release on
-purpose is legitimate -- and it disables itself outside a git work tree, so a real target host
-never sees it.
-
-**Its first version was wrong, in the way worth recording.** It compared the artefact's git hash
-against HEAD, on the assumption that a release is built from a commit. **It is not: a release is
-built from the working tree as it stands**, uncommitted changes included, which is the normal case
-here because changes are tested before they are committed. So the hash could match perfectly while
-the deployed venue lacked every edit made since -- silent in exactly the workflow it was written
-for. The comparison is now `built_at` against file modification times, which asks the question that
-matters: *was this built after my last edit?*
-
-Timestamps were rejected in the first design for being noisy, and they are: a `git checkout`
-rewrites them without changing content. That cost is accepted, because the alternative was a check
-that answered a question nobody was asking.
-
-**One case it cannot catch, and will not try to.** Entirely new code that no existing file
-references is invisible, because only tracked files are read. Whether a new file belongs to the
-project is a decision the developer makes with `git add`, and a check that guessed would warn about
-working notes on every run for ever -- which is how a warning stops being read.
-
 ### BUG-0018: The idle-connection reaper tears down the pre-warmed failover link {#bug_0018}
 
 | | |
@@ -1816,6 +1736,104 @@ renders as a bare directory link rather than failing.
 ---
 
 ## Closed
+
+### BUG-0015: `deploy.py` silently ignores a change to an environment file {#bug_0015}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-09 |
+| Recorded | 2026-08-09 (d9b38e5) |
+| How | Raising the binary gateway's open-order pool in `environments/dev.toml` before a load run; the deployed config still held the old value after `deploy.py` reported success |
+| Kind | task -- the defect it described was a misreading of deploy.py's contract |
+| Fixed | 2026-08-28 -- the tools warn when the deployment predates the source, and deploy.py no longer reports doing nothing in the same words as doing something |
+| Impact | A run can execute a whole profile against the *old* configuration while every command in the runbook appears to have succeeded. Reworded 2026-08-28: only reachable by skipping the release step |
+
+`deploy.py` substitutes `${placeholder}` values into the deployed configs; it does not re-copy the
+templates. Once a config has been expanded it contains no placeholder, so a later edit to
+`environments/dev.toml` has no effect: `deploy.py` reports `0 template(s) expanded` and exits
+zero. Nothing warns, and the venue starts happily on the previous values.
+
+The working sequence is a re-install first, so there is something left to expand:
+
+```bash
+cmake --install build                     # re-lay the templates, unexpanded
+python3 scripts/deploy.py --skip-db --skip-certs  # expand them from environments/dev.toml
+```
+
+**Worth fixing rather than documenting**, because the failure is silent and the cost is a whole
+run. Either re-copy a template when it or the environment file is newer than the deployed config,
+or refuse to report success when a deployment expanded nothing — `0 template(s) expanded` is
+almost never what the caller intended, and it is the one case that currently looks identical to
+success.
+
+#### Reworded 2026-08-28: the premise was wrong, and only the last sentence survives
+
+**`deploy.py` deploys a release. It does not deploy an environment file.** The four environment
+TOMLs are packaged *into* the artefact by `release.py`, and `--env` selects which of them to expand
+from. So changing a value in `environments/dev.toml` and expecting a redeploy to pick it up is
+asking deploy to use an input the release never carried. **The answer is to cut a new release**, and
+the behaviour recorded above is the contract working rather than failing.
+
+That was not obvious from this entry, because the "working sequence" it recommends -- `cmake
+--install` then `deploy.py` -- is the development shortcut described in
+[BUG-0011](#bug_0011) and not the deployment path. The entry documented the workaround and was then
+read as documenting the contract.
+
+A fix along the lines the paragraph above proposes was built on 2026-08-28 and reverted the same
+day. Keeping a pristine copy of each template so an environment edit always takes effect does work,
+and what it costs is the reason not to have it: configuration would reach a running venue without
+passing through a release, so "what is deployed" would no longer be answerable from the artefact.
+**The immutability is the feature.**
+
+**What survives is the last sentence.** `0 template(s) expanded` followed by exit zero is
+indistinguishable from a successful deployment, and it is worth distinguishing even when doing
+nothing is the correct outcome -- it read as success twice in one session. Saying "nothing to
+expand; these configs already match the artefact" costs a line and removes the ambiguity.
+
+#### Answered 2026-08-28: the tools say when the deployment predates the source
+
+Blaming a person for a mistake the layout produces is not an answer, and neither is a rule they
+have to remember. `scripts/deployment_freshness.py` compares the deployed tree's `built_at`
+against the modification times of tracked files, and `devenv.py start`, `ha_test.py` and
+`perf_run.py` report what it finds. It warns and never blocks -- deploying an older release on
+purpose is legitimate -- and it disables itself outside a git work tree, so a real target host
+never sees it.
+
+**Its first version was wrong, in the way worth recording.** It compared the artefact's git hash
+against HEAD, on the assumption that a release is built from a commit. **It is not: a release is
+built from the working tree as it stands**, uncommitted changes included, which is the normal case
+here because changes are tested before they are committed. So the hash could match perfectly while
+the deployed venue lacked every edit made since -- silent in exactly the workflow it was written
+for. The comparison is now `built_at` against file modification times, which asks the question that
+matters: *was this built after my last edit?*
+
+Timestamps were rejected in the first design for being noisy, and they are: a `git checkout`
+rewrites them without changing content. That cost is accepted, because the alternative was a check
+that answered a question nobody was asking.
+
+**One case it cannot catch, and will not try to.** Entirely new code that no existing file
+references is invisible, because only tracked files are read. Whether a new file belongs to the
+project is a decision the developer makes with `git add`, and a check that guessed would warn about
+working notes on every run for ever -- which is how a warning stops being read.
+
+**And the ambiguous message is gone.** `deploy.py` now distinguishes the three outcomes it used to
+report identically: how many of how many templates were expanded, or that none were because they
+had already been expanded by an earlier deployment and so nothing changed -- with the thing to do
+about it if a change was expected -- or that no templates were found at all.
+
+```
+16 of 17 template(s) expanded in installed/etc/
+
+0 of 17 template(s) expanded in installed/etc/ -- they were already expanded by an
+earlier deployment, so nothing in them changed.
+If you expected an edit to take effect, deploy a release built since that edit:
+scripts/devsetup.sh, or deploy.py --artefact.
+```
+
+**Closed 2026-08-28.** The defect this entry names does not exist -- deploying a release does not
+consult an environment file the release did not carry, and that is the contract rather than a
+fault. What was real was that nothing told anybody, and two things now do.
 
 ### BUG-0063: `check_docs.py` passes links the documentation build rejects {#bug_0063}
 
