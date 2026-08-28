@@ -60,7 +60,7 @@ host = "${sequencer_primary_matching_engine_secondary_host}"
 port = ${sequencer_primary_matching_engine_secondary_port}
 
 [ha]
-ha_enabled                  = true
+ha_enabled                  = ${ha_enabled}
 instance_id                 = 1
 arbiter_primary_host        = "${sequencer_primary_ha_arbiter_primary_host}"
 arbiter_primary_port        = ${sequencer_primary_ha_arbiter_primary_port}

@@ -28,6 +28,17 @@ struct WitnessConfiguration {
     /** @brief TCP port on which the witness listens. */
     uint16_t listen_port{7100};
 
+    /**
+     * @brief Whether the venue is running as a high-availability deployment at all.
+     *
+     * Read from the one venue-wide `[ha] enabled` in the environment file, expanded into every
+     * config that has an opinion about it. This component exists only to break a tie between
+     * arbiters, so when it is false the component refuses to start rather than sitting there
+     * doing nothing: a running arbiter in a venue that has disowned arbitration is something an
+     * operator will later trust. See docs/bug_list.md, BUG-0061.
+     */
+    bool ha_enabled{true};
+
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};
 

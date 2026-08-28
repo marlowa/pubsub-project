@@ -21,7 +21,7 @@ segment_size              = 4194304
 snapshot_interval_seconds = 30
 
 [ha]
-ha_enabled                      = true
+ha_enabled                      = ${ha_enabled}
 instance_id                     = 1
 arbiter_primary_host            = "${matching_engine_publisher_primary_ha_arbiter_primary_host}"
 arbiter_primary_port            = ${matching_engine_publisher_primary_ha_arbiter_primary_port}

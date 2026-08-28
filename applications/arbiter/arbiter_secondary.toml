@@ -3,6 +3,8 @@ listen_host = "${arbiter_secondary_network_listen_host}"
 listen_port = ${arbiter_secondary_network_listen_port}
 
 [ha]
+# The venue-wide switch. An arbiter refuses to start when it is false; see BUG-0061.
+enabled     = ${ha_enabled}
 instance_id = 2
 
 [peer]

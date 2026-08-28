@@ -107,6 +107,20 @@ int main(int argc, char* argv[]) {
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
 
+    // Refuse to run in a venue that has disowned high availability. Not launching this component
+    // is what devenv.py already does; refusing is what protects the case it does not cover -- a
+    // hand-started process, or a supervisor with a stale manifest. With high availability off there is one instance of everything and no role to assign.
+    //
+    // An operator who sees arbiter running will believe the venue has the mechanism it
+    // names. Being present and idle is the failure worth preventing here, not being absent.
+    // See docs/bug_list.md, BUG-0061.
+    if (!config.ha_enabled) {
+        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Error,
+                       "Arbiter: refusing to start -- this venue has [ha] enabled = false in its environment, so there is nothing to "
+                       "arbitrate. Set [ha] enabled = true and redeploy, or do not start this component.");
+        return 1;
+    }
+
     // Background by default: mask the whole process to the shared tier before it
     // creates any thread, so every thread inherits it and the Reactor only has to
     // promote the few that were allocated dedicated cores.

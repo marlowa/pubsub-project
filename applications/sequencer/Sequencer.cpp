@@ -62,9 +62,17 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     // Inbound PDU listener for peer-to-peer leader-follower protocol PDUs.
     // Exempt from idle timeout: the peer connection is long-lived; heartbeats are
     // application-level and do not produce TCP data on every interval.
-    reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_listen_host, config_.peer_listen_port},
-                                        pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
-                                        pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
+    //
+    // Not opened at all with high availability off, and the reason is not tidiness. The loader
+    // reads peer.* only when ha_enabled is true, so with it false peer_listen_port keeps its
+    // struct default -- and two instances started on one host then both try to bind that same
+    // default and the second dies with "Address already in use". A sequencer with no peer has
+    // nothing to listen for. Found by ha_test.py scenario 47; see docs/bug_list.md, BUG-0061.
+    if (config_.ha_enabled) {
+        reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_listen_host, config_.peer_listen_port},
+                                            pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
+                                            pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
+    }
 
     // Inbound PDU listener for external WAL subscribers (MEP primary and secondary).
     // Exempt from idle timeout: subscribers are long-lived; WalAck PDUs are sparse.

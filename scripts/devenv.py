@@ -10,7 +10,9 @@ Subcommands:
 
 Options:
   --env PATH         Environment TOML (default: environments/dev.toml).
-  --no-ha            Skip components marked ha_only = true.
+  --no-ha            Skip components marked ha_only = true.  Refused when the environment
+                     file still says [ha] enabled = true, because the deployed configs
+                     would then expect components this flag does not start.
   --delay SECONDS    Sleep between component starts (default: 1.0).
   --debug            Override applog_level to 'debug' in C++ configs before starting.
   --supervised       Start each component under scripts/launch.py, so that a component
@@ -724,7 +726,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-ha", action="store_true",
-        help="skip components marked ha_only = true",
+        help="skip components marked ha_only = true; refused unless [ha] enabled is already false",
     )
     parser.add_argument(
         "--debug", action="store_true",
@@ -781,7 +783,26 @@ def main() -> None:
         env["db"]["port"] = args.db_port
 
     ha_from_toml = env.get("ha", {}).get("enabled", True)
-    ha_enabled   = ha_from_toml and not args.no_ha
+
+    # --no-ha skips launching ha_only components. It does NOT change what was deployed, and until
+    # 2026-08-28 nothing noticed the difference: the flag suppressed the arbiters while every
+    # deployed config still said high availability was on, so the sequencer waited for an arbiter
+    # that would never exist, never became leader, and forwarded no orders at all -- while
+    # acknowledging every member and logging nothing wrong. See docs/bug_list.md, BUG-0061.
+    #
+    # The flag keeps its meaning and loses the ability to disagree. To run without high
+    # availability, say so where every component reads it.
+    if args.no_ha and ha_from_toml:
+        sys.exit(
+            f"error: --no-ha would skip the high-availability components, but {env_path} has\n"
+            "       [ha] enabled = true, so the deployed configs expect them. The sequencer would\n"
+            "       wait for an arbiter that is never started and forward no orders.\n"
+            "\n"
+            "       Set [ha] enabled = false in the environment file and re-run deploy.py, which\n"
+            "       makes every component agree. --no-ha is then unnecessary but harmless."
+        )
+
+    ha_enabled = ha_from_toml
 
     with_prometheus = not args.no_prometheus
 

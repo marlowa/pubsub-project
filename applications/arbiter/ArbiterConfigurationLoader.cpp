@@ -33,6 +33,7 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         validate_port(listen_port, "network.listen_port");
         config.listen_port = static_cast<uint16_t>(listen_port);
 
+        toml.get_required_except("ha.enabled", config.ha_enabled);
         toml.get_required_except("ha.instance_id", config.instance_id);
 
         toml.get_required_except("peer.listen_host", config.peer_listen_host);

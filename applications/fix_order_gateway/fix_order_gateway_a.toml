@@ -21,7 +21,7 @@ secondary_host = "${fix_order_gateway_a_authentication_service_secondary_host}"
 secondary_port = ${fix_order_gateway_a_authentication_service_secondary_port}
 
 [sequencer]
-ha_enabled      = true
+ha_enabled      = ${ha_enabled}
 primary_host    = "${fix_order_gateway_a_sequencer_primary_host}"
 primary_port    = ${fix_order_gateway_a_sequencer_primary_port}
 secondary_host  = "${fix_order_gateway_a_sequencer_secondary_host}"

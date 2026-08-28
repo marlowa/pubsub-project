@@ -282,7 +282,7 @@ these states differently.
 | Found | 2026-08-28 |
 | Recorded | 2026-08-28 |
 | How | Andrew asking what happens when the launcher restarts a component that keeps dying, then measuring it |
-| Impact | [BUG-0009](#bug_0009)'s refusal never fires against an engine that dies and restarts repeatedly. The venue takes orders it cannot process for as long as the flapping lasts, and reports recovery on every cycle |
+| Impact | Each restart cycle strands the orders deferred during it, while orders on either side go through normally. The venue looks half-healthy because it is, and reports recovery on every cycle. [BUG-0009](#bug_0009)'s refusal never fires |
 
 **Measured.** A matching engine was killed and restarted on a 24-second cycle, eight times, with
 orders flowing. The sequencer's deferral clock restarted on every reconnect:
@@ -311,17 +311,35 @@ start and earns a `--failure-sleep`. A child that survives ten seconds and then 
 start at all -- `consecutive_failures` resets to zero and it is restarted at once, indefinitely.
 **Flapping on any period longer than two seconds is invisible to the supervisor.**
 
-#### The fix, in two parts
+#### The fix, corrected 2026-08-28 before it was built
 
-**Recovery must be evidenced by progress, not by connectivity.** The deferral should end when an
-order is successfully forwarded, not when a socket appears. A flapping engine that forwards nothing
-then shows an age that only grows, and the threshold trips as intended. This needs no new constant,
-no help from the launcher, and no way for the two to disagree -- and the clock still does not run on
-a healthy venue, because `deferring_orders_` is only set when something has actually been deferred.
+**The first fix recorded here was wrong, and working it out is worth keeping.** It proposed ending
+the deferral on a successful forward rather than on a connection -- "recovery evidenced by progress,
+not connectivity" -- so that a flapping engine forwarding nothing would show an ever-growing age.
 
-It is the same lesson as `GW-PROGRESS` in BUG-0009 step 2, one level up: **a signal driven by
-connection state cannot report the absence of processing**, just as a line driven by progress could
-not report the absence of progress.
+Two things defeat it. **It deadlocks:** if a connection does not restore acceptance, the gateway
+refuses every order, so no order is ever forwarded, so the deferral never clears and the venue never
+reopens. And more fundamentally, **forwarding did resume on every cycle.** The measured run answered
+18 of 34 orders: during each up phase orders flowed normally. A progress-driven clock would have
+been cleared by those forwards exactly as the connection-driven one was.
+
+**The 16 stranded orders were not stranded because forwarding stopped. They were stranded because
+each restart applied nothing.** Every cycle deferred a few orders, the engine came back as a cold
+start, reconciled nothing, and those particular orders were lost while the next ones went through
+normally. The venue looked half-healthy throughout because it *was* half-healthy.
+
+**So this is [BUG-0064](#bug_0064) happening repeatedly, and BUG-0064's fix is this one's fix.** A
+cold-starting leader that reconciled -- reporting its position and being sent what it has not
+applied -- would pick up each cycle's deferred orders like a promoting follower already does. The
+deferral clock is a red herring.
+
+**What remains specific to flapping**, once BUG-0064 is fixed: an engine that dies faster than
+reconciliation completes accumulates orders no cycle ever applies. The sequencer knows the sequence
+numbers it deferred and the engine's applied position is already exchanged during reconciliation, so
+it can tell -- **the venue should clear a deferral only when the deferred range is known to have
+been applied**, rather than when an engine appears or when forwarding resumes. That is the honest
+version of "evidenced by progress", and it is a check on the orders themselves rather than on a
+proxy for them.
 
 **And the launcher's flap detection should widen** to restarts within a rolling window rather than
 consecutive starts shorter than `--minimum-runtime`. It already writes a restart count to
@@ -484,6 +502,17 @@ block running a venue on the surviving machine after the primary's hardware has 
 `forward_pdu_to_sequencers` sends to the secondary only inside `if (config_.ha_enabled)` -- so the
 same order cannot enter two books. It is not split brain.
 
+**Correction, 2026-08-28: that was true of the code and false of the configuration.** The gateway's
+`ha_enabled` lived under `[sequencer]` in its own template and was **hardcoded `true`**, so it never
+followed the venue switch at all. With high availability off the gateway went on sending to both
+sequencers, and two instances leading would have put the same order into two books -- real split
+brain, not the deferred trap described above. The reasoning was checked against the branch and not
+against the value reaching it.
+
+Fixed while completing [BUG-0061](#bug_0061): every component config now expands `${ha_enabled}`
+from the one `[ha] enabled`, so the gateway follows the venue and the paragraph above is true as
+written. There were **four** places able to disagree, and this was the one that mattered most.
+
 **The damage is deferred, which is what makes it nasty.** Both instances advance state that is
 meant to be single-valued:
 
@@ -552,6 +581,35 @@ says so.
 can be turned off deliberately. Then make `devenv.py --no-ha` consistent -- either by having it
 refuse to start a venue whose deployed configuration disagrees with it, or by removing the flag in
 favour of the environment file, which is the single source of truth everything else already uses.
+
+**Built 2026-08-28, and NOT the way this paragraph proposed.** A per-component `[sequencer]` section
+would have been a *third* place able to disagree, which is the shape of this bug rather than a fix
+for it. `[ha] enabled` already existed as the venue-wide switch and `devenv.py` already read it, so
+the sequencer templates and the matching engine's now expand `${ha_enabled}` from that one value,
+and `[matching_engine] ha_enabled` is gone. One switch, one meaning, everywhere.
+
+Verified end to end with `[ha] enabled = false`: no arbiter and no witness start, the sequencer logs
+*"ha_enabled=false -- starting as leader immediately"*, and a member's orders come back
+`OrdStatus=0`. That is the first time a venue with high availability off has traded.
+
+**And it was more than the sequencer.** The gateways, the binary gateways and the matching-engine
+publishers all carried a hardcoded `ha_enabled = true` of their own, so nine component configs in
+total now expand `${ha_enabled}` from the one venue switch. The gateway's was the consequential one:
+see the correction in [BUG-0062](#bug_0062), where it meant that two sequencers leading with high
+availability off would have been genuine split brain rather than the deferred trap that entry
+describes.
+
+**Also built:** `devenv.py --no-ha` now refuses when the environment still says `[ha] enabled = true`,
+naming the fix, rather than starting a venue whose configs expect components it will not launch. The
+arbiter and the witness refuse to start when the switch is false and say why -- not launching them
+is what `devenv.py` does, and refusing is what covers a hand-started process or a stale supervisor
+manifest.
+
+**Still open here:** a secondary started alone with high availability off leads but cannot be
+reached, because the gateway then talks only to its primary. Making it send to both would recreate
+the split brain corrected above, so what a non-HA venue needs is to be told *which* single sequencer
+to use -- a configuration decision this entry does not settle. Scenario 46 asserts the gap rather
+than hiding it.
 
 **Related in shape to several found this week:** two places that have to agree, only one of which
 is updated. See [BUG-0055](#bug_0055), where a member's sequence reset reached the gateway and not

@@ -14,7 +14,7 @@ er_listen_port = ${binary_order_gateway_b_network_er_listen_port}
 instance_id = ${binary_order_gateway_b_gateway_instance_id}
 
 [sequencer]
-ha_enabled     = true
+ha_enabled     = ${ha_enabled}
 primary_host   = "${binary_order_gateway_b_sequencer_primary_host}"
 primary_port   = ${binary_order_gateway_b_sequencer_primary_port}
 secondary_host = "${binary_order_gateway_b_sequencer_secondary_host}"

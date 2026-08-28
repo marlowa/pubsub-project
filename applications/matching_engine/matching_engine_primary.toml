@@ -11,7 +11,7 @@ host = "${matching_engine_sequencer_er_secondary_host}"
 port = ${matching_engine_sequencer_er_secondary_port}
 
 [ha]
-enabled = ${matching_engine_ha_enabled}
+enabled = ${ha_enabled}
 role    = "primary"
 
 [book_replication]

@@ -90,6 +90,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Refuse to run in a venue that has disowned high availability. Not launching this component
+    // is what devenv.py already does; refusing is what protects the case it does not cover -- a
+    // hand-started process, or a supervisor with a stale manifest. With high availability off there is no arbiter pair, so there is no tie to break.
+    //
+    // An operator who sees witness running will believe the venue has the mechanism it
+    // names. Being present and idle is the failure worth preventing here, not being absent.
+    // See docs/bug_list.md, BUG-0061.
+    if (!config.ha_enabled) {
+        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Error,
+                       "Witness: refusing to start -- this venue has [ha] enabled = false in its environment, so there is nothing to "
+                       "witness. Set [ha] enabled = true and redeploy, or do not start this component.");
+        return 1;
+    }
+
     logger->set_log_level(config.applog_level);
     logger->set_syslog_level(config.syslog_level);
 

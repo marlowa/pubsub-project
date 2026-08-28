@@ -47,6 +47,18 @@ user = "pubsub_app"
 # ── High availability ─────────────────────────────────────────────────────────
 
 [ha]
+# The venue-wide high-availability switch, and the ONLY one.
+#
+# devenv.py reads it to decide which components to launch, and deploy.py expands it into every
+# component config that has an opinion about high availability -- the sequencer pair's ha_enabled
+# and the matching engine's. One value, one meaning, everywhere.
+#
+# It was not always so. The sequencer's template hardcoded ha_enabled = true and the matching
+# engine read a separate [matching_engine] ha_enabled, so a venue started with high availability
+# off launched no arbiters while its sequencer waited for one, never became leader, and forwarded
+# no orders at all -- while acknowledging every member and logging nothing wrong. See
+# docs/bug_list.md, BUG-0061. Adding a per-component key for the sequencer would have made a third
+# place to disagree, which is the shape of the bug rather than a fix for it.
 enabled = true
 
 # ── TLS certificates ──────────────────────────────────────────────────────────

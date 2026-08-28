@@ -20,6 +20,7 @@ WitnessConfiguration WitnessConfigurationLoader::load(const std::string& file_pa
     WitnessConfiguration config;
 
     try {
+        toml.get_required_except("ha.enabled", config.ha_enabled);
         toml.get_required_except("network.listen_host", config.listen_host);
 
         int32_t listen_port = 0;

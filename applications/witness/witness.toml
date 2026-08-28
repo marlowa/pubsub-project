@@ -2,6 +2,10 @@
 listen_host = "${witness_network_listen_host}"
 listen_port = ${witness_network_listen_port}
 
+[ha]
+# The venue-wide switch. The witness refuses to start when it is false; see BUG-0061.
+enabled = ${ha_enabled}
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"
