@@ -1,6 +1,11 @@
-# Next pub/sub work: rewire the MEP onto TopicPublisher, and build TAP {#pubsub_mep_rewire_and_tap}
+# Next pub/sub work: rewire the MEP onto TopicPublisher, and build OAR {#pubsub_mep_rewire_and_oar}
 
-**Status (2026-07-12):** Part 1 (MEP rewire) **DONE**. Part 2 (TAP) still planned. The reusable
+> The order activity recorder was called TAP, the Trade Activity Publisher, in earlier
+> documents. Sessions in `docs/history/` and anything under `docs/superseded/` keep that
+> name, because they are records of what was said at the time.
+
+
+**Status (2026-07-12):** Part 1 (MEP rewire) **DONE**. Part 2 (OAR) still planned. The reusable
 pub/sub components (`TopicPublisher`, `TopicSubscriberChannel`, `TopicControlChannel`) and the
 flow-control design (F1–F4, `docs/pubsub/flow_control.md`) are done and tested.
 
@@ -72,26 +77,26 @@ kept, a subscriber's data+control connections must both hit the same topic's por
 After the rewire: re-run the Java web fix-test-client end-to-end (login/place/cancel) to confirm no
 regression, and consider a subscriber connecting to the MEP for a live smoke test.
 
-## 2. Build TAP (the first real subscriber)
+## 2. Build OAR (the first real subscriber)
 
-TAP is the first application to subscribe in the pub/sub sense. Per the recorded decisions, TAP
+OAR is the first application to subscribe in the pub/sub sense. Per the recorded decisions, OAR
 subscribes to **both** `orders` and `execution_reports` published by the MEP.
 
 Steps:
 1. New `applications/tap/` with a `TapThread : ApplicationThread` (+ config TOML, CMakeLists, wire
    into `applications/CMakeLists.txt`).
-2. TAP opens, per subscribed topic, a **data** connection (via `TopicSubscriberChannel`) and a
+2. OAR opens, per subscribed topic, a **data** connection (via `TopicSubscriberChannel`) and a
    **control** connection (via `TopicControlChannel`) to the MEP's port, distinguished by the
    `role` field and correlated by `subscriber_id` (see the DualChannelSubscriberThread test as the
-   working template). TAP implements `TopicSubscriberChannelHost` + `TopicControlChannelHost`.
-3. **Record handling** (per the recorded TAP decisions): `orders` records -> forward to the
+   working template). OAR implements `TopicSubscriberChannelHost` + `TopicControlChannelHost`.
+3. **Record handling** (per the recorded OAR decisions): `orders` records -> forward to the
    enterprise bus via an abstract `BusPublisher` (`StubBusPublisher` for framework validation;
-   Kafka/Pulsar later); `execution_reports` -> maintain an internal L3 book. TAP does NOT publish
+   Kafka/Pulsar later); `execution_reports` -> maintain an internal L3 book. OAR does NOT publish
    ERs to the enterprise bus.
 4. **Gap/lag handling:** on a `TopicLagged` (control channel) or a gap-on-resubscribe
-   (`accepted_from_seq_no > requested`), TAP logs the gap and resumes (accepting the loss or pulling
+   (`accepted_from_seq_no > requested`), OAR logs the gap and resumes (accepting the loss or pulling
    a snapshot -- snapshot mechanism is future).
-5. **HA:** TAP is a primary/secondary pair (arbiter-mediated), like the other components. Use
+5. **HA:** OAR is a primary/secondary pair (arbiter-mediated), like the other components. Use
    `TopicNotLeader` from the MEP as the failover-redirect signal (client tries the other MEP
    endpoint).
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /*
-topic_probe -- a tiny diagnostic topic subscriber (a minimal stand-in for TAP).
+topic_probe -- a tiny diagnostic topic subscriber (a minimal stand-in for OAR).
 
 It connects to a publisher (e.g. the MEP) and subscribes to one or more topics over
 the data channel using the reusable pubsub_itc_fw::TopicSubscriberThread -- one

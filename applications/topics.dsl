@@ -26,7 +26,7 @@
 #
 #  All direct topic subscribers are C++ applications because
 #  they require low latency. Non-latency-sensitive downstream
-#  consumers subscribe to the enterprise bus via TAP.
+#  consumers subscribe to the enterprise bus via OAR.
 #
 #  FAILOVER
 #  --------

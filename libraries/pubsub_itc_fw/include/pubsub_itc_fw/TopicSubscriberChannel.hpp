@@ -20,7 +20,7 @@ namespace pubsub_itc_fw {
  *
  * As with TopicPublisherHost, the channel decides *what* to send and defers the
  * actual send to its host, so it can be driven from a plain test thread as well as
- * from a real subscriber application (TAP, later the market-data programs).
+ * from a real subscriber application (OAR, later the market-data programs).
  */
 class TopicSubscriberChannelHost {
   public:

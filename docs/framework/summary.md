@@ -161,7 +161,7 @@ The gateway listens for FIX connections on port 9879. The matching engine log at
 - `on_framework_pdu_message(msg)` — **caller must call `allocator.deallocate(msg.slab_id(), msg.payload())` after processing**
 - `on_connection_established(id)`, `on_connection_failed(reason)`, `on_connection_lost(id, reason)`
 
-**Topic pub/sub delivery.** A subscriber receives topic records through `on_pubsub_message(msg)`. The reusable header-only `TopicSubscriberThread` base owns the connect/subscribe handshake and inbound topic-PDU routing (delegating to `TopicSubscriberChannel`: dedup by seq_no, periodic truncation ack), decodes each `TopicPage`, and calls `on_pubsub_message` once per fresh record — so a concrete subscriber (`topic_probe`, later TAP) overrides `on_pubsub_message` only and handles no PDUs itself. The delivered `EventMessage` carries `seq_no()` and `pdu_id()`; its `payload()` is a **borrowed zero-copy view valid only for the duration of the call** — the framework owns and releases the underlying inbound slab once the page is delivered, so a subscriber that needs the bytes must copy them. Delivery is synchronous; the record is not re-enqueued as a `PubSubCommunication` reactor event.
+**Topic pub/sub delivery.** A subscriber receives topic records through `on_pubsub_message(msg)`. The reusable header-only `TopicSubscriberThread` base owns the connect/subscribe handshake and inbound topic-PDU routing (delegating to `TopicSubscriberChannel`: dedup by seq_no, periodic truncation ack), decodes each `TopicPage`, and calls `on_pubsub_message` once per fresh record — so a concrete subscriber (`topic_probe`, later OAR) overrides `on_pubsub_message` only and handles no PDUs itself. The delivered `EventMessage` carries `seq_no()` and `pdu_id()`; its `payload()` is a **borrowed zero-copy view valid only for the duration of the call** — the framework owns and releases the underlying inbound slab once the page is delivered, so a subscriber that needs the bytes must copy them. Delivery is synchronous; the record is not re-enqueued as a `PubSubCommunication` reactor event.
 
 ---
 
@@ -868,7 +868,7 @@ rationale and tool trade-off analysis below are retained for reference.
 created and fully populated as a human-navigable alternative to this summary file. Entry
 point: `docs/index.md`. Design subsystem docs in `docs/design/` (threading, reactor,
 allocators, WAL+HA, serialisation DSL, socket comms, secure comms, CPU pinning, sequencer,
-MEP/TAP). Application docs in `docs/applications/` (FIX order gateway, sequencer, matching
+MEP/OAR). Application docs in `docs/applications/` (FIX order gateway, sequencer, matching
 engine, admin service, FIX test client). `pubsub_itc_fw_summary.md` is NOT deleted — it
 remains the authoritative narrative and session log. The remaining part of item 18 is
 specifically the **Graphviz DOT clickable maps in Doxygen**, described below.

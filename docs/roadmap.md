@@ -3,7 +3,7 @@
 ## Slices
 
 Each slice leaves the system in a working state. Slices 1–8 and 10 are complete; slice 11
-(TAP) is the next planned application.
+(OAR) is the next planned application.
 
 | # | Description | Status |
 |---|-------------|--------|
@@ -17,7 +17,7 @@ Each slice leaves the system in a working state. Slices 1–8 and 10 are complet
 | 8 | Arbiter implementation — replaces file-based fencing with real lease+epoch arbiter; PSA+witness topology | ✓ Done |
 | 9 | Dual snapshots, snapshot validation, operational polish | Not started |
 | 10 | WAL multi-subscriber generalisation + MEP (MatchingEnginePublisher); topic pub/sub over the WAL | ✓ Done |
-| 11 | TAP (Trade Activity Publisher) — topic subscriber to MEP; Kafka/Pulsar publisher | Not started |
+| 11 | OAR (Order Activity Recorder) — topic subscriber to MEP; Kafka/Pulsar publisher | Not started |
 | 12+ | Gateway pool; market data; seamless ME failover; DR site; multi-instrument scaling | Forward-looking, not yet planned |
 
 The ME primary-secondary pair was listed under slice 12+ as forward-looking; it landed on
@@ -284,7 +284,7 @@ account of each is in `pubsub_itc_fw_summary.md` under the same item number.
 
 - **Pub/sub WAL** (item 7) — done as slice 10. Topic-based fan-out over the WAL, streamed and
   socket-paced, with replay from a cursor. See [Pub/Sub](pubsub/pubsub.md). The MEP is the
-  reference publisher, `topic_probe` the reference subscriber, and TAP (slice 11) is the next
+  reference publisher, `topic_probe` the reference subscriber, and OAR (slice 11) is the next
   consumer to build on it. This also removes the rendezvous problem that the connection-retry
   workaround exists to paper over.
 

@@ -8,7 +8,7 @@
  * Exercises TopicPublisher and TopicSubscriberChannel end-to-end over loopback
  * TCP, with the publisher and subscriber each running on their own reactor in
  * their own thread -- i.e. the pub/sub functionality on its own, not through the
- * MEP/TAP applications.
+ * MEP/OAR applications.
  *
  * First test (SingleSubscriberReceivesReplayedRecordsInOrder):
  *   The publisher pre-populates a WAL with three records for topic "orders".

@@ -1,6 +1,11 @@
-# Broker-Side Deduplication for TAP's Bus Publisher — Evidence
+# Broker-Side Deduplication for OAR's Bus Publisher — Evidence
 
-**Status: evidence gathered 2026-08-16, no decision taken.** TAP does not exist yet. This
+> The order activity recorder was called TAP, the Trade Activity Publisher, in earlier
+> documents. Sessions in `docs/history/` and anything under `docs/superseded/` keep that
+> name, because they are records of what was said at the time.
+
+
+**Status: evidence gathered 2026-08-16, no decision taken.** OAR does not exist yet. This
 records what was checked, with sources, so the reasoning behind `BusPublisher`'s interface is
 traceable rather than remembered.
 
@@ -8,9 +13,9 @@ traceable rather than remembered.
 
 ## The problem this is evidence for
 
-TAP will publish records downstream over an abstract `BusPublisher`. Because TAP resumes from
+OAR will publish records downstream over an abstract `BusPublisher`. Because OAR resumes from
 its own persisted cursor, and because that cursor must be written *after* a publish is
-confirmed (a crash between the two must re-publish rather than skip — see below), TAP is
+confirmed (a crash between the two must re-publish rather than skip — see below), OAR is
 inherently **at-least-once**. Duplicates are routine, not exceptional: every restart and every
 promotion re-publishes some records.
 
@@ -20,7 +25,7 @@ state to cover the largest possible replay burst, and a single consumer that get
 publishes duplicate orders into whatever it feeds. The question is whether the broker can
 absorb duplicates instead, so no consumer has to.
 
-**The ordering rule that makes TAP at-least-once, stated once so the rest follows from it:**
+**The ordering rule that makes OAR at-least-once, stated once so the rest follows from it:**
 persist the cursor *after* the publish is confirmed. Crash between publish and cursor-write
 re-publishes (duplicate, absorbable). Crash between cursor-write and publish skips the record
 permanently (unabsorbable). The two failure costs are wildly asymmetric, so the order is
@@ -92,9 +97,9 @@ From [Message deduplication](https://pulsar.apache.org/docs/next/cookbooks-dedup
 > restarts, allowing it to resume publishing from the record next to the last successfully
 > published record before the crash."
 
-Note this is a *convenience*, not the safety mechanism. With broker-side dedup enabled TAP does
+Note this is a *convenience*, not the safety mechanism. With broker-side dedup enabled OAR does
 not need to consult it: a promoted instance may re-publish from a conservative cursor and the
-broker discards what it has already seen. Keeping TAP's resume decision local — rather than
+broker discards what it has already seen. Keeping OAR's resume decision local — rather than
 querying the bus — keeps a venue correctness property from depending on an external system's
 availability.
 
@@ -102,7 +107,7 @@ availability.
 
 ## Apache Kafka, for comparison
 
-Kafka's idempotent producer does **not** span a producer restart, which is precisely TAP's
+Kafka's idempotent producer does **not** span a producer restart, which is precisely OAR's
 failover case:
 
 > "If an idempotent producer is stopped and restarted, it gets a new PID assigned, i.e., PIDs
@@ -140,7 +145,7 @@ That concern reads as being in tension with PIP-6's recovery description, which 
 the mark-delete position precisely to close such a gap. The article is from 2018 and may
 predate or misread the replay path. **It is not resolved here**, and it is the one claim in
 this document that should be settled by experiment rather than by reading, because it sits
-exactly on TAP's failover path.
+exactly on OAR's failover path.
 
 He also notes a point that cuts the other way, in Kafka's favour, for *broker* failover:
 Kafka followers maintain the sequence map from the messages themselves, so a newly elected
@@ -157,10 +162,10 @@ leader has dedup state without a snapshot or replay step.
 - **Producer names must be globally unique, and the broker fences on them.** "Only one producer
   with that name can publish on a topic at a time." This composes well with arbiter-mediated
   leadership — it is a second, independent fence — but it introduces a **promotion
-  interaction that must be tested**: a promoted TAP secondary claiming the same producer name
+  interaction that must be tested**: a promoted OAR secondary claiming the same producer name
   may be refused while the broker still believes the dead primary holds it.
 - **Dedup state is per-topic and in-memory before snapshot**, so it scales with producer count.
-  TAP is a single producer, so this is not a concern here, but it is the reason the 10,000
+  OAR is a single producer, so this is not a concern here, but it is the reason the 10,000
   default exists.
 
 ---
@@ -239,9 +244,9 @@ deduplication misbehaves, it does not emit duplicates — it silently drops good
 
 ### Position taken, on this evidence
 
-**Do not make TAP's correctness depend on broker-side deduplication.**
+**Do not make OAR's correctness depend on broker-side deduplication.**
 
-TAP's whole design rests on an asymmetry: duplicates are absorbable, loss is catastrophic.
+OAR's whole design rests on an asymmetry: duplicates are absorbable, loss is catastrophic.
 Broker-side dedup asks us to enable a feature whose *historical failure mode is silent loss*, in
 order to avoid the failure we can already absorb. That is the wrong way round on our own
 asymmetry, and no amount of "those bugs are fixed" changes the shape of the risk — an
@@ -249,10 +254,10 @@ unverified component in the loss path is worse than a verified one in the duplic
 
 So:
 
-- **Baseline (load-bearing):** at-least-once from TAP, dedup downstream on `seq_no`.
+- **Baseline (load-bearing):** at-least-once from OAR, dedup downstream on `seq_no`.
 - **Optimisation (never load-bearing):** broker-side dedup, enabled per deployment, to relieve
   consumers of the burden. If it silently drops something, the baseline is what must already
-  have made TAP correct.
+  have made OAR correct.
 
 This does not weaken the interface conclusions below — stable producer identity and an explicit
 sequence id are exactly what downstream dedup needs too. It changes only what we are permitted

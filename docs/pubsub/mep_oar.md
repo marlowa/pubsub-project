@@ -1,7 +1,12 @@
-# MEP, TAP, and Supporting Infrastructure — Design {#mep_tap}
+# MEP, OAR, and Supporting Infrastructure — Design {#mep_oar}
+
+> The order activity recorder was called TAP, the Trade Activity Publisher, in earlier
+> documents. Sessions in `docs/history/` and anything under `docs/superseded/` keep that
+> name, because they are records of what was said at the time.
+
 
 This document captures the design agreed in the sessions of 2026-06-12/13/14. It covers three
-inter-dependent areas of work: two new application components (MEP and TAP) and the sequencer
+inter-dependent areas of work: two new application components (MEP and OAR) and the sequencer
 changes needed to support them. Nothing here is implemented yet. The document is the reference
 for the implementation sessions that follow.
 
@@ -16,7 +21,7 @@ current system does not serve:
 
 - **Market data** — needs both the order stream (NOS + OCR) and the execution report stream
   (ER) at low latency relative to other non-core consumers.
-- **TAP (Trade Activity Publisher)** — needs the order stream for publication to an enterprise
+- **OAR (Order Activity Recorder)** — needs the order stream for publication to an enterprise
   bus (Kafka, Pulsar, or equivalent, not yet decided). It also needs ERs internally to manage
   its L3 order book and to know when orders are matched (filled), so it knows when to retire
   them from the book after the enterprise bus acknowledges receipt.
@@ -27,7 +32,7 @@ broadcast consumers, not participants in the order pipeline.
 The WAL-follower-per-consumer pattern (used for the secondary sequencer) does not scale cleanly
 to multiple consumers with fanout semantics. A topic-based pub/sub primitive is now justified
 for the first time. This document designs that primitive, the component that hosts it (MEP),
-and the first subscriber application (TAP).
+and the first subscriber application (OAR).
 
 ### Terminology
 
@@ -53,7 +58,7 @@ e.g. `array<Item>[4]`) remains a worthwhile general framework capability for fut
 where structural enforcement at the type-system level is needed. It requires changes to
 `ast.py`, `parser.py`, `validator.py`, `generator_cpp.py`, and `generator_java.py`, plus
 new tests in `test_roundtrip_nested_lists.py`. It is **not** on the critical path for MEP or
-TAP and should be scheduled as a standalone DSL improvement session when time permits.
+OAR and should be scheduled as a standalone DSL improvement session when time permits.
 
 ---
 
@@ -315,7 +320,7 @@ payloads — it routes by `pdu_id`.
 
 **The topic subscriber API is open.** Any process that can reach MEP's listener ports and
 speaks the topic protocol may subscribe. There is no pre-registration, no whitelist, and no
-configuration change required when a new subscriber type is added. TAP and market data are
+configuration change required when a new subscriber type is added. OAR and market data are
 the named first consumers, but the API is a library interface: any component can link against
 it, connect to MEP, and begin receiving records. `subscriber_id` is a label used by MEP for
 logging and per-connection cursor tracking; it is not a registry key and is not validated
@@ -369,11 +374,11 @@ Key properties:
 
 | Topic name | PDU IDs included | Consumers |
 |---|---|---|
-| `orders` | 1000 (NOS), 1001 (OCR) | TAP, market data |
-| `execution_reports` | 1002 (ER) | TAP (for L3 book), market data |
+| `orders` | 1000 (NOS), 1001 (OCR) | OAR, market data |
+| `execution_reports` | 1002 (ER) | OAR (for L3 book), market data |
 
 MEP listens on separate ports per topic (see port table). A subscriber subscribes to exactly
-one topic per connection. TAP connects twice (once per topic); market data connects twice.
+one topic per connection. OAR connects twice (once per topic); market data connects twice.
 Any other process may also connect to either port and subscribe — no configuration change
 to MEP is required.
 
@@ -453,7 +458,7 @@ applications/matching_engine_publisher/
 All direct topic subscribers will be low-latency C++ applications. There is therefore no
 need for a standalone client library, a C API shim, or any other-language mechanism.
 Applications that need further downstream consumption at lower-latency requirements (Java
-services, analytics, settlement) subscribe to the enterprise bus via TAP, not to MEP
+services, analytics, settlement) subscribe to the enterprise bus via OAR, not to MEP
 directly.
 
 `TopicSubscriberChannel`, `TopicSubscriberChannelConfig`, and `TopicSubscriberThread` all
@@ -461,7 +466,7 @@ live in the framework library:
 
 ```
 libraries/pubsub_itc_fw/include/pubsub_itc_fw/
-├── TopicSubscriberChannel.hpp       # for framework components (TAP, market data)
+├── TopicSubscriberChannel.hpp       # for framework components (OAR, market data)
 ├── TopicSubscriberChannelConfig.hpp
 └── TopicSubscriberThread.hpp        # pre-built thread for external C++ apps
 
@@ -563,14 +568,14 @@ Key callbacks:
 ### 6.9 `TopicSubscriberChannel` and `TopicSubscriberThread` — client-side components
 
 `TopicSubscriberChannel` is the client-side half of the topic pub/sub primitive, for use by
-framework components (TAP, market data) that are already `ApplicationThread` subclasses.
+framework components (OAR, market data) that are already `ApplicationThread` subclasses.
 `TopicSubscriberThread` is a pre-built `ApplicationThread` subclass for external C++
 applications that do not want to write their own.
 
 All direct MEP topic subscribers are C++ applications — low-latency is the reason they
 connect directly rather than via the enterprise bus. There is therefore no standalone client
 library, no C API, and no other-language mechanism. Applications needing downstream
-consumption at lower-latency requirements subscribe to the enterprise bus via TAP.
+consumption at lower-latency requirements subscribe to the enterprise bus via OAR.
 
 **`TopicSubscriberChannel` API (sketch):**
 
@@ -612,7 +617,7 @@ class TopicSubscriberChannel {
 - Invokes `RecordCallback` for each record in each received `TopicPage`, in seq_no order.
 - Never exposes connection IDs, PDU types, or failover state to the application.
 
-**Application pattern (TAP example using `TopicSubscriberChannel`):**
+**Application pattern (OAR example using `TopicSubscriberChannel`):**
 
 ```cpp
 // In TapThread constructor:
@@ -722,28 +727,28 @@ and `topics.orders.listen_port = 7042`, `topics.execution_reports.listen_port = 
 
 ---
 
-## 7. TAP (Trade Activity Publisher)
+## 7. OAR (Order Activity Recorder)
 
 ### 7.1 Role
 
-TAP is a framework subscriber to MEP's two topics. It maintains an L3 order book (all live
+OAR is a framework subscriber to MEP's two topics. It maintains an L3 order book (all live
 orders tracked individually) and publishes order events to an enterprise bus. The enterprise
 bus implementation (Kafka, Pulsar, or other) is a compile-time choice behind a `BusPublisher`
 abstract interface. For framework validation purposes, a `StubBusPublisher` logs and counts
 records without connecting to any external system.
 
-TAP is HA (primary/secondary pair). Cursor persistence across restarts and failovers is
+OAR is HA (primary/secondary pair). Cursor persistence across restarts and failovers is
 achieved by the subscriber maintaining its last acked cursor in a small local state file (one
 file per topic subscription), combined with the MEP WAL that holds records for replay.
 
 ### 7.2 L3 book and enterprise bus interaction
 
-TAP subscribes to both MEP topics:
+OAR subscribes to both MEP topics:
 
 **Orders topic (NOS + OCR):**
 - On NOS: add the order to the L3 book; publish the order event to the enterprise bus.
 - On OCR: update the L3 book to record a pending cancel; publish the cancel event.
-- TAP does not remove an order from the L3 book until it receives confirmation from both:
+- OAR does not remove an order from the L3 book until it receives confirmation from both:
   (a) the enterprise bus that it has acknowledged the published event; and
   (b) the ER confirming the order is fully terminal (filled or cancelled).
 - This mirrors the behaviour of the equivalent component in the reference system.
@@ -752,7 +757,7 @@ TAP subscribes to both MEP topics:
 - On ER with a terminal status (Filled, Canceled, Rejected): mark the corresponding order
   in the L3 book as terminal. If the enterprise bus has already acked the order event, remove
   it from the book immediately. Otherwise, retain it and remove it on the subsequent bus ack.
-- ERs are **not** published to the enterprise bus by TAP.
+- ERs are **not** published to the enterprise bus by OAR.
 
 ### 7.3 `BusPublisher` abstraction
 
@@ -781,17 +786,17 @@ defined now so they can be added without changing `TapThread`.
 
 ### 7.4 Cursor persistence
 
-TAP maintains two cursor files (one per topic subscription):
+OAR maintains two cursor files (one per topic subscription):
 - `tap_cursor_orders.bin` — last `TopicAck.last_seq_no` sent for the orders topic.
 - `tap_cursor_execution_reports.bin` — last `TopicAck.last_seq_no` for the ER topic.
 
-On restart, TAP reads these files and presents the cursors in `TopicSubscribeRequest`. If no
-cursor file exists (cold start), TAP uses `from_seq_no = 0` (full replay from MEP's oldest
+On restart, OAR reads these files and presents the cursors in `TopicSubscribeRequest`. If no
+cursor file exists (cold start), OAR uses `from_seq_no = 0` (full replay from MEP's oldest
 WAL record), so no order events are lost from the enterprise bus.
 
 ### 7.5 High availability
 
-TAP primary/secondary pair, arbiter-mediated election. Only the TAP leader subscribes to MEP
+OAR primary/secondary pair, arbiter-mediated election. Only the OAR leader subscribes to MEP
 and publishes to the enterprise bus. The secondary connects to MEP's topic listeners but
 sends `TopicSubscribeRequest` with the cold-start cursor and immediately closes the connection
 (it does not consume while passive). On failover, the new leader reconnects with its persisted
@@ -888,8 +893,8 @@ initial_slabs    = 1
 | 7043 | MEP secondary "execution_reports" topic inbound listener |
 | 7044 | MEP primary leader-follower peer port |
 | 7045 | MEP secondary leader-follower peer port |
-| 7046 | TAP primary leader-follower peer port |
-| 7047 | TAP secondary leader-follower peer port |
+| 7046 | OAR primary leader-follower peer port |
+| 7047 | OAR secondary leader-follower peer port |
 | 7070 | gateway → authentication_service primary |
 | 7071 | gateway → authentication_service secondary |
 | 7100 | arbiter inbound (all components connect here) |
@@ -929,8 +934,8 @@ cursors_directory            = "/var/tmp/pubsub/tap_primary_cursors"
 ...
 ```
 
-`devenv.py` and `deploy.py` require matching updates to include MEP and TAP in the startup
-order and component lists (MEP starts after the sequencer pair; TAP starts after MEP).
+`devenv.py` and `deploy.py` require matching updates to include MEP and OAR in the startup
+order and component lists (MEP starts after the sequencer pair; OAR starts after MEP).
 
 ---
 
@@ -947,7 +952,7 @@ Sequencer slice 10 (external WAL subscriber listener + Wal extraction)
     │
 MEP component (WAL follower + topic publisher)
     │
-TAP component (topic subscriber + BusPublisher)
+OAR component (topic subscriber + BusPublisher)
 ```
 
 Each step is a separate session. None should begin before the preceding step has been

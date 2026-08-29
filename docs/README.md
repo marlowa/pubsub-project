@@ -13,7 +13,7 @@ worked on and what is wrong with it.
 - **[Orientation](orientation/README.md)** — what the venue is, how to build it, how it is tested
 - **[The framework](framework/README.md)** — `pubsub_itc_fw`: the reactor, threading, allocators, pinning
 - **[The venue](venue/README.md)** — the deployable components, one document each
-- **[Pub/sub](pubsub/README.md)** — topic publish and subscribe, the MEP, and TAP
+- **[Pub/sub](pubsub/README.md)** — topic publish and subscribe, the MEP, and OAR
 - **[Durability](durability/README.md)** — the write-ahead log and replay
 - **[High availability](availability/README.md)** — surviving a process death, and a machine death
 - **[FIX](fix/README.md)** — the protocol, the codec, and the session layer
