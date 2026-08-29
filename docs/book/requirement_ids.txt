@@ -1,0 +1,15 @@
+# Every requirement identifier ever allocated, one per line.  An identifier is
+# permanent and is never reused; a withdrawn requirement keeps its line and
+# gains the status "retired".  Allocate the identifier here before using it.
+#
+# id       status    allocated   title
+R-0001     active    2026-08-29  An order that was not forwarded never takes effect
+R-0002     active    2026-08-29  A member can establish that an order was not taken
+R-0003     active    2026-08-29  An order that was not taken may be resubmitted unchanged
+R-0004     active    2026-08-29  A committed order is processed
+R-0005     active    2026-08-29  A report produced for an unbound session is delivered on reconnection
+R-0006     active    2026-08-29  A resubmitted committed order is refused as a duplicate
+R-0007     active    2026-08-29  A numbered report that was not received is recoverable
+R-0008     active    2026-08-29  Reports remain recoverable for the reconnection window
+R-0009     active    2026-08-29  A gap that cannot be filled is reported as such
+R-0010     active    2026-08-29  A duplicate is refused whatever has become of the first order

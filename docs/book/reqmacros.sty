@@ -1,0 +1,76 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{reqmacros}[2026/08/29 Requirement environment for the venue book]
+
+\RequirePackage{xcolor}
+\RequirePackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+
+% Each requirement writes a record into \jobname.req as it is typeset, read by
+% scripts/check_book_requirements.py.  One field per line, key first.  Titles
+% must be plain text: \write expands its argument.
+\newwrite\req@out
+\AtBeginDocument{\immediate\openout\req@out=\jobname.req\relax}
+\AtEndDocument{\immediate\closeout\req@out}
+\newcommand{\req@write}[1]{\immediate\write\req@out{#1}}
+
+\definecolor{reqframe}{HTML}{2F4858}
+\definecolor{reqback}{HTML}{F4F6F7}
+
+% \begin{requirement}{R-0001}{Short title}
+%    Normative text: what the venue shall do.
+%    \rationale{Why, and what practice it follows.}
+%    \covers{ha_test:31, ha_test:48}
+% \end{requirement}
+\newenvironment{requirement}[2]{%
+  % Must precede tcolorbox, which steps a counter: \@currentlabel is the
+  % enclosing sectional unit's number only until it does.
+  \label{reqsec:#1}%
+  \req@write{BEGIN}%
+  \req@write{ID #1}%
+  \req@write{SEC \@currentlabel}%
+  \req@write{TITLE #2}%
+  \begin{tcolorbox}[breakable, enhanced, colback=reqback, colframe=reqframe,
+                    boxrule=0.4pt, left=2mm, right=2mm, top=1.5mm, bottom=1.5mm,
+                    title={\textbf{#1}\quad #2}, fonttitle=\sffamily\small]%
+}{%
+  \end{tcolorbox}%
+  \req@write{END}%
+}
+
+\newcommand{\rationale}[1]{\par\smallskip{\small\textbf{Rationale.}\ #1}}
+
+% \detokenize so that a scenario name carrying an underscore is written and set
+% literally rather than read as mathematics.
+\newcommand{\covers}[1]{%
+  \req@write{COVERS \detokenize{#1}}%
+  \par\smallskip{\small\sffamily\color{reqframe}Verified by: \texttt{\detokenize{#1}}}%
+}
+\newcommand{\uncovered}[1]{%
+  \req@write{UNCOVERED \detokenize{#1}}%
+  \par\smallskip{\small\sffamily\color{reqframe}Not yet verified: #1}%
+}
+
+\definecolor{gapframe}{HTML}{8A5A00}
+\definecolor{gapback}{HTML}{FDF6E7}
+
+% \begin{gap}{BUG-0048, BUG-0064}   (the argument may be empty)
+%    What the venue does not do yet.
+% \end{gap}
+%
+% Records a difference between what this document specifies and what the venue
+% does.  Temporary: a gap is removed when it is closed, and a document with none
+% left describes a system that works.
+\newenvironment{gap}[1]{%
+  \req@write{GAP \@currentlabel\space\detokenize{#1}}%
+  \begin{tcolorbox}[breakable, enhanced, colback=gapback, colframe=gapframe,
+                    boxrule=0.4pt, left=2mm, right=2mm, top=1.5mm, bottom=1.5mm,
+                    title={\textbf{Gap}\ifx\relax#1\relax\else\quad\texttt{\detokenize{#1}}\fi},
+                    fonttitle=\sffamily\small]%
+}{%
+  \end{tcolorbox}%
+}
+
+% \reqref{R-0001} -> "R-0001 (SS 1.2.3)", hyperlinked.
+\newcommand{\reqref}[1]{\hyperref[reqsec:#1]{#1}~(\S\ref{reqsec:#1})}
+
+\endinput

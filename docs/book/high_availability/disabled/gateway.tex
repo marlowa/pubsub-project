@@ -1,0 +1,190 @@
+\subsection{The gateway holding the session}
+\label{sec:ha:disabled:gateway}
+
+The gateway carrying a member's session dies and is restarted. The member's
+connection ends and it reconnects.
+
+\subsubsection{What state it holds}
+\label{sec:ha:disabled:gateway:state}
+
+The gateway holds the conversation with the member: where the session's
+numbering has reached in each direction, and which of the outbound numbers
+carried execution reports rather than session-level traffic. That is the whole
+of what matters when it dies.
+
+While it is running it also holds the member's identity and the terms it was
+admitted under, an authentication exchange part-completed, a resend being
+served, and reports held back while the numbering is being established. None of
+these needs to survive: the first is re-established at the next logon, and the
+rest are abandoned and asked for again.
+
+It holds no order state. The book belongs to the matching engine and the
+ordering to the sequencer. Where the gateway must act on a member's behalf ---
+cancelling what the member has resting when its connection ends --- it reports
+the disconnection and the terms it was given to the component that owns the
+orders, rather than keeping a view of them to act on itself. The terms
+accordingly travel with the session, and are remembered wherever the session's
+other state is remembered.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:disabled:gateway:durable}
+
+The sequencer holds the numbering. Gateways report a session's position as it
+advances and the sequencer remembers it, because the sequencer is the only
+component that every gateway instance talks to. Execution reports are held in
+the sequencer's write-ahead log, stamped with the session they belong to.
+
+An order that has not been committed has no copy anywhere in the venue. Between
+the member sending it and the sequencer committing it the only record inside the
+venue is the gateway's, and when the gateway is what died, nothing can recover
+it.
+
+That is deliberate rather than a shortcoming. A durable record kept by the
+gateway would be a write on the hot path, in front of the write-ahead log that
+already exists, doubling the cost of every order to protect a window of
+microseconds --- and it would be redundant, because a copy of the order exists
+outside the venue in the hands of the member that sent it. The venue therefore
+does not attempt to recover an uncommitted order. It guarantees instead that
+such an order never takes effect afterwards, and that the member can establish
+as much and send it again.
+
+\begin{gap}{}
+  The gateway keeps its own view of what each session has resting, and acts on
+  that view when a connection ends. The view is built only as execution reports
+  arrive, so a restarted gateway holds nothing for orders placed before the
+  restart, and a member that asked for cancel-on-disconnect is no longer
+  protected by it, is not told, and cannot tell.
+\end{gap}
+
+\begin{requirement}{R-0008}{Reports remain recoverable for the reconnection window}
+  The venue shall retain every execution report for at least as long as a member
+  may take to reconnect and ask for it, and that period shall be stated.
+  \rationale{Recovery that depends on a record still being present is only as
+  good as the retention behind it. A retention period that is a by-product of
+  storage rather than a stated figure cannot be relied on by anyone.}
+  \uncovered{retention is not measured}
+\end{requirement}
+
+\begin{gap}{BUG-0048, BUG-0046}
+  There is no stated retention period. What survives is whatever the
+  write-ahead log has not yet discarded, which varies with the rate orders
+  arrive at, so the window narrows exactly when a member has most at stake.
+\end{gap}
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:disabled:gateway:recovery}
+
+The member reconnects, the session binds to the restarted gateway, and the
+sequencer supplies the numbering it remembers. What comes back with it depends
+on how far each order had travelled.
+
+There is only one such operation, and that is worth stating because it is not so
+elsewhere. A gateway is never promoted: it elects nothing and holds no role. A
+member returning to the instance that restarted and a member arriving at a
+different instance are therefore the same event seen from the venue --- a
+session binds to an instance that does not hold its state, and that instance
+asks the sequencer for it. Nothing in the sequence is particular to running more
+than one gateway, which is why gateways need no arbiter, and why running several
+of them costs so little.
+
+\textbf{An order the gateway had received but not forwarded} was never
+committed.
+
+\begin{requirement}{R-0001}{An order that was not forwarded never takes effect}
+  The order shall have no effect on the venue. No execution report shall be
+  produced for it, and no order shall rest on the book on its behalf.
+  \rationale{The venue had not taken the order, so acting on it later would
+  execute an instruction the member has been given no reason to believe is
+  live.}
+  \uncovered{no scenario restarts a gateway}
+\end{requirement}
+
+\textbf{An order the sequencer had committed} is the venue's responsibility from
+that moment.
+
+\begin{requirement}{R-0004}{A committed order is processed}
+  The order shall be processed by the matching engine, whether or not the
+  gateway that received it is running when the engine reaches it.
+  \rationale{Commitment is the venue taking the order. Nothing downstream of it
+  may be conditional on the component that happened to carry it.}
+  \uncovered{scenario 23 covers a gateway that is not restarted}
+\end{requirement}
+
+\textbf{A report that had been given an outbound sequence number} but did not
+reach the member leaves a gap in the member's numbering.
+
+\begin{requirement}{R-0007}{A numbered report that was not received is recoverable}
+  The member shall detect the gap in its inbound numbering, and the venue shall
+  supply the reports that occupied the missing numbers.
+  \covers{ha_test:22}
+\end{requirement}
+
+\subsubsection{What the member is told}
+\label{sec:ha:disabled:gateway:member}
+
+\begin{requirement}{R-0002}{A member can establish that an order was not taken}
+  On reconnecting, a member shall be able to determine that the venue holds no
+  order for a \texttt{ClOrdID} it had sent.
+  \rationale{The member cannot distinguish this case from a lost reply. Every
+  venue provides an order status enquiry for exactly this reason.}
+  \uncovered{the venue does not answer order status enquiries}
+\end{requirement}
+
+\begin{gap}{}
+  The venue answers no order status enquiry of any kind, so a member has no way
+  to ask what is held for it. Recovery rests entirely on what the venue chooses
+  to send.
+\end{gap}
+
+\begin{requirement}{R-0003}{An order that was not taken may be resubmitted unchanged}
+  A member may send the order again under the same \texttt{ClOrdID}, and the
+  venue shall process it as a new order.
+  \rationale{Without this the member must choose between abandoning an order and
+  risking a duplicate. Resubmission under the original identifier is what makes
+  the choice unnecessary.}
+  \uncovered{no scenario restarts a gateway}
+\end{requirement}
+
+\begin{requirement}{R-0006}{A resubmitted committed order is refused as a duplicate}
+  Where a member sends again an order the venue had already committed, under the
+  same \texttt{ClOrdID}, the venue shall refuse it as a duplicate and shall not
+  create a second order.
+  \rationale{This is what makes \reqref{R-0003} safe. A member that cannot tell
+  the two cases apart relies on the venue telling them apart on its behalf.}
+  \uncovered{no scenario restarts a gateway}
+\end{requirement}
+
+\begin{requirement}{R-0010}{A duplicate is refused whatever has become of the first order}
+  The refusal required by \reqref{R-0006} shall not depend on the order having
+  reached the matching engine, nor on the engine that received it still running.
+  \rationale{Commitment is the sequencer's act, so a record of what has been
+  committed is the only thing that can answer this at the moment the question is
+  asked. An order committed and not yet applied is invisible to the engine, and
+  an engine that has restarted knows of no earlier submission at all; in either
+  case a member following \reqref{R-0003} would be given a second live order.}
+  \uncovered{no scenario restarts a gateway}
+\end{requirement}
+
+\begin{requirement}{R-0005}{A report produced for an unbound session is delivered on reconnection}
+  An execution report produced while the session had no connection shall be
+  delivered when that session next binds to a gateway, without the member having
+  to ask for it.
+  \rationale{No outbound sequence number was allocated for such a report, so it
+  leaves no gap. The member has nothing to notice and nothing to request, and a
+  resend cannot reach it.}
+  \uncovered{no scenario restarts a gateway}
+\end{requirement}
+
+\begin{gap}{}
+  Recovery is driven entirely by the member noticing a gap and asking. A report
+  produced while the session had no connection was never numbered, so it leaves
+  no gap, and nothing pushes it.
+\end{gap}
+
+\begin{requirement}{R-0009}{A gap that cannot be filled is reported as such}
+  Where the venue cannot supply a report the member has asked for, it shall say
+  so rather than fill the number silently.
+  \rationale{A silently filled gap leaves the member believing it is
+  synchronised when it has lost a report it will never see.}
+  \uncovered{no scenario restarts a gateway}
+\end{requirement}

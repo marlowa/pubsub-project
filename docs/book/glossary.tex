@@ -1,0 +1,56 @@
+% Terms and abbreviations.  An abbreviation may be used in the prose only if it
+% is defined here; \gls expands it on first use and shortens it thereafter.
+\newacronym{wal}{WAL}{write-ahead log}
+\newacronym{spof}{SPOF}{single point of failure}
+\newacronym{rto}{RTO}{recovery time objective}
+\newacronym{rpo}{RPO}{recovery point objective}
+\newacronym{fix}{FIX}{Financial Information eXchange protocol}
+
+\newglossaryentry{member}{
+  name={member},
+  description={A firm admitted to trade on the venue. A member reaches the venue
+    over one or more sessions}}
+
+\newglossaryentry{session}{
+  name={session},
+  description={A comp id and a protocol. A session is not a connection: it
+    outlives the connection that carries it, keeps its sequence numbering across
+    one ending, and owns the orders placed on it}}
+
+\newglossaryentry{primary}{
+  name={primary},
+  description={A configured identity, fixed for the life of a deployment and
+    never changing. It says which instance is preferred at a cold start and
+    nothing else. Not a synonym for \gls{leader}}}
+
+\newglossaryentry{secondary}{
+  name={secondary},
+  description={The other configured identity. Not a synonym for \gls{follower}}}
+
+\newglossaryentry{leader}{
+  name={leader},
+  description={A runtime role: the instance currently entitled to act. Either
+    configured instance may hold it at any time, so a \gls{primary} that is the
+    \gls{follower} is a normal state rather than a contradiction}}
+
+\newglossaryentry{follower}{
+  name={follower},
+  description={A runtime role: the instance that is not acting. It tracks the
+    \gls{leader} so that it can take over, and sends nothing onward while it
+    holds this role}}
+
+\newglossaryentry{committed}{
+  name={committed},
+  description={An order is committed once the sequencer has assigned it a
+    sequence number and appended it to the \gls{wal}. Before that moment the
+    venue has not taken the order; after it, the venue owes an answer for it}}
+
+\newglossaryentry{arbiter}{
+  name={arbiter},
+  description={The component that decides which instance leads. It holds no
+    venue state and answers only the question it is asked}}
+
+\newglossaryentry{witness}{
+  name={witness},
+  description={The third party that lets a pair of arbiters reach a majority,
+    so that two instances cannot both believe they lead}}

@@ -1,0 +1,47 @@
+% The venue book.  Build with "make"; "make check" validates requirement
+% identifiers and their coverage.  Chapter and section order is expressed here
+% and nowhere else.
+\documentclass[11pt,a4paper,openany]{book}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+\usepackage[a4paper,margin=32mm,marginparwidth=0mm]{geometry}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{amsmath} % to use text in math mode
+\usepackage{cleveref} % cleverref must come after amsmath
+\usepackage[acronym,nopostdot,nonumberlist,toc]{glossaries}
+\makeglossaries
+\input{glossary}
+\usepackage{reqmacros}
+
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{3}
+
+\title{\texttt{pubsub\_itc\_fw}\\[0.5em]\Large Functional Specification\\[0.3em]
+       \large the behaviour required of the framework and the venue built on it}
+\author{Andrew Marlow}
+\date{Draft --- \today}
+
+\begin{document}
+\frontmatter
+\maketitle
+\tableofcontents
+% Every entry is listed whether or not the prose has reached it yet.
+\glsaddall
+\printglossary[type=\acronymtype,title={Abbreviations}]
+\printglossary[title={Terms}]
+
+\mainmatter
+
+% Name a chapter here to rebuild only that one.
+% \includeonly{process_restart/process_restart}
+
+\include{introduction/introduction}
+\include{high_availability/high_availability}
+
+\end{document}

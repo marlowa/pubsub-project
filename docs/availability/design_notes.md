@@ -771,7 +771,7 @@ connected but idle member unaware, leaves a member reconnecting into a halt to d
 trial, and gives nothing to a member that has stopped sending. One message with a defined exit is
 what stops a halt being something members work out.
 
-**A halt must be rare, and the ladder is built to keep it so.** Observed in practice: halts get
+**A halt must be rare, and the escalation is built to keep it so.** Observed in practice: halts get
 declared at the drop of a hat, and a venue that halts readily trains its members to ignore the
 signal. The wish to automate that away is right; the error would be automating it so completely
 that no halt is possible. Deferring and refusing are automatic and self-clearing precisely so that

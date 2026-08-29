@@ -1,0 +1,131 @@
+\chapter{High availability}
+\label{ch:high_availability}
+
+\section{Introduction to high availability}
+\label{sec:ha_intro}
+
+High availability in electronic trading exchanges is designed to eliminate single points of failure and guarantee continuous order processing, position tracking, and market data dissemination. Unlike enterprise web applications that tolerate brief retries or eventual consistency, matching engines require strict determinism, sub-millisecond failover times, and absolute state synchronisation between primary and backup nodes.
+
+\subsection{Architectural patterns}
+\label{subsec:ha_architectural_patterns}
+
+Most financial exchanges implement one of two primary architectural models for fault tolerance:
+
+\begin{itemize}
+    \item \textbf{Active-passive, or hot standby:} The primary matching engine processes all incoming client sessions,
+      maintains the active order book, and continuously replicates its state delta to a backup node.
+      If the primary node experiences hardware, network, or software failure, the backup node promotes itself to primary,
+      replays or recovers the replicated state, and resumes accepting sessions.
+    \item \textbf{Active-active, consensus driven:} Multiple nodes process transactions concurrently using
+      consensus protocols (such as Raft or Paxos) or synchronous state machine replication. While offering lower recovery time
+      objectives, this model introduces higher coordination latency, making it less common for
+      ultra-low-latency matching engines unless cross-site resiliency overrides raw speed.
+\end{itemize}
+
+\subsection{Failover mechanics and state synchronisation}
+\label{subsec:ha_failover_mechanics}
+
+A robust implementation must manage state across three distinct layers during a failover event:
+
+\begin{enumerate}
+    \item \textbf{Session state:} Client connections (such as FIX or proprietary binary sessions) must either maintain persistent TCP connections via network load balancers or allow clients to rapidly reconnect, query sequence numbers, and resume state without losing in-flight messages.
+    \item \textbf{Order book state:} The exact sequence of resting bids and offers, execution reports, and cancelled orders must be identical on the standby node to prevent double-fills or lost orders.
+    \item \textbf{Gateway ingress and egress:} Gateways handle protocol translation and risk checks. If a gateway fails independently of the matching engine, session recovery protocols must determine whether an in-flight \texttt{NewOrderSingle} was accepted, rejected, or lost before timeout notifications reach the client.
+\end{enumerate}
+
+\subsection{The approach taken here}
+\label{subsec:ha_approach}
+
+This library is intended for low latency environments rather than ultra-low ones.
+
+\textbf{This system is active-passive} for every component that must be
+singular: the sequencer, the matching engine and the arbiter. Each of those runs
+as a pair, one instance the leader and the other the follower, and the
+difference between the two roles is total.
+
+\begin{itemize}[nosep]
+  \item \textbf{The leader does the work.} The sequencer assigns each order a
+        sequence number, appends it to the write-ahead log and forwards it to the
+        matching engine; the matching engine matches against its book and issues
+        the execution reports.
+  \item \textbf{The leader replicates continuously.} The sequencer streams every
+        log record to its follower, which writes it to a log of its own and
+        acknowledges it. The matching engine's follower keeps a replica of the
+        book from the same stream.
+  \item \textbf{The follower acts on nothing.} It forwards no order, issues no
+        execution report and answers no gateway. While it holds that role it
+        processes no traffic at all.
+  \item \textbf{On failure the follower is promoted.} The arbiter tells it that
+        it now leads; it brings itself up to date from whatever it has replicated
+        but not applied, and begins acting.
+\end{itemize}
+
+That is the pattern \cref{subsec:ha_architectural_patterns} describes as
+active-passive, clause for clause. The test that rules out active-active is the
+third point: at no moment do two instances process the same traffic, and no
+transaction is ever handled concurrently by more than one of them.
+
+Classic consensus algorithms such as Raft or Paxos are not used. In their place
+there is an arbitration service and a witness, which between them decide which
+instance may act and stop both instances believing it at once.
+
+Components that need not be singular are not paired in that way. The
+authentication services run active-active, any instance answering any caller.
+Several gateways run at once, each holding a different set of sessions, which
+divides the work rather than replicating it. \Cref{sec:ha:disabled:scope}
+returns to that distinction, because it decides what turning high availability
+off actually removes.
+
+\section{Preliminaries}
+\label{sec:ha:preliminaries}
+
+A requirement is a statement of behaviour the venue must exhibit. It carries a
+permanent identifier of the form \texttt{R-0001}, allocated in sequence and
+never reused, so that a citation from a test, a defect record or a commit
+message resolves for the life of the project. The identifier does not encode
+position: a cross-reference renders as the identifier followed by the section it
+is stated in, computed when the document is built.
+
+A requirement describes observable behaviour --- what the venue does, and where
+a member is involved, what that member is able to observe or do. Something that
+holds when nothing has failed is an assumption rather than a requirement, and is
+stated as one. One requirement is stated for each outcome a member can
+distinguish, rather than for each mechanism that produces one.
+
+Every requirement names the scenarios that verify it, or states that none does
+yet.
+
+\bigskip
+
+Components are started by a launcher, which restarts what it starts and knows
+nothing else. It takes no part in deciding which instance holds which role, and
+no requirement in this chapter depends on it being present.
+
+A component that dies repeatedly has not failed once; it is failing. Restarting
+it again produces another failure, so the number of attempts is bounded, and
+exhausting that bound is a terminal condition rather than a slower loop.
+
+\textbf{An order is committed} when the sequencer has assigned it a sequence
+number and appended it to the write-ahead log. That moment divides every
+scenario in this chapter. Before it, the venue has not taken the order: it may
+be lost by a failure, and the requirements say only that it must not take effect
+afterwards and that the member can establish what happened. After it, the venue
+has taken the order and owes an answer for it, whatever dies subsequently. The
+word is never used as a synonym for the \texttt{New} execution report that
+reports an order's acceptance to a member.
+
+\textbf{The following hold when nothing has failed}, and are specified
+elsewhere. They are recorded here because the requirements in this chapter rely
+on them.
+
+\begin{itemize}[nosep]
+  \item A member's session is its comp id and protocol rather than its
+        connection, and outlives the connection that carried it.
+  \item \texttt{ClOrdID} is unique per session per trading day, and the venue
+        enforces it.
+  \item Sequence numbering is reset on a stated schedule, and never as a
+        consequence of a failure.
+\end{itemize}
+
+\input{high_availability/disabled/section}
+\input{high_availability/enabled/section}

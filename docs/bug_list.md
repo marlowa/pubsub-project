@@ -278,7 +278,7 @@ is trading. A broadcast should exist as well rather than instead: the reply leav
 idle member unaware, and leaves a member reconnecting into a halt to find out by trial.
 
 **A halt must be rare.** Also from practice: halts get declared at the drop of a hat, and a venue
-that halts readily trains its members to ignore the signal. That is the reason the escalation ladder
+that halts readily trains its members to ignore the signal. That is the reason the escalation
 puts two automatic, self-clearing states beneath it -- everything recoverable is recovered before a
 halt is reached. The error to avoid is not automating too little but automating so completely that
 no halt is possible.
@@ -287,7 +287,7 @@ no halt is possible.
 scheduled pause, a market-wide event, an instrument suspension, an operator decision. None of those
 can be expressed today.
 
-**And it is what the escalation ladder needs at the top.** See
+**And it is the state the escalation needs above the other two.** See
 [design notes 15](availability/design_notes.md#ha_recovery_ends_at_loss). Deferring and refusing are
 both automatic and both self-clearing, which is right while nothing has been lost. Once orders have
 been stranded -- [BUG-0064](#bug_0064) -- resuming automatically conceals the damage, and the venue
@@ -310,7 +310,7 @@ What a design has to settle:
   chosen before the technical event has a shape.
 - **Where the state lives, which is not obvious here.** Holding it in the matching engine is natural
   when the engine is up and the halt is a trading decision. It cannot be the whole answer for this
-  venue: the condition that prompted the ladder is *there is no matching engine*, so a halt entered
+  venue: the condition that prompted the escalation is *there is no matching engine*, so a halt entered
   for that reason must be held by something outliving the engine -- the sequencer, the gateways, or
   both -- or it vanishes exactly when it is needed.
 - **What a halted venue does with an order.** Reject with a halt reason is the obvious answer, but
@@ -387,7 +387,7 @@ Four things the event's shape has to get right:
 a venue that reopens quietly after losing orders conceals the loss, so the event that lifts a halt
 is published because a person decided it was safe, never because an engine reconnected.
 
-Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the top of the ladder
+Related: [BUG-0009](#bug_0009) and [BUG-0064](#bug_0064), which is what made the third state
 necessary rather than tidy. [BUG-0061](#bug_0061), since a non-HA venue has no arbiter and reaches
 these states differently. [BUG-0060](#bug_0060), for the burst of cancels a halt produces.
 

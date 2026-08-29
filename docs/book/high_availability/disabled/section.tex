@@ -1,0 +1,46 @@
+\section{High availability disabled}
+\label{sec:ha:disabled}
+
+The venue has a single switch that turns high availability off. With it off no
+arbiter and no witness is started, and each component that would otherwise run
+as a primary and secondary pair runs as one instance.
+
+This configuration exists for development, and for no other purpose. A
+development machine is one machine, and a second instance of every component
+consumes processors and memory that the work being done has better uses for.
+Many tests do not depend on high availability at all, and run faster and more
+predictably without the components that provide it.
+
+\textbf{It is not a supported production configuration and must never be
+deployed as one.} With one instance of each singular component there is nothing
+to fail over to. The only recovery available is to restart the process that died
+and rebuild what it held.
+
+\subsection{What the switch does and does not remove}
+\label{sec:ha:disabled:scope}
+
+Two kinds of multiplicity must not be confused.
+
+\emph{Replicated peers} are components of which several instances run, all of
+them live, none of them leading. The authentication services and the gateways
+are replicated peers: a caller reaching any instance gets the same answer, and
+losing one costs capacity rather than correctness.
+
+\emph{Singular components} are those of which exactly one instance may act at a
+time. The sequencer, the matching engine and the publisher are singular, and
+that constraint is what the arbiter, the leader and follower roles, and the
+leadership generation exist to enforce.
+
+Turning high availability off removes the second instance of each singular
+component, and the components whose only purpose is to arbitrate between them.
+It says nothing about the replicated peers, which run in every configuration.
+
+\subsection{What this configuration owes}
+\label{sec:ha:disabled:obligation}
+
+A configuration that exists in order to be tested against must be honest rather
+than safe. It may lose what a production venue must not, provided that it says
+so. It must never behave in a way that leaves a test passing for a reason that
+would not hold in production.
+
+\input{high_availability/disabled/gateway}
