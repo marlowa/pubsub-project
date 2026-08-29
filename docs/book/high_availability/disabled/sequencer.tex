@@ -1,0 +1,177 @@
+\subsection{The sequencer}
+\label{sec:ha:disabled:sequencer}
+
+The sequencer dies and is restarted. No member's connection is broken by this:
+their sessions are held by gateways, which stay up. What stops is the venue's
+ability to take an order.
+
+\subsubsection{What state it holds}
+\label{sec:ha:disabled:sequencer:state}
+
+\textbf{The ordering.} The number it will assign next, and the write-ahead log
+that records what it has assigned. This is the venue's account of what it has
+taken, and everything else in this subsection is subordinate to it.
+
+\textbf{The leadership generation.} Which generation of leadership its work is
+stamped with, so that a message from a superseded instance can be told from a
+current one.
+
+\textbf{Each session's numbering.} Where every session has reached in each
+direction, and which of its outbound numbers carried execution reports. The
+sequencer holds this on the gateways' behalf and not for itself ---
+\cref{sec:ha:disabled:gateway:durable} --- because it is the only component that
+every gateway instance talks to.
+
+\textbf{Where an execution report should go.} The route from a committed order
+back to the session that placed it.
+
+\textbf{What it has deferred.} How many orders it has taken that no matching
+engine has yet seen, and how long that has been true.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:disabled:sequencer:durable}
+
+\textbf{The first two survive it.} The log is on disk, and the next number is
+taken from its last record. The generation is in a small file beside the log,
+written to a temporary file and renamed over the real one, so that a reader sees
+either the old value or the new one whatever moment the process died at.
+
+\textbf{The other three have no durable copy.} They are held only in the running
+process, and what happens to each on a restart is different.
+
+Session numbering is \emph{relearned} rather than recovered. Gateways report
+every session's position on a timer, so a restarted sequencer is told again,
+within one reporting interval, about every session that is bound to a gateway at
+that moment. A session with no live connection has nobody to tell it --- and
+that is precisely the session that is about to reconnect and ask.
+
+\begin{gap}{}
+  A session that was not connected when the sequencer restarted is forgotten
+  entirely. Nothing on disk holds its numbering and no gateway is reporting it.
+\end{gap}
+
+The route from an order to a session is deliberately not rebuilt. Recovering it
+by replaying the log would populate it with entries that nothing ever erases,
+and the log holds a trading day.
+
+\begin{gap}{}
+  An execution report arriving for an order committed before the restart cannot
+  be placed, because the route it needed was not kept and is not rebuilt.
+\end{gap}
+
+What has been deferred is a count and a time. The orders themselves are in the
+log, and a restarted sequencer has no record that anything is owed on them.
+
+\begin{gap}{BUG-0064}
+  A restart resets the venue's knowledge that it is holding orders no matching
+  engine has seen. The records remain in the log; what is lost is that they were
+  waiting.
+\end{gap}
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:disabled:sequencer:recovery}
+
+It reopens the log, takes the next number from the last record it finds, and
+reads the generation from the file beside it. What it cannot recover, it is
+told: gateways report the sessions they hold, and a matching engine connects.
+
+What is outstanding at the moment it dies falls into cases, and they are not
+alike.
+
+\textbf{An order committed and not yet forwarded to the matching engine} is the
+venue's, and is covered by \reqref{R-0013}: the engine reports how far it has
+got and the sequencer sends what follows.
+
+\textbf{An execution report produced but not yet sent onward} is a different
+problem. The report itself survives, because it was written to the log with the
+session it belongs to stamped on it. What does not survive is the route the
+sequencer was going to use.
+
+\begin{requirement}{R-0025}{A report can be addressed to its session after a restart}
+  An execution report the venue has produced shall be deliverable to the session
+  that placed the order, after a restart of any component between the two, and
+  the session it belongs to shall be determinable from what survived that
+  restart.
+  \rationale{The record of the report already names its session. A route held
+  only in a running process is lost at precisely the moment it is wanted, and
+  nothing else can supply it.}
+  \uncovered{no scenario restarts a sequencer with reports undelivered}
+\end{requirement}
+
+\textbf{This is not the same operation as a promotion}, and the difference
+matters more than it first appears. A follower has been receiving each session
+report all along, because gateways report to both instances, and has been
+receiving every log record as it was written. It therefore already holds what a
+restarted instance must be told --- including for sessions that are not bound to
+any gateway, which are exactly the ones nobody will report.
+
+So the sequencer is the reverse of \cref{sec:ha:disabled:gateway}, where there
+is only one operation because there is no promotion. Here there are two, they
+recover different amounts, and the weaker of them is the one the venue falls
+back on when there is nothing to fail over to.
+
+\subsubsection{What the member is told}
+\label{sec:ha:disabled:sequencer:member}
+
+\begin{requirement}{R-0026}{A logon completes or is refused within a bounded time}
+  A member logging on shall be given either an established session or a refusal,
+  within a stated time, whatever the venue has restarted meanwhile. It shall not
+  be left authenticated and unestablished.
+  \rationale{A session that is neither established nor refused leaves the member
+  unable to trade and with nothing to act on: it cannot proceed, and it has been
+  given no reason to reconnect.}
+  \uncovered{no scenario restarts a sequencer during a logon}
+\end{requirement}
+
+\begin{requirement}{R-0027}{An interrupted resend leaves the member able to act}
+  Where the venue cannot finish supplying a range of messages it has begun, it
+  shall say so. A member shall not be left with an unfilled gap and no
+  indication that nothing further is coming.
+  \rationale{From the member's side, waiting for records that will never arrive
+  is indistinguishable from waiting for records that are merely slow. Only the
+  venue can tell the two apart, so only the venue can end it.}
+  \uncovered{no scenario restarts a sequencer during a resend}
+\end{requirement}
+
+\begin{requirement}{R-0011}{A session's numbering survives a restart of whatever remembers it}
+  A member reconnecting after the venue has restarted the component that holds
+  its numbering shall be resumed where it left off, and not at the beginning.
+  \rationale{A member whose numbering restarts sees a break it cannot
+  reconcile, and the venue cannot tell it which of its orders the venue still
+  holds.}
+  \uncovered{no scenario restarts a sequencer with a session unbound}
+\end{requirement}
+
+\begin{requirement}{R-0012}{A member is never resumed at a numbering the venue cannot vouch for}
+  Where the venue has no record of a session's numbering, it shall say so rather
+  than resume that session at the beginning.
+  \rationale{Resuming at the beginning is indistinguishable, to a member whose
+  own store has also restarted, from a session that has genuinely never traded.
+  Both sides then agree on a numbering neither has any basis for, no gap is
+  visible to either, and the member is silently resynchronised while its orders
+  are still open. Being refused is recoverable; being agreed with wrongly
+  is not.}
+  \uncovered{no scenario restarts a sequencer with a session unbound}
+\end{requirement}
+
+\begin{gap}{}
+  A member whose session the venue has forgotten is resumed at the beginning and
+  is not told.
+\end{gap}
+
+\begin{requirement}{R-0013}{An order committed before a sequencer restart still receives its execution report}
+  An order that the sequencer had committed before it died shall be processed,
+  and an execution report shall be produced for it and be deliverable to the
+  session that placed the order.
+  \rationale{Commitment is the venue taking the order, and a restart of the
+  component that took it does not give it back.}
+  \uncovered{no scenario restarts a sequencer with orders committed and unanswered}
+\end{requirement}
+
+\begin{requirement}{R-0014}{A sequence number is never issued twice}
+  A restarted sequencer shall not assign a number it has assigned before.
+  \rationale{The number is the venue's name for an order. Two orders sharing one
+  cannot both be answered, and the second cannot be distinguished from a
+  retransmission of the first.}
+  \uncovered{scenario 14 covers a restart with a peer to synchronise from}
+\end{requirement}

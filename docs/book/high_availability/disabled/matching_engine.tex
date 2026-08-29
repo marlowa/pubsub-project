@@ -1,0 +1,157 @@
+\subsection{The matching engine}
+\label{sec:ha:disabled:me}
+
+The matching engine dies and is restarted. No member's connection is broken and
+the venue can still take orders; what stops is anything being done with them.
+
+\subsubsection{What state it holds}
+\label{sec:ha:disabled:me:state}
+
+\textbf{The set of open orders.} Which orders the venue has accepted and not yet
+cancelled or rejected, and the session each belongs to. This is what lets an
+order identifier be recognised as one already in use, and a cancel be answered
+rather than guessed at. It is the only copy: the sequencer holds the record of
+what was taken and in what order, which is a different thing and cannot be
+turned into this one cheaply.
+
+\textbf{How far that set has been brought.} The sequence number up to which the
+set reflects what the sequencer has committed. Without it the set is a
+collection of orders with no way to say what is missing from it.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:disabled:me:durable}
+
+Nowhere. The set exists in one process and is lost with it.
+
+\begin{gap}{}
+  With a thousand orders open, a matching engine killed and restarted returns
+  holding none of them. The gateway continues to report those orders as open,
+  the member continues to believe they are live, and nothing tells either
+  otherwise. A cancel for any of them is then refused as an order the venue does
+  not recognise.
+\end{gap}
+
+It cannot be recovered from the sequencer's log either, and the reason is worth
+stating because the log looks as though it should serve. The log records changes
+rather than state, so rebuilding the set from it means replaying from the
+beginning --- and the earlier part of the log is discarded as it grows.
+
+\begin{gap}{BUG-0048}
+  The history retained is whatever has not yet been discarded, which is a
+  quantity of records rather than a period of time. Rebuilding a set of orders
+  of any age from the log is therefore not possible, however the rebuilding is
+  written.
+\end{gap}
+
+\textbf{What is required instead is a checkpoint}: the set itself, written
+periodically by the component that owns it, recording the orders it holds open
+and the sequence number they are current to. That is the copy that outlives the
+process, and the log supplies only what has happened since.
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:disabled:me:recovery}
+
+It reads the checkpoint, rebuilds the set as it stood at the sequence number the
+checkpoint records, and asks the sequencer for everything committed after that.
+It applies what comes back without issuing execution reports for it --- those
+were issued the first time --- and begins accepting orders once it has caught
+up.
+
+\textbf{This is the same operation a promoted instance performs.} A follower
+that is promoted holds a replica of the set and knows the sequence number it
+reached; it asks for everything after that, applies it silently, and begins
+accepting. The two differ only in where the starting number comes from --- a
+file in one case, a replica in the other.
+
+That is the most useful result in this chapter. It means the configuration with
+high availability enabled needs no separate promotion path: promotion is this
+recovery, starting from a number learned another way. One mechanism is built,
+and the same mechanism is exercised by every restart rather than only by the
+failovers a test contrives.
+
+\begin{gap}{BUG-0064}
+  An instance that starts without having been a follower applies nothing. It
+  adopts its role and begins accepting orders while holding none. There are two
+  such paths --- one where the venue arbitrates roles and one where it does not
+  --- and neither recovers anything.
+\end{gap}
+
+\subsubsection{What the member is told}
+\label{sec:ha:disabled:me:member}
+
+\begin{requirement}{R-0028}{Every accepted order is reported to its member, once}
+  An order the matching engine accepted shall have an execution report reach the
+  member that placed it, whatever restarted between the acceptance and the
+  delivery, and the member shall not be led to believe the acceptance happened
+  twice.
+  \rationale{Catching up after a restart applies orders without issuing reports,
+  on the ground that the reports were issued the first time. An order accepted
+  whose report never left the engine is exactly the case where that ground does
+  not hold, so something must be able to tell the two apart.}
+  \uncovered{no scenario restarts the engine between acceptance and delivery}
+\end{requirement}
+
+\begin{requirement}{R-0029}{A cancel request is always answered}
+  A request to cancel shall receive either a report saying the order was
+  cancelled or a rejection saying why, whatever restarted while the request was
+  in flight.
+  \rationale{A member that does not know whether its cancel took effect must
+  assume the order is live and can hedge in neither direction. A rejection it
+  can act on; silence it cannot.}
+  \uncovered{no scenario restarts the engine with a cancel in flight}
+\end{requirement}
+
+\begin{requirement}{R-0030}{With no matching engine, the venue refuses rather than acknowledges}
+  Where no matching engine exists to process orders, the venue shall refuse
+  orders and tell members why, rather than accept orders it cannot process.
+  \rationale{An order acknowledged and never processed is worse for a member
+  than one refused: it believes the order live, may have hedged against it, and
+  has nothing to cancel.}
+  \uncovered{scenario 42 covers refusal, and not a restart}
+\end{requirement}
+
+\begin{requirement}{R-0018}{An open order survives a restart of the matching engine}
+  An order the venue held open before the restart shall be held open afterwards,
+  on the same terms, and shall remain cancellable by the member that placed it.
+  \rationale{The member was told the order was accepted and has no reason to
+  think a venue process has restarted. An order that quietly ceases to exist is
+  the one failure a member cannot detect, cannot cancel and cannot hedge.}
+  \uncovered{no scenario asserts that open orders survive a restart}
+\end{requirement}
+
+\begin{requirement}{R-0036}{A cancelled order does not become open again}
+  An order the member cancelled before a restart shall not be open after it.
+  \rationale{Recovery reads a record of the state and then applies what followed
+  it. A cancellation that falls between the two is the case that resurrects an
+  order its member killed --- and the member, having been told it was cancelled,
+  is not watching for it.}
+  \uncovered{no scenario cancels an order and then restarts the engine}
+\end{requirement}
+
+\begin{requirement}{R-0020}{An order the venue cannot recover is cancelled to its member}
+  Where the set of open orders cannot be rebuilt, the venue shall send an
+  unsolicited cancel for every order it can still name, and shall say that it
+  cannot name the rest.
+  \rationale{A member's view converges on the venue's only if the venue reports
+  what it has lost. Ceasing to mention an order is not a report of anything.}
+  \uncovered{the venue sends nothing in this case}
+\end{requirement}
+
+\begin{requirement}{R-0021}{A member is not told an order is unknown while the venue is still recovering}
+  A request concerning an order shall not be refused as unrecognised before the
+  set of open orders has been brought up to date.
+  \rationale{Before then the venue does not know whether it holds the order.
+  Answering as though it does not is a statement it cannot support, and the
+  member acts on it.}
+  \uncovered{no scenario asserts that open orders survive a restart}
+\end{requirement}
+
+\begin{requirement}{R-0022}{The venue keeps enough history to bring a recovered set of orders up to date}
+  The record of committed orders shall be retained at least as far back as the
+  oldest checkpoint any component may restart from.
+  \rationale{Recovery that reads a checkpoint and then asks for what followed it
+  fails entirely if what followed has been discarded, and fails in the way that
+  is hardest to notice: the checkpoint loads, the catch-up returns nothing, and
+  the set looks complete.}
+  \uncovered{retention is not anchored to anything}
+\end{requirement}

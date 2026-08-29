@@ -1,0 +1,111 @@
+\subsection{The authentication service}
+\label{sec:ha:disabled:auth}
+
+Several authentication services run at once and none of them leads. A member
+never speaks to one directly: a gateway does so on its behalf, at logon, and
+reaches whichever instance answers.
+
+Losing one instance therefore costs capacity and not correctness, and that is
+the easy part of this subsection. The hard part is that two instances can hold
+different answers to the same question.
+
+\subsubsection{What state it holds}
+\label{sec:ha:disabled:auth:state}
+
+The credential set: which comp ids may trade, the material each is
+authenticated against, and the terms it was admitted under. This is a copy and
+not the original. The database is the source of truth, and an administration
+service is its only writer.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:disabled:auth:durable}
+
+The database, reached in two steps rather than one. An instance loads an export
+of the database when it starts, and is afterwards sent each change as the
+administration service makes it. It holds no connection to the database itself,
+so it can neither check an answer against the source nor tell how far behind it
+has fallen.
+
+That arrangement has a consequence worth stating plainly: \textbf{the only party
+that can tell whether an instance is current is the administration service},
+because it is the only one that knows what it sent and to whom.
+
+\begin{gap}{}
+  A change is reported as having succeeded when at least one instance applied
+  it. A partial fan-out is therefore indistinguishable from a complete one, and
+  nobody learns that an instance was missed.
+\end{gap}
+
+\begin{gap}{}
+  Nothing brings a running instance up to date. Having missed a change, it stays
+  wrong until it is restarted --- and restarting reloads the export, which may
+  itself predate the change, so restarting is not a reliable remedy either.
+\end{gap}
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:disabled:auth:recovery}
+
+It reloads the export and resumes answering. As with
+\cref{sec:ha:disabled:gateway}, there is only one such operation: an
+authentication service elects nothing and is never promoted, so a restarted
+instance and a newly started one do the same thing.
+
+What it does not do is ask for what it missed, and nothing offers it.
+
+\subsubsection{What the member is told}
+\label{sec:ha:disabled:auth:member}
+
+The two ways an instance can be wrong are not equally serious, and the
+requirements are asymmetric for that reason. An instance that has missed an
+addition refuses a member that should be admitted: recoverable, and visible to
+the member at once. An instance that has missed a withdrawal admits a member
+that should be refused: silent, persistent, and a failure of a different kind.
+
+\begin{requirement}{R-0042}{A credential change is applied by every instance, or is reported as incomplete}
+  A change shall not be reported as having succeeded unless every instance
+  applied it. Where an instance did not, the change shall be reported as
+  incomplete and shall name the instance.
+  \rationale{Reporting success when one of several applied makes a partial
+  distribution indistinguishable from a complete one, so there is no moment at
+  which anybody could act on it. Every remedy below depends on the condition
+  being known.}
+  \uncovered{no scenario makes a credential change while an instance is down}
+\end{requirement}
+
+\begin{requirement}{R-0043}{An instance that has missed a change is brought current without being restarted}
+  Where an instance has missed a change, it shall be brought up to date while
+  running.
+  \rationale{Restarting is not a remedy: an instance reloads an export of the
+  database, which may itself be older than the change it missed. Nothing else
+  makes an instance reconcile, so without this staleness has no end.}
+  \uncovered{nothing brings a running instance up to date}
+\end{requirement}
+
+\begin{requirement}{R-0044}{A member is admitted by every instance or by none}
+  A member's logon shall succeed or be refused alike whichever instance answers
+  it.
+  \rationale{Intermittent admission is worse for a member than consistent
+  refusal. It works, then it does not, nothing distinguishes the attempts, and
+  it is correspondingly hard to report or to reproduce.}
+  \uncovered{no scenario authenticates the same member against both instances}
+\end{requirement}
+
+\begin{requirement}{R-0045}{An instance can say how current its credential set is}
+  An instance shall be able to report the point up to which it has applied
+  changes.
+  \rationale{An instance that cannot say this leaves nobody able to determine it
+  --- the instance has no view of the source, and the administration service
+  cannot tell an instance that missed a change from one that never received it.}
+  \uncovered{an instance reports nothing about its credential set}
+\end{requirement}
+
+\begin{requirement}{R-0046}{A change made while an instance is unavailable is applied when it returns}
+  A credential change shall be accepted while an instance is unavailable, that
+  instance shall be recorded as not current, and the change shall be applied to
+  it when it returns.
+  \rationale{Refusing the change instead would prevent access being withdrawn
+  during an outage, which is when it may most be wanted. The cost is an instance
+  that is knowingly behind for a bounded time, which is acceptable only because
+  \reqref{R-0042} makes it known rather than assumed.}
+  \uncovered{no scenario makes a credential change while an instance is down}
+\end{requirement}

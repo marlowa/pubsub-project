@@ -18,7 +18,7 @@ served, and reports held back while the numbering is being established. None of
 these needs to survive: the first is re-established at the next logon, and the
 rest are abandoned and asked for again.
 
-It holds no order state. The book belongs to the matching engine and the
+It holds no order state. Which orders are open belongs to the matching engine and the
 ordering to the sequencer. Where the gateway must act on a member's behalf ---
 cancelling what the member has resting when its connection ends --- it reports
 the disconnection and the terms it was given to the component that owns the
@@ -92,7 +92,7 @@ committed.
 
 \begin{requirement}{R-0001}{An order that was not forwarded never takes effect}
   The order shall have no effect on the venue. No execution report shall be
-  produced for it, and no order shall rest on the book on its behalf.
+  produced for it, and the venue shall hold no order open on its behalf.
   \rationale{The venue had not taken the order, so acting on it later would
   execute an instruction the member has been given no reason to believe is
   live.}
@@ -114,8 +114,12 @@ that moment.
 reach the member leaves a gap in the member's numbering.
 
 \begin{requirement}{R-0007}{A numbered report that was not received is recoverable}
-  The member shall detect the gap in its inbound numbering, and the venue shall
-  supply the reports that occupied the missing numbers.
+  The member shall detect the gap in its inbound numbering and ask for the
+  missing range, and the venue shall send again the execution reports that
+  occupied those numbers, filling the numbers that carried session traffic
+  rather than reports.
+  \rationale{This is the FIX resend, used as the protocol intends. The venue
+  supplies what it can reproduce and accounts for the rest.}
   \covers{ha_test:22}
 \end{requirement}
 

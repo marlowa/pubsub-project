@@ -1,0 +1,44 @@
+\subsection{Recovery in general}
+\label{sec:ha:disabled:recovery}
+
+Two requirements hold for every component in this section, and are stated once
+here rather than repeated in each. Both concern the window between a component
+starting and its being ready, which is short, is entered on every restart, and
+is where a second failure does the most damage.
+
+Every requirement here assumes that what survived a failure can be read. A log
+truncated part-way through a record, a checkpoint that fails its checksum, or a
+file that is simply absent leaves a component with nothing to recover from --- and
+in this configuration with nowhere else to turn, because there is no second
+instance holding a clean copy.
+
+\textbf{This configuration is weak there, and deliberately so.} With high
+availability enabled the instance whose copy is intact takes over, which is the
+answer to damaged state and the reason the enabled configuration exists. Nothing
+in the disabled configuration substitutes for it. That is a reason to run this
+configuration only where losing what it holds is acceptable.
+
+\begin{gap}{}
+  Damaged durable state is not detected as such. A component reads what it can
+  and proceeds, rather than establishing that what it read was whole.
+\end{gap}
+
+\begin{requirement}{R-0031}{A component does not act on partially recovered state}
+  A component shall not begin work until its recovery is complete. No sequence
+  number shall be assigned before the last one issued is known, and no order
+  shall be accepted before the set of open orders is current.
+  \rationale{Acting on partial state produces results that look ordinary and are
+  wrong. Of the ways a venue can fail, that is the hardest to detect and the
+  hardest to unwind afterwards.}
+  \uncovered{no scenario interrupts a recovery}
+\end{requirement}
+
+\begin{requirement}{R-0032}{An interrupted recovery can be repeated without applying anything twice}
+  Where a component fails while recovering, the recovery shall be able to run
+  again from the same starting point and reach the same result.
+  \rationale{Without this a failure during recovery corrupts rather than delays,
+  and a component that fails repeatedly leaves worse state on each attempt. It
+  is also what makes a bound on the number of attempts meaningful: the bound is
+  only safe if the attempts beneath it were harmless.}
+  \uncovered{no scenario interrupts a recovery}
+\end{requirement}

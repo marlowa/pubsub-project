@@ -13,3 +13,46 @@ R-0007     active    2026-08-29  A numbered report that was not received is reco
 R-0008     active    2026-08-29  Reports remain recoverable for the reconnection window
 R-0009     active    2026-08-29  A gap that cannot be filled is reported as such
 R-0010     active    2026-08-29  A duplicate is refused whatever has become of the first order
+R-0011     active    2026-08-29  A session's numbering survives a restart of whatever remembers it
+R-0012     active    2026-08-29  A member is never resumed at a numbering the venue cannot vouch for
+R-0013     active    2026-08-29  A committed order is answered though the sequencer restarts before it is
+R-0014     active    2026-08-29  A sequence number is never issued twice
+R-0015     active    2026-08-29  Trading does not resume until the venue can account for what it took
+R-0016     retired   2026-08-29  Where the venue cannot account for what it took, it halts and says so
+R-0017     active    2026-08-29  Recovery does not depend on the order the components return in
+R-0018     active    2026-08-29  An open order survives a restart of the matching engine
+R-0019     retired   2026-08-29  The venue does not match until its book is current
+R-0020     active    2026-08-29  An order the venue cannot recover is cancelled to its member
+R-0021     active    2026-08-29  A member is not told an order is unknown while the venue is still recovering
+R-0022     active    2026-08-29  The venue keeps enough history to bring a recovered set of orders up to date
+R-0023     active    2026-08-29  Trading can be halted by a person, and members are told
+R-0024     active    2026-08-29  A halt that cancels open orders reports every cancellation
+R-0025     active    2026-08-29  A report can be addressed to its session after a restart
+R-0026     active    2026-08-29  A logon completes or is refused within a bounded time
+R-0027     active    2026-08-29  An interrupted resend leaves the member able to act
+R-0028     active    2026-08-29  Every accepted order is reported to its member, once
+R-0029     active    2026-08-29  A cancel request is always answered
+R-0030     active    2026-08-29  With no matching engine, the venue refuses rather than acknowledges
+R-0031     active    2026-08-29  A component does not act on partially recovered state
+R-0032     active    2026-08-29  An interrupted recovery can be repeated without applying anything twice
+R-0033     active    2026-08-29  A component asked to stop is not restarted
+R-0034     active    2026-08-29  An orderly stop leaves less to recover than a crash
+R-0035     active    2026-08-29  The start and end of a trading day are published
+R-0036     active    2026-08-29  A cancelled order does not become open again
+R-0037     active    2026-08-29  A member's cancel-on-disconnect instruction is not lost because a component was restarting
+R-0038     active    2026-08-29  A component that cannot start at all is reported at once
+R-0039     active    2026-08-29  A component that fails repeatedly and quickly is not restarted again
+R-0040     active    2026-08-29  Giving up is announced where something other than a person can see it
+R-0041     active    2026-08-29  A component that runs healthily again is given a fresh allowance
+R-0042     active    2026-08-29  A credential change is applied by every instance, or is reported as incomplete
+R-0043     active    2026-08-29  An instance that has missed a change is brought current without being restarted
+R-0044     active    2026-08-29  A member is admitted by every instance or by none
+R-0045     active    2026-08-29  An instance can say how current its credential set is
+R-0046     active    2026-08-29  A change made while an instance is unavailable is applied when it returns
+R-0047     active    2026-08-30  A subscriber resumes where it had reached, across a restart of the publisher
+R-0048     active    2026-08-30  A record is retained until every subscriber has consumed it
+R-0049     active    2026-08-30  Nothing is lost from the external record, though it may appear more than once
+R-0050     active    2026-08-30  Every externally published record carries an identity a consumer can deduplicate on
+R-0051     active    2026-08-30  The recorder never resumes beyond its last confirmed publish
+R-0052     active    2026-08-30  A restart of the recorder does not stop trading
+R-0053     active    2026-08-30  Where external publishing cannot resume, trading is halted

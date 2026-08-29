@@ -1,0 +1,26 @@
+\subsection{Stopping and starting deliberately}
+\label{sec:ha:disabled:stopping}
+
+Not every stop is a failure. A component is taken down for a release, for a
+configuration change, or because the trading day has ended, and none of those
+should cost what a crash costs.
+
+\begin{requirement}{R-0034}{An orderly stop leaves less to recover than a crash}
+  A component asked to stop shall record its state before it goes, so that what
+  it has to recover afterwards is no more than what it wrote.
+  \rationale{A planned restart is the common one --- a release, a configuration
+  change --- and there is no reason for it to cost what an unplanned one does.
+  It is also the cheapest way to exercise the recovery path regularly.}
+  \uncovered{nothing is written on the way out}
+\end{requirement}
+
+\begin{requirement}{R-0035}{The start and end of a trading day are published}
+  The venue shall publish the start of a trading day and its end as events that
+  any interested party may subscribe to.
+  \rationale{Whether a venue that has just started is resuming a trading day or
+  beginning a new one changes what every recovery in this section means, and it
+  should be answerable rather than inferred. Publishing it once to whoever
+  subscribes also avoids each component being told separately, which is how they
+  come to disagree.}
+  \uncovered{the venue has no notion of a trading day}
+\end{requirement}

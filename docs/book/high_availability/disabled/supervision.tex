@@ -1,0 +1,61 @@
+\subsection{Supervision}
+\label{sec:ha:disabled:supervision}
+
+A launcher answers one question: is this component running, and if not, start
+it. It takes no part in deciding roles, and nothing in this chapter depends on
+it being present. What it must do is bounded, and the bounds are here.
+
+\begin{requirement}{R-0033}{A component asked to stop is not restarted}
+  Where a component is stopped deliberately, whatever supervises it shall not
+  start it again.
+  \rationale{Without this, stopping the venue is not possible. Every stop
+  becomes a restart, and an operator has no way to take a component out of
+  service.}
+  \uncovered{no scenario stops a supervised component deliberately}
+\end{requirement}
+
+\begin{requirement}{R-0038}{A component that cannot start at all is reported at once}
+  Where a component cannot be started --- its binary absent, its configuration
+  unreadable, a port it needs already held --- whatever supervises it shall
+  report the failure immediately and shall not retry as though the attempt might
+  succeed.
+  \rationale{Retrying a start that cannot succeed turns a fault an operator
+  could fix in a minute into a silent absence. The distinction from a component
+  that starts and then dies is that nothing here is transient, so nothing is
+  gained by waiting.}
+  \uncovered{no scenario starts a component that cannot start}
+\end{requirement}
+
+\begin{requirement}{R-0039}{A component that fails repeatedly and quickly is not restarted again}
+  Where a component dies repeatedly within a short time of being started,
+  whatever supervises it shall stop restarting it. A death soon after a start is
+  a failure to start rather than a run that ended, and shall be counted as one.
+  \rationale{Restarting a component whose fault is deterministic produces
+  another failure, and doing so without limit produces a fault that runs
+  continuously and looks like nothing at all. The distinction between a failure
+  to start and a run that ended is what makes the condition detectable: a
+  healthy component runs for hours, and one that exits in seconds has not run.}
+  \uncovered{no scenario makes a component fail repeatedly}
+\end{requirement}
+
+\begin{requirement}{R-0040}{Giving up is announced where something other than a person can see it}
+  Having stopped restarting a component, the supervisor shall say so on its
+  output, in a form a log monitor can detect and raise an alert from without
+  anyone watching at the time.
+  \rationale{Automatic restart removes the symptom that would otherwise draw
+  attention. A component that dies and stays dead is eventually noticed by
+  somebody downstream; one that is restarted forty times an hour is noticed by
+  nobody. Automating the recovery therefore makes the reporting compulsory
+  rather than optional.}
+  \uncovered{nothing asserts what the supervisor says when it gives up}
+\end{requirement}
+
+\begin{requirement}{R-0041}{A component that runs healthily again is given a fresh allowance}
+  Where a restarted component runs for long enough to have started
+  successfully, the count of rapid failures against it shall be reset.
+  \rationale{Without this the allowance is consumed over the life of the
+  deployment rather than over an episode, so a component that fails once a month
+  eventually exhausts it and is not restarted for a fault it has recovered from
+  every time.}
+  \uncovered{no scenario makes a component fail repeatedly}
+\end{requirement}

@@ -4,7 +4,7 @@
 \newacronym{spof}{SPOF}{single point of failure}
 \newacronym{rto}{RTO}{recovery time objective}
 \newacronym{rpo}{RPO}{recovery point objective}
-\newacronym{fix}{FIX}{Financial Information eXchange protocol}
+\newacronym{me}{ME}{matching engine}
 
 \newglossaryentry{member}{
   name={member},
@@ -54,3 +54,16 @@
   name={witness},
   description={The third party that lets a pair of arbiters reach a majority,
     so that two instances cannot both believe they lead}}
+
+\newglossaryentry{openorder}{
+  name={open order},
+  description={An order the venue has accepted and not yet cancelled or
+    rejected. The matching engine holds the set of them, which is what lets it
+    refuse an order identifier already in use and answer a cancel rather than
+    guess at it}}
+
+\newglossaryentry{oar}{
+  name={order activity recorder},
+  description={The component that subscribes to the venue's internal topics and
+    forwards what the venue has done to an enterprise bus. Known as TAP in
+    earlier documents}}

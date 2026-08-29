@@ -1,0 +1,38 @@
+\subsection{The gateway together with another component}
+\label{sec:ha:disabled:gw_and_others}
+
+The gateway depends on the sequencer for everything it recovers, and on the
+matching engine for everything it asks to be done on a member's behalf. Losing
+either alongside it is therefore a distinct case, and stating it is worth doing
+even where the requirements are ones already made: it says which combinations
+the venue is designed to survive rather than leaving a reader to infer it.
+
+\subsubsection{The gateway and the sequencer}
+\label{sec:ha:disabled:gw_and_seq}
+
+A member reconnects to a restarted gateway, which asks a sequencer that has
+itself just restarted and no longer holds the session. Nothing new is required:
+\reqref{R-0011} says the numbering must survive, and \reqref{R-0012} says that
+where it has not, the venue says so rather than resuming the member at the
+beginning. What the combination adds is that this is the likeliest way for the
+second of those to be reached, because a session that was not bound at the
+moment the sequencer restarted is one nobody is reporting.
+
+\subsubsection{The gateway and the matching engine}
+\label{sec:ha:disabled:gw_and_me}
+
+A member's connection ends while the matching engine is not running. The gateway
+does not act on the member's orders itself; it reports the disconnection and the
+terms it was given to the component that holds them --- and that component is
+absent.
+
+\begin{requirement}{R-0037}{A member's cancel-on-disconnect instruction is not lost because a component was restarting}
+  Where a session ends while the component that holds its orders is unavailable,
+  the instruction shall be acted on once that component returns, or the member
+  shall be told that it was not.
+  \rationale{The member configured this to bound its exposure when its own
+  connection fails. An instruction dropped because a venue process happened to
+  be restarting leaves it exposed for a reason it has no way to discover, and
+  the venue has no way to discover either.}
+  \uncovered{no scenario ends a session while the engine is down}
+\end{requirement}

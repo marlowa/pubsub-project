@@ -1,0 +1,98 @@
+\subsection{The sequencer and the matching engine together}
+\label{sec:ha:disabled:seq_and_me}
+
+Both processes die, and both are restarted. This is not the two preceding
+subsections happening at once: each of them relies on a component that is, in
+this case, also gone.
+
+\subsubsection{What state it holds}
+\label{sec:ha:disabled:seq_and_me:state}
+
+Between them, everything the venue knows about work in progress. The sequencer
+holds the account of what has been taken; the matching engine holds which orders
+are open. Neither holds the other's, and neither can reconstruct it.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:disabled:seq_and_me:durable}
+
+The log, and nothing else. What is on disk is the record of what the venue took
+and in which order. Nothing on disk says which orders were open.
+
+The difference from the single failures is not that more is lost, but that the
+survivor which made each of them recoverable is absent. A matching engine
+recovers by asking the sequencer how far it is behind; a sequencer is reminded
+of its sessions by components that are still running. When both have gone, the
+first has nobody to ask, and what the second must be told is held by the
+component that is asking.
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:disabled:seq_and_me:recovery}
+
+An order between the two --- committed, and never given to the matching engine
+--- is the case this subsection exists for. It is in the log, so the venue took
+it. The engine does not hold it, so nothing will answer it. And with both components restarted,
+nothing knows it is owed: the sequencer's record that it was waiting did not
+survive, and the engine holds nothing to compare against.
+
+Recovery therefore acquires an order it does not otherwise have. The engine
+cannot become current before the sequencer is current, because it becomes
+current by asking. Where only one of the two failed, that ordering was supplied
+by the survivor being already up.
+
+\begin{gap}{BUG-0064}
+  An order committed before both components died is applied by neither, answered
+  by neither, and recorded as outstanding by neither. It remains in the log
+  indefinitely.
+\end{gap}
+
+\subsubsection{What the member is told}
+\label{sec:ha:disabled:seq_and_me:member}
+
+\begin{requirement}{R-0015}{Trading does not resume while committed orders remain unresolved}
+  The venue shall not accept new orders after such a failure until every order
+  it had committed has either been given to the matching engine or had an
+  execution report produced for it. Whether a member is present to receive that
+  report does not bear on this: a member that is slow to return, or that never
+  returns, cannot hold the venue shut.
+  \rationale{Accepting new orders while earlier ones remain unresolved conceals
+  the loss rather than recovering from it: the venue looks healthy to a member
+  whose earlier order will never be mentioned again.}
+  \uncovered{no scenario restarts both components together}
+\end{requirement}
+
+Where the automatic paths cannot resolve a failure, the recourse is a person
+rather than a longer timer. That requires the venue to have a state it can be
+put into, which is a capability rather than a reaction: a venue needs to stop
+trading for reasons that have nothing to do with any failure --- a scheduled
+pause, a market-wide event, an instrument in disorderly conditions.
+
+\begin{requirement}{R-0023}{Trading can be halted by a person, and members are told}
+  An operator shall be able to halt trading. Members shall be told that the
+  venue has halted and shall be told when it resumes, and the halt shall not
+  lift of its own accord.
+  \rationale{A member that is connected but idle learns nothing from the
+  rejection of an order it has not sent, and a member reconnecting into a halt
+  would otherwise discover it by trial. Requiring a person to lift it is what
+  distinguishes a halt from the automatic, self-clearing states beneath it.}
+  \uncovered{the venue has no halted state}
+\end{requirement}
+
+\begin{requirement}{R-0024}{A halt that cancels open orders reports every cancellation}
+  Where a halt cancels the venue's open orders, an execution report shall be
+  sent to the member that placed each one. No order shall cease to be open
+  without the member that placed it being told.
+  \rationale{Cancelling the open orders is a normal thing for a halt to do, and
+  has been done at real venues when a market became disorderly. What makes it
+  safe is that each member's view converges on the venue's, which requires the
+  venue to say what it cancelled rather than to stop mentioning it.}
+  \uncovered{the venue has no halted state}
+\end{requirement}
+
+\begin{requirement}{R-0017}{Recovery does not depend on the order the components return in}
+  The venue shall reach the same state whichever of the two starts first.
+  \rationale{A launcher restarts what it starts and coordinates with nothing, so
+  the order is not the venue's to choose. A component that cannot yet be told
+  what it needs must wait to be told, rather than proceed on the assumption that
+  there is nothing to hear.}
+  \uncovered{no scenario restarts both components together}
+\end{requirement}

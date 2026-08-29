@@ -46,12 +46,12 @@ difference between the two roles is total.
 \begin{itemize}[nosep]
   \item \textbf{The leader does the work.} The sequencer assigns each order a
         sequence number, appends it to the write-ahead log and forwards it to the
-        matching engine; the matching engine matches against its book and issues
-        the execution reports.
+        matching engine; the matching engine accepts the order and issues the
+        execution report for it.
   \item \textbf{The leader replicates continuously.} The sequencer streams every
         log record to its follower, which writes it to a log of its own and
         acknowledges it. The matching engine's follower keeps a replica of the
-        book from the same stream.
+        orders it holds open, from the same stream.
   \item \textbf{The follower acts on nothing.} It forwards no order, issues no
         execution report and answers no gateway. While it holds that role it
         processes no traffic at all.
