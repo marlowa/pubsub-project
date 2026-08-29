@@ -7,8 +7,8 @@
 
 This document captures the design agreed in the sessions of 2026-06-12/13/14. It covers three
 inter-dependent areas of work: two new application components (MEP and OAR) and the sequencer
-changes needed to support them. Nothing here is implemented yet. The document is the reference
-for the implementation sessions that follow.
+changes needed to support them. The MEP has since been built; the recorder has not. The document
+is the reference for the implementation sessions that follow.
 
 ---
 
@@ -26,8 +26,32 @@ current system does not serve:
   its L3 order book and to know when orders are matched (filled), so it knows when to retire
   them from the book after the enterprise bus acknowledges receipt.
 
-Neither consumer has the low-latency requirements of the core order flow. They are downstream
-broadcast consumers, not participants in the order pipeline.
+Neither consumer has the low-latency requirements of the core order flow.
+
+**But the recorder is a participant in the order pipeline, and this document originally said it
+was not.** Corrected 2026-08-30. What was got wrong is that latency and availability were treated
+as the same question. The recorder does not need the core flow's latency --- a bus confirms an
+asynchronous publish in milliseconds, against microseconds elsewhere, and that is fine. What it
+needs is to be *present*: the venue may run only a few seconds ahead of the external record before
+it must stop, because trading that outruns the record of it cannot be reconstructed by anyone
+afterwards. Where no recorder is publishing and the backlog passes that bound, the market is
+halted.
+
+Three things follow, and they are not small.
+
+- **The recorder is mandatory in production.** Order acceptance depends on it, so it cannot be an
+  optional component there. See `../availability/design_notes.md` section 14 for what it costs to
+  make something depend on a component that could otherwise be absent.
+- **The bound cannot be chosen, only measured.** It must exceed a supervised restart of the
+  recorder plus the time it takes to catch up, or a routine restart stops the market --- which is
+  the same argument the promotion grace period settled in `design_notes.md` section 11.
+- **A restart of the recorder must not stop trading.** It resumes from its last confirmed publish,
+  republishes whatever it had not recorded, and catches up. Duplicates downstream are expected.
+
+Market data remains a downstream broadcast consumer, and nothing about order acceptance depends
+on it.
+
+Specified as R-0052 and R-0053 in the functional specification, `../book/`.
 
 The WAL-follower-per-consumer pattern (used for the secondary sequencer) does not scale cleanly
 to multiple consumers with fanout semantics. A topic-based pub/sub primitive is now justified
