@@ -1691,7 +1691,7 @@ to every check that exists.
 
 | Missing scenario | What it would verify |
 |---|---|
-| Restart the matching engine with orders open, and assert they are still open | R-0018, and the measured loss above |
+| ~~Restart the matching engine with orders open, and assert they are still open~~ | **Done 2026-08-30**, scenario 50, and it fails as it should: the engine refuses the member's cancels as orders it does not recognise. Marked as an expected failure, so the suite still passes -- and will fail if scenario 50 ever passes, because the marking must then be removed |
 | Restart every instance of a group together | R-0064 --- the generation must not restart at the beginning, which is where a pair agrees a generation the venue has already spent |
 | ~~Send from an instance whose entitlement has passed~~ | **Done 2026-08-30**, scenario 49: the leader is frozen, the peer takes over, and the leader is let run again holding a superseded generation. Every message it sends is refused. Covers R-0065 |
 | Expire a lease while its holder keeps its sockets open | R-0061 --- scenario 49 produces the condition but the takeover it asserts is driven by the peer heartbeat, not by the lease, so the lease itself is still untested |
@@ -1713,6 +1713,11 @@ continuing to trade --- from *custody* --- the venue keeping what it was given. 
 to observe and custody is not, which is why the scenarios that exist all test the first. A
 specification that identifies that asymmetry and then leaves its custody requirements unverified
 has inverted its own priorities, so the custody rows above come first.
+
+**A hazard the scenarios share.** Scenario 19 writes a cancel-on-disconnect grace period into the
+database and leaves it there, so a later scenario inherits a value it did not choose. Scenario 50
+provisions its own rather than relying on the default, and anything else that depends on that
+setting should do the same.
 
 **Do not close this by making the check pass.** A scenario that names a requirement without
 asserting it is worse than one that names none, because the count then reports coverage that does

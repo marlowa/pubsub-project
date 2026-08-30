@@ -243,6 +243,8 @@ _CANCEL_GRACE_HOLD_TIMEOUT  = 10.0
 # The grace period scenario 19 provisions for FIX8_COMP_ID before running, deliberately
 # different from the gateway's own configured default so the two cannot be confused.
 _PROVISIONED_GRACE_PERIOD_SECONDS = 90
+# How long to wait for the gateway's cancels to be answered one way or the other.
+_OPEN_ORDER_CANCEL_TIMEOUT = 45.0
 _CANCEL_GRACE_QUIET_PERIOD  = 5.0
 # Session provisioning, scenario 20. The gateway ha_test runs is instance 1, so these say
 # "this instance is the primary, with the instance the harness does not run as its backup":
@@ -686,6 +688,16 @@ class Scenario(NamedTuple):
     # run_scenario's "cancel grace" block. Kills nothing -- the gateway must survive, or
     # there is no process left to do the cancelling and the test proves nothing.
     assert_cancel_grace: bool = False
+    # When True, assert that the orders a member had open before the matching engine was
+    # restarted are still open afterwards -- by dropping the session and counting how many of
+    # the cancels the gateway then sends are refused as orders the venue does not recognise.
+    assert_open_orders_survive: bool = False
+    # Why this scenario is expected to fail, when the venue is known not to meet the
+    # requirement it asserts. A scenario marked this way does not fail the suite when it
+    # fails; it fails the suite when it PASSES, because the gap has closed and the marking
+    # must be removed. A gap recorded as a passing test is the failure this file exists to
+    # avoid, so it is never recorded that way.
+    expected_failure: str = ""
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -2787,6 +2799,35 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 50 -- do a member's open orders survive a restart of the matching engine?
+    #
+    # This scenario is expected to fail. It asserts R-0018, which the venue does
+    # not meet: a restarted engine holds nothing, while the gateway and the member
+    # go on believing the orders are open. It is recorded as a failing test rather
+    # than as a note, because a note is read once and a test is run every time.
+    #
+    # It asks the member's question rather than an internal one. Dropping the
+    # session makes the gateway cancel what it believes is open; the engine either
+    # accepts each cancel or refuses it as an order it does not recognise.
+    Scenario(
+        number=50,
+        short_name="open_orders_survive_me_restart",
+        description="A member's open orders across a restart of the matching engine",
+        expected_outcome=(
+            "every order open before the restart is still open afterwards, so every "
+            "cancel the gateway sends for it is accepted rather than refused as unknown"
+        ),
+        assert_open_orders_survive=True,
+        expected_failure=(
+            "the venue holds open orders only in the running matching engine, so a restart "
+            "loses them and the member is not told -- R-0018, and docs/bug_list.md BUG-0064"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[_me_restart_step()],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4346,6 +4387,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_cancel_grace:
             log("=== Provisioning cancel-on-disconnect for the test comp id ===")
             provision_cancel_on_disconnect(FIX8_COMP_ID, _PROVISIONED_GRACE_PERIOD_SECONDS)
+        elif scenario.assert_open_orders_survive:
+            # Zero, not the default: the question is what the engine does with the cancels,
+            # and a grace period only delays asking it. A value left behind in the database
+            # by another scenario would otherwise decide how long this one waits.
+            log("=== Provisioning cancel-on-disconnect with no grace period ===")
+            provision_cancel_on_disconnect(FIX8_COMP_ID, 0)
 
         # Likewise for session provisioning: the comp id is pinned to the instance this
         # harness runs, so the baseline session is admitted and the gateway has real
@@ -5018,6 +5065,52 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # reports saying so had nowhere to go.
             log(f"  gateway orphan: {cancel_count} order(s) cancelled in the book, "
                 "0 cancel reports delivered to any client -- orders silently orphaned")
+
+        # ── Do the member's open orders survive a restart of the matching engine? ──
+        # The member-visible form of the question is whether those orders are still
+        # cancellable, so the probe is a cancel rather than an inspection of anything
+        # internal. Dropping the session makes the gateway send one for every order it
+        # believes the member has open, and the matching engine's own log says what became
+        # of each: a cancel report for an order it holds, or a rejection naming it as an
+        # order it does not recognise.
+        if scenario.assert_open_orders_survive:
+            gw_pos = file_end(gw_log)
+            me_pos = file_end(me_log)
+
+            log("=== Dropping the client session, so the gateway cancels what it believes is open ===")
+            stop_f8test(f8proc)
+            f8proc = None
+
+            found, _, _ = poll_log_for(
+                gw_log, "disconnected with", "open order",
+                timeout=_CANCEL_GRACE_HOLD_TIMEOUT, from_byte=gw_pos,
+            )
+            if not found:
+                die("open orders: the gateway never reported the dropped session's open orders, so "
+                    "nothing was cancelled and the question was not asked")
+
+            # Whichever answer comes back, it comes back from the engine.
+            deadline = time.monotonic() + _OPEN_ORDER_CANCEL_TIMEOUT
+            unknown = cancelled = 0
+            while time.monotonic() < deadline:
+                tail = me_log.read_text(errors="replace")[me_pos:]
+                unknown = tail.count("UnknownOrder")
+                cancelled = tail.count("sent cancel ER")
+                if unknown or cancelled:
+                    break
+                time.sleep(1.0)
+
+            if unknown:
+                die(f"open orders: the matching engine refused {unknown} of the member's cancels as "
+                    "orders it does not recognise. The orders open before it restarted are gone, and "
+                    "neither the member nor the gateway was told -- see R-0018, and docs/bug_list.md "
+                    "BUG-0064")
+            if not cancelled:
+                die("open orders: the engine neither cancelled nor refused anything within "
+                    f"{_OPEN_ORDER_CANCEL_TIMEOUT:.0f}s -- the cancels never reached it, so the "
+                    "question was not asked")
+            log(f"  the engine cancelled {cancelled} order(s) and refused none: the orders open "
+                "before the restart survived it -- OK")
 
         # ── Cancel-on-disconnect grace period (step 3b) ───────────────────────
         # The gateway is alive throughout; only the client session goes away. Everything
@@ -6299,6 +6392,18 @@ def main() -> None:
     results: list[tuple[int, str, bool]] = []
     for scenario in scenarios_to_run:
         passed = run_scenario(scenario, args)
+        if scenario.expected_failure:
+            if passed:
+                log("")
+                log(f"Scenario {scenario.number} PASSED and was marked as expected to fail:")
+                log(f"  {scenario.expected_failure}")
+                log("  The gap has closed. Remove expected_failure from the scenario, so that a")
+                log("  future regression fails the suite instead of being absorbed by the marking.")
+                overall_pass = False
+            else:
+                log("")
+                log(f"Scenario {scenario.number} failed, as expected: {scenario.expected_failure}")
+                passed = True
         results.append((scenario.number, scenario.short_name, passed))
         if not passed:
             overall_pass = False

@@ -115,7 +115,7 @@ it is exercised continually rather than only when a test produces a failover.
   \rationale{The member was told the order was accepted and has no reason to
   think a venue process has restarted. An order that quietly ceases to exist is
   the one failure a member cannot detect, cannot cancel and cannot hedge.}
-  \uncovered{no scenario asserts that open orders survive a restart}
+  \covers{ha_test:50}
 \end{requirement}
 
 \begin{requirement}{R-0036}{A cancelled order does not become open again}
