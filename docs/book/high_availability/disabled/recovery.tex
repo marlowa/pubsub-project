@@ -20,7 +20,10 @@ configuration only where losing what it holds is acceptable.
 
 \begin{gap}{}
   Damaged durable state is not detected as such. A component reads what it can
-  and proceeds, rather than establishing that what it read was whole.
+  and proceeds, rather than establishing that what it read was whole, so a
+  truncated log or a partial checkpoint produces a component that holds the wrong
+  orders and reports itself as current. A member is then answered from that
+  state: an order it placed may be unknown, and one it cancelled may be live.
 \end{gap}
 
 \begin{requirement}{R-0031}{A component does not act on partially recovered state}

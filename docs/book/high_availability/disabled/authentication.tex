@@ -5,9 +5,10 @@ Several authentication services run at once and none of them leads. A member
 never speaks to one directly: a gateway does so on its behalf, at logon, and
 reaches whichever instance answers.
 
-Losing one instance therefore costs capacity and not correctness, and that is
-the easy part of this subsection. The hard part is that two instances can hold
-different answers to the same question.
+Losing one instance reduces the capacity available and does not affect
+correctness. The condition that does affect correctness is two instances holding
+different answers to the same question, and most of this subsection concerns
+that.
 
 \subsubsection{What state it holds}
 \label{sec:ha:disabled:auth:state}
@@ -15,7 +16,9 @@ different answers to the same question.
 The credential set: which comp ids may trade, the material each is
 authenticated against, and the terms it was admitted under. This is a copy and
 not the original. The database is the source of truth, and an administration
-service is its only writer.
+service is its only writer --- a component that changes credentials and
+distributes each change to every authentication service, described in
+\cref{sec:ha:disabled:admin}.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:auth:durable}
@@ -26,8 +29,8 @@ administration service makes it. It holds no connection to the database itself,
 so it can neither check an answer against the source nor tell how far behind it
 has fallen.
 
-That arrangement has a consequence worth stating plainly: \textbf{the only party
-that can tell whether an instance is current is the administration service},
+It follows that \textbf{the only party that can tell whether an instance is
+current is the administration service},
 because it is the only one that knows what it sent and to whom.
 
 \begin{gap}{}

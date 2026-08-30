@@ -48,20 +48,43 @@ prevent.
 \cref{sec:ha:disabled} could only restart what had died and rebuild what it
 held, there is now an instance already holding it.
 
-\textbf{What does not change is the recovery itself.} The most useful result of
-\cref{sec:ha:disabled} was that becoming current after a restart and becoming
-current after a promotion are, for the matching engine, the same operation
-differing only in where the starting point comes from --- a file in one case, a
-replica in the other. That result is what makes this section tractable: it is
-largely about how an instance learns it may act, and about the failures that
-only exist because there are two of them, rather than about a second recovery
-mechanism.
+\textbf{What does not change is the recovery itself.} For the matching engine,
+becoming current after a restart and becoming current after a promotion are the
+same operation, differing only in where the starting point comes from --- a file
+in one case, a replica in the other. This section therefore describes how an
+instance learns that it may act, and the failures that exist only because there
+are two instances. It does not describe a second recovery mechanism, because
+there is not one.
 
 \textbf{What is new} is everything that follows from a second instance existing:
 deciding which of the two may act, ensuring that only one of them believes it,
 detecting that the other has gone, and refusing what an instance sends after its
 entitlement has passed to the other. Those, and the components that exist to
 arbitrate, are the subject of the subsections that follow.
+
+\subsection{What running two of everything has to be worth}
+\label{sec:ha:enabled:worth}
+
+Running two instances of a component adds ways for the venue to fail that running
+one does not have. One instance cannot disagree with itself, cannot be
+partitioned from itself, and cannot both act and not act. A pair can do all
+three.
+
+Two things must therefore hold for the second instance to be an improvement.
+
+\textbf{The venue must not be stopped by something a single instance would have
+survived.} If a pair of sequencers stops trading because they cannot reach each
+other, when one sequencer alone would have carried on, the redundancy has made
+the venue less available rather than more.
+
+\textbf{The new failures must be prevented rather than made unlikely.} Two
+instances acting at once, and neither acting at all, are conditions that cannot
+arise with one instance. They exist only because a second instance
+exists. Making them rare is not sufficient, because in both the venue continues
+to look healthy --- the first until the two instances' states are compared, and
+the second until somebody asks why nothing is trading.
+
+Most of this section is about preventing them.
 
 \input{high_availability/enabled/arbiter}
 \input{high_availability/enabled/sequencer}
@@ -71,3 +94,4 @@ arbitrate, are the subject of the subsections that follow.
 \input{high_availability/enabled/machine_loss}
 \input{high_availability/enabled/partition}
 \input{high_availability/enabled/failback}
+\input{high_availability/enabled/degraded}

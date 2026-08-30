@@ -13,9 +13,9 @@ chapter where doing nothing and doing the obvious thing are both wrong.
 An instance that cannot see its peer has two explanations available and no way to
 choose between them. If it promotes itself and the peer is alive, both act and
 their states diverge --- and neither can afterwards be shown to have been right.
-If it declines and the peer is genuinely dead, nothing acts, and that failure is
-the quieter of the two: nothing crashes and nothing logs an error, so it is
-noticed when somebody asks why trading stopped.
+If it declines and the peer is genuinely dead, nothing acts. That failure is
+harder to notice than the first: nothing crashes and nothing logs an error, so it
+is found when somebody asks why trading has stopped.
 
 \subsubsection{What the venue must do}
 \label{sec:ha:enabled:partition:behaviour}
@@ -39,6 +39,27 @@ noticed when somebody asks why trading stopped.
   the general statement in every case a test contrives and fail it here.}
   \uncovered{no scenario partitions a pair}
 \end{requirement}
+
+\subsubsection{When only one side can see the other}
+\label{sec:ha:enabled:partition:asymmetric}
+
+A partition need not be symmetric. One instance may be able to reach its peer
+while the peer cannot reach it, and the two rules for settling an entitlement
+then both apply at once: the instance that can see its peer settles it locally
+under \reqref{R-0072}, while the instance that cannot refers it under
+\reqref{R-0086}.
+
+That the two rules are mutually exclusive rests on visibility being the same in
+both directions, and here it is not. What closes the case is that an instance
+which takes an entitlement reports it immediately rather than at its next
+scheduled report, so the party being asked already holds a record of a present
+holder and confirms that holder instead of granting the entitlement afresh.
+
+The window is therefore as long as it takes a new holder to report itself, and
+not as long as the partition. It is narrowed rather than eliminated, which is a
+weaker guarantee than one party alone issuing entitlements would give --- and it
+is the case most worth producing deliberately, because reasoning is a poor
+substitute for having seen it.
 
 \subsubsection{What this costs, stated plainly}
 \label{sec:ha:enabled:partition:cost}

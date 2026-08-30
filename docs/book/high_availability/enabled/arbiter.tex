@@ -12,9 +12,16 @@ because nothing crashes and nothing logs an error --- traffic simply stops.
 \textbf{An arbiter is answerable and a consensus protocol is not necessary.} One
 party decides, so only one entitlement exists at a time, and a generation number
 carried on every message lets a receiver refuse an instance whose entitlement has
-since passed. The arbiter is itself made available by running a pair of them plus
-a witness, which is a small and bounded amount of the same problem, solved once
-in a component that holds no venue state.
+since passed.
+
+\textbf{The arbitration service is not a single point of failure.} Two arbiters
+run, and a witness runs alongside them so that two can reach a majority rather
+than disagreeing. Losing any one of the three moves no entitlement and
+interrupts nothing --- \reqref{R-0063}. The venue continues to trade even when
+all of them are gone, though it is then unable to move an entitlement, which is
+\cref{sec:ha:enabled:degraded}. What running a pair plus a witness achieves is
+that the amount of agreement the venue needs is small, bounded, and confined to a
+component that holds no venue state.
 
 \subsubsection{What state it holds}
 \label{sec:ha:enabled:arbiter:state}
@@ -96,6 +103,19 @@ terms of those components rather than of members.
   \uncovered{no scenario stops a leader renewing while it stays connected}
 \end{requirement}
 
+\begin{requirement}{R-0099}{Adjusting a machine's clock does not move an entitlement}
+  The expiry of a lease shall be measured by a clock that only moves forward at a
+  steady rate, and shall not be affected by the machine's notion of the time of
+  day being corrected, stepped or set.
+  \rationale{Time-of-day clocks are adjusted routinely --- by a time service
+  correcting drift, by a leap second, by an operator. Measuring a lease against
+  one means an adjustment can expire a lease that was being renewed properly, and
+  move an entitlement for a reason unconnected to any component's health. An
+  adjustment in the other direction is worse: a lease that should have expired
+  continues to be honoured while its holder is gone.}
+  \uncovered{no scenario adjusts a clock}
+\end{requirement}
+
 \begin{requirement}{R-0062}{An instance already acting keeps its entitlement when another returns}
   Where an instance holds the entitlement and is still present, an instance
   rejoining the group shall be told to follow, whatever its configured name.
@@ -118,19 +138,22 @@ terms of those components rather than of members.
 
 \begin{requirement}{R-0064}{A generation is never issued twice, and never goes backwards}
   Each grant of entitlement shall carry a generation greater than every
-  generation the venue has used, and that number shall survive the restart of
-  whatever issued it.
+  generation the venue has used. Where every instance that could have issued one
+  has restarted, the new generation shall still exceed every generation
+  previously used, which requires that the number outlive the processes rather
+  than any one of them.
   \rationale{The generation is what lets a receiver refuse a superseded sender.
   Held only in memory it restarts at the beginning, so a pair restarted together
-  agree a generation the venue has already spent --- and a message left over
-  from the earlier one compares as current.}
+  agree a generation the venue has used before --- and a message left over from
+  the earlier one compares as current.}
   \uncovered{no scenario restarts every instance of a group together}
 \end{requirement}
 
 \begin{requirement}{R-0065}{An instance whose entitlement has passed has what it sends refused}
   A receiver shall refuse a message carrying a generation older than the newest
   it has accepted for that group.
-  \rationale{This is the whole of the fencing. A stale instance is not stopped
+  \rationale{Refusing what a stale instance sends is the entire mechanism that
+  keeps it from acting. It is not stopped
   and is not required to notice anything; it is simply refused at every
   interaction it attempts, which needs no hardware and no agreement from the
   instance being fenced.}

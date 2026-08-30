@@ -63,11 +63,10 @@ reached; it asks for everything after that, applies it silently, and begins
 accepting. The two differ only in where the starting number comes from --- a
 file in one case, a replica in the other.
 
-That is the most useful result in this chapter. It means the configuration with
-high availability enabled needs no separate promotion path: promotion is this
-recovery, starting from a number learned another way. One mechanism is built,
-and the same mechanism is exercised by every restart rather than only by the
-failovers a test contrives.
+Two things follow. The configuration with high availability enabled needs no
+separate promotion path, because promotion is this recovery starting from a
+number learned another way. And because the same mechanism runs on every restart,
+it is exercised continually rather than only when a test produces a failover.
 
 \begin{gap}{BUG-0064}
   An instance that starts without having been a follower applies nothing. It
@@ -147,6 +146,19 @@ failovers a test contrives.
   Answering as though it does not is a statement it cannot support, and the
   member acts on it.}
   \uncovered{no scenario asserts that open orders survive a restart}
+\end{requirement}
+
+\begin{requirement}{R-0102}{A checkpoint that cannot be trusted is not used}
+  A component shall establish that a checkpoint is whole before rebuilding from
+  it, and shall not act on the part it could read. A checkpoint that is absent,
+  incomplete or inconsistent shall be treated as no checkpoint at all.
+  \rationale{A checkpoint is read once, at the moment nothing else knows what the
+  component holds, and it is believed entirely. A partial one produces a set of
+  orders that is wrong in a way no later check detects, because every subsequent
+  check is made against it. Treating a doubtful checkpoint as absent gives the
+  answer of \reqref{R-0020}, which is a worse outcome for a member and a knowable
+  one.}
+  \uncovered{no scenario damages a checkpoint}
 \end{requirement}
 
 \begin{requirement}{R-0022}{The venue keeps enough history to bring a recovered set of orders up to date}

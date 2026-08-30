@@ -16,6 +16,22 @@ deployed as one.} With one instance of each singular component there is nothing
 to fail over to. The only recovery available is to restart the process that died
 and rebuild what it held.
 
+\textbf{It is also not the configuration the venue is principally tested in.}
+The scenarios that exercise the behaviour specified in this chapter are run with
+high availability enabled, because that is what production runs, and a test of a
+configuration nobody deploys is evidence about very little. This configuration is
+tested too, and for what is particular to it: that the components which exist
+only to arbitrate are absent, and that the ones which remain say so.
+
+\textbf{Development is not restricted to this configuration.} High availability
+can be switched on with every component running on one machine, and doing so
+starts the arbiters, the witness and a second instance of each singular
+component exactly as a production deployment would. This is provided so that the
+behaviour specified in \cref{sec:ha:enabled} can be exercised without needing
+more than one machine to do it. What such a deployment cannot reproduce is the
+loss of a machine, because there is only one --- so it exercises everything in
+that section except \cref{sec:ha:enabled:machine_loss}.
+
 \subsection{What the switch does and does not remove}
 \label{sec:ha:disabled:scope}
 
@@ -35,16 +51,32 @@ Turning high availability off removes the second instance of each singular
 component, and the components whose only purpose is to arbitrate between them.
 It says nothing about the replicated peers, which run in every configuration.
 
-\subsection{What this configuration owes}
+\subsection{What this configuration may and may not do}
 \label{sec:ha:disabled:obligation}
 
-A configuration that exists in order to be tested against must be honest rather
-than safe. It may lose what a production venue must not, provided that it says
-so. It must never behave in a way that leaves a test passing for a reason that
-would not hold in production.
+This configuration is used for development and for running tests. Two things
+follow from that, and they pull in opposite directions.
+
+\textbf{It is allowed to lose things a production venue must not.} There is one
+instance of each singular component, so an order the venue has taken can be lost
+outright when that instance dies, and a session's numbering can be lost with it.
+That is the consequence of running one of everything, and it is accepted here
+because nothing of value is being traded.
+
+\textbf{It must not behave differently from production in ways a test cannot
+see.} A test run against this configuration is evidence about the venue only if
+the venue does the same things here that it does in production, and fails for the
+same reasons. Where it does less, it must fail visibly rather than appear to
+work.
+
+The failure to avoid is a venue that accepts a member's orders, acknowledges
+every one of them, forwards none of them anywhere, and logs nothing wrong. A test
+that sent orders and got replies would pass against that, and the result would
+mean nothing at all.
 
 \input{high_availability/disabled/recovery}
 \input{high_availability/disabled/authentication}
+\input{high_availability/disabled/administration}
 \input{high_availability/disabled/gateway}
 \input{high_availability/disabled/sequencer}
 \input{high_availability/disabled/matching_engine}

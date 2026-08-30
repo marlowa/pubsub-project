@@ -60,4 +60,15 @@ docs/book/*.acn
 docs/book/*.acr
 docs/book/*.alg
 docs/book/*.ist
+docs/book/*.txt
+docs/book/*.html
+docs/book/*.docx
+docs/book/*.css
+docs/book/*.lg
+docs/book/*.xref
+docs/book/*.tmp
+docs/book/*.idv
+docs/book/*.4ct
+docs/book/*.4tc
+docs/book/*.dvi
 docs/book/**/*.aux

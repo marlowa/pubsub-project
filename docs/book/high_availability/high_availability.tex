@@ -22,6 +22,9 @@ Most financial exchanges implement one of two primary architectural models for f
       ultra-low-latency matching engines unless cross-site resiliency overrides raw speed.
 \end{itemize}
 
+This venue uses the first of these. \Cref{subsec:ha_approach} says which
+components it applies to and why the second was not chosen.
+
 \subsection{Failover mechanics and state synchronisation}
 \label{subsec:ha_failover_mechanics}
 
@@ -33,7 +36,42 @@ A robust implementation must manage state across three distinct layers during a 
     \item \textbf{Gateway ingress and egress:} Gateways handle protocol translation and risk checks. If a gateway fails independently of the matching engine, session recovery protocols must determine whether an in-flight \texttt{NewOrderSingle} was accepted, rejected, or lost before timeout notifications reach the client.
 \end{enumerate}
 
-\subsection{The approach taken here}
+\subsection{Two properties, and why one does not imply the other}
+\label{subsec:ha_two_properties}
+
+High availability is usually discussed as one property and is two. They fail
+independently, and a venue can have the first in full while having none of the
+second.
+
+\textbf{Continuity} is the venue continuing to work. Something detects that an
+instance has stopped, another instance takes over, and members go on placing
+orders. Almost everything written about failover is about this: how it is
+detected, how long it takes, how the decision is reached.
+
+\textbf{Custody} is the venue keeping what it was given. An order accepted before
+the failure is still there afterwards, on the same terms; a session's numbering
+continues; a report the venue had not yet sent can still be sent.
+
+\textbf{Continuity is easy to observe and custody is not}, which is what makes
+the pair dangerous. A venue that has lost everything it was holding looks
+entirely healthy from outside: it accepts orders, answers them promptly, moves
+leadership when an instance dies, and reports no error. The evidence of lost
+custody is an absence --- an order that stops being mentioned --- and an absence
+is not something an observer notices, nor something a test detects unless it was
+written to look for that particular one.
+
+The two are also easy to conflate when reasoning. A failover that completes in
+three seconds with orders flowing throughout is a success by every measure of
+continuity, and says nothing whatever about whether the promoted instance holds
+what its predecessor held.
+
+\textbf{This is why the four questions are shaped as they are.} Only the last of
+them --- what the member is told --- concerns what an observer would see. The
+first three are about state: what a component holds, where the copy that outlives
+it lives, and how a restarted instance gets back to current. Continuity follows
+from a component running again; custody does not, and has to be specified.
+
+\subsection{The pattern this venue uses}
 \label{subsec:ha_approach}
 
 This library is intended for low latency environments rather than ultra-low ones.
@@ -92,8 +130,29 @@ holds when nothing has failed is an assumption rather than a requirement, and is
 stated as one. One requirement is stated for each outcome a member can
 distinguish, rather than for each mechanism that produces one.
 
+\textbf{This chapter says what the venue does, and not how it does it.} Where a
+requirement constrains what may happen while a component waits for a disk, or
+what a component must still be doing while it waits, it says only that. Which
+data structures satisfy such a requirement is a property of the library rather
+than of the venue's behaviour, is decided in \cref{ch:library}, and is not
+restated here --- a specification that named its own implementation would have to
+be changed whenever the implementation was, and would then be a description
+rather than a requirement.
+
+\textbf{This chapter was written after the components it describes, and not
+before them.} The venue was built first and its behaviour under failure was
+settled case by case as each case arose, which produced an implementation whose
+parts had never been reconciled with one another. This chapter states what those
+components must do, arrived at by asking the same questions of each of them; the
+answers are not a description of what they currently do. Where the two differ, a
+gap says so.
+
 Every requirement names the scenarios that verify it, or states that none does
-yet.
+yet. \textbf{A requirement that nothing verifies is not an unfinished part of
+this document.} The requirement is complete; what is absent is a test of the
+venue. The count of unverified requirements is therefore a measurement of the
+venue and not of the specification, and it does not fall as this document is
+finished --- it falls only as tests are written.
 
 \bigskip
 
@@ -103,16 +162,26 @@ no requirement in this chapter depends on it being present.
 
 A component that dies repeatedly has not failed once; it is failing. Restarting
 it again produces another failure, so the number of attempts is bounded, and
-exhausting that bound is a terminal condition rather than a slower loop.
+exhausting that bound is a terminal condition rather than a slower loop. This
+condition is called flapping, and it is specified in
+\cref{sec:ha:disabled:supervision}.
 
 \textbf{An order is committed} when the sequencer has assigned it a sequence
 number and appended it to the write-ahead log. That moment divides every
 scenario in this chapter. Before it, the venue has not taken the order: it may
 be lost by a failure, and the requirements say only that it must not take effect
 afterwards and that the member can establish what happened. After it, the venue
-has taken the order and owes an answer for it, whatever dies subsequently. The
+has taken the order and must answer it, whatever dies subsequently. The
 word is never used as a synonym for the \texttt{New} execution report that
 reports an order's acceptance to a member.
+
+The record it is appended to is a write-ahead log: every order is written to it
+before anything acts on the order, and it is the venue's account of what it has
+taken. Where two instances of the sequencer run, an order becomes durable in two
+stages rather than one --- written by the instance that took it, and acknowledged
+by the second --- and a member is not told about an order until both have
+happened. \Cref{sec:ha:enabled:sequencer:durable} states that rule and what it
+is for.
 
 \textbf{The following hold when nothing has failed}, and are specified
 elsewhere. They are recorded here because the requirements in this chapter rely
@@ -128,4 +197,5 @@ on them.
 \end{itemize}
 
 \input{high_availability/disabled/section}
+\input{high_availability/recovery_shape}
 \input{high_availability/enabled/section}

@@ -1700,10 +1700,18 @@ to every check that exists.
 | Restart a gateway at all | Nothing does. Six requirements depend on it |
 | Partition a pair, so neither instance can see the other | R-0086, R-0087 --- the condition the arbiter exists for, and nothing produces it |
 | Stop a machine, rather than a process | R-0083, R-0085 --- every scenario kills processes, so the failure the second machine is for is unexercised |
+| Partition a pair in one direction only | R-0072 and R-0086 both apply at once, and the window is closed only by a new holder reporting itself promptly |
+| Withhold a record during a catch-up | R-0101 --- a component that silently misses one is wrong and believes it is current |
 | Rewrite scenario 21 | It asserts that a promoted engine cancels what was open. Under R-0073 that is the fallback, so it should assert the fallback, and something new should assert that orders survive |
 
 Requirement identifiers are permanent and are listed in `docs/book/requirement_ids.txt`; each
 requirement in the specification names what verifies it or says that nothing does.
+
+**Why the order of work matters.** The specification distinguishes *continuity* --- the venue
+continuing to trade --- from *custody* --- the venue keeping what it was given. Continuity is easy
+to observe and custody is not, which is why the scenarios that exist all test the first. A
+specification that identifies that asymmetry and then leaves its custody requirements unverified
+has inverted its own priorities, so the custody rows above come first.
 
 **Do not close this by making the check pass.** A scenario that names a requirement without
 asserting it is worse than one that names none, because the count then reports coverage that does

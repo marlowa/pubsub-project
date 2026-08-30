@@ -53,9 +53,9 @@ on the peer's word alone safe.
   worse outcome by the configuration that exists to give it a better one.
 
   The two requirements are a hierarchy rather than alternatives: recover what can
-  be recovered, and disclaim what cannot. That keeps what made cancelling
-  attractive --- the member is told exactly where it stands --- without paying
-  for it when the venue has the orders and knows it does.}
+  be recovered, and disclaim what cannot. The member is still told exactly
+  where it stands, which was the merit of cancelling, but only in the case where
+  the venue does not have the orders.}
   \uncovered{scenario 21 asserts the fallback, and nothing asserts this}
 \end{requirement}
 
@@ -86,7 +86,7 @@ on the peer's word alone safe.
 \begin{requirement}{R-0076}{Orders taken while no engine was acting are applied on promotion}
   An order committed while no instance was acting shall be applied and answered
   once one is.
-  \rationale{The venue took those orders, so it owes an answer for each. This is
+  \rationale{The venue took those orders, so it must answer each of them. This is
   the case the disabled configuration cannot serve, because there is no instance
   holding a position from which to catch up.}
   \uncovered{no scenario asserts that deferred orders are answered after a promotion}

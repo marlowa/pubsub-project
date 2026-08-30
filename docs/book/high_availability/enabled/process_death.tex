@@ -19,7 +19,7 @@ whole again in seconds and nothing was lost.
 
 A machine that has died cannot be restored by anything the venue does, so
 promoting is the only remedy. A process that has died on a living machine can be,
-so promoting throws away a recovery that was available. Treating the two as one
+so promoting discards a recovery that was available. Treating the two as one
 failure is what makes a recoverable event cost resilience.
 
 \subsubsection{What the venue must do}
@@ -54,4 +54,62 @@ failure is what makes a recoverable event cost resilience.
   perfectly well, once per failure. \reqref{R-0062} states the arbiter's side of
   this; this is the instance's.}
   \covers{ha_test:29, ha_test:30, ha_test:31}
+\end{requirement}
+
+\subsubsection{When the restart and the promotion race}
+\label{sec:ha:enabled:process_death:race}
+
+The two remedies run at the same time and neither is aware of the other. The
+launcher is restarting the instance that died while the peer is counting down to
+asking whether it may act. \textbf{The race is benign, and settles the same way
+whichever ordering occurs.}
+
+\textbf{The restart completes first.} The returning instance holds no position
+and asks which it holds. No instance holds the entitlement, so it is granted it,
+and resumes acting. The peer, still waiting, finds the entitlement held and
+remains the follower. The entitlement did not move and the pair is whole.
+
+\textbf{The peer asks first.} It is granted the entitlement and begins acting.
+The returning instance asks, finds the position held by an instance that is
+present, and takes the other one. That its configured name is primary does not
+enter into it, and neither does its having held the entitlement minutes earlier.
+
+\textbf{Both ask at once.} The claims are resolved by there being one party that
+answers them. It grants one, records what it granted, and refuses the other
+against that record.
+
+In every ordering exactly one instance ends up acting, and no instance is ever
+required to have detected what the other was doing --- which is the property that
+makes the race benign rather than merely unlikely to go wrong.
+
+\begin{requirement}{R-0090}{A returning instance assumes nothing and asks}
+  An instance that has restarted shall hold no position until it is told which
+  it holds, whatever position it held before and whatever it is configured as.
+  \rationale{An instance that assumes it leads because it led before, or because
+  of its configured name, becomes a second instance acting whenever the peer has
+  already been promoted --- and it does so without anything having gone wrong
+  with the peer.}
+  \covers{ha_test:24, ha_test:25}
+\end{requirement}
+
+\begin{requirement}{R-0091}{A returning instance that finds the position vacant takes it}
+  Where an instance returns and no instance holds the entitlement, it shall take
+  it rather than wait.
+  \rationale{A returning instance holds nothing and asks, which is what keeps a
+  restart from producing a second instance acting. This is the other half of that
+  rule: where the answer is that nobody holds the entitlement, the returning
+  instance is the one that must take it, or a restart that outran its peer's
+  promotion would leave both instances following and none acting.}
+  \covers{ha_test:26, ha_test:27, ha_test:28}
+\end{requirement}
+
+\begin{requirement}{R-0092}{Simultaneous claims are resolved by one party, not by the claimants}
+  Where a returning instance and its peer both seek the entitlement at once, at
+  most one shall be granted it, and neither shall be required to have detected
+  the other.
+  \rationale{Two instances that must notice each other to stay out of each
+  other's way will eventually fail to, and the moment they fail is the moment
+  they are least able to communicate. Referring both claims to one party removes
+  the requirement to detect anything.}
+  \uncovered{no scenario times a restart to collide with a promotion}
 \end{requirement}

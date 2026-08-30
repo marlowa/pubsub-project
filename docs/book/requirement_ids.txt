@@ -92,3 +92,18 @@ R-0086     active    2026-08-30  An instance that cannot see its peer refers the
 R-0087     active    2026-08-30  A partition does not produce two instances acting
 R-0088     active    2026-08-30  The entitlement does not return to an instance merely because it has come back
 R-0089     active    2026-08-30  Leadership can be moved deliberately, and moving it loses nothing
+R-0090     active    2026-08-30  A returning instance assumes nothing and asks
+R-0091     active    2026-08-30  A returning instance that finds the position vacant takes it
+R-0092     active    2026-08-30  Simultaneous claims are resolved by one party, not by the claimants
+R-0093     active    2026-08-30  The venue trades while a group is reduced to one instance
+R-0094     active    2026-08-30  A group running without its second instance is knowable
+R-0095     active    2026-08-30  An instance may act with no arbiter reachable, and says that it did
+R-0096     active    2026-08-30  A credential change is recorded before it is distributed
+R-0097     active    2026-08-30  The record of which instances are behind outlives the service that made it
+R-0098     active    2026-08-30  Members trade and log on while no administration service is running
+R-0099     active    2026-08-30  Adjusting a machine's clock does not move an entitlement
+R-0100     active    2026-08-30  Waiting for a disk or for a peer does not stop a component working
+R-0101     active    2026-08-30  A component establishes that its catch-up was complete before it acts
+R-0102     active    2026-08-30  A checkpoint that cannot be trusted is not used
+R-0103     active    2026-08-30  The terms a session was admitted under outlive the component that received them
+R-0104     active    2026-08-30  A member is told nothing false while an entitlement is moving

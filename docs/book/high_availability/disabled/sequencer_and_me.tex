@@ -29,10 +29,10 @@ component that is asking.
 \label{sec:ha:disabled:seq_and_me:recovery}
 
 An order between the two --- committed, and never given to the matching engine
---- is the case this subsection exists for. It is in the log, so the venue took
+--- is the case this subsection is about. It is in the log, so the venue took
 it. The engine does not hold it, so nothing will answer it. And with both components restarted,
-nothing knows it is owed: the sequencer's record that it was waiting did not
-survive, and the engine holds nothing to compare against.
+nothing records that it is still to be answered: the sequencer's record that it
+was waiting did not survive, and the engine holds nothing to compare against.
 
 Recovery therefore acquires an order it does not otherwise have. The engine
 cannot become current before the sequencer is current, because it becomes
@@ -91,7 +91,7 @@ pause, a market-wide event, an instrument in disorderly conditions.
 \begin{requirement}{R-0017}{Recovery does not depend on the order the components return in}
   The venue shall reach the same state whichever of the two starts first.
   \rationale{A launcher restarts what it starts and coordinates with nothing, so
-  the order is not the venue's to choose. A component that cannot yet be told
+  the order in which they return is not something the venue decides. A component that cannot yet be told
   what it needs must wait to be told, rather than proceed on the assumption that
   there is nothing to hear.}
   \uncovered{no scenario restarts both components together}

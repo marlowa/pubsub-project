@@ -25,15 +25,15 @@ fails, a machine that stops, a kernel that hangs --- none of these takes the
 venue's record of what it has done, because a second copy was written as the
 first was.
 
-\textbf{The rule that makes it worth having is about when a member is told.} An
+\textbf{The rule that gives two machines their value concerns when a member is told.} An
 order becomes durable in two stages: the leader writes it, which permits the
 order to be given to the matching engine; and the follower acknowledges it, which
 permits the resulting execution report to be given to the gateway. A member is
 therefore never told about an order whose existence rests on one machine.
 
-That ordering costs a round trip on the reporting path and buys the property the
-whole configuration exists for. It is not an optimisation to be revisited when
-the path is measured.
+That ordering adds a round trip to the reporting path, and it is what gives the
+venue the property two machines are being run for. It is not an optimisation to
+be removed when the path is measured.
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:enabled:sequencer:recovery}
@@ -60,6 +60,19 @@ second claimant might exist unseen.
 \label{sec:ha:enabled:sequencer:member}
 
 Ideally nothing at all: a brief pause in responses, and no break in numbering.
+
+\begin{requirement}{R-0104}{A member is told nothing false while an entitlement is moving}
+  Between the loss of the instance that was acting and the moment its replacement
+  has caught up, a member may receive no answer to what it sends, and shall not
+  receive an answer that is wrong. An order shall not be rejected as unknown, and
+  an order shall not be reported accepted, on the basis of state that is not yet
+  current.
+  \rationale{The interval is short and it is not zero, and a member cannot see
+  that it is in one. Silence during it is a delay, which a member is built to
+  tolerate; an answer given from state that is still being assembled is a
+  statement the venue cannot support, and the member acts on it.}
+  \uncovered{no scenario sends orders during a failover and checks the answers}
+\end{requirement}
 
 \begin{requirement}{R-0066}{A member is never told of an order held on one machine only}
   An execution report shall not be sent to a member until the record of the order
@@ -102,6 +115,20 @@ Ideally nothing at all: a brief pause in responses, and no break in numbering.
   orders received and no reports, which is visible and recoverable; the
   alternative is invisible.}
   \uncovered{no scenario makes the follower lag}
+\end{requirement}
+
+\begin{requirement}{R-0100}{Waiting for a disk or for a peer does not stop a component working}
+  A component shall continue to process what arrives while it is waiting for a
+  write to complete or for a second instance to acknowledge one, and shall
+  continue to renew its entitlement and to answer enquiries about its health
+  throughout.
+  \rationale{The obligations in this section make a component wait for a disk and
+  for a peer, and both can be slow for reasons that have nothing to do with the
+  venue. A component that stops processing while it waits stops doing everything
+  --- answering members, replying to its peer, renewing its lease --- and from
+  outside that is indistinguishable from a component that has stopped. It is then
+  brought down as one, and a slow disk becomes a restart instead of a delay.}
+  \uncovered{no scenario makes a disk or a peer slow}
 \end{requirement}
 
 \begin{requirement}{R-0071}{A sequencer that finds its own record damaged stops rather than serving from it}

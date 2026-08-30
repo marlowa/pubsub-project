@@ -42,9 +42,9 @@ most needs to.
 \begin{requirement}{R-0085}{The surviving machine can carry the whole venue}
   A machine shall be able to run everything the venue requires of it after its
   partner is lost, and not merely its own share.
-  \rationale{A pair sized so that each carries half is a pair that fails
-  together: the survivor inherits the load that killed nothing and is killed by
-  it. Failing over into a condition both machines share converts an outage into a
-  slightly later outage and spends the standby on the way.}
+  \rationale{Where each machine is sized to carry only its own share, the
+  survivor inherits a load it cannot carry and fails in turn. The outage is then
+  delayed rather than avoided, and the second machine is lost as well as the
+  first.}
   \uncovered{no scenario measures the survivor under the whole load}
 \end{requirement}

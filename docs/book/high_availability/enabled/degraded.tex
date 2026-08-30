@@ -1,0 +1,54 @@
+\subsection{Running degraded}
+\label{sec:ha:enabled:degraded}
+
+Every failure in this section leaves the venue in a state, and for several of
+them that state is: working, and no longer able to survive the next failure.
+
+A group whose second instance has not yet been restarted is serving from one.
+A venue that has lost both arbiters is trading, and cannot move an entitlement if
+it needs to. Neither condition stops anything, neither produces an error, and
+from outside neither is distinguishable from a venue in full health.
+
+\textbf{The venue must run in these states rather than refuse to.} Losing
+redundancy is not a reason to stop: that would turn the loss of a spare into the
+outage the spare existed to prevent, and it would mean the venue was less
+available for having been made highly available. But running degraded silently is
+not acceptable either, because the exposure is real and bounded only by how long
+it lasts.
+
+\subsubsection{What the venue must do}
+\label{sec:ha:enabled:degraded:behaviour}
+
+\begin{requirement}{R-0093}{The venue trades while a group is reduced to one instance}
+  The loss of one instance of a group shall not stop members trading, and shall
+  not stop the surviving instance acting.
+  \rationale{A pair reduced to one has lost its protection against the next
+  failure and has lost nothing else. Refusing to work in that state causes an
+  outage now rather than risking one later.}
+  \covers{ha_test:3, ha_test:6}
+\end{requirement}
+
+\begin{requirement}{R-0094}{A group running without its second instance is knowable}
+  The venue shall make it possible to establish, at any moment, which groups are
+  running with a second instance and which are not.
+  \rationale{The window of no resilience lasts from the failure until something
+  restores the missing instance, and its length is the venue's exposure to a
+  second failure. Automatic restart makes it short and also makes it invisible ---
+  a component that dies and stays dead is eventually noticed by somebody
+  downstream, and one that is restarted repeatedly is noticed by nobody. What is
+  automated has to be reported, or nothing is watching the thing that used to
+  announce itself by breaking.}
+  \uncovered{nothing reports whether a group has a second instance}
+\end{requirement}
+
+\begin{requirement}{R-0095}{An instance may act with no arbiter reachable, and says that it did}
+  Where no arbiter can be reached and an entitlement must be settled, an instance
+  may take it by the rule that orders a cold start, and shall record that it did
+  so without arbitration.
+  \rationale{Refusing to act because the party that arbitrates is unreachable
+  stops the venue for the failure of a component that holds no venue state and is
+  off the order path --- which is the opposite of what it is for. This is
+  nonetheless the one moment the venue is not protected against a second
+  claimant, so it is also the one that must not pass unrecorded.}
+  \covers{ha_test:8, ha_test:9, ha_test:35, ha_test:39}
+\end{requirement}

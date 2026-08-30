@@ -78,8 +78,7 @@ The member reconnects, the session binds to the restarted gateway, and the
 sequencer supplies the numbering it remembers. What comes back with it depends
 on how far each order had travelled.
 
-There is only one such operation, and that is worth stating because it is not so
-elsewhere. A gateway is never promoted: it elects nothing and holds no role. A
+There is only one such operation here, where other components have two. A gateway is never promoted: it elects nothing and holds no role. A
 member returning to the instance that restarted and a member arriving at a
 different instance are therefore the same event seen from the venue --- a
 session binds to an instance that does not hold its state, and that instance
@@ -125,6 +124,17 @@ reach the member leaves a gap in the member's numbering.
 
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:gateway:member}
+
+\begin{requirement}{R-0103}{The terms a session was admitted under outlive the component that received them}
+  The instructions a member gave about what should happen to its orders when its
+  connection ends shall be available to whichever component must act on them,
+  whether or not the component that first received them is still running.
+  \rationale{Those instructions arrive once, when the session is admitted, and
+  are acted on later --- possibly by a different instance, and possibly when the
+  member is no longer present to supply them again. Held only where they were
+  received, they are lost precisely when the failure they guard against occurs.}
+  \uncovered{no scenario restarts a gateway holding a session's terms}
+\end{requirement}
 
 \begin{requirement}{R-0002}{A member can establish that an order was not taken}
   On reconnecting, a member shall be able to determine that the venue holds no

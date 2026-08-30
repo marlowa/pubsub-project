@@ -1,0 +1,87 @@
+\subsection{The administration service}
+\label{sec:ha:disabled:admin}
+
+The administration service is the only component permitted to change credential
+state. Members never speak to it; authentication services receive what it sends
+them.
+
+\textbf{One instance runs, in both configurations, and that is a decision rather
+than an omission.} It is not on the path an order takes, so its absence does not
+stop members trading or logging on. Credentials change rarely, so its absence is
+tolerable for as long as a restart takes. And a second instance would need
+arbitration of its own to remain a single writer, which is a large mechanism for
+a component that is idle for most of a trading day.
+
+The condition attached to that decision is that everything the single instance
+must remember has to survive it.
+
+\subsubsection{What state it holds}
+\label{sec:ha:disabled:admin:state}
+
+\textbf{The credential state}, of which it is the writer rather than the owner.
+The database is the source of truth.
+
+\textbf{Which authentication services have applied which change.} No other
+component holds this. An authentication service cannot know what it did not
+receive, and the database records what the credentials are rather than who has
+been told.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:disabled:admin:durable}
+
+The database holds the first. Nothing holds the second.
+
+\begin{gap}{}
+  Which instances have applied a change is held only in the running process. An
+  administration service that restarts between making a change and distributing
+  it to every instance cannot afterwards establish which instances were missed.
+\end{gap}
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:disabled:admin:recovery}
+
+It reads the credential state from the database, which is complete. It cannot
+recover what it had distributed, because that was never written down.
+
+As with \cref{sec:ha:disabled:gateway} and \cref{sec:ha:disabled:auth}, there is
+one such operation rather than two: an administration service is never promoted,
+because there is never a second one to promote.
+
+\subsubsection{What the member is told}
+\label{sec:ha:disabled:admin:member}
+
+Nothing directly. A member's logon is answered by an authentication service, and
+the requirements here exist so that the answer does not depend on an
+administration service being present at the time.
+
+\begin{requirement}{R-0096}{A credential change is recorded before it is distributed}
+  A change shall be written to the source of truth before it is sent to any
+  instance, so that a failure between the two loses the distribution rather than
+  the change.
+  \rationale{A change distributed but not recorded is undone by the next
+  instance to reload from the database, and is undone silently. A change recorded
+  but not distributed is visible as a difference between instances, and can be
+  corrected.}
+  \uncovered{no scenario interrupts a credential change}
+\end{requirement}
+
+\begin{requirement}{R-0097}{The record of which instances are behind outlives the service that made it}
+  Where an instance did not receive a change, that shall be recorded durably, and
+  shall be acted on by whichever administration service is running when the
+  instance next becomes reachable.
+  \rationale{\reqref{R-0046} accepts a change while an instance is unavailable on
+  the understanding that it is applied later. If the obligation to apply it is
+  held only in a running process, that understanding fails whenever the
+  administration service restarts before the instance returns --- and the
+  credential state is then permanently inconsistent with nothing recording it.}
+  \uncovered{no scenario restarts the administration service}
+\end{requirement}
+
+\begin{requirement}{R-0098}{Members trade and log on while no administration service is running}
+  The absence of an administration service shall not prevent a member logging on,
+  placing orders, or being answered.
+  \rationale{It writes credential state and answers nothing at admission time.
+  Making a member's logon depend on it would put a component that is idle for
+  most of a trading day on the path of every session that starts.}
+  \uncovered{no scenario runs the venue without an administration service}
+\end{requirement}
