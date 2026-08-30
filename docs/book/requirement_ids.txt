@@ -107,3 +107,11 @@ R-0101     active    2026-08-30  A component establishes that its catch-up was c
 R-0102     active    2026-08-30  A checkpoint that cannot be trusted is not used
 R-0103     active    2026-08-30  The terms a session was admitted under outlive the component that received them
 R-0104     active    2026-08-30  A member is told nothing false while an entitlement is moving
+R-0105     active    2026-08-30  An order that outlives the trading day is held where it survives the venue stopping
+R-0106     active    2026-08-30  Such orders are open when trading next begins
+R-0107     active    2026-08-30  A change to such an order is durable before the member is told of it
+R-0108     active    2026-08-30  The work needed to bring a component current is bounded
+R-0109     active    2026-08-30  An instance that is not making progress does not keep its entitlement
+R-0110     active    2026-08-30  How far behind a second instance may fall is a stated figure
+R-0111     active    2026-08-30  A deployment that could not survive losing a machine is reported when it starts
+R-0112     active    2026-08-30  The venue trades while the store it depends on is unreachable

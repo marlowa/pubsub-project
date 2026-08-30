@@ -148,6 +148,17 @@ it is exercised continually rather than only when a test produces a failover.
   \uncovered{no scenario asserts that open orders survive a restart}
 \end{requirement}
 
+\begin{requirement}{R-0108}{The work needed to bring a component current is bounded}
+  A checkpoint shall be taken often enough that the records a recovering
+  component must apply after reading one do not exceed a stated bound, and that
+  bound shall be a figure the venue can state.
+  \rationale{Recovery takes as long as reading the checkpoint plus applying
+  everything since it. Leaving the interval between checkpoints unstated leaves
+  recovery time unstated with it, and the interval is then set by whatever was
+  convenient rather than by how long the venue may be absent.}
+  \uncovered{no checkpoint is written at all}
+\end{requirement}
+
 \begin{requirement}{R-0102}{A checkpoint that cannot be trusted is not used}
   A component shall establish that a checkpoint is whole before rebuilding from
   it, and shall not act on the part it could read. A checkpoint that is absent,

@@ -1,0 +1,81 @@
+\subsection{Orders that outlive the trading day}
+\label{sec:ha:disabled:long_lived}
+
+Most orders are for the session that placed them or for the day. Some are not: an
+order may be placed to rest for weeks, and its member expects to find it there
+each morning without doing anything.
+
+Everything else in this section concerns state that must survive a process, or a
+machine. These orders must survive \emph{the venue} --- every process stopped
+deliberately, the day ended, the machines rebooted, and trading begun again the
+next morning.
+
+\subsubsection{Why the mechanisms already described do not serve}
+\label{sec:ha:disabled:long_lived:why}
+
+A checkpoint records the orders held at a point in the sequence, and is useful
+only while the record it is anchored to still holds what followed that point
+(\cref{sec:ha:disabled:me:durable}). That relationship is what a day boundary
+breaks: a new day's record does not continue the previous day's, and retaining
+every day's record so that a checkpoint from any of them remains usable is not a
+retention policy anybody would choose.
+
+So an order intended to outlive the day needs a durable home of its own, held
+independently of the record of what the venue did, and read when trading begins
+rather than recovered when something fails.
+
+\textbf{No component reaches that home while it is trading.} The venue's
+components hold no connection to the store, in the same way and for the same
+reason that admission does not depend on one: a store that must be reachable for
+the venue to work is a store whose every outage is a trading outage. The orders
+are exported and read when trading begins, and the store is brought up to date
+from the venue's own record of what it did --- which is behind the venue by
+design, and can be brought level again from that record because the record is
+what it is derived from.
+
+That has one consequence for the requirement below. What must be durable before a
+member is told its order has been cancelled is \emph{the venue's own record},
+not the store. The store follows.
+
+\subsubsection{What the venue must do}
+\label{sec:ha:disabled:long_lived:behaviour}
+
+\begin{requirement}{R-0105}{An order that outlives the trading day is held where it survives the venue stopping}
+  An order whose terms say it remains open beyond the trading day shall be
+  recorded where it survives every component stopping and the day ending.
+  \rationale{The member was told the order would rest until it said otherwise.
+  Holding it only where the day's own state is held makes that promise good for
+  one day, which is not the promise that was made.}
+  \uncovered{such orders are held only for the life of the venue's processes}
+\end{requirement}
+
+\begin{requirement}{R-0106}{Such orders are open when trading next begins}
+  When trading begins, every order that was open at the end of the previous day
+  and has not since expired shall be open, on the terms it was placed under, and
+  cancellable by the member that placed it.
+  \rationale{A member that must re-place its resting orders each morning has not
+  been given orders that outlive the day; it has been given orders that are
+  quietly cancelled overnight, and told otherwise.}
+  \uncovered{the venue has no notion of a trading day}
+\end{requirement}
+
+\begin{requirement}{R-0107}{A change to such an order is committed before the member is told of it}
+  Where such an order is cancelled, amended or filled, that shall be committed to
+  the venue's own record before the member is told, and the store the order
+  outlives the day in shall be brought up to date from that record.
+  \rationale{A member told its order is cancelled stops watching for it. If
+  nothing durable is written first, a failure between the two brings the order
+  back the next time the store is read --- live, on a market that has moved, for a
+  member with no reason to look. Requiring the venue's own record rather than the
+  store is what allows the store to lag: anything it is missing can be supplied
+  again from the record, where a change that was never committed anywhere cannot
+  be.}
+  \uncovered{such orders are not recorded durably at all}
+\end{requirement}
+
+\begin{gap}{}
+  Orders that outlive the trading day are held only where every other open order
+  is held, which does not survive the venue stopping. A member placing one is
+  given an order that lasts until the next time the venue is restarted, and is
+  told nothing to that effect.
+\end{gap}

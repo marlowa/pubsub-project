@@ -77,6 +77,18 @@ administration service being present at the time.
   \uncovered{no scenario restarts the administration service}
 \end{requirement}
 
+\begin{requirement}{R-0112}{The venue trades while the store it depends on is unreachable}
+  No component shall require a connection to the durable store in order to admit
+  a member, accept an order, or answer one. What it needs from the store shall be
+  read when it starts and supplied to it thereafter.
+  \rationale{A store that must be reachable for the venue to work is a store
+  whose every outage is a trading outage, and it adds a failure whose likelihood
+  is unrelated to anything the venue does. Admission is already arranged this way
+  --- an authentication service reads an export when it starts and is sent each
+  change --- and orders that outlive the day are to be arranged the same way.}
+  \uncovered{no scenario runs the venue with the store unreachable}
+\end{requirement}
+
 \begin{requirement}{R-0098}{Members trade and log on while no administration service is running}
   The absence of an administration service shall not prevent a member logging on,
   placing orders, or being answered.

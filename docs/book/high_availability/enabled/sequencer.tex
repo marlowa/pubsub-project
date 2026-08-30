@@ -131,6 +131,18 @@ Ideally nothing at all: a brief pause in responses, and no break in numbering.
   \uncovered{no scenario makes a disk or a peer slow}
 \end{requirement}
 
+\begin{requirement}{R-0110}{How far behind a second instance may fall is a stated figure}
+  The point at which a second instance is too far behind shall be a figure the
+  venue states, expressed in what has not been acknowledged rather than in
+  elapsed time alone.
+  \rationale{\reqref{R-0070} requires the venue to stop confirming rather than
+  proceed without the second instance, and cannot be implemented or tested
+  without knowing when that point is reached. Expressed only as a duration the
+  figure moves with the rate orders arrive, so a venue under load reaches it
+  after far fewer records than a quiet one.}
+  \uncovered{nothing states how far behind is too far}
+\end{requirement}
+
 \begin{requirement}{R-0071}{A sequencer that finds its own record damaged stops rather than serving from it}
   An instance that cannot read its log whole shall not act on the part it can
   read, and the instance holding an undamaged copy shall act instead.

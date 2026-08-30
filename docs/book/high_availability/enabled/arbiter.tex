@@ -116,6 +116,18 @@ terms of those components rather than of members.
   \uncovered{no scenario adjusts a clock}
 \end{requirement}
 
+\begin{requirement}{R-0109}{An instance that is not making progress does not keep its entitlement}
+  Holding an entitlement shall depend on the instance continuing to do the work
+  the entitlement is for, and not only on its continuing to ask to keep it.
+  \rationale{Renewing requires no more than a thread running. An instance
+  starved of processor time, or stalled in a way that leaves its timers running,
+  renews on schedule and does nothing else --- and both presence and renewal
+  report it as healthy, because neither is a report of work. The venue then
+  stays with an instance that has stopped, which is the failure that stops
+  everything while nothing appears wrong.}
+  \uncovered{no scenario starves an instance that keeps renewing}
+\end{requirement}
+
 \begin{requirement}{R-0062}{An instance already acting keeps its entitlement when another returns}
   Where an instance holds the entitlement and is still present, an instance
   rejoining the group shall be told to follow, whatever its configured name.

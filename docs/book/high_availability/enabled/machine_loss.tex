@@ -39,6 +39,18 @@ most needs to.
   \uncovered{nothing checks where instances are placed}
 \end{requirement}
 
+\begin{requirement}{R-0111}{A deployment that could not survive losing a machine is reported when it starts}
+  Where instances are placed such that the loss of one machine would leave the
+  venue unable to decide which instance may act, that shall be reported when the
+  venue starts rather than discovered when the machine is lost.
+  \rationale{\reqref{R-0084} is a property of where processes were put, and a
+  deployment that violates it behaves identically to one that does not until the
+  wrong machine fails. It is checkable at the moment the instances announce
+  themselves, and that is the only moment before the failure at which anybody
+  would look.}
+  \uncovered{nothing checks where instances are placed}
+\end{requirement}
+
 \begin{requirement}{R-0085}{The surviving machine can carry the whole venue}
   A machine shall be able to run everything the venue requires of it after its
   partner is lost, and not merely its own share.

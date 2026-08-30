@@ -1,7 +1,136 @@
 \chapter{Disaster recovery}
 \label{ch:disaster_recovery}
 
-The loss of a site rather than of a machine: what is expected to survive, how
-long recovery may take, and how much may be lost in the process.
+The loss of a site rather than of a machine, and the switchover of trading to
+another data centre.
 
-It is not yet written.
+This chapter is not written. What follows is the set of positions settled so far,
+recorded here so that they are not re-derived, and so that the requirements in
+\cref{ch:high_availability} that depend on them can point somewhere. They are
+stated as positions rather than as requirements because the analysis that would
+turn them into requirements has not been done.
+
+\section{Positions settled}
+\label{sec:dr:settled}
+
+\textbf{Switchover is a decision taken by a person, and is never automatic.}
+Across a wide-area link, an unreachable site and a dead site are
+indistinguishable, and that ambiguity is the normal failure rather than a rare
+one. A mechanism that decided for itself would produce two data centres trading
+whenever the link between them broke, with no third party either could reach. The
+decision therefore rests on knowledge the venue does not have: that the site is
+genuinely gone, that it will not shortly return, and that what has not replicated
+can be lost.
+
+\textbf{Nothing arbitrates between sites.} The arbiters and the witness remain a
+mechanism within a site, deciding which local instance may act. A third site is
+not needed to hold a witness, because there is no automatic decision for which a
+majority must be reached.
+
+\textbf{The site being left is shut down where it can be reached.} That is the
+only fence available, and a person performs it.
+
+\textbf{Where it cannot be reached, it must not resume unattended.} A site that
+was unreachable when the decision was taken has been told nothing, and cannot be
+relied on to know it was superseded. So the rule is stated the other way about: a
+site whose components have all been down together begins halted, and trading
+there is an act somebody performs rather than a consequence of processes
+starting. \Cref{sec:ha:disabled:sequencer_and_me} already requires a halt to be
+declared and not to lift by itself.
+
+\textbf{Responsibility passes for the remainder of the trading day, and then
+until further notice.} There is no automatic return. Which site is live becomes a
+decision taken at each start of day, which is part of what
+\reqref{R-0035} is for.
+
+\textbf{Outstanding orders are cancelled on switchover, except those meant to
+outlive the day.} The set of orders present at the second site is a prefix of
+what the first site held, because replication is asynchronous, and it cannot be
+established which orders are missing from it. Cancelling leaves each member with
+a position it can state exactly; carrying an unknown subset across leaves every
+member with a position neither it nor the venue can state. This is the case
+\reqref{R-0020} describes rather than an exception to \reqref{R-0073}: recover
+what can be recovered, and disclaim what cannot.
+
+\textbf{Orders that outlive the day are held in the database and reach the second
+site by replicating it.} \Cref{sec:ha:disabled:long_lived} requires them to be
+held durably for reasons that have nothing to do with site loss; replicating that
+store is what carries them across.
+
+\section{How much may be lost, and how long recovery may take}
+\label{sec:dr:rpo_rto}
+
+These are the two quantities a member, an auditor or an operator will ask for,
+and they have different answers within a site and between sites. None of the
+figures below has been measured; the shape of each is settled and the number is
+not.
+
+\textbf{Within a site, how much may be lost is nothing that a member was told
+about.} \Cref{sec:ha:enabled:sequencer:durable} requires that an execution report
+is not sent until a second machine has acknowledged the record it concerns, so an
+order the member has been told of exists in two places before it is told. An
+order accepted and not yet reported may be lost, and \cref{sec:ha:disabled} says
+so throughout. That property is bought with a round trip on the reporting path,
+and it is the reason the round trip is there.
+
+\textbf{Between sites, it is not nothing, and it cannot be.} Replication across
+sites is asynchronous, because the alternative puts a wide-area round trip inside
+every member's acknowledgement. What may be lost is therefore everything
+accepted between the last record the second site received and the moment the
+first site stopped --- a quantity that varies with how busy the venue was and how
+far behind replication had fallen. It should be measured under load rather than
+asserted, and it should be stated to members rather than left for them to
+discover.
+
+\textbf{How long recovery takes, within a site, is a failover.} It is bounded by
+the period a peer waits before seeking to act (\reqref{R-0081}) plus the time to
+catch up from the position it holds. Both are short and both are measurable, and
+neither has been measured.
+
+\textbf{Between sites it is dominated by the decision, not by the machinery.}
+A person must establish that the site has gone, decide to switch, shut down what
+can be reached, and declare the second site live; members must then connect to
+it. The software's part of that is small and the whole is not. A figure that
+counts only the software's part will be quoted and will be wrong.
+
+\textbf{Neither figure means anything until a switchover has been rehearsed.} A
+recovery time derived from how long the steps ought to take is an estimate of a
+procedure nobody has performed.
+
+\section{Consequences not yet worked through}
+\label{sec:dr:open}
+
+\textbf{The replica is a prefix, and the venue must be able to say what is in
+doubt.} Asynchronous replication has a loss window by construction. Members will
+ask what became of orders placed near the moment of the loss, and the venue
+should be able to name the range it cannot account for, rather than only that one
+exists.
+
+\textbf{A cancellation that did not replicate resurrects an order.} A member
+cancels an order meant to outlive the day, the cancellation reaches the primary
+database and not the replica, and the site is lost. The second site then holds
+that order as open, for a member that was told it was cancelled and has stopped
+watching for it. \reqref{R-0107} is the rule that narrows this; the residue is
+the replication window itself.
+
+\textbf{Credentials inherit the same window, with the same asymmetry.} The
+database also carries the comp ids that may trade, so a credential revoked
+shortly before the loss may still admit a member at the second site.
+\Cref{sec:ha:disabled:auth} establishes that a missed addition is recoverable and
+a missed withdrawal is not; across sites the window is larger and the conclusion
+is unchanged.
+
+\textbf{Sequence numbering must not continue where the replica stopped.} The
+first site may have issued numbers beyond the last the second received, for
+orders that were never replicated. Continuing from the last number received would
+give two different orders the same name within one trading day. The second site
+must begin beyond anything the first could have reached, leaving a visible gap
+--- which is correct, because something happened there that cannot be accounted
+for.
+
+\textbf{And the risk that no mechanism removes.} If a switchover is declared
+while the first site is still trading, both sites trade. Nothing in this design
+prevents it, because the two cannot reach a common arbiter and the venue does not
+fence by force. It is the same trade recorded in \cref{sec:ha:enabled:partition},
+made at a larger scale, and it rests on the decision being taken by somebody who
+has established that the first site has stopped.
