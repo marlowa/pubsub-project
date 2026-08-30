@@ -1,0 +1,36 @@
+\subsection{Failback}
+\label{sec:ha:enabled:failback}
+
+An instance that failed is repaired and returns, and the question is whether the
+entitlement to act should return with it.
+
+\textbf{It should not, and not merely because moving it is disruptive.} The
+instance that has just returned is the one that recently failed, and the instance
+holding the entitlement is one that is serving. Moving the position from the
+second to the first, on the strength of a name fixed in configuration when the
+deployment was built, is a change made for no reason connected to either
+instance's fitness.
+
+That does not mean leadership may never be moved deliberately. A machine may need
+to be taken out of service, or a deployment rebalanced, and moving the position
+on purpose is an ordinary operation. What it must not be is automatic.
+
+\begin{requirement}{R-0088}{The entitlement does not return to an instance merely because it has come back}
+  A repaired instance rejoining a group shall take the follower position while
+  the other instance holds the entitlement and is present, whatever its
+  configured name.
+  \rationale{Configured names order a cold start and decide nothing else. An
+  automatic return moves the position away from an instance that is working, to
+  the one that recently was not, and does so at a moment nobody chose.}
+  \covers{ha_test:24, ha_test:32}
+\end{requirement}
+
+\begin{requirement}{R-0089}{Leadership can be moved deliberately, and moving it loses nothing}
+  An operator shall be able to move the entitlement between instances of a group,
+  and doing so shall lose no order, no report and no session.
+  \rationale{Without it, a machine cannot be taken out of service without
+  provoking the failure the configuration exists to survive --- and an operator
+  who must kill a healthy process to move a position will eventually kill the
+  wrong one.}
+  \uncovered{nothing moves leadership deliberately}
+\end{requirement}

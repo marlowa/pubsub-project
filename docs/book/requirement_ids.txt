@@ -56,3 +56,39 @@ R-0050     active    2026-08-30  Every externally published record carries an id
 R-0051     active    2026-08-30  The recorder never resumes beyond its last confirmed publish
 R-0052     active    2026-08-30  A restart of the recorder does not stop trading
 R-0053     active    2026-08-30  Where external publishing cannot resume, trading is halted
+R-0054     active    2026-08-30  A member that returns in time finds its orders untouched
+R-0055     active    2026-08-30  A member that does not return has its orders cancelled as it asked, and is told when it comes back
+R-0056     active    2026-08-30  An order meant to outlive the session is not cancelled by a disconnection
+R-0057     active    2026-08-30  A member that has lost its own numbering can start afresh without losing its orders
+R-0058     active    2026-08-30  Two instances of a group are never both entitled to act
+R-0059     active    2026-08-30  An arbiter that has not been told declines rather than guesses
+R-0060     active    2026-08-30  Silence from an arbiter is not read as the absence of one
+R-0061     active    2026-08-30  Entitlement is held under a lease and lapses unless renewed
+R-0062     active    2026-08-30  An instance already acting keeps its entitlement when another returns
+R-0063     active    2026-08-30  Losing one arbiter, or the witness, changes nothing
+R-0064     active    2026-08-30  A generation is never issued twice, and never goes backwards
+R-0065     active    2026-08-30  An instance whose entitlement has passed has what it sends refused
+R-0066     active    2026-08-30  A member is never told of an order held on one machine only
+R-0067     active    2026-08-30  Losing a machine does not lose a committed order
+R-0068     active    2026-08-30  The venue keeps trading when the acting sequencer is lost
+R-0069     active    2026-08-30  A member's session survives a failover
+R-0070     active    2026-08-30  A follower that falls behind stops the venue confirming, rather than being dropped
+R-0071     active    2026-08-30  A sequencer that finds its own record damaged stops rather than serving from it
+R-0072     active    2026-08-30  A pair that can see each other settles leadership between themselves
+R-0073     active    2026-08-30  An open order survives a failover
+R-0074     active    2026-08-30  An instance that gives up leadership cannot thereby create a second one
+R-0075     active    2026-08-30  The venue keeps working when the acting engine is lost
+R-0076     active    2026-08-30  Orders taken while no engine was acting are applied on promotion
+R-0077     active    2026-08-30  A subscriber resumes at the surviving instance without loss
+R-0078     active    2026-08-30  A promoted recorder republishes rather than skips
+R-0079     active    2026-08-30  Losing one publisher or one recorder does not halt the venue
+R-0080     active    2026-08-30  A process death on a healthy machine does not cost the pair
+R-0081     active    2026-08-30  The peer does not promote while a restart could still succeed
+R-0082     active    2026-08-30  An instance that keeps failing does not disturb a healthy peer
+R-0083     active    2026-08-30  The venue survives the loss of any one machine
+R-0084     active    2026-08-30  No single machine holds enough of the venue to prevent a decision
+R-0085     active    2026-08-30  The surviving machine can carry the whole venue
+R-0086     active    2026-08-30  An instance that cannot see its peer refers the question rather than deciding it
+R-0087     active    2026-08-30  A partition does not produce two instances acting
+R-0088     active    2026-08-30  The entitlement does not return to an instance merely because it has come back
+R-0089     active    2026-08-30  Leadership can be moved deliberately, and moving it loses nothing

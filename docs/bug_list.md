@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 67 |
-| Open | 23 (15 defects, 8 tasks) |
+| Bugs recorded | 68 |
+| Open | 24 (15 defects, 9 tasks) |
 | Closed | 44 |
-| Next id | BUG-0068 |
+| Next id | BUG-0069 |
 
 ## Open bugs by severity
 
-10 high, 9 medium, 4 low.
+11 high, 10 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -23,6 +23,7 @@
 | [BUG-0064](#bug_0064) | high | defect | Deferred orders are never recovered, and the venue logs that they were |
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
+| [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -1659,6 +1660,56 @@ roadmap slice 9 and not started. So this is not simply a missing call: calling
 snapshot standing behind it, which is the case the invariant exists to prevent.
 
 Related: BUG-0046, since the WAL is what a member's resend is served from.
+
+### BUG-0068: The specification states behaviour that almost nothing tests {#bug_0068}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task -- a coverage matrix, not a defect |
+| Found | 2026-08-30 |
+| Recorded | 2026-08-30 |
+| How | Writing the functional specification in `docs/book`, which records against each requirement what verifies it |
+| Impact | 63 requirements are stated and 59 have no scenario. The suite reports success on a venue that does not meet them |
+
+`scripts/check_book_requirements.py` reads the record the specification emits as it is typeset and
+reports the count on every build. At the time of writing: **63 requirements, 4 verified, 8 of 47
+scenarios naming a requirement at all.**
+
+This is not the same gap as [BUG-0030](#bug_0030), whose matrix is complete. That one asked which
+*restart cases* a pair has and covered all eighteen. This one asks which *stated behaviours* are
+verified, and the answer is almost none of them --- because the scenarios were written before
+there was anything to verify against, so they assert that leadership moved and that new orders
+flow, which is what was designed rather than what was promised.
+
+**The measured consequence.** A matching engine killed and restarted with a thousand orders open
+returns holding none of them; the gateway continues reporting them as open and the member is told
+nothing. `ha_test.py` reports `RESULT: PASS`, because sent equals answered and the loss is silent
+to every check that exists.
+
+**The scenarios that would matter most, in order:**
+
+| Missing scenario | What it would verify |
+|---|---|
+| Restart the matching engine with orders open, and assert they are still open | R-0018, and the measured loss above |
+| Restart every instance of a group together | R-0064 --- the generation must not restart at the beginning, which is where a pair agrees a generation the venue has already spent |
+| Send from an instance whose entitlement has passed | R-0065 --- the fencing itself is untested, and it is the whole of what replaced hardware fencing |
+| Ask a freshly started arbiter about a group it has not been told of | R-0059, R-0060 --- declining rather than guessing, and not reading silence as absence |
+| Stop a leader renewing while it holds its connection open | R-0061 --- the lease, which presence alone cannot test |
+| Restart a sequencer with a session unbound, then reconnect that member | R-0011, R-0012 --- the case where a member is silently resumed at the beginning |
+| Restart a gateway at all | Nothing does. Six requirements depend on it |
+| Partition a pair, so neither instance can see the other | R-0086, R-0087 --- the condition the arbiter exists for, and nothing produces it |
+| Stop a machine, rather than a process | R-0083, R-0085 --- every scenario kills processes, so the failure the second machine is for is unexercised |
+| Rewrite scenario 21 | It asserts that a promoted engine cancels what was open. Under R-0073 that is the fallback, so it should assert the fallback, and something new should assert that orders survive |
+
+Requirement identifiers are permanent and are listed in `docs/book/requirement_ids.txt`; each
+requirement in the specification names what verifies it or says that nothing does.
+
+**Do not close this by making the check pass.** A scenario that names a requirement without
+asserting it is worse than one that names none, because the count then reports coverage that does
+not exist.
+
+---
 
 ## Closed
 

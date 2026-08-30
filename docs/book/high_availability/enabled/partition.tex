@@ -1,0 +1,58 @@
+\subsection{A partition}
+\label{sec:ha:enabled:partition}
+
+Both instances are running and neither can see the other. Each is healthy, each
+believes the other may be dead, and neither can tell which.
+
+This is the condition the arbiter exists for, and it is the only one in this
+chapter where doing nothing and doing the obvious thing are both wrong.
+
+\subsubsection{What is at risk}
+\label{sec:ha:enabled:partition:risk}
+
+An instance that cannot see its peer has two explanations available and no way to
+choose between them. If it promotes itself and the peer is alive, both act and
+their states diverge --- and neither can afterwards be shown to have been right.
+If it declines and the peer is genuinely dead, nothing acts, and that failure is
+the quieter of the two: nothing crashes and nothing logs an error, so it is
+noticed when somebody asks why trading stopped.
+
+\subsubsection{What the venue must do}
+\label{sec:ha:enabled:partition:behaviour}
+
+\begin{requirement}{R-0086}{An instance that cannot see its peer refers the question rather than deciding it}
+  Where an instance cannot reach its peer, it shall ask the arbiter which
+  instance may act, and shall not decide for itself.
+  \rationale{This is the one case an instance cannot settle alone, because it is
+  the only one where a second claimant may exist unseen. Where a peer \emph{is}
+  visible, the two settle it between themselves --- \reqref{R-0072} --- and the
+  two rules are mutually exclusive by construction, so no group has two parties
+  entitled to decide.}
+  \uncovered{no scenario partitions a pair}
+\end{requirement}
+
+\begin{requirement}{R-0087}{A partition does not produce two instances acting}
+  A partition of any duration shall not result in both instances of a group
+  acting.
+  \rationale{\reqref{R-0058} states this generally; it is restated here because
+  a partition is the condition that produces it, and because a design can satisfy
+  the general statement in every case a test contrives and fail it here.}
+  \uncovered{no scenario partitions a pair}
+\end{requirement}
+
+\subsubsection{What this costs, stated plainly}
+\label{sec:ha:enabled:partition:cost}
+
+An instance on the losing side of a partition is not stopped. It keeps running,
+keeps believing what it believed, and is refused at every interaction it attempts
+--- \reqref{R-0065}. It cannot corrupt anything, because nothing it sends is
+accepted, but it also does not stop, and it may hold resources until somebody
+intervenes.
+
+That is the accepted trade. Removing the instance instead would require
+authority over the machine it runs on: a separate management network, hardware
+power control, and credentials to use them --- properties of a deployment rather
+than of this software, absent from a developer's machine, and therefore a
+mechanism that could only ever be exercised in one environment. Refusing
+everything a stale instance sends needs none of that and is tested wherever the
+venue runs.

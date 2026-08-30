@@ -1,0 +1,125 @@
+\subsection{The sequencer pair}
+\label{sec:ha:enabled:sequencer}
+
+Two sequencers run. One holds the entitlement to act; the other receives
+everything it does and waits.
+
+\subsubsection{What state it holds}
+\label{sec:ha:enabled:sequencer:state}
+
+The same state as in \cref{sec:ha:disabled:sequencer} --- the ordering, the log,
+the generation, each session's numbering --- but now held twice, on two machines
+with two disks.
+
+The follower's copy is not a backup taken periodically. It is built from the same
+records, in the same order, as they are written. And a session's numbering
+reaches the follower by the same route it reaches the leader: gateways report to
+both instances, so the follower holds what a restarted instance would have to be
+told.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:enabled:sequencer:durable}
+
+On the other machine, and this is the point of the configuration. A disk that
+fails, a machine that stops, a kernel that hangs --- none of these takes the
+venue's record of what it has done, because a second copy was written as the
+first was.
+
+\textbf{The rule that makes it worth having is about when a member is told.} An
+order becomes durable in two stages: the leader writes it, which permits the
+order to be given to the matching engine; and the follower acknowledges it, which
+permits the resulting execution report to be given to the gateway. A member is
+therefore never told about an order whose existence rests on one machine.
+
+That ordering costs a round trip on the reporting path and buys the property the
+whole configuration exists for. It is not an optimisation to be revisited when
+the path is measured.
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:enabled:sequencer:recovery}
+
+A promoted follower is already current, or nearly: it holds the records and has
+acknowledged them, and needs only to apply anything it has received and not yet
+applied.
+
+\textbf{Here the comparison with \cref{sec:ha:disabled:sequencer} favours the
+pair, and by more than it does elsewhere.} A restarted sequencer recovers its
+sequence number from its log, its generation from a file, and its sessions by
+being told --- which leaves it holding nothing for a session that was not bound
+at the time. A promoted follower was told the same things as they happened, so it
+holds the sessions nobody would think to report. The two operations recover
+different amounts, and this is the one that recovers more.
+
+The pair also settles leadership between themselves when they can see each other,
+rather than referring it. Both hold both instance identities and both
+generations, so both compute the same answer from the same inputs. The arbiter is
+for the case a pair cannot settle alone --- when one cannot see the other, and a
+second claimant might exist unseen.
+
+\subsubsection{What the member is told}
+\label{sec:ha:enabled:sequencer:member}
+
+Ideally nothing at all: a brief pause in responses, and no break in numbering.
+
+\begin{requirement}{R-0066}{A member is never told of an order held on one machine only}
+  An execution report shall not be sent to a member until the record of the order
+  it concerns has been acknowledged by a second instance.
+  \rationale{Telling a member about an order that exists in one place is a
+  promise the venue cannot keep if that place is lost. This is the property two
+  machines are being run for, and every other requirement here is subordinate to
+  it.}
+  \uncovered{no scenario asserts that a report waits for the follower}
+\end{requirement}
+
+\begin{requirement}{R-0067}{Losing a machine does not lose a committed order}
+  An order committed before a machine was lost shall be processed and answered by
+  the surviving instance.
+  \rationale{Commitment is the venue taking the order, and the loss of one of two
+  machines holding it is the failure the pair exists to absorb.}
+  \uncovered{no scenario asserts an order committed before the kill is answered after it}
+\end{requirement}
+
+\begin{requirement}{R-0068}{The venue keeps trading when the acting sequencer is lost}
+  Members shall continue to be able to place orders across the loss of the
+  instance that was acting.
+  \covers{ha_test:1}
+\end{requirement}
+
+\begin{requirement}{R-0069}{A member's session survives a failover}
+  A member's numbering, and the orders open under its session, shall be
+  unaffected by leadership moving between sequencers.
+  \rationale{A failover the member can detect is a failover that has failed at
+  its purpose. The follower is told each session's position as it advances, for
+  exactly this reason.}
+  \uncovered{no scenario fails the sequencer over under a live session}
+\end{requirement}
+
+\begin{requirement}{R-0070}{A follower that falls behind stops the venue confirming, rather than being dropped}
+  Where the second instance cannot keep up, the venue shall stop sending
+  execution reports rather than continue without it.
+  \rationale{Dropping the follower to keep the reporting path moving abandons
+  \reqref{R-0066} silently and at exactly the moment it matters. Members see
+  orders received and no reports, which is visible and recoverable; the
+  alternative is invisible.}
+  \uncovered{no scenario makes the follower lag}
+\end{requirement}
+
+\begin{requirement}{R-0071}{A sequencer that finds its own record damaged stops rather than serving from it}
+  An instance that cannot read its log whole shall not act on the part it can
+  read, and the instance holding an undamaged copy shall act instead.
+  \rationale{This is the answer \cref{sec:ha:disabled:recovery} says the disabled
+  configuration does not have. Serving from a partial log assigns numbers that
+  have been assigned before and answers orders that were not the ones committed.}
+  \uncovered{no scenario damages a log}
+\end{requirement}
+
+\begin{requirement}{R-0072}{A pair that can see each other settles leadership between themselves}
+  Where both instances are present and neither holds the entitlement, they shall
+  reach the same answer without referring it, and shall reach it whichever
+  started first.
+  \rationale{Both hold both identities and both generations, so both compute the
+  same result from the same inputs. Referring it instead makes the venue wait on
+  a component that, having just started itself, is the least informed party
+  present.}
+  \covers{ha_test:36, ha_test:37}
+\end{requirement}

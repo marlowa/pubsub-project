@@ -1,0 +1,93 @@
+\subsection{The matching engine pair}
+\label{sec:ha:enabled:me}
+
+Two matching engines run. One acts; the other holds a replica of the set of open
+orders, built from the same records in the same order.
+
+\subsubsection{What state it holds}
+\label{sec:ha:enabled:me:state}
+
+The set of open orders and the sequence number it is current to ---
+\cref{sec:ha:disabled:me:state} --- held twice. The engine keeps no log of its
+own in either configuration: the record of what was taken belongs to the
+sequencer, and what the engine holds is the consequence of it.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:enabled:me:durable}
+
+In the other instance, kept current by the same stream. This is the copy that
+\cref{sec:ha:disabled:me:durable} says does not exist when the configuration is
+disabled, and its absence there is why a checkpoint is needed at all.
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:enabled:me:recovery}
+
+It reports the sequence number its replica has reached, receives everything
+committed after it, applies that silently, and begins acting.
+
+\textbf{This is the same operation as \cref{sec:ha:disabled:me:recovery}}, and
+the subsection is short for that reason. A restarting instance learns its
+starting number from a checkpoint; a promoted instance knows it from the replica
+it has been maintaining. Nothing else about the operation differs, which is why
+the disabled configuration is worth getting right first: it builds the mechanism
+that this one uses.
+
+The engine differs from the sequencer in one respect. A sequencer pair settles
+leadership between themselves in both directions, because both hold both
+generations at the same moment. A matching engine only ever \emph{gives}
+leadership up: it adopts the follower position on its peer's word and takes the
+generation it is given, and never issues one. Deferring cannot create a second
+instance acting, whatever the peer is confused about, which is what makes acting
+on the peer's word alone safe.
+
+\subsubsection{What the member is told}
+\label{sec:ha:enabled:me:member}
+
+\begin{requirement}{R-0073}{An open order survives a failover}
+  An order open before leadership moved shall be open after it, on the same
+  terms, and shall remain cancellable by the member that placed it. Where the set
+  cannot be recovered, \reqref{R-0020} applies instead and every order the venue
+  can still name is cancelled to its member.
+  \rationale{\reqref{R-0018} requires this of a restart. A member that keeps its
+  orders when a process dies and loses them when a machine dies is being given a
+  worse outcome by the configuration that exists to give it a better one.
+
+  The two requirements are a hierarchy rather than alternatives: recover what can
+  be recovered, and disclaim what cannot. That keeps what made cancelling
+  attractive --- the member is told exactly where it stands --- without paying
+  for it when the venue has the orders and knows it does.}
+  \uncovered{scenario 21 asserts the fallback, and nothing asserts this}
+\end{requirement}
+
+\begin{gap}{}
+  A promoted matching engine cancels the orders that were open, whether or not it
+  could have recovered them. Under the requirement above that is the fallback
+  path, and the venue takes it every time. The behaviour was settled before
+  promotion was known to recover the set reliably --- which it has since been
+  measured to do --- and was not revisited afterwards.
+\end{gap}
+
+\begin{requirement}{R-0074}{An instance that gives up leadership cannot thereby create a second one}
+  An instance shall adopt the follower position only on its peer's assertion that
+  the peer leads, only while itself holding no position, and only where the
+  generation offered is not older than one it has already seen.
+  \rationale{Giving up a position cannot produce two instances acting, whatever
+  the peer is mistaken about, which is what makes a one-way announcement
+  sufficient here where the sequencer needs an exchange.}
+  \uncovered{no scenario offers a stale generation to an instance holding no position}
+\end{requirement}
+
+\begin{requirement}{R-0075}{The venue keeps working when the acting engine is lost}
+  Members shall continue to be able to place and cancel orders across the loss of
+  the instance that was acting.
+  \covers{ha_test:16}
+\end{requirement}
+
+\begin{requirement}{R-0076}{Orders taken while no engine was acting are applied on promotion}
+  An order committed while no instance was acting shall be applied and answered
+  once one is.
+  \rationale{The venue took those orders, so it owes an answer for each. This is
+  the case the disabled configuration cannot serve, because there is no instance
+  holding a position from which to catch up.}
+  \uncovered{no scenario asserts that deferred orders are answered after a promotion}
+\end{requirement}

@@ -1,0 +1,50 @@
+\subsection{Losing a machine}
+\label{sec:ha:enabled:machine_loss}
+
+A machine stops. This is the failure the configuration exists for, and it is a
+combined failure by construction: a machine hosts several components, so losing
+it loses all of them at the same instant.
+
+\subsubsection{What is at risk}
+\label{sec:ha:enabled:machine_loss:risk}
+
+Every component that machine was running, at once, and every position any of them
+held. Nothing on that machine can be restarted, so for each of those groups the
+only remedy is the instance elsewhere.
+
+Two things follow that do not arise when a single process dies. **The surviving
+machine must be able to carry the whole venue**, not the half it was carrying.
+And **the components that decide who may act must not all have been on the
+machine that stopped**, or the venue loses the ability to decide at the moment it
+most needs to.
+
+\subsubsection{What the venue must do}
+\label{sec:ha:enabled:machine_loss:behaviour}
+
+\begin{requirement}{R-0083}{The venue survives the loss of any one machine}
+  Members shall continue to trade across the loss of any single machine,
+  whichever machine it is and whatever it was running.
+  \rationale{Stated for any machine rather than for a nominated one: a deployment
+  that survives losing the secondary and not the primary has not achieved this,
+  and the difference is invisible until the wrong machine fails.}
+  \uncovered{no scenario stops a machine}
+\end{requirement}
+
+\begin{requirement}{R-0084}{No single machine holds enough of the venue to prevent a decision}
+  The instances that decide which component may act shall be placed so that no
+  one machine's loss leaves the venue unable to decide.
+  \rationale{An arbitration pair and its witness on one machine is not an
+  arbitration service; it is a single point of failure with three processes in
+  it.}
+  \uncovered{nothing checks where instances are placed}
+\end{requirement}
+
+\begin{requirement}{R-0085}{The surviving machine can carry the whole venue}
+  A machine shall be able to run everything the venue requires of it after its
+  partner is lost, and not merely its own share.
+  \rationale{A pair sized so that each carries half is a pair that fails
+  together: the survivor inherits the load that killed nothing and is killed by
+  it. Failing over into a condition both machines share converts an outage into a
+  slightly later outage and spends the standby on the way.}
+  \uncovered{no scenario measures the survivor under the whole load}
+\end{requirement}

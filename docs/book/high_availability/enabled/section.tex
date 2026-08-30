@@ -1,4 +1,73 @@
 \section{High availability enabled}
 \label{sec:ha:enabled}
 
-It is not yet written.
+This is the configuration a venue runs in. The switch starts a second instance
+of every component that must be singular --- the sequencer, the matching engine
+and the recorder --- together with the components whose only purpose is to
+decide which of a pair may act: a pair of arbiters and a witness.
+
+It changes nothing about the replicated peers. The authentication services and
+the gateways run the same way in both configurations, for the reason given in
+\cref{sec:ha:disabled:scope}: several of each run at once, none of them leads,
+and there is nothing for an arbiter to decide about them.
+
+\subsection{Two pairs of words, and why they must not be confused}
+\label{sec:ha:enabled:vocabulary}
+
+\textbf{Primary and secondary are permanent names.} They are fixed in
+configuration when an instance is deployed and never change for the life of that
+deployment. They say which instance is preferred when both start together and
+neither has any other claim, and they say nothing else. They are not a statement
+about which instance is doing the work.
+
+\textbf{Leader and follower are positions.} The leader is the instance currently
+entitled to act; the follower is the one that is not. Either configured instance
+may hold either position, and which it holds may change repeatedly over a
+deployment's life.
+
+It follows that \textbf{``the primary is the follower'' is not a contradiction}.
+After one failover it is the ordinary state, and it stays that way until
+something moves leadership again. A design that reads the two pairs as synonyms
+will move leadership back to the primary for no reason beyond its name --- and
+will move it to the instance that has just failed.
+
+The pair must also be able to exchange positions repeatedly. If the secondary is
+promoted and later dies, the primary --- by then the follower --- must be able to
+take over again. A scheme that can only fail over once has postponed an outage
+rather than prevented one.
+
+The terms \emph{active} and \emph{standby} are not used anywhere in this
+document. They are read sometimes as the configured identity and sometimes as
+the position, and that ambiguity is the confusion this section exists to
+prevent.
+
+\subsection{What changes, and what does not}
+\label{sec:ha:enabled:what_changes}
+
+\textbf{What changes} is that the loss of a machine becomes survivable. Where
+\cref{sec:ha:disabled} could only restart what had died and rebuild what it
+held, there is now an instance already holding it.
+
+\textbf{What does not change is the recovery itself.} The most useful result of
+\cref{sec:ha:disabled} was that becoming current after a restart and becoming
+current after a promotion are, for the matching engine, the same operation
+differing only in where the starting point comes from --- a file in one case, a
+replica in the other. That result is what makes this section tractable: it is
+largely about how an instance learns it may act, and about the failures that
+only exist because there are two of them, rather than about a second recovery
+mechanism.
+
+\textbf{What is new} is everything that follows from a second instance existing:
+deciding which of the two may act, ensuring that only one of them believes it,
+detecting that the other has gone, and refusing what an instance sends after its
+entitlement has passed to the other. Those, and the components that exist to
+arbitrate, are the subject of the subsections that follow.
+
+\input{high_availability/enabled/arbiter}
+\input{high_availability/enabled/sequencer}
+\input{high_availability/enabled/matching_engine}
+\input{high_availability/enabled/publishing}
+\input{high_availability/enabled/process_death}
+\input{high_availability/enabled/machine_loss}
+\input{high_availability/enabled/partition}
+\input{high_availability/enabled/failback}

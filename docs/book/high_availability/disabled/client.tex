@@ -1,0 +1,82 @@
+\subsection{The member's own application}
+\label{sec:ha:disabled:client}
+
+A member's application dies and is restarted. This is the only failure in this
+section that is not the venue's, and the venue's obligations are correspondingly
+different: it has nothing to recover, and everything to hold.
+
+It is also the failure the venue is most often subjected to. A member restarts
+its systems on its own schedule, for its own reasons, without telling anybody.
+
+\subsubsection{What state it holds}
+\label{sec:ha:disabled:client:state}
+
+Its own view: which orders it believes are live at the venue, the identifiers it
+has used, and where its side of the conversation had reached. None of this is
+the venue's to keep, and the venue cannot assume any of it survived.
+
+What the venue holds \emph{on the member's behalf} is a different list, and it
+is the subject of the rest of this subsection: the session's numbering, the
+orders open under it, and the terms the member was admitted under.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:disabled:client:durable}
+
+Wherever the member chose to put it, which the venue cannot know and must not
+depend on. A member may return knowing exactly where it was, or knowing nothing
+at all, and both are legitimate.
+
+The consequence is that the venue must be able to answer rather than to assume.
+A returning member that has kept its numbering resumes; one that has lost it
+says so and starts afresh; and either way it must be able to establish what the
+venue is holding for it --- which it currently cannot, as recorded at
+\cref{sec:ha:disabled:gateway:member}.
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:disabled:client:recovery}
+
+It connects, logs on, and either resumes its numbering or asks to restart it. The
+venue supplies what it remembers of the session, and the member reconciles its own
+view against what the venue reports.
+
+\subsubsection{What the member is told}
+\label{sec:ha:disabled:client:member}
+
+\begin{requirement}{R-0054}{A member that returns in time finds its orders untouched}
+  Where a member's connection ends unexpectedly and the same comp id logs on
+  again within the period provisioned for it, none of that member's orders shall
+  have been cancelled.
+  \rationale{The period exists so that a member's own restart is a reconnection
+  rather than an event. Cancelling and then having the member replace the orders
+  costs it its place and tells the market something that did not happen.}
+  \covers{ha_test:19}
+\end{requirement}
+
+\begin{requirement}{R-0055}{A member that does not return has its orders cancelled as it asked, and is told when it comes back}
+  Where the period expires without the member returning, the orders it asked to
+  have cancelled shall be cancelled, and the reports of those cancellations
+  shall be delivered to it when it next connects.
+  \rationale{The member configured this to bound its exposure while it is
+  absent. Cancelling without recording it for the member's return leaves it to
+  discover the change by inference.}
+  \uncovered{no scenario lets the period expire and then reconnects}
+\end{requirement}
+
+\begin{requirement}{R-0056}{An order meant to outlive the session is not cancelled by a disconnection}
+  An order whose time in force says it survives the trading session shall not be
+  cancelled because the member's connection ended.
+  \rationale{Such an order is by definition intended to outlive the session that
+  placed it. Cancelling it because a socket closed defeats what the member
+  asked for, and it is the one instruction a member cannot restate cheaply.}
+  \uncovered{no scenario places an order that outlives the session and then drops it}
+\end{requirement}
+
+\begin{requirement}{R-0057}{A member that has lost its own numbering can start afresh without losing its orders}
+  A member that asks to restart its numbering shall be given a session numbered
+  from the beginning, and the orders it holds at the venue shall be unaffected.
+  \rationale{Losing a sequence store is an ordinary consequence of a member's
+  own restart, and it says nothing about its orders. Tying the two together
+  would make a member choose between a session it can use and a book it can
+  keep.}
+  \uncovered{no scenario restarts a member's numbering with orders open}
+\end{requirement}

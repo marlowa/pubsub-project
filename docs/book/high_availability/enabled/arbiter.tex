@@ -1,0 +1,138 @@
+\subsection{The arbiter and the witness}
+\label{sec:ha:enabled:arbiter}
+
+Where two instances may act and only one may act at a time, something has to
+decide which. The alternative is that each decides for itself, and a pair with no
+third party cannot tell ``the other is dead'' from ``I cannot see the other''.
+Both answers are available to it, and both are wrong: promote on the second and
+the pair ends up with two instances acting and diverging; decline on the first
+and neither acts, which is the safer failure and often the later noticed,
+because nothing crashes and nothing logs an error --- traffic simply stops.
+
+\textbf{An arbiter is answerable and a consensus protocol is not necessary.} One
+party decides, so only one entitlement exists at a time, and a generation number
+carried on every message lets a receiver refuse an instance whose entitlement has
+since passed. The arbiter is itself made available by running a pair of them plus
+a witness, which is a small and bounded amount of the same problem, solved once
+in a component that holds no venue state.
+
+\subsubsection{What state it holds}
+\label{sec:ha:enabled:arbiter:state}
+
+Which instance leads each group, under which generation, and which instances are
+currently present. It holds nothing about orders, sessions or sequence numbers,
+and that is a deliberate limit rather than an omission: a component that decides
+who may act must not also be a component whose own state can be wrong.
+
+The witness holds less still. It exists to be counted, so that two arbiters can
+reach a majority rather than disagreeing.
+
+\subsubsection{Where the copy that outlives it lives}
+\label{sec:ha:enabled:arbiter:durable}
+
+Nowhere, and deliberately. Persisting the record would give a component that
+holds no venue state a persistence story of its own, and a file written before a
+long outage asserts an incumbent that may since have changed --- so it would need
+validating against the present anyway.
+
+\textbf{What replaces persistence is being told.} Only an instance that leads
+reports itself as leading, so a report is already a claim; the generation settles
+any disagreement between two of them. An arbiter that has restarted therefore
+learns who leads by listening, needs no persistence, and depends on nothing that
+might also have restarted. Asking the surviving arbiter is kept as an
+accelerator, not as the mechanism, because the case that matters most --- both
+arbiters restarted --- is the one with no peer to ask.
+
+\subsubsection{How a restarted instance becomes current}
+\label{sec:ha:enabled:arbiter:recovery}
+
+It starts, and waits to be told. Between starting and being informed it cannot
+distinguish ``nobody leads'' from ``I have not been told yet'', and the
+requirements below say what it must do about that: decline, rather than guess.
+
+\subsubsection{What the member is told}
+\label{sec:ha:enabled:arbiter:member}
+
+Nothing. The arbiter is off the path a member's orders travel, and a member
+should never be able to tell that one exists. Its failures are felt only through
+the components that consult it, which is why the requirements here are stated in
+terms of those components rather than of members.
+
+\begin{requirement}{R-0058}{Two instances of a group are never both entitled to act}
+  At any moment, at most one instance of a group shall hold the entitlement to
+  act.
+  \rationale{This is the property the arbiter exists to provide, and the one
+  from which the rest of this subsection follows. Two instances acting on the
+  same state diverge, and nothing afterwards can say which of them was right.}
+  \uncovered{no scenario asserts the property directly, only particular routes to it}
+\end{requirement}
+
+\begin{requirement}{R-0059}{An arbiter that has not been told declines rather than guesses}
+  An arbiter that holds no record for a group shall decline to decide for it,
+  and shall say that it is declining.
+  \rationale{Having just started, an arbiter cannot tell a group with no leader
+  from a group it has not yet heard about. Guessing produces the second leader
+  the arbiter exists to prevent; declining costs the asking component a retry.}
+  \uncovered{no scenario asks a freshly started arbiter about an unknown group}
+\end{requirement}
+
+\begin{requirement}{R-0060}{Silence from an arbiter is not read as the absence of one}
+  A component that asks and hears nothing shall ask again before concluding that
+  no arbiter exists.
+  \rationale{A silent arbiter may be one deliberately declining under
+  \reqref{R-0059}. Acting on the assumption that nobody is listening, against a
+  decision that was being withheld, produces exactly the second leader the
+  decline was protecting.}
+  \uncovered{no scenario makes an arbiter decline while a component is asking}
+\end{requirement}
+
+\begin{requirement}{R-0061}{Entitlement is held under a lease and lapses unless renewed}
+  An instance's entitlement to act shall expire unless it is renewed, and the
+  arbiter shall stop honouring a record whose holder is no longer present.
+  \rationale{A record that is believed indefinitely is not a lease but a
+  statement about something that was true once. An instance that holds its
+  connection open and stops renewing is, from the outside, indistinguishable
+  from a healthy one, so presence alone cannot be the test.}
+  \uncovered{no scenario stops a leader renewing while it stays connected}
+\end{requirement}
+
+\begin{requirement}{R-0062}{An instance already acting keeps its entitlement when another returns}
+  Where an instance holds the entitlement and is still present, an instance
+  rejoining the group shall be told to follow, whatever its configured name.
+  \rationale{Preferring the configured primary at this point moves the
+  entitlement for no reason but a name --- and moves it to the instance that has
+  just failed, away from one that is serving. The configured preference is a
+  cold-start tie-break and nothing more.}
+  \covers{ha_test:24, ha_test:25}
+\end{requirement}
+
+\begin{requirement}{R-0063}{Losing one arbiter, or the witness, changes nothing}
+  The failure of a single arbiter, or of the witness, shall not move any
+  group's entitlement and shall not interrupt the venue.
+  \rationale{The arbiter is made available by redundancy rather than by being
+  watched, which is what stops the question ``who watches the watcher'' from
+  regressing. If losing one mattered, something would have to supervise it, and
+  that thing would need supervising.}
+  \covers{ha_test:2, ha_test:4, ha_test:5, ha_test:33}
+\end{requirement}
+
+\begin{requirement}{R-0064}{A generation is never issued twice, and never goes backwards}
+  Each grant of entitlement shall carry a generation greater than every
+  generation the venue has used, and that number shall survive the restart of
+  whatever issued it.
+  \rationale{The generation is what lets a receiver refuse a superseded sender.
+  Held only in memory it restarts at the beginning, so a pair restarted together
+  agree a generation the venue has already spent --- and a message left over
+  from the earlier one compares as current.}
+  \uncovered{no scenario restarts every instance of a group together}
+\end{requirement}
+
+\begin{requirement}{R-0065}{An instance whose entitlement has passed has what it sends refused}
+  A receiver shall refuse a message carrying a generation older than the newest
+  it has accepted for that group.
+  \rationale{This is the whole of the fencing. A stale instance is not stopped
+  and is not required to notice anything; it is simply refused at every
+  interaction it attempts, which needs no hardware and no agreement from the
+  instance being fenced.}
+  \uncovered{no scenario sends from an instance whose entitlement has passed}
+\end{requirement}

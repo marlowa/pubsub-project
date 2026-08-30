@@ -1,0 +1,57 @@
+\subsection{A process dies while its peer is present}
+\label{sec:ha:enabled:process_death}
+
+A component dies on a machine that is otherwise healthy, and the launcher
+restarts it, while a second instance of the same component is running elsewhere.
+This is the case where the two configurations meet, and getting it wrong costs
+more than it appears to.
+
+\subsubsection{What is at risk}
+\label{sec:ha:enabled:process_death:risk}
+
+Not the venue's ability to trade --- the peer can act, so trading continues
+whatever is decided. What is at risk is \textbf{the pair}.
+
+If the peer promotes, the venue is served by one instance until somebody restores
+the other, and it carries an unbounded exposure to a second failure for as long
+as that takes. If the launcher restarts the dead instance instead, the pair is
+whole again in seconds and nothing was lost.
+
+A machine that has died cannot be restored by anything the venue does, so
+promoting is the only remedy. A process that has died on a living machine can be,
+so promoting throws away a recovery that was available. Treating the two as one
+failure is what makes a recoverable event cost resilience.
+
+\subsubsection{What the venue must do}
+\label{sec:ha:enabled:process_death:behaviour}
+
+\begin{requirement}{R-0080}{A process death on a healthy machine does not cost the pair}
+  Where a component dies and is restarted on a machine that has not failed, the
+  venue shall end with two instances running, as it began.
+  \rationale{The measure is whether the pair is whole again, not whether the
+  venue kept trading --- which a promotion achieves on its own while leaving one
+  instance down and nobody watching for the second failure.}
+  \uncovered{no scenario asserts the pair is whole afterwards, only that trading continued}
+\end{requirement}
+
+\begin{requirement}{R-0081}{The peer does not promote while a restart could still succeed}
+  An instance that has lost contact with the acting instance shall wait, before
+  seeking to act, for at least as long as a supervised restart takes.
+  \rationale{Waiting less fails the venue over for a failure that did not need
+  it. Waiting much more tolerates a genuinely dead machine for longer than it
+  should be. The period is therefore whatever a restart actually takes plus a
+  margin, which cannot be known until restarts have been timed --- so it is
+  measured rather than chosen, and it must be measured again when the components
+  change.}
+  \covers{ha_test:26, ha_test:27, ha_test:28}
+\end{requirement}
+
+\begin{requirement}{R-0082}{An instance that keeps failing does not disturb a healthy peer}
+  A restarted instance shall not take the entitlement to act from a peer that
+  holds it and is present.
+  \rationale{Without this, an instance failing repeatedly takes leadership on
+  each restart, dies, and hands it back --- disrupting a peer that was working
+  perfectly well, once per failure. \reqref{R-0062} states the arbiter's side of
+  this; this is the instance's.}
+  \covers{ha_test:29, ha_test:30, ha_test:31}
+\end{requirement}

@@ -133,7 +133,10 @@ failovers a test contrives.
   unsolicited cancel for every order it can still name, and shall say that it
   cannot name the rest.
   \rationale{A member's view converges on the venue's only if the venue reports
-  what it has lost. Ceasing to mention an order is not a report of anything.}
+  what it has lost. Ceasing to mention an order is not a report of anything.
+
+  This is the fallback beneath \reqref{R-0073}, not an alternative to it: it
+  applies where recovery was attempted and could not complete.}
   \uncovered{the venue sends nothing in this case}
 \end{requirement}
 
