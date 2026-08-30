@@ -1693,13 +1693,14 @@ to every check that exists.
 |---|---|
 | Restart the matching engine with orders open, and assert they are still open | R-0018, and the measured loss above |
 | Restart every instance of a group together | R-0064 --- the generation must not restart at the beginning, which is where a pair agrees a generation the venue has already spent |
-| Send from an instance whose entitlement has passed | R-0065 --- the fencing itself is untested, and it is the whole of what replaced hardware fencing |
+| ~~Send from an instance whose entitlement has passed~~ | **Done 2026-08-30**, scenario 49: the leader is frozen, the peer takes over, and the leader is let run again holding a superseded generation. Every message it sends is refused. Covers R-0065 |
+| Expire a lease while its holder keeps its sockets open | R-0061 --- scenario 49 produces the condition but the takeover it asserts is driven by the peer heartbeat, not by the lease, so the lease itself is still untested |
 | Ask a freshly started arbiter about a group it has not been told of | R-0059, R-0060 --- declining rather than guessing, and not reading silence as absence |
 | Stop a leader renewing while it holds its connection open | R-0061 --- the lease, which presence alone cannot test |
 | Restart a sequencer with a session unbound, then reconnect that member | R-0011, R-0012 --- the case where a member is silently resumed at the beginning |
 | Restart a gateway at all | Nothing does. Six requirements depend on it |
 | Partition a pair, so neither instance can see the other | R-0086, R-0087 --- the condition the arbiter exists for, and nothing produces it |
-| Stop a machine, rather than a process | R-0083, R-0085 --- every scenario kills processes, so the failure the second machine is for is unexercised |
+| ~~Stop a machine, rather than a process~~ | **Done 2026-08-30**, scenario 48: the arbiter, sequencer and matching engine primaries killed together and none restarted. Covers R-0083. It does not yet cover R-0085, since the survivor is not put under the whole load |
 | Partition a pair in one direction only | R-0072 and R-0086 both apply at once, and the window is closed only by a new holder reporting itself promptly |
 | Withhold a record during a catch-up | R-0101 --- a component that silently misses one is wrong and believes it is current |
 | Rewrite scenario 21 | It asserts that a promoted engine cancels what was open. Under R-0073 that is the fallback, so it should assert the fallback, and something new should assert that orders survive |

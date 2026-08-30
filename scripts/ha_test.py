@@ -460,6 +460,68 @@ class KillStep(NamedTuple):
     leader_markers: tuple | None = None
 
 
+class MachineKillStep(NamedTuple):
+    """
+    Every process a machine was running, killed together and left dead.
+
+    A machine cannot be stopped in an environment that has one, so this is the
+    venue's view of the event rather than the event itself: several components
+    stop at the same instant and none of them come back. That is what
+    distinguishes it from KillStep, which removes one component while the rest
+    of its machine carries on -- the case every other scenario in this file
+    covers, and the reason none of them exercises the failure a second machine
+    exists for.
+
+    proc_names:    every process on the machine, killed in one pass with no
+                   waiting in between.
+    ready_log_name: a log to poll for the survivors taking over, or None.
+    ready_markers:  markers that must all appear on one line of that log.
+    """
+    proc_names: tuple
+    ready_log_name: str | None
+    ready_markers: tuple
+    ready_timeout: float
+    settle_secs: float
+
+
+class IsolateStep(NamedTuple):
+    """
+    Stop a process without killing it, let its peer take over, then let it run
+    again holding an entitlement that has since passed to the other instance.
+
+    A partition cannot be produced on one machine without privileges the test
+    does not have, so this produces the condition a partition leads to, which is
+    the part that matters: an instance that is alive, believes it may act, and is
+    wrong.  Freezing it also reproduces the case a lease exists for -- the
+    process keeps its sockets open while renewing nothing, so presence alone
+    still reports it as healthy.
+
+    Nothing else in this file produces a live instance holding a superseded
+    entitlement, which is what the generation check on every message exists to
+    refuse.
+
+    The assertion is NOT that the resumed instance learns it has been superseded.
+    It has no way to: freezing it tears down none of its connections, so no status
+    is exchanged and nothing tells it anything.  It wakes still believing it may
+    act and says so on the wire.  What must hold is that saying so achieves
+    nothing -- every message it sends is refused for quoting a generation that has
+    been superseded, and the instance that took over keeps the entitlement.
+
+    refusal_markers:   markers on the SURVIVOR's log showing it refused what the
+                       resumed instance sent.  This is the assertion.
+    forbidden_markers: markers that must NOT appear on the survivor's log
+                       afterwards -- it must not give the entitlement back.
+    """
+    proc_name: str
+    takeover_log_name: str
+    takeover_markers: tuple
+    takeover_timeout: float
+    refusal_markers: tuple
+    refusal_timeout: float
+    forbidden_markers: tuple
+    settle_secs: float
+
+
 class RestartStep(NamedTuple):
     """
     One kill-and-restart action within a scenario.
@@ -2649,6 +2711,82 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         steps=[],
     ),
+
+    # 48 -- a machine stops.
+    #
+    # Every scenario before this one kills a process, which models a component
+    # failing on a machine that is still there.  None of them models the failure
+    # the second machine exists for: the machine itself stopping, taking
+    # everything on it at the same instant, with nothing to restart.
+    #
+    # The split assumed here puts the arbitration pair's primary, the sequencer
+    # primary and the matching engine primary on the machine that stops.  The
+    # witness is deliberately NOT on it: an arbitration pair and its witness on
+    # one machine is a single point of failure with three processes in it, which
+    # the specification requires a deployment not to be (R-0084).  The gateway
+    # is likewise elsewhere, so that the member's session survives the machine
+    # and the venue's ability to trade can be observed at all.
+    Scenario(
+        number=48,
+        short_name="machine_loss",
+        description="A machine stops, taking every component on it at once",
+        expected_outcome=(
+            "the sequencer and matching engine on the surviving machine take "
+            "over, the member's session is unaffected, and recovery orders are "
+            "answered -- with nothing on the lost machine restarted"
+        ),
+        me_ha=True,
+        # In-flight orders would advance the promoted secondary's counter during
+        # reconciliation, as in scenario 16.
+        orders_during_override=0,
+        steps=[],
+        extra_steps=[
+            MachineKillStep(
+                proc_names=("arbiter_primary", "sequencer_primary", "matching_engine_primary"),
+                ready_log_name="matching_engine_secondary.log",
+                ready_markers=("MatchingEngineThread:", "adopting LEADER role"),
+                ready_timeout=45.0,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+        ],
+    ),
+
+    # 49 -- an instance that was unreachable comes back still believing it leads.
+    #
+    # The condition a partition produces, reached by freezing the leader rather
+    # than by breaking a network the test cannot touch.  While it is stopped it
+    # holds every socket it had and renews nothing, which is precisely the case
+    # a lease exists for: presence still reports it as healthy, and only the
+    # lease expiring says otherwise.
+    #
+    # It is then let run again, holding an entitlement that has passed to the
+    # other instance.  Nothing else in this file produces that, and it is what
+    # the generation carried on every message exists to refuse -- the mechanism
+    # this venue uses in place of removing the node by force.
+    Scenario(
+        number=49,
+        short_name="superseded_instance_returns",
+        description="A frozen leader is resumed after its peer has taken over",
+        expected_outcome=(
+            "the peer takes over while the leader is stopped, and everything the "
+            "leader sends on waking is refused for quoting a generation that has "
+            "been superseded -- the peer keeping the entitlement throughout"
+        ),
+        orders_during_override=0,
+        steps=[],
+        extra_steps=[
+            IsolateStep(
+                proc_name="sequencer_primary",
+                takeover_log_name="sequencer_secondary.log",
+                takeover_markers=(_SEQ_ROLE, _TO_LEADER),
+                takeover_timeout=45.0,
+                refusal_markers=("SequencerThread:", "stale peer", "ignoring"),
+                refusal_timeout=30.0,
+                forbidden_markers=(_SEQ_ROLE, "-> follower"),
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -3826,6 +3964,107 @@ def do_kill_step(
     return True, secondary_name, elapsed
 
 
+def do_machine_kill_step(
+    step: MachineKillStep,
+    proc_by_name: dict[str, subprocess.Popen],
+    log_dir: Path,
+) -> tuple[bool, str, float]:
+    """
+    Kill every named process without waiting between them, then poll for the
+    survivors taking over.  Nothing is restarted: a machine that has stopped
+    does not come back on its own, and a test that restarts these processes is
+    testing something else.
+    """
+    label = ", ".join(step.proc_names)
+    poll_from = file_end(log_dir / step.ready_log_name) if step.ready_log_name else 0
+
+    log(f"  SIGKILL -> every process on one machine: {label}")
+    killed = []
+    for name in step.proc_names:
+        proc = proc_by_name.get(name)
+        if proc is None:
+            die(f"machine kill: '{name}' was never started")
+        if proc.poll() is not None:
+            die(f"machine kill: '{name}' had already exited before the kill")
+        proc.kill()
+        killed.append((name, proc))
+
+    for name, proc in killed:
+        proc.wait()
+    log(f"  {len(killed)} process(es) confirmed dead, and none will be restarted")
+
+    if step.ready_log_name is None:
+        time.sleep(step.settle_secs)
+        return True, label, 0.0
+
+    markers = " + ".join(repr(m) for m in step.ready_markers)
+    log(f"  Waiting for {step.ready_log_name}: {markers} (timeout {step.ready_timeout:.0f}s) ...")
+    found, elapsed, _ = poll_log_for(
+        log_dir / step.ready_log_name, *step.ready_markers,
+        timeout=step.ready_timeout, from_byte=poll_from,
+    )
+    if not found:
+        die(f"machine kill: nothing on the surviving machine took over within {step.ready_timeout:.0f}s")
+    log(f"  the surviving machine took over ({elapsed:.1f}s)")
+    time.sleep(step.settle_secs)
+    return True, label, elapsed
+
+
+def do_isolate_step(
+    step: IsolateStep,
+    proc_by_name: dict[str, subprocess.Popen],
+    log_dir: Path,
+) -> tuple[bool, str, float]:
+    """Freeze the named process, wait for its peer to take over, then let it run again."""
+    proc = proc_by_name.get(step.proc_name)
+    if proc is None or proc.poll() is not None:
+        die(f"isolate: '{step.proc_name}' is not running")
+
+    own_log = log_dir / f"{step.proc_name}.log"
+    resume_from = 0
+    takeover_from = file_end(log_dir / step.takeover_log_name)
+
+    log(f"  SIGSTOP -> {step.proc_name} (PID {proc.pid}): alive, holding its sockets, renewing nothing")
+    os.kill(proc.pid, signal.SIGSTOP)
+
+    markers = " + ".join(repr(m) for m in step.takeover_markers)
+    log(f"  Waiting for {step.takeover_log_name}: {markers} (timeout {step.takeover_timeout:.0f}s) ...")
+    found, elapsed, _ = poll_log_for(
+        log_dir / step.takeover_log_name, *step.takeover_markers,
+        timeout=step.takeover_timeout, from_byte=takeover_from,
+    )
+    if not found:
+        os.kill(proc.pid, signal.SIGCONT)
+        die(f"isolate: the peer did not take over within {step.takeover_timeout:.0f}s")
+    log(f"  the peer took over ({elapsed:.1f}s) while {step.proc_name} still believed it was entitled to act")
+
+    survivor_log = log_dir / step.takeover_log_name
+    refusal_from = file_end(survivor_log)
+    log(f"  SIGCONT -> {step.proc_name}: it wakes still believing it may act, and says so on the wire")
+    os.kill(proc.pid, signal.SIGCONT)
+
+    markers = " + ".join(repr(m) for m in step.refusal_markers)
+    log(f"  Waiting for the survivor to refuse it: {markers} (timeout {step.refusal_timeout:.0f}s) ...")
+    found, refuse_elapsed, _ = poll_log_for(
+        survivor_log, *step.refusal_markers,
+        timeout=step.refusal_timeout, from_byte=refusal_from,
+    )
+    if not found:
+        die("isolate: the survivor never refused the superseded instance -- either it accepted what "
+            f"it sent, or the instance sent nothing, within {step.refusal_timeout:.0f}s")
+    log(f"  the survivor refused it on its superseded generation ({refuse_elapsed:.1f}s)")
+
+    time.sleep(step.settle_secs)
+
+    # And the entitlement must not have gone back.
+    tail = survivor_log.read_text(errors="replace")[refusal_from:]
+    for line in tail.splitlines():
+        if all(m in line for m in step.forbidden_markers):
+            die(f"isolate: the survivor gave the entitlement back to a superseded instance: {line.strip()}")
+    log(f"  the survivor kept the entitlement -- checked {len(tail.splitlines())} line(s) since the resume")
+    return True, step.proc_name, elapsed
+
+
 def do_restart_step(
     step: RestartStep,
     proc_by_name: dict[str, subprocess.Popen],
@@ -3952,6 +4191,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             return s.proc_name + (" [failover expected]" if s.secondary_log_name else "")
         if isinstance(s, RestartStep):
             return f"RESTART:{s.proc_name}"
+        if isinstance(s, IsolateStep):
+            return f"ISOLATE:{s.proc_name}"
+        if isinstance(s, MachineKillStep):
+            return "MACHINE:" + "+".join(s.proc_names)
         if isinstance(s, InterimOrdersStep):
             return f"({s.count_batches * 1000} interim orders)"
         if isinstance(s, VerifyStep):
@@ -4377,6 +4620,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 failover_occurred, label, elapsed = do_kill_step(
                     step, proc_by_name, log_dir, args.failover_timeout,
                 )
+                kill_results.append((failover_occurred, label, elapsed))
+                phase4_results.append(("kill", failover_occurred, label, elapsed))
+            elif isinstance(step, IsolateStep):
+                failover_occurred, label, elapsed = do_isolate_step(step, proc_by_name, log_dir)
+                kill_results.append((failover_occurred, label, elapsed))
+                phase4_results.append(("kill", failover_occurred, label, elapsed))
+            elif isinstance(step, MachineKillStep):
+                failover_occurred, label, elapsed = do_machine_kill_step(step, proc_by_name, log_dir)
                 kill_results.append((failover_occurred, label, elapsed))
                 phase4_results.append(("kill", failover_occurred, label, elapsed))
             elif isinstance(step, RestartStep):

@@ -15,6 +15,10 @@ $(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty')
 	$(LATEX) $(JOB).tex
 
 check: $(JOB).pdf
+	@! grep -q 'Reference.*undefined\|Citation.*undefined' $(JOB).log || \
+	  { echo "undefined cross-references:"; grep -o "Reference \`[^']*' on page [0-9]*" $(JOB).log; exit 1; }
+	@! grep -q 'multiply defined' $(JOB).log || \
+	  { echo "duplicate labels:"; grep -o "Label \`[^']*' multiply defined" $(JOB).log; exit 1; }
 	python3 $(CHECK) $(JOB).req
 
 # A plain-text copy, for tools that will not take a PDF.  Goes through HTML so
