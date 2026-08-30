@@ -61,6 +61,12 @@ number the day has seen, and the engine needs something of its own.
 **A memory-mapped region of fixed-size slots, one per open order**, separate from
 the engine's own containers and from the pool allocator.
 
+The region itself is `pubsub_itc_fw::MappedSlotStore`, which knows nothing about
+orders: it holds equally sized records, hands out and takes back slots by index,
+carries the published position, and refuses a file written with a different
+record size or slot count. What a record contains is the matching engine's
+business, described below.
+
 ### The slot
 
 Holds the order's identity, the session that placed it, its terms, a live flag,
@@ -183,7 +189,9 @@ could not provide.
 1. Map the region and read the published position, N.
 2. Scan for live slots, **ignoring any whose sequence number is above N**.
 3. Rebuild the engine's ordinary in-memory structures from those slots, allocated
-   as they are today.
+   as they are today. A slot stamped with sequence number zero is not live work:
+   a new region publishes zero, so trusting such a slot would recover a record
+   nothing had settled.
 4. **Rebuild the free list from the complement of the live set.** The on-region
    free list is never trusted: it is mutated on every accept and removal, so a
    crash can leave it holding a dangling index or a cycle. The scan is already
@@ -193,6 +201,12 @@ could not provide.
 
 Step 2 is O(region size), and the region is sized to the peak open orders, which
 is the bound (d) asks for.
+
+**Touching the whole region first.** Mapping a file reserves addresses and reads
+nothing, so the delay of fetching each page falls on whoever touches it first.
+The engine touches every page before it reports itself ready, which is R-0121;
+the region provides `warm()` for it. After a recovery the scan has already
+touched everything, so the cost is paid either way and the only question is when.
 
 ### Crash consistency
 
@@ -212,7 +226,10 @@ and that the enabled configuration's answer to it is the other machine.
 ## When the region cannot be used
 
 Absent, damaged, or written by a different build: it is treated as no region at
-all, under R-0102. The engine then cannot name what it held, and cannot cancel
+all, under R-0102. A region whose header does not describe what the engine is
+configured to read is refused outright rather than read as though it did, because
+reading it the wrong way round produces orders that are wrong in ways nothing
+downstream can detect. The engine then cannot name what it held, and cannot cancel
 what it cannot name.
 
 **The fallback is the sequencer's record.** It holds every order and every
@@ -242,10 +259,8 @@ prevent.
 ## Still to be decided or measured
 
 - **How the region is sized.** It must hold the peak simultaneously open orders,
-  which nobody has measured.
-- **Whether to pre-fault it at start-up.** Doing so keeps major faults off the
-  hot path, at the cost of making the whole region resident even when the book is
-  small. It is a decision rather than a side effect.
+  which nobody has measured. It is configured rather than derived, and the
+  environment templates carry the figure; a million is what development uses.
 - **What a slot write costs** against the engine's existing work, and whether
   cold faults on a large region are visible in the latency profile.
 - **Whether the kernel's background flushing** produces write bursts a
