@@ -373,6 +373,11 @@ admin_listen_port    = 11073
 # generation the venue has already spent. Kept outside the versioned tree in
 # the deployed environments for the same reason the WAL is.
 epoch_state_file    = "/opt/pubsub/var/matching_engine_epoch.state"
+# The open orders, so an order placed before a restart is still open after one.
+# Alongside the epoch file and outside the versioned tree for the same reason.
+order_book_region_path     = "/opt/pubsub/var/matching_engine_open_orders.region"
+# The most orders that may be open at once; the region cannot grow past it.
+order_book_region_capacity = 1000000
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9205
 network_listen_host           = "0.0.0.0"

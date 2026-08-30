@@ -2,6 +2,7 @@ add_executable(matching_engine
         MatchingEngineConfigurationLoader.cpp
         MatchingEngineThread.cpp
         MatchingEngine.cpp
+        OrderBook.cpp
 )
 
 target_include_directories(matching_engine PRIVATE
@@ -22,6 +23,8 @@ target_sources(matching_engine PRIVATE
         MatchingEngineConfigurationLoader.hpp
         MatchingEngineThread.hpp
         MatchingEngine.hpp
+        OrderBook.hpp
+        OrderEntry.hpp
 )
 
 install(TARGETS matching_engine
@@ -41,6 +44,8 @@ install(FILES
 add_executable(matching_engine_tests
         tests/OrderKeyTest.cpp
         tests/CancelClOrdIdTest.cpp
+        tests/OrderBookTest.cpp
+        OrderBook.cpp
 )
 
 target_include_directories(matching_engine_tests PRIVATE
@@ -66,3 +71,7 @@ endif()
 install(TARGETS matching_engine_tests
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
+
+# ── Performance harness ───────────────────────────────────────────────────────
+# What the open-order region costs the engine, against the book as it was.
+add_subdirectory(performance)

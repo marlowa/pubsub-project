@@ -93,6 +93,18 @@ initial_capacity = 262144
 # warning at all. One line per doubling, never per order.
 growth_report_threshold_bytes = 67108864
 
+# Where the open orders live, so that an order placed before a restart is still open, and
+# still cancellable, after one. A mapped region of fixed-size records, one per open order.
+# It survives this process dying and not the machine dying, which is what the second
+# machine is for. See docs/durability/open_order_checkpoint.md.
+region_path = "${matching_engine_order_book_region_path}"
+
+# The most orders that may be open at once. Fixes the size of the region, which cannot
+# grow: an order arriving when every record is taken is refused, because the venue must not
+# accept an order it could not account for after a restart. Size it to the peak orders open
+# at once, not to the day's volume -- a cancelled or filled order releases its record.
+region_capacity = ${matching_engine_order_book_region_capacity}
+
 [command_queue_pool]
 objects_per_slab = ${matching_engine_command_queue_pool_objects_per_slab}
 initial_slabs    = ${matching_engine_command_queue_pool_initial_slabs}

@@ -178,6 +178,26 @@ struct MatchingEngineConfiguration {
      *  many doublings of warning before memory becomes a problem. */
     int64_t order_book_growth_report_threshold_bytes{64L * 1024 * 1024};
 
+    /** @brief File holding the open orders, so that they survive this process dying.
+     *
+     *  A memory-mapped region of fixed-size records, one for each order currently open. It is
+     *  what makes an order placed before a restart still open, and still cancellable, after
+     *  one. Put it where a restart will find it and a reboot need not: it survives the process
+     *  dying rather than the machine dying, which is what the second machine is for.
+     *
+     *  See docs/durability/open_order_checkpoint.md. */
+    std::string order_book_region_path{"var/matching_engine/open_orders.region"};
+
+    /** @brief The most orders that may be open at once.
+     *
+     *  Fixes the size of the region, which cannot grow: an order arriving when every record is
+     *  taken is refused, because the venue must not accept an order it could not account for
+     *  after a restart. Size it to the peak simultaneously open orders and not to the day's
+     *  volume -- an order that has been cancelled or filled releases its record.
+     *
+     *  A million costs roughly 320 MB of address space, which is not resident until touched. */
+    int32_t order_book_region_capacity{1000000};
+
     // Wall clock
 
     /** @brief Clock used to generate transact_time on ExecutionReports when the

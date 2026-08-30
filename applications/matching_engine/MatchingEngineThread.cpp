@@ -148,7 +148,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
     , sequencer_er_conn_id_{}
     , sequencer_er_secondary_conn_id_{}
-    , order_book_(0, OrderKeyHash{}, std::equal_to<OrderKey>{}, &book_growth_reporter_)
+    , order_book_(&book_growth_reporter_)
     , epoch_store_(config.epoch_state_file) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
@@ -168,7 +168,12 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
                    bytes / (1024UL * 1024UL), largest / (1024UL * 1024UL));
     };
 
-    order_book_.reserve(static_cast<size_t>(config_.order_book_initial_capacity));
+    // The region holds the orders themselves and is sized to the most that may be open at
+    // once; the map beside it is sized to the same expectation but may grow past it.
+    const bool region_existed = order_book_.open(config_.order_book_region_path, static_cast<OrderBook::SlotIndex>(config_.order_book_region_capacity),
+                                                 static_cast<size_t>(config_.order_book_initial_capacity));
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: order book region {} at {} holding up to {} order(s)",
+               region_existed ? "opened" : "created", config_.order_book_region_path, order_book_.region_capacity());
 
     // Registered unconditionally: this component has exactly one application thread and
     // names its scope above, so there is no second thread to collide with. The handle is a
@@ -485,7 +490,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     // orders from the failed primary; re-sending would duplicate them.
     if (ha_role_state_ == MeRole::Reconciling) {
         const OrderKey recon_key = OrderKey::make(session, view.cl_ord_id);
-        if (order_book_.count(recon_key)) {
+        if (order_book_.contains(recon_key)) {
             return; // duplicate during replay -- ignore
         }
         OrderEntry recon_entry{};
@@ -499,7 +504,14 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
             recon_entry.set_price(view.price);
         }
         recon_entry.session = session;
-        order_book_.emplace(recon_key, recon_entry);
+        if (!order_book_.add(recon_key, recon_entry, sequence_number)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: RECONCILING cannot apply NOS seq={} cl_ord_id={} -- the order book region is full at {} order(s)",
+                       sequence_number, view.cl_ord_id, order_book_.region_capacity());
+            return;
+        }
+        // Nothing was sent outward for this order, so the position may be published at once.
+        order_book_.publish(sequence_number);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply NOS seq={} cl_ord_id={} book_size={}",
                    sequence_number, view.cl_ord_id, order_book_.size());
         return;
@@ -518,7 +530,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
 
     // Reject duplicate ClOrdID within the same FIX session.
-    if (order_book_.count(order_key)) {
+    if (order_book_.contains(order_key)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: duplicate ClOrdID={} (session comp_id='{}') -- rejecting NOS",
                    view.cl_ord_id, session.comp_id_view());
 
@@ -568,7 +580,42 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     if (view.has_price) {
         entry.set_price(view.price);
     }
-    order_book_.emplace(order_key, entry);
+    if (!order_book_.add(order_key, entry, sequence_number)) {
+        // The region is full, so the venue cannot record this order in a form that would
+        // survive a restart, and must not accept what it cannot account for afterwards. A
+        // refusal is the only one of the three answers a member can act on: growing the region
+        // would fault pages in on this thread, and reusing the oldest record would silently
+        // lose an order the venue had accepted. See docs/durability/open_order_checkpoint.md.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: order book region full at {} order(s) -- rejecting NOS ClOrdID={} (session comp_id='{}')",
+                   order_book_.region_capacity(), view.cl_ord_id, session.comp_id_view());
+
+        pubsub_itc_fw_app::ExecutionReport full_er{};
+        full_er.order_id = "NONE";
+        full_er.exec_id = exec_id;
+        full_er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+        full_er.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+        full_er.symbol = view.symbol;
+        full_er.side = view.side;
+        full_er.leaves_qty = "0";
+        full_er.cum_qty = "0";
+        full_er.avg_px = "0.00";
+        full_er.transact_time = now_ns;
+        full_er.has_cl_ord_id = true;
+        full_er.cl_ord_id = view.cl_ord_id;
+        full_er.has_order_qty = true;
+        full_er.order_qty = view.order_qty;
+        full_er.has_ord_rej_reason = true;
+        // None of the specific reasons fits: nothing is wrong with the order or the member.
+        // The text says what is, because the reason code alone would leave the member looking
+        // for a fault of its own that it will not find.
+        full_er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+        full_er.has_text = true;
+        full_er.text = "the venue is holding as many open orders as it can";
+
+        send_er_to_sequencer(full_er, sequence_number);
+        return;
+    }
 
     // Counted here, on the one path that puts an order on the book. Not at entry to this
     // function: the reconciliation and follower paths return before this point, and a
@@ -650,6 +697,10 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     //
     // A LOAD RUN raises this component's applog_level instead, which is per-component
     // configuration and needs no code change. See perf_run.py --profile.
+    // Last, and only now. The report has left, so a death from here loses nothing: the
+    // record is already in the region and this says how far the region can be trusted.
+    order_book_.publish(sequence_number);
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
                exec_id, view.cl_ord_id, order_book_.size());
 }
@@ -659,7 +710,9 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     // RECONCILING (Slice D): apply the WAL catch-up OCR to the book but do NOT emit an ER.
     if (ha_role_state_ == MeRole::Reconciling) {
         const OrderKey recon_key = OrderKey::make(session, view.orig_cl_ord_id);
-        order_book_.erase(recon_key);
+        order_book_.remove(recon_key);
+        // Nothing was sent outward for this cancel, so the position may be published at once.
+        order_book_.publish(sequence_number);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply OCR seq={} orig_cl_ord_id={} book_size={}",
                    sequence_number, view.orig_cl_ord_id, order_book_.size());
         return;
@@ -679,8 +732,8 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: OrderCancelRequest seq={} ClOrdID={} OrigClOrdID={} Symbol={} Side={}",
                sequence_number, view.cl_ord_id, view.orig_cl_ord_id, view.symbol, static_cast<char>(view.side));
 
-    auto it = order_book_.find(orig_key);
-    if (it == order_book_.end()) {
+    const OrderEntry* found = order_book_.find(orig_key);
+    if (found == nullptr) {
         pubsub_itc_fw_app::ExecutionReport er{};
         er.order_id = "NONE";
         er.exec_id = exec_id;
@@ -707,9 +760,10 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
         return;
     }
 
-    // Order found -- cancel it.
-    const OrderEntry entry = it->second;
-    order_book_.erase(it);
+    // Order found -- cancel it. Copied out first, because removing it releases the record it
+    // was read from and the report below is built from these terms.
+    const OrderEntry entry = *found;
+    order_book_.remove(orig_key);
 
     // Replicate the removal to ME-secondary.
     send_book_update(sequence_number, pubsub_itc_fw_app::BookUpdateType::Remove, session, view.orig_cl_ord_id, nullptr);
@@ -754,6 +808,10 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     er.ord_type = entry.ord_type;
 
     send_er_to_sequencer(er, sequence_number);
+
+    // Last, and only now, for the same reason as on the accept path.
+    order_book_.publish(sequence_number);
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: sent cancel ER OrderID={} ExecID={} ClOrdID={} OrigClOrdID={} book_size={}", order_id, exec_id, view.cl_ord_id,
                view.orig_cl_ord_id, order_book_.size());
@@ -925,11 +983,20 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
         if (view.has_price) {
             entry.set_price(view.price);
         }
-        order_book_.insert_or_assign(key, entry);
+        if (!order_book_.add_or_replace(key, entry, view.seq_no)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: replica cannot apply Add seq={} cl_ord_id={} -- the order book region is full at {} order(s)", view.seq_no,
+                       view.cl_ord_id, order_book_.region_capacity());
+            release_pdu_payload(message);
+            return;
+        }
+        // The follower sends nothing outward, so there is no report to get ahead of.
+        order_book_.publish(view.seq_no);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Add seq={} cl_ord_id={} book_size={}", view.seq_no,
                    view.cl_ord_id, order_book_.size());
     } else if (update_type == pubsub_itc_fw_app::BookUpdateType::Remove) {
-        order_book_.erase(key);
+        order_book_.remove(key);
+        order_book_.publish(view.seq_no);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: replica Remove seq={} cl_ord_id={} book_size={}", view.seq_no,
                    view.cl_ord_id, order_book_.size());
     } else {
@@ -1350,10 +1417,7 @@ void MatchingEngineThread::cancel_all_orders_on_failover() {
     const int64_t now_ns = config_.wall_clock->now_ns();
     size_t cancelled = 0;
 
-    for (const auto& kv : order_book_) {
-        const OrderKey& key = kv.first;
-        const OrderEntry& entry = kv.second;
-
+    order_book_.for_each([&](const OrderKey& key, const OrderEntry& entry) {
         std::array<char, 32> exec_id_buf{};
         const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
         std::array<char, 32> order_id_buf{};
@@ -1387,7 +1451,7 @@ void MatchingEngineThread::cancel_all_orders_on_failover() {
         // originating session's connection id rides on the envelope instead.
         send_er_to_sequencer(er, 0, entry.session);
         ++cancelled;
-    }
+    });
 
     order_book_.clear();
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.

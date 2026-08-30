@@ -179,6 +179,15 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         // Optional: an existing deployment that predates this keeps the default rather
         // than failing to start, and the default is a useful value rather than "off".
         static_cast<void>(toml.get_required("order_book.growth_report_threshold_bytes", config.order_book_growth_report_threshold_bytes));
+        toml.get_required_except("order_book.region_path", config.order_book_region_path);
+        toml.get_required_except("order_book.region_capacity", config.order_book_region_capacity);
+        if (config.order_book_region_path.empty()) {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_path must name a file");
+        }
+        if (config.order_book_region_capacity < 1) {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_capacity must be >= 1, got " +
+                                                        std::to_string(config.order_book_region_capacity));
+        }
         if (config.order_book_initial_capacity < 1) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.initial_capacity must be >= 1, got " +
                                                         std::to_string(config.order_book_initial_capacity));

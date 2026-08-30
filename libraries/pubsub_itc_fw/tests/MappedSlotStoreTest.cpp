@@ -78,7 +78,10 @@ std::vector<uint8_t> pattern(uint8_t seed, uint32_t size = record_size) {
 class MappedSlotStoreTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        std::string tmpl = "/dev/shm/mapped_slot_store_test_XXXXXX";
+        // Under the working directory rather than a machine-wide location: two builds on one
+        // machine must not contend, and a store is meant to be read back off a real
+        // filesystem, which is the thing being tested.
+        std::string tmpl = "mapped_slot_store_test_XXXXXX";
         ASSERT_NE(::mkdtemp(tmpl.data()), nullptr);
         dir_ = tmpl;
         path_ = dir_ + "/store.bin";

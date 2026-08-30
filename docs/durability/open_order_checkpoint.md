@@ -1,6 +1,12 @@
 # Recovering the open orders after a process restart {#open_order_checkpoint}
 
-Design note, 2026-08-30. Nothing here is built.
+Design note, 2026-08-30.
+
+**What is built:** the region itself, as `pubsub_itc_fw::MappedSlotStore`, and the
+matching engine's book on top of it, as `matching_engine::OrderBook` — so an
+open order is written to the region as it is accepted and taken out of it as it
+is cancelled. **What is not:** reading the region back at startup, which is what
+turns the record into a recovery, and the warming and halt behaviour below.
 
 The matching engine's set of open orders exists only in the running process. When
 the process dies they are gone: measured on 2026-08-29 with a thousand orders
@@ -177,6 +183,23 @@ thread and must stay there** — it is what defines the consistency point, and
 moving it to another thread makes the position lag by an arbitrary amount, which
 lengthens the tail and makes R-0108's bound harder to hold.
 
+### The follower keeps one too
+
+The passive instance maintains its replica of the book in a region of its own, on its own
+file, exactly as the leader does. Its updates arrive as BookUpdate messages rather than as
+orders, and it publishes each one as it applies it -- it sends nothing outward, so there is
+no report for a publish to get ahead of.
+
+This is decided rather than incidental. A follower without a region is a follower that has
+to be handed the whole book again every time it restarts, which is the same recovery problem
+one process along; with a region it comes back holding what it held. It costs one region per
+instance and no work on any path that matters, because the follower's path is not the
+latency-sensitive one.
+
+The two regions are separate files and neither reads the other's. They are not a shared
+store and must not become one: what makes the second machine the answer to a lost region is
+that it is a different machine with a different copy.
+
 ### Addressing
 
 Everything in the region is referred to by slot index, never by address —
@@ -256,18 +279,108 @@ The third is the one to be sure of rejecting. It trades a visible refusal for an
 invisible loss, which is the exchange the whole availability chapter exists to
 prevent.
 
+**What the member is told.** An execution report with ExecType and OrdStatus of
+Rejected, and OrdRejReason of Other, because none of the specific reasons fits:
+nothing is wrong with the order, and nothing is wrong with the member that sent
+it. The text says what is — that the venue is holding as many open orders as it
+can — because a reason code of Other on its own leaves a member looking for a
+fault of its own that it will not find.
+
+## What this changes for the availability design
+
+Section 11e of [design_notes.md](../availability/design_notes.md) records three
+defects that had one shape between them: a rule that held while the epoch was
+ephemeral, and stopped holding once it survived a restart. It says a fourth of the
+same kind is likely. This is a second piece of state that now survives a restart,
+so it is worth saying which rules it touches before one of them turns out to be
+the fourth.
+
+**A restarted engine no longer comes back empty.** Section 11 argues that a
+restarted process comes back as a follower, and one of its two consequences is
+that "resuming leadership must wait for reconciliation, not for the decision. A
+restarted process has lost its state; that is why it restarted." With the region
+that premise is no longer true: a restarted engine comes back holding the orders
+it held. The conclusion still stands and for the better reason -- the region is
+current only to its published position, so the tail after it still has to be
+replayed before the engine can lead -- but the reason has changed, and the amount
+of replaying is now bounded by the gap rather than by the whole day.
+
+**Two instances now hold two regions and they may disagree.** That is correct
+rather than a fault: each region records what that instance actually holds, which
+is the only thing an instance can honestly write down. The follower's region is
+what it replicated; the leader's is what it accepted. Promotion reads the promoted
+instance's own region and then reconciles, exactly as before.
+
+**Primary and secondary are permanent names; leader and follower are positions.**
+The region is fixed to the instance, so it follows the permanent name: each
+process has one file, named in its own configuration, and neither reads the
+other's. A region is not a shared store and must not become one -- what makes the
+second machine the answer to a lost region is that it is a different machine with
+a different copy.
+
+**The grace period gets longer.** Section 11 says the follower's wait before
+promoting is measured rather than chosen, and equals what a supervised restart
+actually takes plus a margin. Reading a region back adds to that; the figure is
+below.
+
+## What it costs
+
+Measured 2026-08-30 by `applications/matching_engine/performance/order_book_bench`,
+a million orders accepted and then cancelled, one record of 168 bytes each, so a
+region of 160 MB. Figures in nanoseconds a call, and each carries about 35 ns of
+clock overhead, which the harness reports so it can be read off. Three runs, and
+they agreed to within a few per cent.
+
+| Operation | The book as it was | The book as it is |
+|---|---|---|
+| accept, p50 | 74 | 53 |
+| accept, p90 | 735 | 197 |
+| accept, p99 | 1370 | 853 |
+| accept, mean | 214 | 135 |
+| cancel, p50 | 143 | 138 |
+| cancel, p99 | 300 | 293 |
+
+**Writing the record costs nothing; it pays for itself.** The accept path is
+faster with the region than without it, which is not what one would guess from
+"one more store per order". The reason is that the map no longer holds the orders:
+it holds a four-byte index where it used to hold a 168-byte order, so its table is
+a fortieth of the size, and the incremental migration that runs alongside every
+insert moves a fortieth as much. That saving is larger than a 168-byte copy and an
+aligned store, and the p90 is where it shows: 197 ns against 735.
+
+The cancel path is unchanged within the noise, which is what it should be: it did
+a lookup and a copy before, and it does a lookup and a copy now.
+
+**Cold pages cost 8 microseconds each, and that is what the warming is for.**
+Touching every page of a freshly created region takes about 0.5 ms, because the
+file is all holes and there is nothing on the disk to read. A region left behind by
+a process that died is another matter: written, pushed to the disk, and dropped
+from the page cache, the same walk takes **338 ms, or 8.2 microseconds a page over
+41,015 pages**. That is a disk read per page, and it is exactly the cost R-0121
+exists to keep off the order path. Left unwarmed it would land on whichever orders
+happened to touch each page first.
+
+**Two consequences.**
+
+- The 338 ms is part of what a restart takes, so it belongs in the grace period the
+  follower waits before promoting -- which section 11 of
+  [design_notes.md](../availability/design_notes.md) says is measured rather than
+  chosen. It scales with the size of the region and not with the orders in it, so a
+  region sized for a million orders costs that whether one order was open or a
+  million.
+- A recovery scan touches every page anyway, so after a recovery the walk is not an
+  extra cost, only an earlier one.
+
 ## Still to be decided or measured
 
 - **How the region is sized.** It must hold the peak simultaneously open orders,
   which nobody has measured. It is configured rather than derived, and the
-  environment templates carry the figure; a million is what development uses.
-- **What a slot write costs** against the engine's existing work, and whether
-  cold faults on a large region are visible in the latency profile.
+  environment templates carry the figure; a million is what development uses. The
+  measurement above gives the price of guessing high: 168 bytes and 8 microseconds
+  of restart for each record never used.
 - **Whether the kernel's background flushing** produces write bursts a
-  latency-sensitive process can see.
-
-The first two are choices. The last two are measurements, and the trading-day run
-is where they would show.
+  latency-sensitive process can see. That is a measurement, and the trading-day run
+  is where it would show.
 
 ## See also
 
