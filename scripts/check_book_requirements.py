@@ -6,6 +6,7 @@ Reads ``book.req``, which the book emits as it is typeset, rather than parsing L
 What it enforces:
 
 * every identifier used in the book is listed in ``docs/book/requirement_ids.txt``, and is listed there once;
+* every requirement gives a reason for existing;
 * every scenario a requirement claims to be verified by exists in ``scripts/ha_test.py``;
 * every scenario in ``ha_test.py`` verifies at least one requirement.  Reported, and fatal only under ``--strict``.
 
@@ -33,7 +34,7 @@ def read_requirements(req_path: Path) -> list[dict]:
     for raw in req_path.read_text().splitlines():
         line = raw.strip()
         if line == "BEGIN":
-            current = {"covers": [], "uncovered": ""}
+            current = {"covers": [], "uncovered": "", "rationale": False}
         elif line == "END":
             records.append(current)
         elif line.startswith("ID "):
@@ -42,6 +43,8 @@ def read_requirements(req_path: Path) -> list[dict]:
             current["section"] = line[4:].strip()
         elif line.startswith("TITLE "):
             current["title"] = line[6:].strip()
+        elif line == "RATIONALE":
+            current["rationale"] = True
         elif line.startswith("COVERS "):
             current["covers"] = [c.strip() for c in line[7:].split(",") if c.strip()]
         elif line.startswith("UNCOVERED "):
@@ -120,6 +123,9 @@ def check(req_path: Path) -> tuple[list[str], list[str]]:
             problems.append(f"{where}: not listed in {_LEDGER.name} -- allocate the identifier before using it")
         elif allocated[req_id] == "retired":
             problems.append(f"{where}: the identifier is retired and must not be reused")
+
+        if not req.get("rationale"):
+            problems.append(f"{where}: gives no reason for existing -- add \\rationale saying what goes wrong without it")
 
         if not req.get("covers") and not req.get("uncovered"):
             problems.append(f"{where}: says nothing about what verifies it -- use \\covers or \\uncovered")
