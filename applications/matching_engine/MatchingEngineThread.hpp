@@ -316,9 +316,29 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void publish_book_metrics();
     void handle_peer_role_announcement(const pubsub_itc_fw::EventMessage& message);
 
+    /**
+     * @brief Reads the open orders back out of the region, if a previous process left any.
+     * @param[in] region_existed Whether open() found a region rather than creating one.
+     *
+     * Files every record the region vouches for, takes the position it was current to as the
+     * point reconciliation resumes from, and carries the order numbering forward so a
+     * successor does not reissue one. Where there was nothing to recover it touches the
+     * region instead, so that no order pays a page fault (R-0121).
+     */
+    void recover_open_orders(bool region_existed);
+
     void begin_reconciliation();
     void send_me_position_request();
     void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);
+    /**
+     * @brief Whether the engine can say what it is holding.
+     *
+     * The region vouches for the book. Where it cannot be used the engine holds only what the
+     * sequencer's tail replayed, which is not the same thing, and the answer is to cancel
+     * everything, report each cancel, and halt -- R-0102 and R-0123.
+     */
+    [[nodiscard]] bool book_can_be_vouched_for() const;
+
     void cancel_all_orders_on_failover();
 };
 

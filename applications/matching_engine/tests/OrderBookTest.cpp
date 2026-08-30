@@ -354,6 +354,177 @@ TEST_F(OrderBookTest, ARegionWrittenForADifferentNumberOfOrdersIsRefused) {
     EXPECT_THROW(static_cast<void>(second.open(path_, region_capacity * 2, map_capacity)), pubsub_itc_fw::PubSubItcException);
 }
 
+// ---- what a successor process recovers --------------------------------------------------
+
+TEST_F(OrderBookTest, RecoveringARegionNobodyWroteFindsNothing) {
+    OrderBook book;
+    ASSERT_FALSE(book.open(path_, region_capacity, map_capacity));
+
+    const OrderBook::Recovery found = book.recover();
+
+    EXPECT_EQ(found.orders, 0U);
+    EXPECT_EQ(found.discarded, 0U);
+    EXPECT_EQ(found.published, 0);
+    EXPECT_EQ(book.size(), 0U);
+}
+
+TEST_F(OrderBookTest, AnOrderOpenBeforeTheRestartIsOpenAfterIt) {
+    const OrderKey key = key_for("MEMBER-A", "ORD-001");
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        OrderEntry entry = entry_for(7, "BHP", "100");
+        entry.has_price = true;
+        entry.set_price("42.50");
+        entry.has_time_in_force = true;
+        entry.time_in_force = pubsub_itc_fw_app::TimeInForce::GoodTillCancel;
+        ASSERT_TRUE(before.add(key, entry, 10));
+        before.publish(10);
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    const OrderBook::Recovery found = after.recover();
+
+    EXPECT_EQ(found.orders, 1U);
+    EXPECT_EQ(found.published, 10);
+    EXPECT_EQ(found.highest_order_id_num, 7);
+
+    // The member's question is whether its order is still cancellable, which means the record
+    // has to be filed under the identity the member will name it by.
+    ASSERT_TRUE(after.contains(key));
+    const OrderEntry* recovered = after.find(key);
+    ASSERT_NE(recovered, nullptr);
+    EXPECT_EQ(recovered->order_id_num, 7);
+    EXPECT_EQ(recovered->get_cl_ord_id(), "ORD-001");
+    EXPECT_EQ(recovered->session.comp_id_view(), "MEMBER-A");
+    EXPECT_EQ(recovered->get_symbol(), "BHP");
+    EXPECT_EQ(recovered->get_order_qty(), "100");
+    EXPECT_EQ(recovered->get_price(), "42.50");
+    EXPECT_EQ(recovered->time_in_force, pubsub_itc_fw_app::TimeInForce::GoodTillCancel);
+    EXPECT_TRUE(after.remove(key));
+}
+
+TEST_F(OrderBookTest, EveryMembersOrdersComeBackUnderTheirOwnIdentities) {
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-001"), entry_for(1, "BHP", "100"), 10));
+        ASSERT_TRUE(before.add(key_for("MEMBER-B", "ORD-001"), entry_for(2, "RIO", "200"), 11));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-002"), entry_for(3, "CBA", "300"), 12));
+        before.publish(12);
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    EXPECT_EQ(after.recover().orders, 3U);
+
+    // Two members using the same identifier must not become one order.
+    EXPECT_EQ(after.find(key_for("MEMBER-A", "ORD-001"))->get_symbol(), "BHP");
+    EXPECT_EQ(after.find(key_for("MEMBER-B", "ORD-001"))->get_symbol(), "RIO");
+    EXPECT_EQ(after.find(key_for("MEMBER-A", "ORD-002"))->get_symbol(), "CBA");
+}
+
+TEST_F(OrderBookTest, AnOrderCancelledBeforeTheRestartDoesNotComeBack) {
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-001"), entry_for(1, "BHP", "100"), 10));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-002"), entry_for(2, "RIO", "200"), 11));
+        before.publish(11);
+        before.remove(key_for("MEMBER-A", "ORD-001"));
+        before.publish(12);
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    EXPECT_EQ(after.recover().orders, 1U);
+    EXPECT_FALSE(after.contains(key_for("MEMBER-A", "ORD-001")));
+    EXPECT_TRUE(after.contains(key_for("MEMBER-A", "ORD-002")));
+}
+
+TEST_F(OrderBookTest, AnOrderWrittenAfterTheLastPublishIsDiscarded) {
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-001"), entry_for(1, "BHP", "100"), 10));
+        before.publish(10);
+        // Written, but the process dies before the report leaves, so nothing publishes it.
+        // The sequencer's tail holds this order and will run it again.
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-002"), entry_for(2, "RIO", "200"), 11));
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    const OrderBook::Recovery found = after.recover();
+
+    EXPECT_EQ(found.orders, 1U);
+    EXPECT_EQ(found.discarded, 1U) << "the unfinished record must be reported, not silently dropped";
+    EXPECT_EQ(found.published, 10);
+    EXPECT_TRUE(after.contains(key_for("MEMBER-A", "ORD-001")));
+    EXPECT_FALSE(after.contains(key_for("MEMBER-A", "ORD-002")));
+}
+
+TEST_F(OrderBookTest, ARecoveredBookCanTakeNewOrdersInEveryRecordItFreed) {
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        for (SlotIndex i = 0; i < region_capacity; ++i) {
+            ASSERT_TRUE(before.add(key_for("MEMBER-A", ("ORD-" + std::to_string(i)).c_str()), entry_for(i + 1, "BHP", "100"), 10 + i));
+        }
+        before.publish(10 + region_capacity);
+        // Two of them cancelled, so the region holds two free records that the free list in
+        // the file may or may not be telling the truth about.
+        before.remove(key_for("MEMBER-A", "ORD-0"));
+        before.remove(key_for("MEMBER-A", "ORD-3"));
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    EXPECT_EQ(after.recover().orders, region_capacity - 2);
+
+    // The free list is rebuilt from what the scan found rather than trusted, so exactly the
+    // two released records are available and no more.
+    EXPECT_TRUE(after.add(key_for("MEMBER-B", "NEW-1"), entry_for(101, "RIO", "200"), 200));
+    EXPECT_TRUE(after.add(key_for("MEMBER-B", "NEW-2"), entry_for(102, "RIO", "200"), 201));
+    EXPECT_FALSE(after.add(key_for("MEMBER-B", "NEW-3"), entry_for(103, "RIO", "200"), 202));
+    EXPECT_EQ(after.size(), region_capacity);
+}
+
+TEST_F(OrderBookTest, TheHighestOrderNumberComesBackSoASuccessorDoesNotReissueIt) {
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-001"), entry_for(41, "BHP", "100"), 10));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-002"), entry_for(99, "RIO", "200"), 11));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-003"), entry_for(70, "CBA", "300"), 12));
+        before.publish(12);
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    EXPECT_EQ(after.recover().highest_order_id_num, 99);
+}
+
+TEST_F(OrderBookTest, RecoveryLeavesNothingForWarmingToDo) {
+    {
+        OrderBook before;
+        ASSERT_FALSE(before.open(path_, region_capacity, map_capacity));
+        ASSERT_TRUE(before.add(key_for("MEMBER-A", "ORD-001"), entry_for(1, "BHP", "100"), 10));
+        before.publish(10);
+    }
+
+    OrderBook after;
+    ASSERT_TRUE(after.open(path_, region_capacity, map_capacity));
+    EXPECT_EQ(after.recover().orders, 1U);
+
+    // Warming after a recovery is allowed and does nothing that matters, because the scan has
+    // already touched every page. It must not disturb what was recovered.
+    after.warm();
+    EXPECT_EQ(after.size(), 1U);
+    EXPECT_EQ(after.find(key_for("MEMBER-A", "ORD-001"))->get_symbol(), "BHP");
+}
+
 TEST_F(OrderBookTest, WarmingLeavesTheOrdersAlone) {
     OrderBook book;
     ASSERT_FALSE(book.open(path_, region_capacity, map_capacity));

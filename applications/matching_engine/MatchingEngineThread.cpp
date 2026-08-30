@@ -175,6 +175,8 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: order book region {} at {} holding up to {} order(s)",
                region_existed ? "opened" : "created", config_.order_book_region_path, order_book_.region_capacity());
 
+    recover_open_orders(region_existed);
+
     // Registered unconditionally: this component has exactly one application thread and
     // names its scope above, so there is no second thread to collide with. The handle is a
     // no-op when metrics are disabled, and the application and component tokens come from
@@ -1335,6 +1337,40 @@ void MatchingEngineThread::send_arbiter_heartbeat() {
 
 // WAL reconciliation (Slice D)
 
+void MatchingEngineThread::recover_open_orders(bool region_existed) {
+    if (!region_existed) {
+        // Nothing was left behind, so there is nothing to read and every page of the region is
+        // a hole. Touching them now costs about half a millisecond and means no order pays a
+        // fault later, which is R-0121.
+        order_book_.warm();
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "MatchingEngineThread: no order book region was left behind -- starting with an empty book");
+        return;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    const OrderBook::Recovery found = order_book_.recover();
+    const int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+    // The scan above read every page, so there is nothing left for warm() to do.
+
+    // So that a successor does not hand out an order number the venue has already used. The
+    // counter is what "ME-ORD-N" is formatted from, and a repeated N would name two different
+    // orders in the reports a member reconciles against.
+    order_id_counter_ = std::max(order_id_counter_, found.highest_order_id_num);
+
+    // Where the tail starts. The region is current to what it published and no further, so
+    // everything the sequencer holds after that has still to be applied -- which is the
+    // existing reconciliation path, asked to start here instead of at zero.
+    last_replicated_seq_no_ = found.published;
+
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
+    // and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: recovered {} open order(s) from the region at seq_no={} in {} ms ({} unfinished record(s) discarded)", found.orders,
+               found.published, elapsed_ms, found.discarded);
+}
+
 void MatchingEngineThread::begin_reconciliation() {
     // Cancel the promotion timer (it fired or arbitration is complete).
     cancel_timer(promotion_timeout_timer_id_);
@@ -1400,8 +1436,24 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionAck received -- book reconciled to seq_no={} (book_size={})",
                ack.last_seq_no, order_book_.size());
 
-    // Cancel-on-failover: cancel every live order before resuming as leader.
-    cancel_all_orders_on_failover();
+    // The book is now consistent with the sequencer: what the region vouched for, plus every
+    // record the sequencer held after it. An order still on it is genuinely outstanding, so it
+    // is kept and the member goes on holding what it placed. This is R-0018 and R-0073.
+    //
+    // It used to be cancelled here, every order of it, on every promotion. That was the right
+    // answer while the book could not survive the process holding it: a promoted engine could
+    // not say what it held, and telling every member its orders were gone is better than
+    // holding orders nobody can account for. The region is what changed the answer, by making
+    // the book something the engine can vouch for. See docs/durability/open_order_checkpoint.md
+    // and the cancel-on-failover section of docs/availability/wal_and_ha.md.
+    //
+    // Cancelling everything remains the answer when the region cannot be used, which is R-0102
+    // and R-0123: cancel each, report each, halt. That path is not built yet, so the branch
+    // below is not reached today -- an unusable region currently stops the engine starting
+    // rather than arriving here.
+    if (!book_can_be_vouched_for()) {
+        cancel_all_orders_on_failover();
+    }
 
     // Transition to LEADER -- normal processing begins.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -1409,6 +1461,15 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
                order_book_.size());
     ha_role_state_ = MeRole::Unknown; // clear reconciling so adopt_leader_role proceeds
     adopt_leader_role();
+}
+
+bool MatchingEngineThread::book_can_be_vouched_for() const {
+    // The region is what vouches for the book: it holds the orders themselves, and what it
+    // published says how far they can be trusted. Without it the engine holds whatever the
+    // sequencer's tail happened to replay, which is not the same thing and must not be traded
+    // on. open() refuses a region it cannot read, so today this is true whenever the engine is
+    // running at all; the path that makes it false is R-0102's.
+    return order_book_.is_open();
 }
 
 void MatchingEngineThread::cancel_all_orders_on_failover() {

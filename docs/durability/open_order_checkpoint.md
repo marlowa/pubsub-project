@@ -2,11 +2,11 @@
 
 Design note, 2026-08-30.
 
-**What is built:** the region itself, as `pubsub_itc_fw::MappedSlotStore`, and the
-matching engine's book on top of it, as `matching_engine::OrderBook` — so an
-open order is written to the region as it is accepted and taken out of it as it
-is cancelled. **What is not:** reading the region back at startup, which is what
-turns the record into a recovery, and the warming and halt behaviour below.
+**What is built:** the region itself, as `pubsub_itc_fw::MappedSlotStore`; the
+matching engine's book on top of it, as `matching_engine::OrderBook`, so an open
+order is written to the region as it is accepted and taken out of it as it is
+cancelled; reading the region back at startup; and the warming. **What is not:**
+what to do when the region cannot be used at all, which is the halt below.
 
 The matching engine's set of open orders exists only in the running process. When
 the process dies they are gone: measured on 2026-08-29 with a thousand orders
@@ -116,11 +116,12 @@ is an `IncrementalRehashMap` whose entries reach each other by address.
 
 Slot *i* is at `header_size + i * slot_size`. Index arithmetic and nothing else.
 
-**Indicative size.** With today's limits — 64 characters each for comp id, order
-identifier and symbol, 32 for quantity — a slot is roughly 270 bytes. A region
-for a million simultaneously open orders is therefore around 320 MB mapped, which
-is not resident unless touched. Those limits are generous rather than measured,
-and the record can be tightened if the sizing turns out to matter.
+**Size, as built.** A record is **232 bytes** and a slot is 248 with the store's
+own header, so a region for a million simultaneously open orders is **248 MB**
+mapped, which is not resident unless touched. Most of it is the two identifiers:
+64 characters for the comp id and 64 for the order identifier, both generous
+rather than measured, and both able to be tightened if the sizing turns out to
+matter.
 
 ### What is deliberately not in it
 
@@ -288,6 +289,21 @@ fault of its own that it will not find.
 
 ## What this changes for the availability design
 
+**Cancelling everything on a promotion has stopped.** It was the chosen baseline
+in [wal_and_ha.md](../availability/wal_and_ha.md): a promoted engine issued a
+cancel for every order on the reconciled book, and members resubmitted. That was
+right while the book could not survive the process holding it. The region is what
+changed it. The correctness rule in that document already said what follows --
+"any order still on the reconciled book is genuinely outstanding" -- and the only
+reason to cancel one anyway was that the engine could not vouch for the book it
+had reconstructed. It can now: its own region says what it held and to what
+position, and the sequencer's tail supplies the rest.
+
+So the ordinary path keeps the book, and cancelling everything becomes the answer
+where the region has failed. That is the same answer as before, moved to the case
+that still needs it.
+
+
 Section 11e of [design_notes.md](../availability/design_notes.md) records three
 defects that had one shape between them: a rule that held while the epoch was
 ephemeral, and stopped holding once it survived a restart. It says a fourth of the
@@ -326,58 +342,62 @@ below.
 ## What it costs
 
 Measured 2026-08-30 by `applications/matching_engine/performance/order_book_bench`,
-a million orders accepted and then cancelled, one record of 168 bytes each, so a
-region of 160 MB. Figures in nanoseconds a call, and each carries about 35 ns of
-clock overhead, which the harness reports so it can be read off. Three runs, and
-they agreed to within a few per cent.
+a million orders accepted and then cancelled, one record of 232 bytes each, so a
+region of 221 MB. Figures in nanoseconds a call, and each carries about 10 ns of
+clock overhead, which the harness reports so it can be read off.
 
 | Operation | The book as it was | The book as it is |
 |---|---|---|
-| accept, p50 | 74 | 53 |
-| accept, p90 | 735 | 197 |
-| accept, p99 | 1370 | 853 |
-| accept, mean | 214 | 135 |
-| cancel, p50 | 143 | 138 |
-| cancel, p99 | 300 | 293 |
+| accept, p50 | 76 | 57 |
+| accept, p90 | 772 | 209 |
+| accept, p99 | 1487 | 892 |
+| accept, mean | 243 | 140 |
+| cancel, p50 | 147 | 139 |
+| cancel, p99 | 304 | 295 |
 
 **Writing the record costs nothing; it pays for itself.** The accept path is
 faster with the region than without it, which is not what one would guess from
 "one more store per order". The reason is that the map no longer holds the orders:
-it holds a four-byte index where it used to hold a 168-byte order, so its table is
-a fortieth of the size, and the incremental migration that runs alongside every
-insert moves a fortieth as much. That saving is larger than a 168-byte copy and an
-aligned store, and the p90 is where it shows: 197 ns against 735.
+it holds a four-byte index where it used to hold a 232-byte order, so its table is
+a sixtieth of the size, and the incremental migration that runs alongside every
+insert moves a sixtieth as much. That saving is larger than a 232-byte copy and an
+aligned store, and the p90 is where it shows: 209 ns against 772.
 
 The cancel path is unchanged within the noise, which is what it should be: it did
 a lookup and a copy before, and it does a lookup and a copy now.
 
-**Cold pages cost 8 microseconds each, and that is what the warming is for.**
-Touching every page of a freshly created region takes about 0.5 ms, because the
-file is all holes and there is nothing on the disk to read. A region left behind by
-a process that died is another matter: written, pushed to the disk, and dropped
-from the page cache, the same walk takes **338 ms, or 8.2 microseconds a page over
-41,015 pages**. That is a disk read per page, and it is exactly the cost R-0121
-exists to keep off the order path. Left unwarmed it would land on whichever orders
-happened to touch each page first.
+**A restart on a healthy machine costs about 56 milliseconds.** Measured in
+`scripts/ha_test.py` scenario 50: a thousand open orders recovered from a 248 MB
+region in 56 ms. The pages the dead process wrote are still in the page cache,
+which is the case a process restart on a live machine actually presents.
+
+**When the cache has given them up it costs 457 milliseconds.** Written, pushed
+to the disk, and dropped from the page cache, the same walk takes 457 ms, or
+**8.1 microseconds a page over 56,640 pages** — a disk read per page. That is what
+R-0121's warming exists to keep off the order path. Touching every page of a
+region that was freshly created costs 0.7 ms instead, because the file is all
+holes and there is nothing to read.
 
 **Two consequences.**
 
-- The 338 ms is part of what a restart takes, so it belongs in the grace period the
-  follower waits before promoting -- which section 11 of
+- The restart cost belongs in the grace period the follower waits before
+  promoting, which section 11 of
   [design_notes.md](../availability/design_notes.md) says is measured rather than
-  chosen. It scales with the size of the region and not with the orders in it, so a
-  region sized for a million orders costs that whether one order was open or a
-  million.
-- A recovery scan touches every page anyway, so after a recovery the walk is not an
-  extra cost, only an earlier one.
+  chosen. 56 ms is the ordinary case and 457 ms the worst, and both scale with the
+  size of the region rather than with the orders in it: a region sized for a
+  million orders costs that whether one order was open or a million.
+- A recovery scan touches every page anyway, so after a recovery the warming is
+  not an extra cost, only an earlier one. The engine warms only where there was
+  nothing to recover.
 
 ## Still to be decided or measured
 
 - **How the region is sized.** It must hold the peak simultaneously open orders,
   which nobody has measured. It is configured rather than derived, and the
   environment templates carry the figure; a million is what development uses. The
-  measurement above gives the price of guessing high: 168 bytes and 8 microseconds
-  of restart for each record never used.
+  measurement above gives the price of guessing high: 232 bytes and, when the page
+  cache has gone cold, about 8 microseconds of restart for every 17 records never
+  used.
 - **Whether the kernel's background flushing** produces write bursts a
   latency-sensitive process can see. That is a measurement, and the trading-day run
   is where it would show.

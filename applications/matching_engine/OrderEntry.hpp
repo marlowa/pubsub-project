@@ -63,6 +63,15 @@ struct OrderEntry {
     bool has_expire_time{false};
     int64_t expire_time{};
     bool has_price{false};
+    // The member's own name for this order.
+    //
+    // It is half of the key this entry is filed under, and the map used to hold that key, so
+    // for a while this field was not here. It has to be: a record read back out of the region
+    // after a restart has to say which order it is, and a successor with the session but not
+    // the identifier could not file it, could not answer a cancel for it, and could not name
+    // it in a report. The other half, the session, is above.
+    uint8_t cl_ord_id_len{};
+    std::array<char, max_cl_ord_id_length> cl_ord_id{};
     uint8_t symbol_len{};
     uint8_t order_qty_len{};
     uint8_t price_len{};
@@ -70,6 +79,10 @@ struct OrderEntry {
     std::array<char, max_qty_length> order_qty{};
     std::array<char, max_qty_length> price{};
 
+    void set_cl_ord_id(std::string_view sv) {
+        cl_ord_id_len = static_cast<uint8_t>(std::min(sv.size(), max_cl_ord_id_length));
+        std::memcpy(cl_ord_id.data(), sv.data(), cl_ord_id_len);
+    }
     void set_symbol(std::string_view sv) {
         symbol_len = static_cast<uint8_t>(std::min(sv.size(), max_symbol_length));
         std::memcpy(symbol.data(), sv.data(), symbol_len);
@@ -83,6 +96,9 @@ struct OrderEntry {
         std::memcpy(price.data(), sv.data(), price_len);
     }
 
+    [[nodiscard]] std::string_view get_cl_ord_id() const {
+        return {cl_ord_id.data(), cl_ord_id_len};
+    }
     [[nodiscard]] std::string_view get_symbol() const {
         return {symbol.data(), symbol_len};
     }

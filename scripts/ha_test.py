@@ -532,10 +532,17 @@ class RestartStep(NamedTuple):
     starts fresh, relaunches the process, and polls ready_log_name for a line
     containing ALL of ready_markers.
 
-    resets_me_counter: True when restarting the matching engine, whose
-                       order_id_counter_ resets to 0 on every startup (no
-                       WAL).  Phase 5 adjusts its order-count target and
-                       log-read position accordingly.
+    resets_me_counter: True when restarting the matching engine.  Phase 5 adjusts
+                       its order-count target and log-read position accordingly.
+
+                       The name is now half true and kept because the adjustment
+                       still is.  The counter used to restart at 0 because the
+                       engine held nothing across a restart; it now carries
+                       forward from the highest order number in the recovered
+                       region, so a successor cannot reissue an ME-ORD-N that
+                       already names a different order.  What Phase 5 needs is
+                       unchanged: the log was deleted, so it reads from the
+                       start of a new one.
     settle_secs:       how long to wait after readiness is confirmed.
     """
     proc_name: str
@@ -642,12 +649,11 @@ class Scenario(NamedTuple):
     # killed and the secondary promotes) are confirmed on
     # matching_engine_secondary.log.  Leaves all non-me_ha scenarios untouched.
     #
-    # me_ha scenarios also assert cancel-on-failover ER routing (Phase 5): the ME
-    # stub never matches, so every baseline order rests in the book and replicates
-    # to the secondary; on promotion the secondary cancels the whole book and emits
-    # seq_no=0 cancel ERs that must route to the client via the WalRecord envelope.
-    # The assertion checks a non-empty book was cancelled and no ER was dropped for
-    # a missing conn id.  See run_scenario's "ME-HA: cancel-on-failover" block.
+    # me_ha scenarios also assert what a promotion does to the book (Phase 5): the
+    # ME never matches, so every baseline order rests in the book and replicates to
+    # the secondary; on promotion the secondary keeps that book rather than
+    # cancelling it, because its own region plus the sequencer's tail say what it
+    # holds.  See run_scenario's "ME-HA: the promoted book" block.
     # Components to start under scripts/launch.py, so that killing one has it restarted by a
     # real supervisor rather than by this harness. Needed for any scenario whose subject is
     # what happens when a restart beats a timeout: a harness restarting the process itself
@@ -1373,6 +1379,22 @@ _SCENARIOS: list[Scenario] = [
     # book, emitting exactly one cancel ER per resting order. Those orders came from
     # gateway a, which by then is dead, so every one of those ERs has nowhere to go.
     #
+    # THAT GENERATOR IS GONE, 2026-08-30, and it is why this scenario is now recorded as
+    # failing. A promotion no longer cancels the book: the engine keeps its open orders in
+    # a memory-mapped region, so a promoted instance can say what it holds and an order
+    # still on the reconciled book is genuinely outstanding (R-0073, and
+    # docs/durability/open_order_checkpoint.md). No cancels means no reports, and the
+    # assertions below have nothing to observe.
+    #
+    # Nothing about the venue got worse and nothing this scenario asserts has changed --
+    # there is still no session handover, and reports for a dead instance are still dropped
+    # rather than rerouted. What is missing is a way to produce a report for an order whose
+    # gateway is dead. Two candidates, in preference order:
+    #   1. R-0123's cancel-each-and-halt, which is the remaining user of the seq_no=0 report
+    #      path and will emit exactly this burst when a region cannot be used;
+    #   2. orders in flight across the kill, using the pipeline-full guard scenario 23
+    #      already has, which answers the race objection that ruled this out originally.
+    #
     # Kill order matters: gateway a first, ME primary second. The reverse would let
     # the cancel ERs reach a before it died and prove nothing.
     #
@@ -1397,6 +1419,12 @@ _SCENARIOS: list[Scenario] = [
         ),
         me_ha=True,
         gateway_b=True,
+        expected_failure=(
+            "this scenario has no execution reports left to observe: its generator was the "
+            "cancel burst a promotion used to emit, and a promotion now keeps the book "
+            "(R-0073). The gap it asserts is unchanged and still true -- see the note above "
+            "for the two ways to give it a generator again"
+        ),
         # The FIX session lives on gateway a. Once a is killed there is no session to
         # send through, so Phase 5 has nothing to do.
         orders_during_override=0,
@@ -2802,10 +2830,9 @@ _SCENARIOS: list[Scenario] = [
 
     # 50 -- do a member's open orders survive a restart of the matching engine?
     #
-    # This scenario is expected to fail. It asserts R-0018, which the venue does
-    # not meet: a restarted engine holds nothing, while the gateway and the member
-    # go on believing the orders are open. It is recorded as a failing test rather
-    # than as a note, because a note is read once and a test is run every time.
+    # It asserts R-0018. The engine writes every open order to a memory-mapped
+    # region as it accepts it and reads the region back at startup, so a restarted
+    # engine comes back holding what it held.
     #
     # It asks the member's question rather than an internal one. Dropping the
     # session makes the gateway cancel what it believes is open; the engine either
@@ -2819,10 +2846,6 @@ _SCENARIOS: list[Scenario] = [
             "cancel the gateway sends for it is accepted rather than refused as unknown"
         ),
         assert_open_orders_survive=True,
-        expected_failure=(
-            "the venue holds open orders only in the running matching engine, so a restart "
-            "loses them and the member is not told -- R-0018, and docs/bug_list.md BUG-0064"
-        ),
         orders_during_override=0,
         orders_after_override=0,
         steps=[],
@@ -3052,15 +3075,47 @@ def poll_log_for(log_path: Path, *markers: str,
     return False, time.monotonic() - t0, pos
 
 
+def me_resumed_book_size(log_path: Path, from_byte: int = 0,
+                         timeout: float = 10.0) -> int | None:
+    """Return the order count the ME resumed as leader with, or None if it never said.
+
+    On promotion the ME logs "reconciliation complete at seq_no=S with N order(s) on
+    the book -- resuming as leader". N is what it is holding at the moment it starts
+    serving again, which is the member-visible promise: those orders are still open
+    and still cancellable. Only bytes beyond from_byte are scanned, so this promotion
+    is seen rather than a prior one. Polls up to `timeout` because the logger is
+    asynchronous and the line may lag the event slightly.
+    """
+    marker = "resuming as leader"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if log_path.is_file():
+            with open(log_path, "r", errors="replace") as fh:
+                fh.seek(from_byte)
+                for line in fh.read().splitlines():
+                    if marker in line and " order(s) on the book" in line:
+                        try:
+                            return int(line.split(" with ", 1)[1].split(" order(s)", 1)[0])
+                        except (IndexError, ValueError):
+                            return None
+        time.sleep(LOG_POLL_INTERVAL)
+    return None
+
+
 def me_cancel_on_failover_count(log_path: Path, from_byte: int = 0,
                                 timeout: float = 10.0) -> int:
     """Return N from the ME's cancel-on-failover summary line, or -1 if absent.
 
-    On promotion the ME cancels its whole (replicated) order book and logs
-    "cancel-on-failover complete -- N cancel ER(s) sent, book cleared". N is the
-    number of resting orders that were cancelled. Only bytes beyond from_byte are
-    scanned (so we see this promotion, not a prior run). Polls up to `timeout`
-    because the logger is asynchronous and the line may lag the event slightly.
+    The ME logs "cancel-on-failover complete -- N cancel ER(s) sent, book cleared"
+    when it cancels its whole book. That is no longer what a promotion does: the
+    promoted instance keeps the book its region and the sequencer's tail vouch for.
+    The line belongs to the path taken when the region cannot be used -- cancel each,
+    report each, halt (R-0102, R-0123) -- so a caller checking that a promotion did
+    NOT cancel should pass a short timeout, since it is waiting to confirm an absence.
+
+    Only bytes beyond from_byte are scanned (so we see this promotion, not a prior
+    run). Polls up to `timeout` because the logger is asynchronous and the line may
+    lag the event slightly.
     """
     marker = "cancel-on-failover complete"
     deadline = time.monotonic() + timeout
@@ -3841,6 +3896,32 @@ def clear_fix8_persisted_state() -> None:
             die(f"could not clear the fix8 session store at {path}: {error}")
 
 
+def clear_open_order_regions(prefix: Path) -> None:
+    """Delete the matching engines' open-order regions before a run.
+
+    The region holds the venue's open orders so that they outlive the process holding them,
+    which is exactly what it should do between a death and a restart -- and exactly what a
+    scenario must not inherit from the run before it. Left in place, a scenario starts with the
+    previous scenario's orders resting on the book and with the order numbering carried forward
+    past them, so the baseline waits for an ME-ORD-1000 that will never be issued again.
+
+    A scenario's premise is a venue whose book is empty and whose numbering starts at one. That
+    is a thing the harness has to arrange deliberately, the same way it deletes the clients'
+    session store, because in a deployment finding the previous process's region is the whole
+    point.
+
+    The engine creates the region again at startup when it finds none.
+    """
+    var_dir = prefix / "var"
+    if not var_dir.is_dir():
+        return
+    for path in sorted(var_dir.glob("*open_orders.region")):
+        try:
+            path.unlink()
+        except OSError as error:
+            die(f"could not clear the open-order region at {path}: {error}")
+
+
 def write_no_reset_fix8_config() -> None:
     """The resend scenario's client: instance a, not asking the venue to forget the session,
     prepared to ask for a gap it first sees on the Logon rather than logging off over it, and
@@ -4393,6 +4474,21 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # by another scenario would otherwise decide how long this one waits.
             log("=== Provisioning cancel-on-disconnect with no grace period ===")
             provision_cancel_on_disconnect(FIX8_COMP_ID, 0)
+        else:
+            # Every other scenario needs the baseline orders to KEEP RESTING when a session
+            # drops, because those orders are what a failover promotes with and what a restart
+            # recovers. With no grace period the gateway cancels the lot the instant a session
+            # goes, and the scenario proceeds against an empty book having tested nothing.
+            #
+            # Provisioned rather than inherited. Until 2026-08-31 a scenario that set nothing
+            # ran with whatever the last one left in the database, so its meaning depended on
+            # what preceded it: scenario 21 after 50 found a zero grace period, dropped its
+            # baseline session, and promoted with an empty book; scenario 12 after 50 had its
+            # whole book cancelled the moment Phase 5 restarted the session, and the recovery
+            # orders queued behind that burst until the timeout. Both looked like defects in
+            # the venue and were defects in the harness.
+            log("=== Provisioning cancel-on-disconnect so the baseline orders keep resting ===")
+            provision_cancel_on_disconnect(FIX8_COMP_ID, _PROVISIONED_GRACE_PERIOD_SECONDS)
 
         # Likewise for session provisioning: the comp id is pinned to the instance this
         # harness runs, so the baseline session is admitted and the gateway has real
@@ -4401,6 +4497,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # have a client resume a thousand messages ahead of a venue that has just started.
         clear_fix8_persisted_state()
 
+        # And the venue's own memory of what it was holding, for the same reason: a scenario
+        # that began with the previous one's open orders would be testing something nobody
+        # wrote. See clear_open_order_regions.
+        clear_open_order_regions(prefix)
+
         if scenario.assert_resend_recovery:
             write_no_reset_fix8_config()
 
@@ -4408,8 +4509,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             write_fix8_variant(_INFLIGHT_A_CFG, keep_sequence_numbers=True, ignore_logon_sequence_check=True,
                                persist_to_disk=_FIX8_PERSIST_DB)
 
-        if scenario.fresh_logon_in_recovery:
-            write_recovery_fix8_config()
+        # Written for every scenario, not only the one that logs on afresh. Phase 5 also needs
+        # it after a matching engine restart, where the baseline orders are still open and the
+        # baseline comp id could only send duplicates of them. Generating one small file is
+        # cheaper than working out in advance which scenarios will want it.
+        write_recovery_fix8_config()
 
         if scenario.assert_session_provisioning:
             log("=== Provisioning gateway instances for the test comp id ===")
@@ -4813,8 +4917,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 5: recovery orders ──────────────────────────────────────────
         # Target calculation:
-        #   ME restart   → ME log and counter reset; target = after_total,
-        #                  scan from byte 0.
+        #   ME restart   → count accepted NOS on the restarted engine's log from the
+        #                  point it came ready.
         #   orders_during> 0 → some in-flight orders may have been processed
         #                  (or lost) during Phase 4; scan from me_pos to find
         #                  the actual current ME-ORD count, then add after_total.
@@ -4845,10 +4949,22 @@ def run_scenario(scenario: Scenario, args) -> bool:
             count_based  = True
             after_target = after_total
         elif me_restarted:
+            # Counted rather than waiting for an absolute ME-ORD-N.
+            #
+            # The engine used to come back with its order numbering at zero, because it held
+            # nothing across a restart, so ME-ORD-1000 named the thousandth recovery order.
+            # It now reads its open orders back from a memory-mapped region and carries the
+            # numbering forward past the highest it recovered -- a repeated number would name
+            # two different orders in the reports a member reconciles against. So that name is
+            # never issued a second time and waiting for it times out having tested nothing.
+            #
+            # Counting is what the me_ha branches above already do, for the same reason: it
+            # holds however far the numbering was advanced. Reconciliation logs no accept
+            # line, so the count is exactly the recovery orders.
             recovery_log = me_log
-            count_based  = False
+            count_based  = True
             after_target = after_total
-            me_log_from  = 0
+            me_log_from  = file_end(me_log)
         elif orders_during > 0 or scenario.extra_steps:
             recovery_log = me_log
             count_based  = False
@@ -4882,9 +4998,20 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # arrive, so Phase 5 T commands written to the old stdin would just queue
             # behind them.  Start a fresh FIX session to unblock.
             if me_restarted and orders_during > 0 and not scenario.extra_steps:
-                log("  Restarting FIX session (old session blocked on dropped in-flight orders) ...")
+                # Under its own comp id, for the reason FIX8_RECOVERY_COMP_ID gives: the
+                # baseline orders are still open, so the baseline comp id could only send
+                # duplicates of them.
+                #
+                # It did not have to be until 2026-08-31. A restarted engine held nothing, so
+                # ord1..ord1000 were free again and the same client could send them a second
+                # time. The engine now reads its open orders back from a region and still holds
+                # them, and rejects the repeat -- correctly, because two live orders under one
+                # name cannot be told apart by anyone downstream. Exactly 1000 rejections, and
+                # no accepted order, is what that looks like from here.
+                log("  Restarting FIX session under the recovery comp id "
+                    "(old session blocked, and its ClOrdIDs are still live) ...")
                 stop_f8test(f8proc)
-                f8proc = send_burst(0, gw_log)
+                f8proc = send_burst(0, gw_log, FIX8_RECOVERY_CFG)
 
             # Auth-failover scenarios: an established session does not re-authenticate,
             # so force a fresh logon. With the preferred auth instance dead, send_burst
@@ -4933,66 +5060,57 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 )
             log("  seq monotonicity check: OK")
 
-        # ── ME-HA: cancel-on-failover ER routing ──────────────────────────────
-        # The matching engine is a stub with NO matching logic: every accepted
-        # NewOrderSingle is added to the book as OrdStatus=New and rests there until
-        # cancelled (see MatchingEngineThread::handle_new_order_single). So at the
-        # ME-primary kill the promoted secondary's replicated book is non-empty, and
-        # on promotion it cancels the whole book, emitting one cancel ExecutionReport
-        # per resting order with seq_no=0.
+        # ── ME-HA: the book a promotion resumes with ──────────────────────────
+        # The matching engine does no matching: every accepted NewOrderSingle is added to
+        # the book as OrdStatus=New and rests there until cancelled (see
+        # MatchingEngineThread::handle_new_order_single). So at the ME-primary kill the
+        # promoted secondary's replicated book is non-empty.
         #
-        # Those cancel ERs are NOT tied to a sequenced order, so the sequencer cannot
-        # route them via its seq_no->conn map; the originating session's connection id
-        # rides on the WalRecord envelope instead (see commit 5cb18a6 and
-        # docs/fix/pdu_generation.md). A regression there is silent to the
-        # recovery-order check -- the cancels are simply dropped -- so assert directly:
-        #   * the secondary cancelled a non-empty book (N > 0), and
-        #   * the gateway dropped NO ER for a missing conn id (the regression's
-        #     signature is the gateway log line
-        #     "... has no gateway_session_conn_id -- dropping").
+        # It used to cancel that whole book on promotion and emit one seq_no=0 cancel
+        # ExecutionReport per resting order. It no longer does. The secondary writes every
+        # replicated order into a memory-mapped region of its own, so after reconciling the
+        # sequencer's tail it can say what it holds, and an order still on the book is
+        # genuinely outstanding -- R-0018 and R-0073, and
+        # docs/durability/open_order_checkpoint.md.
         #
-        # The gateway-death scenario reuses the same cancel burst but asserts the
-        # opposite outcome, so it takes the branch below instead of this one.
-        # Skipped when leadership never moved: there is no promotion, so no book to cancel
-        # and no cancel-ER routing to exercise. Asserting it would be requiring a failover of
-        # a scenario whose whole point is that none happened.
+        # So this asserts the promotion KEPT the book, which is the member-visible promise,
+        # and that no ER was dropped for a missing conn id.
+        #
+        # WHAT THIS NO LONGER COVERS, deliberately recorded rather than lost: the cancel
+        # burst was also the only exerciser of seq_no=0 ER routing via the WalRecord
+        # envelope, where the originating session's connection id rides on the envelope
+        # because the sequencer has no order sequence to resolve. That path still exists and
+        # is still needed -- it is how R-0123's cancel-each-and-halt will report -- but
+        # nothing here reaches it until that halt is built. A scenario for it belongs with
+        # that work.
+        #
+        # Skipped when leadership never moved: there is no promotion, so no book to keep.
         if scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary:
-            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
-            if cancel_count <= 0:
-                die("ME-HA: promoted secondary did not cancel a non-empty book on failover "
-                    f"(cancel-on-failover count={cancel_count}) -- cancel-ER routing was not exercised")
-            log(f"  ME-HA: cancel-on-failover cancelled {cancel_count} resting order(s)")
+            # A short timeout: this is waiting to confirm the line is absent, and the
+            # promotion has already been observed by the time the check runs.
+            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill, timeout=2.0)
+            if cancel_count > 0:
+                die(f"ME-HA: the promoted secondary cancelled {cancel_count} order(s) on promotion. "
+                    "It should keep them: its region and the sequencer's tail say what it holds, so "
+                    "an order still on the reconciled book is genuinely outstanding (R-0073). "
+                    "Cancelling everything is the answer only when the region cannot be used, which "
+                    "is R-0102 and R-0123 and is a halt, not a resumption.")
+
+            resumed = me_resumed_book_size(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
+            if resumed is None:
+                die("ME-HA: the promoted secondary logged no 'resuming as leader' line -- "
+                    "cannot confirm what book it resumed with")
+            if resumed <= 0:
+                die(f"ME-HA: the promoted secondary resumed as leader holding {resumed} order(s). "
+                    "The baseline orders rest in the book and replicate, so it should hold them: "
+                    "an empty book here means the region was not recovered or was recovered empty.")
+            log(f"  ME-HA: the promoted secondary resumed as leader holding {resumed} order(s), "
+                "none cancelled -- OK")
 
             dropped = count_log_marker(gw_log, "has no gateway_session_conn_id -- dropping", from_byte=gw_pos_pre_kill)
             if dropped > 0:
                 die(f"ME-HA: gateway dropped {dropped} ExecutionReport(s) for a missing "
-                    "gateway_session_conn_id -- cancel-on-failover ER routing via the envelope is broken")
-
-            # "None dropped" is necessary but nowhere near sufficient, and on its own it
-            # passed for a long time while the cancel ERs were never delivered at all --
-            # a report that never reaches the gateway cannot be dropped by it. So assert
-            # delivery positively: the gateway must have sent MORE reports than it
-            # received orders, and the excess is the cancel burst.
-            sent, nos_received = gateway_progress_totals(gw_log)
-            if sent is None:
-                die("ME-HA: no GW-PROGRESS line in the gateway log -- cannot confirm the "
-                    "cancel-on-failover ERs were delivered")
-            if sent < nos_received + cancel_count:
-                # Two different defects produce this same shortfall, so name both. The
-                # second only applies to the scenario that reconnects first, but a reader
-                # staring at a failure should not have to know which scenario they are in.
-                die(f"ME-HA: gateway sent {sent} ER(s) for {nos_received} order(s), but "
-                    f"{cancel_count} cancel-on-failover ER(s) were emitted on promotion. "
-                    f"Expected at least {nos_received + cancel_count} -- the cancel reports "
-                    "did not reach the client. Two causes to check, in this order: "
-                    "(1) the WalAck gate in SequencerThread::on_pdu -- cancel ERs carry seq_no 0 "
-                    "and must gate on their own WAL record, not on an order sequence that does "
-                    "not exist; (2) session binding -- the sequencer resolves a report's "
-                    "destination from the session's CURRENT binding, so if SessionBound/"
-                    "SessionUnbound stopped working the reports are addressed at the connection "
-                    "that placed the orders, which in this scenario is deliberately gone.")
-            log(f"  ME-HA: gateway delivered {sent} ER(s) for {nos_received} order(s) -- "
-                f"includes the {cancel_count} cancel-on-failover ER(s) -- OK")
+                    "gateway_session_conn_id -- ER routing via the envelope is broken")
 
         # ── Gateway orphan: no session handover between instances ─────────────
         # Asserts a GAP rather than a guarantee. Instance a is dead and the promoted

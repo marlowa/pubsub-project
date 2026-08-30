@@ -368,11 +368,26 @@ Four options were considered:
 | (a) Slow seamless | ME-secondary cold-starts and replays WAL | Rejected: too slow |
 | (b) Fast lockstep | Both MEs process sequencer input in parallel with deterministic logic; failover is switching to secondary's outputs | Future aspiration; requires full determinism discipline |
 | (c) Halt-on-failure | ME dies, market halts, operator recovers | Preserved as fallback for unrecoverable failure modes |
-| (d) Cancel-on-failover | ME-secondary promoted; issues cancel ERs for all outstanding orders | **Chosen baseline** |
+| (d) Cancel-on-failover | ME-secondary promoted; issues cancel ERs for all outstanding orders | Baseline until 2026-08-30; now the fallback |
 
-Cancel-on-failover avoids the long downtime of (c) and the determinism investment of (b),
+Cancel-on-failover avoided the long downtime of (c) and the determinism investment of (b),
 while giving FIX clients an explicit "your order has been cancelled" message rather than
 silence.
+
+**Superseded on the ordinary path, 2026-08-30.** The engine now writes every open order into
+a memory-mapped region as it accepts it, and reads that region back at startup --
+[open_order_checkpoint.md](../durability/open_order_checkpoint.md). A promoted or restarted
+instance therefore has its own record of what it was holding, and after reconciling the
+sequencer's tail onto it the book is consistent with the sequencer. Step 6 below already
+said what follows from that: "any order still on the reconciled book is genuinely
+outstanding". So it is kept, and the member goes on holding what it placed. That is R-0018
+and R-0073.
+
+Cancelling everything remains the answer where the region cannot be used -- absent, damaged,
+or written by a different build. There the engine cannot say what it held, and the answer is
+to establish it from the sequencer's record, cancel each order, report each cancel, and halt.
+That is R-0102 and R-0123, and it is a halt rather than a resumption, because by then
+somebody has to answer what became of the orders the venue took.
 
 ### ME Failover Correctness Rule
 
@@ -392,7 +407,9 @@ The correct order of operations on ME-secondary promotion:
 5. New sequencer leader replays events `M+1..N` from its WAL. ME-secondary applies them.
 6. **Now** the book is consistent with the sequencer's authoritative state. Any order still
    on the reconciled book is genuinely outstanding.
-7. Issue cancel ERs for the genuinely-outstanding orders, via the new sequencer leader.
+7. Resume as leader holding those orders. (Until 2026-08-30 this step issued cancel ERs for
+   every one of them, because a promoted engine could not otherwise say what it held. It now
+   can, and does so only where the region has failed -- see above.)
 
 This adds latency to the cancel path (cancels cannot fire until the new sequencer leader is
 up and reconciliation is complete) but eliminates the race. A delayed cancel is acceptable;
@@ -424,10 +441,13 @@ window is a common question, and the answer is that **none are lost**:
    the gap orders included.
 
 **Client experience.** For an order sent during the gap the client gets **no immediate ER**
-(no live ME), then — after promotion and reconciliation — a **Cancel ER with no preceding New
-ER**, and resubmits. This is the cancel-on-failover contract: a FIX client must tolerate a
-cancel for an order it never saw acknowledged. Nothing is silently lost; the cost is the
-~15 s window of order-processing unavailability plus the cancel-and-resubmit.
+(no live ME), then — after promotion and reconciliation — the **New ER** for it, late. The
+order is on the book and open. The cost is the ~15 s window of order-processing
+unavailability, and nothing is silently lost.
+
+Before 2026-08-30 it received a **Cancel ER with no preceding New ER** instead, and had to
+resubmit. A FIX client must still tolerate that, because it is what the region-has-failed
+path does, but it is no longer what an ordinary failover produces.
 
 *Verified directly:* a failover under a continuous ~1000 orders/sec stream WAL-committed
 15,000 orders during the 15 s gap and replayed all 15,000 to the promoted ME — none dropped.

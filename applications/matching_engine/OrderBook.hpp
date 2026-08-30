@@ -100,6 +100,9 @@ class OrderBook {
      * @brief Records an open order, stamped with the sequence number that placed it.
      * @return false when the region is full, in which case nothing was recorded.
      *
+     * The identity is written into the record as well as used to file it, because a record
+     * read back after a restart has to say which order it is.
+     *
      * A full region means the order must be refused. Growing the region would fault pages in
      * on the engine's thread, and recycling the oldest record would silently lose an order the
      * venue had accepted -- a visible refusal is the only one of the three a member can act on.
@@ -117,6 +120,31 @@ class OrderBook {
 
     /** @brief Removes every open order. */
     void clear();
+
+    /** @brief What a recovery found in the region. */
+    struct Recovery {
+        size_t orders{};                ///< Orders the region held at or below its published position.
+        size_t discarded{};             ///< Records above it, or never made live: work that was not finished.
+        int64_t published{};            ///< How far the region says it is current.
+        int64_t highest_order_id_num{}; ///< So a successor does not reissue an order number.
+    };
+
+    /**
+     * @brief Reads the region back and rebuilds the book from it.
+     *
+     * Every record at or below the published position is filed again under the identity it
+     * carries. Anything above it was written by work that had not finished, and is left to
+     * whoever produced it to produce again; the free list is rebuilt from what is left rather
+     * than trusted, because a process that died mid-change can leave it holding a dangling
+     * index or a cycle.
+     *
+     * Reads the whole region, so it touches every page: after this there is nothing left for
+     * warm() to do. Costs one pass over the region, which is fixed by its size and not by the
+     * orders in it.
+     *
+     * Call it on an empty book, once, before anything else changes it.
+     */
+    Recovery recover();
 
     /**
      * @brief States that the region holds every change up to this sequence number.
