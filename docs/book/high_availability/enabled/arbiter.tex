@@ -150,7 +150,7 @@ terms of those components rather than of members.
   entitlement for that period, during which nothing acts. Neither error is
   detectable from the figure alone, so it has to be derived from how long the
   work actually takes.}
-  \uncovered{the period is not stated}
+  \uncovered{no scenario tests the period, and none is stated to test}
 \end{requirement}
 
 \begin{requirement}{R-0062}{An instance already acting keeps its entitlement when another returns}
@@ -182,7 +182,14 @@ terms of those components rather than of members.
   \rationale{The generation is what lets a receiver refuse a superseded sender.
   Held only in memory it restarts at the beginning, so a pair restarted together
   agree a generation the venue has used before --- and a message left over from
-  the earlier one compares as current.}
+  the earlier one compares as current.
+
+  This is the requirement most exposed to a restart of everything at once. Where
+  each instance keeps its own record, a group whose members all restart can still
+  exceed every generation used, because each reads its own and the highest wins.
+  Where the record is kept in one place, that place surviving is the whole of the
+  guarantee. Which of those the venue does is not settled here, but the
+  requirement holds either way and one of them has to be chosen deliberately.}
   \uncovered{no scenario restarts every instance of a group together}
 \end{requirement}
 

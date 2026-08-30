@@ -81,7 +81,7 @@ that should be refused: silent, persistent, and a failure of a different kind.
   \rationale{Restarting is not a remedy: an instance reloads an export of the
   database, which may itself be older than the change it missed. Nothing else
   makes an instance reconcile, so without this staleness has no end.}
-  \uncovered{nothing brings a running instance up to date}
+  \uncovered{no scenario makes an instance miss a change, and nothing would bring it current}
 \end{requirement}
 
 \begin{requirement}{R-0044}{A member is admitted by every instance or by none}
@@ -99,7 +99,7 @@ that should be refused: silent, persistent, and a failure of a different kind.
   \rationale{An instance that cannot say this leaves nobody able to determine it
   --- the instance has no view of the source, and the administration service
   cannot tell an instance that missed a change from one that never received it.}
-  \uncovered{an instance reports nothing about its credential set}
+  \uncovered{no scenario asks an instance how current its credentials are, and nothing answers}
 \end{requirement}
 
 \begin{requirement}{R-0046}{A change made while an instance is unavailable is applied when it returns}

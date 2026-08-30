@@ -46,7 +46,7 @@ not the store. The store follows.
   \rationale{The member was told the order would rest until it said otherwise.
   Holding it only where the day's own state is held makes that promise good for
   one day, which is not the promise that was made.}
-  \uncovered{such orders are held only for the life of the venue's processes}
+  \uncovered{no scenario stops the venue and starts it again with such an order open}
 \end{requirement}
 
 \begin{requirement}{R-0106}{Such orders are open when trading next begins}
@@ -56,7 +56,7 @@ not the store. The store follows.
   \rationale{A member that must re-place its resting orders each morning has not
   been given orders that outlive the day; it has been given orders that are
   quietly cancelled overnight, and told otherwise.}
-  \uncovered{the venue has no notion of a trading day}
+  \uncovered{no scenario spans a trading day boundary, which the venue does not mark}
 \end{requirement}
 
 \begin{requirement}{R-0114}{The store is known to be readable before trading begins, not during it}
@@ -68,7 +68,7 @@ not the store. The store follows.
   indication that anything is missing --- and every member holding such an order
   finds it gone, at the one moment nobody is watching for it. The check is cheap
   and the moment to make it is before members are admitted.}
-  \uncovered{the store holds no orders and nothing reads it}
+  \uncovered{no scenario starts trading with the store unreadable}
 \end{requirement}
 
 \begin{requirement}{R-0107}{A change to such an order is committed before the member is told of it}
@@ -82,7 +82,7 @@ not the store. The store follows.
   store is what allows the store to lag: anything it is missing can be supplied
   again from the record, where a change that was never committed anywhere cannot
   be.}
-  \uncovered{such orders are not recorded durably at all}
+  \uncovered{no scenario cancels such an order and then restarts the venue}
 \end{requirement}
 
 \begin{gap}{}

@@ -22,9 +22,22 @@ It holds no order state. Which orders are open belongs to the matching engine an
 ordering to the sequencer. Where the gateway must act on a member's behalf ---
 cancelling what the member has resting when its connection ends --- it reports
 the disconnection and the terms it was given to the component that owns the
-orders, rather than keeping a view of them to act on itself. The terms
-accordingly travel with the session, and are remembered wherever the session's
-other state is remembered.
+orders, rather than keeping a view of them to act on itself. The terms accordingly travel with the session rather than with the gateway.
+
+\textbf{Where they are held once the gateway is gone is not settled.} They reach
+the gateway when the member is admitted, and are needed later --- possibly by a
+different instance, and possibly when the member is no longer connected to supply
+them again. The session's numbering is held by the sequencer, which is the only
+component every gateway instance talks to, and that is the obvious place for the
+terms as well. It is not stated here as the answer, because choosing it is a
+design decision and this chapter does not make those.
+\reqref{R-0103} states what must be true of wherever they are held.
+
+\begin{gap}{}
+  The terms are held only by the gateway that was given them. A gateway that dies
+  takes with it the instructions for every session it held, and there is nowhere
+  else to read them from.
+\end{gap}
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:gateway:durable}
@@ -62,7 +75,7 @@ as much and send it again.
   \rationale{Recovery that depends on a record still being present is only as
   good as the retention behind it. A retention period that is a by-product of
   storage rather than a stated figure cannot be relied on by anyone.}
-  \uncovered{retention is not measured}
+  \uncovered{no scenario measures how far back reports remain available}
 \end{requirement}
 
 \begin{gap}{BUG-0048, BUG-0046}
@@ -153,7 +166,7 @@ reach the member leaves a gap in the member's numbering.
   order for a \texttt{ClOrdID} it had sent.
   \rationale{The member cannot distinguish this case from a lost reply. Every
   venue provides an order status enquiry for exactly this reason.}
-  \uncovered{the venue does not answer order status enquiries}
+  \uncovered{no scenario asks the venue what it holds for a member, because nothing answers}
 \end{requirement}
 
 \begin{gap}{}

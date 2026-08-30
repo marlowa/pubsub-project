@@ -11,7 +11,7 @@ should cost what a crash costs.
   \rationale{A planned restart is the common one --- a release, a configuration
   change --- and there is no reason for it to cost what an unplanned one does.
   It is also the cheapest way to exercise the recovery path regularly.}
-  \uncovered{a component records nothing when it is asked to stop}
+  \uncovered{no scenario stops a component deliberately, and nothing would be written if one did}
 \end{requirement}
 
 \begin{requirement}{R-0035}{The start and end of a trading day are published}
@@ -22,5 +22,5 @@ should cost what a crash costs.
   should be answerable rather than inferred. Publishing it once to whoever
   subscribes also avoids each component being told separately, which is how they
   come to disagree.}
-  \uncovered{the venue has no notion of a trading day}
+  \uncovered{no scenario spans a trading day boundary, which the venue does not mark}
 \end{requirement}

@@ -136,7 +136,7 @@ it is exercised continually rather than only when a test produces a failover.
 
   This is the fallback beneath \reqref{R-0073}, not an alternative to it: it
   applies where recovery was attempted and could not complete.}
-  \uncovered{the venue sends nothing in this case}
+  \uncovered{no scenario makes recovery fail and then checks what the member is sent}
 \end{requirement}
 
 \begin{requirement}{R-0021}{A member is not told an order is unknown while the venue is still recovering}
@@ -156,7 +156,7 @@ it is exercised continually rather than only when a test produces a failover.
   everything since it. Leaving the interval between checkpoints unstated leaves
   recovery time unstated with it, and the interval is then set by whatever was
   convenient rather than by how long the venue may be absent.}
-  \uncovered{no checkpoint is written at all}
+  \uncovered{no scenario reads a checkpoint, because none is written}
 \end{requirement}
 
 \begin{requirement}{R-0102}{A checkpoint that cannot be trusted is not used}
@@ -179,5 +179,5 @@ it is exercised continually rather than only when a test produces a failover.
   fails entirely if what followed has been discarded, and fails in the way that
   is hardest to notice: the checkpoint loads, the catch-up returns nothing, and
   the set looks complete.}
-  \uncovered{retention is not anchored to anything}
+  \uncovered{no scenario exhausts retention, which is anchored to nothing measurable}
 \end{requirement}

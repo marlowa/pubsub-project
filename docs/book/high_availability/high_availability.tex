@@ -154,8 +154,24 @@ components must do, arrived at by asking the same questions of each of them; the
 answers are not a description of what they currently do. Where the two differ, a
 gap says so.
 
+A \textbf{gap} records something the venue does not do that this chapter says it
+must. Where the difference has already been recorded as a defect, the gap names
+it. Two are cited often enough to be worth stating once here:
+
+\begin{itemize}[nosep]
+  \item \textbf{BUG-0048} --- nothing bounds how far back the venue's record of
+        what it did is kept. What survives is whatever has not yet been
+        discarded, which varies with how busy the venue has been.
+  \item \textbf{BUG-0064} --- a matching engine that starts without having been
+        a follower applies nothing, so orders the venue took and had not yet
+        given it are neither applied nor answered.
+\end{itemize}
+
 Every requirement names the scenarios that verify it, or states that none does
-yet. \textbf{A requirement that nothing verifies is not an unfinished part of
+yet. That note says why no scenario exists; where the reason is that the venue
+does not do the thing at all, a gap says so separately. The two are kept apart
+deliberately: a requirement nothing tests and a requirement the venue does not
+meet are different conditions, and only the second is a defect. \textbf{A requirement that nothing verifies is not an unfinished part of
 this document.} The requirement is complete; what is absent is a test of the
 venue. The count of unverified requirements is therefore a measurement of the
 venue and not of the specification, and it does not fall as this document is

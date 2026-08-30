@@ -36,7 +36,7 @@ most needs to.
   \rationale{An arbitration pair and its witness on one machine is not an
   arbitration service; it is a single point of failure with three processes in
   it.}
-  \uncovered{nothing checks where instances are placed}
+  \uncovered{no scenario deploys instances badly, and nothing would report it}
 \end{requirement}
 
 \begin{requirement}{R-0111}{A deployment that could not survive losing a machine is reported when it starts}
@@ -48,7 +48,7 @@ most needs to.
   wrong machine fails. It is checkable at the moment the instances announce
   themselves, and that is the only moment before the failure at which anybody
   would look.}
-  \uncovered{nothing checks where instances are placed}
+  \uncovered{no scenario deploys instances badly, and nothing would report it}
 \end{requirement}
 
 \begin{requirement}{R-0085}{The surviving machine can carry the whole venue}

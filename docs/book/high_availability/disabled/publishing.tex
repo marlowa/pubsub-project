@@ -57,7 +57,7 @@ consumers.
   been consumed, a subscriber that was briefly away loses records without
   anything reporting it. The loss is found by the subscriber, not by the
   publisher that caused it.}
-  \uncovered{retention is not anchored to subscriber positions}
+  \uncovered{no scenario returns a subscriber after its records were discarded}
 \end{requirement}
 
 \subsection{The order activity recorder}
@@ -106,7 +106,7 @@ Nothing directly, until the last requirement below, which stops the market.
   \rationale{Loss outside the venue cannot be repaired by the venue, because
   nothing there knows what is missing. Duplication can be repaired by anybody
   holding the record's identity.}
-  \uncovered{the recorder is not built}
+  \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0050}{Every externally published record carries an identity a consumer can deduplicate on}
@@ -115,7 +115,7 @@ Nothing directly, until the last requirement below, which stops the market.
   \rationale{This is what makes \reqref{R-0049} usable rather than merely true.
   Without it a consumer cannot tell a duplicate from a second event, so
   permitting duplicates would mean permitting the record to be wrong.}
-  \uncovered{the recorder is not built}
+  \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0051}{The recorder never resumes beyond its last confirmed publish}
@@ -124,7 +124,7 @@ Nothing directly, until the last requirement below, which stops the market.
   \rationale{Recording a position before the publish is confirmed converts a
   crash into permanent omission, which \reqref{R-0049} forbids. The ordering is
   not an optimisation and may not be relaxed for throughput.}
-  \uncovered{the recorder is not built}
+  \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0052}{A restart of the recorder does not stop trading}
@@ -133,7 +133,7 @@ Nothing directly, until the last requirement below, which stops the market.
   \rationale{A supervised restart is a routine event the venue recovers from
   unaided. Stopping the market for it would make the recorder's availability,
   rather than the venue's, the thing that decides whether members can trade.}
-  \uncovered{the recorder is not built}
+  \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0053}{Where external publishing cannot resume, trading is halted}
@@ -145,5 +145,5 @@ Nothing directly, until the last requirement below, which stops the market.
   counted --- so it can be acted on without a person present. The bound must
   exceed what a supervised restart and catch-up take, or \reqref{R-0052} is
   contradicted; it therefore has to be measured rather than chosen.}
-  \uncovered{the recorder is not built}
+  \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}

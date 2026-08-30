@@ -57,7 +57,7 @@ all.
   \rationale{The position is a lower bound by construction, so resuming from a
   stale one costs duplicates and resuming from an optimistic one costs records.
   \reqref{R-0049} permits the first and forbids the second.}
-  \uncovered{the recorder is not built}
+  \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0079}{Losing one publisher or one recorder does not halt the venue}
@@ -66,5 +66,5 @@ all.
   \rationale{\reqref{R-0053} halts the venue when no recorder is publishing.
   Running two is what makes that condition rare, and a halt on losing one of them
   would make the pair worse than useless.}
-  \uncovered{the recorder is not built}
+  \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}

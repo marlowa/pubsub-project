@@ -74,7 +74,7 @@ pause, a market-wide event, an instrument in disorderly conditions.
   rejection of an order it has not sent, and a member reconnecting into a halt
   would otherwise discover it by trial. Requiring a person to lift it is what
   distinguishes a halt from the automatic, self-clearing states beneath it.}
-  \uncovered{the venue has no halted state}
+  \uncovered{no scenario halts the venue, because it has no halted state to enter}
 \end{requirement}
 
 \begin{requirement}{R-0024}{A halt that cancels open orders reports every cancellation}
@@ -85,7 +85,7 @@ pause, a market-wide event, an instrument in disorderly conditions.
   has been done at real venues when a market became disorderly. What makes it
   safe is that each member's view converges on the venue's, which requires the
   venue to say what it cancelled rather than to stop mentioning it.}
-  \uncovered{the venue has no halted state}
+  \uncovered{no scenario halts the venue, because it has no halted state to enter}
 \end{requirement}
 
 \begin{requirement}{R-0017}{Recovery does not depend on the order the components return in}
