@@ -118,3 +118,8 @@ R-0112     active    2026-08-30  The venue trades while the store it depends on 
 R-0113     active    2026-08-30  A member's instruction is carried out when the component holding it is the one that failed
 R-0114     active    2026-08-30  The store is known to be readable before trading begins, not during it
 R-0115     active    2026-08-30  How long an entitlement lasts without renewal is a stated figure
+R-0116     active    2026-08-30  The venue recovers what it held before deciding what to do with it
+R-0117     active    2026-08-30  Orders open across a long absence are cancelled, reported, and trading halts
+R-0118     active    2026-08-30  How long an absence may be before orders are cancelled is a stated figure
+R-0119     active    2026-08-30  An order identifier used today is refused for the rest of the day
+R-0120     active    2026-08-30  A cancel for an order the venue no longer holds says which case it is

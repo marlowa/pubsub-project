@@ -204,6 +204,41 @@ reach the member leaves a gap in the member's numbering.
   \uncovered{no scenario restarts a gateway}
 \end{requirement}
 
+\begin{requirement}{R-0119}{An order identifier used today is refused for the rest of the day}
+  Where a member sends an order under an identifier it has already used on that
+  session that trading day, the venue shall refuse it, whatever became of the
+  first order and whatever has restarted since.
+  \rationale{Two live orders under one identifier make a cancel ambiguous, and
+  that much a check against the orders currently open would catch. The reason to
+  go further and refuse an identifier whose first order is finished is what
+  leaves the venue: the activity the venue publishes is identified downstream by
+  this value, and a consumer of that record --- a member's back office, a
+  reconciliation, an auditor --- cannot ask the venue anything. Two different
+  orders under one name in that record cannot be read correctly by anybody.
+
+  It also makes \reqref{R-0003} safe. Resubmitting under the original identifier
+  when the member does not know whether the venue took the order is a recovery
+  path this document requires, so the check that distinguishes a resubmission
+  from a new order is not protection against a member behaving oddly --- it is
+  what a member following the specification depends on. If it does not survive a
+  restart, a member doing the right thing is given a second live order at the
+  moment it is least able to notice.
+
+  The day bounds it. Identifiers are added through a trading day and the set is
+  discarded at the end of one, which is what keeps it finite.}
+  \uncovered{no scenario reuses an identifier whose order has been cancelled}
+\end{requirement}
+
+\begin{gap}{}
+  An identifier is checked against the orders the venue currently holds open, and
+  a cancelled order is removed from that set --- so an identifier whose order has
+  been cancelled is accepted again, and the activity the venue publishes can carry
+  the same identifier for two different orders on the same day.
+
+  Nothing durable holds the identifiers used during a day either, so even the
+  check that exists does not survive a restart of the component that makes it.
+\end{gap}
+
 \begin{requirement}{R-0005}{A report produced for an unbound session is delivered on reconnection}
   An execution report produced while the session had no connection shall be
   delivered when that session next binds to a gateway, without the member having

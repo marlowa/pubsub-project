@@ -118,6 +118,81 @@ it is exercised continually rather than only when a test produces a failover.
   \covers{ha_test:50}
 \end{requirement}
 
+\begin{requirement}{R-0120}{A cancel for an order the venue no longer holds says which case it is}
+  Where a member asks to cancel an order the venue does not currently hold, it
+  shall be told whether the order once existed and is finished, or was never
+  known to the venue at all.
+  \rationale{These are different facts about the member's own position and it
+  cannot establish either without being told. The protocol distinguishes them for
+  that reason.
+
+  There is a second reason particular to this venue. \emph{Unknown order} is also
+  what a member is told when the venue has lost what it was holding --- so
+  answering both cases the same way makes a venue that has forgotten a member's
+  orders indistinguishable, from that member's side, from one answering
+  correctly. The distinction is what stops the failure this chapter exists to
+  prevent from hiding inside an ordinary reply.}
+  \uncovered{no scenario cancels an order that has already been cancelled}
+\end{requirement}
+
+\begin{gap}{}
+  A cancel for an order the venue does not currently hold is answered as an order
+  it does not recognise, whether the order was cancelled a moment ago or never
+  existed. A member cannot tell those apart, and cannot tell either of them from
+  the venue having lost what it held.
+\end{gap}
+
+\begin{requirement}{R-0116}{The venue recovers what it held before deciding what to do with it}
+  A restarted instance shall rebuild the set of orders it held before deciding
+  whether to resume trading or to cancel them.
+  \rationale{Cancelling requires knowing which orders to cancel and which member
+  to tell about each. A venue that cancels without having recovered cannot report
+  anything: it simply stops mentioning the orders, which is what \reqref{R-0020}
+  exists to prevent. Recovery is therefore needed for both outcomes, and is not
+  an alternative to cancelling but the thing that makes cancelling possible.}
+  \uncovered{no scenario restarts the engine and inspects what it holds before trading resumes}
+\end{requirement}
+
+\begin{requirement}{R-0117}{Orders open across a long absence are cancelled, reported, and trading halts}
+  Where the venue was unable to match for longer than a stated period and orders
+  were open when it stopped, it shall cancel each of them, send the member that
+  placed it a report saying so, and halt. Where nothing was open, it shall resume
+  without halting.
+  \rationale{The market moved while the venue could not match, and the member
+  could not cancel because there was nothing to cancel against. An order left
+  resting at a price struck before that gap is a hazard to the member that placed
+  it, and the hazard has nothing to do with whether the order was recoverable ---
+  a correctly recovered stale order is exactly as dangerous as a correctly
+  recovered fresh one.
+
+  Cancelling removes the uncertainty, the reports tell each member where it
+  stands, and the halt says the venue is not simply carrying on as though nothing
+  had happened. The exception for an empty book matters because traffic is
+  bursty: a long absence during a lull leaves nothing stale, nothing to report,
+  and halting would achieve only an outage.
+
+  Unlike a condition the venue cannot detect, both parts of this one are plain
+  --- how long it was absent, and what it cancelled --- so it can be acted on
+  without a person present. Lifting it still requires one, under
+  \reqref{R-0023}.}
+  \uncovered{no scenario keeps the engine down long enough for the period to elapse}
+\end{requirement}
+
+\begin{requirement}{R-0118}{How long an absence may be before orders are cancelled is a stated figure}
+  The period in \reqref{R-0117} shall be a figure the venue states, measured from
+  the last order it matched to trading resuming.
+  \rationale{It is the whole absence and not the recovery step. Noticing the
+  death, restarting the process and rebuilding the set are all terms in it, and
+  the restart alone was measured at about two and a half seconds --- so a figure
+  configured against recovery time is set against the wrong quantity and will be
+  reached later than intended.
+
+  It is also a trading decision rather than a measurement: it says how long a
+  member's resting order stays meaningful in this market, which is a judgement
+  about members and not about how long the code takes.}
+  \uncovered{no period is stated}
+\end{requirement}
+
 \begin{requirement}{R-0036}{A cancelled order does not become open again}
   An order the member cancelled before a restart shall not be open after it.
   \rationale{Recovery reads a record of the state and then applies what followed
