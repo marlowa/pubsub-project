@@ -41,8 +41,9 @@ Nothing by the publisher. The recorder's failure reaches members only through
 all.
 
 \begin{requirement}{R-0077}{A subscriber resumes at the surviving instance without loss}
-  A subscriber whose publisher is lost shall receive every record after the
-  position it presents, from the instance it moves to.
+  Where the instance a subscriber was reading from is lost, the venue shall
+  supply every record after the position that subscriber presents, from the
+  instance it moves to.
   \rationale{A subscriber's position is expressed in the venue's own sequence
   numbers rather than in anything a publisher assigns, so it is meaningful to
   either instance. Nothing has to be handed over.}
@@ -50,9 +51,9 @@ all.
 \end{requirement}
 
 \begin{requirement}{R-0078}{A promoted recorder republishes rather than skips}
-  A recorder that takes over shall resume from a position no later than the last
-  publish the bus confirmed, republishing whatever it cannot establish was
-  confirmed.
+  Where publishing to the bus is taken over by another instance, the venue shall
+  resume from a position no later than the last publish the bus confirmed, and
+  shall publish again whatever it cannot establish was confirmed.
   \rationale{The position is a lower bound by construction, so resuming from a
   stale one costs duplicates and resuming from an optimistic one costs records.
   \reqref{R-0049} permits the first and forbids the second.}
@@ -60,7 +61,8 @@ all.
 \end{requirement}
 
 \begin{requirement}{R-0079}{Losing one publisher or one recorder does not halt the venue}
-  The loss of a single instance of either shall not stop members trading.
+  The loss of a single publisher instance, or of a single recorder instance,
+  shall not stop members trading.
   \rationale{\reqref{R-0053} halts the venue when no recorder is publishing.
   Running two is what makes that condition rare, and a halt on losing one of them
   would make the pair worse than useless.}

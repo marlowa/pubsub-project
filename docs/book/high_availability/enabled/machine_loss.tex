@@ -31,8 +31,8 @@ most needs to.
 \end{requirement}
 
 \begin{requirement}{R-0084}{No single machine holds enough of the venue to prevent a decision}
-  The instances that decide which component may act shall be placed so that no
-  one machine's loss leaves the venue unable to decide.
+  The venue shall be deployed so that the loss of any one machine leaves it
+  still able to decide which instance may act.
   \rationale{An arbitration pair and its witness on one machine is not an
   arbitration service; it is a single point of failure with three processes in
   it.}

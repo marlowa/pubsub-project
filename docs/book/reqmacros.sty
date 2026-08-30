@@ -37,7 +37,10 @@
   \req@write{END}%
 }
 
-\newcommand{\rationale}[1]{\par\smallskip{\small\textbf{Rationale.}\ #1}}
+\newcommand{\rationale}[1]{%
+  \req@write{RATIONALE}%
+  \par\smallskip{\small\textbf{Rationale.}\ #1}%
+}
 
 % \detokenize so that a scenario name carrying an underscore is written and set
 % literally rather than read as mathematics.

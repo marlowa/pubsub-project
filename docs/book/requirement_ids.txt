@@ -61,7 +61,7 @@ R-0055     active    2026-08-30  A member that does not return has its orders ca
 R-0056     active    2026-08-30  An order meant to outlive the session is not cancelled by a disconnection
 R-0057     active    2026-08-30  A member that has lost its own numbering can start afresh without losing its orders
 R-0058     active    2026-08-30  Two instances of a group are never both entitled to act
-R-0059     active    2026-08-30  An arbiter that has not been told declines rather than guesses
+R-0059     active    2026-08-30  An arbiter that does not know which instance is acting says so, rather than choosing one
 R-0060     active    2026-08-30  Silence from an arbiter is not read as the absence of one
 R-0061     active    2026-08-30  Entitlement is held under a lease and lapses unless renewed
 R-0062     active    2026-08-30  An instance already acting keeps its entitlement when another returns
@@ -115,3 +115,6 @@ R-0109     active    2026-08-30  An instance that is not making progress does no
 R-0110     active    2026-08-30  How far behind a second instance may fall is a stated figure
 R-0111     active    2026-08-30  A deployment that could not survive losing a machine is reported when it starts
 R-0112     active    2026-08-30  The venue trades while the store it depends on is unreachable
+R-0113     active    2026-08-30  A member's instruction is carried out when the component holding it is the one that failed
+R-0114     active    2026-08-30  The store is known to be readable before trading begins, not during it
+R-0115     active    2026-08-30  How long an entitlement lasts without renewal is a stated figure

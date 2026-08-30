@@ -74,13 +74,25 @@ terms of those components rather than of members.
   \uncovered{no scenario asserts the property directly, only particular routes to it}
 \end{requirement}
 
-\begin{requirement}{R-0059}{An arbiter that has not been told declines rather than guesses}
-  An arbiter that holds no record for a group shall decline to decide for it,
-  and shall say that it is declining.
-  \rationale{Having just started, an arbiter cannot tell a group with no leader
-  from a group it has not yet heard about. Guessing produces the second leader
-  the arbiter exists to prevent; declining costs the asking component a retry.}
-  \uncovered{no scenario asks a freshly started arbiter about an unknown group}
+\begin{requirement}{R-0059}{An arbiter that does not know which instance is acting says so, rather than choosing one}
+  Where an arbiter is asked which instance of a group may act, and it holds no
+  record of that group, it shall answer that it cannot say. It shall not choose
+  an instance, and it shall not treat having no record as meaning that no
+  instance is currently acting.
+  \rationale{An arbiter keeps nothing across its own restart. It learns which
+  instance holds each entitlement by being told, so one that has just started
+  holds nothing for any group until something reports to it.
+
+  During that period two quite different situations look identical to it: a
+  group in which no instance is acting, and a group whose acting instance it has
+  simply not heard from yet. Choosing an instance is right in the first and
+  wrong in the second, where it grants a second entitlement for a group that
+  already has one --- which is the outcome the arbiter exists to prevent.
+
+  Saying it cannot answer costs the component that asked a retry. Choosing
+  wrongly costs the venue two instances acting on the same state, and nothing
+  afterwards can establish which of them was right.}
+  \uncovered{no scenario asks a freshly started arbiter about a group it has not been told of}
 \end{requirement}
 
 \begin{requirement}{R-0060}{Silence from an arbiter is not read as the absence of one}
@@ -126,6 +138,19 @@ terms of those components rather than of members.
   stays with an instance that has stopped, which is the failure that stops
   everything while nothing appears wrong.}
   \uncovered{no scenario starves an instance that keeps renewing}
+\end{requirement}
+
+\begin{requirement}{R-0115}{How long an entitlement lasts without renewal is a stated figure}
+  The period after which an unrenewed entitlement lapses shall be a figure the
+  venue states, and it shall be long enough that an instance doing its work is
+  never mistaken for one that has stopped.
+  \rationale{Too short and a busy instance loses its entitlement for being busy,
+  which moves the venue's work to the other instance at the moment there is most
+  of it. Too long and an instance that has genuinely stopped holds the
+  entitlement for that period, during which nothing acts. Neither error is
+  detectable from the figure alone, so it has to be derived from how long the
+  work actually takes.}
+  \uncovered{the period is not stated}
 \end{requirement}
 
 \begin{requirement}{R-0062}{An instance already acting keeps its entitlement when another returns}

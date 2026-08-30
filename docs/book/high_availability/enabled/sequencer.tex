@@ -94,7 +94,13 @@ Ideally nothing at all: a brief pause in responses, and no break in numbering.
 
 \begin{requirement}{R-0068}{The venue keeps trading when the acting sequencer is lost}
   Members shall continue to be able to place orders across the loss of the
-  instance that was acting.
+  sequencer instance that was acting, without reconnecting and without being
+  told to retry.
+  \rationale{This is the plainest thing two machines are for, and the one a
+  member would notice immediately if it did not hold. It is stated separately
+  from the requirements about what survives because continuing to trade and
+  keeping what was taken are different properties, and a venue can have this one
+  while failing every other requirement in this section.}
   \covers{ha_test:1}
 \end{requirement}
 

@@ -113,6 +113,15 @@ that order as open, for a member that was told it was cancelled and has stopped
 watching for it. \reqref{R-0107} is the rule that narrows this; the residue is
 the replication window itself.
 
+That residue needs an answer rather than an acknowledgement, and the answer has
+to be told to the member. The second site knows the point its replica reached,
+so it knows which of the orders it holds were last changed near that point ---
+which is not the same as knowing which changes it missed, but is enough to say
+\emph{these are the orders whose state I cannot vouch for}. Reopening trading
+without saying that leaves a member with orders it believes are cancelled and
+the venue believes are open, and no way for either to discover the disagreement
+until one of them is filled.
+
 \textbf{Credentials inherit the same window, with the same asymmetry.} The
 database also carries the comp ids that may trade, so a credential revoked
 shortly before the loss may still admit a member at the second site.
@@ -128,9 +137,32 @@ must begin beyond anything the first could have reached, leaving a visible gap
 --- which is correct, because something happened there that cannot be accounted
 for.
 
-\textbf{And the risk that no mechanism removes.} If a switchover is declared
-while the first site is still trading, both sites trade. Nothing in this design
-prevents it, because the two cannot reach a common arbiter and the venue does not
-fence by force. It is the same trade recorded in \cref{sec:ha:enabled:partition},
-made at a larger scale, and it rests on the decision being taken by somebody who
-has established that the first site has stopped.
+\section{The risk that no mechanism removes}
+\label{sec:dr:residual}
+
+If a switchover is declared while the first site is still trading, both sites
+trade. Nothing in this design prevents it: the two cannot reach a common arbiter,
+and the venue does not remove a site by force. It is the same trade recorded in
+\cref{sec:ha:enabled:partition} at a larger scale, and it is accepted rather than
+solved.
+
+What makes it acceptable is not a mechanism but a procedure, and the procedure
+has to be written down and rehearsed rather than assumed:
+
+\begin{itemize}[nosep]
+  \item the first site is established to have stopped --- not unreachable from
+        where the operator happens to be looking, but stopped;
+  \item where any part of it can still be reached, it is shut down before the
+        second site is declared live, and the shutdown is confirmed;
+  \item the declaration is made once, by somebody with the authority to make it,
+        and is recorded;
+  \item the first site is not brought back until a second decision is taken,
+        which \cref{sec:dr:settled} makes the default by requiring a site whose
+        components were all down to begin halted.
+\end{itemize}
+
+The order of the first two matters more than anything else in this chapter. A
+switchover declared before the first site is shut down is the one sequence that
+produces two trading venues, and it is also the one an operator under pressure is
+most likely to reach for, because declaring the second site live is the step that
+restores service and shutting the first down is the step that does not.

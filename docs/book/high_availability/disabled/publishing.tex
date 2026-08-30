@@ -41,9 +41,9 @@ Nothing: a member is not a subscriber. The requirements here protect the
 consumers.
 
 \begin{requirement}{R-0047}{A subscriber resumes where it had reached, across a restart of the publisher}
-  A subscriber returning after the publisher has restarted shall receive every
-  record after the position it presents, and shall not be required to have
-  been present throughout.
+  The venue shall supply a returning subscriber with every record after the
+  position it presents, and shall not require it to have been present
+  throughout.
   \rationale{A subscriber that must be continuously connected to avoid missing
   records cannot be restarted, upgraded or briefly partitioned --- which is to
   say it cannot be operated.}
@@ -51,8 +51,8 @@ consumers.
 \end{requirement}
 
 \begin{requirement}{R-0048}{A record is retained until every subscriber has consumed it}
-  The publisher shall not discard a record that any subscriber entitled to it
-  has not yet consumed.
+  The venue shall not discard a record that any subscriber entitled to it has
+  not yet consumed.
   \rationale{Where records are discarded on a timer rather than when they have
   been consumed, a subscriber that was briefly away loses records without
   anything reporting it. The loss is found by the subscriber, not by the

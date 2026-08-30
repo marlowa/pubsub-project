@@ -59,6 +59,18 @@ not the store. The store follows.
   \uncovered{the venue has no notion of a trading day}
 \end{requirement}
 
+\begin{requirement}{R-0114}{The store is known to be readable before trading begins, not during it}
+  Whether the store holding these orders can be read shall be established before
+  trading starts, and its being unreadable shall stop trading from starting
+  rather than be discovered once it has.
+  \rationale{These orders are read once, at the start of a day. A store that
+  cannot be read then produces a venue that opens with an empty set and no
+  indication that anything is missing --- and every member holding such an order
+  finds it gone, at the one moment nobody is watching for it. The check is cheap
+  and the moment to make it is before members are admitted.}
+  \uncovered{the store holds no orders and nothing reads it}
+\end{requirement}
+
 \begin{requirement}{R-0107}{A change to such an order is committed before the member is told of it}
   Where such an order is cancelled, amended or filled, that shall be committed to
   the venue's own record before the member is told, and the store the order

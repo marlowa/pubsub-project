@@ -136,6 +136,18 @@ reach the member leaves a gap in the member's numbering.
   \uncovered{no scenario restarts a gateway holding a session's terms}
 \end{requirement}
 
+\begin{requirement}{R-0113}{A member's instruction is carried out when the component holding it is the one that failed}
+  Where a member has asked for its orders to be cancelled if its connection
+  ends, and the connection ends because the component holding that session
+  failed, the instruction shall still be carried out.
+  \rationale{The instruction is acted on by reporting the disconnection to
+  whatever holds the orders, and a component that has died reports nothing. So
+  the one failure certain to end every session it holds is also the one after
+  which nothing acts on what those sessions asked for --- and the member cannot
+  tell, because from its side the connection ended in the ordinary way.}
+  \uncovered{no scenario ends a session by killing the component holding it}
+\end{requirement}
+
 \begin{requirement}{R-0002}{A member can establish that an order was not taken}
   On reconnecting, a member shall be able to determine that the venue holds no
   order for a \texttt{ClOrdID} it had sent.

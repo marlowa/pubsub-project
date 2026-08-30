@@ -78,8 +78,12 @@ on the peer's word alone safe.
 \end{requirement}
 
 \begin{requirement}{R-0075}{The venue keeps working when the acting engine is lost}
-  Members shall continue to be able to place and cancel orders across the loss of
-  the instance that was acting.
+  Members shall continue to be able to place and cancel orders across the loss
+  of the matching engine instance that was acting.
+  \rationale{Cancelling matters here as much as placing, and is the half that
+  is easier to overlook: a member that can place orders but cannot cancel the
+  ones it already has is worse off than one that can do neither, because it is
+  accumulating exposure it has no way to reduce.}
   \covers{ha_test:16}
 \end{requirement}
 

@@ -169,7 +169,8 @@ back on when there is nothing to fail over to.
 \end{requirement}
 
 \begin{requirement}{R-0014}{A sequence number is never issued twice}
-  A restarted sequencer shall not assign a number it has assigned before.
+  The venue shall not assign a sequence number it has assigned before, whatever
+  has restarted since.
   \rationale{The number is the venue's name for an order. Two orders sharing one
   cannot both be answered, and the second cannot be distinguished from a
   retransmission of the first.}

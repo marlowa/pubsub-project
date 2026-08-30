@@ -89,7 +89,8 @@ pause, a market-wide event, an instrument in disorderly conditions.
 \end{requirement}
 
 \begin{requirement}{R-0017}{Recovery does not depend on the order the components return in}
-  The venue shall reach the same state whichever of the two starts first.
+  The venue shall reach the same state whichever of the sequencer and the
+  matching engine starts first after both have failed.
   \rationale{A launcher restarts what it starts and coordinates with nothing, so
   the order in which they return is not something the venue decides. A component that cannot yet be told
   what it needs must wait to be told, rather than proceed on the assumption that

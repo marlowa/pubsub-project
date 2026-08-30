@@ -67,3 +67,16 @@
   description={The component that subscribes to the venue's internal topics and
     forwards what the venue has done to an enterprise bus. Known as TAP in
     earlier documents}}
+
+\newglossaryentry{group}{
+  name={group},
+  description={The instances of one component between which an entitlement to
+    act passes: the two sequencers, or the two matching engines. Every instance
+    of a group can do the same work, and at most one of them may do it at any
+    moment}}
+
+\newglossaryentry{entitlement}{
+  name={entitlement},
+  description={The permission to act, held by one instance of a group at a time
+    and granted for a generation. An instance without it does the work of a
+    follower: it keeps itself current and sends nothing onward}}
