@@ -156,6 +156,14 @@ class Wal {
      * Written atomically via write-to-tmp-then-rename.
      * Raises PubSubItcException on I/O failure.
      */
+    // Record where the log has reached. This does NOT delete anything.
+    //
+    // It used to unlink every segment before the current one, which is how the log came to
+    // retain about thirty seconds of history while claiming fifty million records. A component
+    // recovering from a checkpoint asks for everything after the position it holds, and that
+    // deletion is what made the answer unavailable -- silently, and worse the busier the venue
+    // was. Discarding history is truncate_below()'s job, and it takes the position below which
+    // nothing will be asked for; a snapshot has no idea what that is.
     void take_snapshot();
 
     /**

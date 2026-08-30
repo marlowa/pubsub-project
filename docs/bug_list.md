@@ -31,7 +31,7 @@
 | [BUG-0045](#bug_0045) | medium | task | A member has no defined way to discover its primary gateway is down |
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
 | [BUG-0047](#bug_0047) | medium | task | Disaster recovery is not modelled |
-| [BUG-0048](#bug_0048) | medium | defect | Nothing truncates the WAL, so it grows for the life of the venue |
+| [BUG-0048](#bug_0048) | medium | defect | The log discarded history on a timer, and now retains all of it |
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
@@ -1624,42 +1624,52 @@ it cannot deliver, discovered at the moment it is needed.
 Deliberately out of scope for 0.3.0 and not urgent. Recorded here because "we decided not to do
 this yet" and "nobody has thought about it" are different states, and only one of them is true.
 
-### BUG-0048: Nothing truncates the WAL, so it grows for the life of the venue {#bug_0048}
+### BUG-0048: The log discarded history on a timer, and now retains all of it {#bug_0048}
 
 | | |
 |---|---|
 | Severity | medium |
-| Found | 2026-08-24 |
+| Found | 2026-08-24, and re-diagnosed 2026-08-30 |
 | Recorded | 2026-08-24 |
-| How | Checking a claim in `wal_and_ha.md` about snapshot-anchored truncation against the code that implements it |
-| Impact | WAL segments accumulate on disk with nothing reclaiming them. Two design documents state a retention bound that does not exist |
+| How | Originally by checking a claim in `wal_and_ha.md` against the code. The re-diagnosis came from asking what a restarted matching engine would recover from |
+| Impact | Was: the log kept about thirty seconds of history while reporting fifty million records, and a component asking for anything older got nothing. Now: the log grows for as long as the venue runs |
 
-`Wal::truncate_below()` is implemented and correct: it finds the segment holding the first record
-at or after the safe sequence number and unlinks every segment before it. `delete_segments_before`
-is the only path in the venue that deletes a WAL segment.
+**What this entry said, and why it was wrong.** It said `truncate_below()` is the only path that
+deletes a segment and that nothing calls it. The first half was false: `delete_segments_before()`
+was also reached from `take_snapshot()`, which the sequencer and the publisher both call on a
+thirty-second timer. So the venue was not failing to reclaim history -- it was discarding almost all
+of it, every thirty seconds, and the busier it was the less it kept.
 
-**Nothing in the venue calls it.** The callers are `WalTest.cpp`, `TopicPubSubIntegrationTest.cpp`
-and `TopicPubSubBench.cpp` -- two tests and a benchmark. No sequencer, no matching engine, no
-snapshot path. So the WAL grows for as long as the venue runs, bounded by the disk rather than by
-any policy.
+Observed on 2026-08-30: `installed/var/sequencer_wal` held two 4 MB segments, numbered 3669 and
+3670, while the snapshot header recorded 49,659,964 records. About 3,669 segments had been deleted.
 
-**Two documents state a bound that does not hold.** `gateway_ha.md` step 6 tells the reader
-*"Snapshots truncate the WAL, and anything older than the retained segments cannot be replayed"*,
-and `wal_and_ha.md` describes truncation anchored to an older verified snapshot. Both describe the
-design. Neither describes what runs, and a member's resend depth is currently bounded by disk
-capacity instead.
+**Why it mattered.** Recovery from a checkpoint reads a position and asks for everything after it.
+That deletion is what made the answer unavailable -- silently, with no error at either end, and
+sooner the more the venue had been doing.
 
-**Why this has not bitten.** The longest run so far is 113 minutes. Retention only becomes visible
-over a trading day, and the failure when it arrives is a full disk rather than a slow degradation
--- which is the worst shape for noticing it.
+**Fixed 2026-08-30, in the direction of keeping too much.** `take_snapshot()` no longer deletes
+anything: recording where the log has reached and deciding what may be discarded are different acts,
+and a snapshot has no idea what any reader still needs. `truncate_below()` remains, is tested in
+both directions, and is called by nothing.
 
-**What it depends on.** Truncation must not delete history the follower still needs, nor history
-behind the newest snapshot -- and the safe anchor is the *older verified* snapshot, which is
-roadmap slice 9 and not started. So this is not simply a missing call: calling
-`truncate_below(newest_snapshot)` today would delete WAL history with only one unvalidated
-snapshot standing behind it, which is the case the invariant exists to prevent.
+**So the log now grows for as long as the venue runs**, which is what this entry originally
+described and is the state to be in while the alternative is silent loss. A full disk is a bounded,
+visible problem; a reader being told nothing is neither.
 
-Related: BUG-0046, since the WAL is what a member's resend is served from.
+**What closing this needs.** Retention anchored to the lowest position anything may still ask from
+-- R-0022 in `docs/book`. Three positions make it up and only one exists today:
+
+| Position | State |
+|---|---|
+| The follower's acknowledgement | Tracked as of 2026-08-30, `peer_acked_through_` |
+| The matching engine's checkpoint | Does not exist. See `docs/durability/open_order_checkpoint.md` |
+| The oldest a member's resend may reach | Not tracked. R-0008 |
+
+Until all three exist, nothing may be discarded. The sequencer warns once the log passes five
+million records so that the growth is visible rather than discovered.
+
+Related: [BUG-0046](#bug_0046), since a member's resend is served from this log; and the checkpoint
+work, which cannot be completed without this.
 
 ### BUG-0068: The specification states behaviour that almost nothing tests {#bug_0068}
 

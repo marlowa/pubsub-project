@@ -142,8 +142,6 @@ void Wal::take_snapshot() {
     if (::rename(tmp.c_str(), final_path.c_str()) != 0) {
         throw PubSubItcException("Wal: take_snapshot rename(" + tmp + " -> " + final_path + "): " + StringUtils::get_errno_string());
     }
-
-    delete_segments_before(pos.segment);
 }
 
 void Wal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns) {

@@ -405,13 +405,19 @@ TEST_F(WalClassTest, OversizedPayloadThrows) {
     EXPECT_THROW(wal.append(1, 1000, big.data(), static_cast<int>(big.size()), 0), pubsub_itc_fw::PreconditionAssertion);
 }
 
-// Segment deletion after snapshot
+// What a snapshot does to the segments, which is nothing
 
-TEST_F(WalClassTest, SnapshotDeletesOldSegments) {
+TEST_F(WalClassTest, SnapshotRetainsOldSegments) {
     // Each Wal entry with a 1-byte PDU payload occupies:
     //   24 (WalEntryHeader) + 8 (wall_time_ns) + 2 (pdu_id) + 1 (PDU) + 4 (CRC) = 39 bytes.
-    // With segment_size=128: 3 entries fit (3*39=117), the 4th triggers rollover to segment 1.
-    // take_snapshot() then calls delete_segments_before(1), removing segment 0.
+    // With segment_size=128: 3 entries fit (3*39=117), the 4th rolls over to segment 1.
+    //
+    // take_snapshot() used to delete segment 0 here, and that is the defect this test now
+    // guards against rather than asserting. A component recovering from a checkpoint asks
+    // for everything after the position it holds; deleting on a timer is what made the
+    // answer unavailable, silently, and sooner the busier the venue was. Discarding history
+    // belongs to truncate_below(), which is told the position below which nothing will be
+    // asked for. See docs/bug_list.md BUG-0048.
     constexpr size_t small_segment = 128;
     {
         Wal wal;
@@ -423,11 +429,46 @@ TEST_F(WalClassTest, SnapshotDeletesOldSegments) {
         wal.take_snapshot();
     }
 
-    EXPECT_FALSE(std::filesystem::exists(dir_ + "/wal_000000.log")) << "Segment 0 should have been deleted by take_snapshot()";
+    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000000.log")) << "take_snapshot() must not delete history: a reader may still need it";
     EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log")) << "Segment 1 (current write segment) must still exist";
 }
 
-TEST_F(WalClassTest, SnapshotDeletesOldSegmentsAndReopenWorks) {
+TEST_F(WalClassTest, TruncateBelowDeletesOnlyWhatIsBehindTheGivenPosition) {
+    // The counterpart: discarding history is possible, but only when told from where.
+    constexpr size_t small_segment = 128;
+    {
+        Wal wal;
+        wal.open(dir_, small_segment);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 4; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        // Nothing below seq 4 will be asked for, and seq 4 is the first record of segment 1.
+        wal.truncate_below(4);
+    }
+
+    EXPECT_FALSE(std::filesystem::exists(dir_ + "/wal_000000.log")) << "Segment 0 holds only records below the safe position";
+    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log")) << "Segment 1 holds the safe position itself";
+}
+
+TEST_F(WalClassTest, TruncateBelowKeepsEverythingWhenNothingIsSafeYet) {
+    constexpr size_t small_segment = 128;
+    {
+        Wal wal;
+        wal.open(dir_, small_segment);
+        const uint8_t payload[] = {0x00};
+        for (int i = 1; i <= 4; ++i) {
+            wal.append(i, 1000, payload, 1, 0);
+        }
+        // The earliest record is still needed, so nothing may go.
+        wal.truncate_below(1);
+    }
+
+    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000000.log")) << "Nothing is behind the safe position, so nothing may be deleted";
+    EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log"));
+}
+
+TEST_F(WalClassTest, SnapshotThenReopenWorks) {
     constexpr size_t small_segment = 128;
     {
         Wal wal;

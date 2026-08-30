@@ -226,6 +226,20 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     std::unordered_map<int64_t, PendingEr> pending_er_; // seq_no -> buffered ER
     std::unordered_set<int64_t> wal_acked_seq_nos_;     // acked but ER not yet received
 
+    // The highest sequence number the follower has acknowledged. Only ever advances.
+    //
+    // Distinct from wal_acked_seq_nos_ above, which holds individual acks still waiting for
+    // their execution report and is emptied as they arrive. This is a floor: everything at or
+    // below it is on two machines. It is the first of the positions the log's retention will
+    // be anchored to -- see the snapshot timer for why nothing is reclaimed yet.
+    int64_t peer_acked_through_{0};
+
+    // Warn when the log has grown past this without anything having been reclaimed. Not a
+    // limit: nothing is deleted on reaching it. It exists because the venue currently cannot
+    // establish what is safe to discard, so the log grows for as long as it runs, and an
+    // operator should learn that from a log line rather than from a full disk.
+    static constexpr size_t wal_growth_warning_records = 5'000'000;
+
     // Reusable scratch buffer for encoding the WalRecord envelope before appending it
     // to the WAL (append_envelope_to_wal). Grown to the largest envelope seen and
     // reused -- no fixed cap that could silently fail to persist, no per-record alloc.

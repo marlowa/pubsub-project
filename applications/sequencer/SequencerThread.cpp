@@ -761,8 +761,29 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     if (id == wal_snapshot_timer_id_) {
         try {
             wal_.take_snapshot();
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot taken: last_seq_no={}, record_count={}",
-                       wal_.last_seq_no(), wal_.record_count());
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: WAL snapshot taken: last_seq_no={}, record_count={}, peer acknowledged through {}", wal_.last_seq_no(),
+                       wal_.record_count(), peer_acked_through_);
+
+            // Nothing is reclaimed here, and that is deliberate.
+            //
+            // Taking a snapshot used to delete every segment before the current one, which left
+            // the log holding about thirty seconds of history -- less the busier the venue was.
+            // A component recovering from a checkpoint asks for everything after the position it
+            // holds, and that deletion is what made the answer unavailable.
+            //
+            // Reclaiming safely needs the lowest position anything may still ask from, and the
+            // venue cannot yet establish it: the follower's is known (above), but the matching
+            // engine publishes no position, and a member's resend can reach back as far as its
+            // session goes. Deleting on a timer instead of on those positions is what the
+            // original defect was. So the log grows until they exist, which is a bounded and
+            // visible problem where silent loss was neither. See docs/bug_list.md BUG-0048.
+            if (wal_.record_count() > wal_growth_warning_records) {
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "SequencerThread: the WAL holds {} records and nothing is reclaiming it -- retention cannot be anchored until "
+                           "every component publishes the position it may ask from (docs/bug_list.md BUG-0048)",
+                           wal_.record_count());
+            }
         } catch (const std::exception& ex) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: WAL snapshot failed: {}", ex.what());
         }
@@ -1456,6 +1477,11 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalAck received seq={}", view.seq_no);
+
+    // Everything at or below this is on both machines. Acks arrive in the order the records
+    // were streamed, so the highest is also the highest contiguous; std::max is belt and
+    // braces against a reordering that would otherwise let the floor run ahead of the facts.
+    peer_acked_through_ = std::max(peer_acked_through_, view.seq_no);
 
     auto it = pending_er_.find(view.seq_no);
     if (it != pending_er_.end()) {
