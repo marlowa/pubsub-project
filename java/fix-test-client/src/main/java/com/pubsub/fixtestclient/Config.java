@@ -28,6 +28,17 @@ public record Config(
         String trustStorePassword,
         String logoPath
 ) {
+    /**
+     * Copies the endpoint list so that the configuration cannot change under the client.
+     *
+     * A record keeps whatever list it is handed, and a caller that kept its own reference
+     * could then add or remove a gateway while a session is live. Copying here makes the
+     * list this record hands out immutable whatever it was given.
+     */
+    public Config {
+        gateways = List.copyOf(gateways);
+    }
+
     public static Config load(String path) {
         Toml toml = new Toml().read(new File(path));
         return new Config(

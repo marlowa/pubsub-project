@@ -5,6 +5,9 @@
       EI_EXPOSE_REP2: handler and engine classes store injected singletons by reference.
       These are application-scoped objects created in Main and shared safely through
       constructor injection — wrapping them in a copy would be wrong.
+
+      This list names each class, so a new class that holds an injected collaborator has to
+      be added here or the build fails on it.
     -->
     <Match>
         <Bug pattern="EI_EXPOSE_REP2"/>
@@ -17,19 +20,29 @@
             <Class name="com.pubsub.fixtestclient.script.ScriptRunner"/>
             <Class name="com.pubsub.fixtestclient.fix.FixEngine"/>
             <Class name="com.pubsub.fixtestclient.script.FixSessionBinding"/>
+            <!--
+              BinaryEngine holds the blotter store the whole client writes into, and
+              GatewaySelector holds the two engines it selects between. Both are made once
+              in Main; a copy of either would be a second client with its own session.
+            -->
+            <Class name="com.pubsub.fixtestclient.binary.BinaryEngine"/>
+            <Class name="com.pubsub.fixtestclient.gateway.GatewaySelector"/>
         </Or>
     </Match>
 
     <!--
       EI_EXPOSE_REP: FixApplication.inboundQueue() returns the live queue intentionally
       so ScriptRunner can poll it directly.  FixEngine.fixApplication() is similarly
-      an accessor for a shared singleton.
+      an accessor for a shared singleton.  GatewaySelector.fix() and binary() are the same:
+      the web handlers ask it for the live engine in order to send on that very session, so
+      handing back anything other than the engine itself would send the order nowhere.
     -->
     <Match>
         <Bug pattern="EI_EXPOSE_REP"/>
         <Or>
             <Class name="com.pubsub.fixtestclient.fix.FixApplication"/>
             <Class name="com.pubsub.fixtestclient.fix.FixEngine"/>
+            <Class name="com.pubsub.fixtestclient.gateway.GatewaySelector"/>
         </Or>
     </Match>
 

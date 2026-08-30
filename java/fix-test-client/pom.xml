@@ -272,6 +272,8 @@
                         <goals><goal>check</goal></goals>
                         <configuration>
                             <excludes>
+                                <!-- Generated from the DSL schema into target/generated-sources -->
+                                <exclude>com/pubsub/fixtestclient/protocol/**</exclude>
                                 <!-- Needs live FIX gateway to exercise -->
                                 <exclude>com/pubsub/fixtestclient/fix/FixEngine.class</exclude>
                                 <exclude>com/pubsub/fixtestclient/fix/MaskingLog.class</exclude>
@@ -282,6 +284,9 @@
                                 <exclude>com/pubsub/fixtestclient/capture/**</exclude>
                                 <!-- Needs live Javalin context -->
                                 <exclude>com/pubsub/fixtestclient/web/**</exclude>
+                                <!-- Needs a live binary gateway on a socket -->
+                                <exclude>com/pubsub/fixtestclient/binary/BinaryEngine.class</exclude>
+                                <exclude>com/pubsub/fixtestclient/binary/BinaryEngine$*.class</exclude>
                                 <!-- Wiring only — no logic -->
                                 <exclude>com/pubsub/fixtestclient/Main.class</exclude>
                             </excludes>

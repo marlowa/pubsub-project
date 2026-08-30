@@ -1,0 +1,4 @@
+# The inline mock maker, so that a final class can be mocked. BinaryEngine is final and
+# holds a socket, so a test of anything that talks to it needs a stand-in rather than the
+# real thing.
+mock-maker-inline
