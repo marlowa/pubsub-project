@@ -125,12 +125,45 @@ which is rare and not latency-critical.
 
 ### On the hot path
 
-- **accept**: write the slot's contents, then set the live flag, then publish
-  "this region is current to sequence N".
-- **remove**: clear the live flag, then publish.
+**accept**
+
+1. write the slot's contents
+2. set the live flag
+3. emit the execution report
+4. publish "this region is current to sequence N"
+
+**remove**: clear the live flag, emit the report, publish.
 
 Both are constant time: one copy of an order's terms and two stores. Nothing
 walks, nothing waits, nothing locks.
+
+**The publish comes last, and that ordering is the whole of the safety.** A death
+anywhere before step 4 leaves the order above the published position, so recovery
+discards the slot and the sequencer's tail re-runs the accept — rebuilding the
+slot and emitting the report. Nothing is lost.
+
+The price is that a death between 3 and 4 sends the report twice. That is the
+right way round: a report a member never receives cannot be recovered by the
+member, and one it receives twice can, provided it can tell. R-0122 requires the
+repeat to be marked. Publishing before emitting would trade the duplicate for a
+silent loss, where the venue holds an order the member was never told about.
+
+### One copy of the order, not two
+
+The engine's map from order identity to order becomes **a map to a slot index**,
+and the region holds the only copy of the order itself.
+
+The alternative — a region alongside the existing map of entries — writes every
+order twice on the accept path and allows the two to disagree, which is a class
+of defect with no upper bound on how confusing it gets.
+
+The cost is an indirection on lookup: the map gives an index, and the order is at
+`header_size + index * slot_size`, which on a region of a few hundred megabytes
+is likely a cache miss. Both paths that pay it — the duplicate check on accept,
+and finding an order to cancel — can afford it.
+
+It does mean changing the engine's existing structures rather than adding a
+region beside them. That is more work and it is the right kind.
 
 The published position is a single aligned 64-bit value. A store to it does not
 tear, so there is no partial publish to detect. **It is written on the engine's
@@ -175,6 +208,22 @@ pages sit in the page cache rather than on disk. That is the guarantee the
 specification asks for and not a compromise: `docs/book` section 4.3.3 states
 that lost or damaged durable state is where the disabled configuration is weak,
 and that the enabled configuration's answer to it is the other machine.
+
+## When the region cannot be used
+
+Absent, damaged, or written by a different build: it is treated as no region at
+all, under R-0102. The engine then cannot name what it held, and cannot cancel
+what it cannot name.
+
+**The fallback is the sequencer's record.** It holds every order and every
+cancellation, so what was open can be established by replaying it — the slow path
+rejected above for ordinary recovery. Here it is worth the time: it happens once,
+it is not the normal case, and what it buys is every member being told what
+became of its orders. Cancel each, report each, halt. That is R-0123.
+
+If that record cannot supply it either, the venue halts and says it cannot
+account for what it was holding, which is the last resort and still better than
+falling silent.
 
 ## When the region is full
 

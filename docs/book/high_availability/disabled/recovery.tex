@@ -26,6 +26,38 @@ configuration only where losing what it holds is acceptable.
   state: an order it placed may be unknown, and one it cancelled may be live.
 \end{gap}
 
+\begin{requirement}{R-0121}{A component takes the cost of first touching its memory before it reports itself ready}
+  Where a component maps memory it will use while trading, it shall touch all of
+  that memory before reporting itself ready, so that the delay of first use falls
+  before it is trading rather than during.
+  \rationale{Mapping a file reserves addresses and reads nothing. The first time
+  each page is used the processor interrupts and the kernel fetches it --- a small
+  delay, once per page, and for a region of a few hundred megabytes there are tens
+  of thousands of them. Left alone they fall on whatever code touches each page
+  first, which is the order path.
+
+  Doing it before reporting ready means a component that has said it can trade
+  has already paid them. Doing it afterwards moves the cost onto the first
+  members to send anything, which is the worst moment to take it and the hardest
+  to attribute afterwards.}
+  \uncovered{no scenario measures a component's first orders against its later ones}
+\end{requirement}
+
+\begin{requirement}{R-0122}{A report a member receives twice is marked as a repeat}
+  Where a recovery repeats work whose execution reports had already been sent,
+  the reports sent again shall be marked so that the member can tell a repeat
+  from a second event.
+  \rationale{A component that dies partway through handling an order cannot know
+  whether the report for it was sent. Sending it again is the right choice: a
+  member that never receives one cannot recover from that alone, and a member
+  that receives one twice can, provided it can tell.
+
+  Unmarked, a repeated acceptance is indistinguishable from a second order
+  accepted --- so the venue would be reporting something that did not happen, in
+  the course of correcting something that did.}
+  \uncovered{no scenario kills a component between sending a report and recording that it did}
+\end{requirement}
+
 \begin{requirement}{R-0031}{A component does not act on partially recovered state}
   A component shall not begin work until its recovery is complete. No sequence
   number shall be assigned before the last one issued is known, and no order

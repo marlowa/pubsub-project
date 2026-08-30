@@ -153,17 +153,45 @@ it is exercised continually rather than only when a test produces a failover.
   \uncovered{no scenario restarts the engine and inspects what it holds before trading resumes}
 \end{requirement}
 
+\begin{requirement}{R-0123}{A member is told what it had, even when the venue's own record of it is unusable}
+  Where the record a component keeps of the orders it held cannot be used ---
+  absent, damaged, or written by a different build --- the venue shall establish
+  what was open from its record of what it took, cancel each order, and report
+  the cancellation to the member that placed it. Where it cannot establish that
+  either, it shall halt and say that it cannot account for what it was holding.
+  \rationale{\reqref{R-0102} says such a record is not to be used. That leaves
+  the venue unable to name what it held, and it cannot cancel what it cannot
+  name --- so without a second route it would fall silent about every order,
+  which is the outcome \reqref{R-0020} exists to prevent.
+
+  The record of what the venue took is that second route. Rebuilding from it is
+  far slower than reading a checkpoint, which is why it is not the ordinary
+  recovery; but this is not the ordinary case, it happens once, and what the time
+  buys is every member being told what became of its orders.
+
+  Admitting that it cannot say is the last resort and is still better than
+  silence: a member that is told the venue has lost track can act, where a member
+  that is told nothing cannot.}
+  \uncovered{no scenario damages the record and then restarts the component}
+\end{requirement}
+
 \begin{requirement}{R-0117}{Orders open across a long absence are cancelled, reported, and trading halts}
   Where the venue was unable to match for longer than a stated period and orders
   were open when it stopped, it shall cancel each of them, send the member that
   placed it a report saying so, and halt. Where nothing was open, it shall resume
   without halting.
-  \rationale{The market moved while the venue could not match, and the member
-  could not cancel because there was nothing to cancel against. An order left
-  resting at a price struck before that gap is a hazard to the member that placed
-  it, and the hazard has nothing to do with whether the order was recoverable ---
-  a correctly recovered stale order is exactly as dangerous as a correctly
-  recovered fresh one.
+  \rationale{\textbf{The period is the length of the outage, not the age of the
+  order.} An order that has rested since the morning in a working market is not a
+  problem: its owner could have cancelled it at any moment and did not. What
+  makes an order dangerous is that its owner was \emph{locked out of it} --- the
+  venue could not match, so the member could not cancel, and the market moved
+  while it could do nothing. The order is now priced for a market that has gone,
+  and its owner was denied every opportunity to act on that.
+
+  So the hazard has nothing to do with how long the order had been resting, and
+  nothing to do with whether it was recoverable: a correctly recovered order that
+  its member was locked out of for ten minutes is exactly as dangerous as one
+  recovered from a corrupt region would have been.
 
   Cancelling removes the uncertainty, the reports tell each member where it
   stands, and the halt says the venue is not simply carrying on as though nothing
@@ -180,12 +208,27 @@ it is exercised continually rather than only when a test produces a failover.
 
 \begin{requirement}{R-0118}{How long an absence may be before orders are cancelled is a stated figure}
   The period in \reqref{R-0117} shall be a figure the venue states, measured from
-  the last order it matched to trading resuming.
+  the moment the venue stopped being able to match to the moment it resumes, and
+  the venue shall determine that without depending on anything outside the
+  component concerned.
   \rationale{It is the whole absence and not the recovery step. Noticing the
   death, restarting the process and rebuilding the set are all terms in it, and
   the restart alone was measured at about two and a half seconds --- so a figure
   configured against recovery time is set against the wrong quantity and will be
   reached later than intended.
+
+  \textbf{It is measured from when matching stopped, not from the last order
+  matched.} Traffic comes in bursts, so a quiet period before a failure is
+  ordinary; taking the last order as the start would read a ten-minute lull
+  followed by a two-second restart as a twelve-minute absence, and cancel every
+  member's orders for having been quiet.
+
+  \textbf{And the component must be able to work it out alone.} A supervisor
+  knows exactly when it killed a process and when it started the replacement, and
+  is the obvious source --- but nothing in this chapter may depend on a supervisor
+  being there, and a component started by hand, in a debugger, hours after the
+  last one stopped, must reach the same answer. It does: an hour has passed, the
+  orders are an hour stale, and cancelling them is right.
 
   It is also a trading decision rather than a measurement: it says how long a
   member's resting order stays meaningful in this market, which is a judgement

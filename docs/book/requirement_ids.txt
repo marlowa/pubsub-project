@@ -123,3 +123,6 @@ R-0117     active    2026-08-30  Orders open across a long absence are cancelled
 R-0118     active    2026-08-30  How long an absence may be before orders are cancelled is a stated figure
 R-0119     active    2026-08-30  An order identifier used today is refused for the rest of the day
 R-0120     active    2026-08-30  A cancel for an order the venue no longer holds says which case it is
+R-0121     active    2026-08-30  A component takes the cost of first touching its memory before it reports itself ready
+R-0122     active    2026-08-30  A report a member receives twice is marked as a repeat
+R-0123     active    2026-08-30  A member is told what it had, even when the venue's own record of it is unusable
