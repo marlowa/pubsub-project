@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 69 |
-| Open | 25 (15 defects, 10 tasks) |
+| Bugs recorded | 70 |
+| Open | 26 (16 defects, 10 tasks) |
 | Closed | 44 |
-| Next id | BUG-0070 |
+| Next id | BUG-0071 |
 
 ## Open bugs by severity
 
-11 high, 11 medium, 3 low.
+12 high, 11 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,6 +24,7 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
+| [BUG-0070](#bug_0070) | high | defect | The sequencer blocks for half a second committing to the log |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -792,6 +793,71 @@ series to plot. Whatever the cause turns out to be, the venue could not have sho
 the framework's own guidance is that touching a metric on the order path to buy resolution
 nobody looks at is the wrong trade. The list above is what one investigation actually wanted;
 the arbiters and witness are quieter and can wait until something needs explaining about them.
+
+---
+
+### BUG-0070: The sequencer blocks for half a second committing to the log {#bug_0070}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | First trading-day performance run; then measured directly with `scripts/thread_offcpu.py` |
+| Impact | A p99 round trip of about 2 ms with excursions past 400 ms. Orders arriving during one wait behind it |
+
+**What happens.** The sequencer's reactor thread enters uninterruptible sleep -- state D -- for
+up to 557 ms at a time, with **zero** time on the run queue. It is not competing for a cpu and
+it is not spinning: it is waiting for the filesystem, on the thread that sequences every order
+the venue takes.
+
+Measured across one twenty-minute run, 634 of 640 samples taken while the thread was in
+uninterruptible sleep were in two kernel functions:
+
+| kernel function | samples | what it is |
+|---|---|---|
+| `do_get_write_access` | 396 | asking the ext4 journal for permission to modify a metadata block |
+| `wait_transaction_locked` | 238 | waiting for a journal transaction to commit |
+| `rq_qos_wait` | 5 | block layer queueing |
+
+**Why a memcpy waits on a journal.** The path is not obviously I/O at any point, which is what
+made it hard to find:
+
+1. `WalWriter::open` creates each 4 MB segment with `ftruncate`, so the file is **sparse** ---
+   its size is set and no blocks are allocated.
+2. `WalWriter::append` is two `memcpy` calls into a `MAP_SHARED` mapping. There is no `write`,
+   no `fsync` and no `msync` anywhere in the writer.
+3. The first write to each page of that mapping faults, and the kernel must **allocate a
+   filesystem block** to back it.
+4. Allocating changes ext4 metadata, which needs journal write access. If a transaction is
+   committing, the thread waits, uninterruptibly, and cannot be interrupted or preempted.
+
+So a `memcpy` is silently a journal operation. Nothing in the sequencer's source looks like it
+touches a disk.
+
+**Why it was invisible.** A cycle profiler samples a thread only while it is running, so a
+thread waiting produces no samples at all --- the sequencer's profile showed no hot spot
+because nothing was executing. The only sign in the venue was the reactor's stall watchdog
+noticing a callback had overrun, and the figure it prints is how long the callback has taken
+**so far**, which understates the wait: one stall reported as 372 ms was 557 ms measured.
+
+**Candidate fixes, none tested.**
+
+- **Give each segment real blocks before it is used.** Writing 4 MB of zeros at creation
+  allocates and initialises every block, so later mapped writes touch nothing new. `fallocate`
+  alone may not be enough: on ext4 a preallocated extent is *unwritten*, and the first write
+  still converts it, which is itself journalled.
+- **Create the next segment before it is needed**, off the reactor thread, so whatever the
+  creation costs is not paid by an order.
+- **Both**, since the first removes the per-page cost and the second removes the per-segment
+  cost, and they are different costs.
+
+Measuring any of them is now cheap: `wal_append_nanoseconds` records what a commit costs, and
+`scripts/thread_offcpu.py` says whether the thread still leaves the cpu.
+
+Related: [BUG-0048](#bug_0048), since the log is never reclaimed and so grows without bound,
+which is what keeps allocating new blocks. [BUG-0069](#bug_0069), since the sequencer had no
+metrics at all when this was being investigated.
 
 ---
 
