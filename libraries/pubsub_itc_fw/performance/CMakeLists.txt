@@ -41,6 +41,8 @@ message(STATUS "  Added performance harness: fixed_pool_bench")
 # -----------------------------------------------------------------------------
 add_executable(topic_pubsub_bench
     src/TopicPubSubBench.cpp
+    # Compiled in rather than linked: the test helper library carries its own main().
+    ../tests_common/src/ScratchDirectory.cpp
 )
 
 add_dependencies(topic_pubsub_bench
@@ -55,6 +57,7 @@ target_link_libraries(topic_pubsub_bench PRIVATE
 
 target_include_directories(topic_pubsub_bench PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tests_common/include
     ${FIX_DSL_INCLUDE_DIR}
 )
 

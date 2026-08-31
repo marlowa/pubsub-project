@@ -3,6 +3,7 @@
 add_library(pubsub_itc_fw_test_helpers STATIC
     src/TestRunner.cpp
     src/UnitTestLogger.cpp
+    src/ScratchDirectory.cpp
 )
 
 target_include_directories(pubsub_itc_fw_test_helpers PUBLIC

@@ -21,6 +21,7 @@
 
 #include "EpochStore.hpp"
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace {
 
 // A directory of its own per test, removed afterwards, so a leftover file from
@@ -28,10 +29,7 @@ namespace {
 class EpochStoreTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        char tmpl[] = "/tmp/epoch_store_test_XXXXXX";
-        const char* made = ::mkdtemp(tmpl);
-        ASSERT_NE(made, nullptr) << "could not create a temporary directory";
-        dir_ = made;
+        dir_ = pubsub_itc_fw::tests_common::make_scratch_directory("epoch_store_test");
         path_ = dir_ + "/epoch.state";
     }
 

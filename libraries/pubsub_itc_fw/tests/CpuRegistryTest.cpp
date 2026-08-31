@@ -20,6 +20,7 @@
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 using namespace pubsub_itc_fw;
 
 class CpuRegistryTest : public ::testing::Test {
@@ -32,10 +33,7 @@ class CpuRegistryTest : public ::testing::Test {
     used to make by putting the registry in /dev/shm.
     */
     void SetUp() override {
-        char directory_template[] = "/tmp/pubsub_cpu_registry_test_XXXXXX"; // NOLINT(modernize-avoid-c-arrays)
-        const char* created_directory = ::mkdtemp(directory_template);
-        ASSERT_NE(created_directory, nullptr) << "mkdtemp failed: " << StringUtils::get_errno_string();
-        directory_ = created_directory;
+        directory_ = pubsub_itc_fw::tests_common::make_scratch_directory("pubsub_cpu_registry_test");
         shm_path_ = directory_ + "/registry";
         lock_path_ = directory_ + "/registry.lock";
     }

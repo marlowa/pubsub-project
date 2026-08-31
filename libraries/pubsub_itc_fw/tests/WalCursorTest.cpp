@@ -15,6 +15,7 @@
 #include <pubsub_itc_fw/WalPosition.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace pubsub_itc_fw::tests {
 
 namespace {
@@ -35,9 +36,7 @@ struct Record {
 class WalCursorTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        std::string tmpl = "/dev/shm/wal_cursor_test_XXXXXX";
-        ASSERT_NE(::mkdtemp(tmpl.data()), nullptr);
-        dir_ = tmpl;
+        dir_ = pubsub_itc_fw::tests_common::make_scratch_directory("wal_cursor_test");
     }
 
     void TearDown() override {

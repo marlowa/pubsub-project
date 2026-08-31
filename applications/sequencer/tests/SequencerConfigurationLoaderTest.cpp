@@ -70,8 +70,8 @@ syslog_level = "critical"
 cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = true
 cpu_registry_shm_path  = "/pubsub_cpu_registry_test"
-cpu_registry_lock_file = "/tmp/pubsub_cpu_registry_test.lock"
-cpu_layout_file = "/tmp/cpu_layout_test.toml"
+cpu_registry_lock_file = "var/run/pubsub_cpu_registry_test.lock"
+cpu_layout_file = "var/run/cpu_layout_test.toml"
 cpu_layout_component = "sequencer_primary"
 connect_retry_warning_interval = "15m"
 

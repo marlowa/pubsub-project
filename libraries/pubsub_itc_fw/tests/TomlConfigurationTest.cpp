@@ -26,6 +26,7 @@
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace pubsub_itc_fw::tests {
 
 class TomlConfigurationTest : public ::testing::Test {
@@ -77,7 +78,7 @@ TEST_F(TomlConfigurationTest, LoadStringLeavesConfigUnchangedOnFailure) {
 // load_file
 
 TEST_F(TomlConfigurationTest, LoadFileNonExistentFileReturnsFalse) {
-    auto [ok, err] = config.load_file("/dev/shm/does_not_exist_12345.toml");
+    auto [ok, err] = config.load_file(pubsub_itc_fw::tests_common::scratch_path_that_does_not_exist("config.toml"));
     EXPECT_FALSE(ok);
     EXPECT_FALSE(err.empty());
 }

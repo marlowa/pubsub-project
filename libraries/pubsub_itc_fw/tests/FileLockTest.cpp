@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/FileLock.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 using namespace pubsub_itc_fw;
 
 namespace {
@@ -39,17 +40,16 @@ bool file_is_lockable(const std::string& path) {
 class FileLockTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        path_ = "/dev/shm/pubsub_file_lock_test.lock";
-        other_path_ = "/dev/shm/pubsub_file_lock_test_other.lock";
-        ::unlink(path_.c_str());
-        ::unlink(other_path_.c_str());
+        dir_ = pubsub_itc_fw::tests_common::make_scratch_directory("pubsub_file_lock_test");
+        path_ = dir_ + "/lock";
+        other_path_ = dir_ + "/other.lock";
     }
 
     void TearDown() override {
-        ::unlink(path_.c_str());
-        ::unlink(other_path_.c_str());
+        pubsub_itc_fw::tests_common::remove_scratch_directory(dir_);
     }
 
+    std::string dir_{};
     std::string path_{};
     std::string other_path_{};
 };

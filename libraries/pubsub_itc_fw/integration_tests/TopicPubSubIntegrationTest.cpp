@@ -60,6 +60,7 @@
 #include <fix_orders.hpp>
 #include <topics.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 using pubsub_itc_fw::tests::make_allocator_config;
 using pubsub_itc_fw::tests::make_queue_config;
 
@@ -573,9 +574,7 @@ class TopicPubSubTest : public ::testing::Test {
   protected:
     void SetUp() override {
         logger_ = std::make_unique<LoggerWithSink>();
-        std::string tmpl = "/dev/shm/topic_pubsub_test_XXXXXX";
-        ASSERT_NE(::mkdtemp(tmpl.data()), nullptr);
-        wal_dir_ = tmpl;
+        wal_dir_ = pubsub_itc_fw::tests_common::make_scratch_directory("topic_pubsub_test");
     }
 
     void TearDown() override {

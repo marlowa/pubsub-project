@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <gtest/gtest.h>
@@ -16,6 +17,7 @@
 #include <pubsub_itc_fw/WalReader.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace pubsub_itc_fw::tests {
 
 namespace {
@@ -45,13 +47,11 @@ WalReader::EntryCallback capture(std::vector<Captured>& out) {
 class WalTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        std::string tmpl = "/dev/shm/wal_test_XXXXXX";
-        ASSERT_NE(::mkdtemp(tmpl.data()), nullptr);
-        dir_ = tmpl;
+        dir_ = pubsub_itc_fw::tests_common::make_scratch_directory("wal_test");
     }
 
     void TearDown() override {
-        std::filesystem::remove_all(dir_);
+        pubsub_itc_fw::tests_common::remove_scratch_directory(dir_);
     }
 
     std::string dir_;
@@ -80,6 +80,27 @@ TEST_F(WalTest, OpenSegmentFileHasCorrectSize) {
     WalWriter w;
     w.open(dir_, segment_size, {0, 0});
     EXPECT_EQ(std::filesystem::file_size(dir_ + "/wal_000000.log"), segment_size);
+}
+
+TEST_F(WalTest, ANewSegmentHasItsBlocksAlreadyAllocated) {
+    // The property this exists to keep. A segment created with ftruncate alone is SPARSE: the
+    // size is set and no block is allocated, so every page gets its block on first write --
+    // inside a page fault, on whichever thread happens to be appending. Allocating changes
+    // filesystem metadata, metadata changes need the journal, and waiting for a journal
+    // transaction is uninterruptible: measured on the sequencer, which appends every order the
+    // venue takes, those waits reached 557 ms. See docs/bug_list.md BUG-0070.
+    //
+    // st_blocks counts the 512-byte units actually allocated, so a sparse file reports far
+    // fewer than its size implies and a written one reports at least as many. That is the
+    // difference being asserted, and it is what a return to ftruncate would break.
+    WalWriter w;
+    w.open(dir_, segment_size, {0, 0});
+
+    struct stat info {};
+    ASSERT_EQ(::stat((dir_ + "/wal_000000.log").c_str(), &info), 0);
+    const blkcnt_t needed = static_cast<blkcnt_t>(segment_size / 512);
+    EXPECT_GE(info.st_blocks, needed) << "the segment is sparse: " << info.st_blocks << " blocks allocated of " << needed
+                                      << " the file claims. Appending to it will allocate on the writing thread.";
 }
 
 TEST_F(WalTest, SegmentSizeTooSmallThrows) {
@@ -124,7 +145,7 @@ TEST_F(WalTest, OversizedPayloadThrows) {
 
 TEST_F(WalTest, ReplayMissingDirectoryReturnsFrom) {
     const WalPosition from{0, 0};
-    const WalPosition end = WalReader::replay("/dev/shm/wal_no_such_dir_xyz_abc", from, nullptr);
+    const WalPosition end = WalReader::replay(pubsub_itc_fw::tests_common::scratch_path_that_does_not_exist("wal_dir"), from, nullptr);
     EXPECT_EQ(end.segment, from.segment);
     EXPECT_EQ(end.offset, from.offset);
 }

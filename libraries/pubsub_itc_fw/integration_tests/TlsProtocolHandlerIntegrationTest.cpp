@@ -92,6 +92,7 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace pubsub_itc_fw::tests {
 
 // Test protocol constants
@@ -258,12 +259,7 @@ class TlsCertDirectory {
     }
 
     TlsCertDirectory() {
-        char tmp_dir[] = "/tmp/tls_test_XXXXXX";
-        char* dir = mkdtemp(tmp_dir);
-        if (!dir) {
-            return;
-        }
-        directory_ = dir;
+        directory_ = pubsub_itc_fw::tests_common::make_scratch_directory("tls_test");
 
         EVP_PKEY* ca_key = generate_ec_key();
         X509* ca_cert = ca_key ? create_self_signed_cert(ca_key, "Test CA", 1) : nullptr;

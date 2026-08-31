@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 using namespace pubsub_itc_fw;
 
 // Test fixture
@@ -307,33 +308,35 @@ TEST(QuillLoggerSignalTest, BlockSignalsBeforeConstructionDoesNotThrow) {
 // ensure_log_file_writable
 
 TEST(QuillLoggerEnsureWritableTest, WritablePathReturnsEmpty) {
-    const std::string path = "/dev/shm/quill_writable_test.log";
+    const std::string dir = pubsub_itc_fw::tests_common::make_scratch_directory("quill_writable");
+    const std::string path = dir + "/log.txt";
     const std::string err = QuillLogger::ensure_log_file_writable(path);
     EXPECT_TRUE(err.empty()) << "Unexpected error: " << err;
-    ::unlink(path.c_str());
+    pubsub_itc_fw::tests_common::remove_scratch_directory(dir);
 }
 
 TEST(QuillLoggerEnsureWritableTest, CreatesNonExistentParentDirectory) {
-    const std::string dir = "/dev/shm/quill_ensure_test_dir";
-    const std::string path = dir + "/log.txt";
-    ::rmdir(dir.c_str());
+    // The parent must not exist: creating it is what is under test.
+    const std::string scratch = pubsub_itc_fw::tests_common::make_scratch_directory("quill_ensure");
+    const std::string path = scratch + "/not_yet/log.txt";
     const std::string err = QuillLogger::ensure_log_file_writable(path);
     EXPECT_TRUE(err.empty()) << "Unexpected error: " << err;
-    ::unlink(path.c_str());
-    ::rmdir(dir.c_str());
+    pubsub_itc_fw::tests_common::remove_scratch_directory(scratch);
 }
 
 TEST(QuillLoggerEnsureWritableTest, UnwritablePathReturnsError) {
     if (::getuid() == 0) {
         GTEST_SKIP() << "Skipped: root bypasses file permission checks";
     }
-    const std::string dir = "/dev/shm/quill_nowrite_test";
+    const std::string scratch = pubsub_itc_fw::tests_common::make_scratch_directory("quill_nowrite");
+    const std::string dir = scratch + "/read_only";
     const std::string path = dir + "/log.txt";
-    ::rmdir(dir.c_str());
-    ::mkdir(dir.c_str(), 0555);
+    ASSERT_EQ(::mkdir(dir.c_str(), 0555), 0);
     const std::string err = QuillLogger::ensure_log_file_writable(path);
     EXPECT_FALSE(err.empty()) << "Expected an error for path inside read-only directory";
-    ::rmdir(dir.c_str());
+    // Restore write permission so the directory can be removed.
+    ::chmod(dir.c_str(), 0755);
+    pubsub_itc_fw::tests_common::remove_scratch_directory(scratch);
 }
 
 // File-based logger constructors (rolling logfile configuration)
@@ -342,33 +345,37 @@ TEST(QuillLoggerRollingTest, SizeBasedRollingConstructorDoesNotThrow) {
     RollingLogfileConfiguration cfg{RollingLogfileConfiguration::Mode::Size};
     cfg.max_file_size = 1024 * 1024;
     cfg.max_backup_files = 3;
-    const std::string path = "/dev/shm/quill_size_rolling_test.log";
+    const std::string dir = pubsub_itc_fw::tests_common::make_scratch_directory("quill_size_rolling");
+    const std::string path = dir + "/log.txt";
     EXPECT_NO_THROW({ QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Info, FwLogLevel::Critical, cfg); });
-    ::unlink(path.c_str());
+    pubsub_itc_fw::tests_common::remove_scratch_directory(dir);
 }
 
 TEST(QuillLoggerRollingTest, DailyRollingConstructorDoesNotThrow) {
     const RollingLogfileConfiguration cfg = RollingLogfileConfiguration::daily("00:00");
-    const std::string path = "/dev/shm/quill_daily_rolling_test.log";
+    const std::string dir = pubsub_itc_fw::tests_common::make_scratch_directory("quill_daily_rolling");
+    const std::string path = dir + "/log.txt";
     EXPECT_NO_THROW({ QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Info, FwLogLevel::Critical, cfg); });
-    ::unlink(path.c_str());
+    pubsub_itc_fw::tests_common::remove_scratch_directory(dir);
 }
 
 // set_syslog_level
 
 TEST(QuillLoggerSyslogTest, SetSyslogLevelDoesNotThrow) {
-    const std::string path = "/dev/shm/quill_syslog_level_test.log";
+    const std::string dir = pubsub_itc_fw::tests_common::make_scratch_directory("quill_syslog_level");
+    const std::string path = dir + "/log.txt";
     QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Debug, FwLogLevel::Info);
     EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Warning));
     EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Error));
-    ::unlink(path.c_str());
+    pubsub_itc_fw::tests_common::remove_scratch_directory(dir);
 }
 
 TEST(QuillLoggerSyslogTest, SetSyslogLevelUpdatesGateLevelToMin) {
-    const std::string path = "/dev/shm/quill_syslog_gate_test.log";
+    const std::string dir = pubsub_itc_fw::tests_common::make_scratch_directory("quill_syslog_gate");
+    const std::string path = dir + "/log.txt";
     QuillLogger logger(path, FileOpenMode{FileOpenMode::Truncate}, FwLogLevel::Warning, FwLogLevel::Critical);
     // Lowering syslog to Debug should pull the gate down to Warning
     // (min of Warning and Debug is Debug, but applog is Warning so gate=Warning).
     EXPECT_NO_THROW(logger.set_syslog_level(FwLogLevel::Debug));
-    ::unlink(path.c_str());
+    pubsub_itc_fw::tests_common::remove_scratch_directory(dir);
 }

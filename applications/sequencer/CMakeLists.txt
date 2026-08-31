@@ -52,6 +52,7 @@ target_include_directories(sequencer_tests PRIVATE
 
 target_link_libraries(sequencer_tests PRIVATE
         pubsub_itc_fw
+        pubsub_itc_fw_test_helpers
         GTest::gtest_main
 )
 

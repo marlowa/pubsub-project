@@ -29,6 +29,7 @@
 
 #include <pubsub_itc_fw/TlsContext.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace pubsub_itc_fw::tests {
 
 namespace {
@@ -120,9 +121,7 @@ bool write_pem_key(const std::string& path, EVP_PKEY* key) {
 class TlsContextTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        char tmpl[] = "/dev/shm/tls_ctx_test_XXXXXX";
-        ASSERT_NE(::mkdtemp(tmpl), nullptr);
-        dir_ = tmpl;
+        dir_ = pubsub_itc_fw::tests_common::make_scratch_directory("tls_ctx_test");
 
         EVP_PKEY* ca_key = generate_ec_key();
         X509* ca_cert = ca_key ? make_self_signed(ca_key, "Test CA") : nullptr;

@@ -712,11 +712,21 @@ def test_environment(build_dir):
     install step runs after the tests, that silently tests the *previous* build's
     library: a change to a library .cpp could be validated against the old .so and
     pass.  Prepending the build tree makes the freshly built library win.
+
+    PUBSUB_TEST_SCRATCH_DIR is where tests put files they need on disk.  It must be
+    real disk: /dev/shm is tmpfs, which has no journal and no block allocation, so a
+    test asserting anything about filesystem behaviour there cannot fail (BUG-0070's
+    regression test was written that way and proved nothing).  /tmp is shared with
+    the rest of the machine and is mounted noexec on the RHEL8 target.
     """
     env = os.environ.copy()
     build_library_dir = str((build_dir / "libraries" / "pubsub_itc_fw").resolve())
     existing = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = f"{build_library_dir}:{existing}" if existing else build_library_dir
+
+    scratch_dir = (build_dir / "test_scratch").resolve()
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    env["PUBSUB_TEST_SCRATCH_DIR"] = str(scratch_dir)
     return env
 
 

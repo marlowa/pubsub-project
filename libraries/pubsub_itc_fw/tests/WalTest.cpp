@@ -29,6 +29,7 @@
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace pubsub_itc_fw::tests {
 
 namespace {
@@ -54,9 +55,7 @@ Wal::ReplayCallback capture(std::vector<CapturedRecord>& out) {
 class WalClassTest : public ::testing::Test {
   protected:
     void SetUp() override {
-        std::string tmpl = "/dev/shm/wal_class_test_XXXXXX";
-        ASSERT_NE(::mkdtemp(tmpl.data()), nullptr);
-        dir_ = tmpl;
+        dir_ = pubsub_itc_fw::tests_common::make_scratch_directory("wal_class_test");
     }
 
     void TearDown() override {

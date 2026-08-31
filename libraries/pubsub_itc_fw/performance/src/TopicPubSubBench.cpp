@@ -79,6 +79,7 @@ in FixedPoolBench.cpp (perf_event_paranoid).
 #include <fix_orders.hpp>
 #include <topics.hpp>
 
+#include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 namespace pubsub_itc_fw {
 namespace {
 
@@ -116,12 +117,12 @@ ReactorConfiguration make_reactor_config() {
 }
 
 std::string make_wal_dir() {
-    std::string tmpl = "/dev/shm/topic_pubsub_bench_XXXXXX";
-    if (::mkdtemp(tmpl.data()) == nullptr) {
-        std::cerr << "mkdtemp failed for the WAL directory\n";
+    try {
+        return pubsub_itc_fw::tests_common::make_scratch_directory("topic_pubsub_bench");
+    } catch (const std::exception& e) {
+        std::cerr << "could not create the WAL directory: " << e.what() << "\n";
         std::exit(1);
     }
-    return tmpl;
 }
 
 bool wait_for(const std::function<bool()>& pred, int timeout_ms = 60000) {
