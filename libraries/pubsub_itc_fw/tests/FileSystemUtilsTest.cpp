@@ -5,8 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
-#include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 namespace pubsub_itc_fw::tests {
 

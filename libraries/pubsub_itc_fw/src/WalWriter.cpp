@@ -19,9 +19,9 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/Crc32.hpp>
+#include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
-#include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 namespace pubsub_itc_fw {
 

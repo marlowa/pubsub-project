@@ -37,6 +37,8 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestSink.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
+using pubsub_itc_fw::tests_common::TestSink;
 using namespace pubsub_itc_fw;
 
 namespace {

@@ -25,6 +25,9 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
+using pubsub_itc_fw::tests_common::make_allocator_config;
+using pubsub_itc_fw::tests_common::make_queue_config;
 namespace pubsub_itc_fw::tests {
 
 namespace {

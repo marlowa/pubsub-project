@@ -68,7 +68,7 @@ std::tuple<bool, std::string> PduFramer::continue_send() {
         const uint8_t* buf = active_frame_ptr_ + send_offset_;
         const size_t remaining = frame_size_ - send_offset_;
 
-        auto [bytes_sent, error] = stream_.send(utils::SimpleSpan<const uint8_t>(buf, remaining));
+        auto [bytes_sent, error] = stream_.send(SimpleSpan<const uint8_t>(buf, remaining));
 
         if (bytes_sent < 0) {
             if (bytes_sent == -EAGAIN || bytes_sent == -EWOULDBLOCK) {

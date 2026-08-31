@@ -35,7 +35,7 @@ std::tuple<bool, std::string> PduParser::receive() {
             const size_t header_space = sizeof(PduHeader) - header_bytes_;
 
             if (header_space > 0) {
-                auto [bytes_read, error] = stream_.receive(utils::SimpleSpan<uint8_t>(header_buffer_ + header_bytes_, header_space));
+                auto [bytes_read, error] = stream_.receive(SimpleSpan<uint8_t>(header_buffer_ + header_bytes_, header_space));
 
                 if (bytes_read == 0 && error.empty()) {
                     if (disconnect_handler_ != nullptr) {
@@ -123,7 +123,7 @@ std::tuple<bool, std::string> PduParser::receive() {
         if (payload_remaining > 0) {
             uint8_t* dest = static_cast<uint8_t*>(payload_chunk_) + payload_bytes_received_;
 
-            auto [bytes_read, error] = stream_.receive(utils::SimpleSpan<uint8_t>(dest, payload_remaining));
+            auto [bytes_read, error] = stream_.receive(SimpleSpan<uint8_t>(dest, payload_remaining));
 
             if (bytes_read == 0 && error.empty()) {
                 slab_allocator_.deallocate(payload_slab_id_, payload_chunk_);

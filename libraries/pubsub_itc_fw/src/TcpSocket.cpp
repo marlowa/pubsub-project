@@ -21,10 +21,10 @@
 #include <fmt/format.h> // For fmt::format
 
 // Project headers
-#include <pubsub_itc_fw/InetAddress.hpp>      // For InetAddress
-#include <pubsub_itc_fw/StringUtils.hpp>      // For StringUtils::get_error_string
-#include <pubsub_itc_fw/TcpSocket.hpp>        // Header for this class
-#include <pubsub_itc_fw/utils/SimpleSpan.hpp> // For SimpleSpan
+#include <pubsub_itc_fw/InetAddress.hpp> // For InetAddress
+#include <pubsub_itc_fw/SimpleSpan.hpp>  // For SimpleSpan
+#include <pubsub_itc_fw/StringUtils.hpp> // For StringUtils::get_error_string
+#include <pubsub_itc_fw/TcpSocket.hpp>   // Header for this class
 
 namespace pubsub_itc_fw {
 
@@ -90,18 +90,18 @@ class TcpSocketImpl {
     /**
      * @brief Sends a specified amount of binary data over the TCP socket.
      *
-     * @param[in] data A `utils::SimpleSpan<const uint8_t>` representing the binary data to be sent.
+     * @param[in] data A `SimpleSpan<const uint8_t>` representing the binary data to be sent.
      * @return A `std::tuple` containing the number of bytes sent or a negative errno, and an error string.
      */
-    [[nodiscard]] std::tuple<int, std::string> send(utils::SimpleSpan<const uint8_t> data);
+    [[nodiscard]] std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data);
 
     /**
      * @brief Receives binary data from the TCP socket into the provided buffer.
      *
-     * @param[out] buffer A `utils::SimpleSpan<uint8_t>` representing the buffer where received data will be stored.
+     * @param[out] buffer A `SimpleSpan<uint8_t>` representing the buffer where received data will be stored.
      * @return A `std::tuple` containing the number of bytes received or a negative errno, and an error string.
      */
-    [[nodiscard]] std::tuple<int, std::string> receive(utils::SimpleSpan<uint8_t> buffer);
+    [[nodiscard]] std::tuple<int, std::string> receive(SimpleSpan<uint8_t> buffer);
 
     /**
      * @brief Closes the TCP socket connection.
@@ -201,7 +201,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socket_file_descriptor(socket_fd) 
     }
 }
 
-[[nodiscard]] std::tuple<int, std::string> TcpSocketImpl::send(utils::SimpleSpan<const uint8_t> data) {
+[[nodiscard]] std::tuple<int, std::string> TcpSocketImpl::send(SimpleSpan<const uint8_t> data) {
     if (socket_file_descriptor == -1) {
         return {-1, "Cannot send on an invalid or closed socket."};
     }
@@ -232,7 +232,7 @@ TcpSocketImpl::TcpSocketImpl(int socket_fd) : socket_file_descriptor(socket_fd) 
     return {static_cast<int>(bytes_sent), ""};
 }
 
-[[nodiscard]] std::tuple<int, std::string> TcpSocketImpl::receive(utils::SimpleSpan<uint8_t> buffer) {
+[[nodiscard]] std::tuple<int, std::string> TcpSocketImpl::receive(SimpleSpan<uint8_t> buffer) {
     if (socket_file_descriptor == -1) {
         return {-1, "Cannot receive on an invalid or closed socket."};
     }
@@ -456,11 +456,11 @@ TcpSocket::TcpSocket(int socket_fd) : p_impl_(std::make_unique<TcpSocketImpl>(so
     return {std::unique_ptr<TcpSocket>(new TcpSocket(socket_fd)), ""};
 }
 
-[[nodiscard]] std::tuple<int, std::string> TcpSocket::send(utils::SimpleSpan<const uint8_t> data) {
+[[nodiscard]] std::tuple<int, std::string> TcpSocket::send(SimpleSpan<const uint8_t> data) {
     return p_impl_->send(data);
 }
 
-[[nodiscard]] std::tuple<int, std::string> TcpSocket::receive(utils::SimpleSpan<uint8_t> buffer) {
+[[nodiscard]] std::tuple<int, std::string> TcpSocket::receive(SimpleSpan<uint8_t> buffer) {
     return p_impl_->receive(buffer);
 }
 

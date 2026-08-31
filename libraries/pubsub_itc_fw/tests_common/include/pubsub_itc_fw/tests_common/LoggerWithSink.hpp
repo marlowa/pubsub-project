@@ -10,7 +10,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests_common {
 
 /*
  * LoggerWithSink -- a QuillLogger wired to an in-memory record store for use

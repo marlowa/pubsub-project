@@ -1029,7 +1029,7 @@ TEST(LockFreeMessageQueueTest, QueueDepthHistogramTest) {
     std::atomic<int> consumed{0};
     std::atomic<bool> production_done{false};
 
-    pubsub_itc_fw::tests::LatencyRecorder depth_histogram;
+    pubsub_itc_fw::tests_common::LatencyRecorder depth_histogram;
 
     // Producer: sends messages in bursts with randomised inter-burst pauses
     // to simulate realistic jitter from cache misses and allocator stalls.

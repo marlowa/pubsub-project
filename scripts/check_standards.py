@@ -28,6 +28,7 @@ Checks implemented:
   21. Template keyword on its own line before <
   22. Banner / divider comment lines (rows of - or =)
   23. #include ordering: external / third-party headers before project headers
+  24. A header's namespace must mirror its directory under include/ (Java-style locatability)
   24. Single-argument constructor not declared explicit
   25. Bare true / false literal passed as a function argument
   26. printf family (printf/sprintf/snprintf/fprintf and v- variants); use fmt
@@ -969,6 +970,67 @@ def check_printf_family(path: Path, lines: list[str], stripped: list[str]) -> li
     return violations
 
 
+_NAMESPACE_RE = re.compile(r'^\s*namespace\s+([A-Za-z_][A-Za-z0-9_:]*)\s*\{', re.MULTILINE)
+
+
+def check_namespace_matches_directory(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    """A header's namespace must match the directory it lives in, under the include root.
+
+    A header at include/pubsub_itc_fw/Foo.hpp declares namespace pubsub_itc_fw; one at
+    include/pubsub_itc_fw/bar/Foo.hpp declares namespace pubsub_itc_fw::bar. A file may nest a
+    detail namespace inside that (pubsub_itc_fw::logging_help in pubsub_itc_fw/LoggingMacros.hpp)
+    but may not sit in one that is narrower than, or unrelated to, where it lives.
+
+    WHY THIS IS A RULE HERE. C++ places no relationship at all between a namespace and a file's
+    location, and the language's own libraries do not maintain one -- namespaces were introduced
+    to stop common symbol names colliding between libraries, and that is all they are required
+    to do. The consequence is that a qualified name tells a reader nothing about where to look.
+
+    This project deliberately adopts Java's arrangement instead: packages mirror directories, so
+    a name locates a file and a file predicts a name. That property is worth more than the
+    freedom being given up, and it only holds if it holds everywhere, which is why it is checked
+    rather than asked for.
+
+    Missed once: FileSystemUtils.hpp sat in include/pubsub_itc_fw/utils/ declaring namespace
+    pubsub_itc_fw, while SimpleSpan.hpp beside it declared pubsub_itc_fw::utils. Both compiled,
+    both looked reasonable in isolation, and nothing compared them. This is that comparison. It
+    also found five headers in tests_common/ using three different namespaces between them.
+    """
+    violations: list[Violation] = []
+    if path.suffix != '.hpp':
+        return violations
+
+    parts = path.parts
+    if 'include' not in parts:
+        return violations
+    after_include = parts[parts.index('include') + 1:-1]
+    if not after_include:
+        return violations
+
+    expected = '::'.join(after_include)
+    declared = [m.group(1) for m in _NAMESPACE_RE.finditer(''.join(stripped))]
+    if not declared:
+        return violations
+
+    # Nested single-name namespaces are one declaration each; the outermost run is what the
+    # file's own scope is. Compare against the qualified form and against that run.
+    # The namespace must be the directory's, or nested inside it: a file may declare a detail
+    # namespace of its own (pubsub_itc_fw::logging_help in pubsub_itc_fw/LoggingMacros.hpp) but
+    # may not sit in a namespace narrower than, or unrelated to, where it lives.
+    joined = '::'.join(declared[:len(after_include)])
+    if any(name == expected or name.startswith(expected + '::') for name in declared) or expected == joined:
+        return violations
+
+    line_number = 1
+    for index, line in enumerate(stripped, start=1):
+        if _NAMESPACE_RE.match(line):
+            line_number = index
+            break
+    return [Violation(path, line_number,
+                      f"namespace [{declared[0]}] does not match the directory [{expected}]; a header's namespace must "
+                      f"mirror its path under include/ (see coding rules: namespaces mirror directories)")]
+
+
 _CHECKS = [
     check_defines,
     check_screaming_snake_case,
@@ -998,6 +1060,7 @@ _CHECKS = [
     check_bool_literal_argument,
     check_fixed_encode_buffer,
     check_printf_family,
+    check_namespace_matches_directory,
 ]
 
 

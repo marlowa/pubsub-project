@@ -28,6 +28,74 @@ was on its own device in both. **The only difference was the mount option.**
 
 Not one append in 9.3 million exceeded 10 milliseconds with `lazytime` set.
 
+## What `lazytime` is
+
+A Linux mount option, understood by ext4 among others. To explain what it changes, first what
+happens without it.
+
+Every file carries three timestamps in its inode: when it was last read (`atime`), when its
+contents last changed (`mtime`), and when the inode itself last changed (`ctime`). Writing to a
+file updates `mtime` and `ctime`.
+
+The inode is not the file's data. It is **filesystem metadata**, and on a journalling filesystem
+every metadata change goes through the journal, so that a crash cannot leave the filesystem's own
+bookkeeping half-written. That is what a journal is for, and it is a good thing: it is why an
+ext4 filesystem comes back consistent after a power cut.
+
+The cost is that a metadata change is not a free write to memory. It must be recorded in a
+journal transaction, transactions commit periodically, and a thread that needs journal access
+while a commit is in progress **waits** — in uninterruptible sleep, which cannot be interrupted
+or preempted.
+
+`lazytime` changes only this: timestamp updates are kept **in memory** and written to disk lazily
+— when the inode is written for some other reason, when the file is closed, or after at most 24
+hours. The timestamps are still correct to anything asking the running kernel. What is avoided is
+a journal transaction *per writeback* purely to record that a file's mtime moved.
+
+The trade is small and worth stating: if the machine loses power, timestamps may be up to a day
+stale on recovery. File **contents** are unaffected — `lazytime` changes nothing about data
+integrity, only about when the clock fields reach the disk. For a trading log whose records carry
+their own timestamps inside them, the file's mtime is of no consequence.
+
+## How it was arrived at
+
+Not by guesswork, and not first. The order matters, because three earlier ideas were wrong or
+unnecessary.
+
+**1. The stall was located before it was explained.** `scripts/thread_offcpu.py` samples
+`/proc/<pid>/task/<tid>/stat`, `schedstat` and `wchan` a few hundred times a second. It showed the
+sequencer's thread in state **D** — uninterruptible sleep — with no time on the run queue. That
+alone ruled out lock contention and cpu starvation: a contended mutex produces state S, and a
+thread waiting for a cpu accumulates run-queue time. Neither was happening.
+
+**2. `wchan` named the mechanism.** For a thread in state D that file gives the kernel function
+it is sleeping in. The answers were `do_get_write_access` and `wait_transaction_locked` — asking
+the ext4 journal for permission to modify a metadata block, and waiting for a journal transaction
+to commit. So the stall was the journal, established rather than suspected.
+
+**3. The first explanation was right but incomplete.** Segments were created with `ftruncate`,
+which leaves a file **sparse**: its size is set and not one block is allocated. The first write
+to each page then has to allocate a block, and allocation is a metadata change. That is a real
+cause, it was fixed (see [BUG-0070](../bug_list.md#bug_0070)), and the common tail improved by
+more than ten times — but the large stalls remained. **Block allocation was the suspected cause
+and it was not the whole answer.**
+
+**4. What was left had to be metadata that was not block allocation.** With the blocks already
+allocated, the remaining journal traffic could only come from something else the writes were
+still changing. The inode's timestamps are the obvious remaining candidate: appending is a
+`memcpy` into a mapping, so every writeback of a dirty page updates `mtime`, and each such update
+is a metadata change. `lazytime` is the option that stops exactly that.
+
+**5. It was tested against the alternative, one change at a time.** The log was first moved to
+its own device, changing nothing else — that isolated block-layer contention and accounted for
+249 samples. Then `lazytime` was added, changing nothing else. `wait_transaction_locked` went to
+zero and `do_get_write_access` fell eighteen-fold, which is the confirmation: the remaining
+journal traffic really was timestamps.
+
+A fourth idea, calling `sync_file_range()` from a helper thread to control when writeback
+happened, was planned as the next experiment and became unnecessary — there was nothing left for
+it to fix. It was never built.
+
 ## Why it makes that much difference
 
 Appending to the log is a `memcpy` into a memory-mapped file. There is no `write`, no `fsync`
@@ -59,11 +127,23 @@ allocation was the suspected cause, and it was not.
 
 ## What to do
 
+**This must be run as root.** It takes effect immediately and is not destructive: no data is
+moved, no filesystem is unmounted, and processes with files open are unaffected.
+
 ```
-mount -o remount,lazytime <the filesystem holding the log>
+# as root
+mount -o remount,lazytime /mnt/sda2          # the filesystem holding the log
+findmnt -no SOURCE,OPTIONS /mnt/sda2         # confirm: expect rw,lazytime,relatime
 ```
 
-To survive a reboot, add `lazytime` to that filesystem's options in `/etc/fstab`.
+A remount does **not** survive a reboot. To make it permanent, add `lazytime` to that
+filesystem's options in `/etc/fstab`:
+
+```
+/dev/sda2  /mnt/sda2  ext4  defaults,lazytime  0  2
+```
+
+then `mount -o remount /mnt/sda2` to apply it, or verify at the next boot with `findmnt`.
 
 The sequencer checks this at startup and says what it found. If the option is missing it logs a
 warning naming the directory and the options actually in force. It is a warning rather than a

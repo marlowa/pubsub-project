@@ -8,7 +8,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 
-namespace pubsub_itc_fw::tests {
+namespace pubsub_itc_fw::tests_common {
 
 /**
  * @brief Returns a standard QueueConfiguration for use in unit and integration tests.

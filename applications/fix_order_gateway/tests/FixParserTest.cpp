@@ -16,6 +16,7 @@
 #include <fix_codec/fix_dictionary.hpp>
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
 // Parity tests for FixParser after its reimplementation as a stream driver over
 // fix_codec::FixMessageReader. They pin the stream contract the gateway depends on:
 // the consumed-byte count returned by feed(), which complete messages are
@@ -71,7 +72,7 @@ struct Rejected {
 
 class FixParserTest : public ::testing::Test {
   protected:
-    pubsub_itc_fw::LoggerWithSink logger_;
+    pubsub_itc_fw::tests_common::LoggerWithSink logger_;
     std::vector<Captured> captured_;
     std::vector<Rejected> rejected_;
 

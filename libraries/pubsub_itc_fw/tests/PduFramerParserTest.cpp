@@ -32,6 +32,7 @@
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
 namespace pubsub_itc_fw {
 
 // Stub ByteStreamInterface
@@ -77,7 +78,7 @@ class StubStream : public ByteStreamInterface {
 
     // ByteStreamInterface implementation
 
-    [[nodiscard]] std::tuple<int, std::string> send(utils::SimpleSpan<const uint8_t> data) override {
+    [[nodiscard]] std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data) override {
         if (send_error) {
             send_error = false;
             return {-ECONNRESET, "simulated send error"};
@@ -102,7 +103,7 @@ class StubStream : public ByteStreamInterface {
         return {static_cast<int>(to_send), ""};
     }
 
-    [[nodiscard]] std::tuple<int, std::string> receive(utils::SimpleSpan<uint8_t> buffer) override {
+    [[nodiscard]] std::tuple<int, std::string> receive(SimpleSpan<uint8_t> buffer) override {
         if (recv_disconnect) {
             recv_disconnect = false;
             return {0, ""};

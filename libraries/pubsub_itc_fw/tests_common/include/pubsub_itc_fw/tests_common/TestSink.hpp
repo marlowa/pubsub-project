@@ -16,7 +16,7 @@
 
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 
-namespace pubsub_itc_fw {
+namespace pubsub_itc_fw::tests_common {
 
 /**
  * A Quill sink that captures log records for unit testing.

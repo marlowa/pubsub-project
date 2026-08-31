@@ -9,7 +9,7 @@
 #include <type_traits>
 #include <vector>
 
-namespace pubsub_itc_fw::utils {
+namespace pubsub_itc_fw {
 
 /** @ingroup messaging_subsystem */
 

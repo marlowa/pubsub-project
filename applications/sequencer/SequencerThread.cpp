@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
@@ -21,7 +22,6 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
-#include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 namespace sequencer {
 

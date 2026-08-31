@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
 using fix_order_gateway::FixCapture;
+using pubsub_itc_fw::tests_common::LoggerWithSink;
 
 namespace {
 
@@ -65,7 +66,7 @@ class FixCaptureTest : public ::testing::Test {
     }
 
     std::string capture_file_;
-    pubsub_itc_fw::LoggerWithSink logger_;
+    pubsub_itc_fw::tests_common::LoggerWithSink logger_;
 };
 
 TEST_F(FixCaptureTest, WritesRecordWithCorrectBinaryFormat) {

@@ -15,7 +15,7 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-namespace pubsub_itc_fw::test_support {
+namespace pubsub_itc_fw::tests_common {
 
 // A thread that never reaches Started (blocks forever in on_initial_event).
 class NeverStartingThread : public ApplicationThread {

@@ -80,6 +80,7 @@ in FixedPoolBench.cpp (perf_event_paranoid).
 #include <topics.hpp>
 
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
+
 namespace pubsub_itc_fw {
 namespace {
 

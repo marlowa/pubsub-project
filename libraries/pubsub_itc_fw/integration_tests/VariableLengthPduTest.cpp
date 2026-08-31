@@ -52,6 +52,9 @@
 
 #include <variable_length_test_protocol.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
+using pubsub_itc_fw::tests_common::make_allocator_config;
+using pubsub_itc_fw::tests_common::make_queue_config;
 namespace pubsub_itc_fw::tests {
 
 // PDU IDs matching the variable-length test protocol DSL

@@ -15,8 +15,8 @@
 // (None directly here)
 
 // Project headers
-#include <pubsub_itc_fw/InetAddress.hpp>      // For get_peer_address
-#include <pubsub_itc_fw/utils/SimpleSpan.hpp> // For SimpleSpan
+#include <pubsub_itc_fw/InetAddress.hpp> // For get_peer_address
+#include <pubsub_itc_fw/SimpleSpan.hpp>  // For SimpleSpan
 
 namespace pubsub_itc_fw {
 
@@ -50,7 +50,7 @@ class ByteStreamInterface {
      * it will return 0 or a negative error code (e.g., -EWOULDBLOCK) along with
      * an error string, rather than blocking the calling thread.
      *
-     * @param[in] data A `utils::SimpleSpan<const uint8_t>` representing the binary
+     * @param[in] data A `SimpleSpan<const uint8_t>` representing the binary
      * data to be sent. The data is treated as read-only.
      * @return A `std::tuple` containing:
      * - An `int` indicating the number of bytes sent (>= 0) on success,
@@ -59,7 +59,7 @@ class ByteStreamInterface {
      * - A `std::string` containing an error message if the operation failed.
      * It will be empty on success.
      */
-    [[nodiscard]] virtual std::tuple<int, std::string> send(utils::SimpleSpan<const uint8_t> data) = 0;
+    [[nodiscard]] virtual std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data) = 0;
 
     /**
      * @brief Receives binary data from the stream into the provided buffer.
@@ -69,7 +69,7 @@ class ByteStreamInterface {
      * is immediately available, it will return 0 or a negative error code
      * (e.g., -EWOULDBLOCK) along with an error string.
      *
-     * @param[out] buffer A `utils::SimpleSpan<uint8_t>` representing the buffer
+     * @param[out] buffer A `SimpleSpan<uint8_t>` representing the buffer
      * where received data will be stored.
      * @return A `std::tuple` containing:
      * - An `int` indicating the number of bytes received (>= 0) on success.
@@ -79,7 +79,7 @@ class ByteStreamInterface {
      * - A `std::string` containing an error message if the operation failed.
      * It will be empty on success.
      */
-    [[nodiscard]] virtual std::tuple<int, std::string> receive(utils::SimpleSpan<uint8_t> buffer) = 0;
+    [[nodiscard]] virtual std::tuple<int, std::string> receive(SimpleSpan<uint8_t> buffer) = 0;
 
     /**
      * @brief Closes the byte stream connection.

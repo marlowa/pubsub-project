@@ -38,10 +38,17 @@
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 #include <pubsub_itc_fw/tests_common/MisbehavingThreads.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
+using pubsub_itc_fw::tests_common::NeverStartingThread;
+using pubsub_itc_fw::tests_common::RogueITCThread;
+using pubsub_itc_fw::tests_common::ThrowingAppReadyThread;
+using pubsub_itc_fw::tests_common::ThrowingDuringRunThread;
+using pubsub_itc_fw::tests_common::ThrowingInitialThread;
+using pubsub_itc_fw::tests_common::ThrowingTerminationThread;
 // Reactor initialization timeout test
 
 using namespace pubsub_itc_fw;
-using namespace test_support;
+using namespace pubsub_itc_fw::tests_common;
 
 namespace {
 

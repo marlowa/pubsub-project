@@ -32,6 +32,7 @@
 #include <pubsub_itc_fw/UseHugePagesFlag.hpp>
 #include <pubsub_itc_fw/tests_common/LatencyRecorder.hpp>
 
+using pubsub_itc_fw::tests_common::LatencyRecorder;
 namespace pubsub_itc_fw::tests {
 struct TestObject;
 }

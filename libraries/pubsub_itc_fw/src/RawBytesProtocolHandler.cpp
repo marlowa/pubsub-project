@@ -17,9 +17,9 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/SimpleSpan.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
-#include <pubsub_itc_fw/utils/SimpleSpan.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -173,7 +173,7 @@ void RawBytesProtocolHandler::release_pending_send() {
 std::tuple<bool, std::string> RawBytesProtocolHandler::attempt_send_remaining() {
     while (send_offset_ < frame_size_) {
         const uint32_t remaining = frame_size_ - send_offset_;
-        utils::SimpleSpan<const uint8_t> data(active_frame_ptr_ + send_offset_, remaining);
+        SimpleSpan<const uint8_t> data(active_frame_ptr_ + send_offset_, remaining);
 
         auto [result, error] = socket_.send(data);
 

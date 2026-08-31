@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 71 |
-| Open | 27 (17 defects, 10 tasks) |
-| Closed | 44 |
+| Open | 26 (16 defects, 10 tasks) |
+| Closed | 45 |
 | Next id | BUG-0072 |
 
 ## Open bugs by severity
 
-13 high, 11 medium, 3 low.
+12 high, 11 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,7 +24,6 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0070](#bug_0070) | high | defect | The sequencer blocks for half a second committing to the log |
 | [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -797,105 +796,6 @@ the arbiters and witness are quieter and can wait until something needs explaini
 
 ---
 
-### BUG-0070: The sequencer blocks for half a second committing to the log {#bug_0070}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-31 |
-| Recorded | 2026-08-31 |
-| How | First trading-day performance run; then measured directly with `scripts/thread_offcpu.py` |
-| Impact | A p99 round trip of about 2 ms with excursions past 400 ms. Orders arriving during one wait behind it |
-
-**What happens.** The sequencer's reactor thread enters uninterruptible sleep -- state D -- for
-up to 557 ms at a time, with **zero** time on the run queue. It is not competing for a cpu and
-it is not spinning: it is waiting for the filesystem, on the thread that sequences every order
-the venue takes.
-
-Measured across one twenty-minute run, 634 of 640 samples taken while the thread was in
-uninterruptible sleep were in two kernel functions:
-
-| kernel function | samples | what it is |
-|---|---|---|
-| `do_get_write_access` | 396 | asking the ext4 journal for permission to modify a metadata block |
-| `wait_transaction_locked` | 238 | waiting for a journal transaction to commit |
-| `rq_qos_wait` | 5 | block layer queueing |
-
-**Why a memcpy waits on a journal.** The path is not obviously I/O at any point, which is what
-made it hard to find:
-
-1. `WalWriter::open` creates each 4 MB segment with `ftruncate`, so the file is **sparse** ---
-   its size is set and no blocks are allocated.
-2. `WalWriter::append` is two `memcpy` calls into a `MAP_SHARED` mapping. There is no `write`,
-   no `fsync` and no `msync` anywhere in the writer.
-3. The first write to each page of that mapping faults, and the kernel must **allocate a
-   filesystem block** to back it.
-4. Allocating changes ext4 metadata, which needs journal write access. If a transaction is
-   committing, the thread waits, uninterruptibly, and cannot be interrupted or preempted.
-
-So a `memcpy` is silently a journal operation. Nothing in the sequencer's source looks like it
-touches a disk.
-
-**Why it was invisible.** A cycle profiler samples a thread only while it is running, so a
-thread waiting produces no samples at all --- the sequencer's profile showed no hot spot
-because nothing was executing. The only sign in the venue was the reactor's stall watchdog
-noticing a callback had overrun, and the figure it prints is how long the callback has taken
-**so far**, which understates the wait: one stall reported as 372 ms was 557 ms measured.
-
-**Resolved 2026-08-31, in two parts, one of them not in this repository at all.**
-
-*The code change.* Segments were created with `ftruncate`, leaving them sparse. Filling them on
-creation removed the per-page cost but moved it: the writer did the filling at roll-over, and a
-run showed 673 appends over 1 ms against 684 rotations -- one slow append per roll. A helper
-thread now creates and fills segment N+1 while the writer is still appending to N, so a roll
-costs no open, no fill and no mmap on the order path. `wal_segments_filled_inline` and
-`wal_segments_waited_for` report whether it keeps pace; measured across 686 rotations they read
-1 and 0, the 1 being the first segment, which nothing can prepare in advance.
-
-*The mount option, which turned out to matter more.* Every writeback of a dirty mapped page also
-dirties the inode's timestamps, an inode change is journalled metadata, and waiting for a journal
-transaction is uninterruptible. Mounting the log's filesystem `lazytime` keeps timestamp updates
-in memory instead. Two twenty-minute runs, same load, same binaries, same device, only the mount
-option differing:
-
-| | `relatime` | `lazytime` |
-|---|---|---|
-| appends over 100 ms | 4 | **0** |
-| appends over 1 s | 1 | **0** |
-| worst reactor stall | 845 ms | **under 1 ms** |
-| `wait_transaction_locked` samples | 165 | **0** |
-
-Not one append in 9.3 million exceeded 10 ms. The journal traffic was almost entirely
-timestamps, which is not what was suspected: block allocation was, and it was not the cause.
-
-Giving the log its own device was measured separately and is worth doing but is the smaller
-effect: it took `rq_qos_wait` from 249 samples to 4 and left the journal waits untouched.
-
-**The requirement is now written down** at `docs/operations/filesystem_requirements.md`, and the
-sequencer warns at startup when the log's filesystem lacks `lazytime` -- because the setting is
-in no file this repository holds, and a machine rebuilt without it would look as though the venue
-had regressed for no reason.
-
-**Candidate fixes as they were considered, kept for provenance.**
-
-- **Give each segment real blocks before it is used.** Writing 4 MB of zeros at creation
-  allocates and initialises every block, so later mapped writes touch nothing new. `fallocate`
-  alone may not be enough: on ext4 a preallocated extent is *unwritten*, and the first write
-  still converts it, which is itself journalled.
-- **Create the next segment before it is needed**, off the reactor thread, so whatever the
-  creation costs is not paid by an order.
-- **Both**, since the first removes the per-page cost and the second removes the per-segment
-  cost, and they are different costs.
-
-Measuring any of them is now cheap: `wal_append_nanoseconds` records what a commit costs, and
-`scripts/thread_offcpu.py` says whether the thread still leaves the cpu.
-
-Related: [BUG-0048](#bug_0048), since the log is never reclaimed and so grows without bound,
-which is what keeps allocating new blocks. [BUG-0069](#bug_0069), since the sequencer had no
-metrics at all when this was being investigated.
-
----
-
 ### BUG-0071: Warming the open-order region does not give it any blocks {#bug_0071}
 
 | | |
@@ -948,7 +848,23 @@ reports ready but should be stated in the design rather than discovered in a run
 The matching engine's thread has not been watched with `scripts/thread_offcpu.py`, and a run
 against a freshly deployed region is what would confirm the size of it.
 
-Related: [BUG-0070](#bug_0070), the same mechanism on the sequencer, where it was measured.
+**The other two `ftruncate` calls in the framework were checked and are not this.**
+`MirroredBuffer.cpp` truncates a `memfd_create` object: anonymous memory, no file, no filesystem,
+so nothing can reach a journal. `CpuRegistry.cpp` truncates a real file, so it is the same
+mechanism, but the file is 8,200 bytes -- three pages -- and is written when a process claims
+cores at startup and releases them at shutdown, never on the order path. Neither needs changing.
+This region is the one that matters, because it is 496,001,024 bytes and `OrderBook::add()`
+writes to it for every order the engine accepts.
+
+**A third factor, found later the same day.** Even once the region's blocks exist, every
+writeback of a dirty mapped page updates the inode's timestamps, which is journalled metadata in
+its own right -- the effect that turned out to dominate the sequencer's stalls. The region sits
+on a filesystem that is not mounted `lazytime`, so it carries that exposure too. See
+[filesystem requirements](operations/filesystem_requirements.md). Fixing the warming without
+fixing the mount would leave part of the cost in place.
+
+Related: [BUG-0070](#bug_0070), the same mechanism on the sequencer, where it was measured and
+where both parts of the fix are now recorded.
 
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 
@@ -1958,6 +1874,106 @@ not exist.
 ---
 
 ## Closed
+
+### BUG-0070: The sequencer blocks for half a second committing to the log {#bug_0070}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | First trading-day performance run; then measured directly with `scripts/thread_offcpu.py` |
+| Fixed | 2026-08-31 -- the next segment is created ahead of the writer, and the log's filesystem is mounted `lazytime`. Zero appends over 10 ms in 9.3 million |
+| Impact | A p99 round trip of about 2 ms with excursions past 400 ms. Orders arriving during one wait behind it |
+
+**What happens.** The sequencer's reactor thread enters uninterruptible sleep -- state D -- for
+up to 557 ms at a time, with **zero** time on the run queue. It is not competing for a cpu and
+it is not spinning: it is waiting for the filesystem, on the thread that sequences every order
+the venue takes.
+
+Measured across one twenty-minute run, 634 of 640 samples taken while the thread was in
+uninterruptible sleep were in two kernel functions:
+
+| kernel function | samples | what it is |
+|---|---|---|
+| `do_get_write_access` | 396 | asking the ext4 journal for permission to modify a metadata block |
+| `wait_transaction_locked` | 238 | waiting for a journal transaction to commit |
+| `rq_qos_wait` | 5 | block layer queueing |
+
+**Why a memcpy waits on a journal.** The path is not obviously I/O at any point, which is what
+made it hard to find:
+
+1. `WalWriter::open` creates each 4 MB segment with `ftruncate`, so the file is **sparse** ---
+   its size is set and no blocks are allocated.
+2. `WalWriter::append` is two `memcpy` calls into a `MAP_SHARED` mapping. There is no `write`,
+   no `fsync` and no `msync` anywhere in the writer.
+3. The first write to each page of that mapping faults, and the kernel must **allocate a
+   filesystem block** to back it.
+4. Allocating changes ext4 metadata, which needs journal write access. If a transaction is
+   committing, the thread waits, uninterruptibly, and cannot be interrupted or preempted.
+
+So a `memcpy` is silently a journal operation. Nothing in the sequencer's source looks like it
+touches a disk.
+
+**Why it was invisible.** A cycle profiler samples a thread only while it is running, so a
+thread waiting produces no samples at all --- the sequencer's profile showed no hot spot
+because nothing was executing. The only sign in the venue was the reactor's stall watchdog
+noticing a callback had overrun, and the figure it prints is how long the callback has taken
+**so far**, which understates the wait: one stall reported as 372 ms was 557 ms measured.
+
+**Resolved 2026-08-31, in two parts, one of them not in this repository at all.**
+
+*The code change.* Segments were created with `ftruncate`, leaving them sparse. Filling them on
+creation removed the per-page cost but moved it: the writer did the filling at roll-over, and a
+run showed 673 appends over 1 ms against 684 rotations -- one slow append per roll. A helper
+thread now creates and fills segment N+1 while the writer is still appending to N, so a roll
+costs no open, no fill and no mmap on the order path. `wal_segments_filled_inline` and
+`wal_segments_waited_for` report whether it keeps pace; measured across 686 rotations they read
+1 and 0, the 1 being the first segment, which nothing can prepare in advance.
+
+*The mount option, which turned out to matter more.* Every writeback of a dirty mapped page also
+dirties the inode's timestamps, an inode change is journalled metadata, and waiting for a journal
+transaction is uninterruptible. Mounting the log's filesystem `lazytime` keeps timestamp updates
+in memory instead. Two twenty-minute runs, same load, same binaries, same device, only the mount
+option differing:
+
+| | `relatime` | `lazytime` |
+|---|---|---|
+| appends over 100 ms | 4 | **0** |
+| appends over 1 s | 1 | **0** |
+| worst reactor stall | 845 ms | **under 1 ms** |
+| `wait_transaction_locked` samples | 165 | **0** |
+
+Not one append in 9.3 million exceeded 10 ms. The journal traffic was almost entirely
+timestamps, which is not what was suspected: block allocation was, and it was not the cause.
+
+Giving the log its own device was measured separately and is worth doing but is the smaller
+effect: it took `rq_qos_wait` from 249 samples to 4 and left the journal waits untouched.
+
+**The requirement is now written down** at `docs/operations/filesystem_requirements.md`, and the
+sequencer warns at startup when the log's filesystem lacks `lazytime` -- because the setting is
+in no file this repository holds, and a machine rebuilt without it would look as though the venue
+had regressed for no reason.
+
+**Candidate fixes as they were considered, kept for provenance.**
+
+- **Give each segment real blocks before it is used.** Writing 4 MB of zeros at creation
+  allocates and initialises every block, so later mapped writes touch nothing new. `fallocate`
+  alone may not be enough: on ext4 a preallocated extent is *unwritten*, and the first write
+  still converts it, which is itself journalled.
+- **Create the next segment before it is needed**, off the reactor thread, so whatever the
+  creation costs is not paid by an order.
+- **Both**, since the first removes the per-page cost and the second removes the per-segment
+  cost, and they are different costs.
+
+Measuring any of them is now cheap: `wal_append_nanoseconds` records what a commit costs, and
+`scripts/thread_offcpu.py` says whether the thread still leaves the cpu.
+
+Related: [BUG-0048](#bug_0048), since the log is never reclaimed and so grows without bound,
+which is what keeps allocating new blocks. [BUG-0069](#bug_0069), since the sequencer had no
+metrics at all when this was being investigated.
+
+---
 
 ### BUG-0067: The matching engine segfaulted in the order book during reconciliation, 2026-08-08 {#bug_0067}
 

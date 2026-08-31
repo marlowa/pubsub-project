@@ -75,6 +75,7 @@
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
 namespace pubsub_itc_fw::tests {
 
 // Minimal ApplicationThread subclass.

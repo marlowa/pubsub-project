@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace pubsub_itc_fw::tests {
+namespace pubsub_itc_fw::tests_common {
 
 /** @ingroup instrumentation_subsystem */
 

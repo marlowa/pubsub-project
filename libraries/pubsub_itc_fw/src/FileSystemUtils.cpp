@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
+#include <pubsub_itc_fw/FileSystemUtils.hpp>
 
 #include <cerrno>
 #include <cstring>

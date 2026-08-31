@@ -98,6 +98,9 @@
 
 #include <fix_orders.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
+using pubsub_itc_fw::tests_common::make_allocator_config;
+using pubsub_itc_fw::tests_common::make_queue_config;
 namespace pubsub_itc_fw::tests {
 
 // Test constants

@@ -70,6 +70,9 @@
 
 #include <variable_length_test_protocol.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
+using pubsub_itc_fw::tests_common::make_allocator_config;
+using pubsub_itc_fw::tests_common::make_queue_config;
 namespace pubsub_itc_fw::tests {
 
 static constexpr int16_t pdu_id_data_query = 300;

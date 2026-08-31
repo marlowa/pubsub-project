@@ -21,7 +21,7 @@
 // Project headers
 #include <pubsub_itc_fw/ByteStreamInterface.hpp> // Base interface
 #include <pubsub_itc_fw/InetAddress.hpp>         // For address types
-#include <pubsub_itc_fw/utils/SimpleSpan.hpp>    // For SimpleSpan
+#include <pubsub_itc_fw/SimpleSpan.hpp>          // For SimpleSpan
 
 namespace pubsub_itc_fw {
 
@@ -99,14 +99,14 @@ class TcpSocket : public ByteStreamInterface {
      * possible without blocking. If the socket's send buffer is full, it will
      * return a negative value representing `EWOULDBLOCK` or `EAGAIN`.
      *
-     * @param[in] data A `utils::SimpleSpan<const uint8_t>` representing the binary
+     * @param[in] data A `SimpleSpan<const uint8_t>` representing the binary
      * data to be sent.
      * @return A `std::tuple` containing:
      * - An `int` indicating the number of bytes sent (>= 0) on success,
      * - A negative value (e.g., -EWOULDBLOCK, -ECONNRESET) on error or if the operation would block.
      * - A `std::string` containing an error message if the operation failed.
      */
-    [[nodiscard]] std::tuple<int, std::string> send(utils::SimpleSpan<const uint8_t> data) override;
+    [[nodiscard]] std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data) override;
 
     /**
      * @brief Receives binary data from the TCP socket into the provided buffer.
@@ -117,14 +117,14 @@ class TcpSocket : public ByteStreamInterface {
      * A return value of 0 bytes with no error indicates the peer has gracefully
      * closed its writing half of the connection.
      *
-     * @param[out] buffer A `utils::SimpleSpan<uint8_t>` representing the buffer
+     * @param[out] buffer A `SimpleSpan<uint8_t>` representing the buffer
      * where received data will be stored.
      * @return A `std::tuple` containing:
      * - An `int` indicating the number of bytes received (>= 0) on success.
      * - A negative value (e.g., -EWOULDBLOCK, -ECONNRESET) on error or if the operation would block.
      * - A `std::string` containing an error message if the operation failed.
      */
-    [[nodiscard]] std::tuple<int, std::string> receive(utils::SimpleSpan<uint8_t> buffer) override;
+    [[nodiscard]] std::tuple<int, std::string> receive(SimpleSpan<uint8_t> buffer) override;
 
     /**
      * @brief Closes the TCP socket connection.

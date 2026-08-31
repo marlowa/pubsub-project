@@ -34,10 +34,11 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
-#include <pubsub_itc_fw/utils/SimpleSpan.hpp>
+#include <pubsub_itc_fw/SimpleSpan.hpp>
 
 #include <pubsub_itc_fw/tests_common/LoggerWithSink.hpp>
 
+using pubsub_itc_fw::tests_common::LoggerWithSink;
 namespace pubsub_itc_fw {
 
 // Stream stub: pending bytes are delivered first; once exhausted,
@@ -67,7 +68,7 @@ class PduParserTestStream : public ByteStreamInterface {
         }
     }
 
-    [[nodiscard]] std::tuple<int, std::string> receive(utils::SimpleSpan<uint8_t> buffer) override {
+    [[nodiscard]] std::tuple<int, std::string> receive(SimpleSpan<uint8_t> buffer) override {
         if (!receive_bytes.empty()) {
             const size_t n = std::min(buffer.size(), receive_bytes.size());
             for (size_t i = 0; i < n; ++i) {
@@ -89,7 +90,7 @@ class PduParserTestStream : public ByteStreamInterface {
         return {-EAGAIN, ""};
     }
 
-    [[nodiscard]] std::tuple<int, std::string> send(utils::SimpleSpan<const uint8_t> data) override {
+    [[nodiscard]] std::tuple<int, std::string> send(SimpleSpan<const uint8_t> data) override {
         return {static_cast<int>(data.size()), ""};
     }
 

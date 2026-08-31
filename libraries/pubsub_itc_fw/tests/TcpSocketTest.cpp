@@ -73,8 +73,8 @@
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/InetAddress.hpp>
+#include <pubsub_itc_fw/SimpleSpan.hpp>
 #include <pubsub_itc_fw/TcpSocket.hpp>
-#include <pubsub_itc_fw/utils/SimpleSpan.hpp>
 
 namespace pubsub_itc_fw::tests {
 
@@ -311,7 +311,7 @@ TEST_F(TcpSocketTest, SendOnClosedSocket) {
     socket->close();
 
     const uint8_t data[] = {1, 2, 3};
-    auto [bytes_sent, send_err] = socket->send(utils::SimpleSpan<const uint8_t>{data});
+    auto [bytes_sent, send_err] = socket->send(SimpleSpan<const uint8_t>{data});
     EXPECT_LT(bytes_sent, 0);
     EXPECT_FALSE(send_err.empty());
 }
@@ -321,7 +321,7 @@ TEST_F(TcpSocketTest, SendEmptyData) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
 
-    utils::SimpleSpan<const uint8_t> empty_span{};
+    SimpleSpan<const uint8_t> empty_span{};
     auto [bytes_sent, send_err] = socket->send(empty_span);
     EXPECT_EQ(bytes_sent, 0);
     EXPECT_TRUE(send_err.empty());
@@ -334,7 +334,7 @@ TEST_F(TcpSocketTest, ReceiveOnClosedSocket) {
     socket->close();
 
     uint8_t buf[64];
-    auto [bytes_recv, recv_err] = socket->receive(utils::SimpleSpan<uint8_t>{buf});
+    auto [bytes_recv, recv_err] = socket->receive(SimpleSpan<uint8_t>{buf});
     EXPECT_LT(bytes_recv, 0);
     EXPECT_FALSE(recv_err.empty());
 }
@@ -344,7 +344,7 @@ TEST_F(TcpSocketTest, ReceiveEmptyBuffer) {
     auto [socket, err] = TcpSocket::create(AF_INET);
     ASSERT_NE(socket, nullptr) << err;
 
-    utils::SimpleSpan<uint8_t> empty_span{};
+    SimpleSpan<uint8_t> empty_span{};
     auto [bytes_recv, recv_err] = socket->receive(empty_span);
     EXPECT_EQ(bytes_recv, 0);
     EXPECT_TRUE(recv_err.empty());
