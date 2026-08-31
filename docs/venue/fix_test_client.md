@@ -45,44 +45,18 @@ All pages display a persistent nav bar and a live session status strip.
 | **Config** | Read-only display of `app.toml` |
 | **Logs** | SSE log stream with Pause/Resume; last 1000 lines shown on load |
 
-## Proposed: Advanced NOS Fields (not yet built) {#ftc_advanced_nos}
+## Advanced NOS Fields {#ftc_advanced_nos}
 
-This is a design sketch, not an implemented feature. It is the UI-side follow-up to the
-gateway's [migration to `fix_codec`](fix_order_gateway.md#gw_fix_codec_migration): once
-the gateway can accept the fuller NewOrderSingle cheaply, the entry form becomes the thing
-that can no longer drive it.
+The New Order Single form on the Messages page began with six fields --- ClOrdID, Symbol,
+Side, OrdType, Qty, Price --- while the DSL `NewOrderSingle` topic carried many more optional
+ones that no control could set. It now carries them, in a collapsed `<details>` block beneath
+the six-field row, so the common order is unchanged and the rest is one click away.
 
-**Today** the New Order Single form on the Messages page exposes six fields — **ClOrdID,
-Symbol, Side, OrdType, Qty, Price** (element ids `f-clordid`, `f-symbol`, `f-side`,
-`f-ordtype`, `f-qty`, `f-price`). The DSL `NewOrderSingle` topic already carries many more
-optional fields that no control can currently set.
-
-**Proposed** — keep the six-field row as the default fast path and add a collapsed
-`<details>` block beneath it for the optional tags. The common order is unchanged; the
-advanced fields are one click away and stay out of the way when unused:
-
-```
-New Order Single
- ClOrdID [ORD-001]  Symbol [BHP]  Side [Buy v]  OrdType [Limit v]  Qty [100]  Price [10.50]  (Send)
-
- ▸ Advanced fields                     ← collapsed <details>, closed by default
-
- ── when expanded ────────────────────────────────────────────────
- ▾ Advanced fields
-   TimeInForce [Day        v]   Account [____________]   ExDestination [______]
-   StopPx      [____] (Stop)    ExpireTime [__________]  ExecInst [__________]
-   MinQty      [____]           MaxFloor  [____]         Text     [__________]
- ──────────────────────────────────────────────────────────────────
-```
-
-The fields to surface, each of which the topic already carries, so only the gateway map and
-this form need touching:
-
-| FIX tag | Label | Control | DSL field | Conditional rule to reflect in the UI |
+| FIX tag | Label | Control | DSL field | Conditional rule |
 |---|---|---|---|---|
 | 59  | TimeInForce   | select (Day, GTC, IOC, FOK, GTD) | `time_in_force` | absence implies Day |
-| 126 | ExpireTime    | datetime | `expire_time` | required when TimeInForce=GTD; enable only then |
-| 99  | StopPx        | number | `stop_px` | required for Stop / StopLimit OrdType; enable only then |
+| 126 | ExpireTime    | datetime | `expire_time` | required when TimeInForce=GTD; enabled only then |
+| 99  | StopPx        | number | `stop_px` | for Stop / StopLimit OrdType |
 | 1   | Account       | text | `account` | often venue-required |
 | 100 | ExDestination | text | `ex_destination` | routing destination |
 | 18  | ExecInst      | text | `exec_inst` | single-valued in this topic |
@@ -90,23 +64,28 @@ this form need touching:
 | 111 | MaxFloor      | number | `max_floor` | iceberg display quantity |
 | 58  | Text          | text | `text` | free text |
 
-**How it threads through** (mirrors the existing six fields):
+The element ids are `f-tif`, `f-expiretime`, `f-stoppx`, `f-account`, `f-exdest`, `f-execinst`,
+`f-minqty`, `f-maxfloor` and `f-text`.
 
-1. Add the inputs to `web/messages.html` inside the `<details>` block.
+**How it threads through**, mirroring the original six:
+
+1. The inputs live in `web/messages.html` inside the `<details>` block.
 2. `doSend()` collects them and adds them to the POST body **only when non-empty**, so an
    untouched advanced field is simply omitted.
 3. `MessagesHandler` reads each with `ctx.formParam(...)` and sets it on the QuickFIX
-   `NewOrderSingle` **only when present** — an absent optional must stay absent on the wire,
-   never sent as an empty tag. This is the one correctness rule of the change.
-4. The UI enforces the conditional rules above (enable StopPx for Stop/StopLimit, ExpireTime
-   for GTD) so the form cannot easily build a spec-invalid order; the gateway remains the
-   authority and still validates.
+   `NewOrderSingle` **only when present**. This is the one correctness rule of the whole
+   feature: an absent optional must stay absent on the wire, never be sent as an empty tag.
+   Every field follows the same shape, `if (str != null && !str.isBlank())`.
+4. The UI enforces the conditional rules, so the form cannot easily build a spec-invalid
+   order --- selecting a TimeInForce other than GoodTillDate disables ExpireTime and clears
+   it. The gateway remains the authority and still validates.
 
-**Deliberately not surfaced.** Rarely-used or repeating-group fields are left to the existing
-**raw-FIX** escape hatch and Groovy scripting rather than growing a control per tag. The goal
-is to make the *common* richer order convenient, not to rebuild the whole FIX dictionary as a
-web form. Sequencing: this follows the gateway migration; there is no value in the controls
-until the gateway accepts the fields.
+**Repeating groups are surfaced too**, which was not the original intention. `NoUnderlyings`
+and `NoPartyIDs` have rows that can be added and removed, posted as parallel lists paired by
+index, and `MessagesHandler` builds a QuickFIX group per non-empty row. The reasoning for
+leaving them out --- that a control per tag would end in rebuilding the FIX dictionary as a
+web form --- still holds for everything beyond these two, and rarely-used fields remain the
+business of the **raw-FIX** escape hatch and Groovy scripting.
 
 ## Scripting (Groovy)
 
@@ -168,8 +147,8 @@ Opens on `http://localhost:8081`.
 - FIX Test Client detailed design — see `java/fix-test-client/DESIGN.md` in the source tree
 - [Secure Communications](../operations/secure_comms.md) — TLS 1.2 cap and its cause
 - [Order Gateway](fix_order_gateway.md) — the gateway this client connects to; its
-  [`fix_codec` migration](fix_order_gateway.md#gw_fix_codec_migration) is what motivates
-  the proposed Advanced NOS Fields form
+  [`fix_codec` migration](fix_order_gateway.md#gw_fix_codec_migration) is what motivated
+  the Advanced NOS Fields form
 - [FIX Codec](../fix/codec.md) — the codec library behind that migration
 
 The client itself is a Java application. Its internal design is documented alongside the code, in

@@ -33,13 +33,13 @@ Complete and green:
   Python package is in the pylint gate (10.00/10); `check_standards` and
   clang-format are clean.
 
-**Not yet migrated:** the `fix_order_gateway` still uses its own hand-maintained
-`FixParser` / `FixSerialiser` / `FixMessage` and `Tag::` / `MsgType::` tables.
-Replacing those with this library — and, in doing so, removing the per-message
-`std::string` allocation the current `FixParser::validate_checksum` incurs — is a
-later pass. The migration outline, and its knock-on effect on how much of a
-large message like NewOrderSingle the system exercises, is in
-[Order Gateway → Planned Migration to `fix_codec`](../venue/fix_order_gateway.md#gw_fix_codec_migration).
+**In use inbound, not outbound.** The `fix_order_gateway` frames and validates what it
+receives with this library, and takes its `Tag::` / `MsgType::` from the generated
+dictionary. What it *sends* is still hand-written by `FixSerialiser` / `FixErEncoder`;
+swapping the writer is a later pass, and would also remove the per-message `std::string`
+allocation `validate_checksum` used to incur. What was migrated, what was not, and the
+knock-on effect on how much of a large message like NewOrderSingle the system exercises,
+are in [Order Gateway → Migration to `fix_codec`](../venue/fix_order_gateway.md#gw_fix_codec_migration).
 
 ---
 
@@ -302,11 +302,11 @@ field.as_string_view() == raw;   // read by exact byte count, not by scanning fo
 Internally the reader's iterator consults the generated `is_data_length_tag(95)` /
 `data_field_for_length_tag(95)` to decide this.
 
-### What the gateway migration will look like
+### What the gateway migration did
 
 The [FIX order gateway migration](../venue/fix_order_gateway.md#gw_fix_codec_migration)
 is precisely this reader replacing the hand-written parser. Populating the order
-PDU from an inbound NewOrderSingle becomes:
+PDU from an inbound NewOrderSingle is:
 
 ```cpp
 FixMessageReader reader(window.data(), window.size());
