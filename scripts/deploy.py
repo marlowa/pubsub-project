@@ -818,13 +818,28 @@ def main() -> None:
             print(f"removed stale {stale.name}")
 
     # Resolve WAL directory paths relative to install_dir when not absolute.
-    # The sequencer binary requires an absolute path; dev.toml stores them as
+    # The sequencer binary requires an absolute path; the environment files store them as
     # relative paths so they stay portable across machines and containers.
+    #
+    # PUBSUB_WAL_ROOT overrides that root for one machine only. The log is measurably better on
+    # a device of its own -- see docs/operations/filesystem_requirements.md -- but which device
+    # that is cannot go in an environment file, because dev.toml serves both the Linux Mint host
+    # and the Rocky/RHEL8 container, and a path that exists on one would be silently created on
+    # the container's own filesystem on the other. So the machine says where its disk is, and
+    # the environment file says only that the log wants a directory.
+    wal_root = os.environ.get("PUBSUB_WAL_ROOT")
+    if wal_root:
+        wal_root_path = Path(wal_root)
+        if not wal_root_path.is_dir():
+            print(f"error: PUBSUB_WAL_ROOT is set to {wal_root}, which is not a directory", file=sys.stderr)
+            sys.exit(1)
+        print(f"PUBSUB_WAL_ROOT is set: write-ahead logs go under {wal_root_path}")
+
     for key in ("sequencer_primary_wal_directory", "sequencer_secondary_wal_directory"):
         if key in namespace:
             wal_path = Path(namespace[key])
             if not wal_path.is_absolute():
-                wal_path = install_dir / wal_path
+                wal_path = (Path(wal_root) / wal_path) if wal_root else (install_dir / wal_path)
             wal_path.mkdir(parents=True, exist_ok=True)
             namespace[key] = str(wal_path)
 

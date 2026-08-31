@@ -149,6 +149,30 @@ The sequencer checks this at startup and says what it found. If the option is mi
 warning naming the directory and the options actually in force. It is a warning rather than a
 refusal: the venue is correct without `lazytime`, only slower in the tail.
 
+## Telling the venue which device to use
+
+The device is named by the environment, not by a configuration file:
+
+```
+export PUBSUB_WAL_ROOT=/mnt/sda2/mystuff2      # before scripts/devsetup.sh
+```
+
+`deploy.py` then places every write-ahead log under it, and says so:
+
+```
+PUBSUB_WAL_ROOT is set: write-ahead logs go under /mnt/sda2/mystuff2
+```
+
+Unset, the logs go under the install directory as before, which works anywhere. If it is set to
+something that is not a directory, the deploy stops rather than carrying on.
+
+**Why this is not simply written in `dev.toml`.** That file serves *both* development
+environments -- the Linux Mint host and the Rocky/RHEL8 container -- which differ by platform,
+not by environment file. An absolute path in it would exist on one and not the other, and
+`deploy.py` creates the directory it is given, so the container would quietly get a log on
+whatever filesystem it happened to have. The environment file says the log wants a directory;
+the machine says where its disk is.
+
 ## A second, smaller finding: give the log its own device
 
 Before the `lazytime` run, moving the log off the shared device was measured on its own. It is
