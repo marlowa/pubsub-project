@@ -156,8 +156,8 @@ and the instance number, in `sequencer_primary.toml` and `sequencer_secondary.to
 Setting `enabled = false` on all of them runs the venue with only the FIX gateway, which is
 what the non-dev environments ship with.
 
-**Startup order** is as for the FIX order gateway: this gateway must start before the sequencer,
-which dials its ER listener and otherwise retries.
+**Startup order** is as for the FIX order gateway: it does not matter. The sequencer dials this
+gateway's ER listener and retries every two seconds until it answers.
 
 ## Reference client
 

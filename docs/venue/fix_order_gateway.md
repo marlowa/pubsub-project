@@ -20,10 +20,20 @@ hand-written FIX parser (`parse_fields`, `try_extract_message`). Outbound FIX me
 serialised by `FixErEncoder`, which writes directly to a caller-supplied fixed-size buffer
 via a `FixWireWriter` cursor — no heap allocation on the ER path.
 
-**Startup order:** the gateway must start before the sequencer. The sequencer connects
-outbound to the gateway's ER inbound listener (port 7010); if the sequencer starts first it
-retries at 2-second intervals. The long-term fix is the WAL+HA topology where the gateway
-and ME keep connections open to both sequencer instances at all times.
+**Startup order does not matter.** The sequencer dials this gateway's ER inbound listener
+(`er_listen_port`, 7010 by default) and retries every two seconds until it answers, without
+limit. Starting the sequencer first therefore costs at most one retry interval before reports
+can flow, and loses nothing: there are no orders yet to report on.
+
+This used to be written as a requirement that the gateway start first, which the retry it was
+written beside had already made untrue. The venue is routinely started the other way round --
+`perf_run.py` starts the sequencers before the gateways -- and works.
+
+The one thing to know is what a *later* disconnection costs, which is a different matter: the
+sequencer drops execution reports addressed to a gateway that is not connected rather than
+rerouting them to the surviving instance of the same protocol. That is a real gap, asserted by
+scenario 18 of `scripts/ha_test.py`, and it is about session handover rather than startup ---
+see [Gateway HA](../availability/gateway_ha.md).
 
 **Dual sequencer publishing:** `forward_pdu_to_sequencers()` sends the encoded PDU to both
 the primary and secondary sequencer connections when `ha_enabled = true`. With

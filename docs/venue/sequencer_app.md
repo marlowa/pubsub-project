@@ -18,9 +18,14 @@ order on all messages (the Aeron sequencer pattern). It:
 
 ## Startup and Configuration
 
-**Startup order:** the gateway must start before the sequencer. The sequencer connects
-outbound to the gateway's ER inbound listener (port 7010); if the sequencer starts first it
-retries at a 2-second interval.
+**Startup order does not matter.** The sequencer dials each configured gateway's ER inbound
+listener (port 7010 by default) and retries every two seconds until it answers, without limit.
+Starting the sequencer first costs at most one retry interval before reports can flow, and
+loses nothing, there being no orders yet to report on. `perf_run.py` starts the sequencers
+before the gateways.
+
+This was written as a requirement that the gateway start first, which the retry described in
+the same sentence had already made untrue.
 
 **`ha_enabled = false`** (default for single-instance dev runs): the sequencer immediately
 adopts `Role::leader` in `on_initial_event`, skips the arbiter and peer connections, and

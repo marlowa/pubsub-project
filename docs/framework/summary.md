@@ -1795,7 +1795,7 @@ fix_order_gateway --> FIX ER --> FIX client (via cl_ord_id_to_session_)
 
 **Future state (after WAL+HA slices land):** the second sequencer returns as a passive follower, the gateway connects to both but sends only to the leader, and the WAL replication channel runs alongside the data channels. See "WAL and HA Design" above for the full topology diagram.
 
-**Startup order** (counterintuitive but necessary): gateway must start before the sequencer because the sequencer connects outbound to the gateway's ER inbound listener on port 7010. If the sequencer starts first the connect retries (2-second interval, framework-level retry implemented since session 12). Long-term fix is the WAL+HA design's pattern of always-open dual connections from gateway to sequencer pair.
+**Startup order** does not matter. The sequencer dials the gateway's ER inbound listener on port 7010 and retries every two seconds until it answers, without limit, so starting the sequencer first costs at most one retry interval before reports can flow and loses nothing --- there are no orders yet to report on. `perf_run.py` starts the sequencers before the gateways. This was written as "counterintuitive but necessary" when the framework-level retry it describes in the same sentence had already made it neither.
 
 **Port allocation (local testing, session-15 state):**
 
