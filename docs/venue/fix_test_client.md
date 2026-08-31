@@ -67,6 +67,11 @@ the six-field row, so the common order is unchanged and the rest is one click aw
 The element ids are `f-tif`, `f-expiretime`, `f-stoppx`, `f-account`, `f-exdest`, `f-execinst`,
 `f-minqty`, `f-maxfloor` and `f-text`.
 
+<!-- verify: present java/fix-test-client/src/main/resources/web/messages.html "f-tif" -->
+<!-- verify: present java/fix-test-client/src/main/resources/web/messages.html "f-minqty" -->
+<!-- verify: present java/fix-test-client/src/main/resources/web/messages.html "f-maxfloor" -->
+<!-- verify: present java/fix-test-client/src/main/resources/web/messages.html "f-exdest" -->
+
 **How it threads through**, mirroring the original six:
 
 1. The inputs live in `web/messages.html` inside the `<details>` block.
@@ -80,6 +85,8 @@ The element ids are `f-tif`, `f-expiretime`, `f-stoppx`, `f-account`, `f-exdest`
    order --- selecting a TimeInForce other than GoodTillDate disables ExpireTime and clears
    it. The gateway remains the authority and still validates.
 
+<!-- verify: present java/fix-test-client/src/main/java/com/pubsub/fixtestclient/web/MessagesHandler.java "NoUnderlyings" -->
+<!-- verify: present java/fix-test-client/src/main/java/com/pubsub/fixtestclient/web/MessagesHandler.java "NoPartyIDs" -->
 **Repeating groups are surfaced too**, which was not the original intention. `NoUnderlyings`
 and `NoPartyIDs` have rows that can be added and removed, posted as parallel lists paired by
 index, and `MessagesHandler` builds a QuickFIX group per non-empty row. The reasoning for

@@ -219,6 +219,31 @@ def check_scripts_support_help(source_dir):
     print(f"\n\u2713 all {len(scripts)} scripts answer --help using only the standard library")
 
 
+def run_documentation_checks(source_dir):
+    """Check the documentation links resolve, and that what it says about the code is still true.
+
+    Both scripts existed and neither was run by anything, which is how a document came to say
+    the gateway "currently carries its own hand-written FIX layer" five weeks after it stopped
+    doing so, and how four documents came to require a startup order that each of them
+    contradicted in the same sentence. A checker nobody runs reports nothing, which reads
+    exactly like a checker with nothing to report.
+
+    Cheap enough to run every time: both read files and neither builds anything.
+    """
+    print("\n=== Checking documentation ===")
+    run_command(
+        [sys.executable, "scripts/check_docs.py"],
+        cwd=source_dir,
+        description="Checking documentation links and reachability",
+    )
+    run_command(
+        [sys.executable, "scripts/check_doc_claims.py"],
+        cwd=source_dir,
+        description="Checking what the documentation says about the code",
+    )
+    print("\n\u2713 Documentation checks passed")
+
+
 def run_pytest(source_dir, build_dir=None):
     """Run the Python DSL test suite.
 
@@ -1116,6 +1141,10 @@ Examples:
         help='Skip pylint: the Python DSL and FIX dictionary source, and the top-level scripts'
     )
 
+    parser.add_argument('--no-docs-check', action='store_true',
+        help='Skip the documentation checks: link resolution, and the claims the documentation makes about the code'
+    )
+
     parser.add_argument('--jobs', '-j', type=int, metavar='N',
         help='Number of parallel build jobs (default: number of CPU cores)'
     )
@@ -1237,6 +1266,11 @@ Examples:
         if not skip_pytest:
             run_pytest(source_dir, build_dir)
             run_scripts_pytest(source_dir)
+
+        if not args.no_docs_check:
+            run_documentation_checks(source_dir)
+        else:
+            print("NOTE: --no-docs-check is set; skipping the documentation checks")
 
         if args.clean:
             clean_build(build_dir)

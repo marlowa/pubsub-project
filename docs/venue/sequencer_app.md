@@ -18,6 +18,7 @@ order on all messages (the Aeron sequencer pattern). It:
 
 ## Startup and Configuration
 
+<!-- verify: present applications/sequencer/SequencerThread.cpp "connect_to_service(endpoint.service_name())" -->
 **Startup order does not matter.** The sequencer dials each configured gateway's ER inbound
 listener (port 7010 by default) and retries every two seconds until it answers, without limit.
 Starting the sequencer first costs at most one retry interval before reports can flow, and

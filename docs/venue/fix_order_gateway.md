@@ -42,16 +42,22 @@ is used.
 
 ## Migration to `fix_codec`: inbound done, outbound not {#gw_fix_codec_migration}
 
+<!-- verify: present applications/fix_order_gateway/FixParser.cpp "fix_codec::FixMessageReader" -->
+<!-- verify: present applications/fix_order_gateway/FixParser.cpp "FixMessageValidator" -->
 **The inbound half is migrated.** What arrives on a FIX session is framed by a zero-copy
 reader and checked against a generated dictionary before anything dispatches it. The tags and
 message types come from the same generated source, so `FixMessage.hpp` no longer carries
 tables of its own:
+
+<!-- verify: present applications/fix_order_gateway/FixMessage.hpp "namespace Tag = fix_codec::tag;" -->
 
 ```cpp
 namespace MsgType = fix_codec::msg_type;   // FixMessage.hpp
 namespace Tag     = fix_codec::tag;
 ```
 
+<!-- verify: exists applications/fix_order_gateway/FixSerialiser.hpp -->
+<!-- verify: exists applications/fix_order_gateway/FixErEncoder.hpp -->
 **The outbound half is not.** `FixSerialiser` and `FixErEncoder` still hand-write what the
 gateway sends, and they were deliberately out of scope: swapping the writer is a separate
 piece of work with its own risk, and doing both at once would have made a parity failure hard

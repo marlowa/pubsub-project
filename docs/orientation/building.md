@@ -339,6 +339,45 @@ peer socket, which is what `integration_tests/OutboundConnectionRetryIntegration
 
 ---
 
+## Holding the documentation to what the code does {#doc_claims}
+
+The build runs two checks over `docs/`, and skipping both is `--no-docs-check`.
+
+`check_docs.py` checks that links resolve and that no document is reachable from nothing.
+`check_doc_claims.py` checks something links cannot: whether what a document *says about the
+code* is still true.
+
+It exists because on 2026-08-31 five statements were found to be wrong, none of them by anyone
+reading the documentation. One section was headed "Planned Migration to `fix_codec` (not yet
+done)" five weeks after the migration landed. Another described a form as "not yet built" that
+was built. Four documents required a startup order that each of them contradicted in the same
+sentence. Every one read perfectly well, and link checking reported the tree consistent
+throughout, because the links were fine --- it was the sentences that were wrong.
+
+**Mark a claim you expect to rot** with a comment naming the fact that would prove it. It is an
+HTML comment, so it renders as nothing on GitHub and through Doxygen alike:
+
+```markdown
+<!-- verify: present applications/fix_order_gateway/FixParser.cpp "fix_codec::FixMessageReader" -->
+The gateway frames inbound messages with a zero-copy reader from `fix_codec`.
+```
+
+The forms are `present`, `absent` and `count` (a path, some literal text, and for `count` how
+many times), and `exists` / `missing` (a path alone). Text is matched literally, not as a
+regular expression: a claim in prose is about a thing with a name, and the name is what should
+be written down.
+
+**What it cannot do**, and is not meant to: find an unmarked claim that has gone stale. A
+checker that tried to read prose would be wrong in both directions. What this gives you is a
+way to bind a sentence to the fact behind it, so the build fails rather than a reader finding
+out months later.
+
+**Both scripts existed before either was run by anything.** That is how the faults above
+survived: a checker nobody runs reports nothing, which reads exactly like a checker with
+nothing to report.
+
+---
+
 ## See Also
 
 - [CPU Pinning](../framework/cpu_pinning.md) -- `SCHED_FIFO`, `isolcpus`, and what a machine needs for
