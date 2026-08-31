@@ -789,7 +789,16 @@ peer_listen_host           = "127.0.0.1"
 peer_listen_port           = 11003
 peer_host                  = "127.0.0.1"
 peer_port                  = 11004
-wal_directory              = "var/sequencer_wal"
+# The log lives on its own device, and only on this development machine.
+#
+# rq_qos_wait -- the block layer making a thread wait for the device -- was 249 of 726
+# uninterruptible samples on 2026-08-31. Everything shared /dev/sda1: the log, the matching
+# engine's 496 MB open-order region, the application logs and 1.6 GB of perf captures, so the
+# sequencer's commits queued behind writes that had nothing to do with trading.
+#
+# An absolute path is resolved as-is by deploy.py; a relative one is taken under install_dir.
+# The RHEL8 environments keep the relative form, because /mnt/sda2 exists here and nowhere else.
+wal_directory              = "/mnt/sda2/mystuff2/sequencer_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11030
 command_queue_pool_initial_slabs            = 1
@@ -830,7 +839,7 @@ peer_listen_host           = "127.0.0.1"
 peer_listen_port           = 11004
 peer_host                  = "127.0.0.1"
 peer_port                  = 11003
-wal_directory              = "var/sequencer_secondary_wal"
+wal_directory              = "/mnt/sda2/mystuff2/sequencer_secondary_wal"
 wal_subscriber_listen_host = "127.0.0.1"
 wal_subscriber_listen_port = 11031
 command_queue_pool_initial_slabs            = 1
