@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -410,6 +412,146 @@ TEST_F(WalTest, ReplayIsDeterministic) {
     }
     EXPECT_EQ(end1.segment, end2.segment);
     EXPECT_EQ(end1.offset, end2.offset);
+}
+
+// Preparing the next segment ahead of the writer (BUG-0070).
+//
+// Filling a segment removes the per-page cost of a sparse file, but if the writer does the
+// filling at roll-over it pays the whole segment's allocation in one go, on the order path. A
+// twenty-minute run showed that exactly: 673 appends over 1 ms against 684 rotations, one slow
+// append per roll. These cases are about the fill happening on the helper instead, and about
+// the writer being correct whether or not it does.
+
+TEST_F(WalTest, TheSegmentAfterTheCurrentOneIsReadyBeforeItIsNeeded) {
+    WalWriter w;
+    w.open(dir_, small_segment_size, {0, 0});
+
+    ASSERT_TRUE(w.wait_until_prepared(std::chrono::seconds{5})) << "the helper never prepared a segment";
+
+    // Ready means created, filled and mapped -- so it is on disk with its blocks allocated
+    // before a single append has gone anywhere near it.
+    struct stat info {};
+    ASSERT_EQ(::stat((dir_ + "/wal_000001.log").c_str(), &info), 0) << "segment 1 was not created ahead of time";
+    EXPECT_EQ(static_cast<size_t>(info.st_size), small_segment_size);
+    EXPECT_GE(info.st_blocks, static_cast<blkcnt_t>(small_segment_size / 512))
+        << "segment 1 was prepared but left sparse, so the writer will still allocate on the order path";
+}
+
+TEST_F(WalTest, RollingOverAdoptsThePreparedSegmentRatherThanMakingOne) {
+    WalWriter w;
+    w.open(dir_, small_segment_size, {0, 0});
+    ASSERT_TRUE(w.wait_until_prepared(std::chrono::seconds{5}));
+
+    // Only the first segment should ever be made by the writer: nothing can prepare that one.
+    EXPECT_EQ(w.segments_filled_inline(), 1U);
+
+    const std::vector<uint8_t> payload(16, 0xABu);
+    while (w.current_position().segment == 0) {
+        w.append(1, payload.data(), payload.size());
+    }
+
+    EXPECT_EQ(w.current_position().segment, 1U);
+    EXPECT_EQ(w.segments_filled_inline(), 1U) << "the writer filled a segment itself, so preparation is not keeping pace";
+}
+
+TEST_F(WalTest, RecordsSurviveManyRollsWhilePreparationRunsAlongside) {
+    // The case that does not care about timing. Whatever the two threads did between them, the
+    // log either reads back exactly what was appended or it does not.
+    constexpr int record_count = 5000;
+
+    WalWriter w;
+    w.open(dir_, small_segment_size, {0, 0});
+
+    std::vector<uint8_t> payload(24, 0);
+    for (int i = 0; i < record_count; ++i) {
+        payload[0] = static_cast<uint8_t>(i & 0xFF);
+        w.append(i, payload.data(), payload.size());
+    }
+    ASSERT_GT(w.current_position().segment, 10U) << "too few rolls to exercise the handoff";
+
+    std::vector<int64_t> seen;
+    const WalPosition replayed = WalReader::replay(dir_, {0, 0}, [&](int64_t id, const void*, size_t) { seen.push_back(id); });
+    EXPECT_GT(replayed.segment, 0U);
+
+    ASSERT_EQ(seen.size(), static_cast<size_t>(record_count));
+    for (int i = 0; i < record_count; ++i) {
+        ASSERT_EQ(seen[static_cast<size_t>(i)], i) << "records came back out of order at " << i;
+    }
+}
+
+TEST_F(WalTest, WithPreparationOffTheWriterStillProducesAllocatedSegments) {
+    // The fallback, which is what runs whenever the helper is not ready. It must be correct on
+    // its own: slower at each roll, but never sparse.
+    WalWriter w;
+    w.disable_preparation();
+    w.open(dir_, small_segment_size, {0, 0});
+
+    const std::vector<uint8_t> payload(16, 0xCDu);
+    while (w.current_position().segment < 3) {
+        w.append(1, payload.data(), payload.size());
+    }
+
+    EXPECT_EQ(w.segments_filled_inline(), 4U) << "with preparation off the writer should have made every segment";
+
+    for (int seg = 0; seg <= 3; ++seg) {
+        const std::string path = fmt::format("{}/wal_{:06}.log", dir_, seg);
+        struct stat info {};
+        ASSERT_EQ(::stat(path.c_str(), &info), 0) << path;
+        EXPECT_GE(info.st_blocks, static_cast<blkcnt_t>(small_segment_size / 512)) << path << " is sparse";
+    }
+}
+
+TEST_F(WalTest, AnUnusedPreparedSegmentReadsAsEmptyAndIsResumedInto) {
+    // Shutdown leaves the prepared segment on disk deliberately. Replay must not mistake a
+    // filled-with-zeros segment for data, and the position it reports must be somewhere the
+    // writer can carry on from.
+    WalPosition end;
+    {
+        WalWriter w;
+        w.open(dir_, small_segment_size, {0, 0});
+        ASSERT_TRUE(w.wait_until_prepared(std::chrono::seconds{5}));
+        const std::vector<uint8_t> payload(16, 0x5Au);
+        w.append(7, payload.data(), payload.size());
+    }
+
+    ASSERT_TRUE(std::filesystem::exists(dir_ + "/wal_000001.log")) << "the prepared segment should be left for the next start";
+
+    std::vector<int64_t> seen;
+    end = WalReader::replay(dir_, {0, 0}, [&](int64_t id, const void*, size_t) { seen.push_back(id); });
+    ASSERT_EQ(seen.size(), 1U) << "the zero-filled prepared segment was replayed as though it held records";
+    EXPECT_EQ(seen[0], 7);
+
+    // Resuming from where replay left off must work, and must find the records already there.
+    WalWriter again;
+    again.open(dir_, small_segment_size, end);
+    const std::vector<uint8_t> more(16, 0x77u);
+    again.append(8, more.data(), more.size());
+
+    std::vector<int64_t> after;
+    const WalPosition final_position = WalReader::replay(dir_, {0, 0}, [&](int64_t id, const void*, size_t) { after.push_back(id); });
+    EXPECT_GT(final_position.offset, 0U);
+    ASSERT_EQ(after.size(), 2U);
+    EXPECT_EQ(after[0], 7);
+    EXPECT_EQ(after[1], 8);
+}
+
+TEST_F(WalTest, ClosingWithAPreparedSegmentOutstandingLeaksNoDescriptors) {
+    const auto open_descriptors = []() {
+        size_t count = 0;
+        for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+            (void)entry;
+            ++count;
+        }
+        return count;
+    };
+
+    const size_t before = open_descriptors();
+    {
+        WalWriter w;
+        w.open(dir_, small_segment_size, {0, 0});
+        ASSERT_TRUE(w.wait_until_prepared(std::chrono::seconds{5}));
+    }
+    EXPECT_LE(open_descriptors(), before) << "the prepared segment's descriptor or its eventfd was not closed";
 }
 
 } // namespaces

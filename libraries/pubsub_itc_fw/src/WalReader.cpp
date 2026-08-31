@@ -142,8 +142,15 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from, co
         const std::string path = segment_path(directory, seg);
         const size_t consumed = replay_segment(path, start, cb);
 
-        end.segment = seg;
-        end.offset = consumed;
+        // Only move the end position for a segment that actually held something. A segment
+        // created ahead of the writer is zero-filled, so it yields nothing and must not be
+        // reported as where the log has reached: the answer would name a segment holding no
+        // records, and the caller storing it in a snapshot would resume past the real tail.
+        // The same happens after a crash, which leaves the prepared segment behind too.
+        if (consumed > start) {
+            end.segment = seg;
+            end.offset = consumed;
+        }
     }
 
     return end;
