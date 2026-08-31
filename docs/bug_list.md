@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 71 |
-| Open | 26 (16 defects, 10 tasks) |
+| Bugs recorded | 73 |
+| Open | 28 (18 defects, 10 tasks) |
 | Closed | 45 |
-| Next id | BUG-0072 |
+| Next id | BUG-0074 |
 
 ## Open bugs by severity
 
-12 high, 11 medium, 3 low.
+12 high, 13 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -36,6 +36,8 @@
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
+| [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
+| [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -865,6 +867,109 @@ fixing the mount would leave part of the cost in place.
 
 Related: [BUG-0070](#bug_0070), the same mechanism on the sequencer, where it was measured and
 where both parts of the fix are now recorded.
+
+### BUG-0072: The gateway's open-order pool is sized by nothing in particular {#bug_0072}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | Working out the venue's memory cost for [BUG-0048](#bug_0048), and finding the four figures disagree by a factor of 256 |
+| Impact | The binary gateway is configured to hold 4,096 open orders before it must grow its pool, and growing it is an allocation on the order path. Not yet live -- see the note on enablement |
+
+**The four configured values, and they do not agree with each other.**
+
+| Environment | Gateway | Slots | As memory |
+|---|---|---|---|
+| dev | `binary_order_gateway_a` | 1,048,576 | 192 MiB |
+| dev | `binary_order_gateway_b` | 65,536 | 12 MiB |
+| dev | both FIX gateways | 65,536 | 12 MiB each |
+| prod, preprod, test-1 | `binary_order_gateway_a` | **4,096** | 768 KiB |
+
+One slot costs 192 bytes. The production figure is the same as the compiled-in default in
+`BinaryOrderGatewayConfiguration.hpp:182`, which is what a value looks like when nobody chose it.
+
+**Why 4,096 is the number to look at.** The venue expects hundreds to a few thousand member
+comp ids. If each rests even a handful of orders, the pool is exhausted at once -- and this is
+`ExpandablePoolAllocator`, so exhaustion is not a refusal. It chains another slab and logs a
+warning. **Chaining is an allocation, and it happens on the path an order takes.** For a
+framework whose stated aim is no heap allocation on the hot path, a production configuration
+that guarantees routine chaining is a defect in the configuration rather than in the code.
+
+**The dev asymmetry is a second, smaller thing.** `binary_order_gateway_a` has sixteen times the
+slots of `binary_order_gateway_b`, its standby. Were B to take A's load it would begin chaining
+at a sixteenth of the volume. It matters less than it appears, because
+`binary_order_gateway_b_enabled = false` in production -- but a figure that is wrong in dev is
+the figure that gets copied when the standby is switched on.
+
+**What settling this needs is a stated expectation**, in the same way [BUG-0048](#bug_0048)
+needs a stated retention period: how many orders may be open at once, per gateway and for the
+venue. The matching engine's region already asserts an answer -- 2,000,000 slots, 0.46 GiB --
+and no document says where that came from either, so the two should be settled together and
+should agree. A gateway that can hold 4,096 in front of an engine sized for 2,000,000 is not a
+considered pair of numbers.
+
+**It is not live yet, and that is the reason to fix it now rather than later.**
+`binary_order_gateway_a_enabled = false` in prod, preprod and test-1, so the 4,096 has never run
+under load anywhere -- see [BUG-0073](#bug_0073). Configuration that has never been exercised is
+exactly the configuration that is wrong, and it will be switched on one day by someone who
+assumes it was considered.
+
+**Cheap to be generous, which is the argument for deciding rather than defaulting.** A million
+slots is 192 MiB against 31 GiB on the development machine. The cost of choosing a figure well
+above the true peak is small; the cost of discovering the peak in production is an allocation
+per order once the pool runs out.
+
+Related: [BUG-0048](#bug_0048), for the memory figures this came out of, and
+[BUG-0028](#bug_0028), which is the same class of problem in the order book -- growth sized by
+doubling rather than by a stated expectation.
+
+### BUG-0073: The placeholder environments carry settings nobody chose {#bug_0073}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | Checking why `binary_order_gateway_b`'s pool size was undefined in `prod.toml`, and finding the enablement flags |
+| Impact | None today: these environments are not deployed to. The cost arrives when one becomes real and its unconsidered values are inherited as though they had been decided |
+
+**What they contain.** `prod.toml`, `preprod.toml` and `test-1.toml` are identical in this
+respect, and differ from dev:
+
+| Component | dev | prod, preprod, test-1 |
+|---|---|---|
+| `fix_order_gateway_a` | enabled | enabled |
+| `fix_order_gateway_b` | enabled | **disabled** |
+| `binary_order_gateway_a` | enabled | **disabled** |
+| `binary_order_gateway_b` | enabled | **disabled** |
+
+**These environments exist as a reminder that other environments will**, rather than as
+descriptions of anything running. Nothing is deployed to them, so nothing is broken today. That
+is the reason this is recorded rather than fixed in haste: the values in them are not wrong so
+much as unconsidered, and the difference matters only later.
+
+**Why it is worth an entry at all.** Three things follow from placeholder values sitting in a
+file that looks authoritative:
+
+1. **A disabled standby reads as a decision.** `fix_order_gateway_b` is off in all three. When
+   one of these becomes real, whoever brings it up inherits a venue with no gateway to fail over
+   to -- and the design work in [BUG-0045](#bug_0045) and [BUG-0046](#bug_0046) assumes a second
+   gateway exists. Andrew's judgement on the equivalent binary flag was that it is simply a
+   mistake.
+2. **The binary gateway is the one every load run has used.** The trading-day runs behind
+   [BUG-0070](#bug_0070)'s latency figures and [BUG-0048](#bug_0048)'s volume figures all ran
+   `--gateway binary`. Those findings are downstream of whichever gateway feeds the sequencer so
+   they stand, but the binary gateway's own configuration has been exercised nowhere except dev.
+3. **That is how [BUG-0072](#bug_0072) happened.** Its 4,096 open-order slots is the compiled-in
+   default, in a file nobody runs, which is precisely where a figure nobody chose survives
+   unnoticed.
+
+**What closing this needs**, and it is small: for each flag, a decision and a comment in the file
+saying which it is -- deliberate staging, or a value awaiting a real deployment. A placeholder
+that says it is a placeholder cannot be mistaken for a considered setting, and that is the whole
+of the fix.
 
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 
@@ -1781,7 +1886,7 @@ visible problem; a reader being told nothing is neither.
 |---|---|
 | The follower's acknowledgement | Tracked as of 2026-08-30, `peer_acked_through_` |
 | The matching engine's checkpoint | Recorded as of 2026-08-31, and never reported |
-| The oldest a member's resend may reach | Not defined. R-0008 |
+| The oldest a member's resend may reach | **Defined 2026-08-31**: the start of the current trading day |
 
 Until all three exist, nothing may be discarded. The sequencer warns once the log passes five
 million records so that the growth is visible rather than discovered.
@@ -1829,6 +1934,31 @@ These exclude the matching engine publisher's own logs (`mep_primary_wal`,
 `mep_secondary_wal`), which that run did not exercise, so a real day is larger than 92 GB by an
 amount not yet measured.
 
+**Memory is not a constraint either, and for a reason worth stating.** Forty million orders a
+day is *throughput*. What costs memory is how many orders are open *at once*, and that is capped
+by configuration rather than by the day's volume:
+
+| | capacity | cost |
+|---|---|---|
+| Matching engine open-order region, each of two | 2,000,000 orders | 0.46 GiB |
+| `binary_order_gateway_a` open-order pool | 1,048,576 orders | 0.19 GiB |
+| Three remaining gateway pools | 65,536 each | 0.03 GiB |
+| **Fixed total** | | **1.15 GiB** |
+
+None of that grows with the length of the day, because orders leave the open set as they fill or
+cancel -- the profile behind these figures ran at a cancel ratio of 0.88.
+
+**A day of log costs four megabytes of memory, not 46 GB.** The writer maps one segment at a
+time, so the address space it holds is one segment however long the log grows. That is the
+property that makes a day of retention affordable in memory as well as on disk, and it is worth
+saying explicitly because a memory-mapped file of 46 GB sounds alarming and is not.
+
+**What the volume does cost is page cache.** Writing 46 GB a day passes 46 GB through it.
+That is reclaimable rather than leaked, but it evicts whatever else was cached, and it is why
+the kernel's writeback thresholds matter here -- see
+[filesystem requirements](operations/filesystem_requirements.md), where a mount option turned
+out to decide whether the sequencer stalled.
+
 **Storage is not the constraint, and that settles one thing:** 1.7 TB free holds roughly
 eighteen typical days for both sequencers. So the retention period should be chosen by what a
 member needs in order to reconnect and resend, not by what happens to fit. A period that is a
@@ -1848,10 +1978,45 @@ measured under a burst -- see [BUG-0060](#bug_0060).
 as it stands. A change that adds one sequenced message per order makes it 4.72 and a typical day
 58 GB, so this arithmetic should be redone whenever the set changes.
 
-**So this bug is blocked on a decision, not on work.** Once the retention period is a number,
-what remains is the PDU above, a generation number so that a reused segment's old records are
-not replayed as current (`WalEntryHeader` has an unused `filler(8)` field for one), and the
-reclaiming itself. Until then the log grows, which is the right way to be wrong.
+**DECIDED 2026-08-31: retention is the entire trading day.**
+
+The venue's day runs from the Asian open to the UK close -- about **01:00 to 19:30 UK time,
+18.5 hours**. Every execution report shall remain available for the whole of the day it belongs
+to. That is the stated period R-0008 requires, and it is stated because a member may be
+disconnected for any part of a session and must still be able to ask for what it missed.
+
+The third position is therefore settled: **the oldest a member's resend may reach is the start
+of the current trading day.**
+
+What that costs, using the measured figures above:
+
+| Day | Log at close, primary | Both sequencers | Average order rate | Average write rate, both |
+|---|---|---|---|---|
+| Typical, 40M orders | 46.1 GB | 92.2 GB | 601 /s | 1.38 MB/s |
+| Heavy, twice that | 92.2 GB | 184.4 GB | 1,201 /s | 2.77 MB/s |
+| Extreme, three times | 138.3 GB | 276.7 GB | 1,802 /s | 4.15 MB/s |
+
+The log is at its largest at the close and is reclaimed between days, so those are the peaks
+rather than a steady state. Against 1.7 TB free, even an extreme day leaves ample room.
+
+**Note how modest the average rate is, and do not be reassured by it.** A typical day averages
+601 orders per second because it is long and uneven. Today's twenty-minute run sustained 1,809
+per second -- three times that average -- and it is the peaks, not the mean, that produce the
+stalls this project has spent a day removing. See [BUG-0060](#bug_0060): microbursts remain
+unmeasured.
+
+**Still to settle, and it is a smaller question than the one just answered.** A member
+reconnecting at the start of day N+1 may want reports from day N. Whether the venue promises
+that -- and so retains two days rather than one -- is not decided here. Retaining two days
+doubles the peak to 184 GB typical, which still fits comfortably, so the question is about what
+is promised rather than what is affordable.
+
+**So this bug is no longer blocked on a decision. What remains is work**, and it is named: the
+PDU that carries the matching engine's checkpoint position to the sequencer; a generation number
+so that a reused segment's old records are not replayed as current (`WalEntryHeader` has an
+unused `filler(8)` field for one); and the reclaiming itself, which now has an obvious moment to
+happen -- between trading days. Until that is built the log grows without bound, which remains
+the right way to be wrong.
 
 Related: [BUG-0046](#bug_0046), since a member's resend is served from this log; and the checkpoint
 work, which cannot be completed without this.
