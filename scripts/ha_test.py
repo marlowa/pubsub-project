@@ -1395,32 +1395,23 @@ _SCENARIOS: list[Scenario] = [
     # dropped by the sequencer rather than rerouted. See the "What running two
     # instances gives you today" section of docs/availability/gateway_ha.md.
     #
-    # Getting a deterministic ER for an order whose gateway is dead is the awkward
-    # part. Killing the gateway mid-burst would work but is a race. Instead this
-    # reuses the ME-HA cancel-on-failover path purely as an ER generator: the ME stub
-    # never matches, so every baseline order rests in the book and replicates to the
-    # secondary; killing the primary ME makes the promoted secondary cancel the whole
-    # book, emitting exactly one cancel ER per resting order. Those orders came from
-    # gateway a, which by then is dead, so every one of those ERs has nowhere to go.
+    # Getting a deterministic ER for an order whose gateway is dead is the awkward part.
+    # Killing the gateway mid-burst would work but is a race. So this borrows a burst the
+    # venue produces for its own reasons: the baseline orders rest on the book, the engine
+    # is killed and left down past the period the venue says it may be unable to match, and
+    # on restart it cancels every order it recovers and reports each cancellation (R-0117).
+    # Those orders came from gateway a, which by then is dead, so every one of those reports
+    # has nowhere to go.
     #
-    # THAT GENERATOR IS GONE, 2026-08-30, and it is why this scenario is now recorded as
-    # failing. A promotion no longer cancels the book: the engine keeps its open orders in
-    # a memory-mapped region, so a promoted instance can say what it holds and an order
-    # still on the reconciled book is genuinely outstanding (R-0073, and
-    # docs/durability/open_order_checkpoint.md). No cancels means no reports, and the
-    # assertions below have nothing to observe.
+    # It used to borrow the burst a PROMOTION emitted, cancelling the whole book of a
+    # promoted secondary. That stopped happening on 2026-08-30, when the engine gained a
+    # record of its open orders and a promotion began keeping them (R-0073). The absence
+    # rule is a better generator anyway: it needs one engine rather than a pair, and it is
+    # the venue doing something it must do rather than something it was doing for want of
+    # being able to do better.
     #
-    # Nothing about the venue got worse and nothing this scenario asserts has changed --
-    # there is still no session handover, and reports for a dead instance are still dropped
-    # rather than rerouted. What is missing is a way to produce a report for an order whose
-    # gateway is dead. Two candidates, in preference order:
-    #   1. R-0123's cancel-each-and-halt, which is the remaining user of the seq_no=0 report
-    #      path and will emit exactly this burst when a region cannot be used;
-    #   2. orders in flight across the kill, using the pipeline-full guard scenario 23
-    #      already has, which answers the race objection that ruled this out originally.
-    #
-    # Kill order matters: gateway a first, ME primary second. The reverse would let
-    # the cancel ERs reach a before it died and prove nothing.
+    # Kill order matters: gateway a first, the engine second. The reverse would let the
+    # cancellation reports reach a before it died and prove nothing.
     #
     # The first version of this scenario could not assert the drop, because the reports
     # never reached the drop decision: cancel ERs carry seq_no 0 and the sequencer gated
@@ -1441,14 +1432,10 @@ _SCENARIOS: list[Scenario] = [
             "inherits none of a's sessions, and the sequencer drops every execution "
             "report bound for the dead instance instead of rerouting it to b"
         ),
-        me_ha=True,
         gateway_b=True,
-        expected_failure=(
-            "this scenario has no execution reports left to observe: its generator was the "
-            "cancel burst a promotion used to emit, and a promotion now keeps the book "
-            "(R-0073). The gap it asserts is unchanged and still true -- see the note above "
-            "for the two ways to give it a generator again"
-        ),
+        # Short enough that the scenario need not sit out the deployed five minutes, and the
+        # restart below stays down comfortably past it.
+        absence_limit_seconds=5,
         # The FIX session lives on gateway a. Once a is killed there is no session to
         # send through, so Phase 5 has nothing to do.
         orders_during_override=0,
@@ -1461,13 +1448,16 @@ _SCENARIOS: list[Scenario] = [
                 role_prefix=None,
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
-            KillStep(
-                proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
-                settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+        ],
+        restart_steps=[
+            RestartStep(
+                proc_name="matching_engine",
+                ready_log_name="matching_engine.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=True,
+                settle_secs=_ME_SETTLE,
+                down_secs=12.0,
             ),
         ],
     ),
@@ -5275,9 +5265,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "gateway_session_conn_id -- ER routing via the envelope is broken")
 
         # ── Gateway orphan: no session handover between instances ─────────────
-        # Asserts a GAP rather than a guarantee. Instance a is dead and the promoted
-        # ME has just cancelled its resting orders, so there is a burst of execution
-        # reports addressed to a gateway instance that no longer exists.
+        # Asserts a GAP rather than a guarantee. Instance a is dead and the engine has just
+        # come back from an absence longer than the venue says it may be, cancelling every
+        # order it recovered -- so there is a burst of execution reports addressed to a
+        # gateway instance that no longer exists.
         #
         # Three things must hold for the test to mean anything:
         #   1. the cancel burst actually happened, or the rest proves nothing;
@@ -5292,12 +5283,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # BLOCK SHOULD FAIL. Invert it rather than deleting it: dropped_ers becomes 0
         # and b's traffic becomes non-zero.
         if scenario.assert_gateway_orphaned:
-            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
+            # The log was deleted on restart, so read it whole.
+            cancel_count = me_cancel_on_failover_count(me_log, from_byte=0, timeout=args.failover_timeout)
             if cancel_count <= 0:
-                die("gateway orphan: promoted secondary did not cancel a non-empty book "
-                    f"(count={cancel_count}) -- no execution reports were generated for the "
-                    "dead gateway, so this scenario asserted nothing")
-            log(f"  gateway orphan: {cancel_count} resting order(s) cancelled by the promoted ME")
+                die("gateway orphan: the restarted engine did not cancel the orders it "
+                    f"recovered (count={cancel_count}) -- no execution reports were generated "
+                    "for the dead gateway, so this scenario asserted nothing. It was down for "
+                    "longer than the venue says it may be unable to match, with orders open, so "
+                    "every one of them should have been cancelled and reported (R-0117).")
+            log(f"  gateway orphan: {cancel_count} resting order(s) cancelled after the long absence")
 
             # Wait for the burst to reach the sequencer rather than sampling straight
             # away. Every other me_ha scenario gets this delay for free from Phase 5's
