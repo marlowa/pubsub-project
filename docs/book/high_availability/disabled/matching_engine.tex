@@ -21,20 +21,20 @@ collection of orders with no way to say what is missing from it.
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:me:durable}
 
-Nowhere. The set exists in one process and is lost with it.
+In a memory-mapped region of fixed-size records, one for each open order, held
+beside the engine and separate from the structures it works with. An order is
+written to it as it is accepted and taken out of it as it is cancelled, and it is
+read back when the engine starts. See
+\texttt{docs/durability/open\_order\_checkpoint.md}.
 
-\begin{gap}{}
-  With a thousand orders open, a matching engine killed and restarted returns
-  holding none of them. The gateway continues to report those orders as open,
-  the member continues to believe they are live, and nothing tells either
-  otherwise. A cancel for any of them is then refused as an order the venue does
-  not recognise.
-\end{gap}
+It survives the process dying and not the machine dying. That is the guarantee
+this configuration is specified to give, and the enabled configuration's answer to
+a machine is the other machine.
 
-It cannot be recovered from the sequencer's log either, and the reason is worth
-stating because the log looks as though it should serve. The log records changes
-rather than state, so rebuilding the set from it means replaying from the
-beginning --- and the earlier part of the log is discarded as it grows.
+\textbf{Why a region and not the sequencer's log}, which looks as though it should
+serve. The log records changes rather than state, so rebuilding the set from it
+means replaying from the beginning --- and the earlier part of the log is
+discarded as it grows.
 
 \begin{gap}{BUG-0048}
   The history retained is whatever has not yet been discarded, which is a
@@ -43,9 +43,9 @@ beginning --- and the earlier part of the log is discarded as it grows.
   written.
 \end{gap}
 
-\textbf{What is required instead is a checkpoint}: the set itself, written
-periodically by the component that owns it, recording the orders it holds open
-and the sequence number they are current to. That is the copy that outlives the
+\textbf{What is required instead is a checkpoint}: the set itself, recording the
+orders the component holds open and the sequence number they are current to.
+That is what the region is, and it is the copy that outlives the
 process, and the log supplies only what has happened since.
 
 \subsubsection{How a restarted instance becomes current}
@@ -68,12 +68,6 @@ separate promotion path, because promotion is this recovery starting from a
 number learned another way. And because the same mechanism runs on every restart,
 it is exercised continually rather than only when a test produces a failover.
 
-\begin{gap}{BUG-0064}
-  An instance that starts without having been a follower applies nothing. It
-  adopts its role and begins accepting orders while holding none. There are two
-  such paths --- one where the venue arbitrates roles and one where it does not
-  --- and neither recovers anything.
-\end{gap}
 
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:me:member}
@@ -150,7 +144,7 @@ it is exercised continually rather than only when a test produces a failover.
   anything: it simply stops mentioning the orders, which is what \reqref{R-0020}
   exists to prevent. Recovery is therefore needed for both outcomes, and is not
   an alternative to cancelling but the thing that makes cancelling possible.}
-  \uncovered{no scenario restarts the engine and inspects what it holds before trading resumes}
+  \covers{ha_test:51}
 \end{requirement}
 
 \begin{requirement}{R-0123}{A member is told what it had, even when the venue's own record of it is unusable}
@@ -172,7 +166,7 @@ it is exercised continually rather than only when a test produces a failover.
   Admitting that it cannot say is the last resort and is still better than
   silence: a member that is told the venue has lost track can act, where a member
   that is told nothing cannot.}
-  \uncovered{no scenario damages the record and then restarts the component}
+  \covers{ha_test:52}
 \end{requirement}
 
 \begin{requirement}{R-0117}{Orders open across a long absence are cancelled, reported, and trading halts}
@@ -203,7 +197,7 @@ it is exercised continually rather than only when a test produces a failover.
   --- how long it was absent, and what it cancelled --- so it can be acted on
   without a person present. Lifting it still requires one, under
   \reqref{R-0023}.}
-  \uncovered{no scenario keeps the engine down long enough for the period to elapse}
+  \covers{ha_test:51}
 \end{requirement}
 
 \begin{requirement}{R-0118}{How long an absence may be before orders are cancelled is a stated figure}
@@ -233,7 +227,7 @@ it is exercised continually rather than only when a test produces a failover.
   It is also a trading decision rather than a measurement: it says how long a
   member's resting order stays meaningful in this market, which is a judgement
   about members and not about how long the code takes.}
-  \uncovered{no period is stated}
+  \covers{ha_test:51}
 \end{requirement}
 
 \begin{requirement}{R-0036}{A cancelled order does not become open again}
@@ -287,7 +281,7 @@ it is exercised continually rather than only when a test produces a failover.
   check is made against it. Treating a doubtful checkpoint as absent gives the
   answer of \reqref{R-0020}, which is a worse outcome for a member and a knowable
   one.}
-  \uncovered{no scenario damages a checkpoint}
+  \covers{ha_test:52}
 \end{requirement}
 
 \begin{requirement}{R-0022}{The venue keeps enough history to bring a recovered set of orders up to date}

@@ -19,7 +19,7 @@ namespace pubsub_itc_fw {
 
 namespace {
 constexpr uint32_t store_magic = 0x534C4F54u; // "SLOT"
-constexpr uint32_t store_version = 1;
+constexpr uint32_t store_version = 2;
 constexpr uint32_t slot_free = 0;
 constexpr uint32_t slot_live = 1;
 constexpr size_t page_size = 4096;
@@ -38,6 +38,13 @@ struct MappedSlotStore::Header {
     // A hint, and rebuilt from the slots after any unclean stop.
     std::atomic<uint32_t> free_head;
     uint32_t filler;
+    // When the owner last said it was working, as a wall-clock time. Whoever opens the store
+    // next subtracts it from the current time to learn how long nothing was tending it.
+    //
+    // Deliberately not written by acquire() or commit(). A store that is idle because nothing
+    // is happening is not a store nobody is tending, and stamping this on writes alone would
+    // read a quiet hour followed by a two-second restart as an hour of absence.
+    std::atomic<int64_t> alive_at_ns;
 };
 
 struct MappedSlotStore::SlotHeader {
@@ -104,7 +111,23 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
 
     Header* hdr = header();
 
-    if (existed && hdr->magic == store_magic) {
+    if (existed) {
+        // Something is already in this file, so it is not a new store however unreadable it
+        // turns out to be, and it must not be written over.
+        //
+        // It used to be taken over when the magic did not match, on the reasoning that a file
+        // which was never a store has nothing worth keeping. That is true of a file nobody
+        // wrote, and false of a store whose header was damaged -- which is the same file from
+        // here. Taking it over discarded every record it held and reported a new store, so the
+        // one case that most needs to be noticed was the one that looked most ordinary.
+        if (hdr->magic != store_magic) {
+            // Read before close(), which unmaps the region hdr points into.
+            const uint32_t found = hdr->magic;
+            close();
+            throw PubSubItcException("MappedSlotStore: " + path + " is not a store this understands: it begins " + std::to_string(found) +
+                                     " where a store begins " + std::to_string(store_magic));
+        }
+
         // Refuse rather than reinterpret. A store read with the wrong record size produces
         // records that are wrong in ways nothing downstream can detect.
         if (hdr->version != store_version || hdr->payload_size != payload_size || hdr->slot_count != slot_count) {
@@ -116,13 +139,14 @@ bool MappedSlotStore::open(const std::string& path, uint32_t payload_size, SlotI
         return true;
     }
 
-    // A new store, or a file that was never one. Either way it starts empty.
+    // Nothing was there, so this is a new store and it starts empty.
     hdr->magic = store_magic;
     hdr->version = store_version;
     hdr->payload_size = payload_size;
     hdr->slot_count = slot_count;
     hdr->published.store(0, std::memory_order_relaxed);
     hdr->filler = 0;
+    hdr->alive_at_ns.store(0, std::memory_order_relaxed);
     for (SlotIndex i = 0; i < slot_count; ++i) {
         SlotHeader* s = slot(i);
         s->state.store(slot_free, std::memory_order_relaxed);
@@ -189,6 +213,14 @@ void MappedSlotStore::release(SlotIndex index) {
     s->state.store(slot_free, std::memory_order_release);
     s->next_free = hdr->free_head.load(std::memory_order_relaxed);
     hdr->free_head.store(index, std::memory_order_relaxed);
+}
+
+void MappedSlotStore::mark_alive(int64_t wall_time_ns) {
+    header()->alive_at_ns.store(wall_time_ns, std::memory_order_relaxed);
+}
+
+int64_t MappedSlotStore::alive_at_ns() const {
+    return header()->alive_at_ns.load(std::memory_order_relaxed);
 }
 
 void MappedSlotStore::publish(int64_t seq_no) {

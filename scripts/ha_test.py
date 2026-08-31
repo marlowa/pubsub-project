@@ -544,6 +544,15 @@ class RestartStep(NamedTuple):
                        unchanged: the log was deleted, so it reads from the
                        start of a new one.
     settle_secs:       how long to wait after readiness is confirmed.
+    damage_region:     the file name of a region to corrupt while the process is dead, so
+                       that the successor finds a record of what it held that it cannot
+                       read.  Resolved against the deployment's var directory, because the
+                       scenario table is built before the install prefix is known.
+    down_secs:         how long to leave the process dead before restarting it.  Zero
+                       for every scenario whose subject is a fast restart.  A scenario
+                       testing what a LONG absence does needs the venue to be absent for
+                       real, and there is no faking it: the engine measures the absence
+                       from a wall-clock stamp it wrote before it died.
     """
     proc_name: str
     ready_log_name: str
@@ -551,6 +560,8 @@ class RestartStep(NamedTuple):
     ready_timeout: float
     resets_me_counter: bool
     settle_secs: float
+    down_secs: float = 0.0
+    damage_region: str = ""
 
 
 class SupervisedKillStep(NamedTuple):
@@ -698,6 +709,19 @@ class Scenario(NamedTuple):
     # restarted are still open afterwards -- by dropping the session and counting how many of
     # the cancels the gateway then sends are refused as orders the venue does not recognise.
     assert_open_orders_survive: bool = False
+    # How long the venue may be unable to match before the orders open at the time are
+    # cancelled and trading halts, written into the deployed configs before launch. The
+    # deployed figure is 300s, which no test is going to wait out; the scenario that exercises
+    # the rule shortens it and keeps the engine down past it.
+    absence_limit_seconds: int = 300
+    # When True, keep the matching engine down for longer than absence_limit_seconds before
+    # restarting it, then assert that it cancelled every order it recovered, told each member,
+    # and halted. See run_scenario's "long absence" block.
+    assert_absence_halt: bool = False
+    # When True, damage the matching engine's open-order region before restarting it, and
+    # assert that the venue says it cannot account for what it was holding rather than
+    # resuming as though the region had been empty. See run_scenario's "damaged region" block.
+    assert_damaged_region: bool = False
     # Why this scenario is expected to fail, when the venue is known not to meet the
     # requirement it asserts. A scenario marked this way does not fail the suite when it
     # fails; it fails the suite when it PASSES, because the gap has closed and the marking
@@ -2851,6 +2875,95 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
         restart_steps=[_me_restart_step()],
     ),
+
+    # 51 -- what a long absence does to the orders a member was locked out of.
+    #
+    # An order is not dangerous because it is old. One that rested all morning in a working
+    # market is fine: its owner could have cancelled it at any moment and chose not to. What
+    # makes an order dangerous is that its owner was LOCKED OUT of it -- the venue could not
+    # match, so the member could not cancel, and the market moved while it could do nothing.
+    #
+    # So this kills the engine and leaves it dead. The absence has to be real: the engine
+    # measures it from a wall-clock stamp it wrote before it died, and nothing here can fake
+    # that. The deployed limit is five minutes, which no test is going to sit out, so the
+    # scenario shortens it to a few seconds and stays down past it.
+    #
+    # What must then happen, per R-0117: every recovered order cancelled, the member that
+    # placed each one told, and trading halted. And per R-0023, the halt stays until a person
+    # lifts it -- so the venue must refuse an order sent afterwards rather than quietly
+    # carrying on.
+    Scenario(
+        number=51,
+        short_name="long_absence_cancels_and_halts",
+        description="Orders a member was locked out of are cancelled, reported, and trading halts",
+        expected_outcome=(
+            "the restarted engine recovers its open orders, cancels every one of them, sends "
+            "the member that placed it a report saying so, halts, and refuses the orders sent "
+            "afterwards"
+        ),
+        absence_limit_seconds=5,
+        assert_absence_halt=True,
+        # No orders in flight across the kill: the subject is what happens to the orders that
+        # were already resting, and in-flight traffic only makes the counts non-deterministic.
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[
+            RestartStep(
+                proc_name="matching_engine",
+                ready_log_name="matching_engine.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=True,
+                settle_secs=_ME_SETTLE,
+                # Comfortably past the five seconds this scenario allows, and short enough that
+                # the suite does not notice.
+                down_secs=12.0,
+            ),
+        ],
+    ),
+
+    # 52 -- the venue's own record of what it held cannot be read.
+    #
+    # R-0102 says such a record is not to be used. That leaves the engine unable to name what
+    # it held, and it cannot cancel what it cannot name -- so R-0123 sends it to the other
+    # record the venue keeps, the sequencer's log of what it took, and requires it to cancel
+    # each order and tell each member from that instead.
+    #
+    # But that log is truncated as it is consumed, so a replay from the beginning starts
+    # wherever truncation left off rather than at the start of the day. In a sandbox that has
+    # been running scenarios for hours it starts a long way in, which is the case this asserts:
+    # the engine cannot establish what was open, so it says it cannot account for what it was
+    # holding and halts WITHOUT cancelling. Cancelling only the orders it could name would
+    # leave every earlier one unmentioned, which is the silence the whole chapter exists to
+    # prevent, arrived at while appearing to have done something.
+    #
+    # The region itself must survive: whatever made it unreadable is evidence, and a venue that
+    # overwrites it destroys the only account of its own failure.
+    Scenario(
+        number=52,
+        short_name="damaged_region_cannot_account",
+        description="A matching engine whose record of what it held cannot be read",
+        expected_outcome=(
+            "the engine refuses the damaged region rather than reading it, keeps it aside, "
+            "says it cannot account for what it was holding, and halts without cancelling"
+        ),
+        assert_damaged_region=True,
+        orders_during_override=0,
+        orders_after_override=0,
+        steps=[],
+        restart_steps=[
+            RestartStep(
+                proc_name="matching_engine",
+                ready_log_name="matching_engine.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=True,
+                settle_secs=_ME_SETTLE,
+                damage_region="matching_engine_open_orders.region",
+            ),
+        ],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -3490,6 +3603,33 @@ def set_installed_ha(prefix: Path, enabled: bool) -> int:
         result, count = _HA_SECTION_RE.subn(lambda m: m.group(1) + wanted, text)
         result, extra = _HA_ENABLED_RE.subn(lambda m: m.group(1) + wanted, result)
         count += extra
+        if count and result != text:
+            toml_path.write_text(result)
+            changed += 1
+    return changed
+
+
+def set_installed_absence_limit(prefix: Path, seconds: int) -> int:
+    """Set order_book.absence_limit_seconds in every deployed matching engine config.
+
+    The deployed figure is five minutes, which is a trading decision about how long a member's
+    resting order stays meaningful. No test is going to keep the venue down for five minutes to
+    watch it elapse, so the scenario that exercises the rule shortens it and keeps the engine
+    down past the shorter figure instead.
+
+    Written on every launch rather than restored afterwards, for the same reason
+    set_installed_ha is: a restore only runs when the scenario reaches it, and a scenario that
+    dies half way would leave every later one running with a three-second limit and cancelling
+    its book for no reason anyone could see.
+    """
+    changed = 0
+    pattern = re.compile(r"^(absence_limit_seconds\s*=\s*)\d+", re.M)
+    for toml_path in sorted((prefix / "etc").rglob("*.toml")):
+        try:
+            text = toml_path.read_text(errors="replace")
+        except OSError:
+            continue
+        result, count = pattern.subn(lambda m: m.group(1) + str(seconds), text)
         if count and result != text:
             toml_path.write_text(result)
             changed += 1
@@ -4194,6 +4334,7 @@ def do_restart_step(
     launch_table: list,
     bin_dir: Path,
     log_dir: Path,
+    var_dir: Path,
 ) -> float:
     """
     Kill the named process (if still running), delete its log so Quill starts
@@ -4208,6 +4349,23 @@ def do_restart_step(
         proc.kill()
         proc.wait()
         log(f"  {step.proc_name} confirmed dead")
+
+    if step.damage_region:
+        # Overwrite the header, which is where the store keeps what it is and how it is laid
+        # out. A region whose header does not describe what the engine is configured to read is
+        # refused outright rather than read as though it did -- reading it the wrong way round
+        # would produce orders that are wrong in ways nothing downstream could detect.
+        region = var_dir / step.damage_region
+        if not region.is_file():
+            die(f"damaged region: {region} does not exist, so there is nothing to damage and "
+                "the scenario would pass without testing anything")
+        with open(region, "r+b") as handle:
+            handle.write(b"\xDE\xAD\xBE\xEF" * 8)
+        log(f"  Damaged the open-order region at {region.name}, so the engine cannot read it")
+
+    if step.down_secs > 0:
+        log(f"  Leaving {step.proc_name} down for {step.down_secs:.0f}s, so that the absence is real")
+        time.sleep(step.down_secs)
 
     # Delete the old log before restarting so Quill writes a fresh file
     # and we can safely read from byte 0.
@@ -4431,6 +4589,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # without setting the switch is precisely BUG-0061 -- the sequencer waits for an arbiter that
     # never arrives and forwards nothing -- and setting the switch without skipping the launches
     # leaves an arbiter that now refuses to start.
+    # The absence limit, set on every launch for the same reason. Scenarios that do not test
+    # the rule get the deployed figure back, so one that shortened it cannot leave it short.
+    set_installed_absence_limit(prefix, scenario.absence_limit_seconds)
+
     changed = set_installed_ha(prefix, not scenario.ha_disabled)
     if scenario.ha_disabled:
         log(f"  HA OFF: [ha] switched off in {changed} deployed config(s)")
@@ -4783,7 +4945,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 phase4_results.append(("kill", failover_occurred, label, elapsed))
             elif isinstance(step, RestartStep):
                 elapsed = do_restart_step(
-                    step, proc_by_name, app_procs, launch_table, bin_dir, log_dir,
+                    step, proc_by_name, app_procs, launch_table, bin_dir, log_dir, prefix / "var",
                 )
                 restart_results.append((step.proc_name, elapsed))
                 phase4_results.append(("restart", step.proc_name, elapsed))
@@ -5183,6 +5345,116 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # reports saying so had nowhere to go.
             log(f"  gateway orphan: {cancel_count} order(s) cancelled in the book, "
                 "0 cancel reports delivered to any client -- orders silently orphaned")
+
+        # ── A record of what it held that cannot be read ──────────────────────
+        # R-0102 and R-0123. Three things must hold, and the third is the one that matters
+        # most, because it is the one an implementation is most likely to get wrong in the
+        # helpful direction.
+        if scenario.assert_damaged_region:
+            region_pos = 0  # the log was deleted on restart, so read it whole
+
+            refused = poll_log_for(me_log, "cannot be used", "R-0102",
+                                   timeout=args.failover_timeout, from_byte=region_pos)[0]
+            if not refused:
+                die("damaged region: the engine did not refuse the damaged region. Reading it "
+                    "the wrong way round produces orders that are wrong in ways nothing "
+                    "downstream can detect, which is why it is refused outright (R-0102).")
+            log("  damaged region: refused rather than read")
+
+            # The region is the only account of whatever went wrong with it. A venue that
+            # overwrites it leaves nobody able to find out.
+            kept = prefix / "var" / "matching_engine_open_orders.region.unusable"
+            if not kept.is_file():
+                die(f"damaged region: {kept.name} was not kept. Whatever made the region "
+                    "unreadable is the evidence, and starting a fresh region over the top of it "
+                    "destroys the only account of the failure.")
+            log(f"  damaged region: kept aside as {kept.name}")
+
+            # The venue must say it cannot account for what it was holding. The sequencer's log
+            # is truncated as it is consumed, so it does not reach the orders taken earlier in
+            # the day, and the engine has no way to name them.
+            cannot_account = poll_log_for(me_log, "cannot account for what the venue was holding",
+                                          timeout=args.failover_timeout, from_byte=region_pos)[0]
+            if not cannot_account:
+                die("damaged region: the engine did not say it cannot account for what it was "
+                    "holding. The sequencer's log is truncated, so it does not reach the orders "
+                    "taken earlier in the day; resuming on what it does reach would conceal "
+                    "exactly the loss being recovered from (R-0123).")
+            log("  damaged region: the venue says it cannot account for what it was holding")
+
+            halted = poll_log_for(me_log, "trading is halted", "a person must lift this",
+                                  timeout=args.failover_timeout, from_byte=region_pos)[0]
+            if not halted:
+                die("damaged region: the engine did not halt. Admitting it cannot say is the "
+                    "last resort and is still better than silence, but only if it stops (R-0123).")
+            log("  damaged region: trading halted")
+
+            # And it must NOT have cancelled. Cancelling the orders it can name would leave
+            # every earlier one unmentioned -- the same silence, reached while appearing to
+            # have dealt with it.
+            cancelled = me_cancel_on_failover_count(me_log, from_byte=region_pos, timeout=2.0)
+            if cancelled > 0:
+                die(f"damaged region: the engine cancelled {cancelled} order(s) while unable to "
+                    "account for what it held. Cancelling only what it can name leaves every "
+                    "order it cannot name unmentioned, which is the silence R-0020 exists to "
+                    "prevent, arrived at while appearing to have done something about it.")
+            log("  damaged region: nothing cancelled, because not everything could be named -- OK")
+
+        # ── A long absence: cancelled, reported, halted ───────────────────────
+        # The engine was kept down past the period the venue says it may be absent for, with
+        # orders resting. R-0117 requires all three things, and each is checked separately
+        # because any one of them alone would be a worse outcome than doing nothing:
+        # cancelling without reporting loses the member's position silently, reporting without
+        # halting carries on as though nothing happened, and halting without cancelling leaves
+        # the stale orders in place.
+        if scenario.assert_absence_halt:
+            me_pos_after_restart = 0  # the log was deleted on restart, so read it whole
+
+            cancelled = me_cancel_on_failover_count(me_log, from_byte=me_pos_after_restart,
+                                                    timeout=args.failover_timeout)
+            if cancelled <= 0:
+                die("long absence: the engine did not cancel the orders it recovered "
+                    f"(count={cancelled}). It was down for longer than the venue says it may be "
+                    "with orders open, so every one of them should have been cancelled -- their "
+                    "members were locked out of them while the market moved (R-0117).")
+            log(f"  long absence: {cancelled} order(s) cancelled")
+
+            halted = poll_log_for(me_log, "trading is halted", "a person must lift this",
+                                  timeout=args.failover_timeout, from_byte=me_pos_after_restart)[0]
+            if not halted:
+                die("long absence: the engine cancelled the book but did not halt. Carrying on "
+                    "as though nothing had happened is what the halt exists to prevent (R-0117); "
+                    "lifting it is a judgement and needs a person (R-0023).")
+            log("  long absence: trading halted")
+
+            # The reports have to reach the members. A cancel nobody is told about is the
+            # silent loss this whole chapter exists to prevent, and it looks identical from
+            # here to a cancel that worked.
+            sent, nos_received = gateway_progress_totals(gw_log)
+            if sent is None:
+                die("long absence: no GW-PROGRESS line in the gateway log -- cannot confirm the "
+                    "cancellation reports were delivered to the member")
+            if sent < nos_received + cancelled:
+                die(f"long absence: the gateway sent {sent} report(s) for {nos_received} order(s), "
+                    f"but {cancelled} cancellation(s) were emitted. Expected at least "
+                    f"{nos_received + cancelled}: a member that is not told its order was "
+                    "cancelled cannot tell that from the venue having lost it (R-0117, R-0020).")
+            log(f"  long absence: {sent} report(s) delivered for {nos_received} order(s) -- "
+                f"includes the {cancelled} cancellation(s)")
+
+            # And the halt has to mean something. An order sent now must be refused, in the
+            # reply to that order, which is how a member trading into a halt finds out.
+            log("=== Sending an order into the halt, which must be refused ===")
+            refused_pos = file_end(me_log)
+            f8proc.stdin.write(b"T\n")
+            f8proc.stdin.flush()
+            refused = poll_log_for(me_log, "trading is halted -- refusing NOS",
+                                   timeout=args.recovery_timeout, from_byte=refused_pos)[0]
+            if not refused:
+                die("long absence: the venue accepted an order while halted. A halt that still "
+                    "takes orders is not a halt, and the member is not told the venue is closed "
+                    "to business (R-0117).")
+            log("  long absence: an order sent into the halt was refused -- OK")
 
         # ── Do the member's open orders survive a restart of the matching engine? ──
         # The member-visible form of the question is whether those orders are still
@@ -5699,7 +5971,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # has already failed is not safer.
             log("  restarting the matching engine -- nothing else is done")
             do_restart_step(_me_restart_step(), proc_by_name, app_procs, launch_table,
-                            bin_dir, log_dir)
+                            bin_dir, log_dir, prefix / "var")
             resumed_by = time.monotonic() + _REFUSAL_DEADLINE
             attempt = 0
             while True:

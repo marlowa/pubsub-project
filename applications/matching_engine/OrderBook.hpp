@@ -160,6 +160,22 @@ class OrderBook {
         return store_.published();
     }
 
+    /**
+     * @brief Records that the engine was able to match at this wall-clock time.
+     *
+     * Call it on a timer. Not from the accept or cancel path: a book that is idle because
+     * nothing is being traded is not a book nobody is tending, and stamping this on orders
+     * would read a quiet hour followed by a restart as an hour of absence.
+     */
+    void mark_alive(int64_t wall_time_ns) {
+        store_.mark_alive(wall_time_ns);
+    }
+
+    /** @brief When the previous owner was last able to match, or zero if it never said. */
+    [[nodiscard]] int64_t alive_at_ns() const {
+        return store_.alive_at_ns();
+    }
+
     [[nodiscard]] size_t size() const {
         return index_.size();
     }

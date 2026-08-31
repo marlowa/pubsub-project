@@ -299,9 +299,19 @@ end
 #  streaming is complete.  It carries the sequencer's current WAL
 #  head; on receipt the ME considers its book reconciled and
 #  transitions to LEADER state.
+#
+#  It also carries the EARLIEST record the sequencer still holds.
+#  The log is truncated as it is consumed, so a replay from zero
+#  does not necessarily reach the start of the day. An engine that
+#  has lost its own record of what it held falls back to this one,
+#  and must be able to tell whether it established what was open or
+#  merely got as far back as the log goes -- because resuming on an
+#  incomplete answer conceals exactly the loss it is recovering
+#  from. See R-0123.
 # ------------------------------------------------------------
 message MePositionAck (id=116, version=1)
     i64 last_seq_no        # sequencer's current WAL head at catch-up completion
+    i64 first_seq_no       # earliest record the sequencer still retains, or 0 if it holds none
 end
 
 # ------------------------------------------------------------

@@ -43,13 +43,14 @@ constexpr SlotIndex slot_count = 8;
 
 // The file layout, mirrored here so that the tests below can damage a store the way a
 // crash does. LayoutStillAgreesWithTheStore fails if the class moves anything.
-constexpr size_t header_size = 32;
+constexpr size_t header_size = 40;
 constexpr size_t offset_magic = 0;
 constexpr size_t offset_version = 4;
 constexpr size_t offset_payload_size = 8;
 constexpr size_t offset_slot_count = 12;
 constexpr size_t offset_published = 16;
 constexpr size_t offset_free_head = 24;
+constexpr size_t offset_alive_at_ns = 32;
 constexpr size_t slot_header_size = 16;
 constexpr size_t offset_slot_state = 0;
 constexpr size_t offset_slot_next_free = 4;
@@ -466,27 +467,50 @@ TEST_F(MappedSlotStoreTest, TheReasonForRefusingSaysWhatWasHeldAndWhatWasAsked) 
     }
 }
 
-TEST_F(MappedSlotStoreTest, AFileThatWasNeverAStoreIsTakenOver) {
+TEST_F(MappedSlotStoreTest, AFileThatIsNotAStoreIsRefusedRatherThanTakenOver) {
+    // It used to be taken over, on the reasoning that a file which was never a store holds
+    // nothing worth keeping. That is true of a file nobody wrote and false of a store whose
+    // header was damaged, and from here the two are the same file: the magic does not match.
+    // Taking it over discarded every record and reported a new store, so the case that most
+    // needs to be noticed was the one that looked most ordinary.
     {
         std::ofstream out(path_, std::ios::binary);
         const std::string junk(200, 'x');
         out.write(junk.data(), static_cast<std::streamsize>(junk.size()));
     }
     MappedSlotStore store;
-    EXPECT_FALSE(store.open(path_, record_size, slot_count));
-    EXPECT_EQ(store.published(), 0);
-    EXPECT_EQ(store.rebuild_free_list(), 0u);
-    EXPECT_NE(store.acquire(), MappedSlotStore::no_slot);
+    EXPECT_THROW(static_cast<void>(store.open(path_, record_size, slot_count)), PubSubItcException);
+    EXPECT_FALSE(store.is_open());
 }
 
-TEST_F(MappedSlotStoreTest, AFileTooShortToHoldAHeaderIsTakenOver) {
+TEST_F(MappedSlotStoreTest, AStoreWhoseHeaderWasDamagedIsRefusedRatherThanEmptied) {
+    // The failure this exists for. A store with records in it, whose header is then damaged,
+    // must not come back as an empty store: that is a silent loss of everything it held, and
+    // whoever opens it has no way to tell it apart from a store that was always empty.
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, record_size, slot_count));
+        store_one(store, 1, 10);
+        store.publish(10);
+    }
+    write_at<uint32_t>(offset_magic, 0xDEADBEEFu);
+
+    MappedSlotStore store;
+    EXPECT_THROW(static_cast<void>(store.open(path_, record_size, slot_count)), PubSubItcException);
+    EXPECT_FALSE(store.is_open());
+}
+
+TEST_F(MappedSlotStoreTest, AFileTooShortToHoldAHeaderIsRefused) {
+    // One byte is not a store, but it is not nothing either. Whatever put it there meant
+    // something by it, and writing a store over the top would destroy the only evidence of
+    // what that was.
     {
         std::ofstream out(path_, std::ios::binary);
         out.put('x');
     }
     MappedSlotStore store;
-    EXPECT_FALSE(store.open(path_, record_size, slot_count));
-    EXPECT_NE(store.acquire(), MappedSlotStore::no_slot);
+    EXPECT_THROW(static_cast<void>(store.open(path_, record_size, slot_count)), PubSubItcException);
+    EXPECT_FALSE(store.is_open());
 }
 
 TEST_F(MappedSlotStoreTest, AStoreWithNoRecordSizeOrNoSlotsIsRefused) {
@@ -610,6 +634,32 @@ TEST_F(MappedSlotStoreTest, ManyRecordsSurviveWithHolesInThem) {
     }
 }
 
+TEST_F(MappedSlotStoreTest, WhenTheOwnerWasLastWorkingSurvivesTheStoreBeingClosed) {
+    constexpr int64_t alive_at = 1'700'000'000'000'000'000LL;
+    {
+        MappedSlotStore store;
+        ASSERT_FALSE(store.open(path_, record_size, slot_count));
+        EXPECT_EQ(store.alive_at_ns(), 0) << "a store nobody has tended yet says so";
+        store.mark_alive(alive_at);
+        EXPECT_EQ(store.alive_at_ns(), alive_at);
+    }
+
+    MappedSlotStore reopened;
+    ASSERT_TRUE(reopened.open(path_, record_size, slot_count));
+    EXPECT_EQ(reopened.alive_at_ns(), alive_at) << "the successor has to be able to tell how long the store went untended";
+}
+
+TEST_F(MappedSlotStoreTest, StoringARecordDoesNotSayTheOwnerIsWorking) {
+    // The two are separate on purpose. A store that is idle because nothing is happening is
+    // not a store nobody is tending, and if writing a record stamped this, a quiet hour
+    // followed by a restart would read as an hour of absence.
+    MappedSlotStore store;
+    ASSERT_FALSE(store.open(path_, record_size, slot_count));
+    store_one(store, 1, 10);
+
+    EXPECT_EQ(store.alive_at_ns(), 0);
+}
+
 TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
     // The damage tests above write to offsets worked out here rather than asked of the
     // class, which hides its layout. If this fails they are damaging the wrong bytes and
@@ -619,15 +669,18 @@ TEST_F(MappedSlotStoreTest, LayoutStillAgreesWithTheStore) {
         ASSERT_FALSE(store.open(path_, record_size, slot_count));
         store_one(store, 1, 10);
         store_one(store, 2, 4242);
+        store.mark_alive(1234567890123456789LL);
     }
 
     EXPECT_EQ(read_at<uint32_t>(offset_payload_size), record_size);
     EXPECT_EQ(read_at<uint32_t>(offset_slot_count), slot_count);
     EXPECT_EQ(read_at<int64_t>(offset_published), 4242);
     EXPECT_EQ(read_at<uint32_t>(offset_magic), 0x534C4F54u);
-    EXPECT_EQ(read_at<uint32_t>(offset_version), 1u);
+    EXPECT_EQ(read_at<uint32_t>(offset_version), 2u);
     EXPECT_EQ(read_at<uint32_t>(slot_offset(1) + offset_slot_state), 1u);
     EXPECT_EQ(read_at<int64_t>(slot_offset(1) + offset_slot_seq_no), 4242);
+
+    EXPECT_EQ(read_at<int64_t>(offset_alive_at_ns), 1234567890123456789LL);
 
     const std::vector<uint8_t> expected = pattern(2);
     std::array<uint8_t, record_size> held{};

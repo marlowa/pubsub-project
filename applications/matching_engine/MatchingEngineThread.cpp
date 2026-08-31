@@ -5,6 +5,8 @@
 
 #include <chrono>
 
+#include <cstdio>
+
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -170,8 +172,26 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
 
     // The region holds the orders themselves and is sized to the most that may be open at
     // once; the map beside it is sized to the same expectation but may grow past it.
-    const bool region_existed = order_book_.open(config_.order_book_region_path, static_cast<OrderBook::SlotIndex>(config_.order_book_region_capacity),
-                                                 static_cast<size_t>(config_.order_book_initial_capacity));
+    bool region_existed = false;
+    try {
+        region_existed = order_book_.open(config_.order_book_region_path, static_cast<OrderBook::SlotIndex>(config_.order_book_region_capacity),
+                                          static_cast<size_t>(config_.order_book_initial_capacity));
+    } catch (const pubsub_itc_fw::PubSubItcException& error) {
+        // Damaged, or written by a different build. R-0102 says such a record is not to be
+        // used, and it is not: it is moved aside intact so that somebody can look at it, and a
+        // new one is started. What was in it is now unknown to this process, so the book cannot
+        // be vouched for and trading must not simply resume -- R-0123 decides what happens
+        // instead, once the sequencer's record has been asked.
+        region_was_unusable_ = true;
+        const std::string kept = config_.order_book_region_path + ".unusable";
+        const bool moved = std::rename(config_.order_book_region_path.c_str(), kept.c_str()) == 0;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: the order book region at {} cannot be used -- {}. It is {} and a new one started; what it held will be established "
+                   "from the sequencer's record instead (R-0102, R-0123)",
+                   config_.order_book_region_path, error.what(), moved ? "kept at " + kept : "left where it is");
+        region_existed = order_book_.open(config_.order_book_region_path, static_cast<OrderBook::SlotIndex>(config_.order_book_region_capacity),
+                                          static_cast<size_t>(config_.order_book_initial_capacity));
+    }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: order book region {} at {} holding up to {} order(s)",
                region_existed ? "opened" : "created", config_.order_book_region_path, order_book_.region_capacity());
 
@@ -217,6 +237,10 @@ void MatchingEngineThread::on_app_ready_event() {
     // endpoint is what gauges bind to, and it is ready by this point.
     book_metrics_.register_metrics(get_reactor().metrics(), book_metrics_scope);
     book_metrics_timer_id_ = start_recurring_timer(book_metrics_sample_interval);
+    // Started before anything else can take time, and stamped once immediately: a successor
+    // measures its absence from this, so a gap here would be counted against the next process.
+    mark_able_to_match();
+    able_to_match_timer_id_ = start_recurring_timer(able_to_match_interval);
     publish_book_metrics();
 
     // Both roles connect outbound to the sequencer ER listeners (pre-warmed so
@@ -264,6 +288,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         sequencer_er_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: primary sequencer ER connection {} established", id.get_value());
         announce_role();
+        act_on_pending_halt();
     } else if (svc == "sequencer_er_secondary") {
         sequencer_er_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
@@ -530,6 +555,41 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     // Stack-allocated ID buffers -- no heap allocation.
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+
+    // Refuse everything while trading is halted, and say so in the reply to the order the
+    // member sent. That is how a member learns of a halt: it is the answer to the question it
+    // actually asked, and it reaches the member who is trading, which is the member who needs
+    // to know. A broadcast should exist as well and does not replace this -- see
+    // docs/availability/design_notes.md section 15.
+    if (halted_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: trading is halted -- refusing NOS ClOrdID={} (session comp_id='{}')", view.cl_ord_id, session.comp_id_view());
+
+        pubsub_itc_fw_app::ExecutionReport halt_er{};
+        halt_er.order_id = "NONE";
+        halt_er.exec_id = exec_id;
+        halt_er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+        halt_er.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+        halt_er.symbol = view.symbol;
+        halt_er.side = view.side;
+        halt_er.leaves_qty = "0";
+        halt_er.cum_qty = "0";
+        halt_er.avg_px = "0.00";
+        halt_er.transact_time = now_ns;
+        halt_er.has_cl_ord_id = true;
+        halt_er.cl_ord_id = view.cl_ord_id;
+        halt_er.has_order_qty = true;
+        halt_er.order_qty = view.order_qty;
+        halt_er.has_ord_rej_reason = true;
+        // The venue is closed to business rather than the order being wrong, which is what
+        // this reason says and none of the others do.
+        halt_er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::ExchangeClosed;
+        halt_er.has_text = true;
+        halt_er.text = "trading is halted";
+
+        send_er_to_sequencer(halt_er, sequence_number);
+        return;
+    }
 
     // Reject duplicate ClOrdID within the same FIX session.
     if (order_book_.contains(order_key)) {
@@ -866,6 +926,11 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
+    if (id == able_to_match_timer_id_) {
+        mark_able_to_match();
+        return;
+    }
+
     if (id == startup_arbitration_timer_id_) {
         if (ha_role_state_ == MeRole::Unknown) {
             // Silence from a connected arbiter is not absence. An arbiter that has itself just
@@ -1103,6 +1168,12 @@ void MatchingEngineThread::adopt_leader_role() {
     // role. Send one now so the lease is asserted immediately rather than at the next tick.
     send_arbiter_heartbeat();
     announce_role();
+
+    // This is the moment trading resumes, which is the moment R-0117 is about: an engine that
+    // was absent too long must not simply carry on with the orders its members were locked out
+    // of. Checked here rather than only after reconciliation, because an engine can reach this
+    // point without reconciling at all.
+    act_on_pending_halt();
 }
 
 void MatchingEngineThread::send_arbitration_report() {
@@ -1337,6 +1408,19 @@ void MatchingEngineThread::send_arbiter_heartbeat() {
 
 // WAL reconciliation (Slice D)
 
+void MatchingEngineThread::mark_able_to_match() {
+    if (order_book_.is_open()) {
+        order_book_.mark_alive(config_.wall_clock->now_ns());
+    }
+}
+
+bool MatchingEngineThread::absence_was_too_long() const {
+    if (absence_ns_ <= 0) {
+        return false;
+    }
+    return absence_ns_ > static_cast<int64_t>(config_.order_book_absence_limit_seconds) * 1000000000LL;
+}
+
 void MatchingEngineThread::recover_open_orders(bool region_existed) {
     if (!region_existed) {
         // Nothing was left behind, so there is nothing to read and every page of the region is
@@ -1369,6 +1453,42 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: recovered {} open order(s) from the region at seq_no={} in {} ms ({} unfinished record(s) discarded)", found.orders,
                found.published, elapsed_ms, found.discarded);
+
+    // How long nobody was able to match. Measured from when the previous owner last said it
+    // was working to now, so noticing the death, restarting the process and the scan above are
+    // all inside it. Worked out here and acted on later: cancelling means telling each member,
+    // and there is nothing connected to tell yet.
+    const int64_t alive_at = order_book_.alive_at_ns();
+    if (alive_at > 0) {
+        absence_ns_ = config_.wall_clock->now_ns() - alive_at;
+    }
+
+    if (!absence_was_too_long()) {
+        if (absence_ns_ > 0) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: the venue was unable to match for {} ms, within the {}s it may be",
+                       absence_ns_ / 1000000, config_.order_book_absence_limit_seconds);
+        }
+        return;
+    }
+
+    if (found.orders == 0) {
+        // Nothing was open, so nothing went stale and there is nobody to tell. Halting here
+        // would buy an outage and no safety: traffic is bursty, and a long absence during a
+        // lull is exactly the case this exception exists for.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: the venue was unable to match for {} s, longer than the {}s it may be, but held no open orders -- resuming",
+                   absence_ns_ / 1000000000, config_.order_book_absence_limit_seconds);
+        return;
+    }
+
+    // The orders are not stale because they are old. They are stale because the members that
+    // placed them were locked out of them while the market moved: the venue could not match,
+    // so they could not cancel, and their orders are priced for a market that has gone.
+    cancel_and_halt_pending_ = true;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "MatchingEngineThread: the venue was unable to match for {} s, longer than the {}s it may be, and holds {} open order(s) -- they will be "
+               "cancelled and trading halted once there is somewhere to send the reports (R-0117)",
+               absence_ns_ / 1000000000, config_.order_book_absence_limit_seconds, found.orders);
 }
 
 void MatchingEngineThread::begin_reconciliation() {
@@ -1452,7 +1572,34 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
     // below is not reached today -- an unusable region currently stops the engine starting
     // rather than arriving here.
     if (!book_can_be_vouched_for()) {
-        cancel_all_orders_on_failover();
+        // The region could not be read, so what this engine holds is whatever the sequencer's
+        // record just supplied. R-0123: establish what was open from that record, cancel each
+        // order, and tell the member that placed it.
+        //
+        // Whether it WAS established is the question the ack answers. The log is truncated as
+        // it is consumed, so a replay from the beginning starts wherever truncation left off.
+        // If the earliest record still held is not the first the venue ever took, orders
+        // placed before that point are not in what was just replayed, and the engine has no
+        // way to name them. Resuming on that would conceal exactly the loss it is recovering
+        // from, so it says it cannot account for what it was holding, and stops.
+        const bool record_reaches_the_start = ack.first_seq_no <= 1;
+        if (record_reaches_the_start) {
+            // Established after all: the sequencer's record goes back to the first order the
+            // venue ever took, so what was open can be named, cancelled and reported.
+            region_was_unusable_ = false;
+            cancel_everything_and_halt("the venue's own record of what it held could not be used");
+        } else {
+            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface:
+            // change it and the test breaks, silently and elsewhere.
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: cannot account for what the venue was holding -- the order book region could not be used and the sequencer's "
+                       "record starts at seq_no={}, so orders taken before that cannot be named. Halting without cancelling, because cancelling what cannot "
+                       "be named would leave the rest unmentioned (R-0123)",
+                       ack.first_seq_no);
+            halted_ = true;
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                           "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
+        }
     }
 
     // Transition to LEADER -- normal processing begins.
@@ -1465,11 +1612,68 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
 
 bool MatchingEngineThread::book_can_be_vouched_for() const {
     // The region is what vouches for the book: it holds the orders themselves, and what it
-    // published says how far they can be trusted. Without it the engine holds whatever the
-    // sequencer's tail happened to replay, which is not the same thing and must not be traded
-    // on. open() refuses a region it cannot read, so today this is true whenever the engine is
-    // running at all; the path that makes it false is R-0102's.
-    return order_book_.is_open();
+    // published says how far they can be trusted. Where the one this process inherited could
+    // not be read, the engine holds only what the sequencer's record supplied, which is a
+    // different thing and must not be traded on as though it were the same.
+    return order_book_.is_open() && !region_was_unusable_;
+}
+
+void MatchingEngineThread::act_on_pending_halt() {
+    // Nothing is decided while the sequencer's record is still being asked for: that answer is
+    // what settles whether the venue can say what it held.
+    if (ha_role_state_ == MeRole::Reconciling) {
+        return;
+    }
+
+    if (region_was_unusable_ && !halted_) {
+        // The region could not be read and nothing has established what was open from the
+        // sequencer's record. R-0123's last resort: say so and stop. It does NOT cancel --
+        // cancelling the orders it happens to know about would leave every other one
+        // unmentioned, which is the silence R-0020 exists to prevent, reached while appearing
+        // to have dealt with it.
+        //
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change
+        // it and the test breaks, silently and elsewhere.
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: cannot account for what the venue was holding -- the order book region could not be used and nothing has "
+                       "established what was open from the sequencer's record. Halting without cancelling, because cancelling what can be named would leave "
+                       "the rest unmentioned (R-0123)");
+        halted_ = true;
+        cancel_and_halt_pending_ = false;
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
+        return;
+    }
+
+    if (!cancel_and_halt_pending_) {
+        return;
+    }
+    // Cancelling means telling each member what became of its order, so there has to be a
+    // route to tell them down. Without one this waits: it is called again when a sequencer
+    // connection comes up, and again when the engine adopts leadership.
+    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MatchingEngineThread: waiting for a sequencer connection before cancelling the orders held across a long absence");
+        return;
+    }
+    cancel_everything_and_halt("the venue was unable to match for longer than it may be");
+}
+
+void MatchingEngineThread::cancel_everything_and_halt(const char* why) {
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: cancelling {} open order(s) and halting trading -- {} (R-0117)",
+               order_book_.size(), why);
+
+    // The same cancel-and-report burst a promotion used to do unconditionally, which is what
+    // this case still needs: each member is told what became of the order it placed, rather
+    // than the venue simply ceasing to mention it.
+    cancel_all_orders_on_failover();
+    cancel_and_halt_pending_ = false;
+    halted_ = true;
+
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
+    // and the test breaks, silently and elsewhere.
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
 }
 
 void MatchingEngineThread::cancel_all_orders_on_failover() {

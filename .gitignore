@@ -72,3 +72,10 @@ docs/book/*.4ct
 docs/book/*.4tc
 docs/book/*.dvi
 docs/book/**/*.aux
+
+# Scratch directories from unit tests that write a real file, left behind only when a test
+# dies before its teardown. They are created in the working directory rather than a
+# machine-wide location, so that two builds on one machine cannot contend and so that a
+# store is read back off a real filesystem, which is the thing being tested.
+mapped_slot_store_test_*/
+order_book_test_*/

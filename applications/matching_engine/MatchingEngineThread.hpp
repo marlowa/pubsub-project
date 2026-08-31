@@ -196,6 +196,29 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // See docs/durability/open_order_checkpoint.md.
     OrderBook order_book_;
 
+    // The region this process inherited could not be read, so what it held is unknown here and
+    // the book cannot be vouched for however well the reconciliation goes. R-0102.
+    bool region_was_unusable_{false};
+
+    // How long the venue was unable to match, worked out at startup from the region and kept
+    // until there is somewhere to send the reports. Zero where there was no previous life.
+    int64_t absence_ns_{0};
+
+    // Set at startup when the absence was too long and orders were open. Acted on at the point
+    // the engine would otherwise resume trading, because cancelling means telling each member,
+    // and at startup there is no connection to tell anyone down.
+    bool cancel_and_halt_pending_{false};
+
+    // Trading is halted and the venue is not taking orders. R-0117 halts here after a long
+    // absence; R-0023 requires a person to lift it.
+    bool halted_{false};
+
+    // Says the engine is alive and able to match, independently of whether anything is being
+    // traded. A second is far finer than the absence limit needs and costs one store to
+    // mapped memory.
+    pubsub_itc_fw::TimerID able_to_match_timer_id_{};
+    static constexpr std::chrono::seconds able_to_match_interval{1};
+
     // Monotonic counters for generated OrderID and ExecID values (primary only).
     int64_t order_id_counter_{0};
     int64_t exec_id_counter_{0};
@@ -327,6 +350,21 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      */
     void recover_open_orders(bool region_existed);
 
+    /**
+     * @brief Whether the venue was unable to match for longer than it says it may be.
+     *
+     * Compares the wall-clock time the previous owner of the region last said it was working
+     * against the time this one started. That is the whole absence -- noticing the death,
+     * restarting the process, and rebuilding the book are all terms in it -- and the engine
+     * works it out alone, because nothing here may depend on a supervisor being present.
+     *
+     * False where there was no region, because there was no previous life to be absent from.
+     */
+    [[nodiscard]] bool absence_was_too_long() const;
+
+    /// Says the engine is able to match. On a timer, never from the order path: see R-0118.
+    void mark_able_to_match();
+
     void begin_reconciliation();
     void send_me_position_request();
     void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);
@@ -340,6 +378,19 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] bool book_can_be_vouched_for() const;
 
     void cancel_all_orders_on_failover();
+
+    /// Does the cancel-and-halt the absence rule asked for, once there is somewhere to send
+    /// the reports. A no-op when none was asked for, so it is safe to call from every point
+    /// the engine might reach first.
+    void act_on_pending_halt();
+
+    /**
+     * @brief Cancels every open order, tells each member, and halts trading. R-0117.
+     *
+     * The orders are not stale because they are old. They are stale because the members that
+     * placed them were locked out of them while the market moved, and could not act.
+     */
+    void cancel_everything_and_halt(const char* why);
 };
 
 } // namespaces

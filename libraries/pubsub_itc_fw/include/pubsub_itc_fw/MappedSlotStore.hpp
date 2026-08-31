@@ -116,9 +116,20 @@ class MappedSlotStore {
     /// the store next, which trusts no slot stamped above it.
     void publish(int64_t seq_no);
 
+    /// Record that whoever owns this store was working at this wall-clock time.
+    ///
+    /// Nothing here interprets it. It exists so that the next process to open the store can
+    /// tell how long the store went untended, which is a different question from how long ago
+    /// it was last written to: a store can be idle for an hour because nothing was happening.
+    /// So call it on a timer, and not from the path that records anything.
+    void mark_alive(int64_t wall_time_ns);
+
     // ---- reading, after opening an existing store ---------------------------------
 
     [[nodiscard]] int64_t published() const;
+
+    /// The last time mark_alive() was called, or zero if it never was.
+    [[nodiscard]] int64_t alive_at_ns() const;
     [[nodiscard]] bool is_live(SlotIndex slot) const;
     [[nodiscard]] int64_t slot_seq_no(SlotIndex slot) const;
 

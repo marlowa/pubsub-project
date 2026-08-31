@@ -536,6 +536,9 @@ epoch_state_file    = "var/matching_engine_epoch.state"
 order_book_region_path     = "var/matching_engine_open_orders.region"
 # The most orders that may be open at once; the region cannot grow past it.
 order_book_region_capacity = 1000000
+# How long the venue may be unable to match before open orders are cancelled and
+# trading halts. A trading decision: how long a resting order stays meaningful here.
+order_book_absence_limit_seconds = 300
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9205
 network_listen_host           = "127.0.0.1"
@@ -574,6 +577,9 @@ epoch_state_file    = "var/matching_engine_secondary_epoch.state"
 order_book_region_path     = "var/matching_engine_secondary_open_orders.region"
 # The most orders that may be open at once; the region cannot grow past it.
 order_book_region_capacity = 1000000
+# How long the venue may be unable to match before open orders are cancelled and
+# trading halts. A trading decision: how long a resting order stays meaningful here.
+order_book_absence_limit_seconds = 300
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9206
 book_replication_listen_host  = "127.0.0.1"

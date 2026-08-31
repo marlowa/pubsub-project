@@ -2411,8 +2411,16 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // Walk the WAL from last_seq_no+1 to the head, unwrapping each stored record
     // and streaming the underlying NOS/OCR PDU directly to the ME connection.
     size_t streamed = 0;
+    // The earliest record still held. The log is truncated as it is consumed, so a walk from
+    // zero starts wherever truncation left off rather than at the start of the day. An engine
+    // that has lost its own record of what it held falls back to this one and has to be able
+    // to tell those apart: see R-0123.
+    int64_t earliest_retained = 0;
     [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, {0, 0}, [this, &conn_id, last_seq_no, &streamed](int64_t record_id, const void* payload, size_t size) {
+        config_.wal_directory, {0, 0}, [this, &conn_id, last_seq_no, &streamed, &earliest_retained](int64_t record_id, const void* payload, size_t size) {
+            if (earliest_retained == 0) {
+                earliest_retained = record_id;
+            }
             if (record_id <= last_seq_no) {
                 return;
             }
@@ -2433,11 +2441,13 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed,
                conn_id.get_value());
 
-    // Signal completion. On receipt the ME cancels its book and becomes leader.
+    // Signal completion. On receipt the ME considers its book reconciled and becomes leader.
     pubsub_itc_fw_app::MePositionAck ack{};
     ack.last_seq_no = wal_head;
+    ack.first_seq_no = earliest_retained;
     send_pdu(conn_id, pubsub_itc_fw_app::MePositionAck::message_pdu_id, 0, ack);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: MePositionAck sent (last_seq_no={}) -- ME is now live", wal_head);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: MePositionAck sent (last_seq_no={}, earliest retained={}) -- ME is now live",
+               wal_head, earliest_retained);
 
     // Promote this connection to the active ME order connection so subsequent
     // sequenced orders flow to the newly-promoted ME. If the request arrived on

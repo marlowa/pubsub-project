@@ -2,11 +2,11 @@
 
 Design note, 2026-08-30.
 
-**What is built:** the region itself, as `pubsub_itc_fw::MappedSlotStore`; the
-matching engine's book on top of it, as `matching_engine::OrderBook`, so an open
-order is written to the region as it is accepted and taken out of it as it is
-cancelled; reading the region back at startup; and the warming. **What is not:**
-what to do when the region cannot be used at all, which is the halt below.
+**All of this is built.** The region itself, as `pubsub_itc_fw::MappedSlotStore`;
+the matching engine's book on top of it, as `matching_engine::OrderBook`, so an
+open order is written to the region as it is accepted and taken out of it as it is
+cancelled; reading the region back at startup; the warming; the absence rule; and
+what happens when the region cannot be used at all.
 
 The matching engine's set of open orders exists only in the running process. When
 the process dies they are gone: measured on 2026-08-29 with a thousand orders
@@ -247,6 +247,49 @@ specification asks for and not a compromise: `docs/book` section 4.3.3 states
 that lost or damaged durable state is where the disabled configuration is weak,
 and that the enabled configuration's answer to it is the other machine.
 
+## When the venue was unable to match for too long
+
+An order is not dangerous because it is old. An order that rested all morning in a
+working market is fine: its owner could have cancelled it at any moment and chose
+not to. What makes an order dangerous is that its owner was **locked out of it** —
+the venue could not match, so the member could not cancel, and the market moved
+while it could do nothing. The order is now priced for a market that has gone, and
+its owner was denied every opportunity to act.
+
+So the period that matters is the length of the outage, not the age of the order,
+and not whether the order was recoverable: an order correctly recovered from the
+region, whose member was locked out of it for ten minutes, is exactly as dangerous
+as one that could not be recovered at all.
+
+**How the engine knows.** The region carries a wall-clock stamp saying when its
+owner was last able to match, written by a timer once a second. A successor
+subtracts it from the current time. That is the whole absence — noticing the
+death, restarting the process and rebuilding the book are all terms in it — and
+the engine works it out alone, because nothing in the availability design may
+depend on a supervisor being present.
+
+**The stamp is written by a timer and never by the order path.** A book that is
+idle because nothing is being traded is not a book nobody is tending. Stamping it
+on orders would read a ten-minute lull followed by a two-second restart as a
+twelve-minute absence, and cancel every member's orders for having been quiet.
+That is R-0118, and there is a test that a record write does not stamp it.
+
+**What happens.** Longer than the stated period, with orders open: cancel each,
+tell the member that placed it, halt. Longer than the stated period with nothing
+open: resume without halting, because nothing went stale, there is nobody to tell,
+and halting would buy an outage. That is R-0117.
+
+The period is `order_book.absence_limit_seconds`, five minutes in the environment
+templates. It is a trading decision rather than a measurement: it says how long a
+member's resting order stays meaningful in this market.
+
+**A halted venue refuses orders and says why**, in the reply to the order the
+member sent — `ExchangeClosed`, with text saying trading is halted. That is the
+answer to the question the member actually asked, and it reaches the member who is
+trading, which is the member who needs to know. A broadcast should exist as well
+and does not replace it; that part is not built. Lifting a halt needs a person,
+under R-0023.
+
 ## When the region cannot be used
 
 Absent, damaged, or written by a different build: it is treated as no region at
@@ -262,9 +305,23 @@ rejected above for ordinary recovery. Here it is worth the time: it happens once
 it is not the normal case, and what it buys is every member being told what
 became of its orders. Cancel each, report each, halt. That is R-0123.
 
-If that record cannot supply it either, the venue halts and says it cannot
-account for what it was holding, which is the last resort and still better than
-falling silent.
+**But that record is truncated as it is consumed**, so a replay from the
+beginning starts wherever truncation left off rather than at the start of the day.
+The two cases have to be told apart, and `MePositionAck` carries the earliest
+record the sequencer still holds so that they can be:
+
+| What the sequencer still holds | What the engine does |
+|---|---|
+| The first record the venue took | Cancel each order, report each cancellation, halt |
+| Only a later part of the day | Halt without cancelling, saying it cannot account for what it was holding |
+
+The second is the last resort and is still better than falling silent. **It does
+not cancel**, and that is deliberate: cancelling only the orders it can name would
+leave every earlier one unmentioned, which is the outcome R-0020 exists to
+prevent, arrived at while appearing to have done something about it.
+
+**The region itself is kept.** It is moved aside rather than overwritten, so that
+whatever made it unreadable can still be looked at.
 
 ## When the region is full
 

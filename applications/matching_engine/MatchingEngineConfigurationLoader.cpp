@@ -184,6 +184,11 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         if (config.order_book_region_path.empty()) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_path must name a file");
         }
+        toml.get_required_except("order_book.absence_limit_seconds", config.order_book_absence_limit_seconds);
+        if (config.order_book_absence_limit_seconds < 1) {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.absence_limit_seconds must be >= 1, got " +
+                                                        std::to_string(config.order_book_absence_limit_seconds));
+        }
         if (config.order_book_region_capacity < 1) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_capacity must be >= 1, got " +
                                                         std::to_string(config.order_book_region_capacity));

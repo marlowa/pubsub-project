@@ -198,6 +198,26 @@ struct MatchingEngineConfiguration {
      *  A million costs roughly 320 MB of address space, which is not resident until touched. */
     int32_t order_book_region_capacity{1000000};
 
+    /** @brief How long the venue may be unable to match before open orders are cancelled.
+     *
+     *  Measured from the moment matching stopped to the moment it resumes, which is the whole
+     *  absence and not the recovery step: noticing the death, restarting the process and
+     *  rebuilding the book are all terms in it.
+     *
+     *  When the venue comes back after longer than this AND orders were open, each is
+     *  cancelled, the member that placed it is told, and trading halts. Where nothing was open
+     *  there is nothing stale, so it resumes without halting.
+     *
+     *  **This is a trading decision, not a measurement.** It says how long a member's resting
+     *  order stays meaningful in this market. The hazard is not that the order is old -- an
+     *  order that rested all morning in a working market is fine, because its owner could have
+     *  cancelled it at any moment. The hazard is that its owner was locked out of it while the
+     *  market moved. See R-0117 and R-0118.
+     *
+     *  Five minutes by default, which is far longer than any failover and far shorter than a
+     *  member would tolerate being unable to act. */
+    int32_t order_book_absence_limit_seconds{300};
+
     // Wall clock
 
     /** @brief Clock used to generate transact_time on ExecutionReports when the
