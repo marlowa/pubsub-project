@@ -151,10 +151,17 @@ refusal: the venue is correct without `lazytime`, only slower in the tail.
 
 ## Telling the venue which device to use
 
-The device is named by the environment, not by a configuration file:
+The device is named by the environment, not by a configuration file, and the build scripts set
+it per platform in the same place they set `THIRDPARTY_DIR` -- `devsetup.sh`, `build.sh` and
+`build-release-deploy.sh`. Nothing needs setting by hand.
+
+On the development host it is set only when the directory is actually present, so a machine
+without that disk still builds; on Rocky/RHEL8 it is explicitly unset, so a value inherited from
+the surrounding shell cannot send the logs to a path that means something else there. To
+override it for a one-off run:
 
 ```
-export PUBSUB_WAL_ROOT=/mnt/sda2/mystuff2      # before scripts/devsetup.sh
+export PUBSUB_WAL_ROOT=/somewhere/else      # before scripts/devsetup.sh
 ```
 
 `deploy.py` then places every write-ahead log under it, and says so:

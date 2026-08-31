@@ -17,6 +17,17 @@ fi
 case "${PLATFORM_ID}" in
     linuxmint22*)
         export THIRDPARTY_DIR=/home/marlowa/mystuff/thirdparty
+        # Where the write-ahead logs go. A device of their own, mounted lazytime, which is what
+        # removed stalls of hundreds of milliseconds on the sequencer -- see
+        # docs/operations/filesystem_requirements.md. Set here rather than in dev.toml because
+        # dev.toml serves this platform AND the Rocky/RHEL8 container, where the path does not
+        # exist. Only set when the directory is really there, so that a machine without that
+        # disk still builds: deploy.py then falls back to the install directory.
+        if [ -d /mnt/sda2/mystuff2 ]; then
+            export PUBSUB_WAL_ROOT=/mnt/sda2/mystuff2
+        else
+            unset PUBSUB_WAL_ROOT
+        fi
         export FMT_VERSION=12.1.0
         export QUILL_VERSION=11.0.2
         export ARGPARSE_VERSION=3.2
@@ -32,6 +43,10 @@ case "${PLATFORM_ID}" in
         # omits directories inside the project from the install RPATH, so a third-party tree
         # mounted under the project would link but not be found at run time.
         export THIRDPARTY_DIR=/development/3rdparty
+        # No separate device here, so the logs go under the install directory. Unset rather than
+        # left alone, so that a value inherited from the surrounding shell cannot send them to a
+        # path that means something else on this platform.
+        unset PUBSUB_WAL_ROOT
         export FMT_VERSION="11.0.2"
         export QUILL_VERSION="11.0.2"
         export ARGPARSE_VERSION="3.2"
