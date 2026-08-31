@@ -285,6 +285,50 @@ def watch(threads: list[Thread], hz: int, seconds: float, min_stall_ms: float,
     return stalls, samples, busy
 
 
+# What a kernel function means, by the family it belongs to.
+#
+# The names differ by filesystem, which is a trap worth naming: a reader who has been told to
+# look for do_get_write_access will find nothing on XFS and may conclude the journal is not
+# involved, when XFS simply calls its equivalents something else. Both families are listed.
+#
+# A prefix match is used rather than exact names, because kernels rename these between versions
+# and a partial answer beats a silent one.
+WCHAN_MEANINGS = (
+    # ext4 and its journal, jbd2
+    ("do_get_write_access",   "ext4/jbd2: asking the journal for permission to change metadata"),
+    ("wait_transaction_lock", "ext4/jbd2: waiting for a journal transaction to commit"),
+    ("start_this_handle",     "ext4/jbd2: waiting to join a journal transaction"),
+    ("jbd2_",                 "ext4/jbd2: journal machinery"),
+    ("ext4_",                 "ext4: filesystem work"),
+    # XFS and its log
+    ("xlog_",                 "XFS: waiting on the log -- the same role the journal plays in ext4"),
+    ("xfs_log_force",         "XFS: forcing the log out before proceeding"),
+    ("xfs_buf_",              "XFS: waiting for a metadata buffer"),
+    ("xfs_ilock",             "XFS: waiting for an inode lock"),
+    ("xfs_",                  "XFS: filesystem work"),
+    # Block layer and memory management, common to both
+    ("rq_qos_wait",           "block layer: the device queue is full, or writeback is being throttled"),
+    ("blk_io_schedule",       "block layer: waiting for the device"),
+    ("io_schedule",           "waiting for I/O to complete"),
+    ("balance_dirty_pages",   "too many dirty pages: the kernel is making this thread wait"),
+    ("folio_wait_bit",        "waiting for a page, usually its writeback to finish"),
+    ("wait_on_page_bit",      "waiting for a page, usually its writeback to finish"),
+    ("congestion_wait",       "waiting for I/O congestion to clear"),
+    ("shrink_",               "direct memory reclaim: the kernel is freeing memory on this thread"),
+    ("try_to_free_pages",     "direct memory reclaim: the kernel is freeing memory on this thread"),
+    ("khugepaged",            "transparent huge page work"),
+    ("compaction_",           "memory compaction"),
+)
+
+
+def explain_wchan(name: str) -> str:
+    """A plain description of a kernel function, or an empty string if it is not recognised."""
+    for prefix, meaning in WCHAN_MEANINGS:
+        if name.startswith(prefix):
+            return meaning
+    return ""
+
+
 def report(stalls: list[Stall], samples: int, seconds: float, min_stall_ms: float,
            busy: dict[str, float]) -> None:
     print(f"\n{samples:,} samples taken over {seconds:.0f}s")
@@ -340,8 +384,17 @@ def report(stalls: list[Stall], samples: int, seconds: float, min_stall_ms: floa
     if wchans:
         print("\n  kernel functions waited in, while in uninterruptible sleep:")
         print("  (this is usually the answer -- it names the mechanism, not just its category)")
+        unknown = False
         for name, n in wchans.most_common(12):
-            print(f"    {n:>6}  {name}")
+            meaning = explain_wchan(name)
+            if meaning:
+                print(f"    {n:>6}  {name:<28} {meaning}")
+            else:
+                print(f"    {n:>6}  {name}")
+                unknown = True
+        if unknown:
+            print("\n  A name with no description is not a lesser finding. Look it up: it names the")
+            print("  exact place the kernel put this thread to sleep, which is the whole point.")
     elif by_reason.get(BLOCKED_IO):
         print("\n  uninterruptible sleep was seen but wchan named nothing.")
         print("  kernel.kptr_restrict may be 1; as root, sysctl -w kernel.kptr_restrict=0")

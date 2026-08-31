@@ -200,6 +200,27 @@ tell which change earned it — and no way to know that `sync_file_range`, which
 planned experiment, had become unnecessary. It had: with `lazytime` there was nothing left for
 it to fix, so it was never built.
 
+## On another filesystem the names are different
+
+Everything measured here was on ext4, and the kernel functions named above --
+`do_get_write_access`, `wait_transaction_locked` -- belong to ext4's journal, jbd2. **XFS does
+the same job under entirely different names**, `xlog_*` and `xfs_log_force` among them, so
+someone looking for the ext4 names on an XFS filesystem would find nothing and could reasonably
+conclude the journal was not involved.
+
+`lazytime` itself is a VFS feature rather than an ext4 one and applies to both, though XFS
+batches metadata more aggressively in memory to begin with, so the gain there may be smaller.
+
+`scripts/thread_offcpu.py` names both families in its output, and says plainly that an
+unrecognised name is not a lesser finding. Before predicting anything about a machine, the one
+command worth running is:
+
+```
+findmnt -no SOURCE,FSTYPE,OPTIONS --target <the directory being written to>
+```
+
+which gives the filesystem and whether `lazytime` is already set, together, in one line.
+
 ## Applies to more than the log
 
 Any memory-mapped file the venue writes to has the same exposure, because the mechanism is
