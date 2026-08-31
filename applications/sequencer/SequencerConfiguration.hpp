@@ -286,6 +286,22 @@ struct SequencerConfiguration {
      * Copied into ReactorConfiguration, which is where the Reactor reads it from.
      */
     pubsub_itc_fw::MetricsConfiguration metrics_configuration;
+
+    /** @brief Bucket bounds, in nanoseconds, for how long committing one record to the log takes.
+     *
+     *  Every order the venue takes is committed here before it is forwarded, on the reactor
+     *  thread, so this is on the order path and a slow commit is a stalled sequencer.
+     *
+     *  **The bounds must reach into the hundreds of milliseconds.** On 2026-08-31 the thread was
+     *  measured blocked in uninterruptible I/O for up to 557 ms at a stretch, which is four
+     *  orders of magnitude above the ordinary commit. Bounds chosen for the ordinary case would
+     *  put every one of those in the top bucket and report the same percentile whatever the
+     *  truth was.
+     *
+     *  There is deliberately no default, for the reason GatewayMetrics.hpp gives about its own:
+     *  a default is the one value nobody revisits, and bounds that do not bracket what is
+     *  actually served are worse than no histogram at all. */
+    std::vector<double> wal_append_buckets;
 };
 
 } // namespaces

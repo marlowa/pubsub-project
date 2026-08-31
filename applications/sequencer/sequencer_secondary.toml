@@ -109,6 +109,11 @@ component   = "${component_name}"
 listen_host = "${sequencer_secondary_metrics_listen_host}"
 listen_port = ${sequencer_secondary_metrics_listen_port}
 
+# How long committing one record to the log takes. Every order passes through this on
+# the reactor thread, so a slow commit is a stalled sequencer. Shared placeholder so both
+# instances use the same bounds: histograms with differing bounds cannot be compared.
+wal_append_buckets = ${shared_metrics_wal_append_buckets}
+
 [reactor]
 cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}

@@ -139,6 +139,29 @@ void SequencerThread::on_initial_event() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=true -- startup election timeout armed ({}s)",
                    config_.startup_election_timeout_seconds);
     }
+
+    // Registered here rather than at ready, matching the gateways. The handle is a no-op when
+    // metrics are disabled, and the application and component tokens come from configuration.
+    if (!config_.wal_append_buckets.empty()) {
+        wal_append_histogram_ = get_reactor().metrics().register_histogram(
+            "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log, on the reactor thread",
+            config_.wal_append_buckets);
+    }
+}
+
+void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns) {
+    // Every append goes through here so there is one place that knows what a commit costs.
+    //
+    // It is worth measuring because it is the one thing on the order path that touches a
+    // disk. On 2026-08-31 this thread was measured in uninterruptible sleep for up to 557 ms
+    // at a stretch, with no time on the run queue at all -- so it was waiting for I/O rather
+    // than for a cpu. Nothing reported that: the only sign was the reactor's stall watchdog
+    // noticing a callback had overrun, and the figure it prints is how long the callback had
+    // taken SO FAR, which understates the wait.
+    const auto started = std::chrono::steady_clock::now();
+    wal_.append(seq_no, pdu_id, payload, size, wall_time_ns);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    wal_append_histogram_.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
 }
 
 void SequencerThread::on_app_ready_event() {
@@ -1423,8 +1446,8 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
                    "SequencerThread: failed to encode envelope for seq={} ({} bytes needed) -- record NOT persisted", envelope.seq_no, bytes_needed);
         return;
     }
-    wal_.append(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), static_cast<int>(bytes_written),
-                envelope.wall_time_ns);
+    append_to_wal(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), static_cast<int>(bytes_written),
+                  envelope.wall_time_ns);
 }
 
 void SequencerThread::send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope) {
@@ -1453,7 +1476,7 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
     // Option B: store the received WalRecord bytes verbatim under the WalRecord pdu
     // so the follower WAL is byte-identical to the leader's. (view is decoded only to
     // read seq_no + wall_time_ns for the append header and the WalAck.)
-    wal_.append(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, message.payload(), message.payload_size(), view.wall_time_ns);
+    append_to_wal(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, message.payload(), message.payload_size(), view.wall_time_ns);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: WalRecord seq={} inner_pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
                wal_.record_count());
@@ -1520,7 +1543,7 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
 
             // Option B: persist the received WalRecord bytes verbatim (record pdu_id =
             // WalRecord) so leader and follower WALs stay byte-identical.
-            wal_.append(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, static_cast<int>(size), view.wall_time_ns);
+            append_to_wal(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, static_cast<int>(size), view.wall_time_ns);
 
             pubsub_itc_fw_app::WalAck wal_ack{};
             wal_ack.seq_no = view.seq_no;

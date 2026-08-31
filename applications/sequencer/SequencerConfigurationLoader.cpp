@@ -230,8 +230,31 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             toml.get_required_except("reactor.cpu_registry_lock_file", config.cpu_registry_lock_file);
             toml.get_required_except("reactor.cpu_layout_file", config.cpu_layout_file);
             toml.get_required_except("reactor.cpu_layout_component", config.cpu_layout_component);
+        }
 
-            config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+        // Outside the pinning block, which is where it used to be. Metrics and CPU pinning are
+        // separate concerns, and a component must publish whether or not it is pinned -- with
+        // the load gated on pinning, turning pinning off silently took every metric with it.
+        // The gateway loader already had it this way round.
+        config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+
+        // Required rather than defaulted, for the reason GatewayMetrics.hpp gives about its own
+        // bounds: a default is the one value nobody revisits, and bounds that do not bracket
+        // what is actually served report the same percentile whatever the truth is.
+        //
+        // Only when metrics are on, which is the rule the gateway loader already follows: a
+        // disabled endpoint registers nothing, so requiring the bounds would make turning
+        // metrics off mean filling in a value that is never read.
+        if (config.metrics_configuration.enabled) {
+            toml.get_required_except("metrics.wal_append_buckets", config.wal_append_buckets);
+        }
+        if (config.metrics_configuration.enabled && config.wal_append_buckets.empty()) {
+            throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: metrics.wal_append_buckets must not be empty");
+        }
+        for (size_t index = 1; index < config.wal_append_buckets.size(); ++index) {
+            if (config.wal_append_buckets[index] <= config.wal_append_buckets[index - 1]) {
+                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: metrics.wal_append_buckets must be strictly ascending");
+            }
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

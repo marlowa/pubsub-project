@@ -318,6 +318,23 @@ metrics_order_round_trip_buckets = [
     10000000000, 25000000000,             # 10s 25s                -- outage, not latency
     50000000000, 250000000000 ]           # 50s 250s               -- caught across a failover
 # true: CPU 0 is excluded from pinning candidates on non-isolated test machines.
+# How long committing one record to the write-ahead log takes, in nanoseconds. Every order
+# the venue takes passes through this, on the sequencer's reactor thread, so a slow commit is
+# a stalled sequencer rather than a slow disk somewhere off the path.
+#
+# The range is wide for a reason found by measurement. An ordinary commit is microseconds,
+# but on 2026-08-31 the thread was seen in uninterruptible sleep for up to 557 ms at a
+# stretch, waiting on I/O with no time on the run queue at all. Bounds chosen for the
+# ordinary case would put every one of those excursions in the overflow bucket and report the
+# same percentile whatever the truth was -- so the bounds reach to a second, well past
+# anything that should ever be seen.
+metrics_wal_append_buckets = [
+    1000, 2500, 5000, 10000,              # 1us 2.5us 5us 10us     -- a commit to the page cache
+    25000, 50000, 100000, 250000,         # 25us 50us 100us 250us
+    500000, 1000000, 2500000,             # 500us 1ms 2.5ms
+    5000000, 10000000, 25000000,          # 5ms 10ms 25ms          -- something waited
+    50000000, 100000000, 250000000,       # 50ms 100ms 250ms       -- the stalls measured
+    500000000, 1000000000 ]               # 500ms 1s               -- worse than anything seen
 reactor_cpu_pinning_reserve_cpu0   = true
 # The CPU registry file and its lock live under install_dir/run/ and are set
 # by deploy.py, which is the single place that knows the install layout.  They

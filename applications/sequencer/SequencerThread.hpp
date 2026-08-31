@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
@@ -143,7 +144,17 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // mmap'd on-disk write-ahead log. Opened in on_initial_event()
     // before the sequencer begins accepting connections.
+    /// Commits one record to the log and records how long it took. Every append goes through
+    /// here, so there is one place that knows what a commit costs.
+    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns);
+
     pubsub_itc_fw::Wal wal_;
+
+    // How long committing one record to the log takes. On the order path and on the reactor
+    // thread, which is why it is worth measuring: a commit that blocks is a sequencer that has
+    // stopped sequencing, and until this existed the only sign of it was the reactor's stall
+    // watchdog saying a callback had not finished -- a log line, correlated by hand.
+    pubsub_itc_fw::HistogramHandle wal_append_histogram_;
 
     // External WAL subscriber registry and active connection set.
     // The registry tracks each subscriber's cursor for WAL truncation.
