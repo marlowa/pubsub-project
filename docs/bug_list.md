@@ -1801,6 +1801,53 @@ to a figure nobody has chosen, so what survives is whatever the log has not yet 
 which varies with the order rate, and so narrows exactly when a member has most at stake.
 R-0022 records the same thing from the other end: anchored to nothing measurable.
 
+**What a day of retention costs, measured 2026-08-31 rather than estimated.** A twenty-minute
+run of 2,496,000 orders wrote 9,284,048 records into 686 four-megabyte segments, which gives the
+three figures the arithmetic needs:
+
+| | |
+|---|---|
+| Log records per order | 3.72 |
+| Bytes per record on disk | 310 |
+| Bytes per order | 1,153 |
+
+An order is not one record, which is the part most likely to be got wrong from first principles.
+The segments held four distinct message sizes in near-equal proportion, so each order produces
+roughly four sequenced records.
+
+At a typical day of 40 million orders that is **148.8 million records and 46.1 GB** for the
+primary. The follower stores the records it receives verbatim so that the two logs stay
+byte-identical, so a host running both writes twice:
+
+| Day | Primary | Both sequencers |
+|---|---|---|
+| Typical, 40M orders | 46.1 GB | **92.2 GB** |
+| Heavy, twice that | 92.2 GB | 184.4 GB |
+| Extreme, three times | 138.3 GB | 276.7 GB |
+
+These exclude the matching engine publisher's own logs (`mep_primary_wal`,
+`mep_secondary_wal`), which that run did not exercise, so a real day is larger than 92 GB by an
+amount not yet measured.
+
+**Storage is not the constraint, and that settles one thing:** 1.7 TB free holds roughly
+eighteen typical days for both sequencers. So the retention period should be chosen by what a
+member needs in order to reconnect and resend, not by what happens to fit. A period that is a
+by-product of disk size is exactly what R-0008 forbids.
+
+**It does put a deadline on this entry, though.** Nothing reclaims anything today, and at 46 GB
+a day a disk fills in about a month of trading. This has stopped being a tidiness question.
+
+**The rate is worth recording next to the volume**, because it is what the storage has to
+sustain rather than merely hold: 1.97 MB/s for the primary averaged across a 6.5-hour day at 40
+million orders, 3.94 MB/s for both. The run that produced these figures was itself running at
+1,809 orders per second, slightly above a typical day's average, so they are production-like
+rather than extrapolated from a toy load. A peak is not an average, and the venue has never been
+measured under a burst -- see [BUG-0060](#bug_0060).
+
+**The ratio is a measured property, not a law.** 3.72 records per order reflects the message set
+as it stands. A change that adds one sequenced message per order makes it 4.72 and a typical day
+58 GB, so this arithmetic should be redone whenever the set changes.
+
 **So this bug is blocked on a decision, not on work.** Once the retention period is a number,
 what remains is the PDU above, a generation number so that a reused segment's old records are
 not replayed as current (`WalEntryHeader` has an unused `filler(8)` field for one), and the
