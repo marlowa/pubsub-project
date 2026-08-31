@@ -49,7 +49,7 @@ EXAMPLES
     thread_offcpu.py --pid 1234 --thread SequencerThread --hz 500 --min-stall-ms 10
 
     # keep the samples for later analysis
-    thread_offcpu.py --pid 1234 --output samples.csv
+    thread_offcpu.py --pid 1234 --output samples.txt
 
 READING THE RESULT. Two tables. The first lists each stall with its duration, the thread it
 happened on and why the thread was not running. The second counts the kernel functions seen
@@ -250,7 +250,7 @@ def watch(threads: list[Thread], hz: int, seconds: float, min_stall_ms: float,
 
             wchan = thread.where() if current[1] == "D" else ""
             if out:
-                out.write(f"{current[0]:.6f},{thread.name},{current[1]},{current[2]},{current[3]},{wchan}\n")
+                out.write(f"{current[0]:.6f} {thread.name} {current[1]} {current[2]} {current[3]} {wchan or '-'}\n")
 
             if off:
                 # Consecutive off-cpu samples are ONE stall. Testing each sample against the
@@ -355,7 +355,11 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=120, help="how long to watch (default 120)")
     parser.add_argument("--min-stall-ms", type=float, default=40,
                         help="ignore anything off the cpu for less than this (default 40)")
-    parser.add_argument("--output", help="write every sample to this file as CSV")
+    parser.add_argument("--output",
+                        help="write every sample to this file, one per line, as whitespace-separated columns: "
+                             "wall thread state run_ns wait_ns wchan. Read it with awk, which needs no separator "
+                             "given, or with 'sort | uniq -c' on a column. An absent wchan is written as '-' so "
+                             "every line has the same number of fields")
     args = parser.parse_args()
 
     threads = discover(args.pid, args.thread)
@@ -370,7 +374,7 @@ def main() -> int:
     out = None
     if args.output:
         out = open(args.output, "w")
-        out.write("wall,thread,state,run_ns,wait_ns,wchan\n")
+        out.write("# wall thread state run_ns wait_ns wchan\n")
     try:
         stalls, samples, busy = watch(threads, args.hz, args.seconds, args.min_stall_ms, out)
     except KeyboardInterrupt:

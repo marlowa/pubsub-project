@@ -192,6 +192,25 @@ class Wal {
         return writer_.is_open();
     }
 
+    /**
+     * @brief How many segments the writer created itself rather than adopting a prepared one.
+     *
+     * Expected to be one, for the first segment, which nothing can prepare in advance. A rising
+     * count means preparation is not keeping pace with appends. See WalWriter.
+     */
+    [[nodiscard]] uint64_t segments_filled_inline() const {
+        return writer_.segments_filled_inline();
+    }
+
+    /**
+     * @brief How many rolls had to wait for a preparation that was still in progress.
+     *
+     * Expected to be zero. See WalWriter.
+     */
+    [[nodiscard]] uint64_t segments_waited_for() const {
+        return writer_.segments_waited_for();
+    }
+
   private:
     static constexpr size_t snapshot_checksum_offset = 40;
 

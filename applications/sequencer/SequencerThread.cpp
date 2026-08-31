@@ -147,6 +147,15 @@ void SequencerThread::on_initial_event() {
             "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log, on the reactor thread",
             config_.wal_append_buckets);
     }
+
+    // Whether the log's next segment is being created ahead of the writer, or the writer is
+    // having to do it. The append histogram says what a commit cost; these two say why. Without
+    // them a tail that fails to improve cannot be told apart from a helper that never kept up.
+    wal_segments_filled_inline_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "wal_segments_filled_inline",
+        "Log segments the writer created itself instead of adopting one prepared ahead of it. Expected to be 1, for the first segment");
+    wal_segments_waited_for_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "wal_segments_waited_for", "Segment rolls that had to wait for a preparation still in progress. Expected to be 0");
 }
 
 void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns) {
@@ -782,6 +791,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
 void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     if (id == wal_snapshot_timer_id_) {
+        // Published on the snapshot timer rather than per append: both change at most once per
+        // segment, which is seconds apart, so there is nothing to gain from the order path.
+        wal_segments_filled_inline_gauge_.set(static_cast<double>(wal_.segments_filled_inline()));
+        wal_segments_waited_for_gauge_.set(static_cast<double>(wal_.segments_waited_for()));
+
         try {
             wal_.take_snapshot();
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

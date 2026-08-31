@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -155,6 +156,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // stopped sequencing, and until this existed the only sign of it was the reactor's stall
     // watchdog saying a callback had not finished -- a log line, correlated by hand.
     pubsub_itc_fw::HistogramHandle wal_append_histogram_;
+    pubsub_itc_fw::GaugeHandle wal_segments_filled_inline_gauge_;
+    pubsub_itc_fw::GaugeHandle wal_segments_waited_for_gauge_;
 
     // External WAL subscriber registry and active connection set.
     // The registry tracks each subscriber's cursor for WAL truncation.
