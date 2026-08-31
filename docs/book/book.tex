@@ -6,7 +6,11 @@
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
 
-\usepackage[a4paper,margin=32mm,marginparwidth=0mm]{geometry}
+% Left and right are 12mm narrower than top and bottom: a 32mm side margin on A4 left a
+% great deal of unused paper. Text width is 170mm rather than 146mm. 17mm was tried first
+% and read as too dense, so 12mm is the deliberate stopping point rather than the most that
+% would fit: a wider measure is harder to read back, whatever it does for the paper.
+\usepackage[a4paper,left=20mm,right=20mm,top=32mm,bottom=32mm,marginparwidth=0mm]{geometry}
 \usepackage{microtype}
 \usepackage{booktabs}
 \usepackage{longtable}
