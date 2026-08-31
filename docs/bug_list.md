@@ -1830,11 +1830,31 @@ visible problem; a reader being told nothing is neither.
 | Position | State |
 |---|---|
 | The follower's acknowledgement | Tracked as of 2026-08-30, `peer_acked_through_` |
-| The matching engine's checkpoint | Does not exist. See `docs/durability/open_order_checkpoint.md` |
-| The oldest a member's resend may reach | Not tracked. R-0008 |
+| The matching engine's checkpoint | Recorded as of 2026-08-31, and never reported |
+| The oldest a member's resend may reach | Not defined. R-0008 |
 
 Until all three exist, nothing may be discarded. The sequencer warns once the log passes five
 million records so that the growth is visible rather than discovered.
+
+**The second changed on 2026-08-31 and the third is not what it looks like.**
+
+The checkpoint now records a position: `MappedSlotStore::publish(seq_no)` stamps it in the
+sequencer's own sequence numbers and `OrderBook::recover()` reads it back (`OrderBook.cpp:92`).
+But it sits in a file on the matching engine's host and no PDU carries it to the sequencer,
+which searching that component for `checkpoint` shows plainly -- there is a comment and nothing
+else. So this entry is now plumbing rather than design.
+
+The third is not a tracking problem, and no amount of code will supply it. R-0008 requires that
+reports be retained "for at least as long as a member may take to reconnect and ask for it, and
+that period shall be stated". **No such period has been stated.** Retention cannot be anchored
+to a figure nobody has chosen, so what survives is whatever the log has not yet discarded --
+which varies with the order rate, and so narrows exactly when a member has most at stake.
+R-0022 records the same thing from the other end: anchored to nothing measurable.
+
+**So this bug is blocked on a decision, not on work.** Once the retention period is a number,
+what remains is the PDU above, a generation number so that a reused segment's old records are
+not replayed as current (`WalEntryHeader` has an unused `filler(8)` field for one), and the
+reclaiming itself. Until then the log grows, which is the right way to be wrong.
 
 Related: [BUG-0046](#bug_0046), since a member's resend is served from this log; and the checkpoint
 work, which cannot be completed without this.
