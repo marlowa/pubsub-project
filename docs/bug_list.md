@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 70 |
-| Open | 26 (16 defects, 10 tasks) |
+| Bugs recorded | 71 |
+| Open | 27 (17 defects, 10 tasks) |
 | Closed | 44 |
-| Next id | BUG-0071 |
+| Next id | BUG-0072 |
 
 ## Open bugs by severity
 
-12 high, 11 medium, 3 low.
+13 high, 11 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0070](#bug_0070) | high | defect | The sequencer blocks for half a second committing to the log |
+| [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -860,6 +861,59 @@ which is what keeps allocating new blocks. [BUG-0069](#bug_0069), since the sequ
 metrics at all when this was being investigated.
 
 ---
+
+### BUG-0071: Warming the open-order region does not give it any blocks {#bug_0071}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | Reading `MappedSlotStore::warm()` with the evidence from [BUG-0070](#bug_0070) in hand |
+| Impact | The matching engine pays filesystem journal waits on the order path, on a freshly deployed region |
+
+**What happens.** `MappedSlotStore` creates the open-order region with `ftruncate`
+(`MappedSlotStore.cpp:98`), so the file is sparse exactly as the log segments were. `warm()` is
+meant to move the cost of first access to startup, before the process reports ready, as R-0121
+requires. It reads one byte from each page and its comment states the reasoning:
+
+> Read one byte from each page. Reading is enough: the delay being moved is the kernel finding
+> the page, and it does that whether the access reads or writes.
+
+That reasoning is wrong, on two counts.
+
+1. **A read of a hole allocates nothing.** The kernel maps the shared zero page. No block is
+   allocated and no metadata changes, so the journal wait that [BUG-0070](#bug_0070) measured is
+   still owed --- and it falls on the first *write* to each slot, which is the matching engine's
+   order path.
+2. **A read leaves a second fault owed even where blocks exist.** For a shared file-backed
+   mapping the kernel maps a clean page read-only so it can trap the first write through
+   `page_mkwrite`, for writeback accounting and, under ext4 delayed allocation, block
+   reservation. Reading moves one fault to startup and leaves the other in place.
+
+So the region satisfies R-0121 in letter and not in effect: `warm()` returns, the process
+reports ready, and the cost it was supposed to have absorbed is still ahead of it.
+
+**Why it has not been seen yet.** The region persists between runs, and repeated runs have
+written across all 496 MB of it, so it is fully allocated on this machine today. A fresh deploy
+starts sparse and pays the cost through the first trading day. This is the same reason debris
+from an earlier run can make a latency problem disappear and look fixed.
+
+**The fix.** Warming must write, not read.
+
+- For a **new** region, write it out in full before mapping, as `WalWriter::fill_new_segment`
+  now does.
+- For an **existing** region, read-modify-write the same byte back --- `p[offset] = p[offset]`
+  --- which forces both the allocation and the `page_mkwrite` without altering any content.
+
+The cost is that startup dirties the whole region, which is acceptable before the process
+reports ready but should be stated in the design rather than discovered in a run.
+
+**Not yet measured.** Unlike [BUG-0070](#bug_0070) this was found by reading, not by a probe.
+The matching engine's thread has not been watched with `scripts/thread_offcpu.py`, and a run
+against a freshly deployed region is what would confirm the size of it.
+
+Related: [BUG-0070](#bug_0070), the same mechanism on the sequencer, where it was measured.
 
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 
