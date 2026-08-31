@@ -8,6 +8,13 @@ worked on and what is wrong with it.
 - **[Roadmap](roadmap.md)** — the slicing plan: what is done, what comes next
 - **[Bug List](bug_list.md)** — every known defect, numbered, ranked by severity
 
+> **Deploying to a new machine?** The filesystem holding the sequencer's log must be mounted
+> `lazytime`. It is a mount option, so it is in no file this repository holds, and without it the
+> sequencer stalls for hundreds of milliseconds at a time on the thread that sequences every
+> order. Measured over 9.3 million records: `relatime` produced stalls up to 845 ms; `lazytime`
+> produced none over 10 ms. See
+> **[filesystem requirements](operations/filesystem_requirements.md)**.
+
 ## Chapters
 
 - **[Orientation](orientation/README.md)** — what the venue is, how to build it, how it is tested
@@ -17,7 +24,8 @@ worked on and what is wrong with it.
 - **[Durability](durability/README.md)** — the write-ahead log and replay
 - **[High availability](availability/README.md)** — surviving a process death, and a machine death
 - **[FIX](fix/README.md)** — the protocol, the codec, and the session layer
-- **[Operations](operations/README.md)** — metrics, secure communications, load profiles
+- **[Operations](operations/README.md)** — metrics, secure communications, load profiles, and the
+  [filesystem the log needs](operations/filesystem_requirements.md)
 - **[History](history/README.md)** — the session log and release notes
 - **[Superseded](superseded/README.md)** — working notes kept for provenance only
 

@@ -44,6 +44,28 @@ class FileSystemUtils {
      *         and the system error string.
      */
     [[nodiscard]] static std::string make_directories(const std::string& path);
+
+    /**
+     * @brief The mount options of the filesystem holding @p path.
+     *
+     * Reads /proc/self/mounts and returns the options of the mount whose mount point is the
+     * longest prefix of @p path -- the filesystem a file there actually lives on, since mount
+     * points nest.
+     *
+     * This exists because a mount option can decide whether a component meets its latency
+     * requirement, and nothing in a program's own configuration reveals it. Measured on
+     * 2026-08-31: with the sequencer's log on a filesystem mounted `relatime`, appends over
+     * 100 ms happened five times in 9.3 million and the reactor stalled for up to 845 ms; with
+     * the same filesystem mounted `lazytime`, no append exceeded 10 ms in 9.3 million and the
+     * longest stall was under a millisecond. See docs/operations/filesystem_requirements.md.
+     *
+     * @param[in] path A file or directory. Need not exist; what matters is which mount it
+     *                 falls under.
+     * @return The comma-separated option list, or an empty string if it could not be
+     *         determined. An empty answer means "unknown", never "no options" -- a caller must
+     *         not read it as the absence of a particular option.
+     */
+    [[nodiscard]] static std::string mount_options(const std::string& path);
 };
 
 } // namespaces

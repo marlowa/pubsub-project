@@ -842,7 +842,41 @@ because nothing was executing. The only sign in the venue was the reactor's stal
 noticing a callback had overrun, and the figure it prints is how long the callback has taken
 **so far**, which understates the wait: one stall reported as 372 ms was 557 ms measured.
 
-**Candidate fixes, none tested.**
+**Resolved 2026-08-31, in two parts, one of them not in this repository at all.**
+
+*The code change.* Segments were created with `ftruncate`, leaving them sparse. Filling them on
+creation removed the per-page cost but moved it: the writer did the filling at roll-over, and a
+run showed 673 appends over 1 ms against 684 rotations -- one slow append per roll. A helper
+thread now creates and fills segment N+1 while the writer is still appending to N, so a roll
+costs no open, no fill and no mmap on the order path. `wal_segments_filled_inline` and
+`wal_segments_waited_for` report whether it keeps pace; measured across 686 rotations they read
+1 and 0, the 1 being the first segment, which nothing can prepare in advance.
+
+*The mount option, which turned out to matter more.* Every writeback of a dirty mapped page also
+dirties the inode's timestamps, an inode change is journalled metadata, and waiting for a journal
+transaction is uninterruptible. Mounting the log's filesystem `lazytime` keeps timestamp updates
+in memory instead. Two twenty-minute runs, same load, same binaries, same device, only the mount
+option differing:
+
+| | `relatime` | `lazytime` |
+|---|---|---|
+| appends over 100 ms | 4 | **0** |
+| appends over 1 s | 1 | **0** |
+| worst reactor stall | 845 ms | **under 1 ms** |
+| `wait_transaction_locked` samples | 165 | **0** |
+
+Not one append in 9.3 million exceeded 10 ms. The journal traffic was almost entirely
+timestamps, which is not what was suspected: block allocation was, and it was not the cause.
+
+Giving the log its own device was measured separately and is worth doing but is the smaller
+effect: it took `rq_qos_wait` from 249 samples to 4 and left the journal waits untouched.
+
+**The requirement is now written down** at `docs/operations/filesystem_requirements.md`, and the
+sequencer warns at startup when the log's filesystem lacks `lazytime` -- because the setting is
+in no file this repository holds, and a machine rebuilt without it would look as though the venue
+had regressed for no reason.
+
+**Candidate fixes as they were considered, kept for provenance.**
 
 - **Give each segment real blocks before it is used.** Writing 4 MB of zeros at creation
   allocates and initialises every block, so later mapped writes touch nothing new. `fallocate`

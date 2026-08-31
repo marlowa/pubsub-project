@@ -48,6 +48,7 @@ add_executable(pubsub_itc_fw_tests
     TomlConfigurationTest.cpp
     WalCursorTest.cpp
     WalTest.cpp
+    FileSystemUtilsTest.cpp
     WalWriterReaderTest.cpp
     WallClockTest.cpp
 )

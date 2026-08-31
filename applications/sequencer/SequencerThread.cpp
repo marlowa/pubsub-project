@@ -21,6 +21,7 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
+#include <pubsub_itc_fw/utils/FileSystemUtils.hpp>
 
 namespace sequencer {
 
@@ -146,6 +147,37 @@ void SequencerThread::on_initial_event() {
         wal_append_histogram_ = get_reactor().metrics().register_histogram(
             "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log, on the reactor thread",
             config_.wal_append_buckets);
+    }
+
+    // A mount option decides whether this component meets its latency requirement, and nothing
+    // in the configuration reveals it, so it is checked and said out loud at startup.
+    //
+    // Every writeback of a dirty mapped page also dirties the inode's timestamps, and an inode
+    // change is journalled metadata -- so each flush drags the log into an ext4 journal
+    // transaction, and waiting for one to commit is uninterruptible. `lazytime` keeps timestamp
+    // updates in memory instead. Measured on 2026-08-31 over 9.3 million records, same load and
+    // same hardware, with only this option changed:
+    //
+    //     relatime   5 appends over 100 ms, 1 over 500 ms, worst reactor stall 845 ms
+    //     lazytime   0 appends over  10 ms,                worst reactor stall   0 ms
+    //
+    // A machine rebuilt without it will look as though the venue has regressed for no reason,
+    // which is why this warns rather than staying silent. It is a warning and not a refusal:
+    // the venue works correctly without it, only slower in the tail.
+    const std::string wal_mount_options = pubsub_itc_fw::FileSystemUtils::mount_options(config_.wal_directory);
+    if (wal_mount_options.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: cannot tell how the filesystem holding the log at {} is mounted, so cannot confirm it uses lazytime. See "
+                   "docs/operations/filesystem_requirements.md",
+                   config_.wal_directory);
+    } else if (wal_mount_options.find("lazytime") == std::string::npos) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: the filesystem holding the log at {} is mounted [{}] and does NOT use lazytime. Commit latency will show "
+                   "occasional stalls of hundreds of milliseconds. Remount with lazytime. See docs/operations/filesystem_requirements.md",
+                   config_.wal_directory, wal_mount_options);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: the log at {} is on a filesystem mounted [{}]", config_.wal_directory,
+                   wal_mount_options);
     }
 
     // Whether the log's next segment is being created ahead of the writer, or the writer is

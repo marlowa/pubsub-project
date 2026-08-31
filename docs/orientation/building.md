@@ -1,5 +1,11 @@
 # Building
 
+> **One thing the build cannot do for you.** The filesystem holding the sequencer's log must be
+> mounted `lazytime`, or the venue stalls for hundreds of milliseconds at a time under load. It
+> is a mount option, not a build or configuration setting, and the sequencer warns at startup
+> when it is missing. See [filesystem requirements](../operations/filesystem_requirements.md).
+
+
 `build.sh` is a thin wrapper that sets the third-party environment variables for the detected
 platform and then calls `build.py`, which does the work: configure, compile, run the test suites,
 generate coverage or Doxygen if asked, and install into a staging directory.
