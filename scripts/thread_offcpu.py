@@ -70,6 +70,7 @@ CAUTIONS.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from collections import Counter
@@ -139,6 +140,42 @@ class Stall:
         self.states = states
 
 
+def filesystem_of(path: str) -> tuple[str, str, str]:
+    """The device, type and mount options of the filesystem holding a path.
+
+    Read from /proc/self/mounts, which needs no privileges. Mount points nest, so the answer is
+    the mount whose point is the LONGEST prefix of the path, not the first that matches.
+
+    This is worth reporting beside a stall because the kernel function a thread is sleeping in
+    can only be read once the filesystem is known: ext4 waits in do_get_write_access and
+    wait_transaction_locked, XFS does the same job in xlog_* and xfs_log_force. Someone looking
+    for the ext4 names on an XFS host finds none of them, and "no journal functions" reads as
+    "not the journal" when it means "wrong names". The mount options matter too -- lazytime
+    decides whether a mapped write drags the inode's timestamps through the journal.
+    """
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        resolved = path
+    best = ("", "", "")
+    best_point = ""
+    try:
+        for line in Path("/proc/self/mounts").read_text().splitlines():
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            device, point, fstype, options = fields[0], fields[1], fields[2], fields[3]
+            if not resolved.startswith(point):
+                continue
+            if point != "/" and len(resolved) > len(point) and resolved[len(point)] != "/":
+                continue
+            if len(point) >= len(best_point):
+                best_point, best = point, (device, fstype, options)
+    except OSError:
+        return ("", "", "")
+    return best
+
+
 def writable_file_mappings(pid: int) -> list[str]:
     """Files this process has mapped writable, read from outside it.
 
@@ -148,6 +185,20 @@ def writable_file_mappings(pid: int) -> list[str]:
     kernel while holding a writable file mapping is a strong hint at where to look, and this
     needs no source: the mapping is visible from the outside whatever built the program.
     """
+    # The program itself is mapped writable for relocations, exactly as its libraries are, and is
+    # just as never the thing being written to. Excluding only *.so left the executable in the
+    # list, where it drew a warning about the filesystem holding /usr/bin -- confidently, and
+    # about the wrong file.
+    try:
+        executable = os.path.realpath(f"/proc/{pid}/exe")
+    except OSError:
+        executable = ""
+
+    def is_program_or_library(path: str) -> bool:
+        if path == executable or path.endswith(".so") or ".so." in path:
+            return True
+        return path.startswith(("/usr/lib", "/usr/bin", "/usr/sbin", "/lib", "/lib64", "/bin", "/sbin"))
+
     mapped = []
     try:
         for line in Path(f"/proc/{pid}/maps").read_text().splitlines():
@@ -155,11 +206,11 @@ def writable_file_mappings(pid: int) -> list[str]:
             if len(parts) < 6:
                 continue
             perms, path = parts[1], parts[5].strip()
-            # Writable, backed by a real path, and not the program or its libraries -- those
-            # are mapped writable for relocations and are never the thing being written to.
-            if "w" in perms and path.startswith("/") and not path.endswith(".so") \
-                    and ".so." not in path and "/dev/shm/sem." not in path:
-                mapped.append(path)
+            if "w" not in perms or not path.startswith("/"):
+                continue
+            if is_program_or_library(path) or "/dev/shm/sem." in path:
+                continue
+            mapped.append(path)
     except OSError:
         return []
     return sorted(set(mapped))
@@ -424,6 +475,26 @@ def main() -> int:
         print(f"  NOTE: {len(threads)} threads at {args.hz} Hz is {len(threads) * args.hz:,} reads a second")
         print("        on the machine being measured. Use --thread when the thread is known.")
 
+    # Said before watching rather than after, because it is a fact about the machine and does not
+    # depend on catching a stall. A run that sees no stall still answers "what does this process
+    # write to, on what filesystem, mounted how" -- which is most of what decides whether the
+    # mechanisms below are even possible here.
+    startup_mapped = writable_file_mappings(args.pid)
+    if startup_mapped:
+        print("\n  files this process has mapped writable, and what they sit on:")
+        for path in startup_mapped[:10]:
+            device, fstype, options = filesystem_of(path)
+            print(f"    {path}")
+            if fstype:
+                print(f"        {device} ({fstype}) mounted [{options}]")
+                if fstype in ("ext4", "xfs", "ext3", "btrfs") and "lazytime" not in options:
+                    print("        NOTE: no lazytime. Each writeback of a dirty mapped page also updates the")
+                    print("        inode's timestamps, which is journalled metadata in its own right and can")
+                    print("        wait uninterruptibly. Remounting with lazytime removed stalls of hundreds")
+                    print("        of milliseconds on one system measured this way.")
+    else:
+        print("\n  this process has no writable file mappings, so a mapped write is not a candidate here.")
+
     out = None
     if args.output:
         out = open(args.output, "w")
@@ -447,7 +518,9 @@ def main() -> int:
         print("\n  this process was blocked in the kernel. What it has mapped writable:")
         if mapped:
             for path in mapped[:10]:
-                print(f"    {path}")
+                device, fstype, options = filesystem_of(path)
+                where = f"  [{fstype} on {device}, {options}]" if fstype else ""
+                print(f"    {path}{where}")
             print("\n    A write to a mapped file is a memcpy in the code and can still wait:")
             print("    the first write to each page needs a real block behind it, and on a")
             print("    journalling filesystem that can wait for a transaction to commit.")
