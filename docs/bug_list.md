@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 73 |
-| Open | 28 (18 defects, 10 tasks) |
+| Bugs recorded | 74 |
+| Open | 29 (19 defects, 10 tasks) |
 | Closed | 45 |
-| Next id | BUG-0074 |
+| Next id | BUG-0075 |
 
 ## Open bugs by severity
 
-12 high, 13 medium, 3 low.
+13 high, 13 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
+| [BUG-0074](#bug_0074) | high | defect | R-0101 cannot be met as worded, because the catch-up stream is filtered |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -970,6 +971,72 @@ file that looks authoritative:
 saying which it is -- deliberate staging, or a value awaiting a real deployment. A placeholder
 that says it is a placeholder cannot be mistaken for a considered setting, and that is the whole
 of the fix.
+
+### BUG-0074: R-0101 cannot be met as worded, because the catch-up stream is filtered {#bug_0074}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | Implementing R-0101, and watching 8 of 52 `ha_test` scenarios fail on healthy promotions |
+| Impact | Nothing verifies that a catch-up was complete, so a matching engine can promote on a book that is missing records and believe it is current. R-0101 remains uncovered, and the obvious implementation of it is wrong |
+
+**R-0101 says** a component shall establish that it received every record between the position it
+presented and the position it has reached, and shall not begin acting if it did not. Nothing
+implements it: searching the source for R-0101 returns no code at all.
+
+**The obvious implementation does not work, and this entry exists so that nobody writes it
+twice.** Sequence numbers come from `next_sequence_number_++` and are never skipped, so it looks
+as though completeness is arithmetic: the records must be exactly P+1, P+2 ... Q. Written that
+way and wired into the matching engine, it halted **8 of 52 scenarios** -- every one of them a
+healthy promotion -- reporting for example:
+
+```
+catch-up was not complete -- the stream stopped early: 715 record(s) between
+seq_no 630406 and 631120 were never delivered
+```
+
+Those 715 records were never missing. **The stream is deliberately filtered.**
+`SequencerThread::stream_wal_record_to_me` forwards only `NewOrderSingle` and
+`OrderCancelRequest`, and says why in a comment: execution report envelopes "are outputs, not
+inputs, and are not streamed to the ME during catch-up". So the engine receives a subset of
+[P+1, Q] by design, and a contiguity check over what arrives is wrong by construction.
+
+**Three readings of the requirement, of which only one is implementable.**
+
+| Reading | Verdict |
+|---|---|
+| Every record between P and Q | Impossible: the authority withholds records deliberately |
+| Every record that was **sent** to it | Implementable, and catches loss in transit, reordering and duplication |
+| Every record **relevant** to it | Not checkable by the component alone: it cannot know which sequence numbers were orders without receiving them |
+
+**The second is the one to build, and the pieces nearly exist.** The sequencer already counts
+what it streams (`++streamed` in the catch-up loop) and simply never tells anyone. Putting that
+count into `MePositionAck` alongside the `first_seq_no` and `last_seq_no` it already carries
+lets the engine check it received exactly that many records, in ascending order, with none
+repeated. Wire compatibility is not a constraint until a major release, so adding the field is
+permitted.
+
+**State the limitation in the requirement rather than hiding it.** Under that reading the engine
+trusts the sequencer's count. A bug in `stream_wal_record_to_me` that filtered wrongly would be
+invisible to it, because a component cannot verify it received what it was never told about.
+That is a real guarantee and a narrower one than R-0101's present wording implies, so the
+wording should be sharpened to say what is actually being established.
+
+**What exists already.** `pubsub_itc_fw::CatchUpTally` and nine tests were written for the
+contiguous reading and are on the tree. The shape is right -- offer each record, ask whether the
+run was complete, describe the shortfall in numbers a person can act on -- but it must change
+from checking contiguity to checking a count and monotonic order. The abandoned wiring is kept
+as a patch outside the repository; it is the checks' placement that was right, at the ack and
+before promotion, not their content.
+
+**Also settled while finding this**, and worth keeping: "begin acting" means promoting to
+leader, and the sequencer never skips a sequence number. Both are Andrew's, 2026-08-31.
+
+Related: [BUG-0064](#bug_0064), which needs this to close, and [BUG-0068](#bug_0068), since
+R-0101's own gap note says no scenario withholds a record during a catch-up -- and until one
+does, any implementation of this is believed rather than known.
 
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 
