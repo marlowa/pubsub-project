@@ -883,20 +883,21 @@ requires. It reads one byte from each page and its comment states the reasoning:
 That reasoning is wrong, on two counts.
 
 1. **A read of a hole allocates nothing.** The kernel maps the shared zero page. No block is
-   allocated and no metadata changes, so the journal wait that [BUG-0070](#bug_0070) measured is
-   still owed --- and it falls on the first *write* to each slot, which is the matching engine's
-   order path.
-2. **A read leaves a second fault owed even where blocks exist.** For a shared file-backed
-   mapping the kernel maps a clean page read-only so it can trap the first write through
-   `page_mkwrite`, for writeback accounting and, under ext4 delayed allocation, block
-   reservation. Reading moves one fault to startup and leaves the other in place.
+   allocated and no metadata changes. The journal wait that [BUG-0070](#bug_0070) measured has
+   therefore not been avoided; it happens later instead, on the first *write* to each slot,
+   which is the matching engine's order path.
+2. **A read does not prevent a second page fault, even where blocks already exist.** For a
+   shared file-backed mapping the kernel maps a clean page read-only, so that it can trap the
+   first write through `page_mkwrite` for writeback accounting and, under ext4 delayed
+   allocation, block reservation. Reading moves one page fault to startup. The other still
+   happens on the first write.
 
-So the region satisfies R-0121 in letter and not in effect: `warm()` returns, the process
-reports ready, and the cost it was supposed to have absorbed is still ahead of it.
+So the region meets R-0121 as written but not as intended: `warm()` returns, the process reports
+ready, and the delay it was meant to remove still happens later, during trading.
 
 **Why it has not been seen yet.** The region persists between runs, and repeated runs have
 written across all 496 MB of it, so it is fully allocated on this machine today. A fresh deploy
-starts sparse and pays the cost through the first trading day. This is the same reason debris
+starts sparse and incurs the cost through the first trading day. This is the same reason debris
 from an earlier run can make a latency problem disappear and look fixed.
 
 **The fix.** Warming must write, not read.
@@ -3101,7 +3102,8 @@ ignores what was asked for and returns the most recent reports answers a request
 correctly by accident, so a tail request discriminates nothing.
 
 **Scenario 40 also settles what BUG-0039 was closed without.** That nothing came back outside
-100..149 is the test that `EndSeqNo` is read and honoured, which was owed and missing.
+100..149 is the test that `EndSeqNo` is read and honoured. BUG-0039 should have had that test
+and did not.
 
 **The fix belongs in the design for BUG-0051**, at
 [Resend provenance](availability/resend_provenance.md), because both come from the same missing
