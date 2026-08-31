@@ -1496,7 +1496,15 @@ def main() -> None:
     # Every gateway instance of both protocols runs whichever one is under test, so the
     # process set -- and therefore the machine's load -- is the same in every run and the
     # results are comparable. The idle ones do nothing but hold their listeners open.
+    # The sequencer is here because on 2026-08-31 it was the process that stalled, and it was
+    # the one process not being profiled. A run recording the matching engine and the gateway
+    # produced a report about two components that were not the problem: the p99 tail was a
+    # sequencer reactor stall, growing from 91 ms to 407 ms over an hour, and the perf data
+    # that would have said why had not been collected. A profile that omits a component on the
+    # order path cannot be read as evidence about that component -- only about the ones it
+    # watched.
     perf_targets = {"matching_engine_primary",
+                    "sequencer_primary",
                     gateway_component(args.gateway, args.gateway_instance)}
 
     app_procs:  list[tuple[str, subprocess.Popen]] = []

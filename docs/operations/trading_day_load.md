@@ -103,6 +103,65 @@ accumulation question gets asked at all.
 
 ---
 
+## What the machine must permit before profiling {#perf_permissions}
+
+A cycle profile answers "where did the CPU go". It cannot answer "why did this thread stop
+running", because it samples a thread only while it is ON the CPU: a thread that stalls
+waiting produces no samples at all, just a gap. On 2026-08-31 the sequencer stalled 22 times,
+up to 470 ms, and its perf profile's busiest symbol accounted for 3% of samples --- because
+the thread was not running, and nothing was there to sample.
+
+Answering it needs the scheduler tracepoints, and those need the machine opened up. **Five
+things, as root, and the fifth is the one that is easy to get wrong:**
+
+```bash
+# 1. resolve kernel symbols, so a stack that enters the kernel does not stop at the boundary.
+#    10-kernel-hardening.conf sets this back to 1, and /etc/sysctl.d/99-sysctl.conf is a
+#    symlink to /etc/sysctl.conf, so putting it there sorts after and wins.
+sysctl -w kernel.kptr_restrict=0
+
+# 2. tracepoints need -1, not 0. At 0 the tracepoint id is readable and enabling it still
+#    fails with "No permission to enable sched:sched_switch event", which reads like a
+#    missing tracepoint rather than a missing privilege.
+sysctl -w kernel.perf_event_paranoid=-1
+
+# 3. account per-task sleep and block time, so blocked-on-I/O separates from sleeping-on-a-lock
+sysctl -w kernel.sched_schedstats=1
+
+# 4. let a non-root user into the tracing filesystem at all
+mount -o remount,mode=755 /sys/kernel/tracing
+
+# 5. THE WHOLE events TREE, not just events/sched. perf embeds the event FORMAT in the
+#    recording so it can decode it later, and that needs events/header_page,
+#    events/header_event and events/ftrace/print/format as well. Granting only
+#    events/sched records perfectly and then fails at analysis with "broken or missing
+#    trace data", by which time the run is over.
+chmod -R o+rX /sys/kernel/tracing/events
+```
+
+Only the sysctls survive a reboot, and only if written down:
+
+```bash
+cat >> /etc/sysctl.conf <<'EOF'
+kernel.kptr_restrict = 0
+kernel.sched_schedstats = 1
+EOF
+sed -i 's/^kernel.perf_event_paranoid=0/kernel.perf_event_paranoid=-1/' /etc/sysctl.conf
+```
+
+The mount option and the permissions do not, so they are part of preparing a machine for a
+profiling session rather than something to set once.
+
+**What it costs.** `perf_event_paranoid=-1` removes the restrictions entirely and
+`kptr_restrict=0` exposes kernel addresses, both to any unprivileged user on the box. On a
+personal development machine that is the ordinary trade for being able to profile; it is not
+a setting to leave on anything shared.
+
+**If you would rather not**, `scripts/thread_offcpu.py` needs no privileges at all. It polls
+`/proc/<tid>/schedstat` and `/proc/<tid>/stat` and separates *runnable but unscheduled* from
+*uninterruptible sleep* from *sleeping on a lock*, which is enough to say which kind of stall
+it is. What it cannot do is name the particular wait, which is what `perf sched` is for.
+
 ## Calibrate first: the probe run
 
 Absolute rates are a property of the machine, not of the profile. A figure that saturates a

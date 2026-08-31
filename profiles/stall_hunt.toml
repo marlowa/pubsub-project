@@ -1,0 +1,62 @@
+# A SHORT run whose only purpose is to provoke the sequencer reactor stalls seen on
+# 2026-08-31, so that an off-CPU measurement can say why the thread stopped running.
+#
+# Not a trading day and not a benchmark: two phases, no shape, no quiet period. The first
+# stall in the full run arrived about six minutes into sustained load, so twenty minutes at
+# the same rate should produce several.
+
+#
+# Phase rates are FRACTIONS of ceiling_orders_per_second, never absolute, so the same
+# profile means the same thing on a machine with different capacity. Measure the ceiling
+# on this box and set it below.
+#
+# Compression applies ONLY to phases with compressible = true -- the quiet ones. Bursts
+# keep their real durations because their durations are what is being tested, and the
+# sustained phase is never compressed because accumulation needs real elapsed time.
+#
+# cancel_ratio is a MEMORY DIAL, not an attempt at a realistic cancel-to-order ratio.
+# It sets what fraction of orders leave the book, so the resting count -- and therefore
+# the venue's memory -- is offered x (1 - cancel_ratio).
+#
+# THIS PROFILE IS THE LATENCY ONE, and the high ratio is what makes it so. Its sibling
+# trading_day.toml uses 0.10 to grow the book as fast as it can, because the rehash is
+# what that run is about; it says a run about latency should raise it, and this is that
+# run.
+#
+# 0.88 is arithmetic rather than taste. The seven phases offer 13,023,500 orders, so at
+# 0.88 about 1,563,000 rest at the close -- 78% of a 2,000,000-record region, which
+# leaves the accept path busy for all 113 minutes without the region ever filling.
+#
+# It has to be high because THE MATCHING ENGINE DOES NOT MATCH. Nothing removes a resting
+# order except a cancel, so at any ratio below 1.0 the book grows without bound and the
+# only question is when it fills. At 0.10 a 1,000,000-record region filled after eleven
+# minutes on 2026-08-31 and the venue correctly refused 8.8 million orders after that,
+# which measures the rejection path and not the one intended.
+#
+# Raising the region instead was considered and rejected: every resting order is held in
+# three places -- 248 bytes in the engine's region, 138 in its map, 184 in the gateway --
+# and both engines hold it, so 10,000,000 resting is about 15 GiB at peak on a 31 GiB
+# machine that also runs the gateways, sequencers, arbiters, Prometheus and perf. This
+# venue has been OOM-killed at 9.9 GB once already.
+
+[run]
+ceiling_orders_per_second = 3500   # PROVISIONAL -- calibrate on this machine
+compression               = 6      # quiet phases only
+chart_step_seconds        = 30     # must match pubsub_metrics.py --step
+minimum_samples           = 6      # per phase; sets the floor a phase may not fall below
+
+[[phase]]
+name         = "warm"
+pattern      = "steady"
+duration     = "3m"
+compressible = false
+rate         = 0.30
+cancel_ratio = 0.88
+
+[[phase]]
+name         = "sustained elevated"
+pattern      = "uniform_slowdown"
+duration     = "20m"
+compressible = false
+rate         = 0.55
+cancel_ratio = 0.88

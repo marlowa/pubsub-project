@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 68 |
-| Open | 24 (15 defects, 9 tasks) |
+| Bugs recorded | 69 |
+| Open | 25 (15 defects, 10 tasks) |
 | Closed | 44 |
-| Next id | BUG-0069 |
+| Next id | BUG-0070 |
 
 ## Open bugs by severity
 
-11 high, 10 medium, 3 low.
+11 high, 11 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -34,6 +34,7 @@
 | [BUG-0048](#bug_0048) | medium | defect | The log discarded history on a timer, and now retains all of it |
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
+| [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -747,6 +748,52 @@ session whose provisioning does not name it -- `ha_test.py` scenario 20 tests ex
 
 What is genuinely missing is the automatic half: something that counts per peer, decides when a
 count is excessive, and acts on it without an operator watching. Nothing here is built.
+
+### BUG-0069: The sequencer, arbiters and witness report no metrics at all {#bug_0069}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a component on the order path that nothing can see |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | Noticed during the first trading-day performance run, while trying to explain a latency tail that turned out to be in the sequencer |
+| Impact | The one component the evidence pointed at was the one with nothing to point at it |
+
+`pubsub_metrics.py --list` reports five components: the four gateways and the two matching
+engines. **The sequencer is not among them, and neither are the arbiters, the witness or the
+authentication services.** None of them registers a counter, a gauge or a histogram.
+
+Every order the venue takes passes through the sequencer. It commits each one to the log,
+routes each report back, and holds the maps that make a report deliverable -- and the only
+window onto any of that is its log file.
+
+**What made this worth recording.** On 2026-08-31 a trading-day run showed a p99 round trip of
+about 2 ms with occasional excursions past 300 ms. The excursions correlated exactly with
+reactor stalls on the sequencer, growing from 32 ms to 407 ms over an hour. Establishing even
+that much meant reading log lines and correlating timestamps by hand, because there was no
+series to plot. Whatever the cause turns out to be, the venue could not have shown it.
+
+**What would be worth having**, in the order the evidence would have wanted it:
+
+- **How long a sequenced order spends in the sequencer**, as a histogram. The gateway measures
+  the whole round trip; nothing measures this leg, so a tail cannot be attributed to it or
+  ruled out.
+- **The size of the log and whether anything is reclaiming it.** The count is already logged
+  every thirty seconds along with a warning that retention is anchored to nothing --- see
+  [BUG-0048](#bug_0048) --- so the number exists and simply is not published.
+- **The maps that grow**: `seq_no_to_session_` and `pending_er_` are bounded by orders in
+  flight rather than by resting orders, which is a claim worth being able to check rather than
+  read from the source.
+- **Reports dropped for a disconnected gateway**, which scenario 18 of `ha_test.py` asserts
+  happens and which nothing counts.
+
+**Not simply "add metrics to everything".** A gauge nobody reads is a cost with no return, and
+the framework's own guidance is that touching a metric on the order path to buy resolution
+nobody looks at is the wrong trade. The list above is what one investigation actually wanted;
+the arbiters and witness are quieter and can wait until something needs explaining about them.
+
+---
 
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 

@@ -323,6 +323,31 @@ prevent, arrived at while appearing to have done something about it.
 **The region itself is kept.** It is moved aside rather than overwritten, so that
 whatever made it unreadable can still be looked at.
 
+## Changing how many orders it holds
+
+**Clear the region when you change `order_book_region_capacity`, or the venue will halt
+rather than resize.** The record count is in the region's header, and a header that does not
+describe what the engine is configured to read is refused --- which is right, and is what
+stops a region being reinterpreted at the wrong stride. But a deliberate resize looks
+identical to a damaged region from inside `open()`, so the engine moves the old one aside,
+finds it cannot say what it held, and halts under R-0123.
+
+That is the correct answer to the question it is actually being asked. It is not the answer
+anybody wants from a resize, so the resize is: stop the engine, delete the region, change the
+figure, start it. Any orders open at the time are gone, which is why this is a change to make
+when nothing is resting rather than during a trading day.
+
+**How big it needs to be** depends on what removes orders from the book, which is worth
+saying plainly because a load profile can make it look far worse than it is. This venue's
+matching engine does no matching, so nothing removes a resting order except a cancel. Under
+`profiles/trading_day.toml`, whose cancel ratio is deliberately a memory dial rather than a
+realistic figure, ninety per cent of every order sent rests for ever: a region sized for a
+million filled after eleven minutes on 2026-08-31 and the venue refused 8.8 million orders
+after that. Correctly --- but it says nothing about a venue that fills orders.
+
+So size it to the peak orders open at once, and be clear about which of the two situations
+you are sizing for.
+
 ## When the region is full
 
 **Refuse the order.** The alternatives are worse:

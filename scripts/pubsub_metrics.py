@@ -421,13 +421,31 @@ def resolve_component_config(prom_url, use_live, application):
 
     try:
         discovered = discover_component_config(prom_url, application)
+    except requests.ConnectionError as error:
+        # Nothing is listening, which is a different problem from Prometheus answering badly
+        # and has a different remedy. Said plainly, because the underlying exception says it
+        # in two hundred characters of urllib3 internals with "Connection refused" in the
+        # middle -- and the reader has to know what urllib3 is to find it.
+        #
+        # It is worth a message of its own because it is the common case: perf_run.py owns the
+        # venue and does NOT start Prometheus, so a run driven that way has metrics collected
+        # by nothing unless somebody started it first.
+        raise SystemExit(
+            f"error: nothing is listening at {prom_url} -- Prometheus is not running.\n"
+            f"       Start it with:  python3 scripts/devenv.py --env environments/dev.toml start prometheus\n"
+            f"       Start it BEFORE a load run: perf_run.py starts the venue but not Prometheus,\n"
+            f"       so a run without it collects no percentiles and cannot answer a latency question.\n"
+            f"       To work without it: --demo for synthetic data, or --input to replay a snapshot."
+        ) from error
     except (requests.RequestException, ValueError, KeyError) as error:
         # Deliberately not `except Exception`. A defect in the discovery code raises here
         # too, and catching everything reported a NameError as "could not discover from
         # http://localhost:9090" -- a programming error wearing a connection failure's
         # clothes, which is the most expensive kind of message to read.
         raise SystemExit(
-            f"error: could not reach Prometheus at {prom_url} ({error}).\n"
+            f"error: Prometheus at {prom_url} did not answer usefully ({error}).\n"
+            f"       It is reachable, so this is not a missing process: check that it is ready\n"
+            f"       ({prom_url}/-/ready) and that it has scraped this venue at least once.\n"
             f"       Discovery is the only source of component names, so there is nothing "
             f"to plot. Use --demo for synthetic data, or --input to replay a snapshot."
         ) from error
