@@ -399,6 +399,11 @@ order_book_region_capacity = 1000000
 # How long the venue may be unable to match before open orders are cancelled and
 # trading halts. A trading decision: how long a resting order stays meaningful here.
 order_book_absence_limit_seconds = 300
+# What a promoted matching engine does with the orders it inherits: "cancel" or "keep".
+# "cancel" tells every member its order is gone, which is worse and is certain. "keep" carries
+# the book across (R-0073) and is only safe once the catch-up behind it is verified -- see
+# docs/bug_list.md, BUG-0074.
+order_book_open_orders_on_promotion = "cancel"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9205
 network_listen_host           = "0.0.0.0"

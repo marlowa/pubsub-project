@@ -44,14 +44,24 @@ field is absent, the ME falls back to the current wall clock.
 
 ## HA and Failover
 
-The ME participates in leader-follower HA via the cancel-on-failover policy:
+The ME participates in leader-follower HA, and what a promotion does with the orders it
+inherits is a stated policy rather than a fixed behaviour — `order_book.open_orders_on_promotion`,
+either `"cancel"` or `"keep"`:
 
 - ME-primary is the active matcher; ME-secondary tails the primary's book updates via a
   dedicated replication channel.
-- On ME-primary failure, ME-secondary is promoted via the arbiter, reconciles its book
-  against the sequencer's WAL, then issues cancel ERs for all genuinely-outstanding orders.
+- On ME-primary failure, ME-secondary is promoted via the arbiter and reconciles its book
+  against the sequencer's WAL. Under `"cancel"` it then issues a cancel ER for every order it
+  inherited and resumes on an empty book; under `"keep"` it carries the book across, so an
+  order open before the promotion is open after it and still cancellable by its owner.
+- **`"cancel"` is the deployed default in every environment.** Keeping the book is the better
+  outcome for a member and rests on that book being the one the venue had, which nothing
+  establishes yet: neither the replica maintained by `BookUpdate` nor the completeness of the
+  catch-up that follows it. See R-0073 and R-0101 in the functional specification, and
+  `docs/bug_list.md` BUG-0074.
 - Halt-on-failure is preserved as a fallback for failure modes that cannot be cleanly
-  reconciled (WAL corruption, arbiter unreachable).
+  reconciled (WAL corruption, arbiter unreachable), and cancelling is unconditional there
+  whatever the policy says.
 
 See [WAL and High Availability](../availability/wal_and_ha.md) for the full cancel-on-failover
 correctness rule and the 7-step promotion sequence.

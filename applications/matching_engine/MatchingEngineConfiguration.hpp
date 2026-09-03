@@ -218,6 +218,23 @@ struct MatchingEngineConfiguration {
      *  member would tolerate being unable to act. */
     int32_t order_book_absence_limit_seconds{300};
 
+    /** @brief What a promoted matching engine does with the orders it inherits: "cancel" or "keep".
+     *
+     *  "cancel" cancels every order that was open when leadership moved, tells the member that
+     *  placed each one, and resumes leading an empty book. The member is left in no doubt about
+     *  where it stands, and must place again what it still wants.
+     *
+     *  "keep" carries the book across, so an order open before the promotion is open after it and
+     *  remains cancellable by its owner. That is what R-0073 asks for and it is the better outcome
+     *  for a member -- but it is only safe where the book the promoted instance holds is known to
+     *  be the book the venue had. Two things it is assembled from are unverified today: the
+     *  replica maintained by BookUpdate, and the catch-up that follows it, which nothing checks
+     *  for completeness (R-0101, and docs/bug_list.md BUG-0074).
+     *
+     *  So "cancel" is the default: it is a worse outcome that is certainly true, in place of a
+     *  better one that is not yet established. See R-0073 and R-0020.  */
+    std::string order_book_open_orders_on_promotion{"cancel"};
+
     // Wall clock
 
     /** @brief Clock used to generate transact_time on ExecutionReports when the

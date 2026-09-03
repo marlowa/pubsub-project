@@ -60,11 +60,24 @@ on the peer's word alone safe.
 \end{requirement}
 
 \begin{gap}{}
-  A promoted matching engine cancels the orders that were open, whether or not it
-  could have recovered them. Under the requirement above that is the fallback
-  path, and the venue takes it every time. The behaviour was settled before
-  promotion was known to recover the set reliably --- which it has since been
-  measured to do --- and was not revisited afterwards.
+  \textbf{The venue does not meet this requirement as it is configured, and says
+  so.} What a promoted matching engine does with the orders it inherits is a
+  stated policy, \texttt{order\_book.open\_orders\_on\_promotion}, and it is set
+  to \texttt{cancel} in every environment. Every promotion therefore takes the
+  fallback path: each order is cancelled, its member is told, and the venue leads
+  an empty book.
+
+  The engine is capable of the other answer --- \texttt{keep} carries the book
+  across --- and what is missing is not the mechanism but the grounds for
+  trusting it. The book a promoted instance holds is assembled from two things
+  nothing checks: the replica it maintained by \texttt{BookUpdate} while it was
+  the follower, and the catch-up it applies before it acts, whose completeness is
+  the subject of \reqref{R-0101} and is not established today. Keeping a book
+  that is quietly short of an order is worse than cancelling the lot, because the
+  member is told nothing and believes it has an order the venue does not hold.
+
+  So the setting stands at the outcome that is worse and certain, and moving it
+  is earned by verifying the catch-up rather than by deciding to trust it.
 \end{gap}
 
 \begin{requirement}{R-0074}{An instance that gives up leadership cannot thereby create a second one}

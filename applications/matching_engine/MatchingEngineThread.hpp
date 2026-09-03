@@ -148,6 +148,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool ha_enabled_{false};
     bool is_primary_{true};
 
+    // Whether a promotion cancels the book it inherits, from order_book.open_orders_on_promotion.
+    // The policy is stated in configuration rather than settled here because keeping the book is
+    // only safe once the catch-up behind it is verified; see the configuration field's comment.
+    bool cancel_open_orders_on_promotion_{true};
+
     // Primary: outbound connection to ME-secondary's book replication listener.
     pubsub_itc_fw::ConnectionID outbound_replication_conn_id_;
 

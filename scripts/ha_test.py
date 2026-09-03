@@ -714,6 +714,12 @@ class Scenario(NamedTuple):
     # deployed figure is 300s, which no test is going to wait out; the scenario that exercises
     # the rule shortens it and keeps the engine down past it.
     absence_limit_seconds: int = 300
+    # What a promoted matching engine does with the orders it inherits, written into the
+    # deployed configs before launch: "cancel" or "keep". The deployed default is "cancel",
+    # because keeping the book rests on a catch-up nothing verifies yet (R-0101, BUG-0074).
+    # A scenario that promotes an engine asserts against whichever of the two is set here, so
+    # the assertion follows the venue's stated policy rather than assuming one of them.
+    open_orders_on_promotion: str = "cancel"
     # When True, keep the matching engine down for longer than absence_limit_seconds before
     # restarting it, then assert that it cancelled every order it recovered, told each member,
     # and halted. See run_scenario's "long absence" block.
@@ -3210,11 +3216,11 @@ def me_cancel_on_failover_count(log_path: Path, from_byte: int = 0,
     """Return N from the ME's cancel-on-failover summary line, or -1 if absent.
 
     The ME logs "cancel-on-failover complete -- N cancel ER(s) sent, book cleared"
-    when it cancels its whole book. That is no longer what a promotion does: the
-    promoted instance keeps the book its region and the sequencer's tail vouch for.
-    The line belongs to the path taken when the region cannot be used -- cancel each,
-    report each, halt (R-0102, R-0123) -- so a caller checking that a promotion did
-    NOT cancel should pass a short timeout, since it is waiting to confirm an absence.
+    when it cancels its whole book. Whether a promotion does that is the venue's
+    stated policy, order_book.open_orders_on_promotion; the same line is also emitted
+    on the paths that cancel and halt (R-0102, R-0117, R-0123). A caller confirming
+    the line is ABSENT should pass a short timeout, since it is waiting on an absence
+    rather than an event.
 
     Only bytes beyond from_byte are scanned (so we see this promotion, not a prior
     run). Polls up to `timeout` because the logger is asynchronous and the line may
@@ -3230,6 +3236,31 @@ def me_cancel_on_failover_count(log_path: Path, from_byte: int = 0,
                     if marker in line:
                         try:
                             return int(line.split("complete -- ", 1)[1].split()[0])
+                        except (IndexError, ValueError):
+                            return -1
+        time.sleep(LOG_POLL_INTERVAL)
+    return -1
+
+
+def me_inherited_book_size(log_path: Path, from_byte: int = 0,
+                           timeout: float = 10.0) -> int:
+    """Return the order count the ME held when it began cancelling, or -1 if absent.
+
+    Under the cancel policy the book is emptied before the engine says what it is
+    resuming with, so "resuming as leader" reports zero and cannot say what was
+    inherited. The count is taken from the line the cancel burst opens with instead:
+    "cancel-on-failover -- cancelling N live order(s)".
+    """
+    marker = "cancel-on-failover -- cancelling "
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if log_path.is_file():
+            with open(log_path, "r", errors="replace") as fh:
+                fh.seek(from_byte)
+                for line in fh.read().splitlines():
+                    if marker in line:
+                        try:
+                            return int(line.split(marker, 1)[1].split()[0])
                         except (IndexError, ValueError):
                             return -1
         time.sleep(LOG_POLL_INTERVAL)
@@ -3620,6 +3651,30 @@ def set_installed_absence_limit(prefix: Path, seconds: int) -> int:
         except OSError:
             continue
         result, count = pattern.subn(lambda m: m.group(1) + str(seconds), text)
+        if count and result != text:
+            toml_path.write_text(result)
+            changed += 1
+    return changed
+
+
+def set_installed_promotion_policy(prefix: Path, policy: str) -> int:
+    """Set order_book.open_orders_on_promotion in every deployed matching engine config.
+
+    What a promoted engine does with the book it inherits is a stated policy rather than a
+    behaviour of the code, so a scenario that promotes one has to know which answer the venue
+    is configured to give before it can assert anything about the result.
+
+    Written on every launch rather than restored afterwards, for the same reason
+    set_installed_absence_limit is.
+    """
+    changed = 0
+    pattern = re.compile(r'^(open_orders_on_promotion\s*=\s*)"[a-z]*"', re.M)
+    for toml_path in sorted((prefix / "etc").rglob("*.toml")):
+        try:
+            text = toml_path.read_text(errors="replace")
+        except OSError:
+            continue
+        result, count = pattern.subn(lambda m: m.group(1) + '"' + policy + '"', text)
         if count and result != text:
             toml_path.write_text(result)
             changed += 1
@@ -4582,6 +4637,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # The absence limit, set on every launch for the same reason. Scenarios that do not test
     # the rule get the deployed figure back, so one that shortened it cannot leave it short.
     set_installed_absence_limit(prefix, scenario.absence_limit_seconds)
+    # The promotion policy, on every launch and for the same reason: a scenario that set it
+    # one way must not leave a later one asserting against a policy it did not choose.
+    set_installed_promotion_policy(prefix, scenario.open_orders_on_promotion)
 
     changed = set_installed_ha(prefix, not scenario.ha_disabled)
     if scenario.ha_disabled:
@@ -5218,46 +5276,67 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # MatchingEngineThread::handle_new_order_single). So at the ME-primary kill the
         # promoted secondary's replicated book is non-empty.
         #
-        # It used to cancel that whole book on promotion and emit one seq_no=0 cancel
-        # ExecutionReport per resting order. It no longer does. The secondary writes every
-        # replicated order into a memory-mapped region of its own, so after reconciling the
-        # sequencer's tail it can say what it holds, and an order still on the book is
-        # genuinely outstanding -- R-0018 and R-0073, and
-        # docs/durability/open_order_checkpoint.md.
+        # What happens to that book is the venue's stated policy,
+        # order_book.open_orders_on_promotion, so this asserts whichever answer the scenario
+        # is configured for rather than assuming one. Both answers matter and they fail in
+        # opposite directions: a venue set to cancel that quietly keeps has told a member its
+        # order is gone and kept it; a venue set to keep that quietly cancels has thrown away
+        # a book it could have carried.
         #
-        # So this asserts the promotion KEPT the book, which is the member-visible promise,
-        # and that no ER was dropped for a missing conn id.
+        # Either way the engine must be able to SAY what it holds -- it writes every
+        # replicated order into a memory-mapped region of its own and reconciles the
+        # sequencer's tail on top -- so the resumed book size is checked under both.
         #
-        # WHAT THIS NO LONGER COVERS, deliberately recorded rather than lost: the cancel
-        # burst was also the only exerciser of seq_no=0 ER routing via the WalRecord
-        # envelope, where the originating session's connection id rides on the envelope
-        # because the sequencer has no order sequence to resolve. That path still exists and
-        # is still needed -- it is how R-0123's cancel-each-and-halt will report -- but
-        # nothing here reaches it until that halt is built. A scenario for it belongs with
-        # that work.
-        #
-        # Skipped when leadership never moved: there is no promotion, so no book to keep.
+        # Skipped when leadership never moved: there is no promotion and no book to decide
+        # about.
         if scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary:
-            # A short timeout: this is waiting to confirm the line is absent, and the
-            # promotion has already been observed by the time the check runs.
-            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill, timeout=2.0)
-            if cancel_count > 0:
-                die(f"ME-HA: the promoted secondary cancelled {cancel_count} order(s) on promotion. "
-                    "It should keep them: its region and the sequencer's tail say what it holds, so "
-                    "an order still on the reconciled book is genuinely outstanding (R-0073). "
-                    "Cancelling everything is the answer only when the region cannot be used, which "
-                    "is R-0102 and R-0123 and is a halt, not a resumption.")
-
+            cancels_expected = scenario.open_orders_on_promotion == "cancel"
+            # A short timeout under "keep": the promotion has already been observed by the
+            # time this runs, so it is confirming an absence rather than waiting for a line.
+            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill,
+                                                       timeout=args.failover_timeout if cancels_expected else 2.0)
             resumed = me_resumed_book_size(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
             if resumed is None:
                 die("ME-HA: the promoted secondary logged no 'resuming as leader' line -- "
                     "cannot confirm what book it resumed with")
-            if resumed <= 0:
-                die(f"ME-HA: the promoted secondary resumed as leader holding {resumed} order(s). "
-                    "The baseline orders rest in the book and replicate, so it should hold them: "
-                    "an empty book here means the region was not recovered or was recovered empty.")
-            log(f"  ME-HA: the promoted secondary resumed as leader holding {resumed} order(s), "
-                "none cancelled -- OK")
+
+            if cancels_expected:
+                # What it inherited has to come from the cancel burst's own opening line: the
+                # book is empty by the time the engine says what it is resuming with, so
+                # "resuming as leader" reports zero under this policy and proves nothing.
+                inherited = me_inherited_book_size(me_secondary_log, from_byte=me_secondary_pos_pre_kill, timeout=2.0)
+                if inherited <= 0:
+                    die(f"ME-HA: the venue is configured to cancel on promotion but the promoted "
+                        f"secondary reported inheriting {inherited} order(s). The baseline orders rest "
+                        "in the book and replicate, so it should have had them to cancel: nothing here "
+                        "distinguishes a book correctly cancelled from a book never recovered.")
+                # The count is the discriminator. Cancelling SOME of the book would leave the
+                # rest unmentioned, which is the silence the policy exists to avoid, and it
+                # would pass any check that only asked whether cancelling happened at all.
+                if cancel_count != inherited:
+                    die(f"ME-HA: the promoted secondary inherited {inherited} order(s) and sent "
+                        f"{cancel_count} cancel report(s). Every order it inherited must be cancelled "
+                        "and its member told: cancelling part of the book leaves the rest unmentioned, "
+                        "which is worse than either answer taken whole (R-0020).")
+                if resumed != 0:
+                    die(f"ME-HA: the promoted secondary cancelled {cancel_count} order(s) and then "
+                        f"resumed as leader holding {resumed}. The book it cancelled must be the whole "
+                        "of what it held, or it is serving orders it has told the member are gone.")
+                log(f"  ME-HA: open_orders_on_promotion=cancel -- the promoted secondary inherited "
+                    f"{inherited} order(s), cancelled all {cancel_count} of them, and resumed with an "
+                    "empty book -- OK")
+            else:
+                if cancel_count > 0:
+                    die(f"ME-HA: the venue is configured to keep the book on promotion, and the "
+                        f"promoted secondary cancelled {cancel_count} order(s). Its region and the "
+                        "sequencer's tail say what it holds, so an order still on the reconciled "
+                        "book is genuinely outstanding (R-0073).")
+                if resumed <= 0:
+                    die(f"ME-HA: the promoted secondary resumed as leader holding {resumed} order(s). "
+                        "The baseline orders rest in the book and replicate, so it should hold them: "
+                        "an empty book here means the region was not recovered or was recovered empty.")
+                log(f"  ME-HA: open_orders_on_promotion=keep -- the promoted secondary resumed as "
+                    f"leader holding {resumed} order(s), none cancelled -- OK")
 
             dropped = count_log_marker(gw_log, "has no gateway_session_conn_id -- dropping", from_byte=gw_pos_pre_kill)
             if dropped > 0:

@@ -113,6 +113,21 @@ region_capacity = ${matching_engine_secondary_order_book_region_capacity}
 # owner was locked out of it while the market moved. See R-0117 and R-0118.
 absence_limit_seconds = ${matching_engine_secondary_order_book_absence_limit_seconds}
 
+# What a promoted matching engine does with the orders it inherits.
+#
+#   "cancel" -- cancel every order that was open when leadership moved and tell the member
+#               that placed it, then lead an empty book. The member is left in no doubt and
+#               must place again what it still wants.
+#   "keep"   -- carry the book across, so an order open before the promotion is open after it
+#               and still cancellable by its owner. This is what R-0073 asks for.
+#
+# "keep" is the better outcome for a member and is only safe where the book the promoted
+# instance holds is known to be the book the venue had. Nothing establishes that yet: neither
+# the replica maintained by BookUpdate nor the completeness of the catch-up that follows it
+# (R-0101, and docs/bug_list.md BUG-0074). So the default is the worse outcome that is
+# certainly true rather than the better one that is not yet established.
+open_orders_on_promotion = "${matching_engine_secondary_order_book_open_orders_on_promotion}"
+
 [command_queue_pool]
 objects_per_slab = ${matching_engine_secondary_command_queue_pool_objects_per_slab}
 initial_slabs    = ${matching_engine_secondary_command_queue_pool_initial_slabs}

@@ -189,6 +189,12 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.absence_limit_seconds must be >= 1, got " +
                                                         std::to_string(config.order_book_absence_limit_seconds));
         }
+        toml.get_required_except("order_book.open_orders_on_promotion", config.order_book_open_orders_on_promotion);
+        if (config.order_book_open_orders_on_promotion != "cancel" && config.order_book_open_orders_on_promotion != "keep") {
+            throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.open_orders_on_promotion must be 'cancel' or "
+                                                        "'keep', got '" +
+                                                        config.order_book_open_orders_on_promotion + "'");
+        }
         if (config.order_book_region_capacity < 1) {
             throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: order_book.region_capacity must be >= 1, got " +
                                                         std::to_string(config.order_book_region_capacity));

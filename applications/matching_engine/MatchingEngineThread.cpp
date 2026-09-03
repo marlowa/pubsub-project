@@ -148,6 +148,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , config_(config)
     , ha_enabled_(config.ha_enabled)
     , is_primary_(!config.ha_enabled || config.ha_role == "primary")
+    , cancel_open_orders_on_promotion_(config.order_book_open_orders_on_promotion == "cancel")
     , sequencer_er_conn_id_{}
     , sequencer_er_secondary_conn_id_{}
     , order_book_(&book_growth_reporter_)
@@ -1556,21 +1557,21 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionAck received -- book reconciled to seq_no={} (book_size={})",
                ack.last_seq_no, order_book_.size());
 
-    // The book is now consistent with the sequencer: what the region vouched for, plus every
-    // record the sequencer held after it. An order still on it is genuinely outstanding, so it
-    // is kept and the member goes on holding what it placed. This is R-0018 and R-0073.
+    // The book is now assembled: what the region vouched for, plus every record the sequencer
+    // held after it. What happens to it next is a stated policy rather than a decision taken
+    // here -- order_book.open_orders_on_promotion, "cancel" or "keep".
     //
-    // It used to be cancelled here, every order of it, on every promotion. That was the right
-    // answer while the book could not survive the process holding it: a promoted engine could
-    // not say what it held, and telling every member its orders were gone is better than
-    // holding orders nobody can account for. The region is what changed the answer, by making
-    // the book something the engine can vouch for. See docs/durability/open_order_checkpoint.md
-    // and the cancel-on-failover section of docs/availability/wal_and_ha.md.
+    // "keep" is R-0018 and R-0073: an order still on the book is genuinely outstanding, so the
+    // member goes on holding what it placed. It is the better outcome and it rests on the book
+    // being the one the venue had, which nothing yet establishes -- neither the replica this
+    // instance maintained nor the completeness of the catch-up that followed it (R-0101).
     //
-    // Cancelling everything remains the answer when the region cannot be used, which is R-0102
-    // and R-0123: cancel each, report each, halt. That path is not built yet, so the branch
-    // below is not reached today -- an unusable region currently stops the engine starting
-    // rather than arriving here.
+    // "cancel" tells every member its orders are gone, which is worse and is certain. It is the
+    // deployed default until the checks behind "keep" exist. See R-0020, R-0073, and
+    // docs/availability/wal_and_ha.md.
+    //
+    // Cancelling everything is also the answer when the region cannot be used, whatever the
+    // policy says, which is R-0102 and R-0123: cancel each, report each, halt.
     if (!book_can_be_vouched_for()) {
         // The region could not be read, so what this engine holds is whatever the sequencer's
         // record just supplied. R-0123: establish what was open from that record, cancel each
@@ -1600,6 +1601,18 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                            "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
         }
+    } else if (cancel_open_orders_on_promotion_) {
+        // The book could have been carried across. It is not, because the configuration says the
+        // venue does not promise that yet: each member is told its order is gone rather than
+        // being left to trust a book nothing has checked.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: open_orders_on_promotion=cancel -- cancelling the {} order(s) inherited at this promotion rather than keeping them "
+                   "(R-0020; R-0073 is not being met, by configuration)",
+                   order_book_.size());
+        cancel_all_orders_on_failover();
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: open_orders_on_promotion=keep -- carrying {} open order(s) across the promotion (R-0073)", order_book_.size());
     }
 
     // Transition to LEADER -- normal processing begins.
