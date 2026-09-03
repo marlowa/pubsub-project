@@ -101,8 +101,7 @@ becomes the leader.
 \end{itemize}
 
 That is the pattern \cref{subsec:ha_architectural_patterns} describes as
-active-passive, clause for clause. The test that rules out active-active is the
-third point: at no moment do two instances process the same traffic, and no
+active-passive. The test that rules out active-active is the third point: at no moment do two instances process the same traffic, and no
 transaction is ever handled concurrently by more than one of them.
 
 Classic consensus algorithms such as Raft or Paxos are not used. In their place
