@@ -78,8 +78,10 @@ This library is intended for low latency environments rather than ultra-low ones
 
 \textbf{This system is active-passive} for every component that must be
 singular: the sequencer, the matching engine and the arbiter. Each of those runs
-as a pair, one instance the leader and the other the follower, and the
-difference between the two roles is total.
+as a pair, one instance the leader and the other the follower. The follower does
+none of the venue's work --- not a share of it, none. It is not a second server
+that traffic is spread across, and nothing it holds reaches a member until it
+becomes the leader.
 
 \begin{itemize}[nosep]
   \item \textbf{The leader does the work.} The sequencer assigns each order a

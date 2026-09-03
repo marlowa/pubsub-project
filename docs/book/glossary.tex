@@ -14,8 +14,10 @@
 \newglossaryentry{session}{
   name={session},
   description={A comp id and a protocol. A session is not a connection: it
-    outlives the connection that carries it, keeps its sequence numbering across
-    one ending, and owns the orders placed on it}}
+    outlives the connection that carries it and keeps its sequence numbering
+    across one ending. An order placed on a session belongs to that session and
+    not to the connection it arrived on, so the report for it goes to whichever
+    connection is carrying the session when the report is ready}}
 
 \newglossaryentry{primary}{
   name={primary},
@@ -43,7 +45,8 @@
   name={committed},
   description={An order is committed once the sequencer has assigned it a
     sequence number and appended it to the \gls{wal}. Before that moment the
-    venue has not taken the order; after it, the venue owes an answer for it}}
+    venue has not taken the order; after it, the venue must tell the member
+    what became of it}}
 
 \newglossaryentry{arbiter}{
   name={arbiter},
@@ -65,8 +68,7 @@
 \newglossaryentry{oar}{
   name={order activity recorder},
   description={The component that subscribes to the venue's internal topics and
-    forwards what the venue has done to an enterprise bus. Known as TAP in
-    earlier documents}}
+    forwards what the venue has done to an enterprise bus}}
 
 \newglossaryentry{group}{
   name={group},
