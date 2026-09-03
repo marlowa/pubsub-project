@@ -176,9 +176,11 @@ no arbiter to ask. It can only ever be demoted to second place where an arbiter 
 Two things make the non-HA case worse rather than merely different.
 
 **There is no second engine.** A dead matching engine stays dead until somebody starts one, and the
-one they start is a cold start — so [BUG-0064](../bug_list.md#bug_0064) applies every time rather
-than only after a total outage. With high availability off, orders deferred before the threshold
-trips are always lost.
+one they start is a cold start — so every restart here is the case
+[BUG-0064](../bug_list.md#bug_0064) was about, rather than only a total outage being it. That is
+why the catch-up an engine performs before it acts runs in this configuration too, triggered by the
+sequencer's connection rather than by an arbitration that never happens: orders deferred while the
+engine was down are sent to it when it returns, and reported to the members that placed them.
 
 **And today the venue would not even reach the threshold.** Deferral is counted inside the leader
 branch of the forward path: `SequencerThread.cpp` returns for `role_ != leader` before

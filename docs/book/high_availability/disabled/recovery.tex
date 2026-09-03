@@ -55,8 +55,20 @@ configuration only where losing what it holds is acceptable.
   Unmarked, a repeated acceptance is indistinguishable from a second order
   accepted --- so the venue would be reporting something that did not happen, in
   the course of correcting something that did.}
-  \uncovered{no scenario kills a component between sending a report and recording that it did}
+  \covers{ha_test:53}
 \end{requirement}
+
+\begin{gap}{}
+  Scenario 53 covers the repeat a catch-up produces, which is the common case and the one a
+  member meets: an engine applies the venue's record and marks every report it sends, because
+  it cannot tell a record an earlier engine reported from one no engine ever saw.
+
+  It does not cover the narrower case the requirement was written for --- a component that dies
+  between sending a report and recording that it did, so that the same work is repeated on the
+  strength of a record that is one step behind. Nothing kills a component in that window, and
+  producing it deliberately is harder than the other scenarios: the window is a few
+  instructions wide.
+\end{gap}
 
 \begin{requirement}{R-0031}{A component does not act on partially recovered state}
   A component shall not begin work until its recovery is complete. No sequence

@@ -50,6 +50,18 @@ either `"cancel"` or `"keep"`:
 
 - ME-primary is the active matcher; ME-secondary tails the primary's book updates via a
   dedicated replication channel.
+- **Every engine catches up before it acts**, whether it was promoted or has just started. It
+  presents the position it has reached — a promoted follower knows it from the replica it was
+  maintaining, a starting instance from the region it recovered — and the sequencer sends
+  everything after it. Each record applied is reported to the member that placed it, marked
+  `PossResend`, because the engine cannot tell a record an earlier engine already reported from
+  one no engine ever saw. This is what recovers an order the sequencer deferred while no engine
+  was running; see `docs/bug_list.md` BUG-0064.
+- An instance that finds **no region at all** has no position rather than a position of zero, and
+  is placed at the sequencer's head without a catch-up. It holds nothing and never did, so
+  replaying the venue's retained record into it would build a book out of orders it never had.
+  The cost is real and is logged by both sides: an order taken and not yet applied is not
+  recovered by an instance that starts that way.
 - On ME-primary failure, ME-secondary is promoted via the arbiter and reconciles its book
   against the sequencer's WAL. Under `"cancel"` it then issues a cancel ER for every order it
   inherited and resumes on an empty book; under `"keep"` it carries the book across, so an

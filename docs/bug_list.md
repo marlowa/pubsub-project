@@ -2,25 +2,23 @@
 
 | | |
 |---|---|
-| Bugs recorded | 76 |
-| Open | 31 (21 defects, 10 tasks) |
-| Closed | 45 |
-| Next id | BUG-0077 |
+| Bugs recorded | 77 |
+| Open | 30 (20 defects, 10 tasks) |
+| Closed | 47 |
+| Next id | BUG-0078 |
 
 ## Open bugs by severity
 
-14 high, 14 medium, 3 low.
+12 high, 15 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
-| [BUG-0009](#bug_0009) | high | defect | The venue accepts orders indefinitely with no matching engine, and tells nobody |
 | [BUG-0010](#bug_0010) | high | defect | HA fails over into a condition both nodes share |
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
 | [BUG-0061](#bug_0061) | high | defect | HA cannot actually be turned off, and the venue silently stops trading |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
-| [BUG-0064](#bug_0064) | high | defect | Deferred orders are never recovered, and the venue logs that they were |
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
@@ -41,6 +39,7 @@
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0076](#bug_0076) | medium | defect | Scenario 10 fails inside the suite and passes on its own |
+| [BUG-0077](#bug_0077) | medium | defect | A restarting engine can catch up and report while its peer is leading |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -140,129 +139,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0064: Deferred orders are never recovered, and the venue logs that they were {#bug_0064}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-28 |
-| Recorded | 2026-08-28 |
-| How | Andrew asking what becomes of a deferred order if the matching engine never starts, while reviewing [BUG-0009](#bug_0009)'s fix; scope then settled by measuring a routine failover |
-| Impact | Orders deferred while every matching engine is down are silently lost when one starts cold: no execution report, no rejection, nothing to cancel -- and the sequencer logs that they were recovered. A routine failover is unaffected (measured) |
-
-**Measured, not reasoned.** Three orders were placed into a venue with both matching engines
-killed. They were WAL-committed and deferred, as designed. A matching engine was then restarted; it
-adopted the leader role at epoch 301; and:
-
-- the engine's log contains **no WAL line and no order at all** -- it replayed nothing;
-- the gateway's `awaiting` stayed at **3**, where it remains;
-- the member received no execution report and no rejection, then or since.
-
-The sequencer nevertheless logged:
-
-```
-SequencerThread: a matching engine is reachable again after 22s -- 3 order(s) were deferred
-and are recovered by its WAL replay
-```
-
-**The recovery it asserts did not happen.** That line is this project's own, written as part of
-BUG-0009 step 1, and it states a consequence it does not verify.
-
-**The claim is older than that line.** The deferral policy has always rested on it -- the
-per-order message it replaced said `recovered via WAL replay on ME promotion`, and BUG-0009 quoted
-that as the reason deferring was safe. It is the assumption the whole policy stands on, and it was
-never true for this path.
-
-**Why nothing catches it.** A deferred order is never sent to any matching engine, so no engine
-holds it and replication between the pair cannot supply it. The route back is the sequencer sending
-what the engine has not applied -- which happens on promotion and not on a start, as below.
-
-**And the member cannot act.** An order joins the gateway's open-order set only when an execution
-report arrives for it (`FixOrderGatewayThread.cpp:751`). A deferred order never produces one, so it
-is never tracked -- which means cancel-on-disconnect cannot reach it either. The member has no
-report to reconcile against and no order to cancel.
-
-**What [BUG-0009](#bug_0009) did and did not do.** It bounds how many orders can join this state,
-tells the member when the venue stops accepting, and refuses rather than deferring once an outage
-outlives a plausible failover. All of that stands. It explicitly did not rescue the orders already
-deferred, and recorded that as out of scope -- **on the understanding that they were recovered by
-replay, which is what this entry disproves.**
-
-**Not yet designed, and the shape is not obvious.** Rejecting deferred orders to the member is not
-simply the answer: the records are in the WAL, and a replay run afterwards would process orders the
-member has been told are dead. Any fix has to make the two agree -- either replay becomes something
-that reliably happens and is verified, or the deferred records are positively resolved before
-anything can replay them. The first question to settle is which of those the venue is promising.
-
-**Measured 2026-08-28: a routine failover does NOT lose them.** This was the open question and it
-is now answered, which bounds the entry considerably. With the secondary already running, the
-primary was killed under a live FIX session and orders kept flowing across the gap. The sequencer
-deferred **27** of them over a 14-second outage, and every one of the 88 orders sent was answered:
-
-```
-RESULT: sent=88  answered=88  never answered=0
-```
-
-The promoted secondary recovered them by **reconciliation**, not by anything resembling a replay
-run:
-
-```
-MatchingEngineThread: entering RECONCILING (last_replicated_seq_no=47549974, book_size=...)
-MatchingEngineThread: MePositionAck received -- book reconciled to seq_no=47550003
-```
-
-It reports where its replica reached and the sequencer sends everything after it -- 29 records,
-covering the 27 deferred orders.
-
-**Root cause: a cold start never enters reconciliation at all.** `MatchingEngineThread.cpp:1108`,
-in `handle_arbitration_decision`:
-
-```cpp
-if (ha_role_state_ == MeRole::Follower) {
-    begin_reconciliation();   // catch up on the WAL before accepting anything
-} else {
-    adopt_leader_role();      // "Nothing to take over. This is a start rather than a promotion"
-}
-```
-
-An instance that was never a Follower takes the second branch and applies nothing. The comment is
-right that no replica book was maintained there and wrong that this means there is nothing to take
-over: the WAL may hold orders no engine has ever seen, which is exactly the state a deferral
-creates.
-
-**The rule it follows was written on purpose, and undoing it needs care.** That branch is
-[BUG-0043](#bug_0043)'s fix -- a cold-start instance routed through reconciliation waited on a
-connection that never arrived and the venue came up with no matching engine leading. So the
-question is not whether to reconcile on a cold start but **what the test should be**. "Was I a
-Follower?" is a proxy for "is there anything I have not applied?", and it is the wrong proxy: those
-differ precisely when the venue deferred orders and then lost every engine. Note that
-`begin_reconciliation` already handles the arriving-connection case -- it waits for a sequencer
-order connection and re-enters when one appears -- so the stranding BUG-0043 describes may no
-longer be a consequence of reconciling on a start. That needs checking before anything is changed.
-
-**Designed around, 2026-08-28, in
-[Knowing there is no matching engine](availability/matching_engine_presence.md).** That note does
-not fix this entry -- a cold start still applies nothing -- but it reduces how many orders reach
-this state, by letting the sequencer learn from the arbiter that no engine exists instead of
-waiting 45 seconds to guess.
-
-**One thing to carry into the fix: this path has crashed before.** A matching engine segfaulted
-inside the order book while handling `MePositionAck` on 2026-08-08 -- the same reconciliation path,
-recorded and closed as [BUG-0067](#bug_0067). The container has since been replaced, so that exact
-crash cannot recur, but the fix proposed here makes cold-starting engines reconcile *more often
-than they do today*, which exercises this path harder than anything has yet. Worth knowing before,
-rather than discovering after.
-
-**What this narrows.** Ordinary HA operation does not lose orders. What loses them is losing every
-matching engine and starting one cold -- which is exactly the incident behind
-[BUG-0009](#bug_0009), where an engine was promoted, died two minutes later, and nothing existed
-after that.
-
-Related: [BUG-0048](#bug_0048), since nothing truncates the WAL and these records live in it
-indefinitely. [BUG-0010](#bug_0010), since both concern a promotion assumed to put things right.
-
----
 
 ### BUG-0065: The venue has no way to declare a trading halt {#bug_0065}
 
@@ -1178,142 +1054,6 @@ Partly overtaken by the 0.3.0 work, which replaced the blanket `SequenceReset-Ga
 resends carrying `PossDupFlag`. The original concern — never exercised under load — still stands,
 and the trading-day profile is a natural place to exercise it once it drives the FIX gateway.
 
-### BUG-0009: The venue accepts orders indefinitely with no matching engine, and tells nobody {#bug_0009}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-08 |
-| Recorded | 2026-08-08 (49d9dd1) |
-| How | The first clean trading-day load run, after the matching engine was OOM-killed |
-| Impact | 924,000 orders taken with nothing able to process them and no answer sent to the member; 1,087,912 orders deferred over 7 minutes |
-| Partly built | 2026-08-28 -- the venue refuses orders and cancels it cannot process, tells the member why, and resumes on its own. Held by ha_test.py scenario 42 |
-| Still open | the orders deferred BEFORE refusal begins are still never answered. See the reopening note below and [BUG-0064](#bug_0064) |
-
-**Reopened 2026-08-28, the same day it was closed.** Closing it was premature, and the reason is
-worth keeping because it is a reasoning failure rather than a coding one.
-
-The five steps bound how many orders can be deferred, tell the member when the venue stops
-accepting, and refuse rather than defer once an outage outlives a plausible failover. That part is
-built and held by scenario 42. But the title of this entry has two halves, and only the first is
-done. **The venue no longer accepts indefinitely. It still tells nobody about the orders it
-deferred before the threshold** -- up to 45 seconds, or 250,000 orders, of them.
-
-Those were scoped out of the design deliberately, on the stated grounds that they "stay deferred
-and are recovered by WAL replay, as now". [BUG-0064](#bug_0064) records the measurement that
-disproves it: a restarted matching engine replays nothing, the orders are never executed and never
-rejected, and the sequencer logs that they were recovered. **A scope decision resting on a false
-premise is not a valid scope decision**, so the ground for closing this went away with it.
-
-What remains here is the member-facing half: an order this venue took and cannot process must end
-in an answer, whatever happens to the engine. The mechanism is BUG-0064's to settle, because
-nothing can be promised to the member until it is known whether replay happens at all.
-
-**Next step designed 2026-08-28 in
-[Knowing there is no matching engine](availability/matching_engine_presence.md), not built.** The
-45-second threshold exists only because the sequencer cannot tell a failover in progress from a
-matching engine service that no longer exists. The arbiter already holds that fact and discards it,
-so the sequencer should ask it -- a query, not a subscription, which is the shape
-[section 11b](availability/design_notes.md#ha_arbiter_only_arbitrates) requires. The threshold then
-becomes the fallback where an arbiter exists, and stays the only mechanism where one does not.
-
-The startup race that design turns on is settled: **a negative answer requires positive evidence.**
-The arbiter reports absence only when it has seen an instance and seen it go, never from elapsed
-time, and every reachable arbiter must agree. See
-[the decision](availability/matching_engine_presence.md#ha_me_presence_race).
-
-When the matching engine connection drops, the sequencer commits each order to the WAL and
-defers forwarding it:
-
-```
-SequencerThread: no matching engine connected -- order seq=59678842 WAL-committed,
-forward deferred until an ME reconnects (recovered via WAL replay on ME promotion)
-```
-
-That policy is sound for a brief failover — the orders are durable and a promoted matching engine
-replays them. Three things about it are not.
-
-**The assumption can stop holding, and nothing notices.** A matching engine was promoted and did
-reconcile, then died two minutes later. The sequencer went on deferring for another five
-minutes, waiting for a recovery that could no longer happen because no matching engine
-existed at all.
-
-**It is logged at INFO, once per order — 1,087,912 times.** A million lines saying the
-venue is degraded, at the level used for routine progress. Volume that large hides the
-condition rather than reporting it.
-
-**Nothing propagates to the gateway.** The sequencer knew there was no matching engine for
-seven minutes. The gateway kept taking orders, logging `dropped=0` throughout, and the member saw
-no difference. The sequencer has the knowledge, the gateway has the member relationship, and there
-is no path between them.
-
-**Correction, 2026-08-28: the member was not acknowledged, it was told nothing.** This entry and
-the design note both said orders were "accepted and acknowledged". Measured while writing the
-scenario for step 5: a `NewOrderSingle` placed with no matching engine reachable receives no
-ExecutionReport at all, because the report is the engine's to send. The figures below already said
-so -- 230,572 orders arrived in the window and 14,000 were accounted for -- and were read as
-"acknowledged" anyway. The correction makes the defect worse, not better: an acknowledgement is a
-state a member's risk system can reason about, and silence is not.
-
-Suggested shape, not yet designed: deferring a handful of orders across a brief failover
-should stay silent; deferring thousands over minutes should escalate — a rate-limited
-WARNING, a metric for deferred-order count and age, and ultimately a signal that makes the
-gateways stop accepting. **A venue that takes orders it cannot process is worse than one
-that refuses them.**
-
-**Designed 2026-08-28 in [Refusing orders the venue cannot process](availability/order_acceptance.md),
-not built.** Three decisions were taken: refusal is triggered by **age first with a count as
-backstop**, because the harm is the member's exposure and exposure is measured in time; the refusal
-is a **rejected ExecutionReport**, which is an order outcome the member already handles rather than
-a protocol fault; and the venue **refuses and resumes automatically**, because this is its own
-capacity rather than a judgement about a member — and a design whose safety depends on someone
-watching is no safer, this being a case where nobody watched for seven minutes.
-
-One thing the design note records that changes the framing: **deferring costs the venue nothing.**
-The handler calls `release_pdu_payload` and returns, so no order is held in memory; the WAL is the
-whole mechanism. The cost falls entirely on the member, which has been told nothing, cannot tell a
-deferred order from a slow one, must assume it may be live, and cannot cancel it because a cancel
-needs the same matching engine. So the thresholds do not protect the venue's memory — they bound how far a
-member's picture of its own position may drift from the truth.
-
-Cancels are refused alongside orders, which sounds wrong and is not: a member believing it had
-cancelled would be more dangerously wrong than one believing it had traded.
-
-Related: BUG-0010, since the deferral policy assumes a promotion that will
-succeed.
-
-#### The gateway's own health line reads green throughout, 2026-08-09
-
-Seen from the gateway's side in run 10, and worse than the sequencer half because this is
-the line an operator would actually watch. `GW-PROGRESS` reports accounted, sent, dropped
-and orders received. Across the failover it stopped being emitted at all for **2 minutes
-19 seconds**, then caught up in a burst of three reports inside 0.2 seconds:
-
-```
-18:39:36  accounted=10,247,000  sent=10,247,000  dropped=0  nos_received=9,315,468
-          <- no progress report for 2m19s
-18:41:55  accounted=10,261,000  sent=10,261,000  dropped=0  nos_received=9,546,040
-18:41:55  accounted=10,275,000  ...
-18:41:55  accounted=10,289,000  ...
-```
-
-**230,572 orders arrived during that window and 14,000 were accounted for.** `dropped`
-stayed at zero the whole way through, and it was not lying: nothing was dropped. The orders
-were accepted, answered to nobody, and queued behind a matching engine that no
-longer existed.
-
-Two distinct faults, and the second is the awkward one:
-
-- **The health line goes silent exactly when it is most wanted.** It is emitted per N
-  orders accounted, so when accounting stalls the reporting stalls with it. A line driven
-  by progress cannot report an absence of progress. It needs a time-based emission as well,
-  or a reader watching a terminal sees the last healthy line and nothing after it.
-- **`dropped=0` is true and misleading together.** An operator watching for trouble watches
-  that counter, and a venue can accept a quarter of a million orders it cannot process
-  without moving it. Whatever replaces this needs to distinguish *accepted and processed*
-  from *accepted and queued behind nothing* — the gap between `nos_received` and
-  `accounted` already carries that information and nothing reports it.
-
 ### BUG-0010: HA fails over into a condition both nodes share {#bug_0010}
 
 | | |
@@ -2157,7 +1897,6 @@ not exist.
 | | |
 |---|---|
 | Severity | high |
-| Kind | defect |
 | Found | 2026-09-03 |
 | Recorded | 2026-09-03 |
 | How | Reading `ArbiterThread` while writing the witness section of the specification, to say what mitigates the loss of the witness |
@@ -2216,7 +1955,6 @@ Related: [BUG-0010](#bug_0010) and [BUG-0062](#bug_0062), which are the same sha
 | | |
 |---|---|
 | Severity | medium |
-| Kind | defect |
 | Found | 2026-09-03 |
 | Recorded | 2026-09-03 |
 | How | A full `ha_test.py --scenario all` run while verifying an unrelated change: 51 of 52 passed and scenario 10 failed |
@@ -2251,9 +1989,395 @@ only whether it beat the deadline, so a slow success is distinguishable from a f
 **Do not close this by raising the timeout.** That hides whichever of the two readings is true,
 and the second one matters.
 
+### BUG-0077: A restarting engine can catch up and report while its peer is leading {#bug_0077}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-03 |
+| Recorded | 2026-09-03 |
+| How | Reading the startup path after moving the catch-up there, while closing [BUG-0064](#bug_0064) |
+| Impact | A burst of execution reports to members for orders they already hold, sent by an instance that is about to become a follower and serve nobody. The reports are marked as repeats, so this is noise a member can discard rather than a loss |
+
+An engine catches up when the sequencer's order connection first arrives, before it has served
+anything --- which is where the catch-up has to be, because an instance that has already been
+working would read the live orders arriving meanwhile as replay.
+
+**A restarting primary does not yet know whether its peer is leading.** It learns that from the
+peer's `RoleAnnouncement` over the replication channel, and adopts the follower position on it. The
+sequencer's order connection is a separate channel and arrives on its own schedule. Where it
+arrives first, the restarting instance asks for a catch-up, applies what comes back, and reports
+every record to the member that placed it --- and then the announcement lands and it becomes a
+follower that will serve nobody.
+
+**The sequencer does not decline it.** `handle_me_position_request` serves any asker while the
+sequencer leads, and the request is itself what re-points the sequencer's ME order connection. That
+is deliberate: on a promotion the engine asks before the sequencer knows to route to it. So the
+obvious guard --- refuse a catch-up to an instance that is not the one being routed to --- would
+break the case the mechanism exists for, and this needs a way to tell the two apart rather than a
+check bolted onto the existing one.
+
+**What bounds the harm.** Every report out of a catch-up is marked `PossResend`, so a member that
+already holds the report can discard it. The book the instance builds is what its replica would
+have held anyway. So this is duplicate traffic and a wasted catch-up, not a loss --- which is why
+it is recorded rather than fixed in the same change.
+
+**Not observed, deduced.** No scenario has produced it: the whole `ha_test` suite passes with the
+catch-up where it now is. It is recorded because the window is visible in the code and a race that
+is only rare is not a race that is absent.
+
+---
+
 ---
 
 ## Closed
+
+### BUG-0064: Deferred orders are never recovered, and the venue logs that they were {#bug_0064}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-28 |
+| Recorded | 2026-08-28 |
+| How | Andrew asking what becomes of a deferred order if the matching engine never starts, while reviewing [BUG-0009](#bug_0009)'s fix; scope then settled by measuring a routine failover |
+| Impact | Orders deferred while every matching engine is down are silently lost when one starts cold: no execution report, no rejection, nothing to cancel -- and the sequencer logs that they were recovered. A routine failover is unaffected (measured) |
+| Fixed | 2026-09-03 -- a cold start catches up like a promotion, and every record it applies is reported to the member and marked as a possible repeat. Held by `ha_test.py` scenario 53 |
+
+**Measured, not reasoned.** Three orders were placed into a venue with both matching engines
+killed. They were WAL-committed and deferred, as designed. A matching engine was then restarted; it
+adopted the leader role at epoch 301; and:
+
+- the engine's log contains **no WAL line and no order at all** -- it replayed nothing;
+- the gateway's `awaiting` stayed at **3**, where it remains;
+- the member received no execution report and no rejection, then or since.
+
+The sequencer nevertheless logged:
+
+```
+SequencerThread: a matching engine is reachable again after 22s -- 3 order(s) were deferred
+and are recovered by its WAL replay
+```
+
+**The recovery it asserts did not happen.** That line is this project's own, written as part of
+BUG-0009 step 1, and it states a consequence it does not verify.
+
+**The claim is older than that line.** The deferral policy has always rested on it -- the
+per-order message it replaced said `recovered via WAL replay on ME promotion`, and BUG-0009 quoted
+that as the reason deferring was safe. It is the assumption the whole policy stands on, and it was
+never true for this path.
+
+**Why nothing catches it.** A deferred order is never sent to any matching engine, so no engine
+holds it and replication between the pair cannot supply it. The route back is the sequencer sending
+what the engine has not applied -- which happens on promotion and not on a start, as below.
+
+**And the member cannot act.** An order joins the gateway's open-order set only when an execution
+report arrives for it (`FixOrderGatewayThread.cpp:751`). A deferred order never produces one, so it
+is never tracked -- which means cancel-on-disconnect cannot reach it either. The member has no
+report to reconcile against and no order to cancel.
+
+**What [BUG-0009](#bug_0009) did and did not do.** It bounds how many orders can join this state,
+tells the member when the venue stops accepting, and refuses rather than deferring once an outage
+outlives a plausible failover. All of that stands. It explicitly did not rescue the orders already
+deferred, and recorded that as out of scope -- **on the understanding that they were recovered by
+replay, which is what this entry disproves.**
+
+**Not yet designed, and the shape is not obvious.** Rejecting deferred orders to the member is not
+simply the answer: the records are in the WAL, and a replay run afterwards would process orders the
+member has been told are dead. Any fix has to make the two agree -- either replay becomes something
+that reliably happens and is verified, or the deferred records are positively resolved before
+anything can replay them. The first question to settle is which of those the venue is promising.
+
+**Measured 2026-08-28: a routine failover does NOT lose them.** This was the open question and it
+is now answered, which bounds the entry considerably. With the secondary already running, the
+primary was killed under a live FIX session and orders kept flowing across the gap. The sequencer
+deferred **27** of them over a 14-second outage, and every one of the 88 orders sent was answered:
+
+```
+RESULT: sent=88  answered=88  never answered=0
+```
+
+The promoted secondary recovered them by **reconciliation**, not by anything resembling a replay
+run:
+
+```
+MatchingEngineThread: entering RECONCILING (last_replicated_seq_no=47549974, book_size=...)
+MatchingEngineThread: MePositionAck received -- book reconciled to seq_no=47550003
+```
+
+It reports where its replica reached and the sequencer sends everything after it -- 29 records,
+covering the 27 deferred orders.
+
+**Root cause: a cold start never enters reconciliation at all.** `MatchingEngineThread.cpp:1108`,
+in `handle_arbitration_decision`:
+
+```cpp
+if (ha_role_state_ == MeRole::Follower) {
+    begin_reconciliation();   // catch up on the WAL before accepting anything
+} else {
+    adopt_leader_role();      // "Nothing to take over. This is a start rather than a promotion"
+}
+```
+
+An instance that was never a Follower takes the second branch and applies nothing. The comment is
+right that no replica book was maintained there and wrong that this means there is nothing to take
+over: the WAL may hold orders no engine has ever seen, which is exactly the state a deferral
+creates.
+
+**The rule it follows was written on purpose, and undoing it needs care.** That branch is
+[BUG-0043](#bug_0043)'s fix -- a cold-start instance routed through reconciliation waited on a
+connection that never arrived and the venue came up with no matching engine leading. So the
+question is not whether to reconcile on a cold start but **what the test should be**. "Was I a
+Follower?" is a proxy for "is there anything I have not applied?", and it is the wrong proxy: those
+differ precisely when the venue deferred orders and then lost every engine. Note that
+`begin_reconciliation` already handles the arriving-connection case -- it waits for a sequencer
+order connection and re-enters when one appears -- so the stranding BUG-0043 describes may no
+longer be a consequence of reconciling on a start. That needs checking before anything is changed.
+
+**Designed around, 2026-08-28, in
+[Knowing there is no matching engine](availability/matching_engine_presence.md).** That note does
+not fix this entry -- a cold start still applies nothing -- but it reduces how many orders reach
+this state, by letting the sequencer learn from the arbiter that no engine exists instead of
+waiting 45 seconds to guess.
+
+**One thing to carry into the fix: this path has crashed before.** A matching engine segfaulted
+inside the order book while handling `MePositionAck` on 2026-08-08 -- the same reconciliation path,
+recorded and closed as [BUG-0067](#bug_0067). The container has since been replaced, so that exact
+crash cannot recur, but the fix proposed here makes cold-starting engines reconcile *more often
+than they do today*, which exercises this path harder than anything has yet. Worth knowing before,
+rather than discovering after.
+
+**What this narrows.** Ordinary HA operation does not lose orders. What loses them is losing every
+matching engine and starting one cold -- which is exactly the incident behind
+[BUG-0009](#bug_0009), where an engine was promoted, died two minutes later, and nothing existed
+after that.
+
+Related: [BUG-0048](#bug_0048), since nothing truncates the WAL and these records live in it
+indefinitely. [BUG-0010](#bug_0010), since both concern a promotion assumed to put things right.
+
+---
+
+#### How it was fixed, 2026-09-03
+
+**The test was changed, not the rule.** This entry said the question was not whether to reconcile
+on a cold start but what the test should be, and that "was I a Follower?" was the wrong proxy for
+"is there anything I have not applied?". The right one was unavailable when this was written: a
+cold-starting engine had no idea where it had got to. The open-order region supplied it on
+2026-08-30 -- `recover_open_orders` sets `last_replicated_seq_no_` from what the region published --
+and after that every instance has a position, so both branches reconcile and the distinction the
+code was making went away.
+
+**[BUG-0043](#bug_0043) is answered where it belongs.** Its stranding -- reconciliation waiting on
+a connection that never came -- is handled by waiting for the sequencer's order connection and
+re-entering when it arrives, which the secondary already did and the primary did not. Skipping the
+catch-up was never the answer to it, only a way of not meeting it.
+
+**Two things found while building it, each of which would have made the fix look like it worked.**
+
+A sequencer serves a catch-up only while it leads, and drops the request silently otherwise. An
+instance starting with the whole venue asks at exactly that moment, so the request is now repeated
+until answered -- and never abandoned, because acting without the catch-up is the loss being
+prevented. The repeat is gated on nothing having arrived since the last ask: re-asking mid-stream
+would have the whole catch-up sent a second time, arriving after promotion and processed as live
+traffic.
+
+An execution report was gated on the WalAck for the order's own sequence number. For a report out
+of a catch-up that acknowledgement arrived and was consumed long ago, so the report waited for
+something in the past and never left the sequencer. The deferred order was applied, reported, and
+lost one hop further along than before -- answered everywhere except at the member. Reports from a
+catch-up now gate on their own record, as the cancel-on-failover reports already did and for the
+same reason.
+
+**Two more found by running it, each of which made the venue worse than before the fix.**
+
+*An engine with no region has no position, and zero is not it.* Read as zero, a starting instance
+asks for everything after zero -- which is the whole retained log, every order of the day rather
+than the few taken while nothing was running. It rebuilt a book out of orders it never held and
+sent a report to a member for each. A negative position now says "I hold nothing and have applied
+nothing of yours", and the sequencer places such an instance at its head. The cost is stated
+plainly in both logs: an order taken and never applied is not recovered by an instance that starts
+that way, because recovering it needs an engine that can say where it had got to.
+
+*The catch-up belongs at the first sequencer connection, not at the arbitration decision.* Hung off
+the decision, it fired whenever an arbiter confirmed leadership -- which happens fifteen seconds
+after a venue starts, and again at a new epoch whenever anything else changes hands. An engine that
+had been serving all that time was taken out of service and made to read the live orders still
+arriving as replay: applied silently, no acceptance reported to anyone. It now happens once, at the
+moment the instance first has somewhere to ask and before it has served anything, and the
+arbitration decision settles the role and nothing else. `become_leader_when_current` is the
+distinction: a passive follower or an instance that has never asked catches up first, and one that
+has been serving since it started is current already.
+
+*Being current and being entitled to act are separate, and the catch-up must not decide the
+second.* Reconciliation had always ended by adopting the leader role, because until now it only
+ever happened as part of a promotion. Moved to startup it made every instance that managed to catch
+up promote itself without asking anybody -- arbitration skipped entirely, and with it the degraded
+rule that only the lower instance id may promote when no arbiter answers. Scenario 35 caught it: an
+engine that should have recorded a degraded self-promotion had already made itself leader and never
+took that path. A catch-up now says what it is for, and one done at startup ends with the instance
+current and still waiting to be told what it may do.
+
+**What a member is told.** The engine cannot tell a record some earlier engine reported from one no
+engine ever saw, so it reports every record in the catch-up and marks each `PossResend` (tag 97,
+standard FIX header, for application content that may already have been sent under a different
+sequence number). A member that already had the report can discard it; one that never had it is
+finally answered. That is R-0122 in the functional specification, which was written and unbuilt;
+`ha_test.py` scenario 53 now covers it.
+
+---
+
+### BUG-0009: The venue accepts orders indefinitely with no matching engine, and tells nobody {#bug_0009}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-08 |
+| Recorded | 2026-08-08 (49d9dd1) |
+| How | The first clean trading-day load run, after the matching engine was OOM-killed |
+| Impact | 924,000 orders taken with nothing able to process them and no answer sent to the member; 1,087,912 orders deferred over 7 minutes |
+| Partly built | 2026-08-28 -- the venue refuses orders and cancels it cannot process, tells the member why, and resumes on its own. Held by ha_test.py scenario 42 |
+| Fixed | 2026-09-03 -- an engine that starts cold catches up like one that is promoted, so an order deferred while no engine existed is applied and reported to the member that placed it. Held by `ha_test.py` scenario 53 |
+
+**Reopened 2026-08-28, the same day it was closed.** Closing it was premature, and the reason is
+worth keeping because it is a reasoning failure rather than a coding one.
+
+The five steps bound how many orders can be deferred, tell the member when the venue stops
+accepting, and refuse rather than defer once an outage outlives a plausible failover. That part is
+built and held by scenario 42. But the title of this entry has two halves, and only the first is
+done. **The venue no longer accepts indefinitely. It still tells nobody about the orders it
+deferred before the threshold** -- up to 45 seconds, or 250,000 orders, of them.
+
+Those were scoped out of the design deliberately, on the stated grounds that they "stay deferred
+and are recovered by WAL replay, as now". [BUG-0064](#bug_0064) records the measurement that
+disproves it: a restarted matching engine replays nothing, the orders are never executed and never
+rejected, and the sequencer logs that they were recovered. **A scope decision resting on a false
+premise is not a valid scope decision**, so the ground for closing this went away with it.
+
+What remains here is the member-facing half: an order this venue took and cannot process must end
+in an answer, whatever happens to the engine. The mechanism is BUG-0064's to settle, because
+nothing can be promised to the member until it is known whether replay happens at all.
+
+**Next step designed 2026-08-28 in
+[Knowing there is no matching engine](availability/matching_engine_presence.md), not built.** The
+45-second threshold exists only because the sequencer cannot tell a failover in progress from a
+matching engine service that no longer exists. The arbiter already holds that fact and discards it,
+so the sequencer should ask it -- a query, not a subscription, which is the shape
+[section 11b](availability/design_notes.md#ha_arbiter_only_arbitrates) requires. The threshold then
+becomes the fallback where an arbiter exists, and stays the only mechanism where one does not.
+
+The startup race that design turns on is settled: **a negative answer requires positive evidence.**
+The arbiter reports absence only when it has seen an instance and seen it go, never from elapsed
+time, and every reachable arbiter must agree. See
+[the decision](availability/matching_engine_presence.md#ha_me_presence_race).
+
+When the matching engine connection drops, the sequencer commits each order to the WAL and
+defers forwarding it:
+
+```
+SequencerThread: no matching engine connected -- order seq=59678842 WAL-committed,
+forward deferred until an ME reconnects (recovered via WAL replay on ME promotion)
+```
+
+That policy is sound for a brief failover — the orders are durable and a promoted matching engine
+replays them. Three things about it are not.
+
+**The assumption can stop holding, and nothing notices.** A matching engine was promoted and did
+reconcile, then died two minutes later. The sequencer went on deferring for another five
+minutes, waiting for a recovery that could no longer happen because no matching engine
+existed at all.
+
+**It is logged at INFO, once per order — 1,087,912 times.** A million lines saying the
+venue is degraded, at the level used for routine progress. Volume that large hides the
+condition rather than reporting it.
+
+**Nothing propagates to the gateway.** The sequencer knew there was no matching engine for
+seven minutes. The gateway kept taking orders, logging `dropped=0` throughout, and the member saw
+no difference. The sequencer has the knowledge, the gateway has the member relationship, and there
+is no path between them.
+
+**Correction, 2026-08-28: the member was not acknowledged, it was told nothing.** This entry and
+the design note both said orders were "accepted and acknowledged". Measured while writing the
+scenario for step 5: a `NewOrderSingle` placed with no matching engine reachable receives no
+ExecutionReport at all, because the report is the engine's to send. The figures below already said
+so -- 230,572 orders arrived in the window and 14,000 were accounted for -- and were read as
+"acknowledged" anyway. The correction makes the defect worse, not better: an acknowledgement is a
+state a member's risk system can reason about, and silence is not.
+
+Suggested shape, not yet designed: deferring a handful of orders across a brief failover
+should stay silent; deferring thousands over minutes should escalate — a rate-limited
+WARNING, a metric for deferred-order count and age, and ultimately a signal that makes the
+gateways stop accepting. **A venue that takes orders it cannot process is worse than one
+that refuses them.**
+
+**Designed 2026-08-28 in [Refusing orders the venue cannot process](availability/order_acceptance.md),
+not built.** Three decisions were taken: refusal is triggered by **age first with a count as
+backstop**, because the harm is the member's exposure and exposure is measured in time; the refusal
+is a **rejected ExecutionReport**, which is an order outcome the member already handles rather than
+a protocol fault; and the venue **refuses and resumes automatically**, because this is its own
+capacity rather than a judgement about a member — and a design whose safety depends on someone
+watching is no safer, this being a case where nobody watched for seven minutes.
+
+One thing the design note records that changes the framing: **deferring costs the venue nothing.**
+The handler calls `release_pdu_payload` and returns, so no order is held in memory; the WAL is the
+whole mechanism. The cost falls entirely on the member, which has been told nothing, cannot tell a
+deferred order from a slow one, must assume it may be live, and cannot cancel it because a cancel
+needs the same matching engine. So the thresholds do not protect the venue's memory — they bound how far a
+member's picture of its own position may drift from the truth.
+
+Cancels are refused alongside orders, which sounds wrong and is not: a member believing it had
+cancelled would be more dangerously wrong than one believing it had traded.
+
+Related: BUG-0010, since the deferral policy assumes a promotion that will
+succeed.
+
+#### The gateway's own health line reads green throughout, 2026-08-09
+
+Seen from the gateway's side in run 10, and worse than the sequencer half because this is
+the line an operator would actually watch. `GW-PROGRESS` reports accounted, sent, dropped
+and orders received. Across the failover it stopped being emitted at all for **2 minutes
+19 seconds**, then caught up in a burst of three reports inside 0.2 seconds:
+
+```
+18:39:36  accounted=10,247,000  sent=10,247,000  dropped=0  nos_received=9,315,468
+          <- no progress report for 2m19s
+18:41:55  accounted=10,261,000  sent=10,261,000  dropped=0  nos_received=9,546,040
+18:41:55  accounted=10,275,000  ...
+18:41:55  accounted=10,289,000  ...
+```
+
+**230,572 orders arrived during that window and 14,000 were accounted for.** `dropped`
+stayed at zero the whole way through, and it was not lying: nothing was dropped. The orders
+were accepted, answered to nobody, and queued behind a matching engine that no
+longer existed.
+
+Two distinct faults, and the second is the awkward one:
+
+- **The health line goes silent exactly when it is most wanted.** It is emitted per N
+  orders accounted, so when accounting stalls the reporting stalls with it. A line driven
+  by progress cannot report an absence of progress. It needs a time-based emission as well,
+  or a reader watching a terminal sees the last healthy line and nothing after it.
+- **`dropped=0` is true and misleading together.** An operator watching for trouble watches
+  that counter, and a venue can accept a quarter of a million orders it cannot process
+  without moving it. Whatever replaces this needs to distinguish *accepted and processed*
+  from *accepted and queued behind nothing* — the gap between `nos_received` and
+  `accounted` already carries that information and nothing reports it.
+
+**Closed 2026-09-03, both halves.** The first half -- the venue no longer accepting indefinitely --
+was built on 2026-08-28 and is held by scenario 42. The second half, the one this entry was
+reopened for, is now built too: an order the venue took and could not process ends in an answer.
+
+**What it turned on.** The remaining half was never really about acceptance policy; it was about an
+order nobody would ever apply. [BUG-0064](#bug_0064) has the mechanism and the closure. In short: a
+matching engine that starts cold now establishes its position and asks the sequencer for everything
+after it, exactly as a promoted one does, and reports what it applies.
+
+**What a member now sees**, measured by scenario 53 against the deployed configuration: nothing
+while no engine exists, which is correct because an engine is expected back; then an acceptance
+marked `PossResend` once one starts; then a cancellation, because this venue is configured to cancel
+the book a promotion inherits. Two answers rather than one, and both true. What it no longer sees is
+silence.
+
+---
+
 
 ### BUG-0070: The sequencer blocks for half a second committing to the log {#bug_0070}
 

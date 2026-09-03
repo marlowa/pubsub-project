@@ -150,24 +150,23 @@ design whose safety rests on the watching that has already failed is not safer.
 - **A matching engine that is connected but not working.** Everything here keys on the connection.
   An engine that accepts orders and does nothing with them looks healthy throughout, which is
   closer to [BUG-0010](../bug_list.md#bug_0010)'s territory.
-- **Orders already deferred before the venue noticed.** This bounds how many join them; it does not
-  rescue the ones already there.
-
-  **This bullet used to end "and are recovered by WAL replay, as now", and that was half wrong.**
-  Measured on 2026-08-28. Across a *routine failover* they are recovered: the promoted secondary
-  reports where its replica reached and the sequencer sends everything after it, so 27 orders
-  deferred over a 14-second gap were all answered. Across a *cold start* they are not: an engine
-  that was never a follower adopts leadership without reconciling, applies nothing, and the orders
-  are never executed and never rejected — while the sequencer logs that they were recovered. See
+- **Orders already deferred before the venue noticed.** This bounds how many join them. Rescuing
+  the ones already there is not this design's job and is now done elsewhere: whichever engine acts
+  next reports the position it has reached and is sent everything after it, so a deferred order is
+  applied and reported to the member that placed it. See
   [BUG-0064](../bug_list.md#bug_0064).
 
-  The distinction matters here because the cold-start case *is* this document's case. An outage
-  long enough to trip refusal is one where every engine has gone, and the engine that ends it
-  starts cold.
+  **The history is kept because it is why these orders were scoped out of this design at all.**
+  This bullet once ended "and are recovered by WAL replay, as now", which was half wrong, and the
+  half that was wrong is exactly this document's case. Across a *routine failover* they were always
+  recovered — measured 2026-08-28, 27 orders deferred over a 14-second gap, all answered. Across a
+  *cold start* they were not: an engine that had never been a follower adopted leadership without
+  reconciling and applied nothing, while the sequencer logged that they were recovered. An outage
+  long enough to trip refusal is one where every engine has gone, so the engine that ends it starts
+  cold, so the failing case was the only case that mattered here.
 
-  It is recorded here rather than quietly corrected because the false version is *why* these orders
-  were scoped out of this design at all. Scoping them out was reasonable if they were recovered.
-  They are not, so it was not, and [BUG-0009](../bug_list.md#bug_0009) has been reopened.
+  Scoping them out was reasonable if they were recovered. They were not, which is why
+  [BUG-0009](../bug_list.md#bug_0009) was reopened; both are now closed.
 - **Telling the member when acceptance resumes.** Nothing pushes that; a member discovers it by
   sending an order that is not rejected. Worth revisiting if it proves awkward in practice.
 
