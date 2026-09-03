@@ -125,8 +125,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // session is connected -- and on the path that needs this most, promotion after a
     // gateway or ME failure, any address it remembered would name a process that has since
     // died. The sequencer holds the live bindings and resolves the identity when it sends.
+    /// Whether a report repeats one whose subject the member may already have been told
+    /// about. Carried to the gateway on the envelope and written there as PossResend
+    /// (tag 97). See R-0122.
+    enum class ReportIsRepeat { no, yes };
+
     void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no,
-                              const fix_common::SessionIdentity& session = fix_common::SessionIdentity{});
+                              const fix_common::SessionIdentity& session = fix_common::SessionIdentity{}, ReportIsRepeat repeat = ReportIsRepeat::no);
 
     const MatchingEngineConfiguration& config_;
 
@@ -267,6 +272,53 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // engine leader at all, so the instance-id rule is applied locally and logged as degraded
     // -- the same fallback the sequencer has, and for the same reason.
     pubsub_itc_fw::TimerID startup_arbitration_timer_id_{};
+
+    // Armed while this instance is reconciling, and cancelled by the ack. Only a sequencer
+    // that leads serves a catch-up; one that is still electing drops the request without
+    // answering. So the request is re-sent while the answer is outstanding, rather than
+    // assumed to have been received -- an instance that asked once at the wrong moment would
+    // wait for an answer nobody is going to send.
+    pubsub_itc_fw::TimerID reconciliation_timer_id_{};
+    int reconciliation_attempts_{0};
+
+    // Records applied since reconciliation began, and the figure at the previous tick. A
+    // request is only repeated when nothing has arrived since the last one: a sequencer that
+    // is serving the catch-up is sending records, and asking it again mid-stream would have it
+    // send the whole catch-up a second time -- which arrives after this instance has promoted
+    // and is then processed as live traffic, duplicating every order in it.
+    int64_t reconciliation_records_seen_{0};
+    int64_t reconciliation_records_at_last_tick_{0};
+
+    // Reports sent out of the catch-up, counted so the engine can say what it did. An operator
+    // reading this line learns how much a member was told on a promotion, which is otherwise
+    // visible only at Debug and only per record.
+    int64_t reconciliation_reports_sent_{0};
+
+    // Whether this catch-up is a promotion or a start. Both catch up, because both may be
+    // missing records; only a promotion inherits a book from a peer, and only a promotion is
+    // what order_book.open_orders_on_promotion speaks about. A restart that recovered its own
+    // region is R-0018's case and keeps what it recovered whatever that setting says.
+    bool reconciling_from_follower_{false};
+
+    // Whether the catch-up has been done. A venue with high availability off has no
+    // arbitration to trigger one, so it reconciles when the sequencer first connects -- once,
+    // not on every reconnect: this instance's position advances as it works and is not tracked
+    // between catch-ups, so asking again later would replay what it has already applied.
+    bool has_reconciled_{false};
+
+    // Whether this instance knows where it had got to. A process that found a region left by a
+    // predecessor does: the region says which sequence number its contents are current to. One
+    // that found no region at all does not, and must not pretend the answer is zero -- asking
+    // for everything after zero asks for the whole retained log, which is every order the venue
+    // has taken since the last reclaim rather than the few it missed.
+    bool has_position_{false};
+
+    // Whether this catch-up is part of taking the role, or only part of becoming current.
+    // Being current and being entitled to act are separate things, and only the arbiter says
+    // who acts. A catch-up done at startup ends with the instance current and still waiting to
+    // be told; one begun because this instance is to lead ends with it leading.
+    bool reconciling_to_lead_{false};
+
     pubsub_itc_fw::TimerID book_metrics_timer_id_{};
 
     /// How many times a starting instance asks the arbiter before giving up and degrading.
@@ -371,6 +423,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void mark_able_to_match();
 
     void begin_reconciliation();
+
+    /// Take the leader role, catching up first where this instance is not already current.
+    /// A follower has been passive and its replica may be behind; an instance that has not yet
+    /// reconciled at all has never asked what it missed. One that has been serving since it
+    /// started is current by definition -- it has applied every record as it arrived -- and
+    /// must not reconcile, because a catch-up makes live orders arriving meanwhile read as
+    /// replay: applied silently, with no acceptance reported to the member.
+    void become_leader_when_current();
     void send_me_position_request();
     void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);
     /**

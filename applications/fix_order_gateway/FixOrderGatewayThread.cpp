@@ -763,7 +763,9 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     // and silently drop the ER. The buffer grows to the high-water mark and is reused, so no
     // per-ER allocation after warmup. The wire view does not begin at the buffer start --
     // FixMessageWriter frames the header backward.
-    if (!send_execution_report_to_session(session, view, /*poss_dup=*/false, 0)) {
+    // The engine marks a report it cannot prove is new; the gateway is where that becomes a
+    // field the member reads. See R-0122.
+    if (!send_execution_report_to_session(session, view, /*poss_dup=*/false, 0, envelope.poss_resend)) {
         release_pdu_payload(message);
         return;
     }
@@ -792,7 +794,7 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
 }
 
 bool FixOrderGatewayThread::send_execution_report_to_session(FixSession& session, const pubsub_itc_fw_app::ExecutionReportView& view, bool poss_dup,
-                                                             int64_t orig_sending_time_ns) {
+                                                             int64_t orig_sending_time_ns, bool poss_resend) {
     // Encode the FIX ExecutionReport into a reusable, growable buffer. encode_execution_report
     // returns an empty view if the buffer is too small (a large ER -- many echoed group
     // instances -- can exceed the starting size), so grow and retry rather than cap the size
@@ -805,11 +807,11 @@ bool FixOrderGatewayThread::send_execution_report_to_session(FixSession& session
     // about it -- encoding, buffer growth, capture, sequence numbering -- must be identical
     // or the member is being told something subtly different about the same event.
     std::string_view wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
-                                                    er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns);
+                                                    er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns, poss_resend);
     while (wire.empty() && er_wire_buffer_.size() < max_execution_report_buffer_size) {
         er_wire_buffer_.resize(er_wire_buffer_.size() * 2);
         wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
-                                       er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns);
+                                       er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns, poss_resend);
     }
     if (wire.empty()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,

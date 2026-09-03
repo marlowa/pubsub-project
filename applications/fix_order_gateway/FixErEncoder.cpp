@@ -64,7 +64,7 @@ void fill_utc_timestamp(char* out, const pubsub_itc_fw::WallClock& clock) {
 
 std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id, std::string_view target_comp_id,
                                          int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer, size_t output_buffer_size, bool poss_dup,
-                                         int64_t orig_sending_time_ns) {
+                                         int64_t orig_sending_time_ns, bool poss_resend) {
     // Stack-allocated timestamp -- no heap allocation.
     char timestamp_buffer[timestamp_length + 1];
     fill_utc_timestamp(timestamp_buffer, wall_clock);
@@ -92,6 +92,16 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
         char orig_timestamp_buffer[timestamp_length + 1];
         fill_utc_timestamp_from(orig_timestamp_buffer, orig_sending_time_ns);
         writer.push_back_field(Tag::OrigSendingTime, std::string_view{orig_timestamp_buffer, timestamp_length});
+    }
+
+    // A new message carrying an event the member may already have been told about, which is
+    // what a matching engine catching up on the venue's record produces: it cannot tell a
+    // record some earlier engine reported from one no engine ever saw, so it reports every
+    // one and marks them all. PossResend is the standard field for exactly that, and it asks
+    // the member to check the identifiers rather than to assume a second event. Also a
+    // standard header field, and written here for the same reason PossDupFlag is.
+    if (poss_resend) {
+        writer.push_back_field(Tag::PossResend, 'Y');
     }
 
     if (view.has_cl_ord_id) {

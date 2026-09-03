@@ -234,6 +234,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         // configuration the venue actually runs.
         bool has_gateway_ingress_ns{false};
         int64_t gateway_ingress_ns{0};
+        // Whether this report repeats one the member may already hold. Carried through the
+        // wait for the same reason the ingress stamp is: the buffered path is the live HA
+        // path, so a mark dropped here is a mark the member never sees in the configuration
+        // the venue actually runs. See R-0122.
+        bool poss_resend{false};
         bool erase_routing_entry{false};
     };
 

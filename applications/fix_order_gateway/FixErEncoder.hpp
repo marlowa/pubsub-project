@@ -51,9 +51,18 @@ static constexpr size_t max_execution_report_buffer_size = 64 * 1024;
  *                                  or 0 when not resending. FIX requires OrigSendingTime
  *                                  alongside PossDupFlag: SendingTime is when this copy went
  *                                  out, and only OrigSendingTime says when the event happened.
+ * @param[in] poss_resend           True for a NEW message whose business content may already
+ *                                  have been sent under a different sequence number, which is
+ *                                  what a matching engine catching up produces. Adds
+ *                                  PossResend=Y. This is a different claim from PossDupFlag:
+ *                                  that one says "the same message again under the same
+ *                                  number", this one says "you may already know about this
+ *                                  event, check the identifiers". The two are independent and
+ *                                  a message may carry either, both or neither.
  */
 [[nodiscard]] std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
                                                        std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock,
-                                                       char* output_buffer, size_t output_buffer_size, bool poss_dup = false, int64_t orig_sending_time_ns = 0);
+                                                       char* output_buffer, size_t output_buffer_size, bool poss_dup = false, int64_t orig_sending_time_ns = 0,
+                                                       bool poss_resend = false);
 
 } // namespaces

@@ -448,7 +448,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] poss_dup              True when resending; adds PossDupFlag=Y.
      * @param[in] orig_sending_time_ns  When the venue first sent it; only read when resending.
      */
-    bool send_execution_report_to_session(FixSession& session, const pubsub_itc_fw_app::ExecutionReportView& view, bool poss_dup, int64_t orig_sending_time_ns);
+    bool send_execution_report_to_session(FixSession& session, const pubsub_itc_fw_app::ExecutionReportView& view, bool poss_dup, int64_t orig_sending_time_ns,
+                                          bool poss_resend = false);
 
     // Sessions are keyed by connection, but a replay is addressed to neither: the reply comes
     // back from the sequencer naming the request, and a bind ack names the comp id. Linear

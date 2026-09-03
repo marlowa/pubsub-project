@@ -526,13 +526,16 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
         if (!me_outbound_order_conn_id_.is_valid()) {
             // The order is already durably WAL-committed above; we simply cannot forward it right
-            // now because no matching engine is connected (during ME failover, before the promoted
-            // secondary reconnects). The forward is deferred rather than the order lost -- but only
-            // where a PROMOTION follows. A promoting follower reports where its replica reached and
-            // is sent everything after it, which recovers this order; an engine that starts COLD
-            // never reconciles at all and this order is never applied and never answered. That is
-            // BUG-0064, and it is why the reassurance this comment used to give without
-            // qualification was wrong.
+            // now because no matching engine is connected. The forward is deferred rather than the
+            // order lost: whichever engine acts next reports the position it has reached and is
+            // sent everything after it, which includes this order.
+            //
+            // That holds however the next engine arrives. A promoting follower knows its position
+            // from the replica it was maintaining and a starting one from the region it recovered,
+            // and both catch up before they act. A start used to skip the catch-up, so an order
+            // deferred while every engine was down was applied by nobody and answered to nobody --
+            // BUG-0064, and the reason this comment once carried a warning instead of a
+            // reassurance.
             //
             // It costs the venue nothing to defer -- the payload is released here and the WAL is
             // the whole mechanism. It costs the MEMBER a great deal: it has been acknowledged, so
@@ -544,8 +547,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // Reachable again. Anything deferred is about to be recovered by the promoted engine's
-        // WAL replay, and an operator wants one line saying what the outage cost.
+        // Reachable again. Anything deferred is recovered by the catch-up the arriving engine
+        // performs before it acts, and an operator wants one line saying what the outage cost.
         note_matching_engine_reachable();
 
         // Record seq_no -> the session that placed this order, so its execution reports can
@@ -748,6 +751,10 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // use of this envelope below.
         envelope.has_sender_comp_id = !routing_identity.empty();
         envelope.sender_comp_id = routing_identity.comp_id_view();
+        // Carried through from the matching engine, which is the only component that knows
+        // whether a report repeats one the member may already hold. The gateway writes it as
+        // PossResend; the sequencer only has to not lose it. See R-0122.
+        envelope.poss_resend = inbound.poss_resend;
 
         append_envelope_to_wal(envelope);
         send_wal_record(envelope);
@@ -775,7 +782,16 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // learns of the cancel only once the backup holds the cancel record itself --
         // and it is the "full two-tier commit of ERs" noted above, applied to the one
         // case that had no working gate at all.
-        const bool gate_on_own_record = (er_seq_no == 0);
+        //
+        // A report that repeats one already sent needs the same treatment, for the same reason
+        // arrived at from the other direction. It names the sequence of an order the venue took
+        // earlier, and that order's WalAck came and was consumed at the time -- so gating on it
+        // waits for an acknowledgement that is in the past and never comes again. Every report
+        // a matching engine sends out of a catch-up is such a report, which is what the mark on
+        // the envelope says. Without this the deferred order that catch-up exists to answer is
+        // applied, reported, and then parked in pending_er_ -- answered everywhere except at
+        // the member.
+        const bool gate_on_own_record = (er_seq_no == 0) || inbound.poss_resend;
         const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 
         if (!needs_wal_ack()) {
@@ -805,6 +821,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 pending.identity = routing_identity;
                 pending.has_gateway_ingress_ns = has_routing_ingress_ns;
                 pending.gateway_ingress_ns = routing_ingress_ns;
+                pending.poss_resend = inbound.poss_resend;
                 pending.erase_routing_entry = erase_routing_entry;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower",
                            er_seq_no, gate_seq_no);
@@ -1699,7 +1716,8 @@ void SequencerThread::note_matching_engine_reachable() {
     }
     const auto degraded_for = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: a matching engine is reachable again after {}s -- {} order(s) were deferred and are recovered by its WAL replay",
+               "SequencerThread: a matching engine is reachable again after {}s -- {} order(s) were deferred and are sent to it by the catch-up it performs "
+               "before it acts",
                degraded_for.count(), deferred_order_count_);
     deferring_orders_ = false;
     deferred_order_count_ = 0;
@@ -2245,6 +2263,7 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     envelope.gateway_ingress_ns = pending.gateway_ingress_ns;
     envelope.has_sender_comp_id = !pending.identity.empty();
     envelope.sender_comp_id = pending.identity.comp_id_view();
+    envelope.poss_resend = pending.poss_resend;
 
     if (destination != nullptr) {
         send_er_to_origin_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope);
@@ -2472,6 +2491,27 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
 
     const int64_t wal_head = wal_.last_seq_no();
     me_catchup_conn_id_ = conn_id;
+
+    // A negative position is an engine saying it holds nothing and has applied nothing of this
+    // venue's record -- a process that found no region where a predecessor would have left one.
+    // It is not behind by the whole log; it is new. Sending it the retained history would
+    // rebuild a book out of orders it never held, and issue a report to a member for every one,
+    // so it is placed at the head and told nothing.
+    //
+    // The cost is stated rather than hidden: an order this venue took and no engine ever
+    // applied is not recovered by an instance that starts this way. Recovering it needs an
+    // engine that can say where it had got to, which is what the region is for.
+    if (last_seq_no < 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: MePositionRequest from connection {} carries no position -- the engine holds nothing and is placed at head={} without "
+                   "catch-up. Any order taken and not yet applied is not recovered by this instance",
+                   conn_id.get_value(), wal_head);
+        pubsub_itc_fw_app::MePositionAck head_ack{};
+        head_ack.last_seq_no = wal_head;
+        head_ack.first_seq_no = wal_head;
+        send_pdu(conn_id, pubsub_itc_fw_app::MePositionAck::message_pdu_id, 0, head_ack);
+        return;
+    }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: MePositionRequest from connection {} last_seq_no={} -- streaming WAL catch-up up to head={}", conn_id.get_value(), last_seq_no,

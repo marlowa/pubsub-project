@@ -359,6 +359,33 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // Primary (or non-HA) inbound order connection from the sequencer.
         sequencer_order_conn_ids_.insert(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} established", id.get_value());
+        if (ha_role_state_ == MeRole::Reconciling) {
+            // Re-entry: reconciliation was begun before any sequencer had dialled in, so the
+            // request could not be sent. Sending it now is what keeps that from stranding the
+            // venue with no engine leading -- the outage BUG-0043 recorded.
+            begin_reconciliation();
+        } else if (!has_reconciled_ && ha_role_state_ != MeRole::Follower) {
+            // The catch-up belongs here, at the moment this instance first has somewhere to ask
+            // and before it has served anything, rather than later when a role is settled. An
+            // instance that starts and works for fifteen seconds while an arbiter makes up its
+            // mind has already applied those orders; it is the orders taken BEFORE it started
+            // that it has not seen, and this is the only moment it can ask about them without
+            // mistaking live traffic for replay.
+            //
+            // A passive follower is excluded: it catches up when it is promoted, from the
+            // replica it has been maintaining, which is a different position and a different
+            // moment.
+            //
+            // An order the sequencer deferred while no engine was running is in the venue's
+            // record and in no engine's book, so this ask is the only thing that recovers it.
+            // See BUG-0064 and the surviving half of BUG-0009.
+            //
+            // Becoming current, not taking the role: who may act is the arbiter's to say, and
+            // an instance that promoted itself on the strength of having caught up would be
+            // deciding that for itself.
+            reconciling_to_lead_ = false;
+            begin_reconciliation();
+        }
     }
 }
 
@@ -513,10 +540,21 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
 
 void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t sequenced_at_ns,
                                                    const fix_common::SessionIdentity& session) {
-    // RECONCILING (Slice D): apply the WAL catch-up NOS to the book but do NOT
-    // emit an ER and do NOT replicate. The gateway already saw ERs for these
-    // orders from the failed primary; re-sending would duplicate them.
+    // RECONCILING: apply the WAL catch-up NOS to the book, report it, and do not replicate.
+    //
+    // The report used to be suppressed, on the grounds that the gateway had already seen one
+    // from the engine that died. That is true of most of these records and false of the ones
+    // that matter: an order the sequencer deferred while no engine was running was never sent
+    // to any of them, so nothing ever reported it, and staying silent here is the whole of
+    // BUG-0064 -- the order rests on the book and its member is never told it exists.
+    //
+    // Nothing here can tell the two apart. The engine sees a record; whether some earlier
+    // engine reported it is not in the record. So every one is reported and every one is
+    // marked as a possible repeat, which is R-0122: a member that already had the report can
+    // discard it, and a member that never had one is finally answered. Silence is the only
+    // outcome that cannot be recovered from.
     if (ha_role_state_ == MeRole::Reconciling) {
+        ++reconciliation_records_seen_;
         const OrderKey recon_key = OrderKey::make(session, view.cl_ord_id);
         if (order_book_.contains(recon_key)) {
             return; // duplicate during replay -- ignore
@@ -538,10 +576,48 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
                        sequence_number, view.cl_ord_id, order_book_.region_capacity());
             return;
         }
-        // Nothing was sent outward for this order, so the position may be published at once.
+        std::array<char, 32> recon_exec_id_buf{};
+        const std::string_view recon_exec_id = format_id(recon_exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+        std::array<char, 32> recon_order_id_buf{};
+        const std::string_view recon_order_id = format_id(recon_order_id_buf, "ME-ORD-", 7, recon_entry.order_id_num);
+
+        pubsub_itc_fw_app::ExecutionReport recon_er{};
+        recon_er.order_id = recon_order_id;
+        recon_er.exec_id = recon_exec_id;
+        recon_er.exec_type = pubsub_itc_fw_app::ExecType::New;
+        recon_er.ord_status = pubsub_itc_fw_app::OrdStatus::New;
+        recon_er.symbol = view.symbol;
+        recon_er.side = view.side;
+        recon_er.leaves_qty = view.order_qty;
+        recon_er.cum_qty = "0";
+        recon_er.avg_px = "0.00";
+        // The time the venue took the order, not the time it got round to saying so. A member
+        // reconciling its day wants when the order was accepted.
+        recon_er.transact_time = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
+        recon_er.has_cl_ord_id = true;
+        recon_er.cl_ord_id = view.cl_ord_id;
+        recon_er.has_order_qty = true;
+        recon_er.order_qty = view.order_qty;
+        if (view.has_price) {
+            recon_er.has_price = true;
+            recon_er.price = view.price;
+        }
+        recon_er.has_ord_type = true;
+        recon_er.ord_type = view.ord_type;
+
+        // The session comes from the record rather than from the sequencer's routing map: an
+        // order that was never forwarded was never entered in that map, so the identity on
+        // the envelope is the only way this report reaches the member who placed it.
+        send_er_to_sequencer(recon_er, sequence_number, session, ReportIsRepeat::yes);
+        ++reconciliation_reports_sent_;
+
+        // Published only after the report is away, which is the ordering the accept path uses
+        // and for the same reason: a death between the two must leave the order above the
+        // published position, so recovery discards it and the record re-runs.
         order_book_.publish(sequence_number);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply NOS seq={} cl_ord_id={} book_size={}",
-                   sequence_number, view.cl_ord_id, order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "MatchingEngineThread: RECONCILING apply NOS seq={} cl_ord_id={} book_size={} -- reported as a possible repeat", sequence_number,
+                   view.cl_ord_id, order_book_.size());
         return;
     }
 
@@ -770,14 +846,50 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 
 void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t sequenced_at_ns,
                                                        const fix_common::SessionIdentity& session) {
-    // RECONCILING (Slice D): apply the WAL catch-up OCR to the book but do NOT emit an ER.
+    // RECONCILING: apply the WAL catch-up OCR and report it, for the reason the NOS branch
+    // above gives at length. A cancel the sequencer deferred was never sent to any engine
+    // either, so its member is still holding an order it believes is live.
     if (ha_role_state_ == MeRole::Reconciling) {
+        ++reconciliation_records_seen_;
         const OrderKey recon_key = OrderKey::make(session, view.orig_cl_ord_id);
+        // Read before the removal, because the report names the order that was cancelled and
+        // the entry is what holds its venue order id.
+        const OrderEntry* recon_cancelled = order_book_.find(recon_key);
+        std::array<char, 32> recon_order_id_buf{};
+        const std::string_view recon_order_id =
+            recon_cancelled != nullptr ? format_id(recon_order_id_buf, "ME-ORD-", 7, recon_cancelled->order_id_num) : std::string_view{"NONE"};
+        const bool recon_was_open = recon_cancelled != nullptr;
         order_book_.remove(recon_key);
-        // Nothing was sent outward for this cancel, so the position may be published at once.
+
+        if (recon_was_open) {
+            std::array<char, 32> recon_exec_id_buf{};
+            const std::string_view recon_exec_id = format_id(recon_exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+
+            pubsub_itc_fw_app::ExecutionReport recon_er{};
+            recon_er.order_id = recon_order_id;
+            recon_er.exec_id = recon_exec_id;
+            recon_er.exec_type = pubsub_itc_fw_app::ExecType::Canceled;
+            recon_er.ord_status = pubsub_itc_fw_app::OrdStatus::Canceled;
+            recon_er.symbol = view.symbol;
+            recon_er.side = view.side;
+            recon_er.leaves_qty = "0";
+            recon_er.cum_qty = "0";
+            recon_er.avg_px = "0.00";
+            recon_er.transact_time = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
+            recon_er.has_cl_ord_id = true;
+            recon_er.cl_ord_id = view.cl_ord_id;
+            recon_er.has_orig_cl_ord_id = true;
+            recon_er.orig_cl_ord_id = view.orig_cl_ord_id;
+            recon_er.has_order_qty = true;
+            recon_er.order_qty = view.order_qty;
+            send_er_to_sequencer(recon_er, sequence_number, session, ReportIsRepeat::yes);
+            ++reconciliation_reports_sent_;
+        }
+
         order_book_.publish(sequence_number);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: RECONCILING apply OCR seq={} orig_cl_ord_id={} book_size={}",
-                   sequence_number, view.orig_cl_ord_id, order_book_.size());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "MatchingEngineThread: RECONCILING apply OCR seq={} orig_cl_ord_id={} book_size={} (was open: {})", sequence_number, view.orig_cl_ord_id,
+                   order_book_.size(), recon_was_open);
         return;
     }
 
@@ -880,7 +992,8 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
                view.orig_cl_ord_id, order_book_.size());
 }
 
-void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session) {
+void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
+                                                ReportIsRepeat repeat) {
     // Encode the ER, then wrap it in a WalRecord envelope. The echoed seq_no travels in
     // the transport header, which is how the sequencer routes an ordinary ER: it looks the
     // order's sequence up and finds the session that placed it. The session identity on
@@ -912,6 +1025,7 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     envelope.sender_comp_id = session.comp_id_view();
     envelope.has_origin_gateway_id = !session.empty();
     envelope.origin_gateway_id = session.protocol;
+    envelope.poss_resend = repeat == ReportIsRepeat::yes;
 
     if (sequencer_er_conn_id_.is_valid()) {
         send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope);
@@ -929,6 +1043,36 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == able_to_match_timer_id_) {
         mark_able_to_match();
+        return;
+    }
+
+    if (id == reconciliation_timer_id_) {
+        if (ha_role_state_ != MeRole::Reconciling) {
+            cancel_timer(reconciliation_timer_id_);
+            return;
+        }
+        ++reconciliation_attempts_;
+        if (sequencer_order_conn_ids_.empty()) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MatchingEngineThread: RECONCILING for {} attempt(s) with no sequencer order connection -- the venue has no matching engine until one "
+                       "connects and answers",
+                       reconciliation_attempts_);
+            return;
+        }
+        if (reconciliation_records_seen_ != reconciliation_records_at_last_tick_) {
+            // Records are arriving, so a sequencer is serving this catch-up and the silence is
+            // its length rather than its absence. Asking again here would have the whole
+            // catch-up sent a second time, arriving after promotion and processed as live.
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "MatchingEngineThread: RECONCILING -- {} record(s) applied so far, catch-up still arriving", reconciliation_records_seen_);
+            reconciliation_records_at_last_tick_ = reconciliation_records_seen_;
+            return;
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: no MePositionAck and no record after {} attempt(s) -- asking again. A sequencer that is not leading drops the "
+                   "request without answering, so this repeats until one that leads answers it",
+                   reconciliation_attempts_);
+        send_me_position_request();
         return;
     }
 
@@ -1249,17 +1393,16 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
     set_epoch(decision.epoch);
 
     if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        if (ha_role_state_ == MeRole::Follower) {
-            // Taking over from a peer that has been serving: catch up on the WAL before
-            // accepting anything, or this instance leads a book it does not have.
-            begin_reconciliation();
-        } else {
-            // Nothing to take over. This is a start rather than a promotion -- the peer is
-            // not leading and no replica book has been maintained here -- and reconciliation
-            // has no connection to wait on, so entering it strands the venue without a
-            // matching engine leader. See docs/bug_list.md, BUG-0043.
-            adopt_leader_role();
-        }
+        // The decision settles the role. Whether this instance must catch up first is a
+        // separate question, answered by what it has done so far rather than by what it has
+        // just been told: a promoted follower was passive and may be behind, while an instance
+        // that has been serving since it started is current already, having applied every
+        // record as it arrived. This decision can land seconds after an instance began working
+        // -- an arbiter takes its time when the whole venue is starting, and again at a new
+        // epoch when something else changes hands -- and reconciling then would take a working
+        // engine out of service and have it read the live orders still arriving as replay:
+        // applied silently, with no acceptance reported to the member.
+        become_leader_when_current();
     } else if (decision.follower_instance_id == static_cast<int64_t>(config_.instance_id)) {
         // We remain the follower: stay passive.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter assigned follower role -- staying passive");
@@ -1428,10 +1571,17 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
         // a hole. Touching them now costs about half a millisecond and means no order pays a
         // fault later, which is R-0121.
         order_book_.warm();
+        // And no position either, which is a different thing from a position of zero. Zero
+        // would mean "I have applied nothing of a log I am part of", and the venue would send
+        // this instance the whole of its retained record -- every order of the day rather than
+        // the few taken while nothing was running. This instance is not behind; it is new, and
+        // it says so and is placed at the venue's current position instead.
+        has_position_ = false;
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "MatchingEngineThread: no order book region was left behind -- starting with an empty book");
+                       "MatchingEngineThread: no order book region was left behind -- starting with an empty book and no position of its own");
         return;
     }
+    has_position_ = true;
 
     const auto start = std::chrono::steady_clock::now();
     const OrderBook::Recovery found = order_book_.recover();
@@ -1492,9 +1642,24 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
                absence_ns_ / 1000000000, config_.order_book_absence_limit_seconds, found.orders);
 }
 
+void MatchingEngineThread::become_leader_when_current() {
+    if (ha_role_state_ == MeRole::Follower || !has_reconciled_) {
+        reconciling_to_lead_ = true;
+        begin_reconciliation();
+        return;
+    }
+    adopt_leader_role();
+}
+
 void MatchingEngineThread::begin_reconciliation() {
     // Cancel the promotion timer (it fired or arbitration is complete).
     cancel_timer(promotion_timeout_timer_id_);
+    if (ha_role_state_ != MeRole::Reconciling) {
+        // Read before the state is overwritten, and only on the way in: this is re-entered
+        // when the sequencer's connection arrives, and a re-entry must not turn a promotion
+        // into a start.
+        reconciling_from_follower_ = ha_role_state_ == MeRole::Follower;
+    }
     ha_role_state_ = MeRole::Reconciling;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})",
                last_replicated_seq_no_, order_book_.size());
@@ -1509,6 +1674,19 @@ void MatchingEngineThread::begin_reconciliation() {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "MatchingEngineThread: RECONCILING -- awaiting sequencer order connection before WAL catch-up");
     }
+
+    // Only a sequencer that leads serves a catch-up; one still deciding drops the request and
+    // says nothing. An instance starting with the whole venue asks at exactly that moment, so
+    // the request is repeated until it is answered. It is never abandoned: acting without the
+    // catch-up is the loss this exists to prevent, and there is no answer to fall back on. A
+    // venue whose sequencers are not leading is not trading either, so waiting costs nothing
+    // that is not already lost.
+    reconciliation_attempts_ = 0;
+    reconciliation_records_seen_ = 0;
+    reconciliation_records_at_last_tick_ = 0;
+    reconciliation_reports_sent_ = 0;
+    cancel_timer(reconciliation_timer_id_);
+    reconciliation_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
 }
 
 void MatchingEngineThread::send_me_position_request() {
@@ -1522,7 +1700,12 @@ void MatchingEngineThread::send_me_position_request() {
     // streaming, so the promoted ME receives exactly one catch-up stream and one
     // ack regardless of which pre-warmed connection the current leader owns.
     pubsub_itc_fw_app::MePositionRequest request{};
-    request.last_seq_no = last_replicated_seq_no_;
+    // A negative position says "I hold nothing and have applied nothing of yours": place me at
+    // your head rather than sending me your history. The alternative reading of an instance
+    // with no region -- that it is a component at position zero which has fallen the whole day
+    // behind -- would have the venue replay everything it still holds into an engine that never
+    // held any of it.
+    request.last_seq_no = has_position_ ? last_replicated_seq_no_ : -1;
     for (const auto& conn_id : sequencer_order_conn_ids_) {
         send_pdu(conn_id, pubsub_itc_fw_app::MePositionRequest::message_pdu_id, 0, request);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={})",
@@ -1553,9 +1736,14 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
         return;
     }
 
+    cancel_timer(reconciliation_timer_id_);
     last_replicated_seq_no_ = ack.last_seq_no;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionAck received -- book reconciled to seq_no={} (book_size={})",
-               ack.last_seq_no, order_book_.size());
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
+    // and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: MePositionAck received -- book reconciled to seq_no={} (book_size={}), {} record(s) applied and {} report(s) sent to "
+               "members, each marked as a possible repeat",
+               ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_);
 
     // The book is now assembled: what the region vouched for, plus every record the sequencer
     // held after it. What happens to it next is a stated policy rather than a decision taken
@@ -1601,7 +1789,7 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                            "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
         }
-    } else if (cancel_open_orders_on_promotion_) {
+    } else if (reconciling_from_follower_ && cancel_open_orders_on_promotion_) {
         // The book could have been carried across. It is not, because the configuration says the
         // venue does not promise that yet: each member is told its order is gone rather than
         // being left to trust a book nothing has checked.
@@ -1610,16 +1798,39 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
                    "(R-0020; R-0073 is not being met, by configuration)",
                    order_book_.size());
         cancel_all_orders_on_failover();
-    } else {
+    } else if (reconciling_from_follower_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: open_orders_on_promotion=keep -- carrying {} open order(s) across the promotion (R-0073)", order_book_.size());
+    } else {
+        // A start rather than a promotion. This instance took no book over from a peer: what it
+        // holds it read from its own region and caught up on top of, which is R-0018 and is not
+        // what the promotion policy speaks about.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: started rather than promoted -- keeping the {} open order(s) recovered from the region (R-0018)", order_book_.size());
+    }
+
+    has_reconciled_ = true;
+    has_position_ = true;
+    ha_role_state_ = MeRole::Unknown; // clear reconciling
+
+    if (!reconciling_to_lead_) {
+        // Current, and that is all. This catch-up was done at startup so that nothing is
+        // served on a stale book; whether this instance may act is a separate question and
+        // belongs to the arbiter. Promoting here would have every instance that manages to
+        // catch up decide for itself that it leads, which is the condition arbitration exists
+        // to prevent -- and with no arbiter reachable it would also skip the degraded rule
+        // that says only the lower instance id may promote.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: caught up at seq_no={} with {} order(s) on the book -- current, and waiting to be told what it may do",
+                   ack.last_seq_no, order_book_.size());
+        act_on_pending_halt();
+        return;
     }
 
     // Transition to LEADER -- normal processing begins.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: reconciliation complete at seq_no={} with {} order(s) on the book -- resuming as leader", ack.last_seq_no,
                order_book_.size());
-    ha_role_state_ = MeRole::Unknown; // clear reconciling so adopt_leader_role proceeds
     adopt_leader_role();
 }
 

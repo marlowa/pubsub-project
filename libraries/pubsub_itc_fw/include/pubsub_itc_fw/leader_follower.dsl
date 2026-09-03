@@ -222,6 +222,19 @@ message WalRecord (id=103, version=1)
     # instance that took the session over, whose steady clock shares no origin with the
     # instance that read the order. The gateway discards a negative delta for that reason.
     optional datetime_ns gateway_ingress_ns
+    # True when this execution report repeats one whose subject the member may already have
+    # been told about. A matching engine that catches up on the sequencer's record cannot tell
+    # a record the dead engine already reported from one no engine ever saw -- an order the
+    # sequencer deferred while none was running -- so it reports every one of them and marks
+    # them all. The gateway writes the mark as PossResend (tag 97), which is the standard
+    # field for application content that may have been sent before under a different sequence
+    # number. It rides here rather than in the report itself because tag 97 is a FIX header
+    # field and the report PDU is a message body derived from the data dictionary.
+    #
+    # This is R-0122, and the reason a deferred order reaches its member at all: without the
+    # report there is no answer, and without the mark an answer the member already had reads
+    # as a second event.
+    bool poss_resend
 end
 
 # ------------------------------------------------------------
