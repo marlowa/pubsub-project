@@ -14,14 +14,87 @@ party decides, so only one entitlement exists at a time, and a generation number
 carried on every message lets a receiver refuse an instance whose entitlement has
 since passed.
 
-\textbf{The arbitration service is not a single point of failure.} Two arbiters
-run, and a witness runs alongside them so that two can reach a majority rather
-than disagreeing. Losing any one of the three moves no entitlement and
-interrupts nothing --- \reqref{R-0063}. The venue continues to trade even when
-all of them are gone, though it is then unable to move an entitlement, which is
-\cref{sec:ha:enabled:degraded}. What running a pair plus a witness achieves is
-that the amount of agreement the venue needs is small, bounded, and confined to a
-component that holds no venue state.
+\textbf{The arbiters are a pair; the witness is one process, and there is only
+one of it.} Two arbiters run so that losing one moves no entitlement and
+interrupts nothing --- \reqref{R-0063}. The witness runs alongside them, and it
+has no pair and no standby. It is a single point of failure and this section
+says what is done about that rather than claiming otherwise.
+
+What the witness is for is narrow: it decides between two arbiters that cannot
+see each other. A pair with no third party cannot tell ``the other is dead'' from
+``I cannot see the other'', which is the problem this whole subsection opened
+with, and the witness is the third party that settles it.
+
+\subsubsection{What is done about the witness being single}
+\label{sec:ha:enabled:arbiter:witness}
+
+\textbf{It holds nothing, so losing it destroys nothing.} There is no state to
+recover and no history to lose. A witness that has just started is exactly as
+useful as one that has run for a month, which is why it needs no standby to hold
+a copy of anything: restarting it is the whole of its recovery.
+
+\textbf{Nothing waits on it.} An arbiter that cannot reach the witness does not
+block; it proceeds. So the venue goes on trading and entitlements go on moving
+while the witness is down, and its absence costs the certainty of one decision
+rather than the availability of the service.
+
+\textbf{It is off every ordinary path.} It is consulted in one circumstance only
+--- an arbiter contemplating promotion whose peer has fallen silent. In ordinary
+running no order, report or election touches it, so the time it spends able to
+affect anything is a small fraction of the time it is running.
+
+\textbf{Losing it alone changes nothing.} Two arbiters that can still see each
+other settle between themselves by configured identity and never ask the witness
+at all. It takes the witness and the link between the arbiters to fail together
+before its absence is felt, and those are independent failures.
+
+\textbf{It is put where the arbiters are not, and that is the mitigation the
+others rest on.} A witness that shares a failure domain with one arbiter is
+close to worthless: a single event then takes out that arbiter and the witness
+together, and the surviving arbiter is left unable to reach a majority at the
+one moment it needs to. So the witness runs on a third machine, on a different
+power supply, behind a different network switch, and ideally in a different
+rack. Its value is entirely in its independence, and every part of that
+independence is a property of where it is deployed rather than of what it does.
+
+Three things about the process make that placement cheap, which is why there is
+no reason to compromise on it:
+
+\begin{itemize}[nosep]
+  \item \textbf{It needs no storage.} It holds no state, so it depends on no
+        disk, no array and no filesystem --- the commonest hardware failure of
+        the lot is one it cannot suffer.
+  \item \textbf{It is off the hot path.} No order, report or election passes
+        through it in ordinary running, so it needs none of the tuning the
+        trading components need: no pinned cores, no low-latency hardware, no
+        proximity to anything. It can be the least capable machine in the
+        deployment.
+  \item \textbf{Its network path is what matters, not its speed.} The failure
+        that hurts is not the witness dying but an arbiter being unable to
+        reach it, so what is worth spending on is a route to it that fails
+        independently of the route between the two arbiters.
+\end{itemize}
+
+The venue continues to trade even when all three are gone, though it is then
+unable to move an entitlement, which is \cref{sec:ha:enabled:degraded}. What
+running a pair plus a witness achieves is that the amount of agreement the venue
+needs is small, bounded, and confined to a component that holds no venue state.
+
+\begin{gap}{BUG-0075}
+  The mitigation above rests on an arbiter that cannot reach the witness
+  proceeding \emph{safely}, and today it proceeds without deciding anything. An
+  arbiter whose peer has gone silent and whose witness is unreachable promotes
+  itself outright. Where both arbiters are in that position at once --- the
+  witness gone and the two unable to see each other --- both promote, and the
+  venue has two parties each granting entitlements and numbering generations
+  from its own count. That is the condition the arbiter exists to prevent,
+  reproduced in the arbiter.
+
+  The rule that would settle it is the one the code's own log line claims to be
+  applying: the configured identities are ordered, so the higher of the two can
+  decline without asking anyone. What that leaves open is an arbiter that has
+  never reached its peer at all and so has no identity to compare against.
+\end{gap}
 
 \subsubsection{What state it holds}
 \label{sec:ha:enabled:arbiter:state}

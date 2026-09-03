@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 74 |
-| Open | 29 (19 defects, 10 tasks) |
+| Bugs recorded | 76 |
+| Open | 31 (21 defects, 10 tasks) |
 | Closed | 45 |
-| Next id | BUG-0075 |
+| Next id | BUG-0077 |
 
 ## Open bugs by severity
 
-13 high, 13 medium, 3 low.
+14 high, 14 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,6 +26,7 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
 | [BUG-0074](#bug_0074) | high | defect | R-0101 cannot be met as worded, because the catch-up stream is filtered |
+| [BUG-0075](#bug_0075) | high | defect | Both arbiters can become active at once when the witness is unreachable |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -39,6 +40,7 @@
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
+| [BUG-0076](#bug_0076) | medium | defect | Scenario 10 fails inside the suite and passes on its own |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2149,6 +2151,105 @@ setting should do the same.
 **Do not close this by making the check pass.** A scenario that names a requirement without
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
+
+### BUG-0075: Both arbiters can become active at once when the witness is unreachable {#bug_0075}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | defect |
+| Found | 2026-09-03 |
+| Recorded | 2026-09-03 |
+| How | Reading `ArbiterThread` while writing the witness section of the specification, to say what mitigates the loss of the witness |
+| Impact | The condition the whole arbitration design exists to prevent -- two parties each entitled to grant leadership -- is reachable in the arbitration service itself, and each of the two can promote a different instance of the same group |
+
+**The witness exists to decide between two arbiters that cannot see each other.** An arbiter
+whose peer has gone silent asks the witness for a vote before promoting itself, and the witness
+grants it to one of them, so only one becomes active.
+
+**An arbiter that cannot reach the witness promotes itself without asking anything.** Two paths
+in `ArbiterThread::on_timer_event` do it:
+
+```
+"ArbiterThread: witness not connected -- self-promoting using instance-id rule"
+"ArbiterThread: vote timeout -- witness unreachable, self-promoting"
+```
+
+Both then run `++epoch_; adopt_role(Role::leader)` unconditionally.
+
+**Neither applies an instance-id rule, though the first says it does.** The rule lives in
+`ArbiterThread::elect_role`, which compares `config_.instance_id` against the peer's and is
+reached only through the StatusQuery exchange -- that is, only when the peer is reachable, which
+is exactly the case these two paths are for. The log line is not describing what the code does.
+
+**So the dangerous case is the witness gone AND the arbiters unable to see each other.** Each
+times its peer out, each finds no witness, and each promotes. Two active arbiters then grant
+entitlements independently, each numbering generations from its own `epoch_`, so two instances of
+one group can be told they lead under the same generation -- and a generation is what a receiver
+uses to refuse a superseded sender, so it does not discriminate between them.
+
+The witness merely being dead is not enough on its own: two arbiters that can still see each
+other settle by instance id through `elect_role` and never consult it. It takes both failures,
+which is why this has not been seen.
+
+**The fix is the rule the message already claims.** `peer_instance_id_` is remembered from the
+peer's StatusQuery, so an arbiter that has ever spoken to its peer can apply the same comparison
+before self-promoting, and the higher id declines. That leaves the case of an arbiter that has
+never seen its peer at all, which has no id to compare and must be decided some other way.
+
+**The witness's own documentation records the wrong justification**, which is how the hole
+survived. `docs/venue/witness.md` says that where only one arbiter is connected to the witness
+that arbiter's vote is granted automatically, "its peer cannot see the witness either, so there
+is no risk of split-brain". The premise is right and the conclusion does not follow: a peer that
+cannot see the witness does not sit still, it promotes itself. That sentence should be corrected
+with the code.
+
+**Do not close this by making the witness redundant.** A second witness is a second thing to
+disagree with, and the design's merit is that the amount of agreement the venue needs is small.
+The question is what a lone arbiter does when it cannot ask, not how many witnesses there are.
+
+Related: [BUG-0010](#bug_0010) and [BUG-0062](#bug_0062), which are the same shape one layer down
+-- two instances acting, and nothing noticing when they are reunited.
+
+### BUG-0076: Scenario 10 fails inside the suite and passes on its own {#bug_0076}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | defect |
+| Found | 2026-09-03 |
+| Recorded | 2026-09-03 |
+| How | A full `ha_test.py --scenario all` run while verifying an unrelated change: 51 of 52 passed and scenario 10 failed |
+| Impact | The suite's result depends on what ran before it, so a genuine regression in this scenario cannot be told from this noise, and a green run is worth less than it looks |
+
+Scenario 10 kills the matching engine and restarts it with 20,000 orders in flight. In the suite
+run it failed:
+
+```
+FAIL: sequencer_primary did not re-establish ME connection within 10s after ME restart
+```
+
+Run on its own immediately afterwards, against the same binaries and the same deployment, it
+passed --- the engine was ready 2.2 s after the restart and the sequencer reconnected at once.
+
+**What it is not.** It is not the promotion policy this run was verifying: scenario 10 runs a
+single matching engine, which reaches leadership through `adopt_leader_role` and never enters
+reconciliation, so the branch that was changed is not on its path. The failing check is about the
+sequencer's outbound connection and mentions no orders at all.
+
+**Two readings, and which one it is has not been established.** Either the ten seconds is simply
+too short for a machine that has already run nine scenarios --- in which case the timeout is
+wrong and the venue is fine --- or the reconnect genuinely takes longer once the sandbox has
+accumulated state, and the figure is telling the truth about something. The second is the one
+worth ruling out first, because a reconnect that degrades with the size of the log is a real
+defect wearing a flake's clothes.
+
+**What would settle it:** run the suite again and see whether it is scenario 10 each time, and
+whether it is always after the same predecessor; then log the elapsed reconnect time rather than
+only whether it beat the deadline, so a slow success is distinguishable from a failure.
+
+**Do not close this by raising the timeout.** That hides whichever of the two readings is true,
+and the second one matters.
 
 ---
 
