@@ -91,8 +91,15 @@ class MappedSlotStore {
     [[nodiscard]] SlotIndex capacity() const;
     [[nodiscard]] uint32_t payload_size() const;
 
-    /// Touch every page so that the delays of first use are taken now rather than later.
-    /// A component doing this before it reports itself ready has already paid them.
+    /// Take the delays of first use now rather than later, by writing a byte back to every page.
+    ///
+    /// It writes rather than reads, and that is the whole point: the region is sparse, and a read
+    /// of a hole allocates nothing, so reading leaves the cost exactly where it was -- on the
+    /// first write to each slot, which is on the order path. Writing allocates the block and
+    /// takes the write fault. The byte written is the byte read, so no content changes.
+    ///
+    /// Call it before the region is in use. It is safe to call on a region holding records, but
+    /// it assumes nothing else is writing to it, and it dirties the whole mapping.
     void warm() const;
 
     // ---- writing -----------------------------------------------------------------

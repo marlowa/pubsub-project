@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 80 |
-| Open | 29 (18 defects, 11 tasks) |
-| Closed | 51 |
+| Open | 28 (17 defects, 11 tasks) |
+| Closed | 52 |
 | Next id | BUG-0081 |
 
 ## Open bugs by severity
 
-11 high, 15 medium, 3 low.
+10 high, 15 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,7 +22,6 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
 | [BUG-0079](#bug_0079) | high | defect | A null pointer reached the slab allocator and terminated the FIX gateway |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -721,76 +720,6 @@ nobody looks at is the wrong trade. The list above is what one investigation act
 the arbiters and witness are quieter and can wait until something needs explaining about them.
 
 ---
-
-### BUG-0071: Warming the open-order region does not give it any blocks {#bug_0071}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-31 |
-| Recorded | 2026-08-31 |
-| How | Reading `MappedSlotStore::warm()` with the evidence from [BUG-0070](#bug_0070) in hand |
-| Impact | The matching engine pays filesystem journal waits on the order path, on a freshly deployed region |
-
-**What happens.** `MappedSlotStore` creates the open-order region with `ftruncate`
-(`MappedSlotStore.cpp:98`), so the file is sparse exactly as the log segments were. `warm()` is
-meant to move the cost of first access to startup, before the process reports ready, as R-0121
-requires. It reads one byte from each page and its comment states the reasoning:
-
-> Read one byte from each page. Reading is enough: the delay being moved is the kernel finding
-> the page, and it does that whether the access reads or writes.
-
-That reasoning is wrong, on two counts.
-
-1. **A read of a hole allocates nothing.** The kernel maps the shared zero page. No block is
-   allocated and no metadata changes. The journal wait that [BUG-0070](#bug_0070) measured has
-   therefore not been avoided; it happens later instead, on the first *write* to each slot,
-   which is the matching engine's order path.
-2. **A read does not prevent a second page fault, even where blocks already exist.** For a
-   shared file-backed mapping the kernel maps a clean page read-only, so that it can trap the
-   first write through `page_mkwrite` for writeback accounting and, under ext4 delayed
-   allocation, block reservation. Reading moves one page fault to startup. The other still
-   happens on the first write.
-
-So the region meets R-0121 as written but not as intended: `warm()` returns, the process reports
-ready, and the delay it was meant to remove still happens later, during trading.
-
-**Why it has not been seen yet.** The region persists between runs, and repeated runs have
-written across all 496 MB of it, so it is fully allocated on this machine today. A fresh deploy
-starts sparse and incurs the cost through the first trading day. This is the same reason debris
-from an earlier run can make a latency problem disappear and look fixed.
-
-**The fix.** Warming must write, not read.
-
-- For a **new** region, write it out in full before mapping, as `WalWriter::fill_new_segment`
-  now does.
-- For an **existing** region, read-modify-write the same byte back --- `p[offset] = p[offset]`
-  --- which forces both the allocation and the `page_mkwrite` without altering any content.
-
-The cost is that startup dirties the whole region, which is acceptable before the process
-reports ready but should be stated in the design rather than discovered in a run.
-
-**Not yet measured.** Unlike [BUG-0070](#bug_0070) this was found by reading, not by a probe.
-The matching engine's thread has not been watched with `scripts/thread_offcpu.py`, and a run
-against a freshly deployed region is what would confirm the size of it.
-
-**The other two `ftruncate` calls in the framework were checked and are not this.**
-`MirroredBuffer.cpp` truncates a `memfd_create` object: anonymous memory, no file, no filesystem,
-so nothing can reach a journal. `CpuRegistry.cpp` truncates a real file, so it is the same
-mechanism, but the file is 8,200 bytes -- three pages -- and is written when a process claims
-cores at startup and releases them at shutdown, never on the order path. Neither needs changing.
-This region is the one that matters, because it is 496,001,024 bytes and `OrderBook::add()`
-writes to it for every order the engine accepts.
-
-**A third factor, found later the same day.** Even once the region's blocks exist, every
-writeback of a dirty mapped page updates the inode's timestamps, which is journalled metadata in
-its own right -- the effect that turned out to dominate the sequencer's stalls. The region sits
-on a filesystem that is not mounted `lazytime`, so it carries that exposure too. See
-[filesystem requirements](operations/filesystem_requirements.md). Fixing the warming without
-fixing the mount would leave part of the cost in place.
-
-Related: [BUG-0070](#bug_0070), the same mechanism on the sequencer, where it was measured and
-where both parts of the fix are now recorded.
 
 ### BUG-0072: The gateway's open-order pool is sized by nothing in particular {#bug_0072}
 
@@ -2003,6 +1932,130 @@ paid once and never on the hot path.
 ---
 
 ## Closed
+
+### BUG-0071: Warming the open-order region does not give it any blocks {#bug_0071}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | Reading `MappedSlotStore::warm()` with the evidence from [BUG-0070](#bug_0070) in hand |
+| Fixed | 2026-09-06 -- warming writes rather than reads. Half of the diagnosis below was wrong and is corrected in the closure |
+| Impact | The matching engine pays filesystem journal waits on the order path, on a freshly deployed region |
+
+**What happens.** `MappedSlotStore` creates the open-order region with `ftruncate`
+(`MappedSlotStore.cpp:98`), so the file is sparse exactly as the log segments were. `warm()` is
+meant to move the cost of first access to startup, before the process reports ready, as R-0121
+requires. It reads one byte from each page and its comment states the reasoning:
+
+> Read one byte from each page. Reading is enough: the delay being moved is the kernel finding
+> the page, and it does that whether the access reads or writes.
+
+That reasoning is wrong, on two counts.
+
+1. **A read of a hole allocates nothing.** The kernel maps the shared zero page. No block is
+   allocated and no metadata changes. The journal wait that [BUG-0070](#bug_0070) measured has
+   therefore not been avoided; it happens later instead, on the first *write* to each slot,
+   which is the matching engine's order path.
+2. **A read does not prevent a second page fault, even where blocks already exist.** For a
+   shared file-backed mapping the kernel maps a clean page read-only, so that it can trap the
+   first write through `page_mkwrite` for writeback accounting and, under ext4 delayed
+   allocation, block reservation. Reading moves one page fault to startup. The other still
+   happens on the first write.
+
+So the region meets R-0121 as written but not as intended: `warm()` returns, the process reports
+ready, and the delay it was meant to remove still happens later, during trading.
+
+**Why it has not been seen yet.** The region persists between runs, and repeated runs have
+written across all 496 MB of it, so it is fully allocated on this machine today. A fresh deploy
+starts sparse and incurs the cost through the first trading day. This is the same reason debris
+from an earlier run can make a latency problem disappear and look fixed.
+
+**The fix.** Warming must write, not read.
+
+- For a **new** region, write it out in full before mapping, as `WalWriter::fill_new_segment`
+  now does.
+- For an **existing** region, read-modify-write the same byte back --- `p[offset] = p[offset]`
+  --- which forces both the allocation and the `page_mkwrite` without altering any content.
+
+The cost is that startup dirties the whole region, which is acceptable before the process
+reports ready but should be stated in the design rather than discovered in a run.
+
+**Not yet measured.** Unlike [BUG-0070](#bug_0070) this was found by reading, not by a probe.
+The matching engine's thread has not been watched with `scripts/thread_offcpu.py`, and a run
+against a freshly deployed region is what would confirm the size of it.
+
+**The other two `ftruncate` calls in the framework were checked and are not this.**
+`MirroredBuffer.cpp` truncates a `memfd_create` object: anonymous memory, no file, no filesystem,
+so nothing can reach a journal. `CpuRegistry.cpp` truncates a real file, so it is the same
+mechanism, but the file is 8,200 bytes -- three pages -- and is written when a process claims
+cores at startup and releases them at shutdown, never on the order path. Neither needs changing.
+This region is the one that matters, because it is 496,001,024 bytes and `OrderBook::add()`
+writes to it for every order the engine accepts.
+
+**A third factor, found later the same day.** Even once the region's blocks exist, every
+writeback of a dirty mapped page updates the inode's timestamps, which is journalled metadata in
+its own right -- the effect that turned out to dominate the sequencer's stalls. The region sits
+on a filesystem that is not mounted `lazytime`, so it carries that exposure too. See
+[filesystem requirements](operations/filesystem_requirements.md). Fixing the warming without
+fixing the mount would leave part of the cost in place.
+
+Related: [BUG-0070](#bug_0070), the same mechanism on the sequencer, where it was measured and
+where both parts of the fix are now recorded.
+
+#### Fixed 2026-09-06, and half of the reasoning above was wrong
+
+**The region is not sparse, so there were no holes to fill.** The first of the two counts above
+says a read of a hole allocates nothing, which is true, and concludes that the region therefore
+keeps its journal waits for the order path, which does not follow --- because by the time `open()`
+returns there are no holes. Creating a store threads a free list through every slot:
+
+```cpp
+for (SlotIndex i = 0; i < slot_count; ++i) {
+    SlotHeader* s = slot(i);
+    s->state.store(slot_free, std::memory_order_relaxed);
+    s->seq_no = 0;
+    s->next_free = (i + 1 < slot_count) ? (i + 1) : no_slot;
+}
+```
+
+Writing a `SlotHeader` into every slot touches every page, and touching every page allocates every
+block. **Measured while writing the test that was meant to prove the opposite:** a fresh 8 MB
+region reports 15,632 allocated 512-byte blocks against the 15,632 its size requires. Fully
+allocated, at creation, inside `open()`.
+
+So the comparison with [BUG-0070](#bug_0070) does not hold. A write-ahead log segment really is
+sparse after `ftruncate` and really does pay for its blocks on the order path; this region is not
+and does not, for a reason nobody had written down.
+
+**The second count stands, and is why the fix is still worth having.** A shared file-backed page is
+faulted in read-only so the kernel can trap the first write through `page_mkwrite`, for writeback
+accounting and, under delayed allocation, block reservation. Reading one byte per page moves the
+read fault to startup and leaves the write fault exactly where it was. So `warm()` met R-0121 by
+half.
+
+**The fix, which is what was proposed and costs the same loop:** write the byte back rather than
+read it, `p[offset] = p[offset]`. That takes both faults, and takes them whether the page is a hole
+or not --- which is why it does not branch on whether the region is new. "New or existing" is the
+wrong axis in any case: what costs is a hole, not a file's age.
+
+**Impact is much smaller than this entry recorded.** It said the engine pays filesystem journal
+waits on the order path. It does not: the blocks are already there. What it pays is one minor fault
+per page on first write --- microseconds, against the hundreds of milliseconds BUG-0070 measured
+for a journal wait. Worth fixing because R-0121 asks for the cost to be taken before a component
+reports itself ready, and it was not; not worth the alarm the original wording carries.
+
+**A test now pins what is actually true.** `CreatingARegionAllocatesItRatherThanLeavingItSparse`
+asserts a new region is fully allocated, because that is the property the order path depends on and
+it is a side effect of free-list initialisation rather than anything deliberate. If the free list
+is ever built lazily, or a header written only where a slot is used, the region becomes sparse and
+the cost moves to the first write to each slot --- and that test is what would notice. `st_blocks`
+is the check, since `st_size` cannot tell a sparse file from a filled one.
+
+**Not measured with a probe, and now not worth one.** The entry asked for `thread_offcpu.py`
+against a freshly deployed region. With the journal waits ruled out there is nothing of that size
+left to find, and a run built to catch hundreds of milliseconds will not resolve a minor fault.
 
 ### BUG-0078: An outbound connection lost to a socket error is never retried {#bug_0078}
 

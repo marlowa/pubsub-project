@@ -250,6 +250,37 @@ TEST_F(MappedSlotStoreTest, AReleasedRecordIsNotRecoveredAfterReopening) {
     EXPECT_FALSE(store.is_recoverable(dropped));
 }
 
+TEST_F(MappedSlotStoreTest, CreatingARegionAllocatesItRatherThanLeavingItSparse) {
+    // Worth pinning because it is easy to assume the opposite, and BUG-0071 did. The region's
+    // size is set with ftruncate, which allocates nothing and leaves a file full of holes -- the
+    // write-ahead log's segments behave exactly that way, which is BUG-0070. This region does not,
+    // because creating it threads a free list through every slot, and writing a SlotHeader into
+    // each one touches every page and allocates every block on the way.
+    //
+    // So the allocation cost of a new region is paid at creation, inside open(), and warm() has
+    // no holes left to fill. If that ever changes -- a free list built lazily, say, or a header
+    // written only where a slot is used -- the region becomes sparse and the cost moves to the
+    // first write to each slot, which is the order path. This test is what would notice.
+    //
+    // st_blocks is what tells the two apart; st_size cannot, because a sparse file and a filled
+    // one report the same size.
+    constexpr SlotIndex many_slots = 200000;
+    MappedSlotStore store;
+    ASSERT_FALSE(store.open(path_, record_size, many_slots));
+
+    struct stat created {};
+    ASSERT_EQ(::stat(path_.c_str(), &created), 0);
+    const blkcnt_t blocks_needed = static_cast<blkcnt_t>(created.st_size) / 512;
+    EXPECT_GE(created.st_blocks, blocks_needed) << "a new region should be fully allocated: had " << created.st_blocks << " of " << blocks_needed;
+
+    store.warm();
+
+    struct stat warmed {};
+    ASSERT_EQ(::stat(path_.c_str(), &warmed), 0);
+    EXPECT_EQ(warmed.st_size, created.st_size) << "warming must not resize the region";
+    EXPECT_GE(warmed.st_blocks, blocks_needed) << "and must not leave it with fewer blocks than it had";
+}
+
 TEST_F(MappedSlotStoreTest, WarmLeavesTheContentAlone) {
     MappedSlotStore store;
     ASSERT_FALSE(store.open(path_, record_size, slot_count));

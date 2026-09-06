@@ -174,11 +174,36 @@ uint32_t MappedSlotStore::payload_size() const {
 }
 
 void MappedSlotStore::warm() const {
-    // Read one byte from each page. Reading is enough: the delay being moved is the kernel
-    // finding the page, and it does that whether the access reads or writes.
-    volatile const uint8_t* p = static_cast<const uint8_t*>(base_);
+    // Write a byte back to every page rather than reading one from it.
+    //
+    // Reading was the first attempt and it warms nothing. The region is created with ftruncate,
+    // which sets the size and allocates not one block, so most of it is holes -- and a READ of a
+    // hole allocates nothing: the kernel maps the shared zero page and returns. The delay this
+    // exists to move to startup was therefore not moved. It still happens, later, on the first
+    // WRITE to each slot, which is on the order path.
+    //
+    // Reading is not enough even where the blocks already exist. A shared file-backed page is
+    // faulted in read-only so that the kernel can trap the first write through page_mkwrite for
+    // writeback accounting and, under delayed allocation, block reservation. A read moves one
+    // fault to startup and leaves the other where it was.
+    //
+    // Writing the byte back takes both, and takes them whether the page was a hole or not --
+    // which is why this does not branch on whether the region is new. "New or existing" is the
+    // wrong axis: a region that has been used but only partly written still holds holes, and it
+    // is the hole that costs rather than the file's age.
+    //
+    // The byte written is the byte read, so no content changes and this stays const in every
+    // sense a caller can observe. What it does cost is that startup dirties the whole region and
+    // the kernel writes it back -- paid before the component reports itself ready, which is the
+    // trade R-0121 asks for, and stated here rather than discovered in a run.
+    //
+    // The same lesson, measured, is in WalWriter::fill_new_segment: writing the bytes is what
+    // works, and fallocate() is not sufficient because ext4 reserves extents UNWRITTEN and the
+    // first write must convert them, which is itself journalled. See docs/bug_list.md, BUG-0071
+    // and BUG-0070.
+    volatile uint8_t* p = static_cast<uint8_t*>(base_);
     for (size_t offset = 0; offset < mapped_size_; offset += page_size) {
-        (void)p[offset];
+        p[offset] = p[offset];
     }
 }
 
