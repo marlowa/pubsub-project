@@ -112,10 +112,33 @@ has stopped trying. That must be announced rather than discovered: a venue quiet
 nothing behind a component is the failure that looks like health. This is the same shape as
 BUG-0010, where high availability fails over into a condition both nodes share.
 
-**Still to settle: the window.** Two deaths a year is not a flap. The count needs a period over
-which it is taken, and that period is not the promotion timeout -- a slow flap can run on any
-cycle. It should be long enough that two unrelated faults are unlikely to be judged as one
-pattern, and short enough that a genuine flap is caught within a trading session.
+**There is no window, and that is deliberate.** The obvious shape is a lookback -- two deaths
+within some period -- and it was rejected. Asked how often one interruption of this kind is
+acceptable, the answer was once: *"Members are bound to complain but the response has to be there
+was a failure and that many seconds is how long recovery took. Would they rather the venue had
+been halted?"*
+
+That answer does not admit a period. An instance gets **one interruption per trading session**;
+the second is fatal. The count resets at a session boundary or when an operator restarts the
+instance, and at no other time.
+
+The reason to prefer this over a window is that it survives the conversation with the member. A
+period cannot be explained to someone whose orders were interrupted twice: it would have the venue
+saying that two failures counted as one pattern because they happened to fall close together, or
+that they did not count because they fell far apart. One failure is a failure; a second from the
+same instance is that instance being unfit to serve.
+
+**What it costs.** An instance is taken out of service on evidence that would not convince anyone
+it was permanently broken. That is accepted: the peer serves, the venue keeps trading, an operator
+can put it back, and the alternative is a member exposed to an open-ended series of interruptions
+nobody is counting.
+
+**Measured, so the figure being traded is known.** An engine goes from process start to leading in
+about 2.4 seconds, and about 3.5 seconds from the moment it dies -- 23,105 open orders recovered
+from its region, 2,000 catch-up records applied, on a venue with a small retained log. That is the
+length of the interruption a member is being asked to accept once. The design target for a process
+dying on a healthy host is under 50 ms, so this figure should fall; the rule does not depend on
+it, but how tolerable one interruption is does.
 
 ## What is still open
 

@@ -56,6 +56,50 @@ failure is what makes a recoverable event cost resilience.
   \covers{ha_test:29, ha_test:30, ha_test:31}
 \end{requirement}
 
+\begin{requirement}{R-0125}{An instance that interrupts the venue twice is not restarted again}
+  Where restarting an instance has already cost the venue one interruption, a
+  second interruption from that instance shall leave it stopped rather than
+  restarted.
+  \rationale{An interruption is a period in which a member can neither place an
+  order nor withdraw one, and is told nothing while it lasts. One is a fault, and
+  the venue can account for it: there was a failure and recovery took as long as
+  it took. A second from the same instance is not a fault it is recovering from,
+  it is that instance being unfit to serve, and restoring it again guarantees a
+  third.
+
+  Stopping is what lets the pair do its work. An instance the supervisor keeps
+  restoring is back before its peer can be granted the entitlement, so a pair that
+  exists for exactly this purpose never acts --- and the venue takes an unbounded
+  series of interruptions instead of the single failover it was built to take.
+  Leaving the instance absent is therefore not an admission of defeat but the
+  step that produces the outcome the member should have had at the first fault.
+
+  \textbf{The count is taken over a session and not over a period.} A window
+  cannot be explained to the member it affects: it would have the venue saying
+  that two failures counted as one pattern because they fell close together, or
+  did not because they fell apart. It is also why this is stated of interruptions
+  rather than of failed starts --- an instance that dies every few minutes starts
+  perfectly every time.}
+  \uncovered{no scenario flaps an instance and asserts it is left stopped}
+\end{requirement}
+
+\begin{requirement}{R-0126}{The venue does not run with no instance of a component without saying so}
+  Where the last instance of a component is stopped and not restarted, the venue
+  shall report that it cannot perform that component's work, rather than continuing
+  in a state where nothing does it.
+  \rationale{Where the cause is something both instances share --- an input that
+  kills whatever reads it, a build, a configuration both instances load --- the peer
+  meets it in its turn and is stopped in its turn. The venue then has no instance of
+  that component and nothing trying to produce one.
+
+  That is the failure that looks like health. Every process that remains is running
+  normally, no alert has a component to name, and the absence is only visible to
+  somebody who thinks to count. Saying so costs an announcement; not saying so costs
+  the time between the last instance stopping and somebody noticing, which is
+  unbounded.}
+  \uncovered{no scenario stops every instance of a component and asserts the venue says so}
+\end{requirement}
+
 \subsubsection{When the restart and the promotion race}
 \label{sec:ha:enabled:process_death:race}
 

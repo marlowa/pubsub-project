@@ -202,6 +202,16 @@ def build_command(
     return command, workdir
 
 
+# How many times a component may take the venue out of service before the supervisor stops putting
+# it back. An interruption is a period in which a member can neither place an order nor cancel one
+# and is told nothing; one is a fault and is defensible, a second from the same instance is that
+# instance being unfit. Giving up is what lets high availability move the entitlement to its peer,
+# which is the outcome the member should have had at the first fault. There is deliberately no
+# window: the count resets when the launcher is started again, so the period is a session.
+# See docs/availability/process_death.md.
+MAX_INTERRUPTIONS_PER_SESSION = 2
+
+
 def start_one(  # pylint: disable=too-many-arguments,too-many-locals
     name: str, comp: dict,
     install_dir: Path, log_dir: Path, run_dir: Path,
@@ -272,7 +282,8 @@ def start_one(  # pylint: disable=too-many-arguments,too-many-locals
         # rather than given knowledge of the venue: it wraps one process, knows only the
         # command line below, and has no idea what a primary or a leader is.
         command = [sys.executable, str(_SCRIPT_DIR / "launch.py"),
-                   "--name", name, "--run-dir", str(run_dir), "--"] + list(command)
+                   "--name", name, "--run-dir", str(run_dir),
+                   "--max-interruptions", str(MAX_INTERRUPTIONS_PER_SESSION), "--"] + list(command)
 
     with stdout_path.open("w") as stdout_file:
         proc = subprocess.Popen(  # pylint: disable=consider-using-with

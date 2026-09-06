@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 78 |
-| Open | 27 (17 defects, 10 tasks) |
+| Bugs recorded | 80 |
+| Open | 29 (18 defects, 11 tasks) |
 | Closed | 51 |
-| Next id | BUG-0079 |
+| Next id | BUG-0081 |
 
 ## Open bugs by severity
 
-10 high, 14 medium, 3 low.
+11 high, 15 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -23,6 +23,7 @@
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
+| [BUG-0079](#bug_0079) | high | defect | A null pointer reached the slab allocator and terminated the FIX gateway |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -37,6 +38,7 @@
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0077](#bug_0077) | medium | defect | A restarting engine can catch up and report while its peer is leading |
+| [BUG-0080](#bug_0080) | medium | task | An exception that stops a process leaves no record of how it got there |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -350,9 +352,55 @@ consecutive starts shorter than `--minimum-runtime`. It already writes a restart
 [BUG-0065](#bug_0065): with no peer, every restart is a cold start, so every cycle strands what was
 deferred, and a venue that resumes automatically conceals it.
 
+#### 2026-09-06: measured again, and the entry splits in two
+
+**The harm this recorded is gone.** The original measurement answered 18 of 34 orders and left
+`awaiting=16` -- sixteen taken from a member and never answered. Re-run on a clean deployment with
+the same eight cycles: **47 of 47 answered, `awaiting=0`, nothing stranded.** That is
+[BUG-0064](#bug_0064)'s catch-up doing what this entry predicted it would.
+
+**The mechanism in the title is still there and still resets.** Deferral cleared after 8s, 8s,
+12s, 12s, 12s, 11s, 9s and 8s -- once per cycle -- and acceptance was never withdrawn, `refused=0`,
+across 190 seconds of flapping. So a flapping engine still stops the venue ever refusing.
+
+**But the reason that mattered has changed, and the fix is not the deferral clock.** The clock
+resetting was recorded as harmful because each cycle stranded orders. Nothing strands now. What
+remains is the loss of service itself, and the numbers say where it comes from:
+
+- the engine's peer arms a **15 second** promotion timeout on losing the replication connection;
+- an engine goes from process start to leading in about **2.4 seconds**, and about 3.5 seconds from
+  the moment it dies;
+- so **every restart is complete long before any failover begins**, and the pair does nothing. Not
+  one promotion occurred in eight cycles.
+
+A member in those windows can neither place an order nor withdraw one, and is told nothing --- the
+venue only refuses after 45 seconds of *continuous* outage, which a flap never reaches.
+
+**Settled 2026-09-06, and built.** An instance that has cost the venue two interruptions is not
+restarted again; the last instance being stopped is announced rather than left silent. R-0125 and
+R-0126, with the reasoning in `docs/availability/process_death.md`. `launch.py` gains
+`--max-interruptions`, which counts deaths however long the component ran -- the existing
+`--max-consecutive-failures` counts *failed starts*, and a component dying every ten minutes starts
+perfectly every time, which is why it never fired. `devenv.py` passes 2.
+
+**Why judging the instance is the load-bearing part**, and not merely tidier: there are two obvious
+repairs and neither works alone. Leave failover at fifteen seconds and the flap gives silent holes.
+Make failover fast, which [BUG-0029](#bug_0029) asks for, and each death promotes the peer instead
+-- and `open_orders_on_promotion` is `cancel`, so every one of those promotions cancels the whole
+book and tells every member their resting orders are gone. Eight cycles become eight mass
+cancellations, which is worse for a member than not knowing. Making recovery faster changes the
+shape of the damage; stopping the instance bounds it.
+
+**What is left, and why this entry stays open.** R-0126 is not built. The launcher supervises one
+process and does not know whether it is the last of its kind, and announcing that the venue cannot
+do a component's work is a venue-level act that [BUG-0065](#bug_0065) says does not exist yet. So
+the first half is done and the second is blocked on a trading halt. Neither requirement has a
+scenario.
+
 Related: [BUG-0009](#bug_0009), whose refusal this defeats. [BUG-0064](#bug_0064), which is why the
 repetition costs orders rather than merely time. [BUG-0029](#bug_0029), on the supervision grace
-period.
+period, and now on how wide the window is in which a restart outruns a failover. [BUG-0065](#bug_0065),
+which R-0126 waits on.
 
 ---
 
@@ -1859,6 +1907,98 @@ it is recorded rather than fixed in the same change.
 **Not observed, deduced.** No scenario has produced it: the whole `ha_test` suite passes with the
 catch-up where it now is. It is recorded because the window is visible in the code and a race that
 is only rare is not a race that is absent.
+
+### BUG-0079: A null pointer reached the slab allocator and terminated the FIX gateway {#bug_0079}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-06 |
+| Recorded | 2026-09-06 |
+| How | Growing the sequencer's log to measure whether a matching engine's recovery time tracks the retained log. Around 800,000 orders were sent on one FIX session; the gateway stopped part way through |
+| Impact | The gateway terminates and every member on it is disconnected. The sequencer and the matching engine were unaffected, so this is a loss of access rather than a loss of the venue -- but a member cannot place or manage anything until it reconnects, and a second gateway is not automatic |
+
+**What was logged, and it is all that was logged:**
+
+```
+FixOrderGatewayThread: OpenOrderPool exhausted: chaining new pool slab (65536 objects)   [six times]
+Reactor::run: exception escaped the event loop; shutting down:
+  ExpandableSlabAllocator::deallocate: ptr must not be nullptr (thrown from ExpandableSlabAllocator.cpp:125)
+```
+
+**Terminating is the right behaviour and is not what this entry is about.** A precondition that
+cannot hold means the process no longer knows what it is doing, and carrying on would be worse.
+The shutdown was orderly: the reactor caught it, the thread went through ShuttingDown to
+Terminate, and nothing was corrupted.
+
+**The immediate mechanism, as far as reading goes.** `ApplicationThread::release_pdu_payload`
+hands `message.payload()` to `deallocate` with no check:
+
+```cpp
+void ApplicationThread::release_pdu_payload(const EventMessage& message) const {
+    reactor_.inbound_slab_allocator().deallocate(message.slab_id(), const_cast<uint8_t*>(message.payload()));
+}
+```
+
+So a message whose payload is null throws there. **What put a null there is not established**, and
+the candidates are different defects: a message shape that legitimately carries no payload being
+released on a path that assumes one; a second release of something already returned; or something
+about the six slab chainings that preceded it.
+
+**Why it cannot be diagnosed from what exists.** The log names the throw site and nothing about
+how control reached it. There is no core and no signal, because the process shut down cleanly --
+so this is *less* recoverable after the fact than a segmentation fault, which at least leaves a
+symbolised stack in the journal. That is [BUG-0080](#bug_0080), and it is the reason this entry
+cannot say more than it does.
+
+**Load context, which argues both ways.** The deployment was wiped and rebuilt earlier the same
+afternoon, so this is not accumulated debris. But 800,000 resting orders on a single session is a
+test profile rather than a member's, and the open-order pool had chained six slabs, which is not
+the ordinary path -- chaining is the designed answer to exhaustion rather than a fault, but it
+does mean the allocator was somewhere it rarely goes. Whether the volume is necessary to reach
+this has not been tested.
+
+The gateway's log is preserved outside the repository at
+`~/mystuff/cores/fix_order_gateway_a-2026-09-06-slab-deallocate.log`.
+
+Related: [BUG-0024](#bug_0024), a different fault in the same allocator, closed. [BUG-0072](#bug_0072),
+the open-order pool being sized by nothing in particular, which is why the chaining happened.
+
+---
+
+### BUG-0080: An exception that stops a process leaves no record of how it got there {#bug_0080}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-06 |
+| Recorded | 2026-09-06 |
+| Kind | task |
+| How | Trying to diagnose [BUG-0079](#bug_0079) and finding the log named the throw site and nothing else |
+| Impact | A process that stops on a thrown precondition can only be diagnosed by rereading the code and guessing. The orderly shutdown that makes the failure safe is also what destroys the evidence |
+
+**A clean termination is worse to diagnose than a crash, which is the wrong way round.** When a
+process dies on a signal, systemd-coredump captures a symbolised stack at dump time, and that is
+what made [BUG-0057](#bug_0057) solvable a week later -- the executable had been rebuilt many times
+by then and its symbols were long gone. An exception that the reactor catches and shuts down on
+produces no core, no signal and no stack. All that survives is the message and the `__FILE__` and
+`__LINE__` the thrower passed.
+
+**What is proposed:** introduce `cpptrace` so that a stack trace is captured **at the point the
+exception is thrown**, not where it is caught, and written to the log with the message. The
+throwing site is the only place the call path still exists; by the time the reactor catches it,
+the frames that would say how the venue got there have been unwound.
+
+**Where it would apply.** Every throw the project makes on a precondition or post-condition --
+`PreconditionAssertion`, `PubSubItcException` and their relatives. The value is not in any one of
+them but in the class: these are the failures nobody can reproduce on demand, and the ones where a
+second occurrence may be weeks away.
+
+**Worth settling while doing it:** whether capture is always on or configurable. A trace costs
+something to take, but it is taken on a path that is about to stop the process, so the cost is
+paid once and never on the hot path.
+
+---
 
 ---
 

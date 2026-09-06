@@ -127,3 +127,5 @@ R-0121     active    2026-08-30  A component takes the cost of first touching it
 R-0122     active    2026-08-30  A report a member receives twice is marked as a repeat
 R-0123     active    2026-08-30  A member is told what it had, even when the venue's own record of it is unusable
 R-0124     active    2026-09-06  An arbiter with nobody to ask declines rather than assume it is alone
+R-0125     active    2026-09-06  An instance that interrupts the venue twice is not restarted again
+R-0126     active    2026-09-06  The venue does not run with no instance of a component without saying so

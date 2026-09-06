@@ -33,21 +33,49 @@ Options:
                               trying to restore service. Reset by any start that survives
                               --minimum-runtime.
 
+  --max-interruptions N       Give up after this many interruptions, exiting 1. An
+                              interruption is the component being gone and coming back --
+                              every death counts, however long it had been running. Zero is
+                              the default and means never.
+
+                              This is NOT --max-consecutive-failures with a different name.
+                              That one asks whether the component can start; this one asks
+                              how many times the venue has lost service because of it, and
+                              nothing resets it. A component that dies every ten minutes
+                              passes the first test forever and fails this one on its second
+                              death.
+
+                              Why a count and not a rate: an interruption is a period in
+                              which a member can neither place an order nor cancel one, and
+                              is told nothing. One is a failure and is defensible -- there
+                              was a fault and recovery took as long as it took. A second
+                              from the same instance is that instance being unfit to serve,
+                              and no window of time makes it otherwise. Giving up hands the
+                              decision to high availability: the instance stays absent for
+                              longer than the promotion timeout, so its peer is granted
+                              leadership and service resumes.
+
+                              The count resets only when this script is started again, which
+                              makes the period a session rather than a clock.
+                              See docs/availability/process_death.md.
+
   -- COMMAND [ARG...]         The command to run, after a bare --. The separator is
                               conventional rather than required, but without it any leading
                               dashes in COMMAND will be read as options to this script.
 
 Exit status:
   0   stood down as asked, by signal or by a stop file
-  1   gave up after --max-consecutive-failures failed starts
+  1   gave up -- after --max-consecutive-failures failed starts, or --max-interruptions
+      interruptions
 
 Files it writes, all in --run-dir:
   <name>.pid              the COMPONENT's pid -- the plain file devenv.py, perf_run.py and
                           the resource monitor already read, so none of them need to know
                           this script exists. Removed on exit.
   <name>.launcher.pid     this script's own pid. Removed on exit.
-  <name>.launcher.state   name, status, restart count, consecutive failed starts, and when
-                          it was last updated. Readable with cat.
+  <name>.launcher.state   name, status, restart count, consecutive failed starts, how many
+                          interruptions this component has caused and how many it is allowed,
+                          and when it was last updated. Readable with cat.
   <name>.stop             not written by this script -- read by it. See below.
 
 Wraps exactly one process. It knows the command line it was given and nothing
@@ -111,18 +139,24 @@ class Launcher:
     """Starts one command and restarts it when it exits."""
 
     def __init__(self, name: str, run_dir: Path, command: list, minimum_runtime: float,
-                 failure_sleep: float, max_consecutive_failures: int) -> None:
+                 failure_sleep: float, max_consecutive_failures: int, max_interruptions: int = 0) -> None:
         self.name = name
         self.run_dir = run_dir
         self.command = command
         self.minimum_runtime = minimum_runtime
         self.failure_sleep = failure_sleep
         self.max_consecutive_failures = max_consecutive_failures
+        self.max_interruptions = max_interruptions
 
         self.child = None
         self.stopping = False
         self.restarts = 0
         self.consecutive_failures = 0
+
+        # Times the venue has lost this component and had it back. Unlike consecutive_failures
+        # this is never reset by a healthy run: a component that dies every ten minutes is not
+        # recovering, it is interrupting service on a slow cycle.
+        self.interruptions = 0
 
     # -- file locations ------------------------------------------------------
 
@@ -187,6 +221,8 @@ class Launcher:
             # preceded by failures still shows them, which is the history worth seeing;
             # the count resets only once a child has run past --minimum-runtime.
             f"consecutive_failed_starts={self.consecutive_failures}",
+            f"interruptions={self.interruptions}",
+            f"max_interruptions={self.max_interruptions}",
             f"launcher_pid={os.getpid()}",
             f"updated={time.strftime('%Y-%m-%d %H:%M:%S')}",
             "",
@@ -309,6 +345,9 @@ class Launcher:
                 return 0
 
             self.restarts += 1
+            self.interruptions += 1
+            if self.give_up_for_interruptions(description, ran_for):
+                return 1
             if ran_for < self.minimum_runtime:
                 self.consecutive_failures += 1
                 log(f"child ended ({description}) after only {ran_for:.1f}s -- treating as a "
@@ -336,6 +375,31 @@ class Launcher:
         self.write_state("gave up")
         return True
 
+    def give_up_for_interruptions(self, description: str, ran_for: float) -> bool:
+        """Whether this component has interrupted the venue often enough to be taken out of service.
+
+        An interruption is the component being gone and coming back. Every death is one, whatever
+        it had been running for: a slow flap interrupts service just as surely as a fast one, and
+        is harder to notice because each individual recovery looks like a success.
+
+        Not restarting is the point rather than a side effect. The instance then stays absent for
+        longer than its peer's promotion timeout, so high availability grants leadership elsewhere
+        and service resumes -- which is the outcome a member should have had at the first fault. A
+        supervisor that keeps restoring an unfit instance prevents that from ever happening.
+        """
+        if self.max_interruptions <= 0:
+            return False
+        if self.interruptions < self.max_interruptions:
+            log(f"child ended ({description}) after {ran_for:.1f}s -- interruption {self.interruptions} "
+                f"of {self.max_interruptions} before this component is taken out of service")
+            return False
+        log(f"child ended ({description}) after {ran_for:.1f}s -- that is interruption {self.interruptions}, "
+            f"and the limit is {self.max_interruptions}. NOT restarting: this component has interrupted the "
+            f"venue too often to be trusted with it, and staying absent is what lets its peer take over. "
+            f"Restart this launcher to put it back.")
+        self.write_state("gave up -- too many interruptions")
+        return True
+
 
 def parse_arguments(argv: list) -> argparse.Namespace:
     """Parse the launcher's own options, and the command that follows a bare --."""
@@ -354,6 +418,9 @@ def parse_arguments(argv: list) -> argparse.Namespace:
                              f"(default: {DEFAULT_FAILURE_SLEEP_SECONDS})")
     parser.add_argument("--max-consecutive-failures", type=int, default=0,
                         help="give up after this many failed starts in a row; 0 means never give up (default: 0)")
+    parser.add_argument("--max-interruptions", type=int, default=0,
+                        help="give up after this many interruptions -- deaths, however long the component had "
+                             "been running; 0 means never (default: 0)")
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="the command to run, after a bare --")
 
@@ -373,7 +440,7 @@ def main() -> int:
     log.name = arguments.name
     launcher = Launcher(arguments.name, arguments.run_dir, arguments.command,
                         arguments.minimum_runtime, arguments.failure_sleep,
-                        arguments.max_consecutive_failures)
+                        arguments.max_consecutive_failures, arguments.max_interruptions)
     return launcher.run()
 
 
