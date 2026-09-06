@@ -13,6 +13,7 @@ the order flow. The clickable [architecture map](../orientation/architecture.md)
 - [authentication_service.md](authentication_service.md) — Credential checking for member logons
 - [admin_service.md](admin_service.md) — The Java administration service
 - [fix_test_client.md](fix_test_client.md) — The FIX test client used to drive the venue
+- [trading_phases.md](trading_phases.md) — What the venue is doing, how it says so, and why a halt cannot leave the process that declares it
 
 ---
 
