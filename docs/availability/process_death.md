@@ -61,6 +61,62 @@ Fifty milliseconds is not reachable by replaying anything. **Only the book itsel
 memory and being re-attached rather than rebuilt can hit it.** That is a much larger change than a
 journal, and it is the main thing this design has to decide.
 
+## A slow flap is a loss of service, and the instance is judged for it
+
+**Settled 2026-09-06.** An instance that dies and returns repeatedly is not a component that keeps
+recovering; it is a venue that keeps losing service. The question this answers is what the venue
+does about it.
+
+**What makes an interruption uncovered.** A pair exists so that one instance failing costs a
+failover rather than an outage. That only works when the survivor is given time to notice: the
+matching engine's peer arms `ha_timing.heartbeat_timeout_seconds` -- fifteen seconds -- on losing
+the replication connection. An instance that dies and is restarted inside that window is back
+before any failover begins, so the pair does nothing and the venue simply has a hole. Measured:
+eight kill-and-restart cycles produced outages of 8 to 12 seconds each, and no promotion at any
+point.
+
+**What a member experiences in one.** An order sent into the hole is accepted, sequenced and
+deferred: no execution report, and the member holds something it believes is live that no book
+holds. A cancel takes the same path, so an order already placed cannot be withdrawn. And nothing
+is said -- the venue only stops accepting after 45 seconds of *continuous* outage, which a flap
+never reaches because the clock restarts on every reconnect. So the member gets repeated silent
+windows in which it can neither place nor withdraw, and no signal that anything is wrong.
+
+**Two uncovered interruptions and the instance is fatal.** One is a fault; two is a pattern. The
+supervisor stops restarting it, which it can already do -- `launch.py` has `give_up()`, writes
+`gave up` to `<name>.launcher.state` and exits. The instance is then absent for longer than the
+promotion timeout by construction, so the arbiter grants leadership to the peer and service
+resumes. The supervisor decides only whether to start a process; which instance leads remains the
+arbiter's, exactly as [design_notes.md#ha_supervisor_role](design_notes.md#ha_supervisor_role)
+requires.
+
+**Why this is needed whatever else is fixed, which is the part worth keeping.** There are two
+obvious repairs and neither is sufficient alone:
+
+- Leave failover at fifteen seconds and the flap gives **silent holes**, as above.
+- Make failover fast, which is what BUG-0029 asks for, and each death promotes the peer instead --
+  but `open_orders_on_promotion` is `cancel`, so **every one of those promotions cancels the whole
+  book and tells every member their resting orders are gone.** Eight cycles become eight mass
+  cancellations, which for a member is worse than not knowing: they are repeatedly told their
+  orders are destroyed and asked to replace them into a venue about to do it again.
+
+So making recovery faster changes the shape of the damage rather than removing it. What bounds it
+is judging the instance, because that turns an open-ended series of interruptions into exactly
+one. Fixing BUG-0029 then makes that one interruption short instead of fifteen seconds, which is
+the right order to value the two.
+
+**The last instance halts loudly rather than leaving nothing.** Where the cause is something both
+instances share -- a poison order, a bad build, a configuration both read -- the peer meets it too
+and is judged in its turn. The venue then has no instance of that component and a supervisor that
+has stopped trying. That must be announced rather than discovered: a venue quietly running with
+nothing behind a component is the failure that looks like health. This is the same shape as
+BUG-0010, where high availability fails over into a condition both nodes share.
+
+**Still to settle: the window.** Two deaths a year is not a flap. The count needs a period over
+which it is taken, and that period is not the promotion timeout -- a slow flap can run on any
+cycle. It should be long enough that two unrelated faults are unlikely to be judged as one
+pattern, and short enough that a genuine flap is caught within a trading session.
+
 ## What is still open
 
 - **Does the order book live in shared memory?** It is the only way to the stated target, and it
@@ -71,9 +127,12 @@ journal, and it is the main thing this design has to decide.
   purpose. Its correct value is a consequence of how fast a supervised restart is, which is why
   BUG-0029 is blocked on this document rather than the other way round. One number serving two
   meanings cannot be tuned for either.
-- **What happens on a crash loop?** Section 7 proposes a poison-pill filter: recovery identifies
-  the input that caused the crash and skips it. Nothing implements this, and skipping an order
-  because it crashed the engine is a decision with its own consequences.
+- **What happens on a crash loop?** Partly settled above: the instance is judged after two
+  uncovered interruptions and the last one halts the venue loudly. What that does not answer is
+  *why* it was dying. Section 7 proposes a poison-pill filter: recovery identifies the input that
+  caused the crash and skips it. Nothing implements this, and skipping an order because it crashed
+  the engine is a decision with its own consequences. Judging the instance bounds the damage; it
+  does not diagnose it.
 - **Which components get an inner loop at all?** The matching engine is the expensive case because
   of the book. A gateway or the arbiter may be cheap enough to restart cold, in which case the
   supervisor is the whole answer for them.

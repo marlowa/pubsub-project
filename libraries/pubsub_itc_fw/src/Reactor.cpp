@@ -1170,13 +1170,10 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                 const uint32_t ev = events[i].events;
 
                 if ((ev & EPOLLERR) && conn->is_established()) {
-                    // Error on an established connection -- tear down immediately.
-                    int err = 0;
-                    socklen_t len = sizeof(err);
-                    ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
-                    const std::string reason = fmt::format("socket error on connection {} to service {}: {}", conn->id().get_value(), conn->service_name(),
-                                                           StringUtils::get_error_string(err));
-                    outbound_manager_.teardown_connection(conn->id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+                    // Error on an established connection. The manager tears it down AND schedules
+                    // the reconnect: doing the first here and leaving the second to be remembered
+                    // is what left a service disconnected for the life of the process (BUG-0078).
+                    outbound_manager_.handle_socket_error(*conn);
                 } else if (conn->is_connecting() && ((ev & EPOLLOUT) || (ev & EPOLLERR))) {
                     // EPOLLOUT signals connect completion (success or failure).
                     // EPOLLERR on a connecting socket (e.g. ECONNREFUSED) also

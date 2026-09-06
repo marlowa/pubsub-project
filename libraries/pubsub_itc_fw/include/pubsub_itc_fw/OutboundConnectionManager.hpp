@@ -241,6 +241,26 @@ class OutboundConnectionManager {
      */
     void teardown_connection(ConnectionID id, const std::string& reason, DeliverLostEventFlag deliver_lost_event);
 
+    /**
+     * @brief Tears down an established outbound connection whose socket reported an error, and
+     *        schedules the reconnect.
+     *
+     * The pairing is the whole point of the method existing. A teardown that transport failure
+     * caused must be followed by a retry, and this was the one path where the two were written
+     * apart: an error raised on an established connection is noticed by the reactor's epoll loop,
+     * which tore the connection down and scheduled nothing. The service then stayed disconnected
+     * for the life of the process.
+     *
+     * What made it hard to see is that it depends on how the peer's socket dies. A process that
+     * closes cleanly leaves a FIN, which arrives as a read of zero bytes and is recovered from
+     * here in on_data_ready; one killed with data in flight leaves an RST, which arrives as
+     * EPOLLERR and was not. No application asked for that distinction. See docs/bug_list.md,
+     * BUG-0078.
+     *
+     * @param[in] conn The established connection whose socket reported an error.
+     */
+    void handle_socket_error(OutboundConnection& conn);
+
   private:
     /**
      * @brief Schedules an automatic reconnect attempt for a configured outbound

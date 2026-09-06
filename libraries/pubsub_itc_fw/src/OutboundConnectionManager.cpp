@@ -307,6 +307,24 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
     }
 }
 
+void OutboundConnectionManager::handle_socket_error(OutboundConnection& conn) {
+    // Snapshot before the teardown, which erases the OutboundConnection from connections_ and so
+    // takes the service name and the thread the retry has to be issued for with it.
+    const std::string service_name = conn.service_name();
+    const ThreadID requesting_thread_id = conn.requesting_thread_id();
+    const ConnectionID id = conn.id();
+
+    int error = 0;
+    socklen_t error_length = sizeof(error);
+    ::getsockopt(conn.get_fd(), SOL_SOCKET, SO_ERROR, &error, &error_length);
+    const std::string reason =
+        fmt::format("socket error on connection {} to service '{}': {}", id.get_value(), service_name, StringUtils::get_error_string(error));
+
+    PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::handle_socket_error: {}", reason);
+    teardown_connection(id, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+    schedule_retry(service_name, requesting_thread_id);
+}
+
 void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
     if (conn.is_tls()) {
         auto [ok, error] = conn.protocol_handler()->continue_send();

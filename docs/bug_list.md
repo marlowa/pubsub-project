@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 77 |
-| Open | 28 (18 defects, 10 tasks) |
-| Closed | 49 |
-| Next id | BUG-0078 |
+| Bugs recorded | 78 |
+| Open | 27 (17 defects, 10 tasks) |
+| Closed | 51 |
+| Next id | BUG-0079 |
 
 ## Open bugs by severity
 
-10 high, 15 medium, 3 low.
+10 high, 14 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -36,7 +36,6 @@
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
-| [BUG-0076](#bug_0076) | medium | defect | Scenario 10 fails inside the suite and passes on its own |
 | [BUG-0077](#bug_0077) | medium | defect | A restarting engine can catch up and report while its peer is leading |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -1824,6 +1823,150 @@ setting should do the same.
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
 
+### BUG-0077: A restarting engine can catch up and report while its peer is leading {#bug_0077}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-03 |
+| Recorded | 2026-09-03 |
+| How | Reading the startup path after moving the catch-up there, while closing [BUG-0064](#bug_0064) |
+| Impact | A burst of execution reports to members for orders they already hold, sent by an instance that is about to become a follower and serve nobody. The reports are marked as repeats, so this is noise a member can discard rather than a loss |
+
+An engine catches up when the sequencer's order connection first arrives, before it has served
+anything --- which is where the catch-up has to be, because an instance that has already been
+working would read the live orders arriving meanwhile as replay.
+
+**A restarting primary does not yet know whether its peer is leading.** It learns that from the
+peer's `RoleAnnouncement` over the replication channel, and adopts the follower position on it. The
+sequencer's order connection is a separate channel and arrives on its own schedule. Where it
+arrives first, the restarting instance asks for a catch-up, applies what comes back, and reports
+every record to the member that placed it --- and then the announcement lands and it becomes a
+follower that will serve nobody.
+
+**The sequencer does not decline it.** `handle_me_position_request` serves any asker while the
+sequencer leads, and the request is itself what re-points the sequencer's ME order connection. That
+is deliberate: on a promotion the engine asks before the sequencer knows to route to it. So the
+obvious guard --- refuse a catch-up to an instance that is not the one being routed to --- would
+break the case the mechanism exists for, and this needs a way to tell the two apart rather than a
+check bolted onto the existing one.
+
+**What bounds the harm.** Every report out of a catch-up is marked `PossResend`, so a member that
+already holds the report can discard it. The book the instance builds is what its replica would
+have held anyway. So this is duplicate traffic and a wasted catch-up, not a loss --- which is why
+it is recorded rather than fixed in the same change.
+
+**Not observed, deduced.** No scenario has produced it: the whole `ha_test` suite passes with the
+catch-up where it now is. It is recorded because the window is visible in the code and a race that
+is only rare is not a race that is absent.
+
+---
+
+## Closed
+
+### BUG-0078: An outbound connection lost to a socket error is never retried {#bug_0078}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-06 |
+| Recorded | 2026-09-06 |
+| How | Running the flap experiment for [BUG-0066](#bug_0066) against a venue deployed onto a wiped install tree and an emptied WAL device, and finding the sequencer never reconnected to the matching engine after the first restart |
+| Fixed | 2026-09-06 -- the manager tears down and schedules the retry in one operation, and the reactor calls that instead of doing half of it |
+| Impact | A component that loses a service to a socket error never gets it back. The sequencer lost its matching engine on the first kill and did not reconnect for the remaining three minutes and seven restarts, so nothing the venue took could be processed and no restart of the engine helped. Recovery needs the process restarted |
+
+**The reactor tears the connection down and stops there.** `Reactor::dispatch_events`,
+`Reactor.cpp:1179`:
+
+```cpp
+if ((ev & EPOLLERR) && conn->is_established()) {
+    // Error on an established connection -- tear down immediately.
+    ...
+    outbound_manager_.teardown_connection(conn->id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+}
+```
+
+**Every other teardown of an outbound connection is paired with `schedule_retry`**, and
+`teardown_connection` does not schedule one itself -- checked. The pairs are at
+`OutboundConnectionManager.cpp` 252/253, 305/306, 322/323 and 348/349. The reactor's is the one
+that is not paired, so an established connection that dies with a socket error is the one case the
+framework does not recover from.
+
+**The reactor is where retry is supposed to live**, which is why this reads as an omission rather
+than a decision. Its own comment at `Reactor.cpp:893` says retry is centralised there rather than
+"surfacing to the application and requiring it to implement retry logic itself". Every application
+in this venue is written on that promise and none of them retries for itself.
+
+**Measured on a clean venue.** The install tree was removed and rebuilt and the WAL device emptied
+first, so nothing here rests on accumulated state: the venue started at epoch 1 with an empty book
+and an empty log. A matching engine was then killed and restarted eight times on a 24-second cycle
+with orders arriving throughout. The sequencer's log records **one** matching-engine connection for
+the whole run:
+
+```
+16:35:46  SequencerThread: matching engine order connection 5 established
+   ...    SequencerThread: matching engine order connection 5 lost: socket error on
+          connection 5 to service matching_engine: Connection reset by peer
+```
+
+and nothing after it. **The contrast is in the same log.** `matching_engine_secondary`, killed once
+and left dead, was torn down through the manager's own path --- *"peer closed connection on service
+'matching_engine_secondary'"* --- and immediately produced *"failed to connect; retrying every
+2000ms"*. The primary engine, torn down by the reactor on a socket error, produced no such line and
+was never dialled again.
+
+**So which of the two happens is decided by how the peer's socket dies.** A process that closes
+cleanly leaves a FIN and is recovered from; one that is killed with unread data in flight leaves an
+RST, raises `EPOLLERR`, and is not. Nothing in the application chooses between them.
+
+**This is the cause of [BUG-0076](#bug_0076)**, which records scenario 10 failing inside the suite
+and passing on its own, with the message *"sequencer_primary did not re-establish ME connection
+within 10s after ME restart"*. That entry offers two readings --- a timeout that is too short, or a
+reconnect that degrades with the size of the log --- and it is neither. Whether a SIGKILLed engine
+leaves a FIN or an RST is a timing matter, which is exactly why the same scenario passes in one
+suite run and fails in the next. BUG-0076 stays open until the fix is verified against it.
+
+**It also blocks measuring [BUG-0066](#bug_0066).** The flap experiment cannot answer whether a
+flapping engine still strands deferred orders, because the engine never became reachable again:
+the deferral clock never cleared, so the behaviour that entry describes was never reached. That
+measurement has to wait for this.
+
+**The fix is not simply a call added at the reactor.** The manager owns the service name and the
+requesting thread id that `schedule_retry` needs, and the reactor reaches for a connection's
+internals to build its message. The tidier shape is one method on the manager --- give it the
+connection and the reason, and let it tear down and schedule as it does everywhere else --- so that
+the two are impossible to separate again. Worth checking at the same time whether the inbound side
+has the same asymmetry.
+
+---
+
+**Fixed 2026-09-06.** `OutboundConnectionManager::handle_socket_error(conn)` now performs the whole
+operation: it reads `SO_ERROR`, builds the reason, tears the connection down and schedules the
+retry. `Reactor::dispatch_events` calls that one method rather than tearing down and leaving the
+retry to be remembered, and `schedule_retry` stays private -- so the two cannot be written apart
+again, which was the defect rather than the missing line.
+
+**Measured, against the run that found it.** The same eight kill-and-restart cycles on a clean
+deployment:
+
+| | Before | After |
+|---|---|---|
+| orders answered | 0 of 47 | **47 of 47** |
+| orders never answered | 13 | **0** |
+| ME order connections established | 1 | **9** -- one at startup, one per cycle |
+
+**It also puts a number on how often the broken path was taken.** Two of the eight kills produced a
+socket error and six a clean close, so roughly a quarter of process deaths went the way that never
+recovered. That is the intermittency [BUG-0076](#bug_0076) records, quantified: before this fix the
+first of those two ended the sequencer's connection to its matching engine for the life of the
+process.
+
+**The inbound side was checked and has no equivalent gap.** `Reactor::dispatch_events` handles an
+error on an inbound connection the same way, but there is nothing to schedule: a peer dialled us and
+cannot be dialled back, so delivering `ConnectionLost` and waiting is the complete behaviour.
+
+`ha_test.py`: 53/53, scenario 10 included.
+
 ### BUG-0076: Scenario 10 fails inside the suite and passes on its own {#bug_0076}
 
 | | |
@@ -1833,6 +1976,7 @@ not exist.
 | Recorded | 2026-09-03 |
 | How | A full `ha_test.py --scenario all` run while verifying an unrelated change: 51 of 52 passed and scenario 10 failed |
 | Impact | The suite's result depends on what ran before it, so a genuine regression in this scenario cannot be told from this noise, and a green run is worth less than it looks |
+| Fixed | 2026-09-06 -- by [BUG-0078](#bug_0078). Not a flake and not the timeout: an outbound connection lost to a socket error was never retried |
 
 Scenario 10 kills the matching engine and restarts it with 20,000 orders in flight. In the suite
 run it failed:
@@ -1882,48 +2026,38 @@ should be put there.
 **Do not close this by raising the timeout.** That hides whichever of the two readings is true,
 and the second one matters.
 
-### BUG-0077: A restarting engine can catch up and report while its peer is leading {#bug_0077}
+**2026-09-06: it is neither reading. The cause is [BUG-0078](#bug_0078).** An outbound connection
+torn down on a socket error is never retried -- the reactor tears it down and does not schedule
+the reconnect that every other teardown path schedules. So whether the sequencer comes back to a
+restarted matching engine depends on how that engine's socket died: a process that closes cleanly
+leaves a FIN and is recovered from, one killed with data in flight leaves an RST, raises
+`EPOLLERR`, and is not. That is why the same scenario passes in one suite run and fails in the
+next, and it is why the ten seconds was never the question.
 
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-03 |
-| Recorded | 2026-09-03 |
-| How | Reading the startup path after moving the catch-up there, while closing [BUG-0064](#bug_0064) |
-| Impact | A burst of execution reports to members for orders they already hold, sent by an instance that is about to become a follower and serve nobody. The reports are marked as repeats, so this is noise a member can discard rather than a loss |
+Found by a flap experiment on a venue deployed onto a wiped install tree and an emptied WAL
+device, where the sequencer lost its engine on the first kill and never dialled it again. **This
+entry stays open until the fix is verified against scenario 10 inside a full suite run**, since an
+intermittent failure is not shown to be gone by one green run.
 
-An engine catches up when the sequencer's order connection first arrives, before it has served
-anything --- which is where the catch-up has to be, because an instance that has already been
-working would read the live orders arriving meanwhile as replay.
+**Closed 2026-09-06, and neither of the two readings was right.** It was not a timeout that is too
+short, and not a reconnect that degrades with the size of the log. The sequencer's outbound
+connection to the matching engine was torn down without a retry being scheduled whenever the
+engine's socket died with an error rather than a clean close -- [BUG-0078](#bug_0078).
 
-**A restarting primary does not yet know whether its peer is leading.** It learns that from the
-peer's `RoleAnnouncement` over the replication channel, and adopts the follower position on it. The
-sequencer's order connection is a separate channel and arrives on its own schedule. Where it
-arrives first, the restarting instance asks for a catch-up, applies what comes back, and reports
-every record to the member that placed it --- and then the announcement lands and it becomes a
-follower that will serve nobody.
+**Which is why it looked like a flake.** A process killed with nothing in flight leaves a FIN, which
+the manager's own path recovers from; one killed mid-write leaves an RST, which the reactor handled
+and did not retry. Whether a SIGKILL produces one or the other is timing, so the same scenario
+passed in one suite run and failed in the next. Measured on the flap experiment that found the
+cause: two of eight kills took the failing path.
 
-**The sequencer does not decline it.** `handle_me_position_request` serves any asker while the
-sequencer leads, and the request is itself what re-points the sequencer's ME order connection. That
-is deliberate: on a promotion the engine asks before the sequencer knows to route to it. So the
-obvious guard --- refuse a catch-up to an instance that is not the one being routed to --- would
-break the case the mechanism exists for, and this needs a way to tell the two apart rather than a
-check bolted onto the existing one.
+**The entry's instruction not to raise the timeout was right**, and worth keeping as the general
+lesson: the number was never the question, and raising it would have hidden a defect that leaves a
+component disconnected for the life of the process.
 
-**What bounds the harm.** Every report out of a catch-up is marked `PossResend`, so a member that
-already holds the report can discard it. The book the instance builds is what its replica would
-have held anyway. So this is duplicate traffic and a wasted catch-up, not a loss --- which is why
-it is recorded rather than fixed in the same change.
-
-**Not observed, deduced.** No scenario has produced it: the whole `ha_test` suite passes with the
-catch-up where it now is. It is recorded because the window is visible in the code and a race that
-is only rare is not a race that is absent.
-
----
-
----
-
-## Closed
+**Closed on a mechanism rather than on a green run.** Scenario 10 passes in a full suite (53/53),
+but that alone would not have been enough for an intermittent failure -- what closes it is that the
+cause is identified in the code, the fix removes it, and the failing path was exercised twice in the
+experiment and recovered both times.
 
 ### BUG-0074: R-0101 cannot be met as worded, because the catch-up stream is filtered {#bug_0074}
 
