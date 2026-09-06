@@ -65,17 +65,35 @@ each case the retained period must be a figure the venue can state rather than
 whatever storage happens to hold.
 
 \begin{requirement}{R-0101}{A component establishes that its catch-up was complete before it acts}
-  A component shall establish that it received every record between the position
-  it presented and the position it has reached, and shall not begin acting if it
-  did not.
+  A component shall establish that every record the authority sent it arrived,
+  exactly once and in the order sent, and shall not begin acting if it did not.
   \rationale{Catch-up records are applied without producing the execution reports
   that were produced the first time, so nothing about applying them draws
   attention. A catch-up that is missing a record therefore leaves a component
   whose state is wrong and which believes it is current --- and every check it
   performs afterwards is made against the wrong state. Silence is the right
   behaviour for records that arrive; it is not the right behaviour for records
-  that do not.}
-  \uncovered{no scenario withholds a record during a catch-up}
+  that do not.
+
+  \textbf{The wording says what the authority sent, and not what lies between the
+  two positions, because the second cannot be established by the component.} This
+  requirement said the second until the day it was built, and building it stopped
+  every healthy promotion in the suite. The stream is filtered: an authority
+  streaming a component back into currency sends what that component consumes and
+  withholds what it produces, so the records that arrive are a subset of the
+  numbers in the range and the gaps between them are ordinary. A check for a run
+  of consecutive numbers is therefore wrong by construction, however much the
+  numbering invites it.
+
+  What is left is a count, an ordering, and no repeats, and it catches what
+  actually goes wrong between two parties: loss in transit, reordering, and
+  duplication. \textbf{What it does not catch is the authority sending the wrong
+  set}, because a component cannot verify it received what it was never told
+  about. That limit is stated here rather than left to be discovered, since the
+  requirement is otherwise easy to read as a stronger guarantee than the venue
+  has.}
+  \uncovered{no scenario withholds a record during a catch-up, so the check is
+  exercised only by its unit tests and never against a real stream}
 \end{requirement}
 
 \textbf{Three components depart from this shape, and the differences matter.} A

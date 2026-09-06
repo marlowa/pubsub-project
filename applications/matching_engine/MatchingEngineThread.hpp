@@ -14,6 +14,7 @@
 
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
+#include <pubsub_itc_fw/CatchUpTally.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -293,6 +294,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // reading this line learns how much a member was told on a promotion, which is otherwise
     // visible only at Debug and only per record.
     int64_t reconciliation_reports_sent_{0};
+
+    // Establishes that the catch-up was complete before this instance acts on it (R-0101).
+    //
+    // Its life is one ASK rather than one reconciliation, unlike the counter above: the answer to
+    // a repeated request is the whole stream again, so what the ack accounts for is what the last
+    // request produced. It is reset where the request is sent.
+    pubsub_itc_fw::CatchUpTally catch_up_tally_{0};
 
     // Whether this catch-up is a promotion or a start. Both catch up, because both may be
     // missing records; only a promotion inherits a book from a peer, and only a promotion is

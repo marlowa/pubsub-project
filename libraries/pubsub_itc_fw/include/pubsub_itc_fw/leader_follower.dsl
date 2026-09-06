@@ -321,10 +321,21 @@ end
 #  merely got as far back as the log goes -- because resuming on an
 #  incomplete answer conceals exactly the loss it is recovering
 #  from. See R-0123.
+#
+#  And it carries HOW MANY records were streamed, so that the engine
+#  can establish its catch-up was complete before it acts (R-0101).
+#  The count is needed because contiguity cannot be used: the stream
+#  is filtered -- only NewOrderSingle and OrderCancelRequest are
+#  forwarded -- so the engine receives a subset of the numbers in the
+#  range and a gap between them is ordinary. It is the count of what
+#  was actually SENT, not of what was walked past: the filtering
+#  happens after the walk, and counting the walk would have the engine
+#  expect records the sequencer deliberately withheld.
 # ------------------------------------------------------------
 message MePositionAck (id=116, version=1)
     i64 last_seq_no        # sequencer's current WAL head at catch-up completion
     i64 first_seq_no       # earliest record the sequencer still retains, or 0 if it holds none
+    i64 records_sent       # how many records were streamed for this request, after filtering
 end
 
 # ------------------------------------------------------------

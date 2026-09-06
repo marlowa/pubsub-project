@@ -69,15 +69,19 @@ on the peer's word alone safe.
 
   The engine is capable of the other answer --- \texttt{keep} carries the book
   across --- and what is missing is not the mechanism but the grounds for
-  trusting it. The book a promoted instance holds is assembled from two things
-  nothing checks: the replica it maintained by \texttt{BookUpdate} while it was
-  the follower, and the catch-up it applies before it acts, whose completeness is
-  the subject of \reqref{R-0101} and is not established today. Keeping a book
-  that is quietly short of an order is worse than cancelling the lot, because the
-  member is told nothing and believes it has an order the venue does not hold.
+  trusting it. The book a promoted instance holds is assembled from two things,
+  and \textbf{one of them is now checked and the other is not}. The catch-up
+  applied before it acts is accounted for, which is \reqref{R-0101}. The replica
+  it maintained by \texttt{BookUpdate} while it was the follower is not: those
+  updates are applied as they arrive and nothing establishes that none was
+  missed. Keeping a book that is quietly short of an order is worse than
+  cancelling the lot, because the member is told nothing and believes it has an
+  order the venue does not hold.
 
-  So the setting stands at the outcome that is worse and certain, and moving it
-  is earned by verifying the catch-up rather than by deciding to trust it.
+  So the setting stands at the outcome that is worse and certain. Half of what
+  would earn the move has been done, and the remaining half is the replication
+  stream --- the same question asked of a different channel, and the reason this
+  gap narrows rather than closes.
 \end{gap}
 
 \begin{requirement}{R-0074}{An instance that gives up leadership cannot thereby create a second one}

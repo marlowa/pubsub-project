@@ -555,6 +555,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     // outcome that cannot be recovered from.
     if (ha_role_state_ == MeRole::Reconciling) {
         ++reconciliation_records_seen_;
+        catch_up_tally_.offer(sequence_number);
         const OrderKey recon_key = OrderKey::make(session, view.cl_ord_id);
         if (order_book_.contains(recon_key)) {
             return; // duplicate during replay -- ignore
@@ -851,6 +852,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     // either, so its member is still holding an order it believes is live.
     if (ha_role_state_ == MeRole::Reconciling) {
         ++reconciliation_records_seen_;
+        catch_up_tally_.offer(sequence_number);
         const OrderKey recon_key = OrderKey::make(session, view.orig_cl_ord_id);
         // Read before the removal, because the report names the order that was cancelled and
         // the entry is what holds its venue order id.
@@ -1705,7 +1707,11 @@ void MatchingEngineThread::send_me_position_request() {
     // with no region -- that it is a component at position zero which has fallen the whole day
     // behind -- would have the venue replay everything it still holds into an engine that never
     // held any of it.
-    request.last_seq_no = has_position_ ? last_replicated_seq_no_ : -1;
+    const int64_t position_presented = has_position_ ? last_replicated_seq_no_ : -1;
+    request.last_seq_no = position_presented;
+    // A repeated request is answered with the whole stream again, so the tally counts from this
+    // ask rather than from the start of the reconciliation. R-0101.
+    catch_up_tally_ = pubsub_itc_fw::CatchUpTally(position_presented);
     for (const auto& conn_id : sequencer_order_conn_ids_) {
         send_pdu(conn_id, pubsub_itc_fw_app::MePositionRequest::message_pdu_id, 0, request);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={})",
@@ -1736,14 +1742,33 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
         return;
     }
 
+    // R-0101: establish that the catch-up was complete before acting on it. What is checked is
+    // that every record the sequencer SENT arrived, exactly once and in ascending order -- not
+    // that the numbers run consecutively, because the stream is filtered and the gaps between
+    // the numbers that arrive are ordinary. See CatchUpTally, which says what that does and does
+    // not establish.
+    //
+    // Nothing is promoted, reconciled or cancelled on a catch-up that cannot be accounted for.
+    // The reconciliation timer is deliberately left running: the next tick finds that nothing
+    // has arrived since the last ask and repeats the request, so an incomplete stream is retried
+    // rather than becoming a state the engine sits in. Applying the same records twice is
+    // absorbed -- an order already on the book is not added again.
+    if (!catch_up_tally_.complete_with(ack.records_sent, ack.last_seq_no)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: catch-up was not complete -- {}. Not acting on it, and asking again (R-0101). {} record(s) were applied and are "
+                   "kept, because what arrived was not wrong, only incomplete",
+                   catch_up_tally_.describe_shortfall(ack.records_sent, ack.last_seq_no), reconciliation_records_seen_);
+        return;
+    }
+
     cancel_timer(reconciliation_timer_id_);
     last_replicated_seq_no_ = ack.last_seq_no;
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
     // and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: MePositionAck received -- book reconciled to seq_no={} (book_size={}), {} record(s) applied and {} report(s) sent to "
-               "members, each marked as a possible repeat",
-               ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_);
+               "members, each marked as a possible repeat; the catch-up accounted for all {} record(s) sent (R-0101)",
+               ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_, ack.records_sent);
 
     // The book is now assembled: what the region vouched for, plus every record the sequencer
     // held after it. What happens to it next is a stated policy rather than a decision taken

@@ -374,8 +374,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     /// Handles a matching engine stating which role it holds and under which epoch.
     void handle_role_announcement(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload, size_t pdu_size,
-                                 int64_t wall_time_ns);
+    /// Streams one catch-up record to a matching engine, and says whether it sent anything.
+    ///
+    /// It withholds execution report envelopes, which are outputs rather than inputs, so a record
+    /// walked past is not a record sent. The engine is told how many were sent and checks it got
+    /// them all (R-0101), so the two counts have to mean the same thing.
+    [[nodiscard]] bool stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,
+                                               size_t pdu_size, int64_t wall_time_ns);
 
     // Which client session an order came from. The identity, not the address: where its
     // reports go is looked up separately, at the moment of sending, so that a session which

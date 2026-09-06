@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 77 |
-| Open | 29 (19 defects, 10 tasks) |
-| Closed | 48 |
+| Open | 28 (18 defects, 10 tasks) |
+| Closed | 49 |
 | Next id | BUG-0078 |
 
 ## Open bugs by severity
 
-11 high, 15 medium, 3 low.
+10 high, 15 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -23,7 +23,6 @@
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
-| [BUG-0074](#bug_0074) | high | defect | R-0101 cannot be met as worded, because the catch-up stream is filtered |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -848,72 +847,6 @@ file that looks authoritative:
 saying which it is -- deliberate staging, or a value awaiting a real deployment. A placeholder
 that says it is a placeholder cannot be mistaken for a considered setting, and that is the whole
 of the fix.
-
-### BUG-0074: R-0101 cannot be met as worded, because the catch-up stream is filtered {#bug_0074}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-08-31 |
-| Recorded | 2026-08-31 |
-| How | Implementing R-0101, and watching 8 of 52 `ha_test` scenarios fail on healthy promotions |
-| Impact | Nothing verifies that a catch-up was complete, so a matching engine can promote on a book that is missing records and believe it is current. R-0101 remains uncovered, and the obvious implementation of it is wrong |
-
-**R-0101 says** a component shall establish that it received every record between the position it
-presented and the position it has reached, and shall not begin acting if it did not. Nothing
-implements it: searching the source for R-0101 returns no code at all.
-
-**The obvious implementation does not work, and this entry exists so that nobody writes it
-twice.** Sequence numbers come from `next_sequence_number_++` and are never skipped, so it looks
-as though completeness is arithmetic: the records must be exactly P+1, P+2 ... Q. Written that
-way and wired into the matching engine, it halted **8 of 52 scenarios** -- every one of them a
-healthy promotion -- reporting for example:
-
-```
-catch-up was not complete -- the stream stopped early: 715 record(s) between
-seq_no 630406 and 631120 were never delivered
-```
-
-Those 715 records were never missing. **The stream is deliberately filtered.**
-`SequencerThread::stream_wal_record_to_me` forwards only `NewOrderSingle` and
-`OrderCancelRequest`, and says why in a comment: execution report envelopes "are outputs, not
-inputs, and are not streamed to the ME during catch-up". So the engine receives a subset of
-[P+1, Q] by design, and a contiguity check over what arrives is wrong by construction.
-
-**Three readings of the requirement, of which only one is implementable.**
-
-| Reading | Verdict |
-|---|---|
-| Every record between P and Q | Impossible: the authority withholds records deliberately |
-| Every record that was **sent** to it | Implementable, and catches loss in transit, reordering and duplication |
-| Every record **relevant** to it | Not checkable by the component alone: it cannot know which sequence numbers were orders without receiving them |
-
-**The second is the one to build, and the pieces nearly exist.** The sequencer already counts
-what it streams (`++streamed` in the catch-up loop) and simply never tells anyone. Putting that
-count into `MePositionAck` alongside the `first_seq_no` and `last_seq_no` it already carries
-lets the engine check it received exactly that many records, in ascending order, with none
-repeated. Wire compatibility is not a constraint until a major release, so adding the field is
-permitted.
-
-**State the limitation in the requirement rather than hiding it.** Under that reading the engine
-trusts the sequencer's count. A bug in `stream_wal_record_to_me` that filtered wrongly would be
-invisible to it, because a component cannot verify it received what it was never told about.
-That is a real guarantee and a narrower one than R-0101's present wording implies, so the
-wording should be sharpened to say what is actually being established.
-
-**What exists already.** `pubsub_itc_fw::CatchUpTally` and nine tests were written for the
-contiguous reading and are on the tree. The shape is right -- offer each record, ask whether the
-run was complete, describe the shortfall in numbers a person can act on -- but it must change
-from checking contiguity to checking a count and monotonic order. The abandoned wiring is kept
-as a patch outside the repository; it is the checks' placement that was right, at the ack and
-before promotion, not their content.
-
-**Also settled while finding this**, and worth keeping: "begin acting" means promoting to
-leader, and the sequencer never skips a sequence number. Both are Andrew's, 2026-08-31.
-
-Related: [BUG-0064](#bug_0064), which needs this to close, and [BUG-0068](#bug_0068), since
-R-0101's own gap note says no scenario withholds a record during a catch-up -- and until one
-does, any implementation of this is believed rather than known.
 
 ### BUG-0060: Microbursts are not measured, and the venue has no story for them {#bug_0060}
 
@@ -1927,6 +1860,25 @@ defect wearing a flake's clothes.
 whether it is always after the same predecessor; then log the elapsed reconnect time rather than
 only whether it beat the deadline, so a slow success is distinguishable from a failure.
 
+**2026-09-06: it is intermittent, not deterministic on its predecessor.** Two full runs of 53
+scenarios on the same machine the same afternoon, with the same scenarios 1 to 9 ahead of it:
+scenario 10 **passed** in the first and **failed** in the second, with the message above. Standalone
+immediately afterwards it passed again, the engine ready 2.2 s after the restart and the sequencer
+reconnected within three seconds.
+
+That rules out the simplest form of the second reading -- it is not that the sandbox has reliably
+accumulated enough state by the tenth scenario to slow the reconnect past ten seconds, because the
+same ten scenarios in the same order did not do it the first time. It does not rule out the reading
+itself, since what accumulates is not only in the scenarios: the log directory, the page cache and
+the WAL device carry over between runs as well as between scenarios.
+
+**What the check actually measures, which narrows it.** The marker is
+`"SequencerThread: matching engine order connection {} established"`, logged from the sequencer's
+`on_connection_established` for its outbound `matching_engine` service. So it times the sequencer's
+outbound TCP reconnect and nothing else -- no orders, no WAL, no catch-up. Whatever this is, it is
+in the reconnect or in the reactor's retry timing, and the instrumentation the entry asks for
+should be put there.
+
 **Do not close this by raising the timeout.** That hides whichever of the two readings is true,
 and the second one matters.
 
@@ -1972,6 +1924,133 @@ is only rare is not a race that is absent.
 ---
 
 ## Closed
+
+### BUG-0074: R-0101 cannot be met as worded, because the catch-up stream is filtered {#bug_0074}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-08-31 |
+| Recorded | 2026-08-31 |
+| How | Implementing R-0101, and watching 8 of 52 `ha_test` scenarios fail on healthy promotions |
+| Fixed | 2026-09-06 -- the sequencer says how many records it sent, and the engine checks it received them all before acting. R-0101 reworded to what is actually established |
+| Impact | Nothing verifies that a catch-up was complete, so a matching engine can promote on a book that is missing records and believe it is current. R-0101 remains uncovered, and the obvious implementation of it is wrong |
+
+**R-0101 says** a component shall establish that it received every record between the position it
+presented and the position it has reached, and shall not begin acting if it did not. Nothing
+implements it: searching the source for R-0101 returns no code at all.
+
+**The obvious implementation does not work, and this entry exists so that nobody writes it
+twice.** Sequence numbers come from `next_sequence_number_++` and are never skipped, so it looks
+as though completeness is arithmetic: the records must be exactly P+1, P+2 ... Q. Written that
+way and wired into the matching engine, it halted **8 of 52 scenarios** -- every one of them a
+healthy promotion -- reporting for example:
+
+```
+catch-up was not complete -- the stream stopped early: 715 record(s) between
+seq_no 630406 and 631120 were never delivered
+```
+
+Those 715 records were never missing. **The stream is deliberately filtered.**
+`SequencerThread::stream_wal_record_to_me` forwards only `NewOrderSingle` and
+`OrderCancelRequest`, and says why in a comment: execution report envelopes "are outputs, not
+inputs, and are not streamed to the ME during catch-up". So the engine receives a subset of
+[P+1, Q] by design, and a contiguity check over what arrives is wrong by construction.
+
+**Three readings of the requirement, of which only one is implementable.**
+
+| Reading | Verdict |
+|---|---|
+| Every record between P and Q | Impossible: the authority withholds records deliberately |
+| Every record that was **sent** to it | Implementable, and catches loss in transit, reordering and duplication |
+| Every record **relevant** to it | Not checkable by the component alone: it cannot know which sequence numbers were orders without receiving them |
+
+**The second is the one to build, and the pieces nearly exist.** The sequencer already counts
+what it streams (`++streamed` in the catch-up loop) and simply never tells anyone. Putting that
+count into `MePositionAck` alongside the `first_seq_no` and `last_seq_no` it already carries
+lets the engine check it received exactly that many records, in ascending order, with none
+repeated. Wire compatibility is not a constraint until a major release, so adding the field is
+permitted.
+
+**State the limitation in the requirement rather than hiding it.** Under that reading the engine
+trusts the sequencer's count. A bug in `stream_wal_record_to_me` that filtered wrongly would be
+invisible to it, because a component cannot verify it received what it was never told about.
+That is a real guarantee and a narrower one than R-0101's present wording implies, so the
+wording should be sharpened to say what is actually being established.
+
+**What exists already.** `pubsub_itc_fw::CatchUpTally` and nine tests were written for the
+contiguous reading and are on the tree. The shape is right -- offer each record, ask whether the
+run was complete, describe the shortfall in numbers a person can act on -- but it must change
+from checking contiguity to checking a count and monotonic order. The abandoned wiring is kept
+as a patch outside the repository; it is the checks' placement that was right, at the ack and
+before promotion, not their content.
+
+**Also settled while finding this**, and worth keeping: "begin acting" means promoting to
+leader, and the sequencer never skips a sequence number. Both are Andrew's, 2026-08-31.
+
+**Fixed 2026-09-06, by the second reading.** `MePositionAck` carries `records_sent`, and the
+engine checks it received exactly that many, in ascending order, none repeated, before it acts on
+the catch-up.
+
+**The count is of what was SENT, not of what was walked past, and that distinction is the fix.**
+The sequencer's `++streamed` sat in the replay loop and counted every record after the position,
+while `stream_wal_record_to_me` filtered afterwards and forwarded only `NewOrderSingle` and
+`OrderCancelRequest`. Putting that counter into the ack unchanged would have reproduced the
+original failure exactly: the engine would expect records the sequencer deliberately withheld. So
+the streaming function now reports whether it sent anything, and the counter follows it.
+
+**Measured, and the margin is not small.** A promotion in scenario 16:
+
+```
+MePositionRequest ... last_seq_no=5372436 -- streaming WAL catch-up up to head=5373171
+WAL catch-up complete -- 0 record(s) streamed to ME connection 24
+```
+
+735 sequence numbers in the range and **nothing sent** -- every one an execution report envelope.
+Under the walked-past count the engine would have been told 735 were sent, received none, and
+halted a healthy promotion. That is the 8-of-52 failure this entry records, reached by a different
+route.
+
+**What `CatchUpTally` now checks.** It was written for the contiguous reading and the shape was
+right: offer each record, ask whether the run was complete, describe the shortfall in numbers a
+person can act on. It now checks a count, an ascending order and no repeats, and refuses a record
+at or before the position presented. Its twelve tests say what each case is for; the one worth
+knowing is `GapsInTheNumbersAreOrdinaryBecauseTheStreamIsFiltered`, which is this mistake written
+down so it cannot be made a third time.
+
+**An incomplete catch-up is retried, not halted.** The engine logs what is missing, does not
+promote, does not mark itself reconciled, and leaves the reconciliation timer running -- the next
+tick finds nothing has arrived since the last ask and repeats the request. Applying the same
+records twice is absorbed, because an order already on the book is not added again. Halting would
+have been the other answer and is worse: nothing lifts it, and the condition it describes is one a
+second attempt usually clears.
+
+**R-0101 was reworded, not merely implemented.** It said "every record between the position it
+presented and the position it has reached", which is the reading that cannot be built. It now says
+every record the authority *sent*, and its rationale states the limit plainly: this does not
+establish that the authority sent the right set, because a component cannot verify it received
+what it was never told about. The requirement was easy to read as a stronger guarantee than the
+venue has.
+
+**It narrows the promotion-policy gap without closing it.** `open_orders_on_promotion` stands at
+`cancel` because the book a promoted instance holds comes from two unchecked sources. One of them
+is now checked. The other -- the `BookUpdate` replica stream, where updates are applied as they
+arrive and nothing establishes that none was missed -- is not, and it is the same question asked of
+a different channel. The specification's gap on R-0073 says so, rather than claiming progress it
+has not made.
+
+**Still uncovered, and honestly so.** No scenario withholds a record during a catch-up, so the
+check is exercised by its unit tests and never against a real stream. Producing one needs a way to
+make the sequencer drop a record deliberately, which the harness has no hook for. R-0101 keeps its
+uncovered note, now saying which half is untested; [BUG-0068](#bug_0068) is where that belongs.
+
+**One reference in this entry was stale when it was written.** It says [BUG-0064](#bug_0064) needs
+this to close; BUG-0064 closed on 2026-09-03 without it, by reporting every catch-up record to its
+member and marking it a possible repeat.
+
+Related: [BUG-0064](#bug_0064), which needs this to close, and [BUG-0068](#bug_0068), since
+R-0101's own gap note says no scenario withholds a record during a catch-up -- and until one
+does, any implementation of this is believed rather than known.
 
 ### BUG-0075: Both arbiters can become active at once when the witness is unreachable {#bug_0075}
 

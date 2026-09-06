@@ -9,105 +9,115 @@
 namespace pubsub_itc_fw {
 
 /**
- * @brief Establishes that a catch-up received every record it should have, and says so plainly.
+ * @brief Establishes that a catch-up received every record that was sent to it, and says so plainly.
  *
- * A component recovering from a checkpoint presents a position and is sent everything after it.
- * Those records are applied *silently* -- without repeating the execution reports that were
- * produced the first time -- so nothing about applying them draws attention, and nothing about
- * failing to receive one does either. A catch-up missing a record therefore leaves a component
- * whose state is wrong and which believes it is current, and every check it makes afterwards is
- * made against the wrong state. That is R-0101, and this is what answers it.
+ * A component recovering from a checkpoint presents a position and is sent what follows it. Those
+ * records are applied *silently* -- without repeating the execution reports produced the first
+ * time -- so nothing about applying them draws attention, and nothing about failing to receive one
+ * does either. A catch-up missing a record leaves a component whose state is wrong and which
+ * believes it is current, and every check it makes afterwards is made against the wrong state.
+ * That is R-0101, and this is what answers it.
  *
- * **Why a counter is enough.** The sequencer assigns numbers with `next_sequence_number_++` and
- * never skips one. So "did I receive every record between the position I presented and the
- * position I reached" is not a protocol question -- it is arithmetic. The records must be
- * exactly P+1, P+2 ... Q, in that order, with nothing missing and nothing repeated.
+ * **Why the check is a count and not a run of consecutive numbers.** The obvious reading is that
+ * the records must be exactly P+1, P+2 ... Q, because the authority numbers them with an
+ * incrementing counter and never skips one. That reading is wrong by construction and was built
+ * once before it was: the stream is deliberately filtered. A sequencer streaming a matching engine
+ * back into currency forwards the orders and the cancels, and withholds the execution report
+ * envelopes, which are outputs rather than inputs. So the receiver is sent a *subset* of the
+ * numbers in the range, and a gap in what arrives is ordinary rather than a fault.
  *
- * Strictness is deliberate. Anything other than the expected number means the stream is not what
- * it claims to be, and a component that cannot say what it holds must not begin acting on it.
+ * What can be checked is therefore narrower, and is stated here so that nobody has to infer it:
+ * every record the authority *sent* arrived, exactly once, in ascending order. It does not
+ * establish that the authority sent the right records. A filter that wrongly withheld one would be
+ * invisible, because a component cannot verify it received what it was never told about.
  *
  * Typical use:
  * @code
  *   CatchUpTally tally(position_presented);
  *   // for each record streamed to us:
- *   tally.offer(record.seq_no);                     // the answer may be left until the end
- *   // when the authority says where its record ends:
- *   if (!tally.complete_through(ack.last_seq_no))
- *       halt(tally.describe_shortfall(ack.last_seq_no));   // R-0101: do not begin acting
+ *   tally.offer(record.seq_no);
+ *   // when the authority says how many it sent and where its record ends:
+ *   if (!tally.complete_with(ack.records_sent, ack.last_seq_no))
+ *       halt(tally.describe_shortfall(ack.records_sent, ack.last_seq_no));   // R-0101: do not act
  * @endcode
  */
 class CatchUpTally {
   public:
     /**
      * @param[in] position_presented The position handed to the authority: the last record this
-     *                               component already holds. The first record expected is the
-     *                               one after it. Zero means "I hold nothing", so the first
-     *                               record expected is 1.
+     *                               component already holds. Every record sent must be numbered
+     *                               after it. A negative value means "I hold nothing and have
+     *                               applied nothing", which the authority answers by placing the
+     *                               component at its head rather than by streaming history.
      */
-    explicit CatchUpTally(int64_t position_presented) : presented_(position_presented), expected_next_(position_presented + 1) {}
+    explicit CatchUpTally(int64_t position_presented) : presented_(position_presented), last_accepted_(position_presented) {}
 
     /**
      * @brief Offers the next record's sequence number.
      *
-     * @return true if it is the one expected. false if it is not, in which case the first such
-     *         discrepancy is retained and reported by describe_shortfall(). Offering more
-     *         records after a discrepancy is harmless and does not overwrite the first one,
-     *         which is the one worth reporting.
+     * @return true if it may be counted: numbered after the position presented, and after every
+     *         record already accepted. false otherwise, in which case the first such discrepancy
+     *         is retained and reported by describe_shortfall(). Offering more records after a
+     *         discrepancy is harmless and does not overwrite the first one, which is the one worth
+     *         reporting.
      */
     bool offer(int64_t seq_no) {
-        if (seq_no != expected_next_) {
+        if (seq_no <= last_accepted_) {
             if (!broken_) {
                 broken_ = true;
-                broke_at_expected_ = expected_next_;
+                broke_after_ = last_accepted_;
                 broke_at_received_ = seq_no;
             }
             return false;
         }
-        ++expected_next_;
+        last_accepted_ = seq_no;
         ++received_;
         return true;
     }
 
     /**
-     * @brief Whether everything from the presented position through @p head arrived.
+     * @brief Whether exactly what the authority sent arrived, in order and none repeated.
      *
-     * @param[in] head The last record the authority holds: the far end of the range. A head
-     *                 equal to the presented position means there was nothing to catch up on,
-     *                 which is complete rather than suspicious.
+     * @param[in] records_sent How many records the authority says it streamed. Zero is complete
+     *                         rather than suspicious: there may have been nothing to send.
+     * @param[in] head         The last record the authority holds: the far end of the range.
      */
-    [[nodiscard]] bool complete_through(int64_t head) const {
+    [[nodiscard]] bool complete_with(int64_t records_sent, int64_t head) const {
         if (broken_) {
             return false;
         }
         // A head behind the presented position means this component holds records the authority
         // does not. That is not a shortfall, it is a contradiction, and it must not read as
-        // success just because nothing was missing from a range that runs backwards.
+        // success just because the count happened to agree.
         if (head < presented_) {
             return false;
         }
-        return expected_next_ == head + 1;
+        return received_ == records_sent;
     }
 
     /**
      * @brief Why the catch-up was not complete, in terms a person reading a log can act on.
      *
      * Returns an empty string when it was complete. The wording names the numbers rather than
-     * summarising them, because the first question anyone asks is which records are missing.
+     * summarising them, because the first question anyone asks is how much is missing.
      */
-    [[nodiscard]] std::string describe_shortfall(int64_t head) const {
-        if (complete_through(head)) {
+    [[nodiscard]] std::string describe_shortfall(int64_t records_sent, int64_t head) const {
+        if (complete_with(records_sent, head)) {
             return "";
         }
         if (broken_) {
-            return "the record stream jumped: expected seq_no " + std::to_string(broke_at_expected_) + " and received " + std::to_string(broke_at_received_) +
-                   ", so " + std::to_string(broke_at_received_ - broke_at_expected_) + " record(s) were not delivered";
+            return "the record stream did not advance: seq_no " + std::to_string(broke_at_received_) + " arrived after seq_no " + std::to_string(broke_after_) +
+                   ", so a record was repeated or the stream went backwards";
         }
         if (head < presented_) {
             return "the authority's record ends at seq_no " + std::to_string(head) + ", behind the position presented (" + std::to_string(presented_) +
                    "), so this component holds records the authority does not";
         }
-        return "the stream stopped early: " + std::to_string(head + 1 - expected_next_) + " record(s) between seq_no " + std::to_string(expected_next_) +
-               " and " + std::to_string(head) + " were never delivered";
+        if (received_ < records_sent) {
+            return "the stream stopped early: " + std::to_string(records_sent) + " record(s) were sent and " + std::to_string(received_) + " arrived, so " +
+                   std::to_string(records_sent - received_) + " never did";
+        }
+        return "more records arrived than were sent: " + std::to_string(records_sent) + " were sent and " + std::to_string(received_) + " arrived";
     }
 
     /// The position handed to the authority.
@@ -115,24 +125,24 @@ class CatchUpTally {
         return presented_;
     }
 
-    /// The sequence number the next record must carry.
-    [[nodiscard]] int64_t expected_next() const {
-        return expected_next_;
+    /// The highest sequence number accepted so far, or the presented position if none has been.
+    [[nodiscard]] int64_t last_accepted() const {
+        return last_accepted_;
     }
 
-    /// How many records were accepted in order. Worth logging even on success: a catch-up that
-    /// applied nothing and one that never ran look identical otherwise.
+    /// How many records were accepted. Worth logging even on success: a catch-up that applied
+    /// nothing and one that never ran look identical otherwise.
     [[nodiscard]] int64_t received() const {
         return received_;
     }
 
   private:
     int64_t presented_{0};
-    int64_t expected_next_{1};
+    int64_t last_accepted_{0};
     int64_t received_{0};
 
     bool broken_{false};
-    int64_t broke_at_expected_{0};
+    int64_t broke_after_{0};
     int64_t broke_at_received_{0};
 };
 

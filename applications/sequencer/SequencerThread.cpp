@@ -2509,6 +2509,7 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
         pubsub_itc_fw_app::MePositionAck head_ack{};
         head_ack.last_seq_no = wal_head;
         head_ack.first_seq_no = wal_head;
+        head_ack.records_sent = 0;
         send_pdu(conn_id, pubsub_itc_fw_app::MePositionAck::message_pdu_id, 0, head_ack);
         return;
     }
@@ -2543,8 +2544,9 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
             std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
             const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
             const size_t pdu_size = size - header_size;
-            stream_wal_record_to_me(conn_id, record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns);
-            ++streamed;
+            if (stream_wal_record_to_me(conn_id, record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns)) {
+                ++streamed;
+            }
         });
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed,
@@ -2554,9 +2556,13 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     pubsub_itc_fw_app::MePositionAck ack{};
     ack.last_seq_no = wal_head;
     ack.first_seq_no = earliest_retained;
+    // What was sent, not what was walked past. The engine checks it received exactly this many
+    // and will not act if it did not, which is R-0101.
+    ack.records_sent = static_cast<int64_t>(streamed);
     send_pdu(conn_id, pubsub_itc_fw_app::MePositionAck::message_pdu_id, 0, ack);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: MePositionAck sent (last_seq_no={}, earliest retained={}) -- ME is now live",
-               wal_head, earliest_retained);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: MePositionAck sent (last_seq_no={}, earliest retained={}, records_sent={}) -- ME is now live", wal_head, earliest_retained,
+               streamed);
 
     // Promote this connection to the active ME order connection so subsequent
     // sequenced orders flow to the newly-promoted ME. If the request arrived on
@@ -2573,7 +2579,7 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     me_catchup_conn_id_ = pubsub_itc_fw::ConnectionID{};
 }
 
-void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,
+bool SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,
                                               size_t pdu_size, int64_t wall_time_ns) {
     // Each stored WAL record is a WalRecord envelope (Option B). Decode it and
     // re-send the envelope to the ME for NOS/OCR (the ME unwraps it and reads
@@ -2582,7 +2588,7 @@ void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID&
     if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- record seq={} is not a WalRecord (pdu_id={}) -- skipping",
                    record_id, pdu_id);
-        return;
+        return false;
     }
 
     auto& arena_buf = decode_arena_buffer();
@@ -2593,12 +2599,12 @@ void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID&
     pubsub_itc_fw_app::WalRecordView view{};
     if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode envelope seq={} -- skipping", record_id);
-        return;
+        return false;
     }
 
     if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
         view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
-        return;
+        return false;
     }
 
     pubsub_itc_fw_app::WalRecord envelope{};
@@ -2613,6 +2619,7 @@ void SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID&
 
     send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, envelope);
     (void)wall_time_ns;
+    return true;
 }
 
 } // namespaces
