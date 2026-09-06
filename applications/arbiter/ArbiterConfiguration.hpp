@@ -53,6 +53,17 @@ struct ArbiterConfiguration {
      */
     bool ha_enabled{true};
 
+    /**
+     * @brief The peer arbiter's instance id.
+     *
+     * Configured rather than only learned, because the moment it is needed is the moment the peer
+     * cannot be reached. An arbiter that has never exchanged a StatusQuery with its peer would
+     * otherwise have no identity to compare its own against, and comparing is what keeps two
+     * arbiters from both making themselves active when neither can reach the witness. See
+     * docs/bug_list.md, BUG-0075.
+     */
+    int32_t peer_instance_id{2};
+
     /** @brief Host address on which the peer listener binds for arbiter-to-arbiter PDUs. */
     std::string peer_listen_host{"127.0.0.1"};
 

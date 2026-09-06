@@ -59,12 +59,11 @@ Scenarios
 
   8  Witness-less arbiter election
        Kills the witness first (no disruption), then kills arbiter_primary.
-       arbiter_secondary detects the heartbeat timeout (~15 s) and tries to
-       contact the witness, which is unreachable.  It immediately
-       self-promotes using the instance-id rule (no vote_timeout wait).
-       Tests the fast fallback path in ArbiterThread.
-       Expected: arbiter_secondary self-promotes; sequencer_primary stays
-       leader; orders uninterrupted.
+       arbiter_secondary detects the heartbeat timeout (~15 s) and has
+       nothing left to ask: its peer is silent and the witness is gone.  It
+       holds the higher instance id, so it declines and stays passive.
+       Expected: arbiter_secondary declines to promote; sequencer_primary
+       stays leader; orders uninterrupted.
 
   9  Degraded sequencer election (no arbiters)
        Kills both arbiters first (no arbiter failover), then kills
@@ -405,6 +404,9 @@ _GW_SEQ_STATE_FALLBACK = "did not report this session's numbering within"
 # Substrings that appear together on adopt_role() log lines:
 #   "SequencerThread: role transition {from} -> {to} (epoch={n})"
 #   "ArbiterThread:   role transition {from} -> {to} (epoch={n})"
+# What a kill step establishes when nothing else is said: the secondary took over.
+_DEFAULT_KILL_OUTCOME = "elected leader"
+
 _SEQ_ROLE  = "SequencerThread: role transition"
 _ARB_ROLE  = "ArbiterThread: role transition"
 _TO_LEADER = "-> leader"
@@ -465,6 +467,11 @@ class KillStep(NamedTuple):
     # line does not follow the "role transition ... -> leader" format, e.g. the
     # matching engine's "MatchingEngineThread: adopting LEADER role".
     leader_markers: tuple | None = None
+    # What finding those markers establishes, as a past-tense phrase, when it is
+    # not a promotion.  Scenario 8 asserts the opposite of one -- an arbiter that
+    # declines -- and a summary reading "elected leader" because a marker matched
+    # is how a run comes to report something it did not establish.
+    outcome_label: str | None = None
 
 
 class MachineKillStep(NamedTuple):
@@ -881,11 +888,19 @@ def _me_restart_step() -> RestartStep:
 #   Kills the witness first (SETTLE_AFTER_KILL is enough — the arbiters use
 #   only their direct peer connection for ongoing heartbeats once elected).
 #   Then kills arbiter_primary.  When arbiter_secondary's peer_heartbeat_timeout
-#   fires (~15 s), it enters the election path: it checks witness_conn_id_,
-#   finds it invalid, and immediately self-promotes using the instance-id rule
-#   (ArbiterThread.cpp line 182: "witness not connected -- self-promoting").
-#   This is faster than scenario 2 because there is no vote_timeout wait.
-#   The sequencer_primary stays leader; order flow is uninterrupted.
+#   fires (~15 s), it finds no witness connection and so has nobody to ask.
+#
+#   It declines.  An arbiter cannot tell a dead peer from an unreachable one,
+#   and this scenario kills the peer for real -- but the arbiter cannot know
+#   that, and the same silence is what a partition produces.  Promoting on it
+#   is how two arbiters both become active, each granting entitlements under
+#   generations it numbers itself.  So only the lower of the two configured
+#   identities may promote unasked, and only while it has never seen its peer
+#   acting; arbiter_secondary is neither.  The venue is left with no arbiter,
+#   which is scenario 9's condition and a defined one: nothing can move an
+#   entitlement until an arbiter or the witness returns, and the instances
+#   already holding theirs carry on.  Hence sequencer_primary stays leader and
+#   order flow is uninterrupted.
 #
 # Scenario 9 — Degraded sequencer election (no arbiters)
 #   Kills both arbiters in rapid succession (SETTLE_AFTER_KILL = 1 s each,
@@ -1074,13 +1089,13 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 8 — witness-less arbiter election: arbiter self-promotes via instance-id rule
+    # 8 — witness-less arbiter election: the survivor declines rather than promote unasked
     Scenario(
         number=8,
         short_name="witnessless_arbiter_election",
         description="Witness-less arbiter election: witness then arbiter_primary death",
         expected_outcome=(
-            "arbiter_secondary self-promotes via instance-id rule (no witness); "
+            "arbiter_secondary declines to promote with no witness to ask; "
             "sequencer_primary remains leader; orders uninterrupted"
         ),
         steps=[
@@ -1094,6 +1109,8 @@ _SCENARIOS: list[Scenario] = [
                 proc_name="arbiter_primary",
                 secondary_log_name="arbiter_secondary.log",
                 role_prefix=_ARB_ROLE,
+                leader_markers=("ArbiterThread:", "declining to promote unwitnessed"),
+                outcome_label="declined to promote unwitnessed",
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -4250,21 +4267,36 @@ def shutdown_all(app_procs: list[tuple[str, subprocess.Popen]]) -> None:
             proc.wait()
 
 
+def kill_summary_line(outcome: str | None, label: str, elapsed: float) -> str:
+    """
+    One line of the result summary for a kill, isolate or machine-kill step.
+
+    A step whose assertion is not a promotion says so.  Reporting "elected leader" because
+    some marker matched is how a summary comes to claim what the run never established --
+    which is the shape of half the entries in docs/bug_list.md.
+    """
+    if outcome is None:
+        return f"  killed  : {label} — no disruption"
+    if outcome == _DEFAULT_KILL_OUTCOME:
+        return f"  failover: {label} {outcome} in {elapsed:.1f}s"
+    return f"  outcome : {label} {outcome} in {elapsed:.1f}s"
+
+
 def do_kill_step(
     step: KillStep,
     proc_by_name: dict[str, subprocess.Popen],
     log_dir: Path,
     failover_timeout: float,
-) -> tuple[bool, str, float]:
+) -> tuple[str | None, str, float]:
     """
     Execute one KillStep: SIGKILL the target process, then either:
-      - poll the secondary log for a role-to-leader transition (if expected), or
+      - poll the secondary log for what the step says must follow (if anything), or
       - settle briefly without waiting for any transition.
 
-    Returns (failover_occurred, label, elapsed_seconds).
-      failover_occurred: True  → secondary became leader; label is its name.
-                         False → no failover expected; label is the killed process.
-      elapsed_seconds: failover time if failover_occurred, else 0.0.
+    Returns (outcome, label, elapsed_seconds).
+      outcome: the phrase describing what was established; label is the secondary's name.
+               None → nothing was expected to follow; label is the killed process.
+      elapsed_seconds: how long the outcome took, or 0.0 where none was awaited.
     """
     proc = proc_by_name.get(step.proc_name)
     if proc is None or proc.poll() is not None:
@@ -4286,7 +4318,7 @@ def do_kill_step(
         # No failover expected for this kill.
         log(f"  No failover expected; settling {step.settle_secs:.0f}s ...")
         time.sleep(step.settle_secs)
-        return False, step.proc_name, 0.0
+        return None, step.proc_name, 0.0
 
     # Failover expected: poll the secondary log for the leader role transition.
     secondary_name = (
@@ -4307,23 +4339,24 @@ def do_kill_step(
         timeout=failover_timeout,
         from_byte=secondary_log_pos,
     )
+    outcome = step.outcome_label if step.outcome_label else _DEFAULT_KILL_OUTCOME
     if not found:
         die(
-            f"{secondary_name} did not become leader within "
+            f"{secondary_name} did not reach '{outcome}' within "
             f"{failover_timeout:.0f}s"
         )
 
-    log(f"  {secondary_name} is now leader ({elapsed:.1f}s after kill)")
+    log(f"  {secondary_name} {outcome} ({elapsed:.1f}s after kill)")
     log(f"  Settling {step.settle_secs:.0f}s for connections to stabilise ...")
     time.sleep(step.settle_secs)
-    return True, secondary_name, elapsed
+    return outcome, secondary_name, elapsed
 
 
 def do_machine_kill_step(
     step: MachineKillStep,
     proc_by_name: dict[str, subprocess.Popen],
     log_dir: Path,
-) -> tuple[bool, str, float]:
+) -> tuple[str | None, str, float]:
     """
     Kill every named process without waiting between them, then poll for the
     survivors taking over.  Nothing is restarted: a machine that has stopped
@@ -4350,7 +4383,7 @@ def do_machine_kill_step(
 
     if step.ready_log_name is None:
         time.sleep(step.settle_secs)
-        return True, label, 0.0
+        return _DEFAULT_KILL_OUTCOME, label, 0.0
 
     markers = " + ".join(repr(m) for m in step.ready_markers)
     log(f"  Waiting for {step.ready_log_name}: {markers} (timeout {step.ready_timeout:.0f}s) ...")
@@ -4362,14 +4395,14 @@ def do_machine_kill_step(
         die(f"machine kill: nothing on the surviving machine took over within {step.ready_timeout:.0f}s")
     log(f"  the surviving machine took over ({elapsed:.1f}s)")
     time.sleep(step.settle_secs)
-    return True, label, elapsed
+    return _DEFAULT_KILL_OUTCOME, label, elapsed
 
 
 def do_isolate_step(
     step: IsolateStep,
     proc_by_name: dict[str, subprocess.Popen],
     log_dir: Path,
-) -> tuple[bool, str, float]:
+) -> tuple[str | None, str, float]:
     """Freeze the named process, wait for its peer to take over, then let it run again."""
     proc = proc_by_name.get(step.proc_name)
     if proc is None or proc.poll() is not None:
@@ -4417,7 +4450,7 @@ def do_isolate_step(
         if all(m in line for m in step.forbidden_markers):
             die(f"isolate: the survivor gave the entitlement back to a superseded instance: {line.strip()}")
     log(f"  the survivor kept the entitlement -- checked {len(tail.splitlines())} line(s) since the resume")
-    return True, step.proc_name, elapsed
+    return _DEFAULT_KILL_OUTCOME, step.proc_name, elapsed
 
 
 def do_restart_step(
@@ -5026,19 +5059,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
         log(f"=== Phase 4: {scenario.description} ===")
         for step in effective_steps:
             if isinstance(step, KillStep):
-                failover_occurred, label, elapsed = do_kill_step(
+                outcome, label, elapsed = do_kill_step(
                     step, proc_by_name, log_dir, args.failover_timeout,
                 )
-                kill_results.append((failover_occurred, label, elapsed))
-                phase4_results.append(("kill", failover_occurred, label, elapsed))
+                kill_results.append((outcome, label, elapsed))
+                phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, IsolateStep):
-                failover_occurred, label, elapsed = do_isolate_step(step, proc_by_name, log_dir)
-                kill_results.append((failover_occurred, label, elapsed))
-                phase4_results.append(("kill", failover_occurred, label, elapsed))
+                outcome, label, elapsed = do_isolate_step(step, proc_by_name, log_dir)
+                kill_results.append((outcome, label, elapsed))
+                phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, MachineKillStep):
-                failover_occurred, label, elapsed = do_machine_kill_step(step, proc_by_name, log_dir)
-                kill_results.append((failover_occurred, label, elapsed))
-                phase4_results.append(("kill", failover_occurred, label, elapsed))
+                outcome, label, elapsed = do_machine_kill_step(step, proc_by_name, log_dir)
+                kill_results.append((outcome, label, elapsed))
+                phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, RestartStep):
                 elapsed = do_restart_step(
                     step, proc_by_name, app_procs, launch_table, bin_dir, log_dir, prefix / "var",
@@ -6890,11 +6923,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.extra_steps:
             for entry in phase4_results:
                 if entry[0] == "kill":
-                    _, failover_occurred, label, elapsed = entry
-                    if failover_occurred:
-                        log(f"  failover: {label} elected leader in {elapsed:.1f}s")
-                    else:
-                        log(f"  killed  : {label} — no disruption")
+                    _, outcome, label, elapsed = entry
+                    log(kill_summary_line(outcome, label, elapsed))
                 elif entry[0] == "restart":
                     _, proc_name, elapsed = entry
                     log(f"  restart : {proc_name} ready in {elapsed:.1f}s")
@@ -6905,11 +6935,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     _, description, elapsed = entry
                     log(f"  verified: {description} ({elapsed:.1f}s)")
         else:
-            for failover_occurred, label, elapsed in kill_results:
-                if failover_occurred:
-                    log(f"  failover: {label} elected leader in {elapsed:.1f}s")
-                else:
-                    log(f"  killed  : {label} — no disruption")
+            for outcome, label, elapsed in kill_results:
+                log(kill_summary_line(outcome, label, elapsed))
             for proc_name, elapsed in restart_results:
                 log(f"  restart : {proc_name} ready in {elapsed:.1f}s")
         log(f"  baseline: {before_total} orders — OK")

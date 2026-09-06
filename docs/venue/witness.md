@@ -10,7 +10,16 @@ When both arbiter instances lose contact with each other and both are undecided,
 contacts the witness asking "may I become active?". The witness grants the vote to the
 arbiter with the lower `instance_id`, ensuring exactly one arbiter promotes itself. If
 only one arbiter is connected to the witness, that arbiter's vote is automatically
-granted (its peer cannot see the witness either, so there is no risk of split-brain).
+granted.
+
+That last grant is safe because the witness is the only party being asked, not because
+the absent arbiter is inert. This document used to say the peer "cannot see the witness
+either, so there is no risk of split-brain", and the conclusion does not follow from the
+premise: an arbiter that cannot see the witness does not sit still. It reaches its own
+decision, and until BUG-0075 was fixed that decision was to promote itself outright. What
+makes the pair safe is the rule the arbiters apply when they cannot ask — only the lower
+of the two configured identities may promote unasked, and only while it has never seen
+its peer acting — and not any assumption about what an unreachable arbiter is doing.
 
 The witness must be deployed on **failure-independent infrastructure** — different power
 supply, different network switch, ideally a different rack — from both arbiter machines.
@@ -34,8 +43,11 @@ It tracks which instance is connected via `conn_to_instance_id_` and
 
 **Vote grant rule:** the witness grants the vote to the arbiter with the lower
 `instance_id` (deterministic tiebreak). If the peer arbiter is not currently connected
-to the witness, the requester's vote is automatically granted — its peer cannot be active
-since it cannot reach the witness either.
+to the witness, the requester's vote is automatically granted. The requester names its
+peer in `ArbiterVoteRequest`, and that identity now comes from the requester's own
+configuration rather than only from a peer it may never have reached — so an arbiter that
+has never spoken to its peer no longer has its vote granted automatically while that peer
+is sitting connected to the witness.
 
 **Epoch:** the witness tracks `max_observed_epoch_` from received heartbeats and assigns
 `max_observed_epoch_ + 1` in `ArbiterVoteResponse`, so the newly-promoted active arbiter

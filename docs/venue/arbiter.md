@@ -62,9 +62,19 @@ Heartbeat). On startup:
    grants the vote to the arbiter with the lower `instance_id` (deterministic tiebreak), or
    to the requester if its peer is not connected to the witness.
 4. The winner adopts active role; the loser adopts passive.
-5. If the witness is unreachable, each arbiter self-promotes using the instance-id rule
-   after `vote_timeout_seconds` (degraded mode — only safe when the two arbiters cannot see
-   each other either, ensuring no split-brain).
+5. If the witness is unreachable, an arbiter promotes itself only when nothing else can be
+   active: it must hold the lower of the two configured `instance_id` values, and it must
+   never have seen its peer acting. At most one arbiter can satisfy both, whatever either
+   can see of the other, so a partition cannot produce two active arbiters. An arbiter that
+   fails the test stays passive and re-arms its peer timeout, so the question is asked again
+   when the peer or the witness returns.
+
+The venue can therefore be left with no active arbiter, and that is the intended outcome
+rather than a failure to handle one. An arbiter cannot tell a dead peer from an unreachable
+one; with no witness to ask, promoting on silence is what produces two arbiters granting
+entitlements independently. No arbiter means no entitlement can move until one returns,
+which is a defined degraded state — components already fall back to their own rule, and it
+can only ever promote the lower instance id. See `docs/bug_list.md`, BUG-0075.
 
 On active arbiter failure, the passive arbiter detects heartbeat loss, requests a vote from
 the witness, and promotes itself if the vote is granted.
@@ -114,13 +124,14 @@ Key `arbiter.toml` sections:
 |-----|---------|
 | `[network] listen_port` | Component connection listener (default 7200) |
 | `[ha] instance_id` | Unique integer; 1 = primary, 2 = secondary; lower wins active role |
+| `[peer] instance_id` | The peer arbiter's `instance_id`; known from configuration so the ordering can be applied before the two have ever spoken |
 | `[peer] listen_port` | Arbiter-to-arbiter listener port |
 | `[peer] host / port` | Peer arbiter's peer listener endpoint |
 | `[peer] heartbeat_interval_seconds` | How often to send `Heartbeat` to peer (default 2 s) |
 | `[peer] heartbeat_timeout_seconds` | Peer silence before promotion attempt (default 6 s) |
-| `[peer] startup_election_timeout_seconds` | How long to wait for peer before self-promoting at startup (default 20 s) |
+| `[peer] startup_election_timeout_seconds` | How long to wait for a peer at startup before deciding without one (default 20 s) |
 | `[witness] host / port` | Witness endpoint |
-| `[witness] vote_timeout_seconds` | How long to wait for witness vote before degraded self-promotion (default 3 s) |
+| `[witness] vote_timeout_seconds` | How long to wait for a witness vote before deciding without one (default 3 s) |
 | `[witness] heartbeat_interval_seconds` | How often to send `ArbiterHeartbeat` to witness (default 30 s) |
 
 ---

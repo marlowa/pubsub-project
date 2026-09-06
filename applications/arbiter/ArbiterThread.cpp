@@ -44,6 +44,7 @@ ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
     , config_(config)
     , peer_conn_id_{}
     , peer_inbound_conn_id_{}
+    , peer_instance_id_{static_cast<int64_t>(config.peer_instance_id)}
     , witness_conn_id_{} {}
 
 void ArbiterThread::on_initial_event() {
@@ -181,19 +182,18 @@ void ArbiterThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             request_witness_vote();
             vote_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.vote_timeout_seconds));
         } else {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: witness not connected -- self-promoting using instance-id rule");
-            ++epoch_;
-            adopt_role(pubsub_itc_fw_app::Role::leader);
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: peer silent and witness not connected -- nobody to ask");
+            promote_if_nothing_else_can_be_active();
         }
         return;
     }
 
     if (id == vote_timeout_timer_id_) {
-        if (role_ != pubsub_itc_fw_app::Role::leader && role_ != pubsub_itc_fw_app::Role::follower) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: vote timeout -- witness unreachable, self-promoting");
-            ++epoch_;
-            adopt_role(pubsub_itc_fw_app::Role::leader);
+        if (role_ == pubsub_itc_fw_app::Role::leader) {
+            return;
         }
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: vote timeout -- witness unreachable, nobody to ask");
+        promote_if_nothing_else_can_be_active();
         return;
     }
 }
@@ -220,6 +220,7 @@ void ArbiterThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
                pubsub_itc_fw_app::to_string(new_role), epoch_);
 
     role_ = new_role;
+    decline_reported_ = false;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
         cancel_timer(peer_heartbeat_timeout_timer_id_);
@@ -251,6 +252,12 @@ void ArbiterThread::elect_role(int64_t peer_id, int32_t peer_epoch, pubsub_itc_f
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: peer epoch {} > my epoch {} -- adopting passive (peer is newer generation)",
                    peer_epoch, epoch_);
         epoch_ = peer_epoch;
+        // A newer generation is reached by being promoted. StatusQuery carries no role, so for a
+        // peer that opened the exchange this is the only thing said about what it is doing, and it
+        // has to be read as the peer acting. A peer that says outright that it follows is believed.
+        if (peer_current_role != pubsub_itc_fw_app::Role::follower) {
+            peer_seen_active_ = true;
+        }
         adopt_role(pubsub_itc_fw_app::Role::follower);
         return;
     }
@@ -270,6 +277,38 @@ void ArbiterThread::elect_role(int64_t peer_id, int32_t peer_epoch, pubsub_itc_f
                    config_.instance_id, peer_id);
         adopt_role(pubsub_itc_fw_app::Role::follower);
     }
+}
+
+bool ArbiterThread::may_promote_unwitnessed() const {
+    if (peer_seen_active_) {
+        return false;
+    }
+    return static_cast<int64_t>(config_.instance_id) < peer_instance_id_;
+}
+
+void ArbiterThread::promote_if_nothing_else_can_be_active() {
+    if (may_promote_unwitnessed()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "ArbiterThread: promoting unwitnessed -- my instance_id={} is lower than peer instance_id={} and the peer has never been seen active",
+                   config_.instance_id, peer_instance_id_);
+        ++epoch_;
+        adopt_role(pubsub_itc_fw_app::Role::leader);
+        return;
+    }
+
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    const auto decline_level = decline_reported_ ? pubsub_itc_fw::FwLogLevel::Debug : pubsub_itc_fw::FwLogLevel::Warning;
+    PUBSUB_LOG(get_logger(), decline_level,
+               "ArbiterThread: declining to promote unwitnessed (my instance_id={} peer instance_id={} peer seen active={}) -- the venue is left with no "
+               "active arbiter rather than two",
+               config_.instance_id, peer_instance_id_, peer_seen_active_);
+    decline_reported_ = true;
+
+    // A decline is not a decision, so it must not be final. The peer returning re-arms this on
+    // its own heartbeats, but a peer that is genuinely gone sends none -- and the witness coming
+    // back is then the only thing that can settle the question. Something has to ask it again.
+    cancel_timer(peer_heartbeat_timeout_timer_id_);
+    peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
 }
 
 void ArbiterThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -389,6 +428,9 @@ void ArbiterThread::handle_peer_status_response(const pubsub_itc_fw::EventMessag
                sr.self_instance_id, sr.epoch, pubsub_itc_fw_app::to_string(sr.current_role));
 
     peer_instance_id_ = sr.self_instance_id;
+    if (sr.current_role == pubsub_itc_fw_app::Role::leader) {
+        peer_seen_active_ = true;
+    }
     elect_role(sr.self_instance_id, sr.epoch, sr.current_role);
 }
 
@@ -435,6 +477,9 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: ArbiterStateRecord received (group={} component={} leader={} epoch={})",
                pubsub_itc_fw_app::to_string(record.group), record.component_instance_id, record.leader_instance_id, record.epoch);
+
+    // Only an active arbiter replicates its decisions, so receiving one is the peer saying it acts.
+    peer_seen_active_ = true;
 
     leadership_state_[record.group] = ComponentState{record.leader_instance_id, 0, record.epoch, true, std::chrono::steady_clock::now()};
 

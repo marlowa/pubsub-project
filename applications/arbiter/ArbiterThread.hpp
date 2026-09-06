@@ -73,8 +73,20 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID peer_conn_id_;
     pubsub_itc_fw::ConnectionID peer_inbound_conn_id_;
 
-    // peer instance_id learned from StatusQuery/StatusResponse.
+    // The peer's instance_id. Seeded from configuration so that it is known before the two have
+    // ever spoken, and overwritten by what the peer says of itself in StatusQuery/StatusResponse.
     int64_t peer_instance_id_{0};
+
+    // Whether the peer has ever been known to hold the active role. It is not cleared when contact
+    // is lost: losing contact is not evidence that the peer stopped acting, and this exists to
+    // answer the question asked at exactly that moment.
+    bool peer_seen_active_{false};
+
+    // Whether the decline below has already been reported. Declining re-arms the timeout, so the
+    // question is asked again every few seconds for as long as the condition lasts; saying so once
+    // is the report, and saying it repeatedly is only volume. Cleared by a change of role, which
+    // is the thing that would make it worth reporting again.
+    bool decline_reported_{false};
 
     // Witness connection (outbound).
     pubsub_itc_fw::ConnectionID witness_conn_id_;
@@ -167,6 +179,16 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void send_peer_heartbeat();
     void send_witness_heartbeat();
     void request_witness_vote();
+
+    /// Whether this arbiter may make itself active on its own judgement, the witness having said nothing.
+    ///
+    /// True only for the lower of the two configured identities, and only while it has no evidence that its
+    /// peer is already acting. At most one arbiter can satisfy that, whatever either can see of the other,
+    /// which is what keeps a partition from producing two of them. See docs/bug_list.md, BUG-0075.
+    [[nodiscard]] bool may_promote_unwitnessed() const;
+
+    /// Becomes active if nothing else can be, and otherwise stays passive and arms the timeout to try again.
+    void promote_if_nothing_else_can_be_active();
 
     // Peer PDU handlers.
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);

@@ -8,6 +8,7 @@ enabled     = ${ha_enabled}
 instance_id = 1
 
 [peer]
+instance_id                      = 2
 listen_host                      = "${arbiter_primary_peer_listen_host}"
 listen_port                      = ${arbiter_primary_peer_listen_port}
 host                             = "${arbiter_primary_peer_host}"

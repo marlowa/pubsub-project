@@ -3,6 +3,8 @@
 
 #include "ArbiterConfigurationLoader.hpp"
 
+#include <string>
+
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
@@ -35,6 +37,15 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
 
         toml.get_required_except("ha.enabled", config.ha_enabled);
         toml.get_required_except("ha.instance_id", config.instance_id);
+
+        toml.get_required_except("peer.instance_id", config.peer_instance_id);
+        if (config.peer_instance_id <= 0) {
+            throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: peer.instance_id must be positive");
+        }
+        if (config.peer_instance_id == config.instance_id) {
+            throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: peer.instance_id must differ from ha.instance_id, both are " +
+                                                        std::to_string(config.instance_id));
+        }
 
         toml.get_required_except("peer.listen_host", config.peer_listen_host);
         int32_t peer_listen_port = 0;

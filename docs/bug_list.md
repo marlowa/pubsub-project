@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 77 |
-| Open | 30 (20 defects, 10 tasks) |
-| Closed | 47 |
+| Open | 29 (19 defects, 10 tasks) |
+| Closed | 48 |
 | Next id | BUG-0078 |
 
 ## Open bugs by severity
 
-12 high, 15 medium, 3 low.
+11 high, 15 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,7 +24,6 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0071](#bug_0071) | high | defect | Warming the open-order region does not give it any blocks |
 | [BUG-0074](#bug_0074) | high | defect | R-0101 cannot be met as worded, because the catch-up stream is filtered |
-| [BUG-0075](#bug_0075) | high | defect | Both arbiters can become active at once when the witness is unreachable |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -1892,64 +1891,6 @@ setting should do the same.
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
 
-### BUG-0075: Both arbiters can become active at once when the witness is unreachable {#bug_0075}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-09-03 |
-| Recorded | 2026-09-03 |
-| How | Reading `ArbiterThread` while writing the witness section of the specification, to say what mitigates the loss of the witness |
-| Impact | The condition the whole arbitration design exists to prevent -- two parties each entitled to grant leadership -- is reachable in the arbitration service itself, and each of the two can promote a different instance of the same group |
-
-**The witness exists to decide between two arbiters that cannot see each other.** An arbiter
-whose peer has gone silent asks the witness for a vote before promoting itself, and the witness
-grants it to one of them, so only one becomes active.
-
-**An arbiter that cannot reach the witness promotes itself without asking anything.** Two paths
-in `ArbiterThread::on_timer_event` do it:
-
-```
-"ArbiterThread: witness not connected -- self-promoting using instance-id rule"
-"ArbiterThread: vote timeout -- witness unreachable, self-promoting"
-```
-
-Both then run `++epoch_; adopt_role(Role::leader)` unconditionally.
-
-**Neither applies an instance-id rule, though the first says it does.** The rule lives in
-`ArbiterThread::elect_role`, which compares `config_.instance_id` against the peer's and is
-reached only through the StatusQuery exchange -- that is, only when the peer is reachable, which
-is exactly the case these two paths are for. The log line is not describing what the code does.
-
-**So the dangerous case is the witness gone AND the arbiters unable to see each other.** Each
-times its peer out, each finds no witness, and each promotes. Two active arbiters then grant
-entitlements independently, each numbering generations from its own `epoch_`, so two instances of
-one group can be told they lead under the same generation -- and a generation is what a receiver
-uses to refuse a superseded sender, so it does not discriminate between them.
-
-The witness merely being dead is not enough on its own: two arbiters that can still see each
-other settle by instance id through `elect_role` and never consult it. It takes both failures,
-which is why this has not been seen.
-
-**The fix is the rule the message already claims.** `peer_instance_id_` is remembered from the
-peer's StatusQuery, so an arbiter that has ever spoken to its peer can apply the same comparison
-before self-promoting, and the higher id declines. That leaves the case of an arbiter that has
-never seen its peer at all, which has no id to compare and must be decided some other way.
-
-**The witness's own documentation records the wrong justification**, which is how the hole
-survived. `docs/venue/witness.md` says that where only one arbiter is connected to the witness
-that arbiter's vote is granted automatically, "its peer cannot see the witness either, so there
-is no risk of split-brain". The premise is right and the conclusion does not follow: a peer that
-cannot see the witness does not sit still, it promotes itself. That sentence should be corrected
-with the code.
-
-**Do not close this by making the witness redundant.** A second witness is a second thing to
-disagree with, and the design's merit is that the amount of agreement the venue needs is small.
-The question is what a lone arbiter does when it cannot ask, not how many witnesses there are.
-
-Related: [BUG-0010](#bug_0010) and [BUG-0062](#bug_0062), which are the same shape one layer down
--- two instances acting, and nothing noticing when they are reunited.
-
 ### BUG-0076: Scenario 10 fails inside the suite and passes on its own {#bug_0076}
 
 | | |
@@ -2031,6 +1972,125 @@ is only rare is not a race that is absent.
 ---
 
 ## Closed
+
+### BUG-0075: Both arbiters can become active at once when the witness is unreachable {#bug_0075}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-03 |
+| Recorded | 2026-09-03 |
+| How | Reading `ArbiterThread` while writing the witness section of the specification, to say what mitigates the loss of the witness |
+| Fixed | 2026-09-06 -- an arbiter with nobody to ask promotes itself only where no other arbiter can be active. R-0124; held by `ha_test.py` scenario 8 |
+| Impact | The condition the whole arbitration design exists to prevent -- two parties each entitled to grant leadership -- is reachable in the arbitration service itself, and each of the two can promote a different instance of the same group |
+
+**The witness exists to decide between two arbiters that cannot see each other.** An arbiter
+whose peer has gone silent asks the witness for a vote before promoting itself, and the witness
+grants it to one of them, so only one becomes active.
+
+**An arbiter that cannot reach the witness promotes itself without asking anything.** Two paths
+in `ArbiterThread::on_timer_event` do it:
+
+```
+"ArbiterThread: witness not connected -- self-promoting using instance-id rule"
+"ArbiterThread: vote timeout -- witness unreachable, self-promoting"
+```
+
+Both then run `++epoch_; adopt_role(Role::leader)` unconditionally.
+
+**Neither applies an instance-id rule, though the first says it does.** The rule lives in
+`ArbiterThread::elect_role`, which compares `config_.instance_id` against the peer's and is
+reached only through the StatusQuery exchange -- that is, only when the peer is reachable, which
+is exactly the case these two paths are for. The log line is not describing what the code does.
+
+**So the dangerous case is the witness gone AND the arbiters unable to see each other.** Each
+times its peer out, each finds no witness, and each promotes. Two active arbiters then grant
+entitlements independently, each numbering generations from its own `epoch_`, so two instances of
+one group can be told they lead under the same generation -- and a generation is what a receiver
+uses to refuse a superseded sender, so it does not discriminate between them.
+
+The witness merely being dead is not enough on its own: two arbiters that can still see each
+other settle by instance id through `elect_role` and never consult it. It takes both failures,
+which is why this has not been seen.
+
+**The fix is the rule the message already claims.** `peer_instance_id_` is remembered from the
+peer's StatusQuery, so an arbiter that has ever spoken to its peer can apply the same comparison
+before self-promoting, and the higher id declines. That leaves the case of an arbiter that has
+never seen its peer at all, which has no id to compare and must be decided some other way.
+
+**The witness's own documentation records the wrong justification**, which is how the hole
+survived. `docs/venue/witness.md` says that where only one arbiter is connected to the witness
+that arbiter's vote is granted automatically, "its peer cannot see the witness either, so there
+is no risk of split-brain". The premise is right and the conclusion does not follow: a peer that
+cannot see the witness does not sit still, it promotes itself. That sentence should be corrected
+with the code.
+
+**Do not close this by making the witness redundant.** A second witness is a second thing to
+disagree with, and the design's merit is that the amount of agreement the venue needs is small.
+The question is what a lone arbiter does when it cannot ask, not how many witnesses there are.
+
+**Fixed 2026-09-06, and not by the rule proposed above.** The instance-id comparison is necessary
+and is not sufficient. `arbiter_primary` passive while `arbiter_secondary` is active is an ordinary
+state, not a rare one -- scenario 2 produces it, and a restarted primary rejoins into it. Partition
+that pair with the witness gone and the ordering rule tells the *lower* identity to promote, while
+the higher one is already active and returns early from its own timeout. Two active arbiters again,
+by the fix.
+
+**What the arbiter does now.** It promotes itself unasked only where no other arbiter can be
+acting, which takes both of:
+
+- it holds the lower of the two configured identities; and
+- it has never observed its peer holding the active role.
+
+At most one arbiter can satisfy the first, whatever either can see of the other, so the two cannot
+both act on the same silence. The second is what stops that one promoting alongside a peer leading
+on the far side of a partition. Evidence of a peer acting is a `StatusResponse` naming it leader or
+an `ArbiterStateRecord`, which only an active arbiter sends; it is deliberately **not cleared when
+contact is lost**, because losing contact is not evidence that the peer stopped, and that is the
+moment the question gets asked.
+
+**The peer's identity is now configured, not only learned.** `[peer] instance_id` in each
+`arbiter.toml`. An arbiter that must meet its peer before it can be ordered against it has no rule
+available in the one circumstance the rule exists for -- which is the case this entry recorded as
+left open. It also stops the witness auto-granting a vote to an arbiter that has never spoken to
+its peer while that peer sits connected to it, since the requester now names the peer it means.
+
+**A decline is not final.** The peer heartbeat timeout is re-armed when the arbiter declines, so the
+question is put again and the peer or the witness returning settles it. Without that, declining
+would strand the arbiter permanently -- a genuinely dead peer sends no heartbeat to re-arm it. The
+code had that shape already, and it was a defect in its own right: a vote request that timed out
+while the arbiter was passive did nothing at all and never asked again.
+
+**The venue can now be left with no active arbiter, and that is the intended outcome.** An arbiter
+cannot tell a dead peer from an unreachable one; with no witness, promoting on silence is what
+produces two. Nothing that already holds an entitlement loses it, so the venue goes on trading;
+what stops is any *movement* of an entitlement until an arbiter or the witness returns. A component
+that finds no arbiter has a defined rule of its own which can only ever promote the lower identity,
+so none is a floor and two is not: nothing afterwards can say which of two grants was the real one.
+
+**Scenario 8 asserted the defect.** It killed the witness and then `arbiter_primary`, and expected
+`arbiter_secondary` to self-promote "via instance-id rule" -- the behaviour this entry is about,
+written down as the expected outcome. It now asserts the decline. Its second expectation is
+unchanged and still holds: `sequencer_primary` stays leader and order flow is uninterrupted.
+
+**`StatusQuery` carries no role, which the evidence rule has to work around.** The exchange is
+one-way about roles: the initiator learns the responder's role from `StatusResponse`, and the
+responder learns only the initiator's epoch. So an arbiter that answers a reconnecting leader is
+told nothing about what that leader is doing. It reads a newer epoch as the peer acting, since a
+newer generation is reached by being promoted, and believes a peer that says outright that it
+follows. Adding `current_role` to `StatusQuery` would make it direct rather than inferred; that PDU
+is shared with the sequencer pair, and there is no wire-compatibility constraint before 1.0.0, so
+the cost is regeneration rather than migration.
+
+**What was not done.** The venue still cannot distinguish a dead peer from an unreachable one, and
+this entry buys safety with the availability that distinction would preserve. A refusal at the TCP
+layer -- something answered, so the peer's host is up and its process is gone -- is real evidence,
+and would let a survivor promote in exactly the case scenario 8 kills for. The connect errno is not
+carried to `on_connection_failed`, only a formatted string, so that would be a framework change. It
+is the same distinction [BUG-0029](#bug_0029) needs one layer down.
+
+Related: [BUG-0010](#bug_0010) and [BUG-0062](#bug_0062), which are the same shape one layer down
+-- two instances acting, and nothing noticing when they are reunited.
 
 ### BUG-0064: Deferred orders are never recovered, and the venue logs that they were {#bug_0064}
 
