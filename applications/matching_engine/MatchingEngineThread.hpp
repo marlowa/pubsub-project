@@ -295,6 +295,40 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // visible only at Debug and only per record.
     int64_t reconciliation_reports_sent_{0};
 
+    // A report produced by a catch-up done at startup, held until this instance knows whether it
+    // is going to serve anybody.
+    //
+    // The engine catches up before it has been told what it may do -- that is the whole point of
+    // doing it at the first sequencer connection -- so an instance that is about to learn its peer
+    // leads would otherwise report every recovered order to the member that placed it and then
+    // serve nobody. Reporting is an act, and BUG-0064's fifth trap says being current and being
+    // entitled to act are separate things. So the reports wait: released if this instance adopts
+    // the leader role, discarded if it becomes a follower, in which case the leader has already
+    // answered those members.
+    //
+    // The encoded bytes are held rather than the ExecutionReport, whose string fields point into
+    // the decode arena and do not outlive the record that produced them.
+    struct HeldReport {
+        std::vector<uint8_t> payload; ///< the encoded ExecutionReport
+        int64_t seq_no{0};            ///< echoed in the transport header, as a live report's is
+        fix_common::SessionIdentity session;
+        bool poss_resend{false};
+    };
+    std::vector<HeldReport> held_reports_;
+
+    // What a held report costs is its encoded size, a few hundred bytes, and a catch-up is
+    // bounded by the venue's retained log rather than by anything this instance controls. Past
+    // this many the reports are sent as they were before, and the reason is logged once: a
+    // member that already holds the report can discard a duplicate, and one that never receives
+    // it cannot recover from the absence. Answering is worth more than tidiness, which is the
+    // same ordering BUG-0009 settled.
+    static constexpr size_t max_held_reports_ = 50000;
+    bool held_reports_overflowed_{false};
+
+    [[nodiscard]] bool holding_reports_until_entitled() const;
+    void release_held_reports();
+    void discard_held_reports(const char* reason);
+
     // Establishes that the catch-up was complete before this instance acts on it (R-0101).
     //
     // Its life is one ASK rather than one reconciliation, unlike the counter above: the answer to

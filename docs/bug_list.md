@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 81 |
-| Open | 26 (16 defects, 10 tasks) |
-| Closed | 55 |
-| Next id | BUG-0082 |
+| Bugs recorded | 83 |
+| Open | 27 (17 defects, 10 tasks) |
+| Closed | 56 |
+| Next id | BUG-0084 |
 
 ## Open bugs by severity
 
-9 high, 14 medium, 3 low.
+9 high, 15 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -35,7 +35,8 @@
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
-| [BUG-0077](#bug_0077) | medium | defect | A restarting engine reports to members for orders it will never serve |
+| [BUG-0082](#bug_0082) | medium | defect | An engine that caught up at startup waits for an arbiter that may never come |
+| [BUG-0083](#bug_0083) | medium | defect | Scenario 26 failed once inside the suite and has not been reproduced |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -135,6 +136,106 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0083: Scenario 26 failed once inside the suite and has not been reproduced {#bug_0083}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-07 |
+| Recorded | 2026-09-07 |
+| How | A full `ha_test.py --scenario all` run verifying BUG-0077's fix. 54 of 55 passed; scenario 26 failed at Phase 5 |
+| Impact | Unknown, and that is the entry. If it is a defect it is one where a restarted matching engine is not sent orders; if it is the harness, the suite's verdict on this area cannot be trusted until it is understood |
+
+**What happened.** Scenario 26 restarts the matching engine under its launcher and asserts that the
+restart beats the peer's promotion timeout. The restart happened, the peer correctly never
+promoted -- the absence check passed after its full 25 seconds -- and then the 1000 recovery orders
+never reached the restarted engine:
+
+```
+VERIFY: the secondary never promoted, because the restart beat its timeout
+  confirmed absent
+=== Phase 5: 1000 recovery orders (1000 accepted NOS on matching_engine_primary.log) ===
+FAIL: recovery orders did not appear within 30s
+```
+
+**Not reproduced, in five attempts**: scenario 26 alone twice; scenario 25 followed by 26, which is
+the suite's own order; a replay of scenarios 1 to 26 one after another, reproducing the suite's
+accumulated write-ahead log and regions; and a second full suite run, which passed 55 of 55. The
+logs from the failing run were overwritten by the scenarios that followed it, which is the first
+thing to fix about the next occurrence.
+
+**Why it is suspected of belonging to that day's change.** [BUG-0077](#bug_0077)'s fix stopped a
+catch-up from re-pointing the sequencer's ME order connection unless the asker is being promoted.
+That removed a side effect which had been quietly restoring the routing to a restarting engine, and
+scenario 26 is the scenario where the engine restarts and nothing else promotes -- so it is the one
+most exposed to a gap in what replaced it.
+
+**Against that**, the replacement paths were read and both cover the orderings that matter: an
+engine that announces leadership before the sequencer holds an order connection to it is routed to
+when that connection arrives (`SequencerThread.cpp:254`), and one that announces after is routed to
+by the announcement (`SequencerThread.cpp:2432`). In the passing runs the engine asks
+`(asking to lead)`, because the arbiter reaches it before the sequencer's order connection does,
+and the promotion path re-points as it always did. No mechanism is known to be missing, which is
+why this is recorded rather than diagnosed.
+
+**What to do at the next occurrence.** Copy `installed/log` aside before the run continues. The
+answer is two lines: the engine's `MePositionRequest sent ... (asking to lead | starting, not
+asking to lead)` says which branch it took, and the sequencer's `orders now route to connection`
+lines say whether anything ever pointed at it. Compare against
+[BUG-0076](#bug_0076), the last scenario that failed only inside the suite and turned out to be a
+real defect rather than a flake.
+
+---
+
+### BUG-0082: An engine that caught up at startup waits for an arbiter that may never come {#bug_0082}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-07 |
+| Recorded | 2026-09-07 |
+| How | Writing `ha_test.py` scenario 55 on the assumption that such an instance would self-promote when the leader died. It did not, and sat there for the full thirty seconds |
+| Impact | The venue can hold a matching engine that is current, holds the book, and will not serve, while no engine is matching. It ends when an arbiter answers; where none does, it does not end |
+
+**What was observed.** A restarted engine catches up at startup, reports itself *"current, and
+waiting to be told what it may do"*, and stays there. The leading peer was then killed, with both
+arbiters already down. Nothing happened: no promotion, no attempt at one, and nothing logged about
+why. The venue had one engine alive, holding two thousand orders and current with the sequencer,
+and it matched nothing.
+
+**Why it stays there.** Two mechanisms could tell such an instance what it is, and in this state
+neither does.
+
+- `handle_peer_role_announcement` acts only when `ha_role_state_ == MeRole::Unknown`
+  (`MatchingEngineThread.cpp:1552`). The leader announces when a replication link comes up, which
+  is while the restarting instance is still `Reconciling`, so the announcement is discarded. The
+  leader has no reason to announce again -- its role has not changed -- and the instance reaches
+  `Unknown` just after the only announcement it would have accepted.
+- The peer-loss promotion works from `Follower`. An instance that has caught up but has never been
+  told anything is in `Unknown`, so losing the peer arms nothing. Scenario 35's degraded rule,
+  which lets the lower instance id promote itself with no arbiter, is not reached either.
+
+So the state that BUG-0077's fix leaves an instance in -- deliberately, because being current and
+being entitled to act are separate things -- has no exit except an arbiter.
+
+**Both halves are new since 2026-09-03**, when the catch-up moved to the first sequencer
+connection (BUG-0009 and BUG-0064). Before that an instance did not become current without being
+told to lead, so `Unknown` after a catch-up did not arise.
+
+**Not the same as [BUG-0036](#bug_0036)**, which was a starting engine that never promoted with no
+arbiter reachable and said nothing. That was about arbitration timing out; this is about an
+instance that has finished catching up and is in a state no mechanism speaks to.
+
+**Where to start.** The narrow repair is for the peer announcement to be remembered rather than
+discarded: an instance reconciling when a leader announces could act on it when it reaches
+`Unknown`. The wider question -- whether an instance that is current and alone should promote
+itself when its peer dies, and under what rule -- is the one worth answering first, because it
+decides whether the narrow repair is enough. `ha_test.py` scenario 55 contains the sequence, with
+the arbiters restarted to get past this; a scenario for the defect itself would stop at the point
+where nothing happens.
+
+---
 
 ### BUG-0065: The venue has no way to declare a trading halt {#bug_0065}
 
@@ -1798,12 +1899,15 @@ setting should do the same.
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
 
+## Closed
+
 ### BUG-0077: A restarting engine reports to members for orders it will never serve {#bug_0077}
 
 | | |
 |---|---|
 | Severity | medium |
 | Found | 2026-09-03 |
+| Fixed | 2026-09-07 -- in three parts, of which the routing was the one that stopped the venue and the reports were the one the entry was opened for |
 | Recorded | 2026-09-03 |
 | How | Reading the startup path after moving the catch-up there, while closing [BUG-0064](#bug_0064) |
 | Impact | A burst of execution reports to members for orders they already hold, sent by an instance that is about to become a follower and serve nobody. Marked as repeats, so a member can discard them. The routing half of this entry, which stopped the venue matching, was fixed on 2026-09-07 |
@@ -1927,12 +2031,46 @@ hold those reports until the instance is told what it may do -- flushed if it le
 it follows -- which extends the rule that being current and being entitled to act are separate
 things (BUG-0064's fifth trap) to reporting, which is an act. It needs a scenario of its own:
 scenario 54 asserts the routing and says nothing about the reports.
+#### Closed 2026-09-07: the reports are held until the instance knows whether it serves
 
+The third change, and the one the entry was opened for. A catch-up done at startup no longer
+reports as it applies. The encoded reports are held -- encoded, because an `ExecutionReport`'s
+strings point into the decode arena and do not outlive the record that produced them -- and then
 
+- **released** in `adopt_leader_role()`, because an instance that is going to serve owes those
+  members their reports;
+- **discarded** in `enter_follower_state()`, the single funnel into that state, because the leader
+  answered them from its own catch-up and this instance serves nobody.
+
+A promotion's catch-up is untouched: that instance has been told it will lead, and its reports go
+out as they are produced.
+
+**The bound is stated rather than assumed.** Fifty thousand reports are held; past that they are
+sent as before and the reason is logged once. A member that already holds a report can discard a
+duplicate, and one that never receives it cannot recover from the absence -- the same ordering
+BUG-0009 settled, applied to the case where memory runs out rather than where an engine is missing.
+
+**Both endings are held by a scenario, and the second one had to be built.** Scenario 54 shows the
+discard: a thousand reports produced by the catch-up, none sent, `discarding 1000 held report(s) --
+this instance is a follower and serves nobody`. Nothing showed the release. Scenario 53 looks as
+though it would -- an engine starts, catches up, leads -- but its reconciliation ends *resuming as
+leader*, so it was told it would lead before it asked and its reports were never held. Scenario 55
+arranges the path that does exist: catch up with no arbiter to say anything, lose the leader, and
+be given the role when the arbiters return. `releasing 1000 report(s) held while this instance was
+becoming current`.
+
+**Two things the scenarios needed, which are worth knowing.** `InterimOrdersStep` could only
+confirm against an absolute ME-ORD number in the primary engine's log, which is useless once that
+engine is the dead one; it now takes `confirm_on` and counts acceptances in a named log the way
+Phase 5 does. And a catch-up has nothing to stream unless orders are taken while the instance is
+down -- orders in flight at the kill are consumed before the window, and the venue refuses orders
+while no engine leads, so the first two attempts at scenario 54 held nothing and proved nothing.
+
+**Found on the way and left open:** [BUG-0082](#bug_0082). The state this fix leaves an instance in
+-- current, and waiting to be told -- has no exit except an arbiter, and the peer's announcement
+that would have settled it arrives while the instance is still reconciling and is discarded.
 
 ---
-
-## Closed
 
 ### BUG-0081: The book's requirement checks cannot run on the platform the venue is built for {#bug_0081}
 

@@ -623,8 +623,19 @@ class InterimOrdersStep(NamedTuple):
     Used in WAL-recovery scenarios where orders must flow through an
     intermediate leader before the original primary is restarted.
     count_batches * 1000 orders are sent and confirmed before proceeding.
+
+    confirm_on: the log to confirm the orders in, when it is not the primary
+                matching engine's.  The default watches matching_engine_primary.log
+                for an absolute ME-ORD number, which is right while the primary is
+                the one matching -- and useless once it has been killed and a
+                promoted secondary is doing the work.  Naming the secondary's log
+                switches to counting acceptances in it instead, the way Phase 5
+                does, because the promoted instance's order numbering carries
+                forward from the region it recovered rather than from this run's
+                tally.
     """
     count_batches: int
+    confirm_on: str | None = None
 
 
 class VerifyStep(NamedTuple):
@@ -2767,10 +2778,15 @@ _SCENARIOS: list[Scenario] = [
         description="A restarted engine catches up while its peer leads, with no arbiter to tell it otherwise",
         expected_outcome=(
             "the restarted instance asks for a catch-up, becomes current, and waits to be told "
-            "what it may do without adopting leadership -- and the venue goes on trading through "
-            "the leader it already had"
+            "what it may do without adopting leadership; the venue goes on trading through the "
+            "leader it already had; and the reports the catch-up produced are discarded rather "
+            "than sent to members this instance will never serve"
         ),
         me_ha=True,
+        # As scenarios 16 and 24: in-flight orders would advance the promoted secondary's counter
+        # during reconciliation and make the recovery count non-deterministic. The orders this
+        # scenario needs are sent deliberately, between the promotion and the restart, by the
+        # InterimOrdersStep below.
         orders_during_override=0,
         # Marked expected_failure when written on 2026-09-07, because it failed at Phase 5: serving
         # the catch-up moved the order routing to the restarting instance and it never came back,
@@ -2805,7 +2821,12 @@ _SCENARIOS: list[Scenario] = [
                 role_prefix=None,
                 settle_secs=2.0,
             ),
-            # 3. Bring the primary back into a venue where only its peer can tell it anything.
+            # 3. Orders the promoted secondary takes while the primary is down. Without these the
+            #    primary's catch-up has nothing to stream -- its region is already at the head --
+            #    and the reports half of this scenario tests nothing. Confirmed in the secondary's
+            #    log, because the primary is dead and it is the secondary doing the matching.
+            InterimOrdersStep(count_batches=1, confirm_on="matching_engine_secondary.log"),
+            # 4. Bring the primary back into a venue where only its peer can tell it anything.
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
@@ -2814,7 +2835,7 @@ _SCENARIOS: list[Scenario] = [
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
-            # 4. It asked. The restart deletes the log first, so this line is from this start and
+            # 5. It asked. The restart deletes the log first, so this line is from this start and
             #    not from the one before it.
             VerifyStep(
                 log_name="matching_engine_primary.log",
@@ -2822,7 +2843,7 @@ _SCENARIOS: list[Scenario] = [
                 timeout=30.0,
                 description="the restarted instance asks for a catch-up though it does not lead",
             ),
-            # 5. And it stopped there. Current, and waiting -- never adopting the role on the
+            # 6. And it stopped there. Current, and waiting -- never adopting the role on the
             #    strength of having caught up, which is what trap 5 of BUG-0064 was about.
             VerifyStep(
                 log_name="matching_engine_primary.log",
@@ -2831,7 +2852,7 @@ _SCENARIOS: list[Scenario] = [
                 description="it becomes current without taking the role",
                 absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
-            # 6. Put the arbiters back, so the recovery orders that follow are sent into a whole
+            # 8. Put the arbiters back, so the recovery orders that follow are sent into a whole
             #    venue and a failure among them means what it says.
             RestartStep(
                 proc_name="arbiter_primary",
@@ -2848,6 +2869,139 @@ _SCENARIOS: list[Scenario] = [
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            # 9. And the reports it produced while catching up went nowhere. It applied those
+            #    records and reported none of them to the members who placed them, because it
+            #    serves nobody: the leader answered them from its own catch-up. Being current and
+            #    being entitled to act are separate things, and reporting is an act -- BUG-0077.
+            #
+            #    Checked after the arbiters return, and not before: with none of them running
+            #    nothing tells this instance what it is, so it sits current and waiting, holding
+            #    the reports. That wait is the behaviour, not a delay to be tuned around.
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "discarding", "held report(s)"),
+                timeout=60.0,
+                description="the reports from its catch-up are discarded rather than sent",
+            ),
+        ],
+    ),
+
+    # 55 -- the other side of 54. Reports held back are owed to the members who placed those
+    # orders the moment this instance does become the one serving them.
+    #
+    # 54 shows them discarded, which is the common ending; nothing showed them released. Scenario
+    # 53 looks as though it would -- an engine starts, catches up, and leads -- but its
+    # reconciliation ends "resuming as leader", so it was told it would lead before it asked and
+    # its reports were never held. The path only exists for an instance that becomes current
+    # first and is told afterwards, so the scenario has to arrange exactly that: catch up with no
+    # arbiter to say anything, then take the leader away.
+    #
+    # With no arbiter the surviving instance promotes itself under the degraded rule, which
+    # scenario 35 establishes and which admits only the lower instance id -- the primary is
+    # instance 1, so this works and would not if the roles were the other way round.
+    Scenario(
+        number=55,
+        short_name="held_reports_released_when_it_leads",
+        description="Reports held while an engine was merely current are sent once it is the one serving",
+        expected_outcome=(
+            "the restarted instance catches up and holds its reports while nothing has told it "
+            "what it may do; when the leader dies and it promotes itself, the reports are "
+            "released and the members who placed those orders are told"
+        ),
+        me_ha=True,
+        orders_during_override=0,
+        recovery_on_primary=True,
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            # 1. Fail the primary so the secondary is genuinely leading.
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            # 2. Both arbiters down, so nothing can assign a role to the instance about to start.
+            KillStep(
+                proc_name="arbiter_primary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=1.0,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            # 3. Orders the leader takes while the primary is down, so its catch-up has records to
+            #    stream and reports to hold.
+            InterimOrdersStep(count_batches=1, confirm_on="matching_engine_secondary.log"),
+            # 4. The primary comes back, catches up, and waits.
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=True,
+                settle_secs=_ME_SETTLE,
+            ),
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "waiting to be told what it may do"),
+                timeout=30.0,
+                description="the restarted instance is current and holding its reports",
+            ),
+            # 5. Take the leader away. Nothing happens yet, and that is not an oversight in this
+            #    scenario: an instance that is current and waiting sits in Unknown, which is not
+            #    the state the peer-loss promotion works from, and there is no arbiter to ask.
+            #    It was written the other way round first, expecting the degraded self-promotion
+            #    of scenario 35, and the instance sat there for the full thirty seconds.
+            KillStep(
+                proc_name="matching_engine_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            # 6. Now bring the arbiters back. With one engine alive and current, the arbiter can
+            #    assign it the role, and it adopts leadership from Unknown having already caught
+            #    up -- which is the one path on which held reports are released rather than
+            #    discarded, and the reason this scenario exists.
+            RestartStep(
+                proc_name="arbiter_primary",
+                ready_log_name="arbiter_primary.log",
+                ready_markers=(_ARB_ROLE,),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=1.0,
+            ),
+            RestartStep(
+                proc_name="arbiter_secondary",
+                ready_log_name="arbiter_secondary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                timeout=60.0,
+                description="the instance that was holding is given the role",
+            ),
+            # 7. The assertion this scenario exists for.
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                # TEST CONTRACT -- the engine's wording. "held report(s)" is the discarding line's
+                # phrasing, not this one's, and looking for it here failed against a release that
+                # had happened perfectly well.
+                markers=("MatchingEngineThread:", "releasing", "report(s) held while this instance was becoming current"),
+                timeout=30.0,
+                description="the held reports are released to the members who placed those orders",
+                absent_markers=("MatchingEngineThread:", "discarding", "held report(s)"),
             ),
         ],
     ),
@@ -4852,6 +5006,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
     after_total      = 0
     running_me_total = 0
     running_me_pos   = 0
+    # Read positions for logs an InterimOrdersStep was told to confirm in, kept per log because a
+    # scenario may watch more than one and each is read from where its own last look ended.
+    interim_positions: dict[str, int] = {}
 
     try:
         # ── Pre-phase: export credentials ─────────────────────────────────────
@@ -5237,12 +5394,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 for _ in range(step.count_batches):
                     f8proc.stdin.write(b"T\n")
                 f8proc.stdin.flush()
-                log(f"  Waiting for ME-ORD-{running_me_total} ...")
-                found, elapsed, running_me_pos = wait_for_me_ord(
-                    me_log, running_me_total,
-                    timeout=args.recovery_timeout,
-                    from_byte=running_me_pos,
-                )
+                if step.confirm_on is not None:
+                    # Counted in the named log rather than matched against an absolute ME-ORD
+                    # number: a promoted instance continues the numbering of the region it
+                    # recovered, so this run's tally says nothing about what its next order id
+                    # will be.
+                    interim_log = log_dir / step.confirm_on
+                    log(f"  Waiting for {count} accepted order(s) in {step.confirm_on} ...")
+                    found, elapsed, interim_positions[step.confirm_on] = wait_for_accepted_count(
+                        interim_log, count,
+                        timeout=args.recovery_timeout,
+                        from_byte=interim_positions.get(step.confirm_on, 0),
+                    )
+                else:
+                    log(f"  Waiting for ME-ORD-{running_me_total} ...")
+                    found, elapsed, running_me_pos = wait_for_me_ord(
+                        me_log, running_me_total,
+                        timeout=args.recovery_timeout,
+                        from_byte=running_me_pos,
+                    )
                 if not found:
                     die(
                         f"interim orders did not appear within "

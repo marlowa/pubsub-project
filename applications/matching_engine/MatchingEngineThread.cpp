@@ -994,6 +994,65 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
                view.orig_cl_ord_id, order_book_.size());
 }
 
+bool MatchingEngineThread::holding_reports_until_entitled() const {
+    // Only a catch-up done at startup. A promotion's catch-up is a different case: that instance
+    // has been told it will lead, and its reports go out as they are produced. With high
+    // availability off there is no peer to defer to and nothing to wait for.
+    return ha_enabled_ && ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead_;
+}
+
+void MatchingEngineThread::release_held_reports() {
+    if (held_reports_.empty()) {
+        held_reports_overflowed_ = false;
+        return;
+    }
+
+    // Taken by move first, so that send_er_to_sequencer -- which is what sends these -- cannot
+    // see the container it is iterating, whatever it decides about holding.
+    const std::vector<HeldReport> to_send = std::move(held_reports_);
+    held_reports_.clear();
+    held_reports_overflowed_ = false;
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: releasing {} report(s) held while this instance was becoming current -- it now serves, so the members who placed "
+               "those orders are told",
+               to_send.size());
+
+    for (const HeldReport& held : to_send) {
+        pubsub_itc_fw_app::WalRecord envelope{};
+        envelope.seq_no = held.seq_no;
+        envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
+        envelope.payload.data = held.payload.data();
+        envelope.payload.size = held.payload.size();
+        envelope.has_sender_comp_id = !held.session.empty();
+        envelope.sender_comp_id = held.session.comp_id_view();
+        envelope.has_origin_gateway_id = !held.session.empty();
+        envelope.origin_gateway_id = held.session.protocol;
+        envelope.poss_resend = held.poss_resend;
+
+        if (sequencer_er_conn_id_.is_valid()) {
+            send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
+        }
+        if (sequencer_er_secondary_conn_id_.is_valid()) {
+            send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
+        }
+    }
+}
+
+void MatchingEngineThread::discard_held_reports(const char* reason) {
+    if (held_reports_.empty()) {
+        held_reports_overflowed_ = false;
+        return;
+    }
+    // Said plainly rather than dropped quietly. These are reports a member would have received
+    // had this instance gone the other way, and an operator reconciling a member's day against
+    // this log should be able to see that they were not sent, and why.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: discarding {} held report(s) -- {}", held_reports_.size(), reason);
+    held_reports_.clear();
+    held_reports_.shrink_to_fit();
+    held_reports_overflowed_ = false;
+}
+
 void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
                                                 ReportIsRepeat repeat) {
     // Encode the ER, then wrap it in a WalRecord envelope. The echoed seq_no travels in
@@ -1016,6 +1075,28 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: failed to encode ExecutionReport ({} bytes needed) -- not sent",
                    bytes_needed);
         return;
+    }
+
+    // Held rather than sent while this instance is becoming current without having been told it
+    // may serve. See held_reports_ for why, and release_held_reports for what happens next.
+    if (holding_reports_until_entitled()) {
+        if (held_reports_.size() < max_held_reports_) {
+            HeldReport held;
+            held.payload.assign(er_encode_buffer_.begin(), er_encode_buffer_.begin() + static_cast<std::ptrdiff_t>(bytes_written));
+            held.seq_no = seq_no;
+            held.session = session;
+            held.poss_resend = repeat == ReportIsRepeat::yes;
+            held_reports_.push_back(std::move(held));
+            return;
+        }
+        if (!held_reports_overflowed_) {
+            held_reports_overflowed_ = true;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MatchingEngineThread: {} reports held while waiting to be told what this instance may do, which is as many as are kept -- the rest "
+                       "are sent as they are produced. A member may receive a report for an order this instance never serves; it is marked as a possible "
+                       "repeat and can be discarded, which is the lesser harm",
+                       held_reports_.size());
+        }
     }
 
     pubsub_itc_fw_app::WalRecord envelope{};
@@ -1316,6 +1397,10 @@ void MatchingEngineThread::adopt_leader_role() {
     send_arbiter_heartbeat();
     announce_role();
 
+    // This instance is going to serve, so anything it caught up on and held back is owed to the
+    // members who placed those orders.
+    release_held_reports();
+
     // This is the moment trading resumes, which is the moment R-0117 is about: an engine that
     // was absent too long must not simply carry on with the orders its members were locked out
     // of. Checked here rather than only after reconciliation, because an engine can reach this
@@ -1426,6 +1511,10 @@ void MatchingEngineThread::enter_follower_state() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: role now FOLLOWER (was {}, epoch={}) -- passive, not accepting orders",
                    me_role_name(previous), epoch_);
     }
+    // Anything held back from a catch-up is not this instance's to send: it serves nobody, and
+    // the leader answered those members from its own catch-up.
+    discard_held_reports("this instance is a follower and serves nobody");
+
     // The timer is deliberately left running. A follower still sends liveness; what it stops
     // sending is the lease, which send_arbiter_heartbeat decides by role.
     announce_role();
