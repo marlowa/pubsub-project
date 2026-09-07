@@ -2744,6 +2744,118 @@ _SCENARIOS: list[Scenario] = [
         steps=[],
     ),
 
+    # 54 -- the window BUG-0077 describes, opened deliberately.
+    #
+    # A restarting engine asks the sequencer for a catch-up as soon as it has somewhere to ask,
+    # before it knows whether its peer is leading, and it learns that from the peer's
+    # RoleAnnouncement on a different channel. Scenario 24 never reaches the window: the arbiter
+    # answers in about a tenth of a second, the instance is a follower before the sequencer's
+    # order connection arrives, and the catch-up is skipped. So both arbiters are stopped for the
+    # restart. Nothing can then tell the instance what it is except its peer, which is exactly the
+    # race, and the venue is otherwise untouched -- the secondary goes on leading, as scenario 25
+    # establishes it does with no arbiter anywhere.
+    #
+    # What this measures, and what it asserts, are different things. The assertions are that the
+    # restarting instance becomes current without taking the role, and that the venue still trades
+    # afterwards -- recovery orders are confirmed on the leading secondary, which they cannot be if
+    # the order routing ends up pointing at an instance that will not act on them. What it measures
+    # is in the sequencer log: whether serving that catch-up moves the order routing at all, and
+    # for how long. See BUG-0077.
+    Scenario(
+        number=54,
+        short_name="startup_catchup_while_peer_leads",
+        description="A restarted engine catches up while its peer leads, with no arbiter to tell it otherwise",
+        expected_outcome=(
+            "the restarted instance asks for a catch-up, becomes current, and waits to be told "
+            "what it may do without adopting leadership -- and the venue goes on trading through "
+            "the leader it already had"
+        ),
+        me_ha=True,
+        orders_during_override=0,
+        # Measured 2026-09-07 and it fails at Phase 5, which is the finding rather than a flaw in
+        # the scenario: serving the catch-up moved the order routing to the restarting instance,
+        # and it never came back. Marked so that the suite reports a known gap; the marking is
+        # removed by the fix, and the run then fails the suite if the gap reopens.
+        expected_failure=(
+            "BUG-0077: the sequencer re-points its ME order connection to whoever it last served a "
+            "catch-up, so a restarting instance takes the routing from the leader and the venue "
+            "stops matching"
+        ),
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
+            # 1. Fail the primary so the secondary is genuinely leading.
+            KillStep(
+                proc_name="matching_engine_primary",
+                secondary_log_name="matching_engine_secondary.log",
+                role_prefix=None,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+                failover_to="matching_engine_secondary",
+                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            # 2. Both arbiters down, and down together, so that nothing can assign a role to the
+            #    instance that is about to start. Killed in turn rather than restarted in turn,
+            #    for the reason scenario 25 records: a survivor answers from its own state and
+            #    the window never opens.
+            KillStep(
+                proc_name="arbiter_primary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=1.0,
+            ),
+            KillStep(
+                proc_name="arbiter_secondary",
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=2.0,
+            ),
+            # 3. Bring the primary back into a venue where only its peer can tell it anything.
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            # 4. It asked. The restart deletes the log first, so this line is from this start and
+            #    not from the one before it.
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "entering RECONCILING"),
+                timeout=30.0,
+                description="the restarted instance asks for a catch-up though it does not lead",
+            ),
+            # 5. And it stopped there. Current, and waiting -- never adopting the role on the
+            #    strength of having caught up, which is what trap 5 of BUG-0064 was about.
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "waiting to be told what it may do"),
+                timeout=30.0,
+                description="it becomes current without taking the role",
+                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
+            ),
+            # 6. Put the arbiters back, so the recovery orders that follow are sent into a whole
+            #    venue and a failure among them means what it says.
+            RestartStep(
+                proc_name="arbiter_primary",
+                ready_log_name="arbiter_primary.log",
+                ready_markers=(_ARB_ROLE,),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=1.0,
+            ),
+            RestartStep(
+                proc_name="arbiter_secondary",
+                ready_log_name="arbiter_secondary.log",
+                ready_markers=("ArbiterThread:",),
+                ready_timeout=30.0,
+                resets_me_counter=False,
+                settle_secs=SETTLE_AFTER_FAILOVER,
+            ),
+        ],
+    ),
+
     # 43 to 47 -- high availability turned off.
     #
     # There was no coverage of this at all, which is why BUG-0061 survived: `devenv.py --no-ha`

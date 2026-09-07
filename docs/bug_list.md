@@ -9,7 +9,7 @@
 
 ## Open bugs by severity
 
-9 high, 14 medium, 3 low.
+10 high, 13 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,6 +22,7 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
+| [BUG-0077](#bug_0077) | high | defect | A restarting engine's catch-up takes the order routing from the leader |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -35,7 +36,6 @@
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
-| [BUG-0077](#bug_0077) | medium | defect | A restarting engine can catch up and report while its peer is leading |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -1798,15 +1798,15 @@ setting should do the same.
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
 
-### BUG-0077: A restarting engine can catch up and report while its peer is leading {#bug_0077}
+### BUG-0077: A restarting engine's catch-up takes the order routing from the leader {#bug_0077}
 
 | | |
 |---|---|
-| Severity | medium |
+| Severity | high |
 | Found | 2026-09-03 |
 | Recorded | 2026-09-03 |
 | How | Reading the startup path after moving the catch-up there, while closing [BUG-0064](#bug_0064) |
-| Impact | A burst of execution reports to members for orders they already hold, sent by an instance that is about to become a follower and serve nobody. The reports are marked as repeats, so this is noise a member can discard rather than a loss |
+| Impact | The sequencer routes orders to an instance that will not act on them, and nothing restores the routing: measured at 53 seconds and still broken when the run ended, with a thousand orders accepted and matched by nothing. The duplicate reports the entry was opened for are the lesser half |
 
 An engine catches up when the sequencer's order connection first arrives, before it has served
 anything --- which is where the catch-up has to be, because an instance that has already been
@@ -1834,6 +1834,62 @@ it is recorded rather than fixed in the same change.
 **Not observed, deduced.** No scenario has produced it: the whole `ha_test` suite passes with the
 catch-up where it now is. It is recorded because the window is visible in the code and a race that
 is only rare is not a race that is absent.
+
+**Observed on 2026-09-07 by scenario 54**, which is what the section below is. The severity was
+raised from medium to high on that measurement.
+
+#### Measured 2026-09-07: it is not duplicate traffic, it is a venue that stops matching
+
+Scenario 54 opens the window deliberately. Scenario 24 does not reach it: the arbiter answers in
+about a tenth of a second, so the instance is already a follower when the sequencer's order
+connection arrives and the catch-up is skipped. With both arbiters stopped for the restart, nothing
+but the peer can say what the instance is, and the race is the one described above.
+
+What the sequencer did, from `sequencer_primary.log`:
+
+```
+21:21:43.815  matching engine instance 2 leads at epoch 90 -- orders now route to connection 23
+21:21:50.894  MePositionRequest from connection 59 last_seq_no=696036 -- streaming WAL catch-up up to head=697922
+21:21:51.296  ME order connection promoted to 59 -- sequenced orders now route to the caught-up ME
+21:22:21.592  matching engine instance 1 on connection 59 is a follower at epoch 97 -- withdrawn from order routing
+```
+
+Connection 59 is the restarting instance, which is not leading and never leads. **Serving its
+catch-up moved the live order routing off the leader**, in 400 milliseconds, because
+`handle_me_position_request` ends by setting `me_outbound_order_conn_id_ = conn_id` for whoever it
+last served (`SequencerThread.cpp:2575`).
+
+**It did not come back.** Thirty seconds later the restarting instance announced follower, and the
+handler for that empties the slot rather than restoring the leader
+(`me_outbound_order_conn_id_ = ConnectionID{}`, `SequencerThread.cpp:2450`). The leader announces
+only on a role change or a new connection, and neither happened. Routing was still empty 53 seconds
+later when the run ended.
+
+**What that cost, in the same run.** 1000 orders were sent at 21:22:14, during the window. The
+leading secondary matched none of them: `matching_engine_secondary.log` records no accepted order,
+and the restarted primary did not act on them either, because it is a follower. The venue accepted
+a thousand orders and no engine acted on any of them -- which is [BUG-0009](#bug_0009)'s shape,
+reached by a different road.
+
+**So the entry's own account of the harm was wrong, and understated.** "Duplicate traffic, not
+loss" describes the reports; it does not describe the routing. Severity is raised from medium to
+high on the measurement: this stops the venue matching, and nothing restores it.
+
+**What the fix must now do**, beyond holding the reports:
+
+- The request must say why it is asking -- starting, or being promoted. The sequencer serves the
+  records either way, so an instance still becomes current, but it re-points the order connection
+  only for a promotion. The asker is the only party that knows which it is, which is why the
+  answer cannot be a check bolted onto the sequencer's side. Wire compatibility is not a
+  constraint yet, so the field is free.
+- A follower announcement that finds itself holding the order slot should hand it to the announced
+  leader where one is known, rather than emptying the slot and waiting for an announcement that
+  has no reason to come.
+
+Scenario 54 is marked `expected_failure` until both are done. It asserts what should be true --
+the instance becomes current without taking the role, and the venue goes on trading through the
+leader it already had -- so removing the marking is the fix's own test.
+
 
 ---
 
