@@ -32,6 +32,7 @@ Checks implemented:
   24. Single-argument constructor not declared explicit
   25. Bare true / false literal passed as a function argument
   26. printf family (printf/sprintf/snprintf/fprintf and v- variants); use fmt
+  27. Doxygen comment block not preceded by a blank line
 """
 
 from __future__ import annotations
@@ -1031,6 +1032,37 @@ def check_namespace_matches_directory(path: Path, lines: list[str], stripped: li
                       f"mirror its path under include/ (see coding rules: namespaces mirror directories)")]
 
 
+# ── Check 27: a Doxygen block is preceded by a blank line ────────────────────
+#
+# A /** block that butts straight up against the declaration above it reads as a
+# trailing comment on that declaration rather than as documentation of the next
+# one, and the two run together on the page. A single blank line separates them.
+#
+# Exempted, because there is nothing to separate the block from: the first line
+# of a file, the first thing inside a scope that has just been opened, and the
+# first member after an access label. That is the convention the codebase
+# already follows -- of the blocks with a non-blank line above them, all but a
+# handful are one of those two cases, so requiring a blank line there would be
+# a new rule rather than the one being written down.
+
+_DOXYGEN_BLOCK_START_RE = re.compile(r'^\s*/\*\*')
+_ACCESS_LABEL_RE = re.compile(r'^\s*(public|private|protected)\s*:\s*$')
+
+
+def check_doxygen_blank_line(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    violations = []
+    for i, line in enumerate(lines):
+        if i == 0 or not _DOXYGEN_BLOCK_START_RE.match(line):
+            continue
+        previous = lines[i - 1].rstrip()
+        if previous.strip() == '':
+            continue
+        if _ACCESS_LABEL_RE.match(previous) or previous.endswith('{'):
+            continue
+        violations.append(Violation(path, i + 1, "Doxygen comment block must be preceded by a blank line"))
+    return violations
+
+
 _CHECKS = [
     check_defines,
     check_screaming_snake_case,
@@ -1061,6 +1093,7 @@ _CHECKS = [
     check_fixed_encode_buffer,
     check_printf_family,
     check_namespace_matches_directory,
+    check_doxygen_blank_line,
 ]
 
 

@@ -583,6 +583,7 @@ class ApplicationThread {
      * reactor thread, which is safe because ExpandableSlabAllocator::deallocate()
      * is thread-safe.
      */
+
     /**
      * @brief Releases the slab-allocated payload of a FrameworkPdu EventMessage.
      *

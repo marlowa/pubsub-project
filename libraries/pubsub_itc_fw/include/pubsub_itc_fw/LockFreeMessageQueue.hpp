@@ -24,6 +24,7 @@
 namespace pubsub_itc_fw {
 
 #ifdef USING_VALGRIND
+
 /**
  * @brief Valgrind-compatible MPSC queue using mutex.
  *

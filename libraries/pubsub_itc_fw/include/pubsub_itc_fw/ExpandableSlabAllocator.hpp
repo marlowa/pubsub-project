@@ -109,6 +109,7 @@ namespace pubsub_itc_fw {
  *
  * See the THREADING CONTRACT block comment above for full concurrency semantics.
  */
+
 /**
  * @brief Whether the empty-slab drain loop has genuinely failed to make progress.
  *

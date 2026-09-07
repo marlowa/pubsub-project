@@ -41,6 +41,7 @@ static constexpr size_t max_execution_report_buffer_size = 64 * 1024;
  * @param[in]  output_buffer_size   Size of output_buffer in bytes.
  * @return A view of the wire bytes within output_buffer; empty on overflow.
  */
+
 /**
  * @param[in] poss_dup              True for a report being RESENT to a member that asked for
  *                                  messages it missed. Adds PossDupFlag=Y, which is what

@@ -31,6 +31,7 @@ namespace pubsub_itc_fw {
 class InetAddress : public IpAddressInterface {
   public:
     // Destructor is first, as per coding style.
+
     /**
      * @brief Default virtual destructor for `InetAddress`.
      * Ensures proper cleanup and allows for polymorphic destruction.

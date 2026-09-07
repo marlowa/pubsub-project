@@ -34,6 +34,7 @@ class Timer {
     [[nodiscard]] TimerID get_timer_id() const {
         return timer_id_;
     }
+
     /**
      * @brief Returns the type of the timer.
      * @return The timer's type.

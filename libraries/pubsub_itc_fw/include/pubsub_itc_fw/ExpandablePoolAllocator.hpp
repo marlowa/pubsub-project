@@ -225,6 +225,7 @@ template <typename T> class ExpandablePoolAllocator {
      *       that still have allocated slots will have their objects destructed
      *       here -- see FixedSizeMemoryPool destructor for details.
      */
+
     /**
      * @brief Destroys the allocator, checking canaries on any leaked objects.
      *

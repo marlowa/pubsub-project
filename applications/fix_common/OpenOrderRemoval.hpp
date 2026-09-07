@@ -42,6 +42,7 @@ namespace open_orders {
  * with nobody managing it, which is the outcome cancel-on-disconnect exists to
  * prevent. The cheap error is to keep, so this keeps.
  */
+
 /**
  * @brief Whether an OrdStatus retires an order, so it stops resting on the book.
  *

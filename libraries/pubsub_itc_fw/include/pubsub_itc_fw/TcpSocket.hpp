@@ -92,6 +92,7 @@ class TcpSocket : public ByteStreamInterface {
     [[nodiscard]] static std::tuple<std::unique_ptr<TcpSocket>, std::string> adopt(int socket_fd);
 
     // ByteStreamInterface implementations
+
     /**
      * @brief Sends a specified amount of binary data over the TCP socket.
      *

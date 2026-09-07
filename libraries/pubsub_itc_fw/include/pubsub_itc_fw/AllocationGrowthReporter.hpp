@@ -29,6 +29,7 @@ namespace pubsub_itc_fw {
  * It is in its own header because it belongs to neither. A structure that reports growth
  * needs this; whether it does so through an allocator is a separate question.
  */
+
 /**
  * @brief Shared reporting state, owned by the application rather than by any allocator.
  *
