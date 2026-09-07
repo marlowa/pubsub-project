@@ -5,10 +5,22 @@
 # build-fmt.sh and build_prometheus_cpp.sh, which hardcode the container's third-party path, this
 # script detects the platform the same way build.sh does, so the same recipe serves both. The
 # options below are deliberately identical on the two platforms -- see the note on zstd.
+#
+# NOTHING HERE REACHES THE NETWORK when both source trees are already unpacked in the third-party
+# directory, which is what a build host behind a corporate firewall needs. Left to itself cpptrace
+# clones libdwarf with git, and a git fetch is exactly what such a host refuses; the two archives
+# below can be downloaded by hand anywhere and copied across. See CPPTRACE_VERSION and
+# LIBDWARF_VERSION for what to fetch, and the FetchContent note further down for how the unpacked
+# copy is used in place of the clone.
 
 set -euo pipefail
 
 CPPTRACE_VERSION="1.0.4"
+
+# The libdwarf-lite commit cpptrace 1.0.4 pins, 5dfb2cd2aacf2bf473e5bfea79e41289f88b3a5f, is the
+# tag v2.1.0 -- verified against the repository rather than assumed, because a release tarball of
+# the wrong revision would build and then behave differently from every other machine.
+LIBDWARF_VERSION="2.1.0"
 
 # Detect platform, exactly as scripts/build.sh does.
 if [ -f /etc/os-release ]; then
@@ -48,14 +60,41 @@ SOURCE_DIR="${THIRDPARTY_DIR}/cpptrace-${CPPTRACE_VERSION}"
 if [ ! -d "${SOURCE_DIR}" ]; then
     ARCHIVE="/tmp/cpptrace-${CPPTRACE_VERSION}.tar.gz"
     if [ ! -f "${ARCHIVE}" ]; then
-        wget "https://github.com/jeremy-rifkin/cpptrace/archive/refs/tags/v${CPPTRACE_VERSION}.tar.gz" \
-            -O "${ARCHIVE}"
+        if ! wget "https://github.com/jeremy-rifkin/cpptrace/archive/refs/tags/v${CPPTRACE_VERSION}.tar.gz" -O "${ARCHIVE}"; then
+            rm -f "${ARCHIVE}"
+            echo "ERROR: cpptrace ${CPPTRACE_VERSION} source not found and could not be downloaded." >&2
+            echo "       On a host without internet access, fetch this archive elsewhere and unpack it" >&2
+            echo "       into the third-party directory:" >&2
+            echo "         https://github.com/jeremy-rifkin/cpptrace/archive/refs/tags/v${CPPTRACE_VERSION}.tar.gz" >&2
+            echo "       so that ${SOURCE_DIR} exists." >&2
+            exit 1
+        fi
     fi
     rm -rf "/tmp/cpptrace-${CPPTRACE_VERSION}"
     tar xzf "${ARCHIVE}" -C /tmp
     SOURCE_DIR="/tmp/cpptrace-${CPPTRACE_VERSION}"
 fi
 echo "Source:         ${SOURCE_DIR}"
+
+# cpptrace fetches libdwarf itself, with git, from a commit it pins. FetchContent takes an already
+# unpacked source tree in place of the clone when FETCHCONTENT_SOURCE_DIR_<NAME> names one, and
+# FETCHCONTENT_FULLY_DISCONNECTED then forbids it from reaching the network at all -- so a build
+# host that refuses git fetches, submodules and clones builds from the release tarball instead,
+# and says so rather than hanging on a clone that cannot succeed. Where the tree is absent the
+# clone is left to happen, which is what the development host does.
+LIBDWARF_SOURCE_DIR="${THIRDPARTY_DIR}/libdwarf-lite-${LIBDWARF_VERSION}"
+LIBDWARF_ARGS=()
+if [ -d "${LIBDWARF_SOURCE_DIR}" ]; then
+    LIBDWARF_ARGS+=(
+        "-DFETCHCONTENT_SOURCE_DIR_LIBDWARF=${LIBDWARF_SOURCE_DIR}"
+        "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
+    )
+    echo "libdwarf:       ${LIBDWARF_SOURCE_DIR} (no network access needed)"
+else
+    echo "libdwarf:       will be cloned by cpptrace -- this needs git and network access."
+    echo "                To build without either, unpack this archive as ${LIBDWARF_SOURCE_DIR}:"
+    echo "                  https://github.com/jeremy-rifkin/libdwarf-lite/archive/refs/tags/v${LIBDWARF_VERSION}.tar.gz"
+fi
 
 # Configure from scratch. A CMakeCache left by an earlier run holds the install prefix and every
 # option below, so a rebuild after changing platform or version would install where the previous
@@ -85,6 +124,7 @@ rm -rf "${BUILD_DIR}"
 # the consuming project is made to satisfy, so a platform that diverges here fails to configure on
 # that platform alone.
 cmake -S "${SOURCE_DIR}" -B "${BUILD_DIR}" \
+    "${LIBDWARF_ARGS[@]+"${LIBDWARF_ARGS[@]}"}" \
     -DCMAKE_INSTALL_PREFIX="${INSTALL_PREFIX}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_STANDARD=17 \
