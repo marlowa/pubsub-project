@@ -135,6 +135,10 @@ target_link_libraries(pubsub_itc_fw PUBLIC
         # in libcurl for nothing.
         prometheus-cpp::core
         prometheus-cpp::pull
+        # Stack traces. PUBLIC because PreconditionAssertion.hpp is a public header of this
+        # library and captures a trace in its constructor, so anything that throws one needs
+        # the include path and the symbols.
+        cpptrace::cpptrace
 )
 
 # std::filesystem (used by CpuPinning and several tests) needs libstdc++fs on

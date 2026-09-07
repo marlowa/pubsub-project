@@ -19,6 +19,7 @@ RUN dnf install -y \
     openssl \
     openssl-devel \
     zlib-devel \
+    libzstd-devel \
     libcurl-devel \
     epel-release \
     && dnf install -y lcov \

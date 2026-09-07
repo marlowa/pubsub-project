@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 80 |
-| Open | 28 (17 defects, 11 tasks) |
-| Closed | 52 |
+| Open | 27 (17 defects, 10 tasks) |
+| Closed | 53 |
 | Next id | BUG-0081 |
 
 ## Open bugs by severity
 
-10 high, 15 medium, 3 low.
+10 high, 14 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -37,7 +37,6 @@
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0077](#bug_0077) | medium | defect | A restarting engine can catch up and report while its peer is leading |
-| [BUG-0080](#bug_0080) | medium | task | An exception that stops a process leaves no record of how it got there |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -1878,7 +1877,9 @@ about the six slab chainings that preceded it.
 how control reached it. There is no core and no signal, because the process shut down cleanly --
 so this is *less* recoverable after the fact than a segmentation fault, which at least leaves a
 symbolised stack in the journal. That is [BUG-0080](#bug_0080), and it is the reason this entry
-cannot say more than it does.
+cannot say more than it does. [BUG-0080](#bug_0080) is closed as of 2026-09-07 and a
+precondition now carries its stack, so a second occurrence will say how control reached the throw.
+It does not recover this one: the trace was not taken on 2026-09-06 and cannot be reconstructed.
 
 **Load context, which argues both ways.** The deployment was wiped and rebuilt earlier the same
 afternoon, so this is not accumulated debris. But 800,000 resting orders on a single session is a
@@ -1895,6 +1896,8 @@ the open-order pool being sized by nothing in particular, which is why the chain
 
 ---
 
+## Closed
+
 ### BUG-0080: An exception that stops a process leaves no record of how it got there {#bug_0080}
 
 | | |
@@ -1904,6 +1907,7 @@ the open-order pool being sized by nothing in particular, which is why the chain
 | Recorded | 2026-09-06 |
 | Kind | task |
 | How | Trying to diagnose [BUG-0079](#bug_0079) and finding the log named the throw site and nothing else |
+| Fixed | 2026-09-07 -- `cpptrace` captures the stack where a precondition is violated, and it reaches the log with the message. `PubSubItcException` is deliberately not included; see the closure |
 | Impact | A process that stops on a thrown precondition can only be diagnosed by rereading the code and guessing. The orderly shutdown that makes the failure safe is also what destroys the evidence |
 
 **A clean termination is worse to diagnose than a crash, which is the wrong way round.** When a
@@ -1929,9 +1933,51 @@ paid once and never on the hot path.
 
 ---
 
----
+#### Fixed 2026-09-07, and what was deliberately left out
 
-## Closed
+`cpptrace` 1.0.4 is a third-party dependency of the framework, built by `scripts/build-cpptrace.sh`
+on both the development host and the Rocky 8 container, and `PreconditionAssertion` now captures a
+stack in its constructor -- which runs immediately before the throw expression completes, while the
+frames that say how the process got there are still on the stack. The trace is appended to
+`what()`, so every existing catch site gains it without being changed, the reactor's among them,
+and `stack_trace()` offers the frames whole to anything that wants them rather than the rendering.
+
+The failure this entry was written about now reads:
+
+```
+Reactor::run: exception escaped the event loop; shutting down:
+  ExpandableSlabAllocator::deallocate: ptr must not be nullptr (thrown from pa_check.cpp:6)
+Stack trace (most recent call first):
+#0 0x00005ae12184d4aa in deallocate(void*) at pa_check.cpp:6:134
+#1 (inlined)          in release_pdu_payload() at pa_check.cpp:9:40
+#2 0x00005ae12184d610 in main at pa_check.cpp:13:28
+```
+
+**Preconditions only, and that is a decision rather than an omission.** The entry above proposed
+applying this to `PubSubItcException` as well. Andrew's position, 2026-09-07: a violated
+precondition is definitely a bug, so the path that reached it is the evidence; `PubSubItcException`
+is usually thrown when a POSIX call fails, which is usually the environment answering rather than a
+defect, and there the message already names the call. So it is excluded until there is a reason to
+include it, not left out by oversight.
+
+**Capture is always on**, which settles the question the entry left open. The cost is paid on a
+path that is about to stop the process, and a configurable capture would be off in exactly the
+deployment where the failure finally happens.
+
+**Two things the build refused before this was finished**, both worth knowing before the next
+third-party addition. `check_standards.py` treats an angle-bracket `.hpp` as a project header
+unless its top path element appears in `_THIRD_PARTY_HPP_ROOTS`, so every standard header after
+the new include was reported out of order until `cpptrace` was added to that set. And the DSL test
+suite compiles its generated pybind11 bindings in a scratch CMake project of its own
+(`python/tests/utils.py`), against the framework include directory -- a new dependency of a public
+framework header has to be found *and linked* there too, because a `MODULE` library links happily
+with undefined symbols and fails at `dlopen` instead.
+
+**What this does not do.** It does not explain [BUG-0079](#bug_0079), which stays open: the null
+that reached `deallocate` on 2026-09-06 is still unexplained, and there is no trace of that
+occurrence to read. What has changed is that a second occurrence will say how it got there.
+
+---
 
 ### BUG-0071: Warming the open-order region does not give it any blocks {#bug_0071}
 

@@ -34,6 +34,7 @@ case "${PLATFORM_ID}" in
         export TOMLPLUSPLUS_VERSION=3.4.0
         export ROBINMAP_VERSION=1.4.1
         export PROMETHEUS_VERSION=1.3.0
+        export CPPTRACE_VERSION=1.0.4
         ;;
     rocky8*|rhel8*|centos8*)
         # The same path the real RHEL8 build hosts use. The Rocky 8 container mounts the
@@ -53,6 +54,7 @@ case "${PLATFORM_ID}" in
         export TOMLPLUSPLUS_VERSION=3.4.0
         export ROBINMAP_VERSION=1.4.1
         export PROMETHEUS_VERSION=1.3.0
+        export CPPTRACE_VERSION=1.0.4
         ;;
     *)
         echo "ERROR: Unrecognised platform: ${PLATFORM_ID}" >&2

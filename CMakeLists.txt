@@ -138,6 +138,7 @@ set(GOOGLETEST_VERSION $ENV{GOOGLETEST_VERSION})
 set(TOMLPLUSPLUS_VERSION $ENV{TOMLPLUSPLUS_VERSION})
 set(ROBINMAP_VERSION $ENV{ROBINMAP_VERSION})
 set(PROMETHEUS_VERSION $ENV{PROMETHEUS_VERSION})
+set(CPPTRACE_VERSION $ENV{CPPTRACE_VERSION})
 
 list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR})
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
@@ -149,6 +150,7 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/googletest/${GOOGLETE
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPLUSPLUS_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/prometheus-cpp/${PROMETHEUS_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/cpptrace/${CPPTRACE_VERSION}")
 # Second candidate prefix for the same package. An RHEL8 target's third-party tree holds it
 # directly under THIRDPARTY_DIR and names the directory after the metric system rather than
 # after the C++ client, so the prefix above does not exist there and 0.3.0 would not configure.
@@ -171,6 +173,11 @@ find_package(tsl-robin-map REQUIRED CONFIG)
 # find_dependency()s Threads, ZLIB (the build has compression on) and CURL (push enabled),
 # so those must be present on the host even though only the pull path is wanted here.
 find_package(prometheus-cpp REQUIRED CONFIG)
+# Stack traces captured where an exception is thrown rather than where it is caught. Its package
+# config find_dependency()s libdwarf, which cpptrace builds itself and installs into the same
+# prefix, so the prefix above satisfies both and there is nothing else to find. libdwarf is a
+# static archive inside libcpptrace.so; only the one shared library is deployed.
+find_package(cpptrace REQUIRED CONFIG)
 find_package(OpenSSL REQUIRED)
 
 find_package(PkgConfig)

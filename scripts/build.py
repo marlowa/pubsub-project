@@ -602,6 +602,7 @@ def check_environment_variables():
         'GOOGLETEST_VERSION',
         'ROBINMAP_VERSION',
         'PROMETHEUS_VERSION',
+        'CPPTRACE_VERSION',
     ]
 
     missing = [var for var in required_vars if var not in os.environ]

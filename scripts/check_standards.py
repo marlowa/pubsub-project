@@ -559,7 +559,7 @@ def check_banner_dividers(path: Path, lines: list[str], stripped: list[str]) -> 
 
 _INCLUDE_ANGLE_RE = re.compile(r'^\s*#\s*include\s+<([^>]*)>')
 _NAMESPACE_START_RE = re.compile(r'^\s*namespace\b')
-_THIRD_PARTY_HPP_ROOTS = frozenset({'toml++', 'argparse'})
+_THIRD_PARTY_HPP_ROOTS = frozenset({'toml++', 'argparse', 'cpptrace'})
 
 def _include_is_project_header(included: str) -> bool:
     base = included.rsplit('/', 1)[-1]

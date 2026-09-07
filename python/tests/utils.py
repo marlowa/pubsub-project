@@ -17,6 +17,20 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # i.e. the directory such that <pubsub_itc_fw/BumpAllocator.hpp> resolves.
 _PUBSUB_ITC_FW_INCLUDE_DIR = str(_PROJECT_ROOT / "libraries" / "pubsub_itc_fw" / "include")
 
+# The generated bindings include framework headers, and PreconditionAssertion.hpp captures a stack
+# trace through cpptrace, so this scratch project needs the same third-party package the real build
+# uses. The prefix is derived from the environment build.sh sets rather than hardcoded, so the
+# Rocky container picks up its own tree. A bare pytest run with neither variable set leaves the
+# prefix empty and find_package then fails at configure time, saying which package it wanted --
+# which is a better answer than a fatal error about a missing include in a header nobody edited.
+_THIRDPARTY_DIR = os.environ.get("THIRDPARTY_DIR", "")
+_CPPTRACE_VERSION = os.environ.get("CPPTRACE_VERSION", "")
+_CPPTRACE_PREFIX = (
+    str(Path(_THIRDPARTY_DIR) / "installed" / "cpptrace" / _CPPTRACE_VERSION)
+    if _THIRDPARTY_DIR and _CPPTRACE_VERSION
+    else ""
+)
+
 # These tests compile a shared object and dlopen it, so the scratch directory must
 # permit executable mappings. The system temp directory frequently does not: mounting
 # /tmp noexec is a standard hardening measure and is in place on the RHEL8 target,
@@ -149,9 +163,14 @@ project(dslgen_bindings LANGUAGES CXX)
 
 find_package(pybind11 REQUIRED)
 
+list(APPEND CMAKE_PREFIX_PATH "{_CPPTRACE_PREFIX}")
+find_package(cpptrace REQUIRED CONFIG)
+
 add_library(dslgen MODULE bindings.cpp)
 target_include_directories(dslgen PRIVATE "{_PUBSUB_ITC_FW_INCLUDE_DIR}")
-target_link_libraries(dslgen PRIVATE pybind11::module)
+# cpptrace is linked, not merely included: a module library links with undefined symbols left to
+# the loader, so an unlinked generate_trace would build cleanly and fail at dlopen instead.
+target_link_libraries(dslgen PRIVATE pybind11::module cpptrace::cpptrace)
 set_target_properties(dslgen PROPERTIES
     CXX_STANDARD 17
     PREFIX ""
