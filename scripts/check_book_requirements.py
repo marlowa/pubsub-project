@@ -14,6 +14,12 @@ It also counts the gaps the book records, and checks that every defect a gap cit
 book specifies and what the venue does; a book with none left describes a system that works.
 """
 
+# The annotations below use builtin generics -- list[dict], dict[str, str] and so on. Python
+# evaluates a function's annotations when the def is executed, and builtins became subscriptable
+# only in 3.9, so without this import the module raises TypeError on import under the Python 3.8
+# that RHEL8 and Rocky 8 ship, and this check cannot run on the platform the venue is built for.
+from __future__ import annotations
+
 import argparse
 import re
 import sys

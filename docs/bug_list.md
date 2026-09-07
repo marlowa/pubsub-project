@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 80 |
+| Bugs recorded | 81 |
 | Open | 26 (16 defects, 10 tasks) |
-| Closed | 54 |
-| Next id | BUG-0081 |
+| Closed | 55 |
+| Next id | BUG-0082 |
 
 ## Open bugs by severity
 
@@ -1838,6 +1838,61 @@ is only rare is not a race that is absent.
 ---
 
 ## Closed
+
+### BUG-0081: The book's requirement checks cannot run on the platform the venue is built for {#bug_0081}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-07 |
+| Recorded | 2026-09-07 |
+| How | Running the whole build in the Rocky 8 container to check that the day's changes compile on gcc 8.5. The build never reached the compiler: it stopped in the pylint stage |
+| Fixed | 2026-09-07 -- `from __future__ import annotations` |
+| Impact | Every gate the specification build owns runs on one developer machine and nowhere else, and the Rocky stage of `release_check.py` fails before it tests anything |
+
+**What happened.** `scripts/check_book_requirements.py` annotates with builtin generics --
+`-> list[dict]`, `dict[str, str]` and so on. Python evaluates a function's annotations when the
+`def` is executed, and builtins became subscriptable only in 3.9, so on the Python 3.8 that RHEL8
+and Rocky 8 ship the module raises on import:
+
+```
+  File "scripts/check_book_requirements.py", line 30, in <module>
+    def read_requirements(req_path: Path) -> list[dict]:
+TypeError: 'type' object is not subscriptable
+```
+
+**What that costs.** `docs/book/Makefile` runs this script, and it enforces that every requirement
+gives a reason for existing, that every scenario a requirement claims exists in `ha_test.py`, and
+that every defect a gap cites exists in this file. On a RHEL8 host none of that runs. The gates
+exist, and they only ever ran on the development machine.
+
+`release_check.py`'s Rocky stage also fails on this alone. It runs `devsetup.py` without
+`--no-pylint`, pylint reports the annotations as `E1136 unsubscriptable-object`, and the stage
+stops there -- before compiling anything, which is what the stage is for.
+
+**Why it was not noticed.** The README recommends `--no-pylint` for container runs, because "the
+pylint version on Rocky 8 may differ from the development machine and produce false positives".
+That advice is how a true report gets dismissed: these messages were correct, and naming a whole
+class of output as noise in advance meant nobody read the one that was not. The Rocky container
+exists to catch exactly this -- a thing that works on Mint and not on the target -- and it did,
+the first time the whole build was run in it after the script was written.
+
+**The fix** is `from __future__ import annotations`, which makes annotations strings that are never
+evaluated, with a comment saying which platform depends on it. The script now produces identical
+output on both:
+
+```
+requirements stated: 124, verified by at least one scenario: 24, awaiting coverage: 100
+ha_test scenarios: 53, verifying at least one requirement: 31, verifying none: 22
+gaps recorded: 21, of which citing a defect: 5
+no problems
+```
+
+`pylint --errors-only` is clean on Python 3.8 afterwards, so the Rocky stage no longer needs
+`--no-pylint` to get past this. The other 38 scripts were scanned for the same construct and none
+have it.
+
+---
 
 ### BUG-0079: A null pointer reached the slab allocator and terminated the FIX gateway {#bug_0079}
 
