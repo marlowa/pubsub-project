@@ -2772,15 +2772,11 @@ _SCENARIOS: list[Scenario] = [
         ),
         me_ha=True,
         orders_during_override=0,
-        # Measured 2026-09-07 and it fails at Phase 5, which is the finding rather than a flaw in
-        # the scenario: serving the catch-up moved the order routing to the restarting instance,
-        # and it never came back. Marked so that the suite reports a known gap; the marking is
-        # removed by the fix, and the run then fails the suite if the gap reopens.
-        expected_failure=(
-            "BUG-0077: the sequencer re-points its ME order connection to whoever it last served a "
-            "catch-up, so a restarting instance takes the routing from the leader and the venue "
-            "stops matching"
-        ),
+        # Marked expected_failure when written on 2026-09-07, because it failed at Phase 5: serving
+        # the catch-up moved the order routing to the restarting instance and it never came back,
+        # so a thousand recovery orders were matched by nothing. The marking came off the same
+        # night, when the request began to say whether it was a promotion or a start and the
+        # sequencer stopped re-pointing for a start. A regression now fails the suite here.
         steps=[],
         restart_steps=[],
         extra_steps=[

@@ -304,6 +304,12 @@ end
 # ------------------------------------------------------------
 message MePositionRequest (id=115, version=1)
     i64 last_seq_no        # last seq_no the ME has already applied
+    # Why the instance is asking, which only the instance knows. A promotion must move the
+    # sequencer's ME order connection to the asker -- the request is what tells the sequencer
+    # where to route, because the arbiter's decision does not reach it. A start must not: an
+    # instance that is merely becoming current may be about to learn that its peer leads, and
+    # taking the routing from a working leader stops the venue matching. See BUG-0077.
+    bool asking_to_lead    # true: this catch-up is part of a promotion, not a start
 end
 
 # ------------------------------------------------------------

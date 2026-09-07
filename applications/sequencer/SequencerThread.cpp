@@ -2443,15 +2443,41 @@ void SequencerThread::handle_role_announcement(const pubsub_itc_fw::ConnectionID
         return;
     }
 
+    // An instance that says it follows is no longer the leader this sequencer knows of, whatever
+    // it announced before. Left standing, that record would route orders to an instance that has
+    // just disclaimed the role.
+    if (me_announced_leader_instance_ == announcement.instance_id) {
+        me_announced_leader_instance_ = 0;
+    }
+
     // A follower must not be sent orders: it drops them. If it is holding the order slot --
     // which is what happens when a restarted primary reconnects on the service it is
-    // configured for -- move it out and leave the slot to whichever instance announces
-    // leadership. Orders are refused meanwhile rather than sent somewhere they vanish.
+    // configured for -- it must come out of that slot.
     if (order_conn->second == me_outbound_order_conn_id_) {
-        me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
         me_secondary_standby_conn_id_ = order_conn->second;
+
+        // Hand the slot to the instance last known to lead, where that is somebody else and this
+        // sequencer holds an order connection to it. Emptying the slot instead leaves orders with
+        // nowhere to go until an announcement arrives, and a leader announces only on a role
+        // change or on a new connection -- neither of which a follower's announcement causes. In
+        // ha_test.py scenario 54 the slot stayed empty for the rest of the run while a perfectly
+        // healthy leader sat beside it. See BUG-0077.
+        const auto leader_conn =
+            me_announced_leader_instance_ != 0 ? me_order_conn_by_instance_.find(me_announced_leader_instance_) : me_order_conn_by_instance_.end();
+        if (leader_conn != me_order_conn_by_instance_.end() && leader_conn->second.is_valid()) {
+            me_outbound_order_conn_id_ = leader_conn->second;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- order routing handed to instance {} on "
+                       "connection {}, which is the leader this sequencer knows of",
+                       announcement.instance_id, order_conn->second.get_value(), announcement.epoch, me_announced_leader_instance_,
+                       leader_conn->second.get_value());
+            return;
+        }
+
+        me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- withdrawn from order routing",
+                   "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- withdrawn from order routing, and this "
+                   "sequencer knows of no leader to hand it to. Orders are refused until one announces",
                    announcement.instance_id, order_conn->second.get_value(), announcement.epoch);
     }
 }
@@ -2470,6 +2496,7 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     }
 
     const int64_t last_seq_no = view.last_seq_no;
+    const bool asking_to_lead = view.asking_to_lead;
 
     // Only the leader may serve WAL catch-up. The promoted ME asks every sequencer
     // it holds a pre-warmed order connection to (it cannot tell which one is the
@@ -2515,8 +2542,8 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: MePositionRequest from connection {} last_seq_no={} -- streaming WAL catch-up up to head={}", conn_id.get_value(), last_seq_no,
-               wal_head);
+               "SequencerThread: MePositionRequest from connection {} last_seq_no={} ({}) -- streaming WAL catch-up up to head={}", conn_id.get_value(),
+               last_seq_no, asking_to_lead ? "asking to lead" : "starting, not asking to lead", wal_head);
 
     // Walk the WAL from last_seq_no+1 to the head, unwrapping each stored record
     // and streaming the underlying NOS/OCR PDU directly to the ME connection.
@@ -2564,11 +2591,26 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
                "SequencerThread: MePositionAck sent (last_seq_no={}, earliest retained={}, records_sent={}) -- ME is now live", wal_head, earliest_retained,
                streamed);
 
-    // Promote this connection to the active ME order connection so subsequent
-    // sequenced orders flow to the newly-promoted ME. If the request arrived on
-    // the standby connection (the normal failover case), this swaps the active
-    // ME from the dead primary to the caught-up secondary. The old standby slot
-    // is cleared; a future ME-primary restart would arrive on it again.
+    // Promote this connection to the active ME order connection so subsequent sequenced orders
+    // flow to the newly-promoted ME. If the request arrived on the standby connection (the normal
+    // failover case), this swaps the active ME from the dead primary to the caught-up secondary.
+    // The old standby slot is cleared; a future ME-primary restart would arrive on it again.
+    //
+    // Only for a promotion. An instance that is merely starting gets the records and no routing:
+    // it does not yet know whether its peer leads, and it learns that from the peer over a
+    // different channel and on its own schedule. Moving the order connection here on the strength
+    // of the ask took the routing off a working leader in 400 milliseconds, and nothing put it
+    // back -- measured by ha_test.py scenario 54, and it stopped the venue matching. The asker is
+    // the only party that knows which case this is, which is why the request carries it rather
+    // than this side inferring it. See BUG-0077.
+    if (!asking_to_lead) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: connection {} caught up but is starting rather than being promoted -- order routing left where it is",
+                   conn_id.get_value());
+        me_catchup_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        return;
+    }
+
     if (conn_id == me_secondary_standby_conn_id_) {
         me_secondary_standby_conn_id_ = pubsub_itc_fw::ConnectionID{};
     }

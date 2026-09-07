@@ -9,7 +9,7 @@
 
 ## Open bugs by severity
 
-10 high, 13 medium, 3 low.
+9 high, 14 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,7 +22,6 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0077](#bug_0077) | high | defect | A restarting engine's catch-up takes the order routing from the leader |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -36,6 +35,7 @@
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
+| [BUG-0077](#bug_0077) | medium | defect | A restarting engine reports to members for orders it will never serve |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -1798,15 +1798,15 @@ setting should do the same.
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
 
-### BUG-0077: A restarting engine's catch-up takes the order routing from the leader {#bug_0077}
+### BUG-0077: A restarting engine reports to members for orders it will never serve {#bug_0077}
 
 | | |
 |---|---|
-| Severity | high |
+| Severity | medium |
 | Found | 2026-09-03 |
 | Recorded | 2026-09-03 |
 | How | Reading the startup path after moving the catch-up there, while closing [BUG-0064](#bug_0064) |
-| Impact | The sequencer routes orders to an instance that will not act on them, and nothing restores the routing: measured at 53 seconds and still broken when the run ended, with a thousand orders accepted and matched by nothing. The duplicate reports the entry was opened for are the lesser half |
+| Impact | A burst of execution reports to members for orders they already hold, sent by an instance that is about to become a follower and serve nobody. Marked as repeats, so a member can discard them. The routing half of this entry, which stopped the venue matching, was fixed on 2026-09-07 |
 
 An engine catches up when the sequencer's order connection first arrives, before it has served
 anything --- which is where the catch-up has to be, because an instance that has already been
@@ -1836,7 +1836,8 @@ catch-up where it now is. It is recorded because the window is visible in the co
 is only rare is not a race that is absent.
 
 **Observed on 2026-09-07 by scenario 54**, which is what the section below is. The severity was
-raised from medium to high on that measurement.
+raised from medium to high on that measurement, and returned to medium when the routing half was
+fixed the same evening -- what is left is the duplicate reporting the entry was opened for.
 
 #### Measured 2026-09-07: it is not duplicate traffic, it is a venue that stops matching
 
@@ -1886,9 +1887,47 @@ high on the measurement: this stops the venue matching, and nothing restores it.
   leader where one is known, rather than emptying the slot and waiting for an announcement that
   has no reason to come.
 
-Scenario 54 is marked `expected_failure` until both are done. It asserts what should be true --
-the instance becomes current without taking the role, and the venue goes on trading through the
-leader it already had -- so removing the marking is the fix's own test.
+Scenario 54 asserts what should be true -- the instance becomes current without taking the role,
+and the venue goes on trading through the leader it already had.
+
+#### The routing is fixed, 2026-09-07. The reports are not.
+
+Two changes, both on the strength of the measurement above.
+
+**The request says why it asks.** `MePositionRequest` carries `asking_to_lead`, which the engine
+sets from `reconciling_to_lead_` -- the flag that already distinguished a promotion from a start.
+The sequencer streams the records either way, so an instance still becomes current, and re-points
+`me_outbound_order_conn_id_` only for a promotion. The asker is the only party that knows which
+case it is in: the arbiter's decision never reaches the sequencer, which is why the request has to
+carry it and why no check on the sequencer's side alone could have told them apart. The log now
+distinguishes them:
+
+```
+MePositionRequest from connection 62 last_seq_no=706119 (starting, not asking to lead) -- streaming WAL catch-up up to head=707922
+connection 62 caught up but is starting rather than being promoted -- order routing left where it is
+```
+
+**A follower hands the slot on rather than emptying it.** `handle_role_announcement` used to clear
+`me_outbound_order_conn_id_` when the announcing follower was holding it, and wait for an
+announcement that a healthy leader has no reason to send. It now hands the slot to the instance
+this sequencer last heard announce leadership, where that is somebody else and it holds an order
+connection to it, and says so. Where it knows of no leader it empties the slot as before and says
+that too, naming the consequence. An instance that announces follower also clears its own record
+as leader, so a stale belief cannot outlive the announcement that contradicts it.
+
+**Verified.** Scenario 54 passes and its `expected_failure` marking is gone, so the gap reopening
+fails the suite. The whole suite passes: 54 of 54, nothing marked. That last part was worth the
+hour it took -- the change alters routing behaviour that every promotion and rejoin scenario has
+been passing against, and the expectation was that at least one would object.
+
+**What remains, and this entry stays open for it.** The duplicate execution reports the entry was
+opened for. A startup catch-up still reports every record to the member that placed it, and an
+instance that then becomes a follower has reported for orders it will never serve. The fix is to
+hold those reports until the instance is told what it may do -- flushed if it leads, discarded if
+it follows -- which extends the rule that being current and being entitled to act are separate
+things (BUG-0064's fifth trap) to reporting, which is an act. It needs a scenario of its own:
+scenario 54 asserts the routing and says nothing about the reports.
+
 
 
 ---

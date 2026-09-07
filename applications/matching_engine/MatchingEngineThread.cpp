@@ -1709,13 +1709,20 @@ void MatchingEngineThread::send_me_position_request() {
     // held any of it.
     const int64_t position_presented = has_position_ ? last_replicated_seq_no_ : -1;
     request.last_seq_no = position_presented;
+    // Why this instance is asking. A promotion needs the sequencer to route orders here
+    // afterwards, and this request is the only thing that tells it to -- the arbiter's decision
+    // does not reach the sequencer. A start needs the records and nothing else: this instance may
+    // be about to learn from its peer that it is a follower, and a sequencer that moved the order
+    // connection here on the strength of the ask would leave the venue routing orders to an
+    // instance that will not act on them. See BUG-0077 and ha_test.py scenario 54.
+    request.asking_to_lead = reconciling_to_lead_;
     // A repeated request is answered with the whole stream again, so the tally counts from this
     // ask rather than from the start of the reconciliation. R-0101.
     catch_up_tally_ = pubsub_itc_fw::CatchUpTally(position_presented);
     for (const auto& conn_id : sequencer_order_conn_ids_) {
         send_pdu(conn_id, pubsub_itc_fw_app::MePositionRequest::message_pdu_id, 0, request);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={})",
-                   conn_id.get_value(), last_replicated_seq_no_);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={}, {})",
+                   conn_id.get_value(), last_replicated_seq_no_, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
     }
 }
 
