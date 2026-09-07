@@ -22,26 +22,33 @@ CPPTRACE_VERSION="1.0.4"
 # the wrong revision would build and then behave differently from every other machine.
 LIBDWARF_VERSION="2.1.0"
 
-# Detect platform, exactly as scripts/build.sh does.
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    PLATFORM_ID="${ID}${VERSION_ID}"
+# An exported THIRDPARTY_DIR wins. The container has two third-party trees serving two workflows --
+# the tree the README's docker run mounts, and the pubsub-rocky-deps volume release_check.py mounts
+# at /opt/deps -- and the platform alone cannot say which of them this build is for. Where nothing
+# is exported the platform decides, exactly as scripts/build.sh does.
+if [ -n "${THIRDPARTY_DIR:-}" ]; then
+    PLATFORM_ID="THIRDPARTY_DIR from the environment"
 else
-    PLATFORM_ID="unknown"
-fi
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        PLATFORM_ID="${ID}${VERSION_ID}"
+    else
+        PLATFORM_ID="unknown"
+    fi
 
-case "${PLATFORM_ID}" in
-    linuxmint22*)
-        THIRDPARTY_DIR=/home/marlowa/mystuff/thirdparty
-        ;;
-    rocky8*|rhel8*|centos8*)
-        THIRDPARTY_DIR=/development/3rdparty
-        ;;
-    *)
-        echo "ERROR: Unrecognised platform: ${PLATFORM_ID}" >&2
-        exit 1
-        ;;
-esac
+    case "${PLATFORM_ID}" in
+        linuxmint22*)
+            THIRDPARTY_DIR=/home/marlowa/mystuff/thirdparty
+            ;;
+        rocky8*|rhel8*|centos8*)
+            THIRDPARTY_DIR=/development/3rdparty
+            ;;
+        *)
+            echo "ERROR: Unrecognised platform: ${PLATFORM_ID}" >&2
+            exit 1
+            ;;
+    esac
+fi
 
 INSTALL_PREFIX="${THIRDPARTY_DIR}/installed/cpptrace/${CPPTRACE_VERSION}"
 BUILD_DIR="/tmp/cpptrace-build"
