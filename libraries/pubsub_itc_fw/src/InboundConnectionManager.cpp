@@ -290,9 +290,11 @@ void InboundConnectionManager::teardown_connection(ConnectionID id, const std::s
         conn.handler()->deallocate_pending_send();
     }
 
-    // Clear pending_send_ if it refers to this connection.
+    // Clear pending_send_ if it refers to this connection. The stashed command
+    // may be a SendPdu or a SendRaw and they carry the chunk in different
+    // fields, so ask the command which of them it owns.
     if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
-        pending_send_->allocator_->deallocate(pending_send_->slab_id_, pending_send_->pdu_chunk_ptr_);
+        pending_send_->allocator_->deallocate(pending_send_->slab_id_, pending_send_->chunk_ptr());
         pending_send_.reset();
     }
 
@@ -496,14 +498,14 @@ bool InboundConnectionManager::drain_pending_send() {
     if (command.as_tag() == ReactorControlCommand::SendRaw) {
         processed = process_send_raw_command(command);
         if (!processed) {
-            command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
+            command.allocator_->deallocate(command.slab_id_, command.chunk_ptr());
             return true;
         }
     } else {
         processed = process_send_pdu_command(command);
         if (!processed) {
             // Connection vanished while the command was stashed -- deallocate.
-            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+            command.allocator_->deallocate(command.slab_id_, command.chunk_ptr());
             return true;
         }
     }

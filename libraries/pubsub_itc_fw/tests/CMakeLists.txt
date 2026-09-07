@@ -21,6 +21,7 @@ add_executable(pubsub_itc_fw_tests
     GrowthReportingAllocatorTest.cpp
     HighResolutionClockTest.cpp
     IncrementalRehashMapTest.cpp
+    InboundConnectionManagerTest.cpp
     InetAddressTest.cpp
     LockFreeMessageQueueTest.cpp
     LoggingConfigurationLoaderTest.cpp

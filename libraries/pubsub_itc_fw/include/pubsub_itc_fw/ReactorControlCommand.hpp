@@ -79,6 +79,31 @@ class ReactorControlCommand {
         return tag_;
     }
 
+    /**
+     * @brief The slab chunk this command owns, whichever field carries it.
+     *
+     * SendPdu keeps the chunk in pdu_chunk_ptr_ and SendRaw keeps it in
+     * raw_chunk_ptr_, and each leaves the other null. Anything that has to
+     * release a command's chunk without knowing which kind it is -- a
+     * connection torn down while the command is stashed, waiting for the
+     * socket to drain -- must ask here rather than read a field and hope.
+     * Reading the wrong one yields nullptr, which deallocate refuses, and
+     * BUG-0079 is what that cost: the FIX order gateway stopped, because
+     * every byte it sends a member is sent raw.
+     *
+     * @return The chunk pointer for this command's tag, or nullptr for a tag
+     *         that owns no chunk.
+     */
+    [[nodiscard]] void* chunk_ptr() const {
+        if (tag_ == SendRaw) {
+            return raw_chunk_ptr_;
+        }
+        if (tag_ == SendPdu) {
+            return pdu_chunk_ptr_;
+        }
+        return nullptr;
+    }
+
     [[nodiscard]] std::string as_string() const {
         if (tag_ == AddTimer) {
             return "AddTimer";

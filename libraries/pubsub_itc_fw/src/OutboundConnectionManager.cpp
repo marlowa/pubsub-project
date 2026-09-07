@@ -707,8 +707,7 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
         // The slab in the stashed command has not yet been passed to send_prebuilt
         // for either PDU or TLS sends, so it must be deallocated here.
-        void* chunk_ptr = (pending_send_->as_tag() == ReactorControlCommand::SendRaw) ? pending_send_->raw_chunk_ptr_ : pending_send_->pdu_chunk_ptr_;
-        pending_send_->allocator_->deallocate(pending_send_->slab_id_, chunk_ptr);
+        pending_send_->allocator_->deallocate(pending_send_->slab_id_, pending_send_->chunk_ptr());
         pending_send_.reset();
     }
 

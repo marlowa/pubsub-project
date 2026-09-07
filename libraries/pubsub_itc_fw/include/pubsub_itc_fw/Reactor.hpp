@@ -400,6 +400,16 @@ class Reactor : public ThreadLookupInterface {
     }
 
     /**
+     * TEST SEAM: exposes the InboundConnectionManager for unit tests that need
+     * to drive its internals directly (e.g. accepting a connection, stashing a
+     * blocked send and calling teardown_connection without a running event
+     * loop). Must not be used by application code.
+     */
+    InboundConnectionManager& inbound_manager() {
+        return inbound_manager_;
+    }
+
+    /**
      * TEST SEAM: returns the OS-assigned port number for the inbound listener
      * registered at the given zero-based index. Listeners are indexed in the
      * order they were registered via register_inbound_listener().

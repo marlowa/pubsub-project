@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 80 |
-| Open | 27 (17 defects, 10 tasks) |
-| Closed | 53 |
+| Open | 26 (16 defects, 10 tasks) |
+| Closed | 54 |
 | Next id | BUG-0081 |
 
 ## Open bugs by severity
 
-10 high, 14 medium, 3 low.
+9 high, 14 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,7 +22,6 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0079](#bug_0079) | high | defect | A null pointer reached the slab allocator and terminated the FIX gateway |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -1836,6 +1835,10 @@ it is recorded rather than fixed in the same change.
 catch-up where it now is. It is recorded because the window is visible in the code and a race that
 is only rare is not a race that is absent.
 
+---
+
+## Closed
+
 ### BUG-0079: A null pointer reached the slab allocator and terminated the FIX gateway {#bug_0079}
 
 | | |
@@ -1844,6 +1847,7 @@ is only rare is not a race that is absent.
 | Found | 2026-09-06 |
 | Recorded | 2026-09-06 |
 | How | Growing the sequencer's log to measure whether a matching engine's recovery time tracks the retained log. Around 800,000 orders were sent on one FIX session; the gateway stopped part way through |
+| Fixed | 2026-09-07 -- an inbound connection torn down with a send stashed freed the wrong field of the stashed command. The diagnosis below was wrong about which thread threw, and the closure says so |
 | Impact | The gateway terminates and every member on it is disconnected. The sequencer and the matching engine were unaffected, so this is a loss of access rather than a loss of the venue -- but a member cannot place or manage anything until it reconnects, and a second gateway is not automatic |
 
 **What was logged, and it is all that was logged:**
@@ -1894,9 +1898,53 @@ The gateway's log is preserved outside the repository at
 Related: [BUG-0024](#bug_0024), a different fault in the same allocator, closed. [BUG-0072](#bug_0072),
 the open-order pool being sized by nothing in particular, which is why the chaining happened.
 
----
+#### Fixed 2026-09-07, and the reading above was wrong
 
-## Closed
+**The mechanism is not `release_pdu_payload`, and the log said so.** The gateway runs two threads
+and the log names both: `710167` is `fix_order_gatew`, the reactor thread, and `710169` is
+`FixOrderGateway`, the application thread. `ApplicationThread::release_pdu_payload` runs on the
+application thread. The throw is on the reactor thread, 150 microseconds after the line above it:
+
+```
+17:38:18.790 [710167] InboundConnectionManager.cpp:225  read backpressure engaged on connection 8 from '127.0.0.1:41876' -- EPOLLIN deregistered
+17:38:35.458 [710167] InboundConnectionManager.cpp:285  teardown_connection: connection 8 ... Connection reset by peer
+17:38:35.458 [710167] Reactor.cpp:238                   exception escaped the event loop ... ptr must not be nullptr
+```
+
+The paragraph above reasoned from the source to a call that hands an unchecked pointer to
+`deallocate`, found one, and stopped. That is a real absence of a check, and it was not this
+failure. The thread identifier was in the log the whole time.
+
+**What actually happened.** `InboundConnectionManager` stashes a send it cannot complete in
+`pending_send_`, which holds a whole `ReactorControlCommand`. `SendPdu` carries the chunk in
+`pdu_chunk_ptr_` and `SendRaw` carries it in `raw_chunk_ptr_`, and each leaves the other null.
+`teardown_connection` read the PDU field whatever the tag said. Every FIX byte sent to a member
+goes out through `send_raw`, so on a member's connection the field read was always null, and
+`deallocate` refuses null. The chunk the command really owned was also never freed; the throw hid
+the leak.
+
+Two conditions are needed together, which is why the load run found it and ordinary running does
+not: a member slow enough for a send to block, and a disconnect while it is blocked. Connection 8
+had been under backpressure for seventeen seconds when the peer reset it.
+
+**The same rule, kept in two places, and only one was right.** `drain_pending_send`, twenty lines
+away in the same file, branches on the tag correctly, and so does
+`OutboundConnectionManager::teardown_connection` -- with a comment explaining why. The inbound
+teardown was the one that did not. This is the second shape in
+[Two shapes that keep coming back](#bug_list_shapes), and the repair is that shape's remedy: the
+rule now lives once, as `ReactorControlCommand::chunk_ptr()`, which returns the field belonging to
+the command's own tag, and every release site asks it.
+
+**The test.** `InboundConnectionManagerTest.TeardownFreesAStashedRawSendRatherThanANullPduPointer`
+accepts a real loopback connection on a RawBytes listener, blocks the socket so a send cannot
+complete, sends again so that the command is stashed, and tears the connection down as a peer reset
+would. It fails on the old code with the precondition, and it also checks that the slab count does
+not grow afterwards, which is what would catch the leak if the wrong field were read again.
+
+**Found by reading, and only because the trace existed to be read.** [BUG-0080](#bug_0080), closed
+the same day, is what made the failing test name `InboundConnectionManager.cpp:295`.
+
+---
 
 ### BUG-0080: An exception that stops a process leaves no record of how it got there {#bug_0080}
 
