@@ -38,25 +38,34 @@ always meant to replace.
 \subsection{Technical events}
 \label{sec:mep_technical_events}
 
-\emph{Placeholder, created 2026-09-08. The placement is a proposal, not a decision, and moving
-it later costs only this subsection.}
+\emph{Placeholder, created 2026-09-08. Whether this subsection belongs to this component at all
+is undecided; see below.}
 
-The venue has no way to say that trading has started, has ended, or has stopped. Start of day,
-end of day and a trading halt are all technical events, and none of them can be expressed today.
+The venue has no way to say that trading has started, has ended, or has stopped. The shape of the
+answer is already settled in \texttt{docs/venue/trading\_phases.md}, which this subsection is to
+state as requirements rather than restate as prose. In outline: the venue is always in exactly one
+of five phases, start of day and end of day among them, because work happens during both and a
+period with duration is a phase rather than a moment; a halt is a flag alongside the phase and not
+a phase of its own; and the message carries the resulting state, the halted flag and the trading
+day, so that a component which missed one event is not left wrong in a way it cannot detect.
 
-The proposal is that they are a third topic owned by this publisher, and that the event enters
-the venue through the sequencer so that it acquires a position in the same order as the orders it
-speaks about. A halt means something only relative to order flow --- these orders were accepted
-before it, those after it were not --- and a publisher that keyed the event by any other clock
-would lose that relationship. The subscribers are the two order gateways, which must both answer
-the member placing an order and tell a member who is connected but idle; market data joins the
-same topic later. The matching engine is deliberately not a subscriber: it receives the
-sequencer's stream directly and applies the event in order by that path, and a second route to
-the same fact would deliver it at a different time.
+What is \emph{not} settled, and what this subsection waits on, is which component publishes it.
+That note establishes two audiences reached by two paths. Components that must act on a phase ---
+a gateway refusing a member's order, the sequencer declining to sequence one --- take it on the
+control plane, most likely by the existing order-acceptance broadcast gaining the phase and the
+halted flag rather than by a second mechanism competing with it. Components that only need to know
+--- this publisher, a recorder, whatever ingests the instrument prices that arrive during end of
+day --- are the audience for pub/sub.
 
-Two questions are open and are to be settled before any of this is written as a requirement.
-Start of day and end of day are session lifecycle rather than order flow, and may not need a
-position in the sequence at all. And the matching engine already halts itself on some paths, so a
-halt can begin in a component that is not the sequencer; how such a halt acquires a position is
-undecided. Both are the same decision as the trading-halt entry in the bug list, and are to be
-settled with it rather than beside it.
+So this publisher appears in that note as a component that needs to be \emph{told}. Whether it is
+also the component that owns the topic and redistributes the event is the open question. There is
+an argument that it is: a topic's history lives in exactly one publisher's write-ahead log, this
+publisher already follows the sequencer's log, and it stores each record under the sequencer's own
+sequence number --- so an event that entered through the sequencer would keep its position
+relative to the orders it speaks about, which is the whole of what a halt means. There is an
+argument that it is not: a component that both consumes a fact and republishes it is doing two
+jobs, and the venue may prefer the event to reach its pub/sub audience from wherever it is
+declared.
+
+That question is to be settled with the trading-halt entry in the bug list and with the order of
+work set out in that note, not here and not first.
