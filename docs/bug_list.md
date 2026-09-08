@@ -159,9 +159,10 @@ VERIFY: the secondary never promoted, because the restart beat its timeout
 FAIL: recovery orders did not appear within 30s
 ```
 
-**Not reproduced, in five attempts**: scenario 26 alone twice; scenario 25 followed by 26, which is
-the suite's own order; a replay of scenarios 1 to 26 one after another, reproducing the suite's
-accumulated write-ahead log and regions; and a second full suite run, which passed 55 of 55. The
+**Not reproduced, in four attempts**: scenario 26 alone; scenario 25 followed by 26, which is the
+suite's own order; a replay of scenarios 1 to 26 one after another, reproducing the suite's
+accumulated write-ahead log and regions; and a second full suite run, which passed 55 of 55. One
+failure in five runs of this scenario, all told. The
 logs from the failing run were overwritten by the scenarios that followed it, which is the first
 thing to fix about the next occurrence.
 
