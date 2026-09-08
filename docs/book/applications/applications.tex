@@ -12,4 +12,51 @@ accepts and cancels orders and does not match them. Absences of that kind are
 deliberate, and this chapter records which they are, so that a reader can tell
 them from defects.
 
-The rest of this chapter is not yet written.
+The rest of this chapter is not yet written, except for the placeholders below.
+
+\section{The matching engine publisher}
+\label{sec:matching_engine_publisher}
+
+\emph{Placeholder, created 2026-09-08. Nothing here is settled.}
+
+The matching engine publisher follows the sequencer's write-ahead log and republishes what it
+sees. It is the venue's first publisher, and today it is the only one.
+
+\subsection{What it publishes}
+\label{sec:mep_pubsub}
+
+Two topics exist: orders, and execution reports. This subsection is to record what each carries,
+who is entitled to subscribe to it, and what a subscriber is promised --- as requirements, and
+referring back to section~\ref{sec:pubsub} for anything general rather than restating it.
+
+Two facts to keep in view while writing it. The publisher stores each record under the
+\emph{sequencer's} sequence number rather than one of its own, so a position means the same thing
+on either instance of the pair and a subscriber's cursor survives a failover. And the fanout as
+built is a loop over unicast connections, which is the scaffolding the pub/sub mechanism was
+always meant to replace.
+
+\subsection{Technical events}
+\label{sec:mep_technical_events}
+
+\emph{Placeholder, created 2026-09-08. The placement is a proposal, not a decision, and moving
+it later costs only this subsection.}
+
+The venue has no way to say that trading has started, has ended, or has stopped. Start of day,
+end of day and a trading halt are all technical events, and none of them can be expressed today.
+
+The proposal is that they are a third topic owned by this publisher, and that the event enters
+the venue through the sequencer so that it acquires a position in the same order as the orders it
+speaks about. A halt means something only relative to order flow --- these orders were accepted
+before it, those after it were not --- and a publisher that keyed the event by any other clock
+would lose that relationship. The subscribers are the two order gateways, which must both answer
+the member placing an order and tell a member who is connected but idle; market data joins the
+same topic later. The matching engine is deliberately not a subscriber: it receives the
+sequencer's stream directly and applies the event in order by that path, and a second route to
+the same fact would deliver it at a different time.
+
+Two questions are open and are to be settled before any of this is written as a requirement.
+Start of day and end of day are session lifecycle rather than order flow, and may not need a
+position in the sequence at all. And the matching engine already halts itself on some paths, so a
+halt can begin in a component that is not the sequencer; how such a halt acquires a position is
+undecided. Both are the same decision as the trading-halt entry in the bug list, and are to be
+settled with it rather than beside it.

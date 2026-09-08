@@ -7,4 +7,35 @@ inter-process communication, pub/sub messaging, timers, high availability, and a
 binary serialisation DSL --- all designed for environments where heap allocation
 on the hot path is not acceptable.
 
-The rest of this chapter is not yet written.
+The rest of this chapter is not yet written, except for the placeholders below.
+
+\section{Pub/sub}
+\label{sec:pubsub}
+
+\emph{Placeholder, created 2026-09-08. Nothing here is settled.}
+
+This section introduces publish and subscribe as this library provides it, and holds the
+requirements that are general to it. Requirements that belong to one publisher's particular
+case do not live here: they live with that component, in
+chapter~\ref{ch:applications}, and refer back to this section.
+
+Four things are to be written, in this order.
+
+\begin{description}
+  \item[What it is.] A publisher exposes named topics; subscribers connect, replay the history
+    they have missed, and then stream new records live. What a topic is, what a record is, and
+    what a subscriber is entitled to expect.
+  \item[Why the fanout is unicast.] The reference system this venue's semantics are drawn from
+    uses reliable multicast over the user datagram protocol, together with a broker. This venue
+    copies the semantics and not the mechanism. The reasoning is to be written out in full here,
+    because at present it survives only as a parenthesis in a superseded working note.
+  \item[The alternatives, and why each was rejected.] Each rejection is to name the ground it
+    rests on, and that ground is to be one a reader can check. A rejection that rests on a
+    mistaken premise discredits the ones that do not.
+  \item[An outline of the functionality.] Delivery and ordering, durability and replay, fanout
+    and backpressure, failover, and subscriber lifecycle and identity.
+\end{description}
+
+The design as built is described outside this book, in \texttt{docs/pubsub/}, and the
+requirements-gathering that preceded it in \texttt{docs/superseded/pubsub\_requirements.md}.
+This section states what is required; those describe how it is done.
