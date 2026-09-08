@@ -361,6 +361,19 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // be told; one begun because this instance is to lead ends with it leading.
     bool reconciling_to_lead_{false};
 
+    // A peer's claim to lead, heard while this instance was still reconciling and therefore not
+    // yet in a state to act on it. Kept rather than discarded: the leader announces when a
+    // replication link comes up, which is the one announcement a restarting instance is offered,
+    // and a healthy leader has no reason to send another. Dropping it left this instance with
+    // nothing telling it a leader existed, so the startup arbitration deadline degraded it into a
+    // second one -- BUG-0082's second half, measured by ha_test.py scenario 57.
+    //
+    // The epoch is re-checked when it is acted on rather than when it is stored, because
+    // reconciliation can advance this instance's own epoch in between.
+    bool peer_leader_heard_while_reconciling_{false};
+    int64_t peer_leader_instance_id_{0};
+    int32_t peer_leader_epoch_{0};
+
     pubsub_itc_fw::TimerID book_metrics_timer_id_{};
 
     /// How many times a starting instance asks the arbiter before giving up and degrading.
@@ -438,6 +451,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void set_epoch(int32_t new_epoch);
     void publish_book_metrics();
     void handle_peer_role_announcement(const pubsub_itc_fw::EventMessage& message);
+
+    /// Defer to a peer that says it leads, taking its generation rather than inventing one.
+    /// Returns false where the claim is refused, which is only ever because it is stale.
+    bool follow_peer_claiming_leadership(int64_t instance_id, int32_t announced_epoch);
+
+    /// Act on a leader announcement that arrived while this instance was reconciling, now that
+    /// it has somewhere to act from. Consumed either way, so a claim is never applied twice.
+    void act_on_peer_leader_heard_while_reconciling();
 
     /**
      * @brief Reads the open orders back out of the region, if a previous process left any.

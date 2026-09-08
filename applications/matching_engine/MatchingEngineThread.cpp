@@ -1160,6 +1160,16 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     }
 
     if (id == startup_arbitration_timer_id_) {
+        if (ha_role_state_ == MeRole::Reconciling) {
+            // The catch-up is still running, so the role question is not settled -- and it has not
+            // been asked either, because request_startup_arbitration acts only from UNKNOWN and an
+            // arbiter that connected during the catch-up found this instance RECONCILING. Dropping
+            // the deadline here spends the only exit the instance has: it reaches UNKNOWN with the
+            // timer gone and no report sent, and nothing else speaks to that state (BUG-0082).
+            // Rearmed rather than counted, because nobody has failed to answer yet.
+            startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+            return;
+        }
         if (ha_role_state_ == MeRole::Unknown) {
             // Silence from a connected arbiter is not absence. An arbiter that has itself just
             // restarted declines to answer until it knows who leads, precisely so that it does
@@ -1179,7 +1189,11 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
                        "MatchingEngineThread: no ArbitrationDecision after {} attempts -- self-promoting via instance-id rule (degraded)",
                        startup_arbitration_attempts_);
             set_epoch(epoch_ + 1);
-            begin_reconciliation();
+            // Through become_leader_when_current, not begin_reconciliation: reconciling towards
+            // leading is what sets reconciling_to_lead_, and a reconciliation begun without it is
+            // a start. A start ends "current, and waiting to be told what it may do" -- so this
+            // path raised the epoch, caught up, and promoted nothing.
+            become_leader_when_current();
         }
         return;
     }
@@ -1426,7 +1440,9 @@ void MatchingEngineThread::send_arbitration_report() {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: no arbiter connected -- self-promoting via instance-id rule (degraded)");
         set_epoch(epoch_ + 1);
-        begin_reconciliation();
+        // As above: this must reconcile towards leading, or it reconciles towards being current
+        // and stops there. An instance that has already caught up adopts the role outright.
+        become_leader_when_current();
         return;
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ArbitrationReport sent (self_instance_id={} peer_instance_id={} epoch={})",
@@ -1546,6 +1562,25 @@ void MatchingEngineThread::handle_peer_role_announcement(const pubsub_itc_fw::Ev
         return;
     }
 
+    // A catch-up done at startup is the one case where this must be kept rather than dropped.
+    // The instance is not in a state to defer yet, but it is about to be: it reaches UNKNOWN a
+    // moment later, having heard the only announcement a healthy leader was ever going to send.
+    // Discarding it here is what left an instance with nothing telling it a leader existed, so
+    // the startup arbitration deadline degraded it into a second one (BUG-0082).
+    //
+    // Only for a start. An instance reconciling towards leading has been told by the arbiter
+    // that it leads, and that question is settled by an authority this announcement is not.
+    if (ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead_) {
+        peer_leader_heard_while_reconciling_ = true;
+        peer_leader_instance_id_ = announcement.instance_id;
+        peer_leader_epoch_ = announcement.epoch;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: peer (instance_id={}) says it leads at epoch {} while this instance is still catching up -- remembered, and acted "
+                   "on once the catch-up ends",
+                   announcement.instance_id, announcement.epoch);
+        return;
+    }
+
     // Only from a standing start. Once this instance is leading, reconciling
     // towards leading, or already a follower, the question is settled and a
     // late-arriving announcement must not disturb it.
@@ -1553,25 +1588,44 @@ void MatchingEngineThread::handle_peer_role_announcement(const pubsub_itc_fw::Ev
         return;
     }
 
-    if (announcement.epoch < epoch_) {
+    follow_peer_claiming_leadership(announcement.instance_id, announcement.epoch);
+}
+
+bool MatchingEngineThread::follow_peer_claiming_leadership(int64_t instance_id, int32_t announced_epoch) {
+    if (announced_epoch < epoch_) {
         // A leader from a generation older than one this node has already seen. It
         // led once and has not learned that it stopped. Following it would put the
         // venue back into a generation it has left, so wait for the arbiter.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MatchingEngineThread: peer (instance_id={}) claims leader at epoch {} but this node has seen epoch {} -- not following a stale leader",
-                   announcement.instance_id, announcement.epoch, epoch_);
-        return;
+                   instance_id, announced_epoch, epoch_);
+        return false;
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: peer (instance_id={}) is already leader at epoch {} -- adopting follower without arbitration", announcement.instance_id,
-               announcement.epoch);
+               "MatchingEngineThread: peer (instance_id={}) is already leader at epoch {} -- adopting follower without arbitration", instance_id,
+               announced_epoch);
 
     // Take the peer's generation rather than inventing one: this is deference, and
     // the generation being deferred to is the peer's.
-    set_epoch(announcement.epoch);
+    set_epoch(announced_epoch);
     cancel_timer(startup_arbitration_timer_id_);
     enter_follower_state();
+    return true;
+}
+
+void MatchingEngineThread::act_on_peer_leader_heard_while_reconciling() {
+    if (!peer_leader_heard_while_reconciling_) {
+        return;
+    }
+    // Consumed whether or not it is followed, so a claim heard once cannot be applied twice and
+    // cannot outlive the catch-up it arrived during.
+    peer_leader_heard_while_reconciling_ = false;
+    const int64_t instance_id = peer_leader_instance_id_;
+    const int32_t announced_epoch = peer_leader_epoch_;
+    // Re-checked against the epoch as it stands now, not as it stood when the announcement
+    // arrived: reconciliation can have advanced this instance's own generation in between.
+    follow_peer_claiming_leadership(instance_id, announced_epoch);
 }
 
 void MatchingEngineThread::announce_role() {
@@ -1945,6 +1999,13 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
                    "MatchingEngineThread: caught up at seq_no={} with {} order(s) on the book -- current, and waiting to be told what it may do",
                    ack.last_seq_no, order_book_.size());
         act_on_pending_halt();
+        // A leader that announced itself while this catch-up was running said so on the only
+        // occasion it had. Acting on it here is what keeps the startup arbitration deadline from
+        // degrading this instance into a second leader while the first is alive and well.
+        // Skipped where trading is halted: that decision is not this announcement's to reopen.
+        if (!halted_) {
+            act_on_peer_leader_heard_while_reconciling();
+        }
         return;
     }
 

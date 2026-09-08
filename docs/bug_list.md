@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 83 |
+| Bugs recorded | 85 |
 | Open | 27 (17 defects, 10 tasks) |
-| Closed | 56 |
-| Next id | BUG-0084 |
+| Closed | 58 |
+| Next id | BUG-0086 |
 
 ## Open bugs by severity
 
-9 high, 15 medium, 3 low.
+10 high, 14 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,6 +22,7 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
+| [BUG-0085](#bug_0085) | high | defect | A degraded promotion advances a generation the arbiter never learns |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -35,7 +36,6 @@
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
-| [BUG-0082](#bug_0082) | medium | defect | An engine that caught up at startup waits for an arbiter that may never come |
 | [BUG-0083](#bug_0083) | medium | defect | Scenario 26 failed once inside the suite and has not been reproduced |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -137,6 +137,63 @@ went looking.
 
 ## Open
 
+### BUG-0085: A degraded promotion advances a generation the arbiter never learns {#bug_0085}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-08 |
+| Recorded | 2026-09-08 |
+| How | `ha_test.py` scenario 57 failing for a reason it was not written to test: the guard added for [BUG-0082](#bug_0082) fired correctly and the instance still refused to follow its leader |
+| Impact | An instance whose stored generation has outrun the venue's refuses the legitimate leader's announcement as stale, forever, and then self-promotes beside it. Two leaders, reached by the path that has no arbiter |
+
+**What was measured.** Primary holding epoch 224, secondary leading at epoch 216. The primary
+restarts, hears the announcement, and logs *"peer (instance_id=2) claims leader at epoch 216 but
+this node has seen epoch 223 -- not following a stale leader"*. It then waits out the startup
+arbitration deadline and adopts `LEADER` at 224. The refusal is deliberate and right in itself:
+following a generation the venue has left would undo a failover. What is wrong is that the two
+generations diverged in the first place.
+
+**How they diverge.** The degraded self-promotion does `set_epoch(epoch_ + 1)` and persists it. It
+runs precisely when no arbiter is reachable, so no arbiter learns of it. `ArbiterThread` takes a
+component's epoch from an `ArbitrationReport` and from an incumbent it already holds, and nothing
+else: `handle_component_heartbeat` logs `hb.epoch` and never advances
+`leadership_state_[group].epoch` from it. So the arbiter goes on issuing decisions from its own,
+lower, line while the instance that degraded is permanently ahead, and the gap widens by one with
+every degraded promotion.
+
+**It does not heal.** The instance will not accept the leader's announcement, and the arbiter's
+decision -- when one arrives -- carries the lower epoch too. `set_epoch` refuses to move backwards,
+correctly, so the divergence is one-way.
+
+**How fast it opens.** Both epoch files were cleared to zero and a single `ha_test.py --scenario
+all` run was started. By scenario 55 the primary held 25 against a leader genuinely leading at 20:
+five generations of divergence in one pass, one for each degraded promotion the suite performs.
+
+**It is already making the suite lie.** Scenario 55 arranges an instance that catches up beside a
+live leader and must hold its reports until it is told it may serve. With the generations in their
+proper relation that instance defers to the peer and discards, which is scenario 54's ending, not
+55's -- so 55 only reaches its own assertion because the drift makes the instance refuse a leader
+that is genuinely leading. It was rewritten on 2026-09-08 to take the peer away instead, so that it
+no longer depends on this defect to pass.
+
+**Not the same as [BUG-0010](#bug_0010)**, which is about both nodes sharing a condition. This is
+about two records of the same venue's generation drifting apart, and only one of them being
+authoritative.
+
+**Held by** `ha_test.py` scenario 57, marked `expected_failure` against this entry. It passes on a
+venue whose epoch files have just been cleared and fails once the suite has run for twenty minutes,
+which is the defect and not a flake: the deferral it tests works and is visible in the log --
+*"says it leads at epoch 26 while this instance is still catching up -- remembered"* -- and is then
+refused against a generation that has drifted. Take the marking off when this is fixed.
+
+**Where to start.** The arbiter learns a component's generation from its heartbeat, which is the
+message that already carries it and already arrives from both instances in every role. Whether
+learning it is enough, or whether a degraded promotion must be reconciled with the arbiter
+explicitly when one returns, is the question to answer first.
+
+---
+
 ### BUG-0083: Scenario 26 failed once inside the suite and has not been reproduced {#bug_0083}
 
 | | |
@@ -186,55 +243,6 @@ asking to lead)` says which branch it took, and the sequencer's `orders now rout
 lines say whether anything ever pointed at it. Compare against
 [BUG-0076](#bug_0076), the last scenario that failed only inside the suite and turned out to be a
 real defect rather than a flake.
-
----
-
-### BUG-0082: An engine that caught up at startup waits for an arbiter that may never come {#bug_0082}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-09-07 |
-| Recorded | 2026-09-07 |
-| How | Writing `ha_test.py` scenario 55 on the assumption that such an instance would self-promote when the leader died. It did not, and sat there for the full thirty seconds |
-| Impact | The venue can hold a matching engine that is current, holds the book, and will not serve, while no engine is matching. It ends when an arbiter answers; where none does, it does not end |
-
-**What was observed.** A restarted engine catches up at startup, reports itself *"current, and
-waiting to be told what it may do"*, and stays there. The leading peer was then killed, with both
-arbiters already down. Nothing happened: no promotion, no attempt at one, and nothing logged about
-why. The venue had one engine alive, holding two thousand orders and current with the sequencer,
-and it matched nothing.
-
-**Why it stays there.** Two mechanisms could tell such an instance what it is, and in this state
-neither does.
-
-- `handle_peer_role_announcement` acts only when `ha_role_state_ == MeRole::Unknown`
-  (`MatchingEngineThread.cpp:1552`). The leader announces when a replication link comes up, which
-  is while the restarting instance is still `Reconciling`, so the announcement is discarded. The
-  leader has no reason to announce again -- its role has not changed -- and the instance reaches
-  `Unknown` just after the only announcement it would have accepted.
-- The peer-loss promotion works from `Follower`. An instance that has caught up but has never been
-  told anything is in `Unknown`, so losing the peer arms nothing. Scenario 35's degraded rule,
-  which lets the lower instance id promote itself with no arbiter, is not reached either.
-
-So the state that BUG-0077's fix leaves an instance in -- deliberately, because being current and
-being entitled to act are separate things -- has no exit except an arbiter.
-
-**Both halves are new since 2026-09-03**, when the catch-up moved to the first sequencer
-connection (BUG-0009 and BUG-0064). Before that an instance did not become current without being
-told to lead, so `Unknown` after a catch-up did not arise.
-
-**Not the same as [BUG-0036](#bug_0036)**, which was a starting engine that never promoted with no
-arbiter reachable and said nothing. That was about arbitration timing out; this is about an
-instance that has finished catching up and is in a state no mechanism speaks to.
-
-**Where to start.** The narrow repair is for the peer announcement to be remembered rather than
-discarded: an instance reconciling when a leader announces could act on it when it reaches
-`Unknown`. The wider question -- whether an instance that is current and alone should promote
-itself when its peer dies, and under what rule -- is the one worth answering first, because it
-decides whether the narrow repair is enough. `ha_test.py` scenario 55 contains the sequence, with
-the arbiters restarted to get past this; a scenario for the defect itself would stop at the point
-where nothing happens.
 
 ---
 
@@ -1901,6 +1909,99 @@ asserting it is worse than one that names none, because the count then reports c
 not exist.
 
 ## Closed
+
+### BUG-0084: Every absent-assertion in the HA suite passed without reading anything {#bug_0084}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-08 |
+| Fixed | 2026-09-08 |
+| Recorded | 2026-09-08 |
+| How | Writing a scenario that was expected to fail, watching it pass, and going to look at why |
+| Impact | Thirteen scenarios reported a property verified that was never examined, among them scenario 35's check that the peer did not also promote itself -- the suite's only assertion that a split brain did not occur |
+
+`poll_log_for` is a `while time.monotonic() < deadline` loop, so with `timeout=0.0` the condition is
+false on its first evaluation and the body never runs: the file is not opened, and the caller is
+told the markers are absent. Both of the script's absent-assertions call it that way, and both mean
+"read what is already there" rather than "wait" -- `AssertAbsentStep`, in nine scenarios, and
+`VerifyStep.absent_markers`, in four more. The comment at the second call site says exactly what was
+intended, and the loop does not do it.
+
+**This concealed [BUG-0082](#bug_0082)'s regression** and would have concealed its repair: the
+scenario written to measure the split brain passed the first time it was run, against a venue that
+had two leaders.
+
+**Fixed** by reading the log once before the deadline is tested, which is what every caller already
+expected. Scenario 57 then failed where it should, and scenario 35's split-brain check began doing
+its job.
+
+**A test that reports a pass it did not perform is the shape [this file was created to
+prevent](#bug_list_shapes)**, arrived at in the tests rather than in the venue. It is worth asking
+what else in `ha_test.py` asserts a property by a route that cannot fail -- BUG-0030 is where that
+belongs.
+
+---
+
+### BUG-0082: An engine that caught up at startup waits for an arbiter that may never come {#bug_0082}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-07 |
+| Fixed | 2026-09-08 -- in two one-line repairs to an exit that already existed, plus the guard that makes it safe to take |
+| Recorded | 2026-09-07 |
+| How | Writing `ha_test.py` scenario 55 on the assumption that such an instance would self-promote when the leader died. It did not, and sat there for the full thirty seconds |
+| Impact | The venue could hold a matching engine that was current, held the book, and would not serve, while no engine was matching |
+
+**What was observed.** A restarted engine catches up at startup, reports itself *"current, and
+waiting to be told what it may do"*, and stays there. The leading peer was then killed, with both
+arbiters already down. Nothing happened: no promotion, no attempt at one, and nothing logged about
+why. The venue had one engine alive, holding two thousand orders and current with the sequencer,
+and it matched nothing.
+
+**The entry was wrong about the cause.** It said the state had no exit but an arbiter, and posed
+the wider question -- whether an instance that is current and alone should promote itself -- as the
+one to answer first. The state had an exit all along: the startup arbitration deadline, armed
+unconditionally for the primary in `on_app_ready_event`, which asks three times and then applies
+the instance-id rule. No new policy was needed. Two separate defects had disabled it, both
+introduced on 2026-09-03 with the move of the catch-up to the first sequencer connection.
+
+- **The deadline was spent by a catch-up.** `on_timer_event` acted on the timer only when the role
+  was `Unknown`. Firing while the instance was `Reconciling`, it fell through and rearmed nothing,
+  so the one-off exit was gone. The instance then reached `Unknown` with no timer armed -- and no
+  `ArbitrationReport` ever sent, because `request_startup_arbitration` returns immediately unless
+  the role is `Unknown`, and an arbiter that connected during the catch-up found it `Reconciling`.
+- **The degraded promotion promoted nothing.** Both self-promotion paths called
+  `begin_reconciliation()` directly, without setting `reconciling_to_lead_`. A reconciliation begun
+  without it is a *start*, and a start ends at "current, and waiting to be told what it may do". So
+  the path raised the epoch, caught up, and returned to the state it was leaving.
+
+**Nothing caught either.** Scenario 35 checks that the engine logs `self-promoting ... (degraded)`,
+which is the line *before* the act, and has passed since 3 September against a promotion that never
+happened -- the shape [this file calls a claim asserted and never checked](#bug_list_shapes). It now
+also requires `adopting LEADER role`.
+
+**Restoring the exit re-opened a window the stall had been hiding**, which is worth recording
+because it is the reason this took two changes rather than one. An instance that self-promotes
+under the instance-id rule while its peer is alive and leading is a split brain, and the guard
+against that is `handle_peer_role_announcement`: a leader announces on every new replication link,
+and an instance in `Unknown` that hears it defers. The guard was leaky in exactly the way this
+entry's second half described -- the announcement arrives while the instance is still
+`Reconciling`, where it was discarded, and a healthy leader has no reason to send another. Measured
+on 2026-09-08 before the guard was added: the restarted instance took `LEADER` at epoch 218 beside
+a peer leading at epoch 210. An announcement heard while reconciling is now remembered and acted on
+when the catch-up ends.
+
+**Left behind:** [BUG-0084](#bug_0084), which is why none of this was caught, and
+[BUG-0085](#bug_0085), which is the one remaining way an instance still refuses to defer to a
+leader that is genuinely leading.
+
+**Held by** `ha_test.py` scenario 56, which reaches the state with no peer and no arbiter so that
+it is arrived at rather than raced for, and scenario 57, which asserts no second leader appears
+while the peer is alive.
+
+---
 
 ### BUG-0077: A restarting engine reports to members for orders it will never serve {#bug_0077}
 
