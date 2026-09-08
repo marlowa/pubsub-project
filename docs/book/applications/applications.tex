@@ -41,31 +41,28 @@ always meant to replace.
 \emph{Placeholder, created 2026-09-08. Whether this subsection belongs to this component at all
 is undecided; see below.}
 
-The venue has no way to say that trading has started, has ended, or has stopped. The shape of the
-answer is already settled in \texttt{docs/venue/trading\_phases.md}, which this subsection is to
-state as requirements rather than restate as prose. In outline: the venue is always in exactly one
-of five phases, start of day and end of day among them, because work happens during both and a
-period with duration is a phase rather than a moment; a halt is a flag alongside the phase and not
-a phase of its own; and the message carries the resulting state, the halted flag and the trading
-day, so that a component which missed one event is not left wrong in a way it cannot detect.
+\textbf{The requirements are not here.} They belong to
+\cref{sec:ha:technical_event}, because the venue's inability to say anything about itself is what
+blocks the requirement that it not run with no instance of a component without saying so. What
+belongs in this subsection is this component's part in carrying the announcement, referring there
+rather than restating it.
 
-What is \emph{not} settled, and what this subsection waits on, is which component publishes it.
-That note establishes two audiences reached by two paths. Components that must act on a phase ---
-a gateway refusing a member's order, the sequencer declining to sequence one --- take it on the
-control plane, most likely by the existing order-acceptance broadcast gaining the phase and the
-halted flag rather than by a second mechanism competing with it. Components that only need to know
---- this publisher, a recorder, whatever ingests the instrument prices that arrive during end of
-day --- are the audience for pub/sub.
+Which leaves the question this subsection waits on: whether this component publishes the technical
+event at all. \Cref{sec:ha:technical_event} establishes two audiences reached by two paths.
+A component that must act on a phase --- a gateway refusing a member's order, the sequencer
+declining to sequence one --- takes it on the control plane, most likely by the existing
+order-acceptance broadcast gaining the phase and the halted flag rather than by a second mechanism
+competing with it. A component that only needs to know takes it by publish and subscribe, and this
+publisher is named among those.
 
-So this publisher appears in that note as a component that needs to be \emph{told}. Whether it is
-also the component that owns the topic and redistributes the event is the open question. There is
-an argument that it is: a topic's history lives in exactly one publisher's write-ahead log, this
-publisher already follows the sequencer's log, and it stores each record under the sequencer's own
-sequence number --- so an event that entered through the sequencer would keep its position
-relative to the orders it speaks about, which is the whole of what a halt means. There is an
-argument that it is not: a component that both consumes a fact and republishes it is doing two
-jobs, and the venue may prefer the event to reach its pub/sub audience from wherever it is
-declared.
+So this publisher appears there as something to be \emph{told}. Whether it is also the component
+that owns the topic and redistributes the event is open. There is an argument that it is: a
+topic's history lives in exactly one publisher's write-ahead log, this publisher already follows
+the sequencer's log, and it stores each record under the sequencer's own sequence number --- so an
+event that entered through the sequencer would keep its position relative to the orders it speaks
+about, which is the whole of what a halt means. There is an argument that it is not: a component
+that both consumes a fact and republishes it is doing two jobs, and the venue may prefer the event
+to reach its subscribers from wherever it is declared.
 
-That question is to be settled with the trading-halt entry in the bug list and with the order of
-work set out in that note, not here and not first.
+That is to be settled with the trading-halt entry in the bug list, and in the order of work set
+out in \texttt{docs/venue/trading\_phases.md} --- not here and not first.

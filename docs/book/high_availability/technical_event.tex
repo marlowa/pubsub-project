@@ -1,0 +1,51 @@
+\section{The venue says what it is doing}
+\label{sec:ha:technical_event}
+
+\emph{Placeholder, created 2026-09-08. The requirements below are named, not written.}
+
+The venue can say one thing about itself --- whether it is accepting orders --- and everything
+else it knows is private to the process that knows it. A matching engine that cannot account for
+what it was holding sets a local flag and writes a line to its log, and no gateway and no
+sequencer mentions a halt at all: the gateway goes on admitting orders and the sequencer goes on
+sequencing them into a venue whose engine has stopped. ``Trading is halted'' is one
+process's private opinion.
+
+That is why this section is in this chapter rather than beside the components that will carry the
+message. \Cref{sec:ha:enabled:process_death} requires that the venue not run with no instance of a
+component without saying so, and it cannot be built until the venue is able to announce anything
+about itself at all. The announcement is the missing mechanism, and the phases are what it
+announces.
+
+The shape is settled and is not to be re-argued here; it is recorded in
+\texttt{docs/venue/trading\_phases.md}. This section turns it into requirements. In outline: the
+venue is always in exactly one of five phases, of which start of day and end of day are two,
+because work happens during both and a period with duration is a phase and not a moment; a halt is
+a flag alongside the phase rather than a phase of its own, so that lifting one does not depend on
+remembered state; and the message carries the resulting state rather than the transition, together
+with the trading day, so that a component which missed an event is not left holding a private
+state machine that is wrong in a way it cannot detect.
+
+\subsection{The requirements to be written}
+\label{sec:ha:technical_event:todo}
+
+\begin{description}
+  \item[The venue declares its phase, and no component derives it.] A component holds what it was
+    told and never computes the phase, or the trading day, from its own clock.
+  \item[An event carrying a trading day older than the one a component holds is refused.] The
+    trading day plays here the part the epoch plays in leadership, so that a halt declared
+    yesterday cannot stop trading today.
+  \item[A component that has just started can ask rather than wait.] The same property the
+    order-acceptance broadcast already provides by repeating itself while the venue is degraded.
+  \item[Both audiences are served, and the two paths are named.] A component that must act on a
+    phase takes it on the control plane; one that only needs to know takes it by publish and
+    subscribe. A phase that some components acting on it have and others do not is worse than no
+    phase at all.
+\end{description}
+
+\textbf{Two things are deliberately not settled yet}, and no requirement here is to assume either.
+What each component may do in each phase is a table that does not exist --- whether a member may
+cancel a resting order after the close is a policy decision with consequences for every order the
+venue holds overnight, and naming the phases does not settle it. And whether a phase belongs to
+the venue or to an instrument is open: this venue is single-instrument in effect, so venue-wide is
+right today, but the shape of the message decides whether per-instrument is an addition later or a
+change.
