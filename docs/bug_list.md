@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 88 |
-| Open | 30 (19 defects, 11 tasks) |
+| Bugs recorded | 90 |
+| Open | 32 (20 defects, 12 tasks) |
 | Closed | 58 |
-| Next id | BUG-0089 |
+| Next id | BUG-0091 |
 
 ## Open bugs by severity
 
-11 high, 16 medium, 3 low.
+12 high, 17 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,6 +24,7 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0085](#bug_0085) | high | defect | A degraded promotion advances a generation the arbiter never learns |
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
+| [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -40,6 +41,7 @@
 | [BUG-0083](#bug_0083) | medium | defect | Scenario 26 failed once inside the suite and has not been reproduced |
 | [BUG-0086](#bug_0086) | medium | defect | Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise |
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
+| [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2054,6 +2056,94 @@ right and does not close this.
 Related: R-0005, R-0020 and R-0028 in `docs/book`, and the gap recorded beneath R-0005, which
 now cites this entry. [BUG-0068](#bug_0068) for the general problem of specified behaviour that
 nothing tests.
+
+### BUG-0089: A member cannot ask the venue what it is holding {#bug_0089}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | before 2026-09 -- carried in a working note from the analysis that produced the high availability chapter |
+| Recorded | 2026-09-10 |
+| How | Working through that note and checking its claims against the code |
+| Impact | Every recovery a member performs rests on what the venue chooses to send it. A member that missed something has no way to establish what it missed, and no way to confirm what it holds |
+
+**What the specification requires.** R-0002 in `docs/book`: *on reconnecting, a member shall be
+able to determine that the venue holds no order for a `ClOrdID` it had sent.* The gap beneath it
+says the venue answers no order status enquiry of any kind.
+
+**Neither message exists.** `OrderStatusRequest` (35=H) and `OrderMassStatusRequest` (35=AF) are
+handled nowhere in the code, and `applications/fix_orders.dd.xml` carries only `8`, `D` and `F`
+-- ExecutionReport, NewOrderSingle and OrderCancelRequest. So this is not a handler missing from
+a message the venue already understands. The messages are absent from the dictionary as well.
+
+**Why it matters more than a missing feature usually would.** Recovery in this venue is one-way.
+The venue sends what it decides to send, and the member reconciles against that. Where anything
+goes wrong with the sending -- [BUG-0088](#bug_0088) drops reports for an unbound session, and
+nothing replays them -- the member has no second route to the answer. The two entries compound:
+one loses the report, the other removes the means of noticing.
+
+**It is filed as a task rather than a defect** because what is missing is a capability that was
+never built, in the same shape as [BUG-0045](#bug_0045) and [BUG-0046](#bug_0046). A case can be
+made for high severity on the grounds that it makes other losses undetectable, and it is worth
+revisiting if [BUG-0088](#bug_0088) is not closed first.
+
+**What closing this needs.** Both messages in the data dictionary, a handler that answers them
+from whatever holds the orders, and a decision about who that is -- the matching engine holds the
+book, and the gateway holds the session. That decision is the same one R-0103 leaves open.
+
+Related: R-0002 in `docs/book` and the gap beneath it, [BUG-0088](#bug_0088).
+
+### BUG-0090: A restarted gateway silently stops honouring cancel-on-disconnect {#bug_0090}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | before 2026-09 -- carried in a working note from the analysis that produced the high availability chapter |
+| Recorded | 2026-09-10 |
+| How | Working through that note and checking its claims against the code, which confirmed the path is unchanged |
+| Impact | A member that asked for its orders to be cancelled if its connection drops stops being protected the moment the gateway restarts. Its orders stay resting, the instruction is not carried out, and neither the member nor the venue records that anything was skipped |
+
+**What happens.** `FixSession::open_orders` is populated in one place only:
+`FixOrderGatewayThread.cpp:751`, as an execution report arrives on the live path. A restarted
+gateway therefore holds an empty map for every order placed before the restart.
+
+`queue_session_for_cleanup` opens with:
+
+```
+if (session.open_orders.empty()) {
+    return;
+}
+```
+
+So when that member later disconnects, the gateway looks at an empty set, cancels nothing, and
+returns without logging anything at all. The orders are still resting -- the book is keyed on
+session identity, so the member can still cancel them by hand -- but the standing instruction it
+gave is not carried out.
+
+**Why it is high.** A member sets `cancel_on_disconnect_enabled` to bound its exposure when its
+own systems fail. The venue accepts the instruction, stops honouring it after an event the member
+cannot observe, and reports nothing. The member believes it is protected and is not. This is the
+mirror of the rule the specification states the other way round: a member whose orders must be
+retained must have them retained, and a member whose orders must be cancelled must have them
+cancelled.
+
+**The silence is the worst part.** The empty-map path returns before any logging, so a deployment
+in which this has happened looks the same as one in which it has not. The disabled case, by
+contrast, logs that it is leaving the orders resting.
+
+**What closing this needs.** The gateway's view of what a session has resting has to be restored
+when the session binds, rather than accumulated from reports. R-0103 requires the terms a session
+was admitted under to outlive the component that received them, and this is the same question
+asked of the orders rather than the terms: the sequencer knows what it forwarded, the matching
+engine holds the book, and neither is obviously the right source. That choice is not made in
+`docs/book`, deliberately.
+
+Failing that, a gateway that knows it cannot honour the instruction should say so rather than
+return silently.
+
+Related: R-0103 and R-0113 in `docs/book` and the gap beneath the gateway's durable-state
+subsection, which now cites this entry.
 
 ## Closed
 

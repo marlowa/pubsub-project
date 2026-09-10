@@ -62,7 +62,7 @@ venue. The venue therefore does not attempt to recover an uncommitted order. It
 guarantees that such an order never takes effect afterwards, that the member can
 establish this, and that the member can send the order again.
 
-\begin{gap}{}
+\begin{gap}{BUG-0090}
   The gateway keeps its own view of what each session has resting, and acts on
   that view when a connection ends. The view is built only as execution reports
   arrive, so a restarted gateway holds nothing for orders placed before the
@@ -171,7 +171,7 @@ reach the member leaves a gap in the member's numbering.
   \uncovered{no scenario asks the venue what it holds for a member, because nothing answers}
 \end{requirement}
 
-\begin{gap}{}
+\begin{gap}{BUG-0089}
   The venue answers no order status enquiry of any kind, so a member has no way
   to ask what is held for it. Recovery rests entirely on what the venue chooses
   to send.
