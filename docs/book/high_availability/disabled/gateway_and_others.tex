@@ -22,9 +22,8 @@ moment the sequencer restarted.
 \label{sec:ha:disabled:gw_and_me}
 
 A member's connection ends while the matching engine is not running. The gateway
-does not act on the member's orders itself. It reports the disconnection and the
-terms it was given to the component that holds the orders, and that component is
-absent.
+does not act on the member's orders itself. It reports the disconnection and those instructions to the component that holds
+the orders, and that component is absent.
 
 \begin{requirement}{R-0037}{A member's cancel-on-disconnect instruction is not lost because a component was restarting}
   Where a session ends while the component that holds its orders is unavailable,

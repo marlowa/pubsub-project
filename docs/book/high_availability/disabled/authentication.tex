@@ -13,7 +13,8 @@ affect correctness, and most of this subsection concerns that condition.
 \label{sec:ha:disabled:auth:state}
 
 An instance holds the credential set: which comp ids may trade, the material each
-is authenticated against, and the terms each was admitted under. This set is a
+is authenticated against, and the instructions each gave when it was admitted.
+This set is a
 copy rather than the original. The database holds the original, and the
 administration service is the only component that writes to it. That service
 changes credentials and distributes each change to every authentication service,

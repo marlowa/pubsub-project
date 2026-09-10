@@ -12,8 +12,10 @@ reached in each direction, and which of the outbound numbers carried execution
 reports rather than session-level traffic. This is the only state that matters
 when the gateway dies.
 
-While it is running, the gateway also holds the member's identity and the terms
-the member was admitted under, any authentication exchange part-completed, any
+While it is running, the gateway also holds the member's identity and the
+instructions the member gave when it was admitted --- whether its resting orders
+should be cancelled if its connection ends, and how long the venue should wait
+before doing so --- any authentication exchange part-completed, any
 resend being served, and any reports held back while the numbering is being
 established. None of these needs to survive the gateway. The member's identity is
 established again at the next logon, and the venue abandons the rest, which the
@@ -22,21 +24,22 @@ member asks for again.
 The gateway holds no order state. The matching engine holds which orders are
 open, and the sequencer holds the order they were taken in. Where the gateway
 must act on a member's behalf, such as cancelling what the member has resting
-when its connection ends, it reports the disconnection and the terms it was given
-to the component that owns the orders. It keeps no view of those orders to act on
-itself. The terms therefore belong to the session rather than to the gateway.
+when its connection ends, it reports the disconnection and those instructions to
+the component that owns the orders. It keeps no view of those orders to act on
+itself. The instructions therefore belong to the session rather than to the
+gateway.
 
-\textbf{This chapter does not settle where the terms are held once the gateway
-is gone.} The terms reach the gateway when the member is admitted, and a
+\textbf{This chapter does not settle where those instructions are held once the
+gateway is gone.} They reach the gateway when the member is admitted, and a
 component needs them later, possibly a different instance, and possibly when the
 member is no longer connected to supply them again. The sequencer holds the
 session's numbering and is the only component every gateway instance talks to, so
-it is the obvious place for the terms as well. Choosing it is a design decision,
+it is the obvious place for the instructions as well. Choosing it is a design decision,
 and this chapter does not make design decisions. The requirement \reqref{R-0103}
 states what must be true wherever they are held.
 
 \begin{gap}{}
-  The terms are held only by the gateway that was given them. A gateway that dies
+  The instructions are held only by the gateway that was given them. A gateway that dies
   takes with it the instructions for every session it held, and there is nowhere
   else to read them from.
 \end{gap}
@@ -140,7 +143,7 @@ reach the member leaves a gap in the member's numbering.
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:gateway:member}
 
-\begin{requirement}{R-0103}{The terms a session was admitted under outlive the component that received them}
+\begin{requirement}{R-0103}{The instructions a member gave at logon outlive the component that received them}
   The instructions a member gave about what should happen to its orders when its
   connection ends shall be available to whichever component must act on them,
   whether or not the component that first received them is still running.
@@ -148,7 +151,7 @@ reach the member leaves a gap in the member's numbering.
   acts on them later, possibly a different instance, and possibly when the member
   is no longer present to supply them again. Instructions held only by the
   component that received them are lost in exactly the failure they guard against.}
-  \uncovered{no scenario restarts a gateway holding a session's terms}
+  \uncovered{no scenario restarts a gateway holding a session's instructions}
 \end{requirement}
 
 \begin{requirement}{R-0113}{A member's instruction is carried out when the component holding it is the one that failed}
