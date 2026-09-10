@@ -490,3 +490,14 @@ over unicast connections and without a broker.
 
 \emph{Not yet written. Each rejection is to name the ground it rests on, and
 that ground is to be one a reader can check.}
+
+One alternative is named here so that it is not overlooked, and it is not
+assessed. \textbf{A and B channel redundancy} publishes every record on two
+independent channels. A subscriber reads both, takes whichever copy of a record
+reaches it first, and discards the second, so the loss of either channel costs
+it nothing and it never waits for a failover. Exchange market data feeds
+commonly work this way. This venue instead runs a publisher as a pair of which
+one leads, and a subscriber that loses the instance it was reading from
+reconnects and presents its own position, which is \reqref{R-0131} and
+\reqref{R-0138}. Whether the difference is a decision this venue should defend
+or one it should revisit has not been established.
