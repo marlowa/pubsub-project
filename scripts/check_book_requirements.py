@@ -10,8 +10,9 @@ What it enforces:
 * every scenario a requirement claims to be verified by exists in ``scripts/ha_test.py``;
 * every scenario in ``ha_test.py`` verifies at least one requirement.  Reported, and fatal only under ``--strict``.
 
-It also counts the gaps the book records, and checks that every defect a gap cites exists in ``docs/bug_list.md``.  A gap is a difference between what the
-book specifies and what the venue does; a book with none left describes a system that works.
+It also counts the gaps the book records, and checks that every defect a gap cites exists in ``docs/bug_list.md`` and is still open there.  A gap is a
+difference between what the book specifies and what the venue does; a book with none left describes a system that works.  A gap citing a defect the bug
+list records as closed is a gap describing behaviour the venue no longer has, which is how the book comes to contradict the code it specifies.
 """
 
 # The annotations below use builtin generics -- list[dict], dict[str, str] and so on. Python
@@ -74,6 +75,28 @@ def read_gaps(req_path: Path) -> list[tuple[str, list[str]]]:
 def read_known_defects(path: Path) -> set[str]:
     """Every defect identifier the bug list mentions."""
     return set(re.findall(r"BUG-\d{4}", path.read_text())) if path.is_file() else set()
+
+
+def read_defect_status(path: Path) -> dict[str, str]:
+    """Every defect the bug list gives an entry to, as {id: "open" | "closed"}.
+
+    The list holds one ``## Open`` section and one ``## Closed`` section, and each defect's own heading carries its anchor, so the section that heading
+    falls in is what says whether the defect is still open.  A defect mentioned only in passing gets no entry here, and is left to the caller's
+    existence check.
+    """
+    if not path.is_file():
+        return {}
+    status: dict[str, str] = {}
+    section = ""
+    for raw in path.read_text().splitlines():
+        heading = re.match(r"^##\s+(Open|Closed)\s*$", raw)
+        if heading is not None:
+            section = heading.group(1).lower()
+            continue
+        anchored = re.match(r"^#+\s*(BUG-\d{4})\b.*\{#bug_\d{4}\}", raw)
+        if anchored is not None and section:
+            status[anchored.group(1)] = section
+    return status
 
 
 def read_ledger(path: Path) -> tuple[dict[str, str], list[str]]:
@@ -147,10 +170,15 @@ def check(req_path: Path) -> tuple[list[str], list[str]]:
                 problems.append(f"{where}: claims ha_test scenario {number}, which does not exist")
 
     known_defects = read_known_defects(_BUG_LIST)
+    defect_status = read_defect_status(_BUG_LIST)
     for section, cited in read_gaps(req_path):
         for defect in cited:
             if defect not in known_defects:
                 problems.append(f"gap in section {section}: cites {defect}, which the bug list does not mention")
+            elif defect_status.get(defect) == "closed":
+                problems.append(
+                    f"gap in section {section}: cites {defect}, which the bug list records as closed -- "
+                    f"a gap records a difference the venue still has, so delete it or restate what remains")
 
     unlinked = [f"ha_test scenario {number}: verifies no requirement -- say what it proves, or record that the book does not yet state it"
                 for number in sorted(scenarios - claimed)]
