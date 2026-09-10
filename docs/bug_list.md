@@ -2132,15 +2132,33 @@ cancelled.
 in which this has happened looks the same as one in which it has not. The disabled case, by
 contrast, logs that it is leaving the orders resting.
 
-**What closing this needs.** The gateway's view of what a session has resting has to be restored
-when the session binds, rather than accumulated from reports. R-0103 requires the terms a session
-was admitted under to outlive the component that received them, and this is the same question
-asked of the orders rather than the terms: the sequencer knows what it forwarded, the matching
-engine holds the book, and neither is obviously the right source. That choice is not made in
-`docs/book`, deliberately.
+**What closing this needs, and it is not a better view.** `docs/book` already states the
+position: the gateway holds no order state, and where it must act on a member's behalf it
+*"reports the disconnection and the terms it was given to the component that owns the orders"*
+rather than keeping a view of those orders to act on itself. The code does the opposite.
+`queue_session_for_cleanup` walks the gateway's own map, filters out the orders whose time in
+force says they outlive the session, and queues one cancel per order.
 
-Failing that, a gateway that knows it cannot honour the instruction should say so rather than
-return silently.
+**A gateway-held view cannot satisfy R-0113 whatever it contains.** That requirement says the
+instruction must still be carried out when the connection ended *because the component holding
+the session failed* -- and a dead gateway enumerates nothing. Restoring the view on binding
+would fix the restart case and leave the gateway-death case exactly as broken.
+
+**The matching engine is the only component that can answer.** It keys the book on
+`SessionIdentity` plus `ClOrdID` and records the session in each region slot, so what a session
+has resting survives in its checkpoint. The sequencer cannot: `SessionSequenceState` holds
+sequence numbers and report ranges and no orders, and deriving them would mean a second copy of
+the book maintained by the component whose job is ordering.
+
+So the fix is to send the disconnection and the terms once, and let the component that owns the
+orders act on them, which also removes the per-order cancel traffic a large session produces at
+disconnect. Where a gateway cannot honour the instruction it should say so rather than return
+silently.
+
+**What is still open is narrower**, and it is R-0103's question rather than this one: where the
+terms a session was admitted under are held once the gateway that received them is gone. The
+book names the sequencer as the obvious candidate and declines to decide, because choosing is a
+design decision.
 
 Related: R-0103 and R-0113 in `docs/book` and the gap beneath the gateway's durable-state
 subsection, which now cites this entry.
