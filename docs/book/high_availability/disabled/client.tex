@@ -44,6 +44,35 @@ member reconciles its own view against what the venue reports.
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:client:member}
 
+\textbf{A member chooses whether its resting orders survive the loss of its
+connection, and it chooses at two granularities.} Per session, cancel-on-disconnect
+is set for that member where the member has stated a preference, and takes the
+venue's own setting otherwise. Per order, the time in force decides: an order
+whose time in force says it outlives the session is not cancelled because a
+connection ended, whatever the session's setting says, which is
+\reqref{R-0056}.
+
+Large derivatives venues arrange it the same way. CME Globex registers
+cancel-on-disconnect against a session, cancels that session's resting orders
+when the connection is lost ungracefully, and excludes orders that are good
+until cancelled or good until a date.
+
+\textbf{The venue does not offer persistence as an order attribute separate
+from the time in force.} Eurex T7 does, marking an order persistent or not
+independently of how long it is meant to rest, and always treating an order on
+its lowest-latency sessions as non-persistent. That coupling is what the
+attribute is for: a non-persistent order is one the venue need not write down
+before acting on it, so the member buys latency by giving up custody.
+
+Three things argue against it here. The write it would avoid is the one
+\cref{sec:ha:enabled:sequencer:durable} requires before a member is told of an
+order, and no measurement shows that write costing the venue anything it cannot
+afford. Every requirement about what survives a failure would gain a second
+outcome, roughly doubling what this chapter has to state. And the venue would
+still have to report each such cancellation to the member, under
+\reqref{R-0024}, because an order that vanished correctly and an order the
+venue lost look identical to a member that is told about neither.
+
 \begin{requirement}{R-0054}{A member that returns in time finds its orders untouched}
   Where a member's connection ends unexpectedly and the same comp id logs on
   again within the period provisioned for it, none of that member's orders shall
