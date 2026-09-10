@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 87 |
-| Open | 29 (18 defects, 11 tasks) |
+| Bugs recorded | 88 |
+| Open | 30 (19 defects, 11 tasks) |
 | Closed | 58 |
-| Next id | BUG-0088 |
+| Next id | BUG-0089 |
 
 ## Open bugs by severity
 
-10 high, 16 medium, 3 low.
+11 high, 16 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -23,6 +23,7 @@
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0085](#bug_0085) | high | defect | A degraded promotion advances a generation the arbiter never learns |
+| [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -2003,6 +2004,56 @@ rather than gating a build.
 
 Related: [BUG-0048](#bug_0048) for the memory figures that came out of the same profiling work,
 and BUG-0030 for the precedent of a tracked task rather than a defect.
+
+### BUG-0088: An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection {#bug_0088}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-10 |
+| Recorded | 2026-09-10 |
+| How | Working through an old debugging note about order loss under load, which observed that when a client disconnected mid-run every report for that client's orders was discarded. The load figures were an artefact of a harness no longer used; this was not |
+| Impact | A member that disconnects between placing an order and its report being produced is never told what became of it. The order is matched, the report exists in the log, and the member learns nothing -- not on reconnection, and not if it asks |
+
+**What the specification requires.** R-0005 in `docs/book`: *an execution report produced while
+the session had no connection shall be delivered when that session next binds to a gateway,
+without the member having to ask for it.*
+
+**What happens.** The report is dropped twice over, at whichever end reaches it first.
+
+- `SequencerThread.cpp:706` -- routing resolves the session to a destination, finds none, and
+  drops the report with a Debug line: *"session not bound to any instance, dropping"*. The code
+  says as much: *"Its reports are dropped, as they always were."*
+- `FixOrderGatewayThread.cpp:681` -- a report that was already in flight arrives for a
+  connection that has gone, finds no session, and is discarded with `++execution_reports_dropped_`.
+
+**The report is not lost, only undelivered.** It is sequenced into the write-ahead log stamped
+with the session it belongs to, exactly as a delivered one is, so everything needed to send it
+exists. What is missing is anything that replays it when the session binds again.
+
+**The rebinding path already carries the harder half.** `handle_session_unbound` keeps the
+session's outbound sequence number and which of its numbers held reports, so a reconnecting
+member continues its numbering rather than resetting it. The state survives; the reports do not.
+
+**The member cannot detect it, and this is what makes it high rather than medium.** No outbound
+sequence number was allocated for an undelivered report, so it leaves no gap in the member's
+numbering. There is nothing to notice and nothing to ask for, and a FIX resend cannot reach it
+because the member does not know a message is missing. The venue simply stops mentioning the
+order, which is the outcome R-0020 exists to prevent, reached by a different route.
+
+**Nor is it visible to an operator.** `execution_reports_dropped_` is an ordinary counter used
+in log lines and in the gateway's order accounting. It is not published as a metric, so a
+deployment loses reports without anything to alert on.
+
+**What closing this needs.** Something that delivers a session's undelivered reports when it
+binds again. The reports are in the log and the session's position is remembered across the
+unbind, so the material is present; what is missing is the trigger and a record of how far the
+member has actually been served. Publishing the dropped-report count is worth doing in its own
+right and does not close this.
+
+Related: R-0005, R-0020 and R-0028 in `docs/book`, and the gap recorded beneath R-0005, which
+now cites this entry. [BUG-0068](#bug_0068) for the general problem of specified behaviour that
+nothing tests.
 
 ## Closed
 

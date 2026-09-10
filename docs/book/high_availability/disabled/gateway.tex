@@ -252,10 +252,11 @@ reach the member leaves a gap in the member's numbering.
   \uncovered{no scenario restarts a gateway}
 \end{requirement}
 
-\begin{gap}{}
+\begin{gap}{BUG-0088}
   Recovery is driven entirely by the member noticing a gap and asking. A report
   produced while the session had no connection was never numbered, so it leaves
-  no gap, and nothing pushes it.
+  no gap, and nothing pushes it. The report is written to the log stamped with
+  its session, so what is missing is the delivery rather than the record.
 \end{gap}
 
 \begin{requirement}{R-0009}{A gap that cannot be filled is reported as such}
