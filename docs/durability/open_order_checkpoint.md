@@ -305,10 +305,17 @@ rejected above for ordinary recovery. Here it is worth the time: it happens once
 it is not the normal case, and what it buys is every member being told what
 became of its orders. Cancel each, report each, halt. That is R-0123.
 
-**But that record is truncated as it is consumed**, so a replay from the
-beginning starts wherever truncation left off rather than at the start of the day.
-The two cases have to be told apart, and `MePositionAck` carries the earliest
-record the sequencer still holds so that they can be:
+**That record is not truncated.** The sequencer discards nothing, so a replay
+from the beginning starts at the start of the trading day. The engine therefore
+reaches the first of the two cases below, and the replay costs a whole day's
+volume — at forty million orders and a microsecond an order, tens of seconds. The
+venue is halted throughout, so that time is an operator's rather than a member's.
+
+The second case becomes reachable once retention is anchored to the oldest
+position anything may still present, which is R-0022 and what closes
+[BUG-0048](../bug_list.md#bug_0048). The two cases have to be told apart either
+way, and `MePositionAck` carries the earliest record the sequencer still holds so
+that they can be:
 
 | What the sequencer still holds | What the engine does |
 |---|---|

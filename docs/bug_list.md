@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 85 |
-| Open | 27 (17 defects, 10 tasks) |
+| Bugs recorded | 86 |
+| Open | 28 (18 defects, 10 tasks) |
 | Closed | 58 |
-| Next id | BUG-0086 |
+| Next id | BUG-0087 |
 
 ## Open bugs by severity
 
-10 high, 14 medium, 3 low.
+10 high, 15 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -31,6 +31,7 @@
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
 | [BUG-0047](#bug_0047) | medium | task | Disaster recovery is not modelled |
 | [BUG-0048](#bug_0048) | medium | defect | The log discarded history on a timer, and now retains all of it |
+| [BUG-0086](#bug_0086) | medium | defect | Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise |
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
@@ -1907,6 +1908,55 @@ setting should do the same.
 **Do not close this by making the check pass.** A scenario that names a requirement without
 asserting it is worse than one that names none, because the count then reports coverage that does
 not exist.
+
+### BUG-0086: Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise {#bug_0086}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-10 |
+| Recorded | 2026-09-10 |
+| How | Reading `docs/durability/open_order_checkpoint.md` against [BUG-0048](#bug_0048) while correcting the functional specification, which described the venue as discarding history it no longer discards |
+| Impact | The recovery the venue falls back on when the matching engine's region cannot be read now replays a whole trading day rather than the part the log had not truncated. The venue is halted throughout, so the cost is an operator's time rather than a member's |
+
+**What changed.** [BUG-0048](#bug_0048) was fixed on 2026-08-30 by stopping `take_snapshot()`
+deleting segments. That was the right fix for the loss it addressed: the log had been discarding
+almost everything every thirty seconds, and a component asking for anything older got nothing.
+
+**What it cost, which nothing recorded.** `open_order_checkpoint.md` describes the fallback for a
+region that cannot be read: establish what was open by replaying the sequencer's record, cancel
+each order, report each cancellation, halt. That is R-0123 in `docs/book`. The memo then says:
+
+> But that record is truncated as it is consumed, so a replay from the beginning starts wherever
+> truncation left off rather than at the start of the day.
+
+**That sentence was true when it was written and is now false.** Nothing truncates the log, so a
+replay from the beginning starts at the beginning. The memo's own arithmetic for the rejected
+path -- forty million orders at a microsecond each, so forty seconds -- is what this fallback now
+costs, where before it cost whatever remained after truncation.
+
+**Why it is medium and not high.** This path runs only when the region is absent, damaged, or
+written by a different build, and it ends in a halt. The venue is not trading while it replays and
+is not claiming to be, so no member waits on it. What it costs is the time an operator spends
+before the venue can be brought back.
+
+**Why it is worth an entry at all.** The memo states something untrue about the venue's behaviour,
+and it is the document somebody would read when this path ran slowly and they wanted to know
+whether that was expected. The two figures also move in opposite directions as retention is
+settled: anchoring retention under R-0022 will truncate the log again and shorten this path, so
+whatever is written now has to say which regime it describes.
+
+**The document is corrected.** `open_order_checkpoint.md` now says the record is not truncated,
+that the replay therefore starts at the start of the trading day, and what that costs. It also
+says which of its two fallback cases is reachable today and what would make the other one
+reachable again.
+
+**What is left.** The cost itself, which stands at a whole day's volume until retention is
+anchored to the oldest position anything may still present -- R-0022, and what closes
+[BUG-0048](#bug_0048). Anchoring it truncates the log again and shortens this path, so this entry
+closes with that one rather than on its own.
+
+Related: [BUG-0048](#bug_0048), which caused this and bounds it; R-0123 and R-0022 in `docs/book`.
 
 ## Closed
 
