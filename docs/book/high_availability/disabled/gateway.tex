@@ -43,10 +43,10 @@ that dies holding live sessions is asked nothing at all, and a member that never
 reconnects binds nowhere --- so the instruction that was to fire at that moment
 must be carried out by whatever owns the orders, which is \reqref{R-0113}.
 
-\begin{gap}{}
-  The instructions are held only by the gateway that was given them. A gateway that dies
-  takes with it the instructions for every session it held, and there is nowhere
-  else to read them from.
+\begin{gap}{BUG-0091}
+  The instructions are held only by the gateway that was given them. A gateway
+  that dies takes with it the instructions for every session it held, and there
+  is nowhere else to read them from.
 \end{gap}
 
 \subsubsection{Where the copy that outlives it lives}

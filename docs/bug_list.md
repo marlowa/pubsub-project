@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 90 |
-| Open | 32 (20 defects, 12 tasks) |
+| Bugs recorded | 91 |
+| Open | 33 (20 defects, 13 tasks) |
 | Closed | 58 |
-| Next id | BUG-0091 |
+| Next id | BUG-0092 |
 
 ## Open bugs by severity
 
-12 high, 17 medium, 3 low.
+12 high, 18 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -42,6 +42,7 @@
 | [BUG-0086](#bug_0086) | medium | defect | Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise |
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
+| [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2162,6 +2163,54 @@ design decision.
 
 Related: R-0103 and R-0113 in `docs/book` and the gap beneath the gateway's durable-state
 subsection, which now cites this entry.
+
+### BUG-0091: A member's standing instructions die with the gateway that received them {#bug_0091}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | before 2026-09 -- recorded in `docs/book` as a gap with no entry behind it |
+| Recorded | 2026-09-10 |
+| How | Settling where those instructions should live, which the book had left open |
+| Impact | A member states at logon whether its resting orders should be cancelled if its connection ends, and how long the venue should wait. A gateway restart discards that, and the member is silently governed by the venue's default instead -- which may be the opposite of what it asked for |
+
+**What the specification requires.** R-0103 in `docs/book`: *the instructions a member gave at
+logon outlive the component that received them.* The gap beneath it says they are held only by
+the gateway that was given them, and that a gateway which dies takes them with it.
+
+**Where they come from and where they stop.** The authentication service sends them to the
+gateway on `AuthenticationResult`, and `FixOrderGatewayThread` stores them on the session
+(`FixOrderGatewayThread.cpp:1121`). Nothing carries them further. `SessionBound` (120) tells the
+sequencer the identity, the instance and the connection; `SessionBoundAck` (122) hands back the
+sequence numbers and the report ranges. Neither mentions the instructions.
+
+**The mechanism is decided**, in `docs/availability/session_binding.md`: they travel with the
+sequence numbers, for the same reason the numbers do. A gateway taking a session on cannot know
+them, and the sequencer is the only component still running that could have been told. So
+`SessionBound` gains them on the way out and `SessionBoundAck` returns them on the way back.
+
+**One detail that must not be lost in the encoding.** At the gateway they are optional: *"the
+member's stored preference wins because it is the more specific statement of intent; the
+configuration file is the venue's answer for everyone who has not given one."* So "the member
+said nothing" and "the member said no" are different states, and both PDUs have to keep them
+apart. A plain boolean defaulting to false would silently convert the first into the second for
+every session the venue has ever admitted.
+
+**What this does not close.** Only the restart case. Binding is what fetches the instructions, so
+a gateway that restarts gets them when the member binds again. A gateway that dies holding live
+sessions is asked nothing, and a member that never reconnects binds nowhere -- so the instruction
+that was to fire at that moment must still be carried out by whatever owns the orders, which is
+R-0113 and [BUG-0090](#bug_0090). The two are close together and are not the same work.
+
+**Why medium.** The failure runs both ways and only one of them is silent. A member that asked
+for cancel-on-disconnect and gets the default of not having it is unprotected and not told, which
+is [BUG-0090](#bug_0090)'s failure reached by another route. A member that asked to keep its
+orders and gets the default of cancellation sees the cancellations, so it can at least tell
+something happened.
+
+Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
+[session_binding.md](availability/session_binding.md).
 
 ## Closed
 
