@@ -129,3 +129,18 @@ R-0123     active    2026-08-30  A member is told what it had, even when the ven
 R-0124     active    2026-09-06  An arbiter with nobody to ask declines rather than assume it is alone
 R-0125     active    2026-09-06  An instance that interrupts the venue twice is not restarted again
 R-0126     active    2026-09-06  The venue does not run with no instance of a component without saying so
+R-0127     active    2026-09-10  Each topic is published by exactly one publisher
+R-0128     active    2026-09-10  Which message types belong to a topic is derived from the schema
+R-0129     active    2026-09-10  A subscriber receives every record published to a topic, in order and once
+R-0130     active    2026-09-10  A subscriber presents the position it resumes from
+R-0131     active    2026-09-10  A position identifies the same record at either instance of a publisher
+R-0132     active    2026-09-10  A subscriber asking for a position no longer retained is told where it was started
+R-0133     active    2026-09-10  A subscriber dropped for falling behind is told before the connection closes
+R-0134     active    2026-09-10  One subscriber consuming slowly does not delay another
+R-0135     active    2026-09-10  A subscriber that falls behind does not grow the publisher's memory
+R-0136     active    2026-09-10  Only the instance that holds leadership publishes
+R-0137     active    2026-09-10  A subscriber that reaches an instance which does not lead is told so
+R-0138     active    2026-09-10  A publisher that loses leadership drops its subscribers
+R-0139     active    2026-09-10  A signal reaches a subscriber whose delivery connection is saturated
+R-0140     active    2026-09-10  The two connections of one subscription are established and dropped together
+R-0141     active    2026-09-10  How far a subscriber may fall behind before it is dropped is a stated figure

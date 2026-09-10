@@ -1,69 +1,492 @@
-\chapter{The pub/sub library}
+\chapter{The framework}
 \label{ch:library}
 
-A low-latency, multi-threaded, event-driven application framework for C++17,
-built around the reactor pattern. It provides inter-thread communication,
-inter-process communication, pub/sub messaging, timers, high availability, and a
-binary serialisation DSL --- all designed for environments where heap allocation
-on the hot path is not acceptable.
+The framework is a low-latency, multi-threaded, event-driven application
+framework for C++17. Applications are built on top of it, and it makes no
+assumption about what those applications carry. \Cref{ch:applications}
+describes the applications that exercise it.
 
-The rest of this chapter is not yet written, except for the placeholders below.
+\section{Overview}
+\label{sec:fw_overview}
+
+This section states the ideas the rest of the chapter depends on. Each
+functional area then has a section of its own.
+
+\subsection{The reactor pattern}
+\label{sec:fw_reactor_pattern}
+
+One thread owns an event loop. That thread waits on a set of file descriptors,
+and when one of them becomes ready it dispatches the work for that descriptor
+and returns to waiting. The framework calls that thread the reactor.
+
+The reactor owns all socket input and output, and all timers. Sockets are
+non-blocking, and the reactor waits on them with edge-triggered \texttt{epoll}.
+A descriptor that becomes ready is therefore reported once, and the reactor
+reads from it until it would block.
+
+Application work does not run on the reactor thread. The reactor converts each
+ready descriptor into a message and posts that message to the application
+thread the work belongs to. An application thread that is slow therefore delays
+its own work and not the reactor's.
+
+\subsection{Lock-free algorithms}
+\label{sec:fw_lock_free}
+
+No hot path in the framework takes a lock. A thread that blocks on a mutex
+waits for a thread the scheduler may not run for milliseconds, and a venue
+cannot answer a member on that timescale.
+
+The framework uses two lock-free structures on its hot paths. Both are stated
+in full in the sections that specify them.
+
+\begin{itemize}[nosep]
+  \item \textbf{A stack of free memory slots}, read and written by any thread,
+        used by the pool allocators.
+  \item \textbf{A queue with many producers and one consumer}, used to carry
+        messages between threads.
+\end{itemize}
+
+Lock-free is not the same as wait-free. A thread that loses a race retries, so
+the framework bounds the retries where a corrupt structure would otherwise
+produce an unbounded loop.
+
+\subsection{Pool allocators}
+\label{sec:fw_pool_allocators}
+
+Allocation from the heap is not permitted on a hot path. The general-purpose
+allocator takes locks, may ask the operating system for more pages, and gives
+no bound on how long a single allocation takes.
+
+A pool allocator is given all of its memory once, when it is created, and hands
+out fixed-size pieces of that memory afterwards. Every allocation and every
+release is then a small, bounded operation on a list of free pieces. The
+framework maps the memory a pool uses in one region, so the pool's cost to the
+translation lookaside buffer stays the same however the free list is ordered.
+
+The framework provides four allocation strategies, matched to different uses.
+\Cref{sec:fw_memory} specifies them.
+
+\subsection{Message queues}
+\label{sec:fw_message_queues}
+
+Threads pass work to one another through a queue that accepts messages from any
+number of producer threads and is drained by exactly one consumer thread. The
+framework uses the intrusive queue of this shape published by Dmitry Vyukov.
+
+A producer appends to the queue with a single atomic exchange, which is the only
+point at which two producers synchronise with each other. The consumer reads
+from the other end and needs no atomic operation to do so. The queue holds a
+permanent stub node, so it is never structurally empty and neither end has to
+be treated as a special case.
+
+The same structure appears twice in the framework. It carries messages between
+threads, and it carries the notification that a slab of memory has become empty
+back to the reactor.
+
+\section{The reactor}
+\label{sec:fw_reactor}
+
+The event loop itself: how it waits, what it dispatches, how connections are
+accepted and established, and how it shuts down. The reactor also implements the
+lookup by which a thread finds another thread's queue.
+
+\emph{Not yet specified.}
+
+\section{Threads and processor affinity}
+\label{sec:fw_threads}
+
+Application threads, their lifecycle, and the states they pass through. Each
+thread claims a processor at startup from a registry held in shared memory, and
+runs pinned to it, so that the operating system does not move a thread and
+discard the cache it had filled.
+
+\emph{Not yet specified.}
+
+\section{Inter-thread communication}
+\label{sec:fw_itc}
+
+The queue described in \cref{sec:fw_message_queues}, the messages it carries,
+and what the framework does when a queue passes a configured depth.
+
+\emph{Not yet specified.}
+
+\section{Memory and allocation}
+\label{sec:fw_memory}
+
+The four allocation strategies, when each is used, and what each guarantees. In
+outline: a pool of fixed-size slots; a chain of such pools that adds another
+pool when one is exhausted; an allocator that hands out memory in order and
+releases all of it at once; and an allocator for pieces whose size is not known
+in advance.
+
+\emph{Not yet specified.}
+
+\section{Inter-process communication}
+\label{sec:fw_ipc}
+
+Communication between processes over unicast connections: how a message is
+framed, how it is parsed, and how the framework passes a received payload to an
+application thread without copying it. Transport layer security is available on
+these connections, and \cref{ch:security} specifies it.
+
+\emph{Not yet specified.}
+
+\section{Serialisation}
+\label{sec:fw_serialisation}
+
+Message shapes are defined in the framework's own definition language, and a
+generator produces the C++17 code that encodes and decodes them. The same format
+carries messages between threads, between processes, and between a publisher and
+its subscribers.
+
+\emph{Not yet specified.}
+
+\section{Timers}
+\label{sec:fw_timers}
+
+Timers, and how the reactor waits for them alongside its sockets.
+
+\emph{Not yet specified.}
+
+\section{The write-ahead log}
+\label{sec:fw_wal}
+
+The record a component writes before it acts, the position within that record
+that a reader presents, and how a reader is supplied with what follows that
+position. \Cref{ch:high_availability} states what the venue requires of this
+record.
+
+\emph{Not yet specified.}
+
+\section{Configuration and logging}
+\label{sec:fw_configuration}
+
+How a component reads its configuration, and how it logs.
+
+\emph{Not yet specified.}
 
 \section{Pub/sub}
 \label{sec:pubsub}
 
 \subsection{Overview}
-pubsub\_itc\_fw provides a topic-based publish/subscribe messaging facility as one of the core services
-of the framework, alongside inter-thread communication (ITC), inter-process communication (IPC), and timers.
-The pub/sub facility allows a component (a publisher) to emit a message tagged with a topic,
-without needing to know which components (subscribers), if any, are interested in that topic.
-Subscribers register interest in one or more topics and receive a copy of every message published
-to those topics.
 
-This decoupling is the central value of the feature: publishers and subscribers do not hold
-direct references to one another, do not need to be co-located in the same thread or process,
-and do not need to be started or stopped in any particular order relative to each other.
-A component's only coupling to the rest of the system is the set of topic names it produces or consumes.
+The framework provides topic-based publish and subscribe messaging as one of its
+core services, alongside inter-thread communication, inter-process communication
+and timers. A publisher emits a message tagged with a topic. It does not need to
+know which components, if any, subscribe to that topic. A subscriber registers
+interest in one or more topics and receives a copy of every message published to
+them.
 
-Because pub/sub sits on top of the same reactor event loop as the other primitives,
-a component that publishes or subscribes to topics does so using the same non-blocking,
-single-threaded-per-reactor programming model used everywhere else in the framework — there is
-no separate thread pool or blocking call dedicated to messaging.
+That decoupling is what the facility is for. A publisher and a subscriber hold
+no reference to each other. They may run in different threads or different
+processes. They may be started and stopped in any order. The only coupling
+between a component and the rest of the system is the set of topic names it
+publishes or subscribes to.
 
-At a functional level, the pub/sub facility is expected to provide:
+Pub/sub runs on the same reactor event loop as the other services. A component
+that publishes or subscribes therefore uses the same non-blocking programming
+model, with one thread per reactor, that it uses everywhere else in the
+framework. The framework dedicates no separate thread pool and no blocking call
+to messaging.
 
-\begin{itemize}
-\item Topics — named channels that categorise messages. A topic is a logical concept, not a physical connection; any number of publishers and subscribers may use the same topic name.
-
-\item Publish — a component sends a message tagged with a topic name. The publisher does not block waiting for delivery and does not receive any acknowledgement that a specific subscriber processed the message.
-Subscribe — a component registers interest in a topic (or set of topics) and subsequently receives every message published to that topic for as long as the subscription is active.
-\item Delivery — the implementation delivers messages via unicast fanout: the framework sends an individual copy of each message to each interested subscriber over its own connection, rather than using a network-level multicast/broadcast mechanism. This keeps delivery reliable and simple to reason about at the cost of publisher-side work scaling with subscriber count.
-
-\item Message ordering — messages published to a given topic are delivered to a given subscriber in the order they were published.
-
-\item Serialisation — message payloads are defined using the framework's binary serialisation DSL and compiled to C++17 encode/decode code, rather than hand-written wire formats. This keeps the pub/sub payload format consistent with the one used for ITC and IPC messages elsewhere in the framework.
-\end{itemize}
-
-The remainder of this section specifies the pub/sub facility in detail:
+The pub/sub facility provides the following.
 
 \begin{itemize}
-\item Topic naming and lifecycle
-\item Publisher and subscriber APIs
-\item Subscription management (add/remove, late-joining subscribers)
-\item Delivery semantics and failure handling (slow subscribers, disconnects)
+\item \textbf{Topics.} A topic is a named channel that categorises messages. It
+  is a logical name rather than a physical connection, and any number of
+  publishers and subscribers may use the same topic name.
+
+\item \textbf{Publish.} A component sends a message tagged with a topic name.
+  The publisher does not block waiting for delivery, and receives no
+  acknowledgement that a particular subscriber processed the message.
+
+\item \textbf{Subscribe.} A component registers interest in a topic, or in a set
+  of topics, and then receives every message published to those topics for as
+  long as the subscription lasts.
+
+\item \textbf{Delivery.} The framework delivers messages by unicast fanout. It
+  sends an individual copy of each message to each interested subscriber over
+  that subscriber's own connection. The work the publisher does therefore grows
+  with the number of subscribers.
+
+\item \textbf{Message ordering.} A subscriber receives the messages published to
+  a topic in the order the publisher published them.
+
+\item \textbf{Serialisation.} Message payloads are defined in the framework's
+  binary serialisation language and compiled to C++17 encoding and decoding
+  code. The pub/sub payload format is therefore the same format the framework
+  uses for inter-thread and inter-process messages.
 \end{itemize}
 
-\begin{description}
-  \item[What it is.] A publisher exposes named topics; subscribers connect, replay the history
-    they have missed, and then stream new records live. What a topic is, what a record is, and
-    what a subscriber is entitled to expect.
-  \item[Why the fanout is unicast.] The reference system this venue's semantics are drawn from
-    uses reliable multicast over the user datagram protocol, together with a broker. This venue
-    copies the semantics and not the mechanism. The reasoning is to be written out in full here,
-    because at present it survives only as a parenthesis in a superseded working note.
-  \item[The alternatives, and why each was rejected.] Each rejection is to name the ground it
-    rests on, and that ground is to be one a reader can check. A rejection that rests on a
-    mistaken premise discredits the ones that do not.
-  \item[An outline of the functionality.] Delivery and ordering, durability and replay, fanout
-    and backpressure, failover, and subscriber lifecycle and identity.
-\end{description}
+The rest of this section specifies the facility in detail:
+
+\begin{itemize}
+\item topic naming and lifecycle;
+\item the publisher and subscriber interfaces;
+\item subscription management, including adding and removing subscriptions and
+  admitting a subscriber that joins late;
+\item delivery semantics and failure handling, including slow subscribers and
+  disconnections.
+\end{itemize}
+
+\subsection{Topics and their owners}
+\label{sec:pubsub_topics}
+
+A topic is a named channel. A publisher publishes records to it, and every
+subscriber of that topic receives each of those records. A record is the unit
+that travels on the wire and the unit that is retained; the message a component
+publishes is the payload of one record.
+
+\begin{requirement}{R-0127}{Each topic is published by exactly one publisher}
+  Each topic shall have exactly one publisher that publishes to it, and that
+  binding shall be fixed rather than reassigned while the venue is running. One
+  publisher may own several topics.
+  \rationale{A topic's history is held in the owning publisher's write-ahead
+  log. A second publisher writing to the same topic would put part of that
+  history in a second log, and no subscriber could then read the topic in order
+  or establish that it had received all of it.
+
+  A subscriber also has to know which publisher holds a topic before it can
+  connect and ask for the records it missed. Ownership therefore has to be a
+  fact the subscriber can establish in advance, rather than something it
+  discovers by asking each publisher in turn.}
+  \uncovered{no scenario publishes one topic from two publishers}
+\end{requirement}
+
+\begin{requirement}{R-0128}{Which message types belong to a topic is derived from the schema}
+  The set of message types a topic carries shall be derived from the schema that
+  defines those message types. A publisher shall serve a record on a topic if
+  and only if the record's message type is a declared member of it.
+  \rationale{Where membership is stated separately from the schema, the two can
+  disagree. A subscriber then receives less than the topic is meant to carry,
+  and nothing reports the difference, because both parties are behaving as they
+  were configured to.
+
+  Retention, page size and the threshold at which a subscriber is judged too far
+  behind are policy rather than identity. They vary between deployments of the
+  same topic, so they remain configuration, and are checked against the derived
+  set when they are loaded.}
+  \uncovered{no scenario declares a topic whose members disagree with the schema}
+\end{requirement}
+
+\subsection{Delivery and ordering}
+\label{sec:pubsub_delivery}
+
+\begin{requirement}{R-0129}{A subscriber receives every record published to a topic, in order and once}
+  A subscriber of a topic shall receive every record published to that topic
+  after the position it resumed from, in the order the publisher published them,
+  and shall receive each of those records once.
+  \rationale{This is the guarantee a subscriber is built against, and the other
+  requirements in this section exist to keep it true across a restart, a
+  failover and a period of slowness.
+
+  Ordering matters beyond tidiness. A subscriber of the order topic builds a
+  view of what the venue did, and records applied in a different order produce a
+  different view. A subscriber that cannot rely on the order has to carry a
+  reordering buffer of unbounded size, because nothing tells it how long to
+  wait for a record that has not arrived.}
+  \uncovered{no scenario asserts what a subscriber received against what was published}
+\end{requirement}
+
+\begin{requirement}{R-0134}{One subscriber consuming slowly does not delay another}
+  The rate at which one subscriber consumes records shall not affect the rate at
+  which the publisher delivers to any other subscriber.
+  \rationale{Subscribers of one topic have no relationship to each other and are
+  not deployed together. A subscriber written for a report that runs once an hour
+  should not be able to delay the market data a trading component consumes.
+
+  This requirement is what makes the number of subscribers a capacity question
+  rather than a correctness one. Without it, adding a subscriber changes the
+  behaviour the existing subscribers see.}
+  \uncovered{no scenario runs a slow subscriber alongside a fast one}
+\end{requirement}
+
+\begin{requirement}{R-0139}{A signal reaches a subscriber whose delivery connection is saturated}
+  A publisher shall be able to deliver a signal to a subscriber at a time when
+  that subscriber is not keeping up with the records being delivered to it.
+  \rationale{The signals that matter most are the ones sent to a subscriber that
+  has fallen behind, and \reqref{R-0133} requires one of them. A signal sent
+  along the same path as the records would queue behind the backlog that caused
+  it, and would arrive after the connection had already been closed.}
+  \uncovered{no scenario signals a subscriber that is not keeping up}
+\end{requirement}
+
+\begin{requirement}{R-0140}{The two connections of one subscription are established and dropped together}
+  Where a subscription is carried on more than one connection, the publisher and
+  the subscriber shall treat those connections as one subscription. The loss of
+  any of them shall end the subscription.
+  \rationale{A subscription with a delivery path and no signal path receives
+  records and cannot be told that anything is wrong with them. A subscription
+  with a signal path and no delivery path receives nothing and is told nothing
+  about the records it is not getting. Neither half is useful alone, and a
+  subscriber that held one of them would consume resources at the publisher
+  while doing no work.}
+  \uncovered{no scenario drops one connection of a subscription}
+\end{requirement}
+
+\subsection{Resuming, and what a subscriber is told}
+\label{sec:pubsub_resume}
+
+A subscriber that connects states where it wants to start. Catching up and
+receiving live records are the same operation: the publisher reads the next
+record after the subscriber's position, whether that record is a second old or a
+month old.
+
+\begin{requirement}{R-0130}{A subscriber presents the position it resumes from}
+  A subscriber shall present the position it resumes from when it subscribes.
+  The publisher shall not be required to hold a subscriber's position across a
+  disconnection.
+  \rationale{The subscriber is the only party that knows what it has finished
+  processing. A publisher that recorded each subscriber's position would be
+  recording a claim it cannot check, and would have to make that record durable
+  and hand it over when leadership moved.
+
+  This is the same rule the venue applies to recovery elsewhere: the party that
+  needs to resume establishes its own position and presents it to whichever
+  component holds the authoritative record.}
+  \uncovered{no scenario resubscribes from a presented position}
+\end{requirement}
+
+\begin{requirement}{R-0131}{A position identifies the same record at either instance of a publisher}
+  A position presented to one instance of a publisher pair shall identify the
+  same record at the other instance.
+  \rationale{A publisher stores each record under the sequence number the
+  sequencer assigned to it, rather than under a number of the publisher's own.
+  Both instances of a pair follow the sequencer independently and key their logs
+  by the same number, so a position means one thing across the pair.
+
+  Without this, a subscriber moving to the surviving instance after a failover
+  would have to translate its position, and neither instance holds what such a
+  translation would need. The two publishers would then have to hand subscriber
+  state over between themselves at the moment one of them has just been lost.}
+  \uncovered{no scenario moves a subscriber between publisher instances}
+\end{requirement}
+
+\begin{requirement}{R-0132}{A subscriber asking for a position no longer retained is told where it was started}
+  Where a subscriber presents a position older than the oldest record the
+  publisher retains, the publisher shall begin at the oldest record it retains,
+  and shall tell the subscriber the position it began at.
+  \rationale{The subscriber asked for records that no longer exist, so the
+  publisher cannot serve the request as made. Beginning at the oldest retained
+  record gives the subscriber everything the venue still has.
+
+  Reporting the position it began at is what makes the gap knowable. A
+  subscriber told only that its subscription succeeded would carry on as though
+  it had missed nothing, and would build a view with a hole in it that nothing
+  afterwards would reveal. A subscriber that knows where the records begin can
+  decide what to do: rebuild from another source, report the gap, or accept it.
+
+  This is the signal a subscriber can rely on, because a subscriber that is
+  reconnecting is by definition reading. The notice required by \reqref{R-0133} is sent to a
+  subscriber that may not be.}
+  \uncovered{no scenario subscribes from a position that has been discarded}
+\end{requirement}
+
+\begin{requirement}{R-0133}{A subscriber dropped for falling behind is told before the connection closes}
+  Where a publisher drops a subscriber because the next record that subscriber
+  needs is about to pass out of the retained window, it shall tell that
+  subscriber why, and shall state the oldest position it retains, before closing
+  the connection.
+  \rationale{A subscriber that is dropped without notice sees a closed
+  connection, which is what it would see if the publisher had died or the
+  network had failed. It would reconnect and ask for the same position, and be
+  dropped again.
+
+  This notice is best effort, because a subscriber far enough behind to be
+  dropped may not read anything the publisher sends. The rule in \reqref{R-0132} is what makes the condition certain to be
+  reported; this requirement is what makes it
+  reported promptly in the ordinary case.}
+  \uncovered{no scenario lets a subscriber fall out of the retained window}
+\end{requirement}
+
+\subsection{Retention, and subscribers that fall behind}
+\label{sec:pubsub_retention}
+
+\begin{requirement}{R-0135}{A subscriber that falls behind does not grow the publisher's memory}
+  The memory a publisher uses shall not grow with how far any subscriber has
+  fallen behind.
+  \rationale{A publisher that buffers what a slow subscriber has not yet taken
+  holds a backlog whose size is set by the slowest subscriber, and nothing
+  bounds that. The failure arrives as the publisher exhausting memory, which
+  stops every subscriber and the publishing component with them, because one
+  subscriber was slow.
+
+  The records a lagging subscriber has not read are already on disk in the
+  publisher's log, which every subscriber reads from. A subscriber that falls
+  behind therefore holds an older position over the same retained records, and
+  costs the publisher a position rather than a copy of the backlog.}
+  \uncovered{no scenario measures a publisher's memory against a lagging subscriber}
+\end{requirement}
+
+\begin{requirement}{R-0141}{How far a subscriber may fall behind before it is dropped is a stated figure}
+  The point at which a subscriber is too far behind to continue shall be a
+  figure the venue states, and the records a publisher retains shall be bounded
+  by a stated window as well as by what its subscribers have consumed.
+  \rationale{The requirement \reqref{R-0048} obliges the venue to retain a record until every
+  subscriber entitled to it has consumed it. That rule alone lets one subscriber
+  that has stopped consuming, and is never coming back, hold every record the
+  publisher has ever written.
+
+  The stated window is what bounds it. A subscriber that passes the window is
+  dropped under \reqref{R-0133}, and the publisher becomes free to discard what
+  that subscriber had not read. Both figures have to be stated, because a
+  publisher cannot decide either of them from what it can observe: how long a
+  subscriber may reasonably be away is a property of the deployment.}
+  \uncovered{no scenario tests the window, and no figure is stated to test}
+\end{requirement}
+
+\subsection{Publishing under high availability}
+\label{sec:pubsub_ha}
+
+A publisher runs inside a component that runs as a pair.
+\Cref{sec:ha:enabled:publishing} states what the venue requires of that pair.
+The requirements here are what the library provides to make it work.
+
+\begin{requirement}{R-0136}{Only the instance that holds leadership publishes}
+  An instance of a publisher shall serve subscribers only while it holds the
+  entitlement to act.
+  \rationale{Two instances serving the same topic would deliver the same records
+  twice to a subscriber that reached both, and a subscriber has no way to
+  establish which of the two connections was the live one.}
+  \uncovered{no scenario subscribes to a publisher instance that does not lead}
+\end{requirement}
+
+\begin{requirement}{R-0137}{A subscriber that reaches an instance which does not lead is told so}
+  Where a subscriber asks to subscribe at an instance that does not hold the
+  entitlement, that instance shall tell the subscriber it does not lead, and
+  shall close the connection.
+  \rationale{A subscriber has to find the instance that is currently publishing.
+  An instance that refuses with a reason lets the subscriber try the other one
+  immediately.
+
+  An instance that accepted the subscription and delivered nothing would be
+  indistinguishable, from the subscriber's side, from a topic on which nothing
+  has been published. The subscriber would wait indefinitely at an endpoint that
+  will never serve it.}
+  \uncovered{no scenario subscribes to a publisher instance that does not lead}
+\end{requirement}
+
+\begin{requirement}{R-0138}{A publisher that loses leadership drops its subscribers}
+  An instance that loses the entitlement to act shall drop every subscriber it
+  is serving.
+  \rationale{The instance may no longer publish under \reqref{R-0136}, so it
+  cannot serve those subscribers. Holding the connections open would leave each
+  subscriber waiting on a path that will deliver nothing further, with no
+  indication that it should look elsewhere.
+
+  Dropping them makes each subscriber reconnect and find the instance that now
+  leads. The subscriber presents its own position when it does, under
+  \reqref{R-0130}, and that position identifies the same record at the new
+  instance, under \reqref{R-0131}. No state passes between the two publishers.}
+  \uncovered{no scenario moves publisher leadership under a live subscriber}
+\end{requirement}
+
+\subsection{The alternatives considered}
+\label{sec:pubsub_alternatives}
+
+The semantics specified above are drawn from a system that delivers them over
+reliable multicast with a central broker. This venue provides the same semantics
+over unicast connections and without a broker.
+
+\emph{Not yet written. Each rejection is to name the ground it rests on, and
+that ground is to be one a reader can check.}
