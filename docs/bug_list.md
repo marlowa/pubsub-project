@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 86 |
-| Open | 28 (18 defects, 10 tasks) |
+| Bugs recorded | 87 |
+| Open | 29 (18 defects, 11 tasks) |
 | Closed | 58 |
-| Next id | BUG-0087 |
+| Next id | BUG-0088 |
 
 ## Open bugs by severity
 
-10 high, 15 medium, 3 low.
+10 high, 16 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -31,13 +31,14 @@
 | [BUG-0046](#bug_0046) | medium | task | The binary order gateway has no in-flight report recovery |
 | [BUG-0047](#bug_0047) | medium | task | Disaster recovery is not modelled |
 | [BUG-0048](#bug_0048) | medium | defect | The log discarded history on a timer, and now retains all of it |
-| [BUG-0086](#bug_0086) | medium | defect | Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise |
 | [BUG-0059](#bug_0059) | medium | task | No defence against a member reconnecting in a loop with the wrong protocol |
 | [BUG-0060](#bug_0060) | medium | task | Microbursts are not measured, and the venue has no story for them |
 | [BUG-0069](#bug_0069) | medium | task | The sequencer, arbiters and witness report no metrics at all |
 | [BUG-0072](#bug_0072) | medium | defect | The gateway's open-order pool is sized by nothing in particular |
 | [BUG-0073](#bug_0073) | medium | defect | The placeholder environments carry settings nobody chose |
 | [BUG-0083](#bug_0083) | medium | defect | Scenario 26 failed once inside the suite and has not been reproduced |
+| [BUG-0086](#bug_0086) | medium | defect | Removing truncation made the matching engine's fallback recovery slower, and a design document still says otherwise |
+| [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -1957,6 +1958,51 @@ anchored to the oldest position anything may still present -- R-0022, and what c
 closes with that one rather than on its own.
 
 Related: [BUG-0048](#bug_0048), which caused this and bounds it; R-0123 and R-0022 in `docs/book`.
+
+### BUG-0087: Whether the hot path allocates cannot be established on demand {#bug_0087}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-09-10 |
+| Recorded | 2026-09-10 |
+| How | Reviewing a June profile that put `malloc` and `_int_malloc` at about 1.5% of the matching engine thread. The obvious causes were eliminated by reading the code, which is not the same as measuring |
+| Impact | The framework's central claim -- no heap allocation on any hot path -- is not checkable. It is believed on the strength of the allocators existing, and a regression would be found by a profile taken for some other reason, or not at all |
+
+**What is being asked for is a tool, not a fix.** This entry closes when the assessment can be
+run on demand. The property it measures is permanent, so a run that finds allocation on the hot
+path is a defect of its own and gets its own entry.
+
+**A profile is the wrong instrument.** `perf` samples, so it reports roughly how much *time*
+went to allocation. That is not the question. A path allocating once every ten thousand orders
+contributes nothing a profile would show and still breaks the rule. What is wanted is a count:
+how many times was the allocator called, on which thread, during a window when the venue was
+trading.
+
+**A counting interposer answers it and needs no rebuild.** `LD_PRELOAD` over `malloc`, `calloc`,
+`realloc` and `free`, counting per thread and reporting at exit.
+[trading_day_load.md](operations/trading_day_load.md) already names this approach among the
+things worth measuring, and the wrapper `deploy.py` generates is the interposition point that
+exists for it. Unlike `valgrind` it does not change timing enough to alter what the venue does.
+
+**The window is the hard part.** Every component allocates freely while it starts -- that is
+where the pools are filled from -- so a count over a whole process says nothing. The interposer
+has to be told when to begin counting, after the venue reports ready and while orders are
+flowing, and told again when to stop.
+
+**The threshold is measured, not chosen.** Whether the right answer is zero, or a small stated
+number per thread, is what the first run establishes. Threads do work besides the order path,
+and logging and the codec may allocate legitimately. Picking a number in advance would either
+pass everything or fail on things nobody intended to forbid.
+
+**What closing this needs.** The interposer, a script that places the window and drives orders
+through it, and a stated per-thread expectation the script asserts against. It belongs with the
+other assessment scripts rather than in the test suite, because it answers a question on demand
+rather than gating a build.
+
+Related: [BUG-0048](#bug_0048) for the memory figures that came out of the same profiling work,
+and BUG-0030 for the precedent of a tracked task rather than a defect.
 
 ## Closed
 
