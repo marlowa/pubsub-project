@@ -339,6 +339,28 @@ python3 scripts/devenv.py --env environments/test-1.toml start
 | `--no-ha` | off | Skip components with `ha_only = true` |
 | `--delay SECONDS` | `1.0` | Pause between component starts |
 
+### Optional: netfilter on loopback
+
+Every component runs on one machine in a developer sandbox, so all of the venue's traffic
+crosses `lo`. Netfilter hooks fire on every packet regardless of interface, loopback included,
+and about 13% of the CPU in both the gateway and the matching engine profiles is `nftables`
+and `conntrack` as a result -- `nft_do_chain`, `nft_counter_eval` and `nft_immediate_eval` sit
+near the top of both.
+
+None of it is the venue's doing, and none of it exists in a real deployment, where the
+instances sit on separate machines and the traffic goes over a network card. It is worth
+removing only when the profile itself is what you are looking at, so that two runs compare:
+
+```bash
+sudo nft flush ruleset          # removes the overhead for this boot
+```
+
+**Do not do this on a deployed host.** The ruleset is there deliberately, and flushing it for
+the benefit of a benchmark is a change to that host's firewall. A run made without flushing is
+a valid run; it simply carries a known overhead that production does not.
+
+See [Trading-day load](docs/operations/trading_day_load.md) for the measurements.
+
 ## Documentation
 
 Start at **[docs/README.md](docs/README.md)**. From there:

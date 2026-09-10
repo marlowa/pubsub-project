@@ -43,6 +43,13 @@ Always use braces for control structures, even single statement
 No assignments in conditionals - e.g., not if ((x = foo())), but separate lines
 Comparison order: Variable on left - e.g., x == 5 not 5 == x (don't use Yoda conditions)
 Never say "using namespace std"
+
+The FIX checksum is always checked, on every inbound message, whatever the deployment. It is
+never redundant and there must be no way to switch it off -- no configuration key, no build
+option, no fast path that skips it, and no exception for traffic believed to be trusted or
+local. A message whose checksum fails cannot be trusted to say who sent it or what sequence
+number it carried, so it is discarded rather than rejected: replying to it would mean replying
+on the strength of data already established as corrupt.
 when checking if a ptr is nullptr, do not say "if (ptr)", say "if (ptr != nullptr)"
 when checking if a ptr is not nullptr, do not say "if (!ptr)", say "if (ptr == nullptr)"
 For a boolean expression, negate with ! rather than comparing against a literal: say if (!succeeded(result)), not if (succeeded(result) == false). This applies to booleans only; pointers keep the explicit == nullptr and != nullptr comparisons above.
