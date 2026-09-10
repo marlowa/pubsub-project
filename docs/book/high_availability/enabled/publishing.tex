@@ -6,47 +6,48 @@ Two publishers run, and two recorders.
 \subsubsection{What state it holds}
 \label{sec:ha:enabled:publishing:state}
 
-The publisher holds what it has been given, and no position on behalf of anybody:
-a subscriber presents its own position when it connects
-(\cref{sec:ha:disabled:mep:state}). The recorder holds one number, how far it has
-published and had confirmed.
+The publisher holds what it has been given, and holds no position on behalf of
+any subscriber. A subscriber presents its own position when it connects, as
+\cref{sec:ha:disabled:mep:state} describes. The recorder holds one number: how
+far it has published and had confirmed.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:enabled:publishing:durable}
 
 Both instances of a publisher receive the same records, identified by the same
-sequence numbers --- the sequencer's, not numbers of the publisher's own. That
-detail is what makes a pair of them useful: \textbf{a subscriber's position means
-the same thing at either instance}, so moving to the survivor requires no
-translation and no handover between the publishers themselves.
+sequence numbers. Those numbers are the sequencer's, and the publisher assigns
+none of its own. \textbf{A subscriber's position therefore means the same thing
+at either instance}, so a subscriber moving to the surviving instance needs no
+translation, and the two publishers need no handover between them.
 
-The recorder's position needs even less. Because it is written only after the bus
-confirms, it is a lower bound on what has been published. A promoted instance
-that resumes from a stale copy of it republishes some records and loses none,
-which downstream absorbs by design.
+The recorder's position needs less still. The recorder writes it only after the
+bus confirms the publish, so the position is a lower bound on what has been
+published. A promoted instance resuming from a stale copy publishes some records
+again and loses none, and the consumers downstream are required to handle the
+duplicates.
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:enabled:publishing:recovery}
 
-Both are told. A publisher is told by each subscriber where it had reached; a
-recorder reads its own position and presents it to a publisher. Neither needs a
-handover from the instance it replaced, which is why neither pair needs the
-coupling the sequencer pair has.
+Other components tell both of them. Each subscriber tells a publisher where that
+subscriber had reached. A recorder reads its own position and presents it to a
+publisher. Neither needs a handover from the instance it replaced, so neither
+pair needs the coupling that the sequencer pair has.
 
 \subsubsection{What the member is told}
 \label{sec:ha:enabled:publishing:member}
 
-Nothing by the publisher. The recorder's failure reaches members only through
-\reqref{R-0053}, and the point of running two is that it should not reach them at
-all.
+The publisher tells a member nothing. A failure of the recorder reaches members
+only through \reqref{R-0053}, and running two recorders is what keeps it from
+reaching them at all.
 
 \begin{requirement}{R-0077}{A subscriber resumes at the surviving instance without loss}
   Where the instance a subscriber was reading from is lost, the venue shall
   supply every record after the position that subscriber presents, from the
   instance it moves to.
-  \rationale{A subscriber's position is expressed in the venue's own sequence
-  numbers rather than in anything a publisher assigns, so it is meaningful to
-  either instance. Nothing has to be handed over.}
+  \rationale{A subscriber's position is expressed in the venue's own sequence numbers rather
+  than in numbers a publisher assigns, so either instance can act on it. The two
+  publishers hand nothing over.}
   \uncovered{no scenario moves a subscriber between publisher instances}
 \end{requirement}
 
@@ -54,17 +55,17 @@ all.
   Where publishing to the bus is taken over by another instance, the venue shall
   resume from a position no later than the last publish the bus confirmed, and
   shall publish again whatever it cannot establish was confirmed.
-  \rationale{The position is a lower bound by construction, so resuming from a
-  stale one costs duplicates and resuming from an optimistic one costs records.
-  \reqref{R-0049} permits the first and forbids the second.}
+  \rationale{The position is a lower bound, so resuming from a stale position costs duplicate
+  records, and resuming from a position later than the confirmed one costs records
+  entirely. \reqref{R-0049} permits the first and forbids the second.}
   \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0079}{Losing one publisher or one recorder does not halt the venue}
   The loss of a single publisher instance, or of a single recorder instance,
   shall not stop members trading.
-  \rationale{\reqref{R-0053} halts the venue when no recorder is publishing.
-  Running two is what makes that condition rare, and a halt on losing one of them
-  would make the pair worse than useless.}
+  \rationale{\reqref{R-0053} halts the venue when no recorder is publishing. Running two
+  recorders is what makes that condition rare. Halting on the loss of one of them
+  would produce the outage that the second recorder exists to prevent.}
   \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}

@@ -1,137 +1,137 @@
 \subsection{The arbiter and the witness}
 \label{sec:ha:enabled:arbiter}
 
-Where two instances may act and only one may act at a time, something has to
-decide which. The alternative is that each decides for itself, and a pair with no
-third party cannot tell ``the other is dead'' from ``I cannot see the other''.
-Both answers are available to it, and both are wrong: promote on the second and
-the pair ends up with two instances acting and diverging; decline on the first
-and neither acts, which is the safer failure and often the later noticed,
-because nothing crashes and nothing logs an error --- traffic simply stops.
+Two instances of a group may act, and only one of them may act at a time. A
+third party decides which one, and that third party is the arbiter.
 
-\textbf{An arbiter is answerable and a consensus protocol is not necessary.} One
-party decides, so only one entitlement exists at a time, and a generation number
-carried on every message lets a receiver refuse an instance whose entitlement has
-since passed.
+An instance cannot make this decision for itself. When an instance loses contact
+with its peer, it cannot distinguish a peer that has stopped from a peer it can
+no longer reach. Both readings lead to a wrong action. If it promotes itself and
+the peer is alive, both instances act and their state diverges. If it declines
+and the peer is dead, neither instance acts and the venue stops trading. The
+second failure is the safer one, and it takes longer to notice, because no
+process crashes and nothing logs an error.
 
-\textbf{The arbiters are a pair; the witness is one process, and there is only
-one of it.} Two arbiters run so that losing one moves no entitlement and
-interrupts nothing --- \reqref{R-0063}. The witness runs alongside them, and it
-has no pair and no standby. It is a single point of failure and this section
-says what is done about that rather than claiming otherwise.
+\textbf{One arbiter decides, so the venue needs no consensus protocol.} A single
+party issues entitlements, so a group has only one entitlement at a time. Every
+message carries the generation number of the entitlement it was sent under, and a
+receiver refuses a message whose generation has been superseded.
 
-What the witness is for is narrow: it decides between two arbiters that cannot
-see each other. A pair with no third party cannot tell ``the other is dead'' from
-``I cannot see the other'', which is the problem this whole subsection opened
-with, and the witness is the third party that settles it.
+\textbf{Two arbiters run, and one witness runs alongside them.} Losing one
+arbiter moves no entitlement and interrupts nothing, which is \reqref{R-0063}.
+The witness has no pair and no standby, so it is a single point of failure.
+\Cref{sec:ha:enabled:arbiter:witness} states what the venue does about that.
+
+The witness has one job. When the two arbiters cannot see each other, each of
+them faces the problem described above: neither can tell a stopped peer from an
+unreachable one. The witness is the third party that settles which arbiter is
+active.
 
 \subsubsection{What is done about the witness being single}
 \label{sec:ha:enabled:arbiter:witness}
 
-\textbf{It holds nothing, so losing it destroys nothing.} There is no state to
-recover and no history to lose. A witness that has just started is exactly as
-useful as one that has run for a month, which is why it needs no standby to hold
-a copy of anything: restarting it is the whole of its recovery.
+\textbf{The witness holds no state, so losing it loses nothing.} It has no record
+to recover and no history to lose. Restarting it is the whole of its recovery,
+and it needs no standby to hold a copy of anything.
 
-\textbf{Nothing waits on it.} An arbiter that cannot reach the witness does not
-block; it decides, and one of the decisions available to it is to decline. While
-the witness is down the arbiter that is already active goes on granting
-entitlements exactly as before, so the venue trades and entitlements move. What
-its absence costs is narrower than the service: the pair's ability to replace its
-own active instance. Losing the witness and the active arbiter together therefore
-leaves the venue with no arbitration until one of them returns, which is the
-price of \reqref{R-0124} and is paid deliberately.
+\textbf{No component waits on the witness.} An arbiter that cannot reach the
+witness does not block. It decides, and declining is one of the decisions
+available to it. While the witness is down, the arbiter that is already active
+goes on granting entitlements as before, so the venue continues to trade and
+entitlements continue to move. Losing the witness costs the arbiter pair one
+ability: replacing its own active instance. If the witness and the active arbiter
+fail together, the venue has no arbitration until one of them returns. That cost
+is stated in \reqref{R-0124} and is accepted deliberately.
 
-\textbf{It is off every ordinary path.} It is consulted in one circumstance only
---- an arbiter contemplating promotion whose peer has fallen silent. In ordinary
-running no order, report or election touches it, so the time it spends able to
-affect anything is a small fraction of the time it is running.
+\textbf{The witness is off every ordinary path.} An arbiter consults it in one
+circumstance: when the arbiter is considering promotion and its peer has fallen
+silent. In ordinary running no order, report or election touches the witness.
 
-\textbf{Losing it alone changes nothing.} Two arbiters that can still see each
-other settle between themselves by configured identity and never ask the witness
-at all. It takes the witness and the link between the arbiters to fail together
-before its absence is felt, and those are independent failures.
+\textbf{Losing the witness alone changes nothing.} Two arbiters that can still
+see each other settle between themselves by configured identity, and never
+consult the witness. The absence of the witness is felt only when it and the link
+between the two arbiters have both failed, and those two failures are
+independent.
 
-\textbf{It is put where the arbiters are not, and that is the mitigation the
-others rest on.} A witness that shares a failure domain with one arbiter is
-close to worthless: a single event then takes out that arbiter and the witness
-together, and the surviving arbiter is left unable to reach a majority at the
-one moment it needs to. So the witness runs on a third machine, on a different
-power supply, behind a different network switch, and ideally in a different
-rack. Its value is entirely in its independence, and every part of that
-independence is a property of where it is deployed rather than of what it does.
+\textbf{The witness runs where the arbiters do not.} A witness that shares a
+failure domain with one arbiter gives little protection, because a single event
+then removes that arbiter and the witness together, and the surviving arbiter
+cannot reach a majority at the moment it needs one. The witness therefore runs on
+a third machine, on a different power supply, behind a different network switch,
+and ideally in a different rack. Its usefulness comes from where it is deployed
+rather than from what it does.
 
-Three things about the process make that placement cheap, which is why there is
-no reason to compromise on it:
+Three properties of the witness process make that placement cheap:
 
 \begin{itemize}[nosep]
   \item \textbf{It needs no storage.} It holds no state, so it depends on no
-        disk, no array and no filesystem --- the commonest hardware failure of
-        the lot is one it cannot suffer.
+        disk, no array and no filesystem.
   \item \textbf{It is off the hot path.} No order, report or election passes
-        through it in ordinary running, so it needs none of the tuning the
-        trading components need: no pinned cores, no low-latency hardware, no
-        proximity to anything. It can be the least capable machine in the
-        deployment.
-  \item \textbf{Its network path is what matters, not its speed.} The failure
-        that hurts is not the witness dying but an arbiter being unable to
-        reach it, so what is worth spending on is a route to it that fails
-        independently of the route between the two arbiters.
+        through it in ordinary running. It needs no pinned cores, no low-latency
+        hardware and no proximity to any other component, so it can run on the
+        least capable machine in the deployment.
+  \item \textbf{Its network route matters more than its speed.} The failure that
+        hurts the venue is an arbiter being unable to reach the witness. The
+        route to the witness should therefore fail independently of the route
+        between the two arbiters.
 \end{itemize}
 
-The venue continues to trade even when all three are gone, though it is then
-unable to move an entitlement, which is \cref{sec:ha:enabled:degraded}. What
-running a pair plus a witness achieves is that the amount of agreement the venue
-needs is small, bounded, and confined to a component that holds no venue state.
+The venue goes on trading even when both arbiters and the witness are gone,
+though no entitlement can move while they are, which is the state
+\cref{sec:ha:enabled:degraded} describes. Running two arbiters and one witness
+keeps the amount of agreement the venue needs small, bounded, and confined to a
+component that holds no venue state.
 
 \subsubsection{What state it holds}
 \label{sec:ha:enabled:arbiter:state}
 
-Which instance leads each group, under which generation, and which instances are
-currently present. It holds nothing about orders, sessions or sequence numbers,
-and that is a deliberate limit rather than an omission: a component that decides
-who may act must not also be a component whose own state can be wrong.
+The arbiter holds which instance leads each group, the generation that
+entitlement was granted under, and which instances are currently present. It
+holds nothing about orders, sessions or sequence numbers. That limit is
+deliberate: a component that decides which instance may act must not itself hold
+state that can be wrong.
 
-The witness holds less still. It exists to be counted, so that two arbiters can
-reach a majority rather than disagreeing.
+The witness holds less than that. It exists to be counted, so that two arbiters
+can reach a majority.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:enabled:arbiter:durable}
 
-Nowhere, and deliberately. Persisting the record would give a component that
-holds no venue state a persistence story of its own, and a file written before a
-long outage asserts an incumbent that may since have changed --- so it would need
-validating against the present anyway.
+The arbiter keeps no copy across its own restart, and that is deliberate. A file
+written before a long outage names an incumbent that may since have changed, so a
+restarted arbiter would have to check it against the present in any case.
 
-\textbf{What replaces persistence is being told.} Only an instance that leads
-reports itself as leading, so a report is already a claim; the generation settles
-any disagreement between two of them. An arbiter that has restarted therefore
-learns who leads by listening, needs no persistence, and depends on nothing that
-might also have restarted. Asking the surviving arbiter is kept as an
-accelerator, not as the mechanism, because the case that matters most --- both
-arbiters restarted --- is the one with no peer to ask.
+\textbf{An arbiter learns the current position by being told.} Only an instance
+that leads reports itself as leading, so every such report is a claim of
+entitlement, and the generation settles any disagreement between two claims. A
+restarted arbiter therefore learns which instance leads each group by listening,
+and it depends on nothing that might also have restarted. It may ask a surviving
+arbiter to reach the answer sooner, but asking is an accelerator rather than the
+mechanism: the case that matters most is both arbiters restarting together, and
+then there is no peer to ask.
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:enabled:arbiter:recovery}
 
-It starts, and waits to be told. Between starting and being informed it cannot
-distinguish ``nobody leads'' from ``I have not been told yet'', and the
-requirements below say what it must do about that: decline, rather than guess.
+A restarted arbiter starts and waits to be told. Until something reports to it,
+it cannot distinguish a group in which no instance leads from a group whose
+leader it has not yet heard from. The requirement \reqref{R-0059} says what it
+must do during that period: answer that it cannot say, rather than choose.
 
 \subsubsection{What the member is told}
 \label{sec:ha:enabled:arbiter:member}
 
-Nothing. The arbiter is off the path a member's orders travel, and a member
-should never be able to tell that one exists. Its failures are felt only through
-the components that consult it, which is why the requirements here are stated in
-terms of those components rather than of members.
+Nothing. The arbiter sits off the path a member's orders travel, and a member
+cannot tell that one exists. An arbiter's failures reach a member only through
+the components that consult it, so the requirements here are stated in terms of
+those components rather than of members.
 
 \begin{requirement}{R-0058}{Two instances of a group are never both entitled to act}
   At any moment, at most one instance of a group shall hold the entitlement to
   act.
-  \rationale{This is the property the arbiter exists to provide, and the one
-  from which the rest of this subsection follows. Two instances acting on the
-  same state diverge, and nothing afterwards can say which of them was right.}
+  \rationale{This is the property the arbiter exists to provide, and the rest of
+  this subsection follows from it. Two instances acting on the same state
+  diverge, and nothing afterwards can establish which of them was right.}
   \uncovered{no scenario asserts the property directly, only particular routes to it}
 \end{requirement}
 
@@ -144,35 +144,35 @@ terms of those components rather than of members.
   instance holds each entitlement by being told, so one that has just started
   holds nothing for any group until something reports to it.
 
-  During that period two quite different situations look identical to it: a
-  group in which no instance is acting, and a group whose acting instance it has
-  simply not heard from yet. Choosing an instance is right in the first and
-  wrong in the second, where it grants a second entitlement for a group that
-  already has one --- which is the outcome the arbiter exists to prevent.
+  During that period the arbiter cannot distinguish two situations: a group in
+  which no instance is acting, and a group whose acting instance it has not heard
+  from yet. Choosing an instance is correct in the first situation. In the second
+  it grants a second entitlement for a group that already has one, which is the
+  outcome the arbiter exists to prevent.
 
-  Saying it cannot answer costs the component that asked a retry. Choosing
-  wrongly costs the venue two instances acting on the same state, and nothing
-  afterwards can establish which of them was right.}
+  Answering that it cannot say costs the component that asked one retry.
+  Answering wrongly costs the venue two instances acting on the same state, and
+  nothing afterwards can establish which of them was right.}
   \uncovered{no scenario asks a freshly started arbiter about a group it has not been told of}
 \end{requirement}
 
 \begin{requirement}{R-0060}{Silence from an arbiter is not read as the absence of one}
   A component that asks and hears nothing shall ask again before concluding that
   no arbiter exists.
-  \rationale{A silent arbiter may be one deliberately declining under
-  \reqref{R-0059}. Acting on the assumption that nobody is listening, against a
-  decision that was being withheld, produces exactly the second leader the
-  decline was protecting.}
+  \rationale{An arbiter that stays silent may be one deliberately declining under
+  \reqref{R-0059}. A component that treats the silence as an absent arbiter acts
+  against a decision that was being withheld, and creates the second leader that
+  the decline was preventing.}
   \uncovered{no scenario makes an arbiter decline while a component is asking}
 \end{requirement}
 
 \begin{requirement}{R-0061}{Entitlement is held under a lease and lapses unless renewed}
   An instance's entitlement to act shall expire unless it is renewed, and the
   arbiter shall stop honouring a record whose holder is no longer present.
-  \rationale{A record that is believed indefinitely is not a lease but a
-  statement about something that was true once. An instance that holds its
-  connection open and stops renewing is, from the outside, indistinguishable
-  from a healthy one, so presence alone cannot be the test.}
+  \rationale{A record that never expires states only that something was true at
+  the moment it was written. Presence alone cannot be the test either: an
+  instance that holds its connection open and stops renewing looks, from the
+  outside, the same as a healthy one.}
   \uncovered{no scenario stops a leader renewing while it stays connected}
 \end{requirement}
 
@@ -180,24 +180,24 @@ terms of those components rather than of members.
   The expiry of a lease shall be measured by a clock that only moves forward at a
   steady rate, and shall not be affected by the machine's notion of the time of
   day being corrected, stepped or set.
-  \rationale{Time-of-day clocks are adjusted routinely --- by a time service
-  correcting drift, by a leap second, by an operator. Measuring a lease against
-  one means an adjustment can expire a lease that was being renewed properly, and
-  move an entitlement for a reason unconnected to any component's health. An
-  adjustment in the other direction is worse: a lease that should have expired
-  continues to be honoured while its holder is gone.}
+  \rationale{Time-of-day clocks are adjusted routinely, by a time service
+  correcting drift, by a leap second, or by an operator. A lease measured against
+  such a clock can expire while it is being renewed properly, which moves an
+  entitlement for a reason unconnected to any component's health. An adjustment
+  in the other direction is worse: a lease that should have expired goes on being
+  honoured after its holder has gone.}
   \uncovered{no scenario adjusts a clock}
 \end{requirement}
 
 \begin{requirement}{R-0109}{An instance that is not making progress does not keep its entitlement}
   Holding an entitlement shall depend on the instance continuing to do the work
   the entitlement is for, and not only on its continuing to ask to keep it.
-  \rationale{Renewing requires no more than a thread running. An instance
-  starved of processor time, or stalled in a way that leaves its timers running,
-  renews on schedule and does nothing else --- and both presence and renewal
-  report it as healthy, because neither is a report of work. The venue then
-  stays with an instance that has stopped, which is the failure that stops
-  everything while nothing appears wrong.}
+  \rationale{Renewing an entitlement requires no more than a running thread. An
+  instance starved of processor time, or stalled in a way that leaves its timers
+  running, renews on schedule and does nothing else. Neither presence nor renewal
+  reports whether the instance is doing any work, so both report such an instance
+  as healthy. The venue then stays with an instance that has stopped, and
+  everything waits while nothing appears to be wrong.}
   \uncovered{no scenario starves an instance that keeps renewing}
 \end{requirement}
 
@@ -205,12 +205,12 @@ terms of those components rather than of members.
   The period after which an unrenewed entitlement lapses shall be a figure the
   venue states, and it shall be long enough that an instance doing its work is
   never mistaken for one that has stopped.
-  \rationale{Too short and a busy instance loses its entitlement for being busy,
-  which moves the venue's work to the other instance at the moment there is most
-  of it. Too long and an instance that has genuinely stopped holds the
-  entitlement for that period, during which nothing acts. Neither error is
-  detectable from the figure alone, so it has to be derived from how long the
-  work actually takes.}
+  \rationale{A period that is too short takes the entitlement away from a busy
+  instance for being busy, which moves the venue's work to the other instance at
+  the moment there is most of it. A period that is too long leaves the
+  entitlement with an instance that has genuinely stopped, and nothing acts until
+  it lapses. The figure alone shows neither error, so it has to be derived from
+  how long the work takes.}
   \uncovered{no scenario tests the period, and none is stated to test}
 \end{requirement}
 
@@ -218,19 +218,18 @@ terms of those components rather than of members.
   Where an instance holds the entitlement and is still present, an instance
   rejoining the group shall be told to follow, whatever its configured name.
   \rationale{Preferring the configured primary at this point moves the
-  entitlement for no reason but a name --- and moves it to the instance that has
-  just failed, away from one that is serving. The configured preference is a
-  cold-start tie-break and nothing more.}
+  entitlement for no reason but a name. It also moves the entitlement to the
+  instance that has just failed, and away from one that is serving. The
+  configured preference is a cold-start tie-break.}
   \covers{ha_test:24, ha_test:25}
 \end{requirement}
 
 \begin{requirement}{R-0063}{Losing one arbiter, or the witness, changes nothing}
   The failure of a single arbiter, or of the witness, shall not move any
   group's entitlement and shall not interrupt the venue.
-  \rationale{The arbiter is made available by redundancy rather than by being
-  watched, which is what stops the question ``who watches the watcher'' from
-  regressing. If losing one mattered, something would have to supervise it, and
-  that thing would need supervising.}
+  \rationale{Redundancy is what makes the arbiter available, so nothing needs to
+  watch it. A design in which losing one arbiter mattered would need something to
+  supervise the arbiter, and that supervisor would need supervising in turn.}
   \covers{ha_test:2, ha_test:4, ha_test:5, ha_test:33}
 \end{requirement}
 
@@ -238,39 +237,38 @@ terms of those components rather than of members.
   Where an arbiter's peer has fallen silent and the witness cannot be reached, it
   shall make itself active only where no other arbiter can be: it shall hold the
   lower of the two configured identities, and it shall never have observed its
-  peer acting. Otherwise it shall remain passive. A decline shall not be final ---
+  peer acting. Otherwise it shall remain passive. A decline shall not be final:
   the arbiter shall put the question again, so that the peer or the witness
   returning settles it.
-  \rationale{Silence is not evidence of death. The pair cannot tell a peer that
-  has stopped from one it cannot reach, which is the limitation this whole
-  subsection opened with, and the witness exists to settle it. Where the witness
-  is gone too, there is nobody to ask, and promoting on silence is how both
-  arbiters become active at once --- each then granting entitlements and
-  numbering generations from its own count, which is the condition the arbiter
-  exists to prevent, reproduced inside it.
+  \rationale{Silence is not evidence of death. An arbiter cannot tell a peer that
+  has stopped from one it cannot reach, and the witness exists to settle exactly
+  that. Where the witness is gone as well, the arbiter has nobody to ask.
+  Promoting on silence is how both arbiters become active at once, each then
+  granting entitlements and numbering generations from its own count, which
+  reproduces inside the arbiter the condition the arbiter exists to prevent.
 
-  What makes the rule sufficient is that at most one arbiter can satisfy it,
-  whatever either can see of the other. Only the lower identity may promote
-  unasked, so the two cannot both act on the same silence; and that one defers
-  where it has seen its peer acting, which is what stops it promoting alongside a
-  peer that leads on the far side of a partition. Ordering alone would not do:
-  the lower identity is passive whenever it is the instance that restarted, and
-  that is an ordinary state rather than a rare one.
+  At most one arbiter can satisfy this rule, whatever either can see of the
+  other. Only the lower identity may promote unasked, so the two cannot both act
+  on the same silence. That one also defers where it has seen its peer acting,
+  which stops it promoting alongside a peer that leads on the far side of a
+  partition. The ordering rule alone is not enough, because the lower identity is
+  passive whenever it is the instance that restarted, and that is an ordinary
+  state rather than a rare one.
 
-  The cost is availability, and it is bounded. An arbiter that declines when its
-  peer really had died leaves the venue with no arbitration, so no entitlement
-  can move until an arbiter or the witness returns --- but the instances already
-  holding theirs go on working, and a component that finds no arbiter has a
-  defined rule of its own that can only ever promote the lower identity. Two
-  arbiters each granting entitlements has no such floor: nothing afterwards can
-  say which grant was the real one. So the venue prefers none to two, and the
-  arbiter says which it has chosen rather than logging a promotion it did not
-  make.
+  The cost of declining is availability, and it is bounded. An arbiter that
+  declines when its peer really had died leaves the venue with no arbitration, so
+  no entitlement can move until an arbiter or the witness returns. The instances
+  already holding entitlements go on working throughout, and a component that
+  finds no arbiter follows a defined rule of its own that can only ever promote
+  the lower identity. Two arbiters each granting entitlements has no such limit,
+  because nothing afterwards can establish which grant was the real one. The
+  venue therefore prefers no arbitration to two arbiters, and the arbiter reports
+  which choice it made rather than logging a promotion it did not make.
 
-  This requires the peer's identity to be known before the two have ever spoken,
-  which is why it is configured rather than only learned. An arbiter that has to
-  meet its peer before it can be ordered against it has no rule available in the
-  one circumstance the rule is for.}
+  This rule requires the peer's identity to be known before the two arbiters have
+  ever spoken, which is why it is configured rather than only learned. An arbiter
+  that had to meet its peer before it could be ordered against it would have no
+  rule available in the one circumstance the rule is for.}
   \covers{ha_test:8}
 \end{requirement}
 
@@ -280,27 +278,27 @@ terms of those components rather than of members.
   has restarted, the new generation shall still exceed every generation
   previously used, which requires that the number outlive the processes rather
   than any one of them.
-  \rationale{The generation is what lets a receiver refuse a superseded sender.
-  Held only in memory it restarts at the beginning, so a pair restarted together
-  agree a generation the venue has used before --- and a message left over from
-  the earlier one compares as current.
+  \rationale{The generation is what lets a receiver refuse a superseded sender. A
+  generation held only in memory restarts at the beginning, so a pair that
+  restarts together agrees a generation the venue has used before, and a message
+  left over from the earlier one then compares as current.
 
   This is the requirement most exposed to a restart of everything at once. Where
   each instance keeps its own record, a group whose members all restart can still
-  exceed every generation used, because each reads its own and the highest wins.
-  Where the record is kept in one place, that place surviving is the whole of the
-  guarantee. Which of those the venue does is not settled here, but the
-  requirement holds either way and one of them has to be chosen deliberately.}
+  exceed every generation used, because each instance reads its own record and
+  the highest wins. Where the record is kept in one place, the survival of that
+  place is the whole of the guarantee. This chapter does not settle which of the
+  two the venue uses. The requirement holds either way, and one of them has to be
+  chosen deliberately.}
   \uncovered{no scenario restarts every instance of a group together}
 \end{requirement}
 
 \begin{requirement}{R-0065}{An instance whose entitlement has passed has what it sends refused}
   A receiver shall refuse a message carrying a generation older than the newest
   it has accepted for that group.
-  \rationale{Refusing what a stale instance sends is the entire mechanism that
-  keeps it from acting. It is not stopped
-  and is not required to notice anything; it is simply refused at every
-  interaction it attempts, which needs no hardware and no agreement from the
-  instance being fenced.}
+  \rationale{Refusing what a superseded instance sends is the whole mechanism
+  that stops it acting. The venue does not stop the instance and does not require
+  it to notice anything. Every interaction it attempts is refused, which needs no
+  special hardware and no cooperation from the instance being refused.}
   \covers{ha_test:49}
 \end{requirement}

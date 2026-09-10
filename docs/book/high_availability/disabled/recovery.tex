@@ -1,22 +1,21 @@
 \subsection{Recovery in general}
 \label{sec:ha:disabled:recovery}
 
-Two requirements hold for every component in this section, and are stated once
-here rather than repeated in each. Both concern the window between a component
-starting and its being ready, which is short, is entered on every restart, and
-is where a second failure does the most damage.
+Two requirements hold for every component in this section, and this subsection
+states them once rather than repeating them for each component. Both concern the
+period between a component starting and that component being ready. That period
+is short, every restart passes through it, and a second failure during it does
+the most damage.
 
-Every requirement here assumes that what survived a failure can be read. A log
-truncated part-way through a record, a checkpoint that fails its checksum, or a
-file that is simply absent leaves a component with nothing to recover from --- and
-in this configuration with nowhere else to turn, because there is no second
-instance holding a clean copy.
+Every requirement here assumes that a component can read what survived the
+failure. A log truncated part-way through a record, a checkpoint that fails its
+checksum, or a file that is absent leaves a component with nothing to recover
+from. This configuration provides no second instance holding an undamaged copy.
 
-\textbf{This configuration is weak there, and deliberately so.} With high
-availability enabled the instance whose copy is intact takes over, which is the
-answer to damaged state and the reason the enabled configuration exists. Nothing
-in the disabled configuration substitutes for it. That is a reason to run this
-configuration only where losing what it holds is acceptable.
+\textbf{This configuration is weak there, by decision.} Where high availability
+is enabled, the instance whose copy is undamaged takes over, and that is the
+venue's answer to damaged state. The disabled configuration has no equivalent, so
+it should be run only where losing what it holds is acceptable.
 
 \begin{gap}{}
   Damaged durable state is not detected as such. A component reads what it can
@@ -30,16 +29,17 @@ configuration only where losing what it holds is acceptable.
   Where a component maps memory it will use while trading, it shall touch all of
   that memory before reporting itself ready, so that the delay of first use falls
   before it is trading rather than during.
-  \rationale{Mapping a file reserves addresses and reads nothing. The first time
-  each page is used the processor interrupts and the kernel fetches it --- a small
-  delay, once per page, and for a region of a few hundred megabytes there are tens
-  of thousands of them. Left alone they fall on whatever code touches each page
-  first, which is the order path.
+  \rationale{Mapping a file reserves addresses and reads nothing. The first time a component
+  uses each page, the processor interrupts and the kernel fetches that page. The
+  delay is small and happens once per page, and a region of a few hundred megabytes
+  holds tens of thousands of pages. Where the component does not touch them first,
+  those delays fall on whatever code reaches each page first, which is the order
+  path.
 
-  Doing it before reporting ready means a component that has said it can trade
-  has already paid them. Doing it afterwards moves the cost onto the first
-  members to send anything, which is the worst moment to take it and the hardest
-  to attribute afterwards.}
+  Touching the memory before reporting ready means that a component which has said
+  it can trade has already taken those delays. Touching it afterwards moves the
+  cost onto the first members to send anything, which is the worst moment to take
+  it and the hardest to attribute afterwards.}
   \uncovered{no scenario measures a component's first orders against its later ones}
 \end{requirement}
 
@@ -47,45 +47,48 @@ configuration only where losing what it holds is acceptable.
   Where a recovery repeats work whose execution reports had already been sent,
   the reports sent again shall be marked so that the member can tell a repeat
   from a second event.
-  \rationale{A component that dies partway through handling an order cannot know
-  whether the report for it was sent. Sending it again is the right choice: a
-  member that never receives one cannot recover from that alone, and a member
-  that receives one twice can, provided it can tell.
+  \rationale{A component that dies part-way through handling an order holds no record of
+  whether it sent the report for that order. Sending the report again is the right
+  choice. A member that never receives a report cannot recover from that on its
+  own. A member that receives one twice can recover, provided it can distinguish
+  the two.
 
-  Unmarked, a repeated acceptance is indistinguishable from a second order
-  accepted --- so the venue would be reporting something that did not happen, in
-  the course of correcting something that did.}
+  Where the venue does not mark the repeat, a member cannot distinguish a repeated
+  acceptance from a second order accepted. The venue would then report an
+  acceptance that did not happen, while correcting one that did.}
   \covers{ha_test:53}
 \end{requirement}
 
 \begin{gap}{}
-  Scenario 53 covers the repeat a catch-up produces, which is the common case and the one a
-  member meets: an engine applies the venue's record and marks every report it sends, because
-  it cannot tell a record an earlier engine reported from one no engine ever saw.
+  Scenario 53 covers the repeat that a catch-up produces, which is the common case
+  and the one a member meets. An engine applies the venue's record and marks every
+  report it sends, because it cannot distinguish a record an earlier engine
+  reported from one no engine ever saw.
 
-  It does not cover the narrower case the requirement was written for --- a component that dies
-  between sending a report and recording that it did, so that the same work is repeated on the
-  strength of a record that is one step behind. Nothing kills a component in that window, and
-  producing it deliberately is harder than the other scenarios: the window is a few
-  instructions wide.
+  It does not cover the narrower case that the requirement also states: a component
+  that dies between sending a report and recording that it sent it, so that the
+  same work is repeated from a record that is one step behind. No scenario kills a
+  component in that window, and producing the window deliberately is harder than
+  the other scenarios, because it is a few instructions wide.
 \end{gap}
 
 \begin{requirement}{R-0031}{A component does not act on partially recovered state}
   A component shall not begin work until its recovery is complete. No sequence
   number shall be assigned before the last one issued is known, and no order
   shall be accepted before the set of open orders is current.
-  \rationale{Acting on partial state produces results that look ordinary and are
-  wrong. Of the ways a venue can fail, that is the hardest to detect and the
-  hardest to unwind afterwards.}
+  \rationale{Acting on partial state produces results that look ordinary and are wrong. Such
+  results are the hardest of the venue's failures to detect, and the hardest to
+  reverse afterwards.}
   \uncovered{no scenario interrupts a recovery}
 \end{requirement}
 
 \begin{requirement}{R-0032}{An interrupted recovery can be repeated without applying anything twice}
   Where a component fails while recovering, the recovery shall be able to run
   again from the same starting point and reach the same result.
-  \rationale{Without this a failure during recovery corrupts rather than delays,
-  and a component that fails repeatedly leaves worse state on each attempt. It
-  is also what makes a bound on the number of attempts meaningful: the bound is
-  only safe if the attempts beneath it were harmless.}
+  \rationale{Without this requirement, a failure during recovery corrupts state rather than
+  delaying the component, and a component that fails repeatedly leaves worse state
+  after each attempt. This requirement is also what makes a bound on the number of
+  attempts safe, because the bound protects the venue only where the attempts
+  beneath it did no harm.}
   \uncovered{no scenario interrupts a recovery}
 \end{requirement}

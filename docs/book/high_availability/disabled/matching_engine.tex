@@ -1,22 +1,22 @@
 \subsection{The matching engine}
 \label{sec:ha:disabled:me}
 
-The matching engine dies and is restarted. No member's connection is broken and
-the venue can still take orders; what stops is anything being done with them.
+The matching engine dies and is restarted. No member's connection is broken, and
+the venue can still take orders. What stops is the processing of those orders.
 
 \subsubsection{What state it holds}
 \label{sec:ha:disabled:me:state}
 
-\textbf{The set of open orders.} Which orders the venue has accepted and not yet
-cancelled or rejected, and the session each belongs to. This is what lets an
-order identifier be recognised as one already in use, and a cancel be answered
-rather than guessed at. It is the only copy: the sequencer holds the record of
-what was taken and in what order, which is a different thing and cannot be
-turned into this one cheaply.
+\textbf{The set of open orders.} The engine holds which orders the venue has
+accepted and has not yet cancelled or rejected, and the session each order
+belongs to. The engine uses this set to recognise an order identifier that is
+already in use, and to answer a cancel request. This set is the only copy of it.
+The sequencer holds a record of which orders were taken and in what order, which
+is a different thing, and converting that record into this set is expensive.
 
-\textbf{How far that set has been brought.} The sequence number up to which the
-set reflects what the sequencer has committed. Without it the set is a
-collection of orders with no way to say what is missing from it.
+\textbf{The point the set has reached.} The engine holds the sequence number up
+to which the set reflects what the sequencer has committed. Without that number
+the engine cannot establish which committed orders are missing from the set.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:me:durable}
@@ -27,46 +27,60 @@ written to it as it is accepted and taken out of it as it is cancelled, and it i
 read back when the engine starts. See
 \texttt{docs/durability/open\_order\_checkpoint.md}.
 
-It survives the process dying and not the machine dying. That is the guarantee
-this configuration is specified to give, and the enabled configuration's answer to
-a machine is the other machine.
+The region survives the death of the process. It does not survive the death of
+the machine, and this configuration is specified to give no more than that.
+Where high availability is enabled, the answer to a lost machine is the other
+machine.
 
-\textbf{Why a region and not the sequencer's log}, which looks as though it should
-serve. The log records changes rather than state, so rebuilding the set from it
-means replaying from the beginning --- and the earlier part of the log is
-discarded as it grows.
+\textbf{Reading the region is what a restart costs.} Scenario 50 recovers a
+thousand open orders from a region of 248 MB in 56 milliseconds, where the pages
+the dead process wrote are still held in memory. The same walk takes 457
+milliseconds where those pages have to be read from the disk. Both figures follow
+from the size of the region rather than from the number of orders open in it.
+
+\textbf{The region holds state, and the sequencer's log holds changes.}
+Rebuilding the set of open orders from the log instead means replaying the log
+from the start of the trading day. The size of the region follows from the number
+of orders open at one moment. The cost of a replay follows from the number of
+orders the day has seen, which is far larger and grows all day, so a replay at a
+full day's volume takes tens of seconds where reading the region takes
+milliseconds.
+
+The venue does replay the log in one case, which \reqref{R-0123} states: where
+the region cannot be used at all. It does not resume trading while it does so. It
+establishes what was open, cancels each order, reports the cancellation to the
+member that placed it, and halts.
 
 \begin{gap}{BUG-0048}
-  The history retained is whatever has not yet been discarded, which is a
-  quantity of records rather than a period of time. Rebuilding a set of orders
-  of any age from the log is therefore not possible, however the rebuilding is
-  written.
+  Nothing bounds how far back the log is kept. The venue discards no records at
+  all, so the log grows for as long as the venue runs, and what it retains is
+  anchored to no position any component may present.
 \end{gap}
 
-\textbf{What is required instead is a checkpoint}: the set itself, recording the
-orders the component holds open and the sequence number they are current to.
-That is what the region is, and it is the copy that outlives the
-process, and the log supplies only what has happened since.
+\textbf{A checkpoint records the set itself}: the orders the component holds
+open, and the sequence number those orders are current to. The region is that
+checkpoint. It is the copy that outlives the process, and the log supplies only
+what has happened since.
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:disabled:me:recovery}
 
-It reads the checkpoint, rebuilds the set as it stood at the sequence number the
-checkpoint records, and asks the sequencer for everything committed after that.
-It applies what comes back without issuing execution reports for it --- those
-were issued the first time --- and begins accepting orders once it has caught
-up.
+The engine reads the checkpoint and rebuilds the set as it stood at the sequence
+number the checkpoint records. It then asks the sequencer for everything
+committed after that number. It applies what comes back without issuing execution
+reports, because those reports were issued the first time. It begins accepting
+orders once it has caught up.
 
-\textbf{This is the same operation a promoted instance performs.} A follower
-that is promoted holds a replica of the set and knows the sequence number it
-reached; it asks for everything after that, applies it silently, and begins
-accepting. The two differ only in where the starting number comes from --- a
-file in one case, a replica in the other.
+\textbf{A promoted instance performs the same operation.} A follower that is
+promoted already holds a replica of the set and the sequence number that replica
+reached. It asks for everything after that number, applies the result silently,
+and begins accepting orders. The two cases differ only in where the starting
+number comes from: a file after a restart, and a replica after a promotion.
 
 Two things follow. The configuration with high availability enabled needs no
-separate promotion path, because promotion is this recovery starting from a
-number learned another way. And because the same mechanism runs on every restart,
-it is exercised continually rather than only when a test produces a failover.
+separate promotion path, because promotion is this same recovery starting from a
+number learned another way. The mechanism also runs on every restart, so it is
+exercised continually rather than only when a test produces a failover.
 
 
 \subsubsection{What the member is told}
@@ -88,9 +102,9 @@ it is exercised continually rather than only when a test produces a failover.
   A request to cancel shall receive either a report saying the order was
   cancelled or a rejection saying why, whatever restarted while the request was
   in flight.
-  \rationale{A member that does not know whether its cancel took effect must
-  assume the order is live and can hedge in neither direction. A rejection it
-  can act on; silence it cannot.}
+  \rationale{A member that does not know whether its cancel took effect must assume the order
+  is live, and it cannot hedge in either direction. A member can act on a
+  rejection. It cannot act on silence.}
   \uncovered{no scenario restarts the engine with a cancel in flight}
 \end{requirement}
 
@@ -106,9 +120,9 @@ it is exercised continually rather than only when a test produces a failover.
 \begin{requirement}{R-0018}{An open order survives a restart of the matching engine}
   An order the venue held open before the restart shall be held open afterwards,
   on the same terms, and shall remain cancellable by the member that placed it.
-  \rationale{The member was told the order was accepted and has no reason to
-  think a venue process has restarted. An order that quietly ceases to exist is
-  the one failure a member cannot detect, cannot cancel and cannot hedge.}
+  \rationale{The member was told the order was accepted, and has no reason to think a venue
+  process has restarted. An order that stops existing without any report is a
+  failure the member cannot detect, cannot cancel and cannot hedge against.}
   \covers{ha_test:50}
 \end{requirement}
 
@@ -121,11 +135,10 @@ it is exercised continually rather than only when a test produces a failover.
   that reason.
 
   There is a second reason particular to this venue. \emph{Unknown order} is also
-  what a member is told when the venue has lost what it was holding --- so
-  answering both cases the same way makes a venue that has forgotten a member's
-  orders indistinguishable, from that member's side, from one answering
-  correctly. The distinction is what stops the failure this chapter exists to
-  prevent from hiding inside an ordinary reply.}
+  what a member is told when the venue has lost what it was holding. Answering both
+  cases the same way leaves a member unable to distinguish a venue that has lost
+  its orders from one that is answering correctly. Distinguishing the two cases is
+  what stops that failure appearing as an ordinary reply.}
   \uncovered{no scenario cancels an order that has already been cancelled}
 \end{requirement}
 
@@ -139,11 +152,11 @@ it is exercised continually rather than only when a test produces a failover.
 \begin{requirement}{R-0116}{The venue recovers what it held before deciding what to do with it}
   A restarted instance shall rebuild the set of orders it held before deciding
   whether to resume trading or to cancel them.
-  \rationale{Cancelling requires knowing which orders to cancel and which member
-  to tell about each. A venue that cancels without having recovered cannot report
-  anything: it simply stops mentioning the orders, which is what \reqref{R-0020}
-  exists to prevent. Recovery is therefore needed for both outcomes, and is not
-  an alternative to cancelling but the thing that makes cancelling possible.}
+  \rationale{Cancelling an order requires knowing which orders to cancel and which member to
+  tell about each one. A venue that cancels without having recovered cannot report
+  anything, and stops mentioning the orders instead, which is what \reqref{R-0020}
+  exists to prevent. Recovery is therefore required for both outcomes, and it is
+  what makes cancelling possible.}
   \covers{ha_test:51}
 \end{requirement}
 
@@ -158,14 +171,14 @@ it is exercised continually rather than only when a test produces a failover.
   name --- so without a second route it would fall silent about every order,
   which is the outcome \reqref{R-0020} exists to prevent.
 
-  The record of what the venue took is that second route. Rebuilding from it is
-  far slower than reading a checkpoint, which is why it is not the ordinary
-  recovery; but this is not the ordinary case, it happens once, and what the time
-  buys is every member being told what became of its orders.
+  The record of what the venue took is that second route. Rebuilding from it is far
+  slower than reading a checkpoint, so it is not the ordinary recovery. This case
+  is rare and happens once, and the time it takes buys every member a report of
+  what became of its orders.
 
-  Admitting that it cannot say is the last resort and is still better than
-  silence: a member that is told the venue has lost track can act, where a member
-  that is told nothing cannot.}
+  Reporting that the venue cannot say is the last resort, and it is still better
+  than silence. A member told that the venue has lost track of its orders can act
+  on that. A member told nothing cannot.}
   \covers{ha_test:52}
 \end{requirement}
 
@@ -175,28 +188,27 @@ it is exercised continually rather than only when a test produces a failover.
   placed it a report saying so, and halt. Where nothing was open, it shall resume
   without halting.
   \rationale{\textbf{The period is the length of the outage, not the age of the
-  order.} An order that has rested since the morning in a working market is not a
-  problem: its owner could have cancelled it at any moment and did not. What
-  makes an order dangerous is that its owner was \emph{locked out of it} --- the
-  venue could not match, so the member could not cancel, and the market moved
-  while it could do nothing. The order is now priced for a market that has gone,
-  and its owner was denied every opportunity to act on that.
+  order.} An order that has rested since the morning in a working market is not a problem,
+  because its owner could have cancelled it at any moment and chose not to. The
+  hazard is that the owner was \emph{locked out of the order}: the venue could not
+  match, so the member could not cancel, and the price moved while the member could
+  do nothing. The order is now priced for a market that no longer exists, and its
+  owner had no opportunity to act on that.
 
-  So the hazard has nothing to do with how long the order had been resting, and
-  nothing to do with whether it was recoverable: a correctly recovered order that
-  its member was locked out of for ten minutes is exactly as dangerous as one
-  recovered from a corrupt region would have been.
+  The hazard therefore does not depend on how long the order had been resting, nor
+  on whether the order was recoverable. An order recovered correctly, whose member
+  was locked out of it for ten minutes, carries the same hazard as one recovered
+  from a damaged region.
 
-  Cancelling removes the uncertainty, the reports tell each member where it
-  stands, and the halt says the venue is not simply carrying on as though nothing
-  had happened. The exception for an empty book matters because traffic is
-  bursty: a long absence during a lull leaves nothing stale, nothing to report,
-  and halting would achieve only an outage.
+  Cancelling removes the uncertainty. The reports tell each member where it stands.
+  The halt records that the venue did not simply carry on. The exception for an
+  empty book matters because traffic is bursty: a long absence during a quiet period
+  leaves no stale order and nothing to report, and halting would produce an outage
+  for no benefit.
 
-  Unlike a condition the venue cannot detect, both parts of this one are plain
-  --- how long it was absent, and what it cancelled --- so it can be acted on
-  without a person present. Lifting it still requires one, under
-  \reqref{R-0023}.}
+  The venue can measure both parts of this condition, the length of the absence and
+  what it cancelled, so it can enter the condition without a person present.
+  Lifting the condition still requires a person, under \reqref{R-0023}.}
   \covers{ha_test:51}
 \end{requirement}
 
@@ -205,37 +217,36 @@ it is exercised continually rather than only when a test produces a failover.
   the moment the venue stopped being able to match to the moment it resumes, and
   the venue shall determine that without depending on anything outside the
   component concerned.
-  \rationale{It is the whole absence and not the recovery step. Noticing the
-  death, restarting the process and rebuilding the set are all terms in it, and
-  the restart alone was measured at about two and a half seconds --- so a figure
-  configured against recovery time is set against the wrong quantity and will be
+  \rationale{The figure covers the whole absence rather than the recovery step alone.
+  Noticing the death, restarting the process and rebuilding the set all count
+  towards it, and the restart alone was measured at about two and a half seconds. A
+  figure set against recovery time is set against the wrong quantity, and is
   reached later than intended.
 
   \textbf{It is measured from when matching stopped, not from the last order
-  matched.} Traffic comes in bursts, so a quiet period before a failure is
-  ordinary; taking the last order as the start would read a ten-minute lull
-  followed by a two-second restart as a twelve-minute absence, and cancel every
-  member's orders for having been quiet.
+  matched.} Traffic comes in bursts, so a quiet period before a failure is ordinary. Taking
+  the last order matched as the start would read a ten-minute quiet period followed
+  by a two-second restart as a twelve-minute absence, and would cancel every
+  member's orders because the market had been quiet.
 
-  \textbf{And the component must be able to work it out alone.} A supervisor
-  knows exactly when it killed a process and when it started the replacement, and
-  is the obvious source --- but nothing in this chapter may depend on a supervisor
-  being there, and a component started by hand, in a debugger, hours after the
-  last one stopped, must reach the same answer. It does: an hour has passed, the
-  orders are an hour stale, and cancelling them is right.
+  \textbf{The component must be able to establish the figure alone.} A supervisor
+  records when it killed a process and when it started the replacement, so it is
+  the obvious source, but nothing in this chapter may depend on a supervisor being
+  present. A component started by hand, in a debugger, hours after the last one
+  stopped must reach the same answer, and it does: an hour has passed, the orders
+  are an hour stale, and cancelling them is correct.
 
-  It is also a trading decision rather than a measurement: it says how long a
+  The figure is a trading decision rather than a measurement. It states how long a
   member's resting order stays meaningful in this market, which is a judgement
-  about members and not about how long the code takes.}
+  about members rather than about how long the code takes.}
   \covers{ha_test:51}
 \end{requirement}
 
 \begin{requirement}{R-0036}{A cancelled order does not become open again}
   An order the member cancelled before a restart shall not be open after it.
-  \rationale{Recovery reads a record of the state and then applies what followed
-  it. A cancellation that falls between the two is the case that resurrects an
-  order its member killed --- and the member, having been told it was cancelled,
-  is not watching for it.}
+  \rationale{Recovery reads a record of the state and then applies what followed it. A
+  cancellation that falls between the two can leave the order open again. The
+  member was told the order was cancelled, so it is not watching for that order.}
   \uncovered{no scenario cancels an order and then restarts the engine}
 \end{requirement}
 
@@ -243,20 +254,20 @@ it is exercised continually rather than only when a test produces a failover.
   Where the set of open orders cannot be rebuilt, the venue shall send an
   unsolicited cancel for every order it can still name, and shall say that it
   cannot name the rest.
-  \rationale{A member's view converges on the venue's only if the venue reports
-  what it has lost. Ceasing to mention an order is not a report of anything.
+  \rationale{A member's view of its orders matches the venue's only if the venue reports what
+  it has lost. Ceasing to mention an order reports nothing.
 
-  This is the fallback beneath \reqref{R-0073}, not an alternative to it: it
-  applies where recovery was attempted and could not complete.}
+  This requirement is the fallback beneath \reqref{R-0073}, and applies where
+  recovery was attempted and could not complete.}
   \uncovered{no scenario makes recovery fail and then checks what the member is sent}
 \end{requirement}
 
 \begin{requirement}{R-0021}{A member is not told an order is unknown while the venue is still recovering}
   A request concerning an order shall not be refused as unrecognised before the
   set of open orders has been brought up to date.
-  \rationale{Before then the venue does not know whether it holds the order.
-  Answering as though it does not is a statement it cannot support, and the
-  member acts on it.}
+  \rationale{Until the set is up to date, the venue cannot establish whether it holds the
+  order. Answering that the order is unrecognised makes a statement the venue
+  cannot support, and the member acts on that statement.}
   \uncovered{no scenario asserts that open orders survive a restart}
 \end{requirement}
 
@@ -264,32 +275,32 @@ it is exercised continually rather than only when a test produces a failover.
   A checkpoint shall be taken often enough that the records a recovering
   component must apply after reading one do not exceed a stated bound, and that
   bound shall be a figure the venue can state.
-  \rationale{Recovery takes as long as reading the checkpoint plus applying
-  everything since it. Leaving the interval between checkpoints unstated leaves
-  recovery time unstated with it, and the interval is then set by whatever was
-  convenient rather than by how long the venue may be absent.}
-  \uncovered{no scenario reads a checkpoint, because none is written}
+  \rationale{Recovery takes as long as reading the checkpoint plus applying everything
+  recorded since it. An unstated interval between checkpoints leaves the recovery
+  time unstated too, and the interval is then set by whatever was convenient rather
+  than by how long the venue may be absent.}
+  \uncovered{no scenario measures the records applied after a checkpoint is read, and no bound is stated to measure against}
 \end{requirement}
 
 \begin{requirement}{R-0102}{A checkpoint that cannot be trusted is not used}
   A component shall establish that a checkpoint is whole before rebuilding from
   it, and shall not act on the part it could read. A checkpoint that is absent,
   incomplete or inconsistent shall be treated as no checkpoint at all.
-  \rationale{A checkpoint is read once, at the moment nothing else knows what the
-  component holds, and it is believed entirely. A partial one produces a set of
-  orders that is wrong in a way no later check detects, because every subsequent
-  check is made against it. Treating a doubtful checkpoint as absent gives the
-  answer of \reqref{R-0020}, which is a worse outcome for a member and a knowable
-  one.}
+  \rationale{A component reads a checkpoint once, at the moment no other record of what it
+  holds is available, and it acts on the whole of what it reads. A partial
+  checkpoint produces a set of orders that is wrong, and no later check detects the
+  error, because every subsequent check is made against that set. Treating a
+  doubtful checkpoint as absent gives the outcome of \reqref{R-0020}, which is
+  worse for a member but is known.}
   \covers{ha_test:52}
 \end{requirement}
 
 \begin{requirement}{R-0022}{The venue keeps enough history to bring a recovered set of orders up to date}
   The record of committed orders shall be retained at least as far back as the
   oldest checkpoint any component may restart from.
-  \rationale{Recovery that reads a checkpoint and then asks for what followed it
-  fails entirely if what followed has been discarded, and fails in the way that
-  is hardest to notice: the checkpoint loads, the catch-up returns nothing, and
-  the set looks complete.}
+  \rationale{Recovery reads a checkpoint and then asks for what followed it. If what followed
+  has been discarded, that recovery fails in the way hardest to notice: the
+  checkpoint loads, the catch-up returns nothing, and the resulting set appears
+  complete.}
   \uncovered{no scenario exhausts retention, which is anchored to nothing measurable}
 \end{requirement}

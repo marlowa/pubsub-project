@@ -4,36 +4,55 @@
 \section{Introduction to high availability}
 \label{sec:ha_intro}
 
-High availability in electronic trading exchanges is designed to eliminate single points of failure and guarantee continuous order processing, position tracking, and market data dissemination. Unlike enterprise web applications that tolerate brief retries or eventual consistency, matching engines require strict determinism, sub-millisecond failover times, and absolute state synchronisation between primary and backup nodes.
+A venue is highly available when the failure of one instance does not stop
+members trading. This chapter states what this venue must do when a component
+fails, and what a member can observe while it happens.
+
+The matching engine must reach the same result from the same sequence of orders.
+An instance that takes over must therefore hold the orders its predecessor held,
+and hold them in the same order. An order the venue has taken must survive the
+failure of the instance that took it. Members are waiting on their orders while
+a failure is handled, so the venue must resume quickly.
+
+Recovery from the death of a process on a working machine is faster than
+recovery from the loss of the machine itself. This chapter specifies the two
+separately.
 
 \subsection{Architectural patterns}
 \label{subsec:ha_architectural_patterns}
 
-Most financial exchanges implement one of two primary architectural models for fault tolerance:
+Two patterns are in common use for fault tolerance, and this chapter uses both
+names.
 
-\begin{itemize}
-    \item \textbf{Active-passive, or hot standby:} The primary matching engine processes all incoming client sessions,
-      maintains the active order book, and continuously replicates its state delta to a backup node.
-      If the primary node experiences hardware, network, or software failure, the backup node promotes itself to primary,
-      replays or recovers the replicated state, and resumes accepting sessions.
-    \item \textbf{Active-active, consensus driven:} Multiple nodes process transactions concurrently using
-      consensus protocols (such as Raft or Paxos) or synchronous state machine replication. While offering lower recovery time
-      objectives, this model introduces higher coordination latency, making it less common for
-      ultra-low-latency matching engines unless cross-site resiliency overrides raw speed.
-\end{itemize}
+Under \textbf{active-passive}, one instance does all the work and a second
+instance holds a copy of its state. The second does none of the venue's work
+while the first is running. When the first fails, the second takes over.
 
-This venue uses the first of these. \Cref{subsec:ha_approach} says which
-components it applies to and why the second was not chosen.
+Under \textbf{active-active}, several instances process transactions at the same
+time. They agree on the order of those transactions through a consensus protocol
+such as Raft or Paxos, or through synchronous state machine replication.
 
-\subsection{Failover mechanics and state synchronisation}
+This venue is active-passive. \Cref{subsec:ha_approach} says which components
+that applies to.
+
+\subsection{What a failover must preserve}
 \label{subsec:ha_failover_mechanics}
 
-A robust implementation must manage state across three distinct layers during a failover event:
+A failover affects three kinds of state. This chapter specifies each of them
+separately.
 
 \begin{enumerate}
-    \item \textbf{Session state:} Client connections (such as FIX or proprietary binary sessions) must either maintain persistent TCP connections via network load balancers or allow clients to rapidly reconnect, query sequence numbers, and resume state without losing in-flight messages.
-    \item \textbf{Order book state:} The exact sequence of resting bids and offers, execution reports, and cancelled orders must be identical on the standby node to prevent double-fills or lost orders.
-    \item \textbf{Gateway ingress and egress:} Gateways handle protocol translation and risk checks. If a gateway fails independently of the matching engine, session recovery protocols must determine whether an in-flight \texttt{NewOrderSingle} was accepted, rejected, or lost before timeout notifications reach the client.
+    \item \textbf{Session state.} A member's session must survive the failure of
+      the component holding it, together with its sequence numbering and the
+      terms the member was admitted under.
+    \item \textbf{Order book state.} The instance that takes over must hold the
+      same resting orders as the instance that failed. If it holds fewer, orders
+      that should have been filled are not filled. If it holds more, an order can
+      be filled twice.
+    \item \textbf{Gateway state.} A gateway translates a member's protocol and
+      applies risk checks to what the member sends. When a gateway fails, the
+      member must be able to establish whether an order it had sent was taken by
+      the venue.
 \end{enumerate}
 
 \subsection{Two properties, and why one does not imply the other}
@@ -79,41 +98,39 @@ This library is intended for low latency environments rather than ultra-low ones
 \textbf{This system is active-passive} for every component that must be
 singular: the sequencer, the matching engine and the arbiter. Each of those runs
 as a pair, one instance the leader and the other the follower. The follower does
-none of the venue's work --- not a share of it, none. It is not a second server
-that traffic is spread across, and nothing it holds reaches a member until it
-becomes the leader.
+none of the venue's work while it holds that role, and nothing it holds reaches a
+member until it becomes the leader.
 
 \begin{itemize}[nosep]
   \item \textbf{The leader does the work.} The sequencer assigns each order a
         sequence number, appends it to the write-ahead log and forwards it to the
-        matching engine; the matching engine accepts the order and issues the
+        matching engine. The matching engine accepts the order and issues the
         execution report for it.
   \item \textbf{The leader replicates continuously.} The sequencer streams every
-        log record to its follower, which writes it to a log of its own and
-        acknowledges it. The matching engine's follower keeps a replica of the
-        orders it holds open, from the same stream.
+        log record to its follower. The follower writes each record to a log of
+        its own and acknowledges it. The matching engine's follower keeps a
+        replica of the orders it holds open, taken from the same stream.
   \item \textbf{The follower acts on nothing.} It forwards no order, issues no
         execution report and answers no gateway. While it holds that role it
         processes no traffic at all.
   \item \textbf{On failure the follower is promoted.} The arbiter tells it that
-        it now leads; it brings itself up to date from whatever it has replicated
-        but not applied, and begins acting.
+        it now leads. It brings itself up to date from whatever it has replicated
+        but not applied, and then begins acting.
 \end{itemize}
 
 That is the pattern \cref{subsec:ha_architectural_patterns} describes as
-active-passive. The test that rules out active-active is the third point: at no moment do two instances process the same traffic, and no
-transaction is ever handled concurrently by more than one of them.
+active-passive. At no moment do two instances process the same traffic, and no
+transaction is ever handled by more than one instance at a time.
 
-Classic consensus algorithms such as Raft or Paxos are not used. In their place
-there is an arbitration service and a witness, which between them decide which
-instance may act and stop both instances believing it at once.
+An arbitration service and a witness decide which instance may act. Together they
+stop both instances believing they lead at the same time.
 
-Components that need not be singular are not paired in that way. The
-authentication services run active-active, any instance answering any caller.
-Several gateways run at once, each holding a different set of sessions, which
-divides the work rather than replicating it. \Cref{sec:ha:disabled:scope}
-returns to that distinction, because it decides what turning high availability
-off actually removes.
+Components that need not be singular run differently. The authentication
+services run active-active, and any instance answers any caller. Several
+gateways run at once, each holding a different set of sessions, which divides
+the work rather than replicating it. \Cref{sec:ha:disabled:scope} returns to
+that distinction, because it decides what turning high availability off
+removes.
 
 \section{Preliminaries}
 \label{sec:ha:preliminaries}
@@ -140,43 +157,36 @@ component separately it says \emph{a component}, which is a different claim from
 
 \textbf{This chapter says what the venue does, and not how it does it.} Where a
 requirement constrains what may happen while a component waits for a disk, or
-what a component must still be doing while it waits, it says only that. Which
-data structures satisfy such a requirement is a property of the library rather
-than of the venue's behaviour, is decided in \cref{ch:library}, and is not
-restated here --- a specification that named its own implementation would have to
-be changed whenever the implementation was, and would then be a description
-rather than a requirement.
+what a component must still be doing while it waits, it says only that.
+\Cref{ch:library} decides which data structures satisfy such a requirement, and
+this chapter does not name them.
 
-\textbf{This chapter was written after the components it describes, and not
-before them.} The venue was built first and its behaviour under failure was
-settled case by case as each case arose, which produced an implementation whose
-parts had never been reconciled with one another. This chapter states what those
-components must do, arrived at by asking the same questions of each of them; the
-answers are not a description of what they currently do. Where the two differ, a
-gap says so.
+\textbf{This chapter was written after the components it describes.} The venue
+was built first, and its behaviour under failure was settled case by case as
+each case arose. That produced an implementation whose parts had never been
+reconciled with one another. This chapter states what those components must do,
+arrived at by asking the same questions of each of them. Where a component does
+something different today, a gap says so.
 
 A \textbf{gap} records something the venue does not do that this chapter says it
 must. Where the difference has already been recorded as a defect, the gap names
-it. Two are cited often enough to be worth stating once here:
+it. One is cited often enough to be worth stating once here:
 
 \begin{itemize}[nosep]
   \item \textbf{BUG-0048} --- nothing bounds how far back the venue's record of
-        what it did is kept. What survives is whatever has not yet been
-        discarded, which varies with how busy the venue has been.
-  \item \textbf{BUG-0064} --- a matching engine that starts without having been
-        a follower applies nothing, so orders the venue took and had not yet
-        given it are neither applied nor answered.
+        what it did is kept. The venue discards none of it, so the record grows
+        for as long as the venue runs, and how far back it reaches is whatever
+        the disk has allowed rather than a period the venue states.
 \end{itemize}
 
 Every requirement names the scenarios that verify it, or states that none does
 yet. That note says why no scenario exists; where the reason is that the venue
 does not do the thing at all, a gap says so separately. The two are kept apart
 deliberately: a requirement nothing tests and a requirement the venue does not
-meet are different conditions, and only the second is a defect. \textbf{A requirement that nothing verifies is not an unfinished part of
-this document.} The requirement is complete; what is absent is a test of the
-venue. The count of unverified requirements is therefore a measurement of the
-venue and not of the specification, and it does not fall as this document is
-finished --- it falls only as tests are written.
+meet are different conditions, and only the second is a defect. \textbf{A
+requirement that nothing verifies is still complete.} What is missing is a test
+of the venue. The count of unverified requirements therefore measures the venue
+rather than this document, and it falls only as tests are written.
 
 \bigskip
 

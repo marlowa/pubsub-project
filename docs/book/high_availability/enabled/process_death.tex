@@ -2,25 +2,24 @@
 \label{sec:ha:enabled:process_death}
 
 A component dies on a machine that is otherwise healthy, and the launcher
-restarts it, while a second instance of the same component is running elsewhere.
-This is the case where the two configurations meet, and getting it wrong costs
-more than it appears to.
+restarts it, while a second instance of the same component runs elsewhere. Both
+configurations apply to this case.
 
 \subsubsection{What is at risk}
 \label{sec:ha:enabled:process_death:risk}
 
-Not the venue's ability to trade --- the peer can act, so trading continues
-whatever is decided. What is at risk is \textbf{the pair}.
+The venue's ability to trade is not at risk, because the peer can act and trading
+continues whatever the venue decides. What is at risk is \textbf{the pair}.
 
-If the peer promotes, the venue is served by one instance until somebody restores
-the other, and it carries an unbounded exposure to a second failure for as long
-as that takes. If the launcher restarts the dead instance instead, the pair is
-whole again in seconds and nothing was lost.
+If the peer promotes, one instance serves the venue until somebody restores the
+other, and the venue is exposed to a second failure for as long as that takes. If
+the launcher restarts the dead instance instead, the pair is whole again in
+seconds and the venue loses nothing.
 
-A machine that has died cannot be restored by anything the venue does, so
-promoting is the only remedy. A process that has died on a living machine can be,
-so promoting discards a recovery that was available. Treating the two as one
-failure is what makes a recoverable event cost resilience.
+Nothing the venue does can restore a machine that has died, so promoting the peer
+is the only remedy for that failure. The venue can restore a process that has
+died on a living machine, so promoting the peer in that case gives up a recovery
+that was available. The venue must therefore treat the two failures differently.
 
 \subsubsection{What the venue must do}
 \label{sec:ha:enabled:process_death:behaviour}
@@ -28,31 +27,30 @@ failure is what makes a recoverable event cost resilience.
 \begin{requirement}{R-0080}{A process death on a healthy machine does not cost the pair}
   Where a component dies and is restarted on a machine that has not failed, the
   venue shall end with two instances running, as it began.
-  \rationale{The measure is whether the pair is whole again, not whether the
-  venue kept trading --- which a promotion achieves on its own while leaving one
-  instance down and nobody watching for the second failure.}
+  \rationale{The measure of this requirement is whether the pair is whole again, rather than
+  whether the venue kept trading. A promotion keeps the venue trading on its own,
+  and leaves one instance down with nothing watching for a second failure.}
   \uncovered{no scenario asserts the pair is whole afterwards, only that trading continued}
 \end{requirement}
 
 \begin{requirement}{R-0081}{The peer does not promote while a restart could still succeed}
   An instance that has lost contact with the acting instance shall wait, before
   seeking to act, for at least as long as a supervised restart takes.
-  \rationale{Waiting less fails the venue over for a failure that did not need
-  it. Waiting much more tolerates a genuinely dead machine for longer than it
-  should be. The period is therefore whatever a restart actually takes plus a
-  margin, which cannot be known until restarts have been timed --- so it is
-  measured rather than chosen, and it must be measured again when the components
-  change.}
+  \rationale{A shorter wait fails the venue over for a failure that did not require it. A much
+  longer wait tolerates a genuinely dead machine for longer than it should. The
+  period is therefore the time a restart takes plus a margin. That time is not
+  known until restarts have been timed, so the period is measured rather than
+  chosen, and it must be measured again whenever the components change.}
   \covers{ha_test:26, ha_test:27, ha_test:28}
 \end{requirement}
 
 \begin{requirement}{R-0082}{An instance that keeps failing does not disturb a healthy peer}
   A restarted instance shall not take the entitlement to act from a peer that
   holds it and is present.
-  \rationale{Without this, an instance failing repeatedly takes leadership on
-  each restart, dies, and hands it back --- disrupting a peer that was working
-  perfectly well, once per failure. \reqref{R-0062} states the arbiter's side of
-  this; this is the instance's.}
+  \rationale{Without this requirement, an instance that fails repeatedly takes leadership on
+  each restart, dies, and hands leadership back, interrupting a peer that was
+  working correctly once per failure. \reqref{R-0062} states the arbiter's side of
+  this rule, and this requirement states the instance's side.}
   \covers{ha_test:29, ha_test:30, ha_test:31}
 \end{requirement}
 
@@ -60,26 +58,25 @@ failure is what makes a recoverable event cost resilience.
   Where restarting an instance has already cost the venue one interruption, a
   second interruption from that instance shall leave it stopped rather than
   restarted.
-  \rationale{An interruption is a period in which a member can neither place an
-  order nor withdraw one, and is told nothing while it lasts. One is a fault, and
-  the venue can account for it: there was a failure and recovery took as long as
-  it took. A second from the same instance is not a fault it is recovering from,
-  it is that instance being unfit to serve, and restoring it again guarantees a
-  third.
+  \rationale{An interruption is a period in which a member can neither place an order nor
+  withdraw one, and is told nothing while it lasts. The venue can account for one
+  interruption: a component failed, and recovery took as long as it took. A second
+  interruption from the same instance shows that the instance is unfit to serve,
+  and restarting it again produces a third.
 
-  Stopping is what lets the pair do its work. An instance the supervisor keeps
-  restoring is back before its peer can be granted the entitlement, so a pair that
-  exists for exactly this purpose never acts --- and the venue takes an unbounded
-  series of interruptions instead of the single failover it was built to take.
-  Leaving the instance absent is therefore not an admission of defeat but the
-  step that produces the outcome the member should have had at the first fault.
+  Stopping the instance is what allows the pair to do its work. An instance that
+  the supervisor keeps restarting returns before the arbiter can grant the
+  entitlement to its peer, so the peer never acts. The venue then takes an
+  unbounded series of interruptions instead of the single failover the pair was
+  built for. Leaving the failing instance stopped produces the outcome the member
+  should have had at the first fault.
 
-  \textbf{The count is taken over a session and not over a period.} A window
-  cannot be explained to the member it affects: it would have the venue saying
-  that two failures counted as one pattern because they fell close together, or
-  did not because they fell apart. It is also why this is stated of interruptions
-  rather than of failed starts --- an instance that dies every few minutes starts
-  perfectly every time.}
+  \textbf{The count is taken over a session rather than over a period.} A time
+  window cannot be explained to the member it affects, because it makes two
+  failures count together when they fall close in time and separately when they do
+  not. The requirement is stated of interruptions rather than of failed starts for a
+  related reason: an instance that dies every few minutes starts correctly every
+  time.}
   \uncovered{no scenario flaps an instance and asserts it is left stopped}
 \end{requirement}
 
@@ -87,63 +84,63 @@ failure is what makes a recoverable event cost resilience.
   Where the last instance of a component is stopped and not restarted, the venue
   shall report that it cannot perform that component's work, rather than continuing
   in a state where nothing does it.
-  \rationale{Where the cause is something both instances share --- an input that
-  kills whatever reads it, a build, a configuration both instances load --- the peer
-  meets it in its turn and is stopped in its turn. The venue then has no instance of
-  that component and nothing trying to produce one.
+  \rationale{Both instances may share the cause of the failure: an input that kills whatever
+  reads it, a build, or a configuration both instances load. The peer then meets
+  that cause in its turn and is stopped in its turn. The venue has no instance of
+  that component left, and nothing is trying to produce one.
 
-  That is the failure that looks like health. Every process that remains is running
-  normally, no alert has a component to name, and the absence is only visible to
-  somebody who thinks to count. Saying so costs an announcement; not saying so costs
-  the time between the last instance stopping and somebody noticing, which is
-  unbounded.}
+  This failure looks like health. Every process that remains is running normally,
+  no alert names a component, and only somebody who counts the processes can see
+  what is missing. Reporting the condition costs an announcement. Not reporting it
+  costs the time between the last instance stopping and somebody noticing, and that
+  time is unbounded.}
   \uncovered{no scenario stops every instance of a component and asserts the venue says so}
 \end{requirement}
 
 \subsubsection{When the restart and the promotion race}
 \label{sec:ha:enabled:process_death:race}
 
-The two remedies run at the same time and neither is aware of the other. The
-launcher is restarting the instance that died while the peer is counting down to
-asking whether it may act. \textbf{The race is benign, and settles the same way
-whichever ordering occurs.}
+The two remedies run at the same time, and neither detects the other. The
+launcher restarts the instance that died while the peer counts down to asking
+whether it may act. \textbf{Exactly one instance ends up acting, whichever of the
+two happens first.}
 
 \textbf{The restart completes first.} The returning instance holds no position
-and asks which it holds. No instance holds the entitlement, so it is granted it,
-and resumes acting. The peer, still waiting, finds the entitlement held and
-remains the follower. The entitlement did not move and the pair is whole.
+and asks which position it holds. No instance holds the entitlement, so the
+arbiter grants it to the returning instance, which resumes acting. The peer is
+still waiting, finds the entitlement held, and remains the follower. The
+entitlement did not move, and the pair is whole.
 
-\textbf{The peer asks first.} It is granted the entitlement and begins acting.
-The returning instance asks, finds the position held by an instance that is
-present, and takes the other one. That its configured name is primary does not
-enter into it, and neither does its having held the entitlement minutes earlier.
+\textbf{The peer asks first.} The arbiter grants the peer the entitlement, and
+the peer begins acting. The returning instance asks, finds the entitlement held
+by an instance that is present, and becomes the follower. Neither its configured
+name nor its having held the entitlement minutes earlier affects that answer.
 
-\textbf{Both ask at once.} The claims are resolved by there being one party that
-answers them. It grants one, records what it granted, and refuses the other
+\textbf{Both ask at once.} One party answers both claims. The arbiter grants the
+entitlement to one instance, records what it granted, and refuses the other claim
 against that record.
 
-In every ordering exactly one instance ends up acting, and no instance is ever
-required to have detected what the other was doing --- which is the property that
-makes the race benign rather than merely unlikely to go wrong.
+In every ordering, exactly one instance ends up acting, and no instance has to
+detect what the other was doing. That is what makes the outcome certain rather
+than merely likely.
 
 \begin{requirement}{R-0090}{A returning instance assumes nothing and asks}
   An instance that has restarted shall hold no position until it is told which
   it holds, whatever position it held before and whatever it is configured as.
-  \rationale{An instance that assumes it leads because it led before, or because
-  of its configured name, becomes a second instance acting whenever the peer has
-  already been promoted --- and it does so without anything having gone wrong
-  with the peer.}
+  \rationale{An instance that assumes it leads, because it led before or because of its
+  configured name, becomes a second acting instance whenever the peer has already
+  been promoted. Nothing has to go wrong with the peer for that to happen.}
   \covers{ha_test:24, ha_test:25}
 \end{requirement}
 
 \begin{requirement}{R-0091}{A returning instance that finds the position vacant takes it}
   Where an instance returns and no instance holds the entitlement, it shall take
   it rather than wait.
-  \rationale{A returning instance holds nothing and asks, which is what keeps a
-  restart from producing a second instance acting. This is the other half of that
-  rule: where the answer is that nobody holds the entitlement, the returning
-  instance is the one that must take it, or a restart that outran its peer's
-  promotion would leave both instances following and none acting.}
+  \rationale{A returning instance holds no position and asks, which is what stops a restart
+  producing a second acting instance. This requirement states the other half of
+  that rule. Where no instance holds the entitlement, the returning instance must
+  take it. Without this, a restart that completed before its peer's promotion would
+  leave both instances following and none acting.}
   \covers{ha_test:26, ha_test:27, ha_test:28}
 \end{requirement}
 
@@ -151,9 +148,9 @@ makes the race benign rather than merely unlikely to go wrong.
   Where a returning instance and its peer both seek the entitlement at once, at
   most one shall be granted it, and neither shall be required to have detected
   the other.
-  \rationale{Two instances that must notice each other to stay out of each
-  other's way will eventually fail to, and the moment they fail is the moment
-  they are least able to communicate. Referring both claims to one party removes
-  the requirement to detect anything.}
+  \rationale{Two instances that must detect each other in order to stay out of each other's
+  way will eventually fail to do so, and they will fail at the moment they are
+  least able to communicate. Referring both claims to one party removes the need to
+  detect anything.}
   \uncovered{no scenario times a restart to collide with a promotion}
 \end{requirement}

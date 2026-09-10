@@ -2,61 +2,61 @@
 \label{sec:ha:disabled:mep}
 
 The publisher takes what the venue has done and makes it available to consumers
-inside the venue --- market data, and the recorder of \cref{sec:ha:disabled:oar}.
-It dies and is restarted. No member notices directly; what stops is anything
-downstream hearing about what the venue is doing.
+inside the venue: market data, and the recorder described in
+\cref{sec:ha:disabled:oar}. The publisher dies and is restarted. No member
+notices this directly. What stops is the flow of records to those consumers.
 
 \subsubsection{What state it holds}
 \label{sec:ha:disabled:mep:state}
 
-The record of what it has been given, and how far each subscriber has consumed
-it. The second of those it does not have to remember: a subscriber presents its
-own position when it reconnects, so the publisher is told rather than obliged to
-recall. That is a deliberate and useful property, and it is why this subsection
-is the shortest in the section.
+The publisher holds the record of what it has been given, and how far each
+subscriber has consumed that record. It does not have to retain the second of
+those across a restart. A subscriber presents its own position when it
+reconnects, so the publisher is told where each subscriber has reached.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:mep:durable}
 
-Its own log, on disk. What it may discard from that log is bounded by the
-slowest subscriber that has not yet consumed it.
+The copy lives in the publisher's own log, on disk. The slowest subscriber that
+has not yet consumed a record determines what the publisher may discard from that
+log.
 
 \begin{gap}{BUG-0048}
-  What the publisher discards is anchored to a periodic mark rather than to the
-  positions its subscribers have reached. A subscriber that returns having been
-  away may therefore find that what it needed is gone.
+  What the publisher may discard is anchored to no position at all. It discards
+  nothing, so its log grows for as long as the venue runs, and the positions its
+  subscribers have reached are never what decides that a record is kept.
 \end{gap}
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:disabled:mep:recovery}
 
-It reopens its log and waits to be told where each returning subscriber has
-reached. As with \cref{sec:ha:disabled:gateway} there is one such operation
-rather than two.
+The publisher reopens its log and waits for each returning subscriber to present
+its position. The publisher has one such operation rather than two, as the
+gateway in \cref{sec:ha:disabled:gateway} does.
 
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:mep:member}
 
-Nothing: a member is not a subscriber. The requirements here protect the
-consumers.
+Nothing. A member is not a subscriber. The requirements in this subsection
+protect the consumers instead.
 
 \begin{requirement}{R-0047}{A subscriber resumes where it had reached, across a restart of the publisher}
   The venue shall supply a returning subscriber with every record after the
   position it presents, and shall not require it to have been present
   throughout.
-  \rationale{A subscriber that must be continuously connected to avoid missing
-  records cannot be restarted, upgraded or briefly partitioned --- which is to
-  say it cannot be operated.}
+  \rationale{A subscriber that must stay connected continuously to avoid missing records
+  cannot be restarted, upgraded, or briefly separated from the network. No operator
+  could run such a subscriber.}
   \uncovered{no scenario restarts the publisher under a connected subscriber}
 \end{requirement}
 
 \begin{requirement}{R-0048}{A record is retained until every subscriber has consumed it}
   The venue shall not discard a record that any subscriber entitled to it has
   not yet consumed.
-  \rationale{Where records are discarded on a timer rather than when they have
-  been consumed, a subscriber that was briefly away loses records without
-  anything reporting it. The loss is found by the subscriber, not by the
-  publisher that caused it.}
+  \rationale{Where the publisher discards records on a timer rather than when they have been
+  consumed, a subscriber that was briefly away loses records and nothing reports
+  the loss. The subscriber discovers the loss, and the publisher that caused it
+  does not.}
   \uncovered{no scenario returns a subscriber after its records were discarded}
 \end{requirement}
 
@@ -64,86 +64,87 @@ consumers.
 \label{sec:ha:disabled:oar}
 
 The recorder subscribes to the publisher and forwards what the venue has done to
-an enterprise bus, which is how systems outside the venue learn of it. Unlike
-every other component in this section, its failure is felt outside the venue
-entirely.
+an enterprise bus, which is how systems outside the venue learn of it. A failure
+of the recorder is felt outside the venue rather than within it.
 
 \subsubsection{What state it holds}
 \label{sec:ha:disabled:oar:state}
 
-One number: how far it has published and had confirmed. Everything else it can
-obtain again from the publisher.
+The recorder holds one number: how far it has published and had confirmed. It can
+obtain everything else again from the publisher.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:oar:durable}
 
-Its own record of that number, written to disk --- and \textbf{written only
-after the bus has confirmed the publish, never before}. That ordering is the
-whole of the durability design. A failure between publishing and recording the
-position republishes, which downstream absorbs. A failure the other way skips a
-record permanently, and nothing afterwards can tell.
+The copy is the recorder's own record of that number, written to disk. The
+recorder \textbf{writes it only after the bus has confirmed the publish, and
+never before}. That ordering is what makes the design durable. A failure between
+publishing and recording the position causes the recorder to publish the record
+again, and the consumers downstream handle the duplicate. A failure in the other
+order skips a record permanently, and nothing afterwards can detect the omission.
 
-It follows that the recorded position need only be a lower bound, so writing it
-lazily is safe however stale it becomes: staleness costs duplicate volume and
-nothing else.
+The recorded position therefore needs to be no more than a lower bound. The
+recorder can write it as late as it likes, whatever the position's staleness,
+because a stale position costs duplicate records and nothing else.
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:disabled:oar:recovery}
 
-It reads its position, presents it to the publisher, and continues. Records it
-had already published but not recorded are published again. This is expected
-rather than tolerated: an enterprise bus consumer is required to cope with
-replay, and the alternative is a design that loses.
+The recorder reads its position, presents it to the publisher, and continues. It
+publishes again any record it had already published but not recorded. This
+duplication is expected: a consumer of the enterprise bus is required to cope
+with records it has already seen.
 
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:oar:member}
 
-Nothing directly, until the last requirement below, which stops the market.
+Nothing directly. The last requirement in this subsection is the exception,
+because it halts trading.
 
 \begin{requirement}{R-0049}{Nothing is lost from the external record, though it may appear more than once}
   Every record the venue produces shall reach the enterprise bus at least once.
   Duplicates are permitted; omissions are not.
-  \rationale{Loss outside the venue cannot be repaired by the venue, because
-  nothing there knows what is missing. Duplication can be repaired by anybody
-  holding the record's identity.}
+  \rationale{The venue cannot repair a loss outside the venue, because nothing outside it
+  knows which records are missing. Anybody holding the record's identity can repair
+  a duplicate.}
   \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0050}{Every externally published record carries an identity a consumer can deduplicate on}
   Each record shall carry a stable producer identity and a sequence number
   assigned by the venue.
-  \rationale{This is what makes \reqref{R-0049} usable rather than merely true.
-  Without it a consumer cannot tell a duplicate from a second event, so
-  permitting duplicates would mean permitting the record to be wrong.}
+  \rationale{This requirement is what makes \reqref{R-0049} usable. Without an identity, a
+  consumer cannot distinguish a duplicate from a second event, and permitting
+  duplicates would then permit the record to be wrong.}
   \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0051}{The recorder never resumes beyond its last confirmed publish}
   The position the recorder resumes from shall never be later than the last
   publish the bus confirmed.
-  \rationale{Recording a position before the publish is confirmed converts a
-  crash into permanent omission, which \reqref{R-0049} forbids. The ordering is
-  not an optimisation and may not be relaxed for throughput.}
+  \rationale{Recording a position before the bus confirms the publish turns a crash into a
+  permanent omission, which \reqref{R-0049} forbids. Relaxing the ordering to
+  increase throughput would reintroduce that omission.}
   \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0052}{A restart of the recorder does not stop trading}
   The venue shall continue to accept orders while the recorder restarts and
   catches up.
-  \rationale{A supervised restart is a routine event the venue recovers from
-  unaided. Stopping the market for it would make the recorder's availability,
-  rather than the venue's, the thing that decides whether members can trade.}
+  \rationale{A supervised restart is a routine event, and the venue recovers from it without
+  help. Halting trading for such a restart would make the recorder's availability,
+  rather than the venue's, decide whether members can trade.}
   \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}
 
 \begin{requirement}{R-0053}{Where external publishing cannot resume, trading is halted}
   Where no recorder is publishing and the unpublished backlog has passed a
   stated bound, the venue shall halt trading, and shall say that it has.
-  \rationale{Trading that outruns the record of it by more than a little cannot
-  be reconstructed afterwards by anyone. Unlike conditions the venue cannot
-  detect, this one is plain --- no recorder is connected, and the backlog is
-  counted --- so it can be acted on without a person present. The bound must
-  exceed what a supervised restart and catch-up take, or \reqref{R-0052} is
-  contradicted; it therefore has to be measured rather than chosen.}
+  \rationale{Nobody can reconstruct trading afterwards once it has outrun the record of it.
+  The venue can measure both parts of this condition: whether a recorder is
+  connected, and how large the backlog is. It can therefore act on the condition
+  without a person present. The bound must exceed the time a supervised restart and
+  catch-up take, or it would contradict \reqref{R-0052}, so the bound has to be
+  measured rather than chosen.}
   \uncovered{no scenario, and none is possible until the recorder exists}
 \end{requirement}

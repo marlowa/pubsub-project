@@ -16,21 +16,19 @@ deployed as one.} With one instance of each singular component there is nothing
 to fail over to. The only recovery available is to restart the process that died
 and rebuild what it held.
 
-\textbf{It is also not the configuration the venue is principally tested in.}
-The scenarios that exercise the behaviour specified in this chapter are run with
-high availability enabled, because that is what production runs, and a test of a
-configuration nobody deploys is evidence about very little. This configuration is
-tested too, and for what is particular to it: that the components which exist
-only to arbitrate are absent, and that the ones which remain say so.
+\textbf{Most testing runs with high availability enabled.} The scenarios that
+exercise the behaviour specified in this chapter run in that configuration,
+because it is the configuration a production venue runs. This configuration is
+tested for what is particular to it: that the components which exist only to
+arbitrate are absent, and that the components which remain report their absence.
 
 \textbf{Development is not restricted to this configuration.} High availability
 can be switched on with every component running on one machine, and doing so
 starts the arbiters, the witness and a second instance of each singular
-component exactly as a production deployment would. This is provided so that the
-behaviour specified in \cref{sec:ha:enabled} can be exercised without needing
-more than one machine to do it. What such a deployment cannot reproduce is the
-loss of a machine, because there is only one --- so it exercises everything in
-that section except \cref{sec:ha:enabled:machine_loss}.
+component exactly as a production deployment would. A developer can therefore exercise the behaviour specified in
+\cref{sec:ha:enabled} on one machine. Such a deployment cannot reproduce the loss
+of a machine, because it has only one, so it exercises everything in that section
+except \cref{sec:ha:enabled:machine_loss}.
 
 \subsection{What the switch does and does not remove}
 \label{sec:ha:disabled:scope}
@@ -54,14 +52,15 @@ It says nothing about the replicated peers, which run in every configuration.
 \subsection{What this configuration may and may not do}
 \label{sec:ha:disabled:obligation}
 
-This configuration is used for development and for running tests. Two things
-follow from that, and they pull in opposite directions.
+This configuration is used for development and for running tests. Two
+requirements follow from that, and they constrain the configuration in opposite
+directions.
 
-\textbf{It is allowed to lose things a production venue must not.} There is one
-instance of each singular component, so an order the venue has taken can be lost
-outright when that instance dies, and a session's numbering can be lost with it.
-That is the consequence of running one of everything, and it is accepted here
-because nothing of value is being traded.
+\textbf{This configuration may lose what a production venue must not.} It runs
+one instance of each singular component, so the death of that instance can lose
+an order the venue has taken, and can lose a session's numbering with it. That
+follows from running one instance of everything, and it is accepted here because
+nothing of value is being traded.
 
 \textbf{It must not behave differently from production in ways a test cannot
 see.} A test run against this configuration is evidence about the venue only if
@@ -69,10 +68,10 @@ the venue does the same things here that it does in production, and fails for th
 same reasons. Where it does less, it must fail visibly rather than appear to
 work.
 
-The failure to avoid is a venue that accepts a member's orders, acknowledges
-every one of them, forwards none of them anywhere, and logs nothing wrong. A test
-that sent orders and got replies would pass against that, and the result would
-mean nothing at all.
+The failure this rule prevents is a venue that accepts a member's orders,
+acknowledges every one of them, forwards none of them anywhere, and logs no
+error. A test that sent orders and received replies would pass against such a
+venue, and the result would mean nothing.
 
 \input{high_availability/disabled/recovery}
 \input{high_availability/disabled/authentication}

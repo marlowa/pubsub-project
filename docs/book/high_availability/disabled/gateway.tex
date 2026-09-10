@@ -7,31 +7,33 @@ connection ends and it reconnects.
 \subsubsection{What state it holds}
 \label{sec:ha:disabled:gateway:state}
 
-The gateway holds the conversation with the member: where the session's
-numbering has reached in each direction, and which of the outbound numbers
-carried execution reports rather than session-level traffic. That is the whole
-of what matters when it dies.
+The gateway holds the state of the session: how far the session's numbering has
+reached in each direction, and which of the outbound numbers carried execution
+reports rather than session-level traffic. This is the only state that matters
+when the gateway dies.
 
-While it is running it also holds the member's identity and the terms it was
-admitted under, an authentication exchange part-completed, a resend being
-served, and reports held back while the numbering is being established. None of
-these needs to survive: the first is re-established at the next logon, and the
-rest are abandoned and asked for again.
+While it is running, the gateway also holds the member's identity and the terms
+the member was admitted under, any authentication exchange part-completed, any
+resend being served, and any reports held back while the numbering is being
+established. None of these needs to survive the gateway. The member's identity is
+established again at the next logon, and the venue abandons the rest, which the
+member asks for again.
 
-It holds no order state. Which orders are open belongs to the matching engine and the
-ordering to the sequencer. Where the gateway must act on a member's behalf ---
-cancelling what the member has resting when its connection ends --- it reports
-the disconnection and the terms it was given to the component that owns the
-orders, rather than keeping a view of them to act on itself. The terms accordingly travel with the session rather than with the gateway.
+The gateway holds no order state. The matching engine holds which orders are
+open, and the sequencer holds the order they were taken in. Where the gateway
+must act on a member's behalf, such as cancelling what the member has resting
+when its connection ends, it reports the disconnection and the terms it was given
+to the component that owns the orders. It keeps no view of those orders to act on
+itself. The terms therefore belong to the session rather than to the gateway.
 
-\textbf{Where they are held once the gateway is gone is not settled.} They reach
-the gateway when the member is admitted, and are needed later --- possibly by a
-different instance, and possibly when the member is no longer connected to supply
-them again. The session's numbering is held by the sequencer, which is the only
-component every gateway instance talks to, and that is the obvious place for the
-terms as well. It is not stated here as the answer, because choosing it is a
-design decision and this chapter does not make those.
-\reqref{R-0103} states what must be true of wherever they are held.
+\textbf{This chapter does not settle where the terms are held once the gateway
+is gone.} The terms reach the gateway when the member is admitted, and a
+component needs them later, possibly a different instance, and possibly when the
+member is no longer connected to supply them again. The sequencer holds the
+session's numbering and is the only component every gateway instance talks to, so
+it is the obvious place for the terms as well. Choosing it is a design decision,
+and this chapter does not make design decisions. The requirement \reqref{R-0103}
+states what must be true wherever they are held.
 
 \begin{gap}{}
   The terms are held only by the gateway that was given them. A gateway that dies
@@ -42,24 +44,23 @@ design decision and this chapter does not make those.
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:gateway:durable}
 
-The sequencer holds the numbering. Gateways report a session's position as it
-advances and the sequencer remembers it, because the sequencer is the only
-component that every gateway instance talks to. Execution reports are held in
-the sequencer's write-ahead log, stamped with the session they belong to.
+The sequencer holds the numbering. A gateway reports a session's position as it
+advances, and the sequencer records it, because the sequencer is the only
+component that every gateway instance talks to. The sequencer's write-ahead log
+holds the execution reports, each stamped with the session it belongs to.
 
 An order that has not been committed has no copy anywhere in the venue. Between
 the member sending it and the sequencer committing it the only record inside the
 venue is the gateway's, and when the gateway is what died, nothing can recover
 it.
 
-That is deliberate rather than a shortcoming. A durable record kept by the
-gateway would be a write on the hot path, in front of the write-ahead log that
-already exists, doubling the cost of every order to protect a window of
-microseconds --- and it would be redundant, because a copy of the order exists
-outside the venue in the hands of the member that sent it. The venue therefore
-does not attempt to recover an uncommitted order. It guarantees instead that
-such an order never takes effect afterwards, and that the member can establish
-as much and send it again.
+This follows from a deliberate decision. A durable record kept by the gateway
+would add a write to the hot path, in front of the write-ahead log that already
+exists, and would double the cost of every order to protect a window of
+microseconds. The member that sent the order also holds a copy of it outside the
+venue. The venue therefore does not attempt to recover an uncommitted order. It
+guarantees that such an order never takes effect afterwards, that the member can
+establish this, and that the member can send the order again.
 
 \begin{gap}{}
   The gateway keeps its own view of what each session has resting, and acts on
@@ -72,32 +73,34 @@ as much and send it again.
 \begin{requirement}{R-0008}{Reports remain recoverable for the reconnection window}
   The venue shall retain every execution report for at least as long as a member
   may take to reconnect and ask for it, and that period shall be stated.
-  \rationale{Recovery that depends on a record still being present is only as
-  good as the retention behind it. A retention period that is a by-product of
-  storage rather than a stated figure cannot be relied on by anyone.}
+  \rationale{Recovery that depends on a record still being present is only as good as the
+  retention behind that record. A retention period that follows from how much
+  storage is available, rather than from a stated figure, gives a member nothing to
+  rely on.}
   \uncovered{no scenario measures how far back reports remain available}
 \end{requirement}
 
 \begin{gap}{BUG-0048, BUG-0046}
-  There is no stated retention period. What survives is whatever the
-  write-ahead log has not yet discarded, which varies with the rate orders
-  arrive at, so the window narrows exactly when a member has most at stake.
+  There is no stated retention period. The write-ahead log discards nothing, so a
+  report stays available for as long as the venue runs and the disk holds out. A
+  member that reconnects is therefore served by what the venue happens still to
+  hold, rather than by a period the venue has undertaken to keep.
 \end{gap}
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:disabled:gateway:recovery}
 
 The member reconnects, the session binds to the restarted gateway, and the
-sequencer supplies the numbering it remembers. What comes back with it depends
-on how far each order had travelled.
+sequencer supplies the numbering it holds. What the member receives next depends
+on how far each of its orders had got before the gateway died.
 
-There is only one such operation here, where other components have two. A gateway is never promoted: it elects nothing and holds no role. A
-member returning to the instance that restarted and a member arriving at a
-different instance are therefore the same event seen from the venue --- a
-session binds to an instance that does not hold its state, and that instance
-asks the sequencer for it. Nothing in the sequence is particular to running more
-than one gateway, which is why gateways need no arbiter, and why running several
-of them costs so little.
+The gateway has one such operation where other components have two, because a
+gateway is never promoted and holds no role. A member returning to the instance
+that restarted, and a member arriving at a different instance, are the same event
+from the venue's side: a session binds to an instance that does not hold its
+state, and that instance asks the sequencer for it. Nothing in that sequence
+depends on how many gateways are running, so gateways need no arbiter and running
+several of them costs little.
 
 \textbf{An order the gateway had received but not forwarded} was never
 committed.
@@ -105,9 +108,8 @@ committed.
 \begin{requirement}{R-0001}{An order that was not forwarded never takes effect}
   The order shall have no effect on the venue. No execution report shall be
   produced for it, and the venue shall hold no order open on its behalf.
-  \rationale{The venue had not taken the order, so acting on it later would
-  execute an instruction the member has been given no reason to believe is
-  live.}
+  \rationale{The venue had not taken the order. Acting on it later would execute an
+  instruction that the member has been given no reason to believe is live.}
   \uncovered{no scenario restarts a gateway}
 \end{requirement}
 
@@ -117,8 +119,8 @@ that moment.
 \begin{requirement}{R-0004}{A committed order is processed}
   The order shall be processed by the matching engine, whether or not the
   gateway that received it is running when the engine reaches it.
-  \rationale{Commitment is the venue taking the order. Nothing downstream of it
-  may be conditional on the component that happened to carry it.}
+  \rationale{Committing the order is the venue taking it. What happens after that point must
+  not depend on which component carried the order.}
   \uncovered{scenario 23 covers a gateway that is not restarted}
 \end{requirement}
 
@@ -130,8 +132,8 @@ reach the member leaves a gap in the member's numbering.
   missing range, and the venue shall send again the execution reports that
   occupied those numbers, filling the numbers that carried session traffic
   rather than reports.
-  \rationale{This is the FIX resend, used as the protocol intends. The venue
-  supplies what it can reproduce and accounts for the rest.}
+  \rationale{This is the FIX resend, used as the protocol intends. The venue supplies the
+  reports it can reproduce, and accounts for the numbers it cannot.}
   \covers{ha_test:22}
 \end{requirement}
 
@@ -142,10 +144,10 @@ reach the member leaves a gap in the member's numbering.
   The instructions a member gave about what should happen to its orders when its
   connection ends shall be available to whichever component must act on them,
   whether or not the component that first received them is still running.
-  \rationale{Those instructions arrive once, when the session is admitted, and
-  are acted on later --- possibly by a different instance, and possibly when the
-  member is no longer present to supply them again. Held only where they were
-  received, they are lost precisely when the failure they guard against occurs.}
+  \rationale{Those instructions arrive once, when the session is admitted, and a component
+  acts on them later, possibly a different instance, and possibly when the member
+  is no longer present to supply them again. Instructions held only by the
+  component that received them are lost in exactly the failure they guard against.}
   \uncovered{no scenario restarts a gateway holding a session's terms}
 \end{requirement}
 
@@ -153,11 +155,11 @@ reach the member leaves a gap in the member's numbering.
   Where a member has asked for its orders to be cancelled if its connection
   ends, and the connection ends because the component holding that session
   failed, the instruction shall still be carried out.
-  \rationale{The instruction is acted on by reporting the disconnection to
-  whatever holds the orders, and a component that has died reports nothing. So
-  the one failure certain to end every session it holds is also the one after
-  which nothing acts on what those sessions asked for --- and the member cannot
-  tell, because from its side the connection ended in the ordinary way.}
+  \rationale{A component acts on the instruction by reporting the disconnection to whatever
+  holds the orders, and a component that has died reports nothing. The death of a
+  gateway ends every session it holds, and is therefore the one failure after which
+  nothing acts on what those sessions asked for. The member cannot detect this,
+  because from the member's side the connection ended in the ordinary way.}
   \uncovered{no scenario ends a session by killing the component holding it}
 \end{requirement}
 
@@ -178,9 +180,9 @@ reach the member leaves a gap in the member's numbering.
 \begin{requirement}{R-0003}{An order that was not taken may be resubmitted unchanged}
   A member may send the order again under the same \texttt{ClOrdID}, and the
   venue shall process it as a new order.
-  \rationale{Without this the member must choose between abandoning an order and
-  risking a duplicate. Resubmission under the original identifier is what makes
-  the choice unnecessary.}
+  \rationale{Without this requirement, the member must choose between abandoning an order and
+  risking a duplicate. Resubmitting under the original identifier removes that
+  choice.}
   \uncovered{no scenario restarts a gateway}
 \end{requirement}
 
@@ -188,19 +190,20 @@ reach the member leaves a gap in the member's numbering.
   Where a member sends again an order the venue had already committed, under the
   same \texttt{ClOrdID}, the venue shall refuse it as a duplicate and shall not
   create a second order.
-  \rationale{This is what makes \reqref{R-0003} safe. A member that cannot tell
-  the two cases apart relies on the venue telling them apart on its behalf.}
+  \rationale{This requirement is what makes \reqref{R-0003} safe. A member cannot tell the two
+  cases apart, and relies on the venue to distinguish them.}
   \uncovered{no scenario restarts a gateway}
 \end{requirement}
 
 \begin{requirement}{R-0010}{A duplicate is refused whatever has become of the first order}
   The refusal required by \reqref{R-0006} shall not depend on the order having
   reached the matching engine, nor on the engine that received it still running.
-  \rationale{Commitment is the sequencer's act, so a record of what has been
-  committed is the only thing that can answer this at the moment the question is
-  asked. An order committed and not yet applied is invisible to the engine, and
-  an engine that has restarted knows of no earlier submission at all; in either
-  case a member following \reqref{R-0003} would be given a second live order.}
+  \rationale{The sequencer is the component that commits an order, so only a record of what
+  has been committed can answer this question at the moment it is asked. The
+  matching engine does not hold an order that has been committed and not yet
+  applied, and an engine that has restarted holds no record of an earlier
+  submission. In either case a member following \reqref{R-0003} would be given a
+  second live order.}
   \uncovered{no scenario restarts a gateway}
 \end{requirement}
 
@@ -208,24 +211,24 @@ reach the member leaves a gap in the member's numbering.
   Where a member sends an order under an identifier it has already used on that
   session that trading day, the venue shall refuse it, whatever became of the
   first order and whatever has restarted since.
-  \rationale{Two live orders under one identifier make a cancel ambiguous, and
-  that much a check against the orders currently open would catch. The reason to
-  go further and refuse an identifier whose first order is finished is what
-  leaves the venue: the activity the venue publishes is identified downstream by
-  this value, and a consumer of that record --- a member's back office, a
-  reconciliation, an auditor --- cannot ask the venue anything. Two different
-  orders under one name in that record cannot be read correctly by anybody.
+  \rationale{Two live orders under one identifier make a cancel request ambiguous, and a check
+  against the orders currently open would catch that much. The reason to go further,
+  and refuse an identifier whose first order has finished, concerns the record the
+  venue publishes. Consumers of that record identify an order by this value, and a
+  consumer such as a member's back office, a reconciliation process or an auditor
+  cannot ask the venue anything. Two different orders under one identifier in that
+  record cannot be read correctly.
 
-  It also makes \reqref{R-0003} safe. Resubmitting under the original identifier
-  when the member does not know whether the venue took the order is a recovery
-  path this document requires, so the check that distinguishes a resubmission
-  from a new order is not protection against a member behaving oddly --- it is
-  what a member following the specification depends on. If it does not survive a
-  restart, a member doing the right thing is given a second live order at the
-  moment it is least able to notice.
+  This requirement also makes \reqref{R-0003} safe. This document requires
+  resubmission under the original identifier as a recovery path, for a member that
+  does not know whether the venue took the order. The check that distinguishes a
+  resubmission from a new order is therefore something a member following this
+  specification depends on. If that check does not survive a restart, a member
+  following the specification is given a second live order at the moment it is
+  least able to notice.
 
-  The day bounds it. Identifiers are added through a trading day and the set is
-  discarded at the end of one, which is what keeps it finite.}
+  The trading day bounds the set of identifiers. The venue adds identifiers through
+  a trading day and discards the set at the end of it, which keeps the set finite.}
   \uncovered{no scenario reuses an identifier whose order has been cancelled}
 \end{requirement}
 
@@ -243,9 +246,9 @@ reach the member leaves a gap in the member's numbering.
   An execution report produced while the session had no connection shall be
   delivered when that session next binds to a gateway, without the member having
   to ask for it.
-  \rationale{No outbound sequence number was allocated for such a report, so it
-  leaves no gap. The member has nothing to notice and nothing to request, and a
-  resend cannot reach it.}
+  \rationale{The venue allocated no outbound sequence number for such a report, so it leaves
+  no gap in the member's numbering. The member has nothing to notice and nothing to
+  request, and a resend cannot reach it.}
   \uncovered{no scenario restarts a gateway}
 \end{requirement}
 
@@ -258,7 +261,7 @@ reach the member leaves a gap in the member's numbering.
 \begin{requirement}{R-0009}{A gap that cannot be filled is reported as such}
   Where the venue cannot supply a report the member has asked for, it shall say
   so rather than fill the number silently.
-  \rationale{A silently filled gap leaves the member believing it is
-  synchronised when it has lost a report it will never see.}
+  \rationale{A gap filled without explanation leaves the member believing its numbering is
+  complete when it has lost a report it will never see.}
   \uncovered{no scenario restarts a gateway}
 \end{requirement}

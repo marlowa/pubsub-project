@@ -2,11 +2,13 @@
 \label{sec:ha:recovery_shape}
 
 \Cref{sec:ha:disabled} asks the same four questions of every component. The
-answers to the third of them --- how a restarted instance becomes current --- have
-a common shape, which is set out here because the next section depends on it.
+answers to the third question, how a restarted instance becomes current, share a
+common shape. This section sets that shape out, because the next section depends
+on it.
 
-\textbf{Every component recovers the same way.} Whatever it holds and whoever
-holds the authority for it, the operation decomposes into four steps:
+\textbf{Every component recovers the same way.} Whatever a component holds, and
+whichever component holds the authoritative record of it, the operation has four
+steps:
 
 \begin{enumerate}[nosep]
   \item establish a \emph{position}: a point up to which its state is current;
@@ -42,64 +44,58 @@ than from a file or from being told. \Cref{sec:ha:enabled} is therefore not
 another recovery design; it is about how an instance learns it may act, and about
 the failures that exist only because there are two of them.
 
-\textbf{The mechanism is exercised constantly rather than rarely.} A recovery
-path used only on promotion runs only when a scenario contrives one. The same
-path, used on every restart, runs whenever anything is upgraded, reconfigured or
-dies --- which is the difference between a mechanism that is known to work and
-one that is believed to.
+\textbf{The venue exercises this mechanism constantly rather than rarely.} A
+recovery path used only on promotion runs only when a scenario produces a
+promotion. The same path, used on every restart, runs whenever a component is
+upgraded, reconfigured or dies. The venue therefore has evidence that the path
+works.
 
-\textbf{Its requirements are shared, and are stated once.} Because the operation
-is common, so are the properties it needs, and they are not repeated per
-component: \reqref{R-0031}, that no component acts on partially recovered state;
-\reqref{R-0032}, that an interrupted recovery can be repeated without applying
-anything twice; and \reqref{R-0064}, that the generation stamped on what is
-served never goes backwards.
+\textbf{The requirements are shared, and this document states them once.} The
+operation is common to every component, so the properties it needs are common
+too, and no component restates them: \reqref{R-0031}, that no component acts on
+partially recovered state; \reqref{R-0032}, that an interrupted recovery can be
+repeated without applying anything twice; and \reqref{R-0064}, that the
+generation stamped on what is served never goes backwards.
 
-\textbf{Retention is the obligation every authoritative source shares.} A
-position is only useful if what follows it still exists, so each source ---
-the sequencer's log, the publisher's log, a member's reports --- must retain
-records at least as far back as the oldest position any party may still present
-to it. That bound is what \reqref{R-0008}, \reqref{R-0022} and \reqref{R-0048}
-state for each source in turn. It is a single policy stated three times, and in
-each case the retained period must be a figure the venue can state rather than
-whatever storage happens to hold.
+\textbf{Every authoritative source carries the same retention obligation.} A
+position is useful only while the records after it still exist. Each source, the
+sequencer's log, the publisher's log and a member's reports, must therefore
+retain records at least as far back as the oldest position any party may still
+present to it. \reqref{R-0008}, \reqref{R-0022} and \reqref{R-0048} state that
+bound for each source in turn. In each case the retained period must be a figure
+the venue states, rather than whatever the available storage happens to hold.
 
 \begin{requirement}{R-0101}{A component establishes that its catch-up was complete before it acts}
   A component shall establish that every record the authority sent it arrived,
   exactly once and in the order sent, and shall not begin acting if it did not.
-  \rationale{Catch-up records are applied without producing the execution reports
-  that were produced the first time, so nothing about applying them draws
-  attention. A catch-up that is missing a record therefore leaves a component
-  whose state is wrong and which believes it is current --- and every check it
-  performs afterwards is made against the wrong state. Silence is the right
-  behaviour for records that arrive; it is not the right behaviour for records
-  that do not.
+  \rationale{A component applies catch-up records without producing the execution reports it
+  produced the first time, so applying them produces no visible output. A catch-up
+  that is missing a record therefore leaves a component whose state is wrong and
+  that treats itself as current, and every check it performs afterwards is made
+  against that wrong state. Applying a record silently is correct. Failing to
+  receive one silently is not.
 
-  \textbf{The wording says what the authority sent, and not what lies between the
-  two positions, because the second cannot be established by the component.} This
-  requirement said the second until the day it was built, and building it stopped
-  every healthy promotion in the suite. The stream is filtered: an authority
-  streaming a component back into currency sends what that component consumes and
-  withholds what it produces, so the records that arrive are a subset of the
-  numbers in the range and the gaps between them are ordinary. A check for a run
-  of consecutive numbers is therefore wrong by construction, however much the
-  numbering invites it.
+  \textbf{The wording states what the authority sent, rather than what lies between
+  the two positions, because a component cannot establish the second.} The stream
+  is filtered. An authority bringing a component back up to date sends the records
+  that component consumes and withholds the records it produces, so the records
+  that arrive are a subset of the numbers in the range, and the gaps between them
+  are ordinary. A check for a run of consecutive numbers is therefore wrong,
+  although the numbering makes such a check look natural.
 
-  What is left is a count, an ordering, and no repeats, and it catches what
-  actually goes wrong between two parties: loss in transit, reordering, and
-  duplication. \textbf{What it does not catch is the authority sending the wrong
-  set}, because a component cannot verify it received what it was never told
-  about. That limit is stated here rather than left to be discovered, since the
-  requirement is otherwise easy to read as a stronger guarantee than the venue
-  has.}
+  The check that remains is a count, an ordering, and an absence of repeats. It
+  catches what goes wrong between two parties: loss in transit, reordering and
+  duplication. \textbf{It does not catch the authority sending the wrong set},
+  because a component cannot establish that it received a record it was never told
+  about. This paragraph states that limit, because the requirement otherwise reads
+  as a stronger guarantee than the venue provides.}
   \uncovered{no scenario withholds a record during a catch-up, so the check is
   exercised only by its unit tests and never against a real stream}
 \end{requirement}
 
-\textbf{Three components depart from this shape, and the differences matter.} A
-gateway and an
-authentication service are never promoted, so they have one operation instead of
-two --- which is why neither needs an arbiter, and why running several of each is
-cheap. And a restarted sequencer recovers \emph{less} than a promoted one,
-because a session that was not bound at the time is one nobody will report; that
-asymmetry is the reason for \reqref{R-0012}.
+\textbf{Three components depart from this shape.} A gateway and an authentication
+service are never promoted, so each has one operation instead of two. Neither
+therefore needs an arbiter, and running several of each costs little. A restarted
+sequencer recovers \emph{less} than a promoted one, because no component reports
+a session that was not bound at the time of the restart. That difference is the
+reason for \reqref{R-0012}.

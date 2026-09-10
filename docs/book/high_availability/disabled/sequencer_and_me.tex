@@ -1,49 +1,54 @@
 \subsection{The sequencer and the matching engine together}
 \label{sec:ha:disabled:seq_and_me}
 
-Both processes die, and both are restarted. This is not the two preceding
-subsections happening at once: each of them relies on a component that is, in
-this case, also gone.
+Both processes die, and both are restarted. This case is not the two preceding
+subsections combined, because each of those recoveries relies on a component that
+has also died here.
 
 \subsubsection{What state it holds}
 \label{sec:ha:disabled:seq_and_me:state}
 
-Between them, everything the venue knows about work in progress. The sequencer
-holds the account of what has been taken; the matching engine holds which orders
-are open. Neither holds the other's, and neither can reconstruct it.
+Between them, the two components hold everything the venue has about work in
+progress. The sequencer holds the record of what has been taken. The matching
+engine holds which orders are open. Neither holds the other's state, and neither
+can reconstruct it.
 
 \subsubsection{Where the copy that outlives it lives}
 \label{sec:ha:disabled:seq_and_me:durable}
 
-The log, and nothing else. What is on disk is the record of what the venue took
-and in which order. Nothing on disk says which orders were open.
+Two records survive. The sequencer's log holds what the venue took and the order
+it took them in. The matching engine's region holds the orders it had open and
+the position those orders are current to, which
+\cref{sec:ha:disabled:me:durable} describes.
 
-The difference from the single failures is not that more is lost, but that the
-survivor which made each of them recoverable is absent. A matching engine
-recovers by asking the sequencer how far it is behind; a sequencer is reminded
-of its sessions by components that are still running. When both have gone, the
-first has nobody to ask, and what the second must be told is held by the
-component that is asking.
+What does not survive is the sequencer's record that particular orders were
+waiting for an engine. Only the running process holds that.
+
+This case differs from the single failures because the component each of those
+recoveries relies on has also died. A matching engine becomes current by asking
+the sequencer, so it cannot become current until the sequencer is current
+itself.
 
 \subsubsection{How a restarted instance becomes current}
 \label{sec:ha:disabled:seq_and_me:recovery}
 
-An order between the two --- committed, and never given to the matching engine
---- is the case this subsection is about. It is in the log, so the venue took
-it. The engine does not hold it, so nothing will answer it. And with both components restarted,
-nothing records that it is still to be answered: the sequencer's record that it
-was waiting did not survive, and the engine holds nothing to compare against.
+This subsection is about an order that sits between the two components:
+committed by the sequencer, and never given to the matching engine.
 
-Recovery therefore acquires an order it does not otherwise have. The engine
-cannot become current before the sequencer is current, because it becomes
-current by asking. Where only one of the two failed, that ordering was supplied
-by the survivor being already up.
+The engine establishes the position its region is current to, asks the sequencer
+for everything committed after that position, and applies what comes back. The
+order is in the log, so the sequencer serves it. The engine applies it and sends
+the member an execution report for it, marked as a report the member may already
+have seen, which is \reqref{R-0122}.
 
-\begin{gap}{BUG-0064}
-  An order committed before both components died is applied by neither, answered
-  by neither, and recorded as outstanding by neither. It remains in the log
-  indefinitely.
-\end{gap}
+The sequencer's own record that the order was waiting does not survive the
+restart, and the venue does not depend on it. The position the engine presents is
+what determines the records the sequencer sends.
+
+Recovery therefore acquires an ordering it does not otherwise have. The engine
+cannot become current before the sequencer is current, because the engine becomes
+current by asking the sequencer. Where only one of the two components failed, the
+surviving component was already running and that ordering did not arise.
 
 \subsubsection{What the member is told}
 \label{sec:ha:disabled:seq_and_me:member}
@@ -54,26 +59,26 @@ by the survivor being already up.
   execution report produced for it. Whether a member is present to receive that
   report does not bear on this: a member that is slow to return, or that never
   returns, cannot hold the venue shut.
-  \rationale{Accepting new orders while earlier ones remain unresolved conceals
-  the loss rather than recovering from it: the venue looks healthy to a member
-  whose earlier order will never be mentioned again.}
+  \rationale{Accepting new orders while earlier orders remain unresolved conceals the loss
+  rather than recovering from it. The venue then looks healthy to a member whose
+  earlier order the venue will never mention again.}
   \uncovered{no scenario restarts both components together}
 \end{requirement}
 
-Where the automatic paths cannot resolve a failure, the recourse is a person
-rather than a longer timer. That requires the venue to have a state it can be
-put into, which is a capability rather than a reaction: a venue needs to stop
-trading for reasons that have nothing to do with any failure --- a scheduled
-pause, a market-wide event, an instrument in disorderly conditions.
+Where the automatic paths cannot resolve a failure, a person resolves it, and a
+longer timer does not. The venue therefore needs a halted state that a person can
+put it into. The venue also needs that state for reasons unconnected to any
+failure: a scheduled pause, a market-wide event, or an instrument trading in
+disorderly conditions.
 
 \begin{requirement}{R-0023}{Trading can be halted by a person, and members are told}
   An operator shall be able to halt trading. Members shall be told that the
   venue has halted and shall be told when it resumes, and the halt shall not
   lift of its own accord.
-  \rationale{A member that is connected but idle learns nothing from the
-  rejection of an order it has not sent, and a member reconnecting into a halt
-  would otherwise discover it by trial. Requiring a person to lift it is what
-  distinguishes a halt from the automatic, self-clearing states beneath it.}
+  \rationale{A member that is connected but idle sends no order, so the rejection of an order
+  tells it nothing. A member reconnecting into a halt would otherwise discover the
+  halt by sending an order and having it refused. Requiring a person to lift the
+  halt is what distinguishes it from the automatic states that clear themselves.}
   \uncovered{no scenario halts the venue, because it has no halted state to enter}
 \end{requirement}
 
@@ -81,19 +86,19 @@ pause, a market-wide event, an instrument in disorderly conditions.
   Where a halt cancels the venue's open orders, an execution report shall be
   sent to the member that placed each one. No order shall cease to be open
   without the member that placed it being told.
-  \rationale{Cancelling the open orders is a normal thing for a halt to do, and
-  has been done at real venues when a market became disorderly. What makes it
-  safe is that each member's view converges on the venue's, which requires the
-  venue to say what it cancelled rather than to stop mentioning it.}
+  \rationale{Cancelling the open orders is a normal thing for a halt to do, and real venues
+  have done it when a market became disorderly. What makes it safe is that each
+  member's view of its orders comes to match the venue's, and that requires the
+  venue to report what it cancelled rather than to stop mentioning those orders.}
   \uncovered{no scenario halts the venue, because it has no halted state to enter}
 \end{requirement}
 
 \begin{requirement}{R-0017}{Recovery does not depend on the order the components return in}
   The venue shall reach the same state whichever of the sequencer and the
   matching engine starts first after both have failed.
-  \rationale{A launcher restarts what it starts and coordinates with nothing, so
-  the order in which they return is not something the venue decides. A component that cannot yet be told
-  what it needs must wait to be told, rather than proceed on the assumption that
-  there is nothing to hear.}
+  \rationale{A launcher restarts what it starts and coordinates with nothing, so the venue
+  does not decide which of the two components returns first. A component that
+  cannot yet be told what it needs must wait, rather than proceed on the assumption
+  that there is nothing to receive.}
   \uncovered{no scenario restarts both components together}
 \end{requirement}
