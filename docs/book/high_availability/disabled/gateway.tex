@@ -29,14 +29,19 @@ the component that owns the orders. It keeps no view of those orders to act on
 itself. The instructions therefore belong to the session rather than to the
 gateway.
 
-\textbf{This chapter does not settle where those instructions are held once the
-gateway is gone.} They reach the gateway when the member is admitted, and a
-component needs them later, possibly a different instance, and possibly when the
-member is no longer connected to supply them again. The sequencer holds the
-session's numbering and is the only component every gateway instance talks to, so
-it is the obvious place for the instructions as well. Choosing it is a design decision,
-and this chapter does not make design decisions. The requirement \reqref{R-0103}
-states what must be true wherever they are held.
+Those instructions reach the gateway when the member is admitted, and a component
+needs them later, possibly a different instance, and possibly when the member is
+no longer connected to supply them again. The requirement \reqref{R-0103} states
+what must be true wherever they are held, and this chapter does not say where
+that is. \texttt{docs/availability/session\_binding.md} makes that choice and
+gives the reason.
+
+Two cases have to be told apart, and only one of them is answered by holding the
+instructions somewhere a gateway can ask. A gateway that restarts is asked for
+nothing until the member binds again, and binding is what fetches them. A gateway
+that dies holding live sessions is asked nothing at all, and a member that never
+reconnects binds nowhere --- so the instruction that was to fire at that moment
+must be carried out by whatever owns the orders, which is \reqref{R-0113}.
 
 \begin{gap}{}
   The instructions are held only by the gateway that was given them. A gateway that dies

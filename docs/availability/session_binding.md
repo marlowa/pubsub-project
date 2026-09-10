@@ -37,6 +37,27 @@ arbitrary: the sequencer cannot derive the numbering itself. A FIX outbound sequ
 *every* message the member is sent, and the heartbeats, Logons, Logouts and session-level rejects
 among them never come near the sequencer.
 
+### The same argument applies to a member's standing instructions
+
+A member states, when it is admitted, whether its resting orders should be cancelled if its
+connection ends and how long the venue should wait first. Those instructions arrive once and are
+acted on later, possibly by a different gateway instance, and possibly when the member is no
+longer connected to state them again.
+
+They belong in `SessionBoundAck` alongside the sequence numbers, for the reason above and no
+other: the gateway taking a session on cannot know them, and the sequencer is the only component
+still running that could have been told. R-0103 in `docs/book` requires them to outlive the
+component that received them; this is where they outlive it.
+
+**This closes the restart case and not the gateway-death case.** A gateway that restarts learns
+the instructions when the member binds again, because binding is what asks. A gateway that dies
+holding live sessions is not asked anything, and nothing binds on behalf of a member that never
+reconnects — so the instruction that was supposed to fire at exactly that moment still has to be
+carried out by whatever owns the orders. That is R-0113, and it needs a mechanism of its own
+whatever `SessionBoundAck` carries.
+
+Recorded so that the second half is not mistaken for solved by the first.
+
 ## The messages
 
 Six PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`.
