@@ -12,14 +12,46 @@ The rest of this chapter is not yet written, except for the placeholders below.
 \section{Pub/sub}
 \label{sec:pubsub}
 
-\emph{Placeholder, created 2026-09-08. Nothing here is settled.}
+\subsection{Overview}
+pubsub\_itc\_fw provides a topic-based publish/subscribe messaging facility as one of the core services
+of the framework, alongside inter-thread communication (ITC), inter-process communication (IPC), and timers.
+The pub/sub facility allows a component (a publisher) to emit a message tagged with a topic,
+without needing to know which components (subscribers), if any, are interested in that topic.
+Subscribers register interest in one or more topics and receive a copy of every message published
+to those topics.
 
-This section introduces publish and subscribe as this library provides it, and holds the
-requirements that are general to it. Requirements that belong to one publisher's particular
-case do not live here: they live with that component, in
-chapter~\ref{ch:applications}, and refer back to this section.
+This decoupling is the central value of the feature: publishers and subscribers do not hold
+direct references to one another, do not need to be co-located in the same thread or process,
+and do not need to be started or stopped in any particular order relative to each other.
+A component's only coupling to the rest of the system is the set of topic names it produces or consumes.
 
-Four things are to be written, in this order.
+Because pub/sub sits on top of the same reactor event loop as the other primitives,
+a component that publishes or subscribes to topics does so using the same non-blocking,
+single-threaded-per-reactor programming model used everywhere else in the framework — there is
+no separate thread pool or blocking call dedicated to messaging.
+
+At a functional level, the pub/sub facility is expected to provide:
+
+\begin{itemize}
+\item Topics — named channels that categorise messages. A topic is a logical concept, not a physical connection; any number of publishers and subscribers may use the same topic name.
+
+\item Publish — a component sends a message tagged with a topic name. The publisher does not block waiting for delivery and does not receive any acknowledgement that a specific subscriber processed the message.
+Subscribe — a component registers interest in a topic (or set of topics) and subsequently receives every message published to that topic for as long as the subscription is active.
+\item Delivery — the implementation delivers messages via unicast fanout: the framework sends an individual copy of each message to each interested subscriber over its own connection, rather than using a network-level multicast/broadcast mechanism. This keeps delivery reliable and simple to reason about at the cost of publisher-side work scaling with subscriber count.
+
+\item Message ordering — messages published to a given topic are delivered to a given subscriber in the order they were published.
+
+\item Serialisation — message payloads are defined using the framework's binary serialisation DSL and compiled to C++17 encode/decode code, rather than hand-written wire formats. This keeps the pub/sub payload format consistent with the one used for ITC and IPC messages elsewhere in the framework.
+\end{itemize}
+
+The remainder of this section specifies the pub/sub facility in detail:
+
+\begin{itemize}
+\item Topic naming and lifecycle
+\item Publisher and subscriber APIs
+\item Subscription management (add/remove, late-joining subscribers)
+\item Delivery semantics and failure handling (slow subscribers, disconnects)
+\end{itemize}
 
 \begin{description}
   \item[What it is.] A publisher exposes named topics; subscribers connect, replay the history
@@ -35,7 +67,3 @@ Four things are to be written, in this order.
   \item[An outline of the functionality.] Delivery and ordering, durability and replay, fanout
     and backpressure, failover, and subscriber lifecycle and identity.
 \end{description}
-
-The design as built is described outside this book, in \texttt{docs/pubsub/}, and the
-requirements-gathering that preceded it in \texttt{docs/superseded/pubsub\_requirements.md}.
-This section states what is required; those describe how it is done.
