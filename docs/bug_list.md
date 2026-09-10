@@ -1861,11 +1861,19 @@ work, which cannot be completed without this.
 | Found | 2026-08-30 |
 | Recorded | 2026-08-30 |
 | How | Writing the functional specification in `docs/book`, which records against each requirement what verifies it |
-| Impact | 63 requirements are stated and 59 have no scenario. The suite reports success on a venue that does not meet them |
+| Impact | 139 requirements are stated and 115 have no scenario. The suite reports success on a venue that does not meet them |
 
 `scripts/check_book_requirements.py` reads the record the specification emits as it is typeset and
-reports the count on every build. At the time of writing: **63 requirements, 4 verified, 8 of 47
-scenarios naming a requirement at all.**
+reports the count on every build, so the current figures are always one `make -C docs/book check`
+away. As of 2026-09-10: **139 requirements, 24 verified, 115 awaiting coverage; 57 scenarios, of
+which 31 name a requirement at all.**
+
+**Both readings of that matter and they point opposite ways.** The proportion verified has risen
+from 4 in 63 to 24 in 139, so scenarios are being tied to requirements faster than requirements
+are being written. The number of unverified requirements has nearly doubled over the same period,
+from 59 to 115, because the specification has grown faster still. Judging this entry by the ratio
+makes it look like progress; judging it by the count makes it look like the opposite. The count is
+the one that says how much of the venue's stated behaviour nothing checks.
 
 This is not the same gap as [BUG-0030](#bug_0030), whose matrix is complete. That one asked which
 *restart cases* a pair has and covered all eighteen. This one asks which *stated behaviours* are
