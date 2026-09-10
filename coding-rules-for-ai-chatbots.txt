@@ -50,6 +50,21 @@ option, no fast path that skips it, and no exception for traffic believed to be 
 local. A message whose checksum fails cannot be trusted to say who sent it or what sequence
 number it carried, so it is discarded rather than rejected: replying to it would mean replying
 on the strength of data already established as corrupt.
+
+Never impose a maximum size on a FIX message. Many FIX messages are open ended, so there is no
+size that is safe to assume, and picking a large one does not make it correct -- it only makes
+the failure rarer and stranger when it comes. Where a buffer is needed, size it at run time from
+the message in hand, or use a structure that grows or wraps, such as a pre-allocated ring the
+records pack into. This has been got wrong more than once.
+
+Log levels say whose fault something is. Warning and Error are for this venue's own software or
+its configuration. Anything a client or a member does that the venue handles correctly is Info,
+however wrong the client was to do it -- a malformed message, a bad checksum, a duplicate
+identifier, a resync. Use Debug for the high-volume consequences of an expected condition, such
+as a report arriving for a session that has already gone. The reason is that a warning a
+deployment cannot act on trains everyone to ignore warnings: one such line, logged once per
+cancelled order, produced over half a million warnings in a single run and buried the ones that
+mattered.
 when checking if a ptr is nullptr, do not say "if (ptr)", say "if (ptr != nullptr)"
 when checking if a ptr is not nullptr, do not say "if (!ptr)", say "if (ptr == nullptr)"
 For a boolean expression, negate with ! rather than comparing against a literal: say if (!succeeded(result)), not if (succeeded(result) == false). This applies to booleans only; pointers keep the explicit == nullptr and != nullptr comparisons above.

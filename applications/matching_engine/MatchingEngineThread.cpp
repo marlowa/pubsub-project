@@ -670,8 +670,13 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     // Reject duplicate ClOrdID within the same FIX session.
+    //
+    // Info rather than Warning: the member is doing what R-0003 tells it to. A member that
+    // does not know whether the venue took an order resubmits under the original identifier,
+    // and R-0006 requires the venue to refuse it. Both sides are behaving as specified, so
+    // this is not a fault of the venue's and must not be logged as one.
     if (order_book_.contains(order_key)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: duplicate ClOrdID={} (session comp_id='{}') -- rejecting NOS",
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: duplicate ClOrdID={} (session comp_id='{}') -- rejecting NOS",
                    view.cl_ord_id, session.comp_id_view());
 
         pubsub_itc_fw_app::ExecutionReport er{};
