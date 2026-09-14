@@ -210,6 +210,11 @@ to be wrong, and what was to come next.
 - **The write-ahead log retains everything, and nothing reclaims it** (BUG-0048). Reclaiming waits
   on a decision about how long history must be kept.
 - **115 of the 139 requirements in the specification have no scenario checking them** (BUG-0068).
+- **The release check was run with `--quick`, and two stages failed.** The coverage baseline
+  predates this release and the 38 changes in function coverage are unreviewed. The Rocky stage
+  stopped before compiling, because `build.py` runs each script's `--help` under `python3 -S`,
+  which hides `tomli` on the container's Python 3.8; this release is unverified under gcc 8.5.
+  `docs/history/releases/v0.4.0.md` has the details.
 
 ## [0.3.0] - 2026-08-10
 
