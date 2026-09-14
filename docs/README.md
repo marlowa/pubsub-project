@@ -2,9 +2,10 @@
 
 ## Working documents
 
-These two are current. Everything else describes how something is built; these say what is being
-worked on and what is wrong with it.
+These three are current. Everything else describes how something is built; these say where the
+project stands and what is wrong with it.
 
+- **[Project status](project_status.md)** — development is paused: what works, what does not, and where to start
 - **[Roadmap](roadmap.md)** — the slicing plan: what is done, what comes next
 - **[Bug List](bug_list.md)** — every known defect, numbered, ranked by severity
 

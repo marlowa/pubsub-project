@@ -7,10 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 While the major version is `0`, the public API is not yet considered stable and may
 change in any release.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-14
+
+Development is paused after this release. `docs/project_status.md` says what works, what is known
+to be wrong, and what was to come next.
 
 ### Added
 
+- **A matching engine keeps its open orders across a restart.** The book is held in a
+  memory-mapped region of fixed-size records, `MappedSlotStore`, that outlives the process: an
+  order is written to it as it is accepted and taken out as it is cancelled, and a published
+  position says how far the records can be trusted. A restarted engine reads the orders back -- a
+  thousand recovered in 56 ms, and all 943 cancels then sent were accepted -- asks the sequencer
+  for everything after its position, and checks it received exactly as many records as the
+  sequencer says it sent before it acts. Where the venue could not match for longer than
+  configuration allows and orders were open, the engine cancels each one, tells the member that
+  placed it, and halts. `ha_test.py` scenario 50 holds it.
+- **`order_book.open_orders_on_promotion`**, `"cancel"` or `"keep"`, states what a promoted
+  matching engine does with the book it inherits. It is required in every deployed configuration
+  and set to `"cancel"` everywhere, because nothing yet establishes that the follower's copy of the
+  book is complete.
+- **`scripts/launch.py` restarts the one process it starts**, and `devenv.py --supervised` starts
+  each component under it. The launcher knows nothing about topology or roles; the arbiters still
+  decide who leads. An instance that interrupts the venue twice is not restarted again: a matching
+  engine restarts in about 3.5 seconds, well inside its peer's 15-second promotion timeout, so a
+  flapping engine never fails over and the venue simply keeps losing service. A component killed
+  by a crash signal is reported as a crash, with the `coredumpctl` commands that keep its
+  backtrace.
+- **The venue checks the sequence numbers a member sends.** A number above the expected one is
+  answered with a ResendRequest and nothing past the gap is processed; a lower number with
+  `PossDupFlag=Y` is discarded; a lower number without it ends the session. An unanswered
+  ResendRequest is repeated every five seconds, three times in all, and then the session ends. The
+  member's inbound position is carried across a gateway change. Before this, an order numbered 50
+  when 3 was expected was accepted. `scripts/fix_raw_client.py`, a client with no session layer
+  that sends whatever bytes it is told to, drives scenario 41.
+- **Orders the venue cannot process are refused.** The sequencer sends `OrderAcceptance` (PDU 127)
+  to every gateway when the current deferral has lasted too long or grown too large, and to each
+  gateway as it connects. While it says so, a NewOrderSingle or an OrderCancelRequest is answered
+  with an ExecutionReport carrying `ExecType=8` and a reason, rather than acknowledged and never
+  answered. The sequencer reports an outage by its age, a Warning every five seconds, instead of
+  an Info line per deferred order, and the gateway's health line runs on a timer so it keeps
+  reporting while nothing progresses. Scenario 42 holds it.
+- **High availability scenarios**, 57 in all. Scenarios 24 to 39 restart each component of each
+  pair, with and without a launcher, in each role; 48 stops a whole machine; 50, 53 and 54 cover
+  orders open across a restart, orders taken while an engine was away, and a catch-up race.
+  `ha_test.py` refuses to start while a port is still held, and names the process holding it.
+- **A functional specification**, `docs/book`, built with `make -C docs/book`. 139 requirements
+  with permanent identifiers, each giving its reason; 24 are verified by a named `ha_test.py`
+  scenario. `make check` fails on an identifier not in the ledger, a requirement with no reason, a
+  scenario that does not exist, and a gap citing a defect the bug list records as closed.
+- **Metrics**: `wal_append_nanoseconds` on the sequencer, with whether the next log segment was
+  ready in time; the size of the matching engine's order book; and both gateways' pool
+  statistics.
+- **Diagnostic tools.** `thread_offcpu.py` separates the reasons a thread is not running, explains
+  the kernel functions it catches on ext4 and XFS, and reports the filesystem and mount options of
+  each file the process writes. `deployment_freshness.py` warns when the deployed venue predates
+  the source. A violated precondition carries the stack trace that reached it, through cpptrace.
+  `check_doc_claims.py` binds a sentence in the documentation to the fact in the source that
+  proves it. The memory monitor can follow one process, keeps the whole run on the chart, and
+  freezes the display without pausing the recording.
 - **`IncrementalRehashMap`, a hash map that grows without ever rehashing the whole table in one
   operation.** The framework offered pool and slab allocators for objects with a message lifecycle
   and nothing for long-lived state that grows, so every application keeping state -- an order book,
@@ -20,14 +75,47 @@ change in any release.
   searching both tables while the move is in flight; the worst case for one operation is a probe
   plus eight moves, whatever the size of the map. Thread-confined by design and now by check: under
   `PUBSUB_ITC_FW_THREAD_CHECKS`, set for Debug, ASan and coverage builds, it records the thread that
-  first touches it and throws `PreconditionAssertion` if another one does. The order book itself is
-  not yet on it -- that change waits on a trading-day load run.
+  first touches it and throws `PreconditionAssertion` if another one does. The matching engine's
+  order book now uses it.
 - **`GrowthReportingAllocator` has unit tests**, where it had none: thresholds, the high-water mark
   not going backwards, a null reporter, and the reporter surviving a container's rebind, which is
   the path every real use of it takes.
 
 ### Changed
 
+- **Every script lives in `scripts/`.** The repository root holds none.
+- **High availability is one switch, `[ha] enabled`.** Nine component configurations expand
+  `${ha_enabled}` from that one value. Before, `devenv.py --no-ha` skipped the arbiters while every
+  configuration still enabled high availability, so the sequencer waited for an arbiter that never
+  came and forwarded no orders.
+- **A leader renews a `LeadershipLease` with the arbiter**, not a heartbeat, and a lease expires.
+  An arbiter keeps an instance that already leads as leader rather than re-applying the cold-start
+  rule. An arbiter that can see neither its peer nor the witness promotes itself only if it holds
+  the lower identity and has never seen its peer active, so two arbiters cannot both act on the
+  same silence.
+- **The leadership epoch survives a restart**, for the sequencer and the matching engine, so a
+  restarted pair no longer reuses a generation the venue has already spent.
+- **The write-ahead log keeps its history.** A snapshot deleted every earlier segment -- about
+  3,669 segments gone against one snapshot -- so a recovery could not ask for its tail. Nothing
+  reclaims segments now; see Known limitations.
+- **The next log segment is created and filled ahead of the writer**, on a helper thread. The
+  filesystem holding the sequencer's log must be mounted `lazytime`, as
+  `docs/operations/filesystem_requirements.md` explains, and the build scripts set
+  `PUBSUB_WAL_ROOT` per platform.
+- **cpptrace is a new third-party dependency.** Where the build host cannot reach git, libdwarf and
+  cpptrace build from hand-copied tarballs.
+- **A header's namespace mirrors its directory, and a Doxygen block is preceded by a blank line.**
+  `check_standards.py` checks both.
+- **A duplicate ClOrdID is logged at Info, not Warning.** The specification requires a member
+  unsure of an order to resubmit it under the same identifier and the venue to refuse it, so the
+  likeliest cause is both sides behaving correctly.
+- **`devsetup.py` deletes this platform's older release artefacts** before making a new one,
+  keeping `--keep-releases` of them.
+- **The gateway pool metric `pool_chain_length` is renamed `pool_segments`.**
+- **The documentation is arranged in chapters**, one directory each, with `docs/README.md` as the
+  way in.
+- **`--no-pylint` describes what it now skips** -- all project Python, not just the DSL -- in both
+  `build.py` and `devsetup.py`. The gate widened in 0.3.0 and the help text did not follow.
 - **`deploy.py` and `devenv.py` take `--db-port`**, forwarded by `devsetup.py` and
   `build-release-deploy.py` so that a build+release+deploy run can name the port. The RHEL8 host
   target host runs its cluster somewhere other than 5432, and the credential export failed there;
@@ -69,11 +157,59 @@ change in any release.
 - **A failing step says what failed.** `create_db.py` repeats the command and its captured stderr,
   `devsetup.py` names the step that failed rather than exiting bare on its status, and `devenv.py`
   says that a refused database connection used the details in the environment file.
+- **Growing the order book stalled the matching engine** for 733 ms at 2^22 entries and over a
+  second at 2^23, after which 1,167,392 of 9,556,000 orders were never accepted.
+- **Leadership went wrong whenever a component restarted.** A restarted primary matching engine
+  adopted leadership before asking the arbiter, then discarded the answer. The sequencer routed
+  orders to the instance named primary rather than the one leading, and then down the connection
+  the role announcement arrived on. Replication ran only from primary to secondary, so the pair
+  survived one failure and not two. An engine with no reachable arbiter waited forever instead of
+  taking the degraded path. Serving a startup catch-up moved the live order routing to the
+  restarting instance, and a thousand orders sent in that window were matched by nothing. An
+  engine catching up at startup sent members their reports and then served nobody. And an engine
+  that caught up while waiting for an arbiter had lost its only way out of waiting.
+- **The sequencer stalled for up to 557 ms** on the thread every order passes through, waiting for
+  the ext4 journal to allocate blocks for a new log segment.
+- **The application test suites were never run by the build**: 90 tests across five suites. They
+  are discovered now, and all pass.
+- **FIX sessions.** A resend filled numbers that had held a Logon or a heartbeat with execution
+  reports, so one number went out carrying two messages. The sequencer kept a session's old
+  numbering after a Logon with `ResetSeqNumFlag=Y`. A gateway wound its inbound counter back over
+  the Logon that bound the session. And a cancel report removed nothing from the gateway's open
+  orders, because it looked up the cancel's ClOrdID rather than its OrigClOrdID.
+- **Framework.** A shutdown that abandoned a thread returned from `main` and destroyed static state
+  underneath it; it now aborts, leaving a core with the abandoned thread's stack. An outbound
+  connection lost to a socket error, rather than a clean close, was never retried. Tearing down a
+  connection with a blocked raw send read the wrong field of the stashed command, and the
+  exception stopped the gateway. Warming a mapped region read each page, which left the write
+  fault on the order path.
+- **Tools and gates.** `check_docs.py` accepted anchors Doxygen cannot resolve and ignored untracked
+  files. The Doxygen warnings gate was off on RHEL8, whose 1.8.14 does not understand
+  `FAIL_ON_WARNINGS`, and is now conditional on the version. Scripts needing the plotting stack
+  could not answer `--help` without it, and the build skipped them rather than failing.
+  `perf_run.py --profile` implies the binary gateway, and an unreadable order count is reported as
+  not verified rather than as lost orders. `deploy.py` no longer reports doing nothing in the same
+  words as success. `create_db.py` uses the Unix socket when already running as the postgres user,
+  and four of five RHEL8 startup faults in the database scripts are fixed. The fix-test-client's
+  SpotBugs and JaCoCo gates pass again. The book's requirement checks run on Python 3.8. Tests
+  write their files to real disk rather than `/dev/shm`, where a test of block allocation could
+  not fail.
 
-### Changed
+### Removed
 
-- **`--no-pylint` describes what it now skips** -- all project Python, not just the DSL -- in both
-  `build.py` and `devsetup.py`. The gate widened in 0.3.0 and the help text did not follow.
+- **`start_fix_seq_system.py`**, superseded by `devenv.py`, and `get-for-copilot.sh`.
+- **`[matching_engine] ha_enabled`**, replaced by `[ha] enabled`.
+
+### Known limitations
+
+- **33 bugs are open, 12 of them high severity**; `docs/bug_list.md` lists them. Among them: a
+  degraded promotion advances a generation the arbiter never learns (BUG-0085); an execution
+  report produced while a session is unbound is never delivered (BUG-0088); a restarted gateway
+  stops honouring cancel-on-disconnect (BUG-0090); and the venue has no way to declare a trading
+  halt (BUG-0065).
+- **The write-ahead log retains everything, and nothing reclaims it** (BUG-0048). Reclaiming waits
+  on a decision about how long history must be kept.
+- **115 of the 139 requirements in the specification have no scenario checking them** (BUG-0068).
 
 ## [0.3.0] - 2026-08-10
 

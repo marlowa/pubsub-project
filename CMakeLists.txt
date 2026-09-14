@@ -5,7 +5,7 @@ if(POLICY CMP0167)
 endif()
 
 project(pubsub_itc_fw_project
-    VERSION 0.3.0
+    VERSION 0.4.0
     LANGUAGES CXX
 )
 
