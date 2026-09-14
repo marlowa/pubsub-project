@@ -152,7 +152,7 @@ def stage_build_local(args) -> tuple[bool, str]:
     Deliberately not --no-java or --no-doxygen: a release is exactly when the
     parts usually skipped for speed must be exercised.
     """
-    code, out = run(["./devsetup.sh", "--clean", "--skip-db", "--skip-certs", f"-j{args.jobs}"],
+    code, out = run(["./scripts/devsetup.sh", "--clean", "--skip-db", "--skip-certs", f"-j{args.jobs}"],
                     timeout=args.build_timeout)
     return code == 0, tail(out, 30)
 
@@ -186,7 +186,7 @@ def stage_coverage(args) -> tuple[bool, str]:
     baseline is toolchain-specific: gcc 8.5 and gcc 13 emit different function lists for
     identical sources. A second baseline nobody reads would be worse than none.
     """
-    code, out = run(["./build.sh", "--clean", "--coverage", "--coverage-report",
+    code, out = run(["./scripts/build.sh", "--clean", "--coverage", "--coverage-report",
                      "--no-java", "--no-doxygen", f"-j{args.jobs}"],
                     timeout=args.build_timeout)
     if code != 0:
@@ -200,7 +200,7 @@ def stage_coverage(args) -> tuple[bool, str]:
     committed = PROJECT_ROOT / "coverage_baseline.txt"
     if not committed.exists():
         return False, ("no committed coverage_baseline.txt. Generate one and commit it:\n"
-                       "    ./build.sh --coverage --coverage-report\n"
+                       "    ./scripts/build.sh --coverage --coverage-report\n"
                        "    python3 scripts/coverage_baseline.py --update")
 
     stale = _baseline_function_coverage_differs(committed, fresh)
