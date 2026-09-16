@@ -11,11 +11,14 @@ box running the venue, render wherever there is a display.
   2. Compare every order gateway on one figure -- the question
      order_round_trip_nanoseconds exists to answer:
 
-         python3 pubsub_metrics.py --application pubsub --component gateways --graphic
+         python3 pubsub_metrics.py --application pubsub --component compare:order_round_trip_nanoseconds --graphic
+
+     The view is named for the metric it compares. 'gateways' is the --demo table's name
+     for the same idea, and is not a component that Prometheus discovery ever returns.
 
   3. Fetch on the venue host, save, and render elsewhere:
 
-         python3 pubsub_metrics.py --application pubsub --component gateways --output gateways.dash
+         python3 pubsub_metrics.py --application pubsub --component compare:order_round_trip_nanoseconds --output gateways.dash
          python3 pubsub_metrics.py --input gateways.dash --graphic
 
   4. Track the round trip through the session against a ceiling it must not exceed,
@@ -55,6 +58,13 @@ Rules:
 Prometheus is started with the venue by devenv.py; see docs/operations/metrics.md.
 """
 
+# Every deferred import in this file is the LAZY-import architecture described above rather
+# than an oversight, so the check that reports them is turned off once here instead of being
+# waived two dozen times. A display-only machine must never import 'requests', and the
+# headless fetch+write side must never import matplotlib or tkinter; hoisting them to the top
+# would make every environment need what every other environment uses.
+# pylint: disable=import-outside-toplevel
+
 import argparse
 import sys
 
@@ -80,12 +90,12 @@ class DashboardData:
     """Container for the four kinds of series shown on the dashboard."""
 
     def __init__(self):
-        self.component = "sample"  # label shown in the figure title
-        self.histograms = []       # list of {"name", "bounds", "counts"}
-        self.bands = []            # list of {"name", "times", "tracks", "ceiling_ns",
-                               #          "breaches", "observations"}
-        self.counters = []         # list of (name, total, rate)
-        self.gauges = []           # list of (name, value)
+        self.component = "sample"   # label shown in the figure title
+        self.histograms = []        # list of {"name", "bounds", "counts"}
+        self.bands = []             # list of {"name", "times", "tracks", "ceiling_ns",
+                                    #          "breaches", "observations"}
+        self.counters = []          # list of (name, total, rate)
+        self.gauges = []            # list of (name, value)
 
 
 def set_component(data, name):
@@ -199,6 +209,13 @@ _MATCHING_ENGINE_INSTANCES = [
 
 def _labels_for(component, application):
     return f'application="{application}", component="{component}"'
+
+
+def _labels_for_path(component, application, path):
+    return (
+        f'application="{application}", component="{component}", '
+        f'path="{path}"'
+    )
 
 
 def _gateway_spec(component, application):
@@ -343,8 +360,15 @@ def discover_component_config(prom_url, application):
         declared = types.get(base) or types.get(metric_name) or ""
 
         if declared == "histogram" or metric_name.endswith(_HISTOGRAM_SUFFIXES):
-            # One entry per (metric, scope): a thread's histogram is its own series.
-            entry["histograms"][(base + "_bucket", labels.get("scope", ""))] = base
+            # A histogram is identified by metric, scope and path. Several logical
+            # latency histograms use the same metric name and scope, with path
+            # distinguishing them. Omitting path here causes later discoveries to
+            # overwrite earlier ones.
+            path = labels.get("path", "")
+            display_name = path if path else base
+            entry["histograms"][
+                (base + "_bucket", labels.get("scope", ""), path)
+            ] = display_name
         elif declared == "counter":
             entry["counters"].add(metric_name)
         elif declared == "gauge":
@@ -359,8 +383,25 @@ def discover_component_config(prom_url, application):
         config[component] = {
             "labels": _labels_for(component, application),
             "histograms": [
-                {"metric": metric, "scope": scope, "name": display_name}
-                for (metric, scope), display_name in sorted(entry["histograms"].items())
+                {
+                    "metric": metric,
+                    "scope": scope,
+                    "path": path,
+                    "name": display_name,
+                    **(
+                        {
+                            "labels": _labels_for_path(
+                                component,
+                                application,
+                                path,
+                            )
+                        }
+                        if path
+                        else {}
+                    ),
+                }
+                for (metric, scope, path), display_name
+                in sorted(entry["histograms"].items())
             ],
             "counters": sorted(entry["counters"]),
             "gauges": sorted(entry["gauges"]),
@@ -373,29 +414,39 @@ def discover_component_config(prom_url, application):
 def _add_comparison_views(config, application):
     """Add a pseudo-component per histogram shared by two or more components.
 
-    A histogram exposed by several components is, by construction, one meant to be
-    compared across them -- that is why it is one metric name distinguished by a
-    label rather than one metric per component. order_round_trip_nanoseconds across
-    the four order gateways is the case this venue exists to answer, and it needs no
-    special-casing: any future shared histogram gets the same view for free.
+    A histogram is identified by metric, scope and path. The path must remain
+    part of the identity because several logical latency measurements can share
+    the same Prometheus metric and scope.
     """
     owners = {}
+
     for component, spec in config.items():
         for histogram in spec["histograms"]:
-            owners.setdefault((histogram["metric"], histogram["scope"]), []).append(component)
+            metric = histogram["metric"]
+            scope = histogram["scope"]
+            path = histogram.get("path", "")
+            owners.setdefault((metric, scope, path), []).append(component)
 
-    for (metric, scope), components in sorted(owners.items()):
+    for (metric, scope, path), components in sorted(owners.items()):
         if len(components) < 2:
             continue
-        view_name = "compare:" + _base_metric_name(metric)
+
+        base_name = _base_metric_name(metric)
+        view_name = f"compare:{path}" if path else f"compare:{base_name}"
+
         config[view_name] = {
             "labels": f'application="{application}"',
             "histograms": [
                 {
                     "metric": metric,
                     "scope": scope,
+                    "path": path,
                     "name": component,
-                    "labels": _labels_for(component, application),
+                    "labels": (
+                        _labels_for_path(component, application, path)
+                        if path
+                        else _labels_for(component, application)
+                    ),
                 }
                 for component in sorted(components)
             ],
@@ -985,22 +1036,22 @@ def _demo_histogram(random_module, name, centre_ns, spread, total):
     return name, list(DEMO_BUCKET_BOUNDS_NS), counts
 
 
-# --- The demo band chart's trading day -------------------------------------- #
+# --- The demo band chart's trading day ------------------------------------- #
 #
 # A session carrying the patterns a percentile chart exists to tell apart, all of which
 # raise a short-window arithmetic mean by a similar amount:
 #
-#   open volatility   every track lifts together        -- the venue really is slower
-#   tail excursion    p50 and p90 flat, p99 climbs      -- a few orders are late
-#   volume collapse   nothing moves at all              -- an averaged alarm is lying
+#   open volatility   every track lifts together    -- the venue really is slower
+#   tail excursion    p50 and p90 flat, p99 climbs  -- a few orders are late
+#   volume collapse   nothing moves at all          -- an averaged alarm is lying
 #
 # The ceiling is placed ON a configured bucket bound, because that is the only way the
 # breach count underneath can be exact rather than interpolated.
 
 DEMO_BAND_STEP_SECONDS = 30
-DEMO_BAND_SESSION_MINUTES = 480       # 08:00 to 16:00
+DEMO_BAND_SESSION_MINUTES = 480        # 08:00 to 16:00
 DEMO_BAND_OPEN_HOUR = 8
-DEMO_BAND_CEILING_NS = 2_500_000      # 2.5ms -- a bound present in DEMO_BUCKET_BOUNDS_NS
+DEMO_BAND_CEILING_NS = 2_500_000       # 2.5ms -- a bound present in DEMO_BUCKET_BOUNDS_NS
 DEMO_BAND_BASELINE_CENTRE_NS = 300_000
 DEMO_BAND_BASELINE_SPREAD = 0.55
 DEMO_BAND_BASELINE_VOLUME = 900
@@ -1393,7 +1444,7 @@ def read_dataset(path):
 
 # =========================================================================== #
 # RENDERING  (DashboardData -> on-screen figure; imports matplotlib/tkinter
-#             lazily so the headless fetch+write side never needs them)
+#            lazily so the headless fetch+write side never needs them)
 # =========================================================================== #
 
 def format_latency_ns(value_ns):
@@ -2370,6 +2421,12 @@ def parse_duration_ns(text):
 
 
 def main(argv=None):
+    """Acquire, optionally persist, and optionally render; return the process exit status.
+
+    0 for a run that did what was asked, 2 for a named component this application does not
+    expose. Returned rather than raised because an unknown component is a usage mistake with
+    a list of the right answers attached, not a failure worth a traceback.
+    """
     arguments = parse_arguments(argv)
     metrics_requested = resolve_metrics(arguments.metrics)
 
@@ -2427,6 +2484,8 @@ def main(argv=None):
         save_dashboard(data, arguments.save_figure, overlay=arguments.overlay)
     if arguments.graphic:
         show_dashboard(data, overlay=arguments.overlay)
+
+    return 0
 
 
 if __name__ == "__main__":
