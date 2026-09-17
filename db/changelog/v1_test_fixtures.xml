@@ -87,4 +87,125 @@
         </insert>
     </changeSet>
 
+    <!-- ================================================================
+         test-004 .. test-008  LOADCLIENT comp_ids
+         SenderCompIDs used by binary_load_client, the binary gateway's
+         counterpart to the fix8 client that CLIENT above serves.
+
+         SCRAM-SHA-256 values derived from password "loadclientpassword",
+         4096 iterations, one salt each. That password is not a secret: it
+         is BINARY_LOAD_PASSWORD in scripts/perf_run.py, and these are dev
+         fixtures for a sandbox, applied only under the "test" context.
+
+         Five of them because the client names its sessions after its
+         comp id prefix: one session keeps the bare prefix, and more than
+         one appends an index. Four indices covers the documented four
+         client run. The gateway refuses a duplicate comp id, so a session
+         without its own credential is refused at logon.
+
+         perf_run.py writes these into credentials.toml itself before a run.
+         Seeding them here is what makes a HAND-DRIVEN binary_load_client
+         work, and survive the next export_credentials.py.
+         ================================================================ -->
+
+    <changeSet id="v1-test-004-loadclient-comp-id" author="pubsub" context="test">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="0">
+                SELECT COUNT(*) FROM ${tablePrefix}comp_id WHERE comp_id = 'LOADCLIENT'
+            </sqlCheck>
+        </preConditions>
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="LOADCLIENT"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="acf1fdd0f96c5f86571333f3761663d2aeed49ae9298a9ca0ee81b548cfe67c3"/>
+            <column name="server_key"            value="2701606ec1f4ad11ea930466c9221f4812a7299d14d86297aee27e012566d69d"/>
+            <column name="salt"                  value="fe64b4b802f953382a405b7bb489620a"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
+    <changeSet id="v1-test-005-loadclient1-comp-id" author="pubsub" context="test">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="0">
+                SELECT COUNT(*) FROM ${tablePrefix}comp_id WHERE comp_id = 'LOADCLIENT-1'
+            </sqlCheck>
+        </preConditions>
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="LOADCLIENT-1"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="72bd0fac01e7978c07b176a270f4354f1ad6148735ca02a53a93075f4ae0e7aa"/>
+            <column name="server_key"            value="b10ec65c48c242248ffd0828a136e4b4ef9ae0010797d8b6efc563383d49c955"/>
+            <column name="salt"                  value="0b792931dab622a4df675d6a016769e3"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
+    <changeSet id="v1-test-006-loadclient2-comp-id" author="pubsub" context="test">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="0">
+                SELECT COUNT(*) FROM ${tablePrefix}comp_id WHERE comp_id = 'LOADCLIENT-2'
+            </sqlCheck>
+        </preConditions>
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="LOADCLIENT-2"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="1dd2be74219596e4aa36d7446b0bc98f3d303128356784acba093f1ff72e9aac"/>
+            <column name="server_key"            value="ce7272b67c3a9cbf01ad756993996efc8528bf20b965c7d3c51350b38c90d067"/>
+            <column name="salt"                  value="01f9fbdc50c00df39eb211aaf0734c72"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
+    <changeSet id="v1-test-007-loadclient3-comp-id" author="pubsub" context="test">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="0">
+                SELECT COUNT(*) FROM ${tablePrefix}comp_id WHERE comp_id = 'LOADCLIENT-3'
+            </sqlCheck>
+        </preConditions>
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="LOADCLIENT-3"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="c4ffb77d6233e4718fa2c6b4b5567cf02322511de2d7270044913d8a4eea1992"/>
+            <column name="server_key"            value="11b29c085efe585d5c40b5c1dface82132791e7b66e918510458bc108e958ff3"/>
+            <column name="salt"                  value="011976b390d2a82b78a3683820ff429c"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
+    <changeSet id="v1-test-008-loadclient4-comp-id" author="pubsub" context="test">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="0">
+                SELECT COUNT(*) FROM ${tablePrefix}comp_id WHERE comp_id = 'LOADCLIENT-4'
+            </sqlCheck>
+        </preConditions>
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="LOADCLIENT-4"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="d30f4007ef5435a7bc9af916ebf7c9b713bdebb6576a68a80d2f3b7afd539c7e"/>
+            <column name="server_key"            value="246a1add30d1a989f2840dac46647db9c75310b244082ee698d21ba25e649653"/>
+            <column name="salt"                  value="967b3482780ca997f9e2add7cdf9d27b"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
 </databaseChangeLog>
