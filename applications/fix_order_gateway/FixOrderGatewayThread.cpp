@@ -224,7 +224,7 @@ void FixOrderGatewayThread::on_app_ready_event() {
         connect_to_service("sequencer_secondary");
     }
 
-    sequence_report_timer_id_ = start_one_off_timer(sequence_report_interval);
+    sequence_report_timer_id_ = start_recurring_timer(sequence_report_interval);
 }
 
 void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
@@ -880,7 +880,6 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
 
     if (timer_id == sequence_report_timer_id_) {
         report_session_sequence_numbers();
-        sequence_report_timer_id_ = start_one_off_timer(sequence_report_interval);
         return;
     }
 

@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -35,6 +36,38 @@ namespace {
 constexpr auto interval = std::chrono::milliseconds(100);
 constexpr auto long_interval = std::chrono::milliseconds(500);
 constexpr int wait_milliseconds = 3000;
+
+// Short enough that a few hundred armings take under a second, long enough that the
+// reactor drains each expiry and its reap command comfortably between firings.
+constexpr auto rearm_interval = std::chrono::milliseconds(1);
+
+// What the reactor itself keeps open once running: the epoll descriptor, the wakeup
+// eventfd, the signalfd, the backstop timerfd, each application thread's eventfd, and
+// whatever the logger holds. Well under the hundreds a per-arming leak produces.
+constexpr size_t reactor_descriptor_allowance = 32;
+
+size_t open_descriptors() {
+    size_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+        (void)entry;
+        ++count;
+    }
+    return count;
+}
+
+// Counts only timer descriptors, so an assertion can name the exact number of timers
+// the process is holding rather than a total that moves for unrelated reasons.
+size_t open_timer_descriptors() {
+    size_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+        std::error_code error_code;
+        const std::filesystem::path target = std::filesystem::read_symlink(entry.path(), error_code);
+        if (!error_code && target.string() == "anon_inode:[timerfd]") {
+            ++count;
+        }
+    }
+    return count;
+}
 
 } // namespaces
 
@@ -485,6 +518,75 @@ class SlowHandlerThread : public ApplicationThread {
 
     void on_itc_message(const EventMessage&) override {}
 };
+
+// RearmingOneOffThread -- re-arms a one-off from its own callback a fixed number of
+// times, then stops. This is the shape a gateway uses for a periodic report it wants to
+// reschedule from the callback, and it is the shape that leaked: a fired single-shot
+// stays armed in no sense at all, but until the reactor reaped it the descriptor, the
+// epoll registration and both timer-registry entries lived for the life of the process.
+
+class RearmingOneOffThread : public ApplicationThread {
+  public:
+    static constexpr int target_armings = 250;
+
+    RearmingOneOffThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "RearmingOneOffThread", ThreadID{1}, make_queue_config(), make_allocator_config("RearmingPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<int> armings{0};
+
+  protected:
+    void on_app_ready_event() override {
+        current_id_ = start_one_off_timer(rearm_interval);
+        armings.fetch_add(1, std::memory_order_release);
+    }
+
+    void on_timer_event(TimerID id) override {
+        if (id != current_id_) {
+            return;
+        }
+        if (armings.load(std::memory_order_acquire) >= target_armings) {
+            return;
+        }
+        current_id_ = start_one_off_timer(rearm_interval);
+        armings.fetch_add(1, std::memory_order_release);
+    }
+
+    void on_itc_message(const EventMessage&) override {}
+
+  private:
+    TimerID current_id_{};
+};
+
+TEST_F(TimerTest, RepeatedlyRearmedOneOffTimerLeaksNoDescriptors) {
+    const size_t before_reactor = open_descriptors();
+
+    auto t = ApplicationThread::create<RearmingOneOffThread>(logger_->logger, *reactor_);
+    reactor_->register_thread(t);
+    start_reactor();
+
+    ASSERT_TRUE(wait_for([&] { return t->armings.load(std::memory_order_acquire) >= RearmingOneOffThread::target_armings; }))
+        << "the thread reached only " << t->armings.load(std::memory_order_acquire) << " of " << RearmingOneOffThread::target_armings << " armings";
+
+    // Each reap is a control command, so the last few are still in flight when the final
+    // arming is counted. Wait for the total to settle rather than sampling once.
+    ASSERT_TRUE(wait_for([&] { return open_descriptors() <= before_reactor + reactor_descriptor_allowance; }))
+        << open_descriptors() << " descriptors open after " << RearmingOneOffThread::target_armings << " armings; there were " << before_reactor
+        << " before the reactor started, so a spent single-shot timer is not being released";
+}
+
+TEST_F(TimerTest, AFiredOneOffTimerReleasesItsTimerDescriptor) {
+    auto t = ApplicationThread::create<OneOffTimerThread>(logger_->logger, *reactor_);
+    reactor_->register_thread(t);
+    start_reactor();
+
+    ASSERT_TRUE(wait_for([&] { return t->fire_count.load(std::memory_order_acquire) >= 1; })) << "One-off timer never fired";
+
+    // The reactor's own backstop timer is recurring and stays. Nothing else should:
+    // the one-off has fired, so its descriptor is disarmed and must have been closed.
+    ASSERT_TRUE(wait_for([&] { return open_timer_descriptors() <= 1; }))
+        << open_timer_descriptors() << " timer descriptors still open after the one-off fired; only the reactor's backstop should remain";
+}
 
 TEST_F(TimerTest, SlowHandlerCoalescesExpirations) {
     auto t = ApplicationThread::create<SlowHandlerThread>(logger_->logger, *reactor_);

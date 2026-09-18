@@ -21,6 +21,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLifecycleState.hpp>
 #include <pubsub_itc_fw/Timer.hpp>
@@ -95,6 +96,26 @@ bool TimerHandler::handle_event(uint32_t events) {
         // Nothing to read (EAGAIN) or interrupted -- treat as consumed
         PUBSUB_LOG(reactor_.get_logger(), FwLogLevel::Info, "handle_event nothing to read (s={}, errno={})", s, errno);
         return true;
+    }
+
+    // A single-shot timer is spent the moment it fires. timerfd_settime left
+    // it_interval zero, so the descriptor is now disarmed and can never become
+    // readable again -- but nothing was releasing it, and it stayed in the epoll
+    // set, in handlers_, and in both timer registries for the life of the process.
+    // An application that re-arms a single-shot from its own callback therefore
+    // leaked one descriptor per arming until it hit RLIMIT_NOFILE and died.
+    //
+    // Reap it through the ordinary control-command path rather than here. The
+    // commands are drained by this same reactor thread later in the loop, so the
+    // cancel cannot run until handle_event has returned; cancelling inline would
+    // destroy the handler whose method is still on the stack. A cancel the
+    // application has already issued for this id is harmless: cancel_timer_fd
+    // returns early for an id it no longer holds.
+    if (timer_.get_type() == TimerType(TimerType::SingleShot)) {
+        ReactorControlCommand reap_command(ReactorControlCommand::CommandTag::CancelTimer);
+        reap_command.owner_thread_id_ = timer_.get_owner_thread_id();
+        reap_command.timer_id_ = timer_.get_timer_id();
+        reactor_.enqueue_control_command(reap_command);
     }
 
     // 3. Reactor-owned housekeeping timer (owner thread ID == 0)
