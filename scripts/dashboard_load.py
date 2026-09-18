@@ -35,122 +35,189 @@ Usage:
 import argparse
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-# (name, share of the session, orders per second; 0 means send nothing at all)
+# Each protocol gets its own shape, and the shapes are OFFSET on purpose.
 #
-# The shares are fractions rather than minutes so that --minutes rescales the whole day
-# without the phases losing their proportions. The rates are what a chart needs rather than
-# what a venue can take: the open is roughly three times the steady rate, which is visible
-# on a graph, and the spike is high enough to be unmistakable.
-PHASES = [
+# A mixed run exists to answer one question a single-protocol run cannot: does load on one
+# gateway disturb latency on the other. They share a matching engine, a sequencer and a host,
+# so the answer is not obviously no.
+#
+# Answering it needs the bursts to NOT coincide. If both protocols spike together, every
+# latency figure rises at once and nothing can be attributed. So each protocol spikes while
+# the other is running a steady trickle -- not while the other is silent, because a protocol
+# that is sending nothing has no latency to disturb. The trickle is the measurement; the
+# spike on the other side is the thing being measured.
+#
+# Shares must sum to the same total in both tables so the two timelines stay aligned.
+#
+# (name, share of the session, orders per second; 0 means send nothing at all)
+
+# The binary gateway: steadier and faster, which is where members are moving.
+BINARY_PHASES = [
     ("pre-open quiet",      0.04,   0),
     ("the open",            0.08, 400),
-    ("morning steady",      0.18, 120),
-    ("morning trickle",     0.10,  15),
-    ("midday lull",         0.08,   0),
-    ("afternoon steady",    0.18, 120),
-    ("afternoon spike",     0.05, 600),
-    ("late trickle",        0.11,  20),
+    ("morning steady",      0.16, 150),
+    ("trickle (FIX spikes)",0.10,  20),   # <-- FIX bursts across this; watch binary latency
+    ("midday steady",       0.12, 150),
+    ("BINARY SPIKE",        0.08, 600),   # <-- watch FIX latency across this
+    ("afternoon steady",    0.16, 150),
+    ("late trickle",        0.08,  20),
     ("the close",           0.14, 350),
     ("post-close quiet",    0.04,   0),
 ]
+
+# The FIX gateway: burstier and lower rate, the traditional shape.
+FIX_PHASES = [
+    ("pre-open quiet",      0.04,   0),
+    ("the open",            0.08, 150),
+    ("morning steady",      0.16,  60),
+    ("FIX SPIKE",           0.10, 300),   # <-- watch binary latency across this
+    ("midday steady",       0.12,  60),
+    ("trickle (bin spikes)",0.08,  15),   # <-- binary bursts across this; watch FIX latency
+    ("afternoon steady",    0.16,  60),
+    ("late trickle",        0.08,  15),
+    ("the close",           0.14, 200),
+    ("post-close quiet",    0.04,   0),
+]
+
+PROTOCOLS = {"binary": BINARY_PHASES, "fix": FIX_PHASES}
 
 DEFAULT_COMP_ID_PREFIX = "LOADCLIENT"
 DEFAULT_PASSWORD = "loadclientpassword"
 
 
-def resolve_client(prefix):
-    """The load client binary, or exit saying where it was looked for."""
-    candidate = Path(prefix) / "bin" / "binary_load_client"
-    if not candidate.is_file():
-        raise SystemExit(f"error: {candidate} not found. Deploy first, or pass --prefix.")
-    return candidate
+def resolve_clients(prefix):
+    """The two load clients, or exit naming whichever is missing."""
+    binary = Path(prefix) / "bin" / "binary_load_client"
+    fix = Path(__file__).resolve().parent / "fix_load_client.py"
+    if not binary.is_file():
+        raise SystemExit(f"error: {binary} not found. Deploy first, or pass --prefix.")
+    if not fix.is_file():
+        raise SystemExit(f"error: {fix} not found.")
+    return binary, fix
 
 
-def plan(minutes):
-    """Turn the phase shares into concrete (name, seconds, rate, orders) tuples."""
+def plan(phases, minutes):
+    """Turn a protocol's phase shares into concrete (name, seconds, rate, orders) tuples."""
     total_seconds = int(minutes * 60)
-    schedule = []
-    for name, share, rate in PHASES:
-        seconds = max(1, int(round(total_seconds * share)))
-        schedule.append((name, seconds, rate, seconds * rate))
-    return schedule
+    return [(name, max(1, int(round(total_seconds * share))), rate,
+             max(1, int(round(total_seconds * share))) * rate)
+            for name, share, rate in phases]
 
 
-def run_phase(client, name, seconds, rate, first_cl_ord_id, args):
-    """Drive one phase, or sleep through it when the rate is zero."""
-    if rate == 0:
-        print(f"  {name:<20} {seconds:>4}s   quiet -- nothing sent")
-        time.sleep(seconds)
-        return 0
+def binary_command(client, rate, seconds, first_cl_ord_id, args):
+    return [str(client),
+            "--comp-id-prefix", args.binary_comp_id,
+            "--password", args.binary_password,
+            "--sessions", "1",
+            "--orders-per-burst", str(rate),
+            "--bursts", str(seconds),
+            "--rate", str(rate),
+            "--first-cl-ord-id", str(first_cl_ord_id),
+            "--cancel-ratio", str(args.cancel_ratio)]
 
-    # One burst per second, so the client paces steadily across the phase rather than
-    # firing everything and idling. Sending flat out would make every phase look the same
-    # on a chart: dominated by queueing, which is not what this script is for.
-    command = [
-        str(client),
-        "--comp-id-prefix", args.comp_id_prefix,
-        "--password", args.password,
-        "--sessions", "1",
-        "--orders-per-burst", str(rate),
-        "--bursts", str(seconds),
-        "--rate", str(rate),
-        "--first-cl-ord-id", str(first_cl_ord_id),
-        "--cancel-ratio", str(args.cancel_ratio),
+
+def fix_command(client, rate, seconds, first_cl_ord_id, args):
+    return [sys.executable, str(client),
+            "--comp-id", args.fix_comp_id,
+            "--orders-per-burst", str(rate),
+            "--bursts", str(seconds),
+            "--rate", str(rate),
+            "--first-cl-ord-id", str(first_cl_ord_id),
+            "--cancel-ratio", str(args.cancel_ratio),
+            "--drain", "0.5"]
+
+
+def run_protocol(label, client, schedule, build_command, first_cl_ord_id, args, report):
+    """Drive one protocol through its phases. Runs in its own thread.
+
+    Each phase is a separate client invocation, so a session is a sequence of logons rather
+    than one long-lived one. That exercises the connect path repeatedly and keeps a phase that
+    goes wrong from taking the rest of the protocol's run with it.
+    """
+    next_id = first_cl_ord_id
+    for name, seconds, rate, orders in schedule:
+        started = time.monotonic()
+        if rate == 0:
+            report(f"  [{label:>6}] {name:<22} {seconds:>4}s  quiet")
+            time.sleep(seconds)
+            continue
+        report(f"  [{label:>6}] {name:<22} {seconds:>4}s  {rate:>4}/s  {orders:>7} orders")
+        result = subprocess.run(build_command(client, rate, seconds, next_id, args),
+                                capture_output=True, text=True, check=False)
+        next_id += orders + 1
+        if result.returncode != 0:
+            tail = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()[-2:]
+            report(f"  [{label:>6}] {name} FAILED (exit {result.returncode}): " + " / ".join(tail))
+        # A phase that finishes early -- the client paces itself and may drift -- is held to
+        # its slot, so the two protocols' timelines stay aligned and an offset spike really
+        # does land against the other's trickle.
+        remaining = seconds - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+
+
+def run(args):
+    binary_client, fix_client = resolve_clients(args.prefix)
+    schedules = {name: plan(phases, args.minutes) for name, phases in PROTOCOLS.items()}
+
+    lock = threading.Lock()
+
+    def report(line):
+        with lock:
+            print(line, flush=True)
+
+    base = args.first_cl_ord_id if args.first_cl_ord_id is not None else int(time.time()) * 1000
+    threads = [
+        threading.Thread(target=run_protocol, args=("binary", binary_client, schedules["binary"],
+                                                    binary_command, base, args, report)),
+        threading.Thread(target=run_protocol, args=("fix", fix_client, schedules["fix"],
+                                                    fix_command, base + 500_000_000, args, report)),
     ]
-    print(f"  {name:<20} {seconds:>4}s   {rate:>4}/s   {seconds * rate:>7} orders")
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        tail = (result.stdout or result.stderr).strip().splitlines()[-3:]
-        print(f"    phase failed (exit {result.returncode}):", *tail, sep="\n      ", file=sys.stderr)
-    return seconds * rate
+    started = time.time()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    print(f"\ndone: {time.time() - started:.0f}s elapsed")
+    return 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--minutes", type=float, default=30.0, help="length of the simulated session (default: 30)")
-    parser.add_argument("--prefix", default="installed", help="install prefix holding bin/binary_load_client (default: installed)")
-    parser.add_argument("--comp-id-prefix", default=DEFAULT_COMP_ID_PREFIX, help=f"SenderCompID prefix (default: {DEFAULT_COMP_ID_PREFIX})")
-    parser.add_argument("--password", default=DEFAULT_PASSWORD, help="SCRAM password for the sessions")
+    parser.add_argument("--prefix", default="installed", help="install prefix holding bin/binary_load_client")
+    parser.add_argument("--binary-comp-id", default=DEFAULT_COMP_ID_PREFIX, help="comp id prefix for the binary client")
+    parser.add_argument("--binary-password", default=DEFAULT_PASSWORD, help="SCRAM password for the binary sessions")
+    parser.add_argument("--fix-comp-id", default="CLIENT", help="SenderCompID for the FIX client")
+    parser.add_argument("--cancel-ratio", type=float, default=0.9,
+                        help="fraction of placed orders also cancelled (default: 0.9). Orders never cancelled rest "
+                             "on the book for ever and are recovered at the next start, which past a few minutes "
+                             "of absence is an R-0117 cancel-and-halt. Set 0 to let the book accumulate")
     parser.add_argument("--first-cl-ord-id", type=int, default=None,
                         help="starting ClOrdID. Defaults to something derived from the clock, because a ClOrdID the "
-                             "matching engine has already seen is rejected as a duplicate and the orders never reach the book")
-    parser.add_argument("--cancel-ratio", type=float, default=0.9, metavar="F",
-                        help="fraction of placed orders the client also cancels (default: 0.9). Orders that are "
-                             "never cancelled rest on the book for ever, and the matching engine recovers every one "
-                             "of them at the next start -- past a few minutes of absence that is an R-0117 "
-                             "cancel-and-halt, and the count only grows. Set 0 to leave the book to accumulate, "
-                             "which is occasionally what a test wants")
-    parser.add_argument("--dry-run", action="store_true", help="print the timeline and exit without sending anything")
+                             "matching engine has already seen is rejected as a duplicate")
+    parser.add_argument("--dry-run", action="store_true", help="print both timelines and exit without sending anything")
     args = parser.parse_args(argv)
 
-    schedule = plan(args.minutes)
-    total_orders = sum(orders for _, _, _, orders in schedule)
-    total_seconds = sum(seconds for _, seconds, _, _ in schedule)
-
-    print(f"session: {total_seconds / 60:.1f} minutes, {total_orders:,} orders across {len(schedule)} phases, "
+    schedules = {name: plan(phases, args.minutes) for name, phases in PROTOCOLS.items()}
+    print(f"session: {args.minutes:.1f} minutes, two protocols in parallel, "
           f"cancel ratio {args.cancel_ratio}\n")
-    print(f"  {'phase':<20} {'time':>5}   {'rate':>6}   {'orders':>7}")
-    for name, seconds, rate, orders in schedule:
-        rate_text = "quiet" if rate == 0 else f"{rate}/s"
-        print(f"  {name:<20} {seconds:>4}s   {rate_text:>6}   {orders:>7}")
-    print()
+    for label, schedule in schedules.items():
+        total = sum(orders for _, _, _, orders in schedule)
+        print(f"  {label} — {total:,} orders")
+        for name, seconds, rate, orders in schedule:
+            rate_text = "quiet" if rate == 0 else f"{rate}/s"
+            print(f"    {name:<22} {seconds:>4}s   {rate_text:>6}   {orders:>7}")
+        print()
 
     if args.dry_run:
         return 0
-
-    client = resolve_client(args.prefix)
-    next_cl_ord_id = args.first_cl_ord_id if args.first_cl_ord_id is not None else int(time.time()) * 1000
-
-    started = time.time()
-    for name, seconds, rate, _ in schedule:
-        next_cl_ord_id += run_phase(client, name, seconds, rate, next_cl_ord_id, args) + 1
-
-    print(f"\ndone: {time.time() - started:.0f}s elapsed, ClOrdIDs up to {next_cl_ord_id:,}")
-    return 0
+    return run(args)
 
 
 if __name__ == "__main__":
