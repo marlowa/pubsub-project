@@ -45,30 +45,27 @@ The rule for all of it: when reality departs from the narrow path this client un
 so and stop. A load client that silently carries on after a protocol surprise produces numbers
 that look fine and mean nothing, which is worse than no numbers.
 
-KNOWN DEFECT: CANCELS ARE INTERMITTENTLY MALFORMED
-=================================================
+WHERE THIS GATEWAY DIFFERS FROM THE BINARY ONE
+==============================================
 
-The order path works -- 300 orders sent, 300 Execution Reports received. Cancels do not.
-Some are parsed by the gateway and some are dropped, interleaved within one run:
+Two fields are accepted by the binary gateway and refused by this one. Both were found by
+building this client, and both mean the protocols are not currently carrying identical
+orders -- which matters, because the point of this tool is to compare them.
 
-    OrderCancelRequest ClOrdID=CLIENT-...-CANCEL OrigClOrdID=CLIENT-... Symbol=AAPL
-    OrderCancelRequest missing required fields -- dropping
+  * ORDER_QTY IS REQUIRED ON A CANCEL. handle_order_cancel_request treats an empty
+    OrderQty as a missing required field and drops the message. BinaryLoadClientMain.cpp
+    builds its cancel from ClOrdID, OrigClOrdID, Side, Symbol and TransactTime alone, with
+    no quantity, and the binary gateway accepts it.
 
-Which field goes missing has not been established. The leading suspicion is the inbound
-framing in read_available(): ClOrdIDs to cancel are harvested from Execution Reports, and a
-message split across a recv boundary in a way the framing mishandles would yield a truncated
-ClOrdID, from which a malformed cancel is then built. That is a hypothesis and has not been
-confirmed -- do not treat it as the diagnosis.
+    The failure is worth describing because it reads deceptively. The gateway logs an Info
+    line reporting the cancel as received, and only then the Warning that drops it, so a log
+    of repeated failures looks like alternating success and failure. It is not intermittent:
+    without OrderQty, every cancel is dropped.
 
-Consequences while it stands:
-
-  * --cancel-ratio does not keep the book from growing, because the cancels that matter are
-    the ones being dropped. The gateway's own cancel-on-disconnect clears the orders at
-    logout, so a run still ends tidily, but only because the gateway rescues it.
-  * Any comparison against binary_load_client should be made on ORDERS only. Its cancels
-    work; these do not, so a cancel-inclusive comparison would be measuring this defect.
-
-The orders path is sound and worth using in the meantime.
+  * EXEC_INST "1 G" IS REJECTED. The FIX validator answers ValueIsIncorrect for tag 18,
+    while the binary gateway carries the same value verbatim as a MULTIPLECHARVALUE. A
+    space-separated pair is legal FIX for that field, so one of the two is wrong.
+    --exec-inst defaults to "1", which is accepted; pass "1 G" to reproduce.
 
 Usage:
 
@@ -171,7 +168,10 @@ class FixSession:
         return fields
 
     def send(self, fields):
-        self.socket.sendall(encode(fields))
+        wire = encode(fields)
+        if getattr(self.options, "trace", False):
+            print(f"  OUT {wire.decode('ascii').replace(SOH, '|')}")
+        self.socket.sendall(wire)
         self.last_sent = time.monotonic()
 
     def connect_and_logon(self):
@@ -319,6 +319,13 @@ class FixSession:
             (ORIG_CL_ORD_ID, target),
             (SIDE, "1"),
             (SYMBOL, self.options.symbol),
+            # OrderQty is required here by this gateway, which is worth knowing because the
+            # binary gateway does NOT require it -- BinaryLoadClientMain.cpp builds its cancel
+            # from ClOrdID, OrigClOrdID, Side, Symbol and TransactTime alone. Omitting it here
+            # produces "OrderCancelRequest missing required fields -- dropping", logged AFTER
+            # an Info line that reports the message as received, so the pair reads at a glance
+            # like some cancels succeeding and others failing. They were all failing.
+            (ORDER_QTY, "100"),
             (TRANSACT_TIME, utc_timestamp()),
         ])
         self.cancels_sent += 1
@@ -423,6 +430,7 @@ def main(argv=None):
     parser.add_argument("--heartbeat", type=int, default=30, help="HeartBtInt in seconds")
     parser.add_argument("--logon-timeout", type=float, default=10.0)
     parser.add_argument("--drain", type=float, default=2.0, help="seconds to keep reading reports after the last order")
+    parser.add_argument("--trace", action="store_true", help="print every message sent, for debugging")
     parser.add_argument("--dry-run", action="store_true", help="print one encoded order and exit")
     options = parser.parse_args(argv)
 
