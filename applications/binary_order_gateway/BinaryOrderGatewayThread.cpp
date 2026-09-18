@@ -89,6 +89,9 @@ BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThr
     if (!config_.order_round_trip_buckets.empty()) {
         order_round_trip_histogram_ = get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_round_trip_metric_name,
                                                                                  gateway_metrics::order_round_trip_help, config_.order_round_trip_buckets);
+        order_ingress_to_forward_histogram_ =
+            get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_ingress_to_forward_metric_name,
+                                                       gateway_metrics::order_ingress_to_forward_help, config_.order_ingress_to_forward_buckets);
     }
 }
 
@@ -669,6 +672,21 @@ void BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, c
     if (!session.comp_id.empty()) {
         envelope.has_sender_comp_id = true;
         envelope.sender_comp_id = session.comp_id;
+    }
+
+    // The gateway's own cost: decoding the client's bytes, validating the fields and
+    // building this envelope. This is the part of the round trip that differs between the
+    // two protocols; everything after it is work they share. Recorded for a NewOrderSingle
+    // only, which is the population the round-trip histogram measures, so the two can be
+    // read against each other without correcting for message mix.
+    //
+    // Skipped without an ingress stamp, on the same reasoning as the round trip: a cancel
+    // this gateway invented when a client disconnected had nobody waiting on it.
+    if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) && current_pdu_ingress_ns_ != 0) {
+        const int64_t ingress_to_forward_ns = config_.wall_clock->now_ns() - current_pdu_ingress_ns_;
+        if (ingress_to_forward_ns >= 0) {
+            order_ingress_to_forward_histogram_.observe(static_cast<double>(ingress_to_forward_ns));
+        }
     }
 
     forward_envelope_to_sequencers(envelope);

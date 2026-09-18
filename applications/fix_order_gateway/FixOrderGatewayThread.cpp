@@ -206,6 +206,9 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
     if (!config_.order_round_trip_buckets.empty()) {
         order_round_trip_histogram_ = get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_round_trip_metric_name,
                                                                                  gateway_metrics::order_round_trip_help, config_.order_round_trip_buckets);
+        order_ingress_to_forward_histogram_ =
+            get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_ingress_to_forward_metric_name,
+                                                       gateway_metrics::order_ingress_to_forward_help, config_.order_ingress_to_forward_buckets);
     }
 
     // Start the reusable ER wire buffer at the common-case size; the ER send path grows

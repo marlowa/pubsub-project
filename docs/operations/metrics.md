@@ -369,6 +369,43 @@ Every ER for an order carries the same ingress stamp, so a later `Canceled` one 
 otherwise be recorded as a round trip lasting as long as the order rested on the book. A
 cancel's own round trip is a different measurement of a different thing.
 
+### `order_ingress_to_forward_nanoseconds`
+
+A histogram, registered by **both** order gateways, measuring from the moment a gateway took
+a client's order in hand to the moment it forwards that order to the sequencer.
+
+    order_ingress_to_forward_nanoseconds_bucket{application="pubsub",component="fix_order_gateway_a",scope="gateway_thread",le="25000"}
+    order_ingress_to_forward_nanoseconds_bucket{application="pubsub",component="binary_order_gateway_a",scope="gateway_thread",le="25000"}
+
+**This is the metric that compares the two protocols, and the round trip is not.** It covers
+the work that is a gateway's alone: parsing the client's bytes, validating the fields, and
+building the envelope. Everything after it — sequencer, matching engine, write-ahead log,
+and the whole report path back — is byte-identical work whichever gateway took the order.
+
+Measured under load on 2026-09-19, the two gateways' round trips differed by 57us inside
+900us, and their `itc_queue_latency_nanoseconds` figures by 1us. An end-to-end number is
+dominated by what the protocols share, so it can show that they differ without ever showing
+where, and a real improvement to FIX decoding would move it by a few per cent at most.
+
+**It shares the round trip's time origin.** The same `gateway_ingress_ns` stamp starts both,
+so the two are directly comparable: the difference between them is everything the gateway
+does not control. No wire change was needed, because that stamp already existed.
+
+**Recorded for a NewOrderSingle only**, which is the population the round trip measures, so
+the two can be read against each other without correcting for message mix. A cancel the
+gateway invented on a client disconnect carries no ingress stamp and is skipped, on the same
+reasoning as the round trip.
+
+**Both gateways are instrumented identically** — one shared metric name, one shared help
+string, one shared set of bucket bounds from a single placeholder, and the observation made
+at the same point in each: immediately before the envelope is handed to the sequencers. The
+warning under Open below is what this answers to; instrumenting them differently would have
+produced a comparison of the instrumentation.
+
+Its bucket bounds are much lower than the round trip's and must be, since it measures a part
+of what the round trip measures. Bounds chosen for the whole would put every observation in
+the lowest bucket and report the same percentile whatever the truth was.
+
 #### How the ingress time travels
 
 The measurement starts in the gateway and ends in the gateway, but the order visits the
@@ -487,12 +524,12 @@ that seam if it turns out to be wanted.
   gateways are opted in; the sequencer, arbiter, witness, authentication services, matching
   engine publisher and topic probe are not, so they expose no per-thread series. Opting the
   sequencer in is the obvious next one, since it sits between the two ends of the round trip.
-- **Which gateway-internal segment is which.** `order_round_trip_nanoseconds` gives the
-  whole trip but does not break it down, so it shows *that* FIX and binary differ without
-  showing where. The segments where they actually differ are gateway-internal -- decode and
-  encode on the FIX side, structurally absent on the binary one -- and everything downstream
-  is common. `gateway_ingress_ns` on the envelope is already the time origin such a
-  breakdown would measure from, so the segments can be added without another wire change.
+- **The outbound half of the gateway-internal breakdown.** The inbound half is now
+  measured: `order_ingress_to_forward_nanoseconds` covers decode, validation and envelope
+  construction, which is where the protocols differ on the way in. Encoding the outbound
+  ExecutionReport is not measured, and on the FIX side that is real work the binary gateway
+  does differently. It needs a second stamp rather than a second metric family, because the
+  ER path has no time origin of its own the way the inbound path has `gateway_ingress_ns`.
   **Instrument both gateways identically or the comparison measures the instrumentation:**
   the first attempt at this comparison was dominated by *logging*, at 32% of the FIX
   gateway's samples against 11% for binary, more than three times the cost of FIX parsing.

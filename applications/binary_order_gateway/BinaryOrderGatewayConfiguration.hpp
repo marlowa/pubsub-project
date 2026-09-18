@@ -220,6 +220,14 @@ struct BinaryOrderGatewayConfiguration {
      * Must match the FIX gateway's exactly -- see GatewayMetrics.hpp.
      */
     std::vector<double> order_round_trip_buckets;
+
+    /**
+     * @brief Bucket bounds in nanoseconds for order_ingress_to_forward_nanoseconds.
+     *
+     * Empty when metrics are disabled, in which case nothing registers and it is unused.
+     * Must match the FIX gateway's exactly -- see GatewayMetrics.hpp.
+     */
+    std::vector<double> order_ingress_to_forward_buckets;
 };
 
 } // namespaces

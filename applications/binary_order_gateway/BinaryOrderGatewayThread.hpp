@@ -263,6 +263,7 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // told apart by the component label -- see applications/fix_common/GatewayMetrics.hpp.
     // Unbound, and therefore a no-op, when no bounds are configured.
     pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
+    pubsub_itc_fw::HistogramHandle order_ingress_to_forward_histogram_;
 
     // Publishes the open-order pool's statistics. The pool records nothing itself -- it
     // computes the numbers and offers them -- so something has to sample it, and this

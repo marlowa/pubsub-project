@@ -321,6 +321,21 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
             envelope.sender_comp_id = sender_comp_id;
         }
 
+        // The gateway's own cost: decoding the client's bytes, validating the fields and
+        // building this envelope. This is the part of the round trip that differs between
+        // the two protocols; everything after it is work they share. Recorded for a
+        // NewOrderSingle only, which is the population the round-trip histogram measures,
+        // so the two can be read against each other without correcting for message mix.
+        //
+        // Skipped without an ingress stamp, on the same reasoning as the round trip: a
+        // cancel this gateway invented when a client disconnected had nobody waiting on it.
+        if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) && gateway_ingress_ns != 0) {
+            const int64_t ingress_to_forward_ns = config_.wall_clock->now_ns() - gateway_ingress_ns;
+            if (ingress_to_forward_ns >= 0) {
+                order_ingress_to_forward_histogram_.observe(static_cast<double>(ingress_to_forward_ns));
+            }
+        }
+
         forward_pdu_to_sequencers(pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope);
     }
 
@@ -555,6 +570,7 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // metrics scope. See applications/fix_common/GatewayMetrics.hpp for why the bucket
     // bounds are shared with the binary gateway rather than chosen here.
     pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
+    pubsub_itc_fw::HistogramHandle order_ingress_to_forward_histogram_;
 
     // Publishes the open-order pool's statistics. Deliberately identical to the binary
     // gateway's -- same metric family, same scope, same sample interval -- since a

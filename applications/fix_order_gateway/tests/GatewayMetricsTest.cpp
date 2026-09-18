@@ -95,6 +95,55 @@ TEST(GatewayMetricsTest, TheErrorNamesTheOffendingElement) {
     }
 }
 
+TEST(GatewayMetricsTest, TheDecodeAndForwardLoaderReadsItsOwnKey) {
+    // The two histograms have separate keys and must not be crossed: one measures a part of
+    // what the other measures, so bounds chosen for either are wrong for the other.
+    pubsub_itc_fw::TomlConfiguration configuration;
+    const std::string text = "[metrics]\norder_ingress_to_forward_buckets = [100, 250, 500]\n";
+    auto [ok, error] = configuration.load_string(text);
+    ASSERT_TRUE(ok) << error;
+
+    const std::vector<double> buckets = gateway_metrics::load_order_ingress_to_forward_buckets(configuration);
+    ASSERT_EQ(buckets.size(), 3u);
+    EXPECT_DOUBLE_EQ(buckets.front(), 100.0);
+    EXPECT_DOUBLE_EQ(buckets.back(), 500.0);
+}
+
+TEST(GatewayMetricsTest, TheDecodeAndForwardLoaderDoesNotFallBackToTheRoundTripKey) {
+    // A file carrying only the round trip's bounds must fail rather than silently measure
+    // the gateway's own work against bounds chosen for the whole venue round trip.
+    pubsub_itc_fw::TomlConfiguration configuration;
+    load_with_buckets(configuration, "[10000, 25000, 50000]");
+    EXPECT_THROW(gateway_metrics::load_order_ingress_to_forward_buckets(configuration), pubsub_itc_fw::ConfigurationException);
+}
+
+TEST(GatewayMetricsTest, TheDecodeAndForwardLoaderAppliesTheSameRules) {
+    // The validation is shared, so this checks the key reaches it rather than re-testing
+    // every rule: a descending pair must be refused, and the message must name this key.
+    pubsub_itc_fw::TomlConfiguration configuration;
+    const std::string text = "[metrics]\norder_ingress_to_forward_buckets = [500, 250]\n";
+    auto [ok, error] = configuration.load_string(text);
+    ASSERT_TRUE(ok) << error;
+
+    try {
+        const std::vector<double> unused = gateway_metrics::load_order_ingress_to_forward_buckets(configuration);
+        FAIL() << "descending bounds were accepted";
+    } catch (const pubsub_itc_fw::ConfigurationException& ex) {
+        const std::string message = ex.what();
+        EXPECT_NE(message.find(gateway_metrics::order_ingress_to_forward_buckets_key), std::string::npos) << message;
+    }
+}
+
+TEST(GatewayMetricsTest, TheDecodeAndForwardMetricNameCarriesNoProtocol) {
+    // Same rule as the round trip's, and it matters more here: this family exists to be
+    // compared across protocols, so a protocol word in the name would defeat its purpose.
+    const std::string name = gateway_metrics::order_ingress_to_forward_metric_name;
+    EXPECT_EQ(name.find("fix"), std::string::npos) << name;
+    EXPECT_EQ(name.find("binary"), std::string::npos) << name;
+    EXPECT_NE(name.find("nanoseconds"), std::string::npos) << name;
+    EXPECT_NE(name, std::string(gateway_metrics::order_round_trip_metric_name));
+}
+
 TEST(GatewayMetricsTest, TheMetricNameCarriesNoProtocol) {
     // Both gateways register this one family and are told apart by the component label.
     // A protocol word here would mean two families, which cannot be compared in one query

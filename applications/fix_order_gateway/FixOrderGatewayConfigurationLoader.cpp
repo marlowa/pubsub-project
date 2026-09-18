@@ -153,6 +153,7 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
         // same rule metrics.listen_host follows.
         if (config.metrics_configuration.enabled) {
             config.order_round_trip_buckets = gateway_metrics::load_order_round_trip_buckets(toml);
+            config.order_ingress_to_forward_buckets = gateway_metrics::load_order_ingress_to_forward_buckets(toml);
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

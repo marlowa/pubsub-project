@@ -76,6 +76,11 @@ listen_port = ${binary_order_gateway_b_metrics_listen_port}
 # protocol's, and histograms with differing bounds cannot be compared or aggregated.
 order_round_trip_buckets = ${shared_metrics_order_round_trip_buckets}
 
+# Bucket bounds in nanoseconds for order_ingress_to_forward_nanoseconds. From the same
+# shared placeholder for the same reason: this is the metric that compares the two
+# gateways, so bounds that differ between them make the comparison meaningless.
+order_ingress_to_forward_buckets = ${shared_metrics_order_ingress_to_forward_buckets}
+
 [reactor]
 cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
