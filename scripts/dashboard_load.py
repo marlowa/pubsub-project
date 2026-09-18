@@ -127,62 +127,89 @@ def plan(phases, minutes):
             for name, share, rate in phases]
 
 
-def binary_command(client, rate, seconds, first_cl_ord_id, args):
+# Orders per "T". Small enough that the interval between bursts paces the rate smoothly,
+# large enough that the shaper is not writing to a pipe thousands of times a second.
+BURST_SIZE = 10
+
+
+def binary_command(client, args, first_cl_ord_id, peak_rate):
+    """binary_load_client, held open for the whole run and driven from stdin."""
     return [str(client),
             "--comp-id-prefix", args.binary_comp_id,
             "--password", args.binary_password,
             "--sessions", "1",
-            "--orders-per-burst", str(rate),
-            "--bursts", str(seconds),
-            "--rate", str(rate),
+            "--orders-per-burst", str(BURST_SIZE),
+            "--rate", str(peak_rate),
             "--first-cl-ord-id", str(first_cl_ord_id),
             "--cancel-ratio", str(args.cancel_ratio)]
 
 
-def fix_command(client, rate, seconds, first_cl_ord_id, args):
-    return [sys.executable, str(client),
+def fix_command(client, args, first_cl_ord_id, peak_rate):
+    """fix_load_client, same contract: --bursts 0 means one burst per T line on stdin."""
+    return [sys.executable, "-u", str(client),
             "--comp-id", args.fix_comp_id,
-            "--orders-per-burst", str(rate),
-            "--bursts", str(seconds),
-            "--rate", str(rate),
+            "--bursts", "0",
+            "--orders-per-burst", str(BURST_SIZE),
+            "--rate", str(peak_rate),
             "--first-cl-ord-id", str(first_cl_ord_id),
             "--cancel-ratio", str(args.cancel_ratio),
-            "--drain", "0.5"]
+            "--drain", "1.0"]
 
 
-def run_protocol(label, client, schedule, build_command, first_cl_ord_id, args, report):
-    """Drive one protocol through its phases. Runs in its own thread.
+def run_protocol(label, command, schedule, report):
+    """Drive one protocol through its phases down a single, long-lived session.
 
-    Each phase is a separate client invocation, so a session is a sequence of logons rather
-    than one long-lived one. That exercises the connect path repeatedly and keeps a phase that
-    goes wrong from taking the rest of the protocol's run with it.
+    ONE session for the whole run, not one per phase. A client that logs out leaves the
+    gateway to cancel every order it still had resting -- cancel-on-disconnect, working
+    exactly as intended -- and with a cancel ratio below 1 that is thousands of orders
+    arriving at the matching engine as a single wall of work. Measured at 8,455 and 9,418
+    orders at two phase boundaries, which showed up as 150ms and 700ms spikes in the round
+    trip of BOTH gateways, because they share the engine.
+
+    Those spikes were an artefact of the harness and contaminated the measurements the run
+    exists to take. Holding the session open removes them: the only logout is at the end.
+
+    The rate is set by how often a "T" is written, each T being BURST_SIZE orders.
     """
-    next_id = first_cl_ord_id
-    for name, seconds, rate, orders in schedule:
-        started = time.monotonic()
-        if rate == 0:
-            report(f"  [{label:>6}] {name:<22} {seconds:>4}s  quiet")
-            time.sleep(seconds)
-            continue
-        report(f"  [{label:>6}] {name:<22} {seconds:>4}s  {rate:>4}/s  {orders:>7} orders")
-        result = subprocess.run(build_command(client, rate, seconds, next_id, args),
-                                capture_output=True, text=True, check=False)
-        next_id += orders + 1
-        if result.returncode != 0:
-            tail = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()[-2:]
-            report(f"  [{label:>6}] {name} FAILED (exit {result.returncode}): " + " / ".join(tail))
-        # A phase that finishes early -- the client paces itself and may drift -- is held to
-        # its slot, so the two protocols' timelines stay aligned and an offset spike really
-        # does land against the other's trickle.
-        remaining = seconds - (time.monotonic() - started)
-        if remaining > 0:
-            time.sleep(remaining)
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, text=True)
+    try:
+        for name, seconds, rate, orders in schedule:
+            if rate == 0:
+                report(f"  [{label:>6}] {name:<22} {seconds:>4}s  quiet")
+                time.sleep(seconds)
+                continue
+            report(f"  [{label:>6}] {name:<22} {seconds:>4}s  {rate:>4}/s  {orders:>7} orders")
+            interval = BURST_SIZE / rate
+            deadline = time.monotonic() + seconds
+            next_burst = time.monotonic()
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    report(f"  [{label:>6}] client exited early (code {process.returncode})")
+                    return
+                try:
+                    process.stdin.write("T\n")
+                    process.stdin.flush()
+                except (BrokenPipeError, ValueError):
+                    report(f"  [{label:>6}] client closed its input")
+                    return
+                next_burst += interval
+                time.sleep(max(0.0, next_burst - time.monotonic()))
+    finally:
+        # Closing stdin ends the client's burst loop; it then drains, reports and logs out.
+        try:
+            process.stdin.close()
+        except (BrokenPipeError, ValueError):
+            pass
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
 
 def run(args):
     binary_client, fix_client = resolve_clients(args.prefix)
     schedules = {name: plan(phases, args.minutes) for name, phases in MODES[args.mode].items()}
-
     lock = threading.Lock()
 
     def report(line):
@@ -190,11 +217,15 @@ def run(args):
             print(line, flush=True)
 
     base = args.first_cl_ord_id if args.first_cl_ord_id is not None else int(time.time()) * 1000
+    peaks = {name: max(rate for _, _, rate, _ in schedule) for name, schedule in schedules.items()}
+
     threads = [
-        threading.Thread(target=run_protocol, args=("binary", binary_client, schedules["binary"],
-                                                    binary_command, base, args, report)),
-        threading.Thread(target=run_protocol, args=("fix", fix_client, schedules["fix"],
-                                                    fix_command, base + 500_000_000, args, report)),
+        threading.Thread(target=run_protocol, args=(
+            "binary", binary_command(binary_client, args, base, peaks["binary"]),
+            schedules["binary"], report)),
+        threading.Thread(target=run_protocol, args=(
+            "fix", fix_command(fix_client, args, base + 500_000_000, peaks["fix"]),
+            schedules["fix"], report)),
     ]
     started = time.time()
     for thread in threads:

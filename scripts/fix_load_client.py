@@ -355,7 +355,17 @@ def run(options):
     next_id = options.first_cl_ord_id
     started = time.monotonic()
 
-    for burst in range(1, options.bursts + 1):
+    # With --bursts 0 the session is driven from stdin instead: one burst per "T" line, which
+    # is binary_load_client's contract and f8test's before it. That is what lets a caller hold
+    # ONE session open for a whole run and vary the rate by how often it writes a T -- rather
+    # than starting a fresh client per phase, where each logout triggers cancel-on-disconnect
+    # for every order still resting and dumps thousands of cancels on the matching engine at
+    # once. Those storms are large enough to show as multi-hundred-millisecond spikes in the
+    # round trip of BOTH gateways, because they share the engine.
+    bursts = iter(lambda: sys.stdin.readline(), "") if options.bursts == 0 \
+        else iter(range(options.bursts).__iter__().__next__, None)
+
+    for burst_index, _ in enumerate(bursts, start=1):
         burst_started = time.monotonic()
         for _ in range(options.orders_per_burst):
             due = time.monotonic() + gap
@@ -367,8 +377,9 @@ def run(options):
             session.heartbeat_if_due()
             while gap and time.monotonic() < due:
                 time.sleep(min(0.001, max(0.0, due - time.monotonic())))
-        print(f"  burst {burst}: {options.orders_per_burst} order(s) in "
-              f"{time.monotonic() - burst_started:.3f}s")
+        if options.trace or options.bursts:
+            print(f"  burst {burst_index}: {options.orders_per_burst} order(s) in "
+                  f"{time.monotonic() - burst_started:.3f}s", flush=True)
 
     # Let the reports catch up before reporting, or the count understates by whatever is
     # still in flight when the last order was sent.
@@ -405,7 +416,10 @@ def main(argv=None):
     parser.add_argument("--password", default=DEFAULT_PASSWORD, help="tag 554; empty for CLIENT")
     parser.add_argument("--symbol", default="AAPL")
     parser.add_argument("--orders-per-burst", type=int, default=1000)
-    parser.add_argument("--bursts", type=int, default=1)
+    parser.add_argument("--bursts", type=int, default=1,
+                        help="fire N bursts then stop; 0 takes one burst per \"T\" line on stdin, which is "
+                             "binary_load_client's contract and is how one session is held open across a "
+                             "whole run instead of one session per phase")
     parser.add_argument("--rate", type=int, default=0,
                         help="orders per second. Omit for a throughput test: orders go out as fast as "
                              "the socket accepts them, which offers load far faster than the pipeline "
