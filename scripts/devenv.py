@@ -590,9 +590,89 @@ def check_configs_expanded(install_dir: Path) -> None:
                  "so what runs is then no longer a release anybody can name.")
 
 
+# ── Durable state, and clearing it deliberately ───────────────────────────────
+
+# The two artefacts a restart inherits, and why they are separate flags.
+#
+# The open-order region is CURRENT STATE: the orders the matching engine was holding. It is
+# what makes a restart resume rather than forget, and it is also what grows without bound in a
+# sandbox, because load that places orders and never cancels them leaves every one of them
+# resting. Past a few minutes of absence that is an R-0117 cancel-and-halt on every start, and
+# the count only rises: 2,000 one day, 165,000 the next, each start slower than the last.
+#
+# The write-ahead log is HISTORY. Clearing it discards the record of what the venue did, which
+# is a different kind of loss and runs into a retention question this project has deliberately
+# not answered. So it is a separate flag, off unless asked for, and never implied by the other.
+# Conflating them is how somebody eventually clears the wrong one.
+#
+# Both read the DEPLOYED configs rather than the environment file, because deploy.py rewrites
+# wal_directory when PUBSUB_WAL_ROOT names another device -- so the environment file says where
+# the WAL was configured to go and the deployed config says where it actually went.
+# Addressed as (section, key) rather than by key name alone. The WAL key is literally
+# `directory`, which is far too generic to search for: matching it anywhere would eventually
+# find something else and delete it. These are the names in the DEPLOYED config, which differ
+# from the environment file -- deploy.py renames order_book_region_path to [order_book]
+# region_path and resolves both to absolute paths, so the environment file says where these
+# were configured to go and the deployed config says where they actually went.
+_REGION = ("order_book", "region_path")
+_WAL = ("wal", "directory")
+
+
+def _durable_paths(env: dict, install_dir: Path, section: str, key: str) -> list[Path]:
+    """Every path named by [section] key across the deployed component configs."""
+    found: list[Path] = []
+    for comp in env["components"].values():
+        if "config" not in comp:
+            continue
+        config_path = (install_dir / comp["config"]).resolve()
+        if not config_path.is_file():
+            continue
+        try:
+            with config_path.open("rb") as handle:
+                config = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        value = config.get(section, {}).get(key)
+        if not value:
+            continue
+        raw = Path(str(value))
+        found.append(raw if raw.is_absolute() else (install_dir / raw).resolve())
+    return sorted(set(found))
+
+
+def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh_wal: bool) -> None:
+    """Remove the open-order regions and/or write-ahead logs before anything starts.
+
+    Says what it removed, every time. A flag that silently deletes durable state is one nobody
+    should trust, and the sizes are worth seeing: a region is preallocated at full size whatever
+    it holds, so the file was never going to tell anyone it had filled up.
+    """
+    for wanted, (section, key), label in ((fresh_book, _REGION, "open-order region"),
+                                          (fresh_wal, _WAL, "write-ahead log")):
+        if not wanted:
+            continue
+        paths = _durable_paths(env, install_dir, section, key)
+        if not paths:
+            print(f"=== clearing {label}: nothing configured ===")
+            continue
+        print(f"=== clearing {label} ===")
+        for path in paths:
+            if path.is_dir():
+                size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+                shutil.rmtree(path)
+                print(f"  removed {path} ({size / 1e6:.0f} MB)")
+            elif path.exists():
+                size = path.stat().st_size
+                path.unlink()
+                print(f"  removed {path} ({size / 1e6:.0f} MB)")
+            else:
+                print(f"  {path} (absent already)")
+
+
 def cmd_start(  # pylint: disable=too-many-arguments
     env: dict, ha_enabled: bool, delay: float, debug: bool = False,
     component: str | None = None, with_prometheus: bool = True, supervised: bool = False,
+    fresh_book: bool = False, fresh_wal: bool = False,
 ) -> None:
     """Implement the 'start' subcommand: export credentials then start all components.
 
@@ -612,6 +692,9 @@ def cmd_start(  # pylint: disable=too-many-arguments
     # Refuse to start against un-deployed (still-templated) configs -- see the function
     # docstring. Guards both the full-stack and single-component paths.
     check_configs_expanded(install_dir)
+    # Before anything is started, so nothing has the region mapped when it is removed.
+    if fresh_book or fresh_wal:
+        clear_durable_state(env, install_dir, fresh_book=fresh_book, fresh_wal=fresh_wal)
     # Say so when the venue about to start was not built from this tree. Reported at start rather
     # than at deploy because this is the moment somebody begins trusting what is running, and it
     # only warns: running an older release on purpose is legitimate. See BUG-0015.
@@ -818,6 +901,18 @@ def parse_args() -> argparse.Namespace:
              "what keeps the launcher optional",
     )
     parser.add_argument(
+        "--fresh-book", action="store_true",
+        help="delete the matching engines' open-order regions before starting, so the venue comes up "
+             "holding no orders. A sandbox driven by load that never cancels accumulates them without "
+             "limit, and past a few minutes of absence every start becomes an R-0117 cancel-and-halt. "
+             "Discards current state; leaves the write-ahead log alone",
+    )
+    parser.add_argument(
+        "--fresh-wal", action="store_true",
+        help="delete the write-ahead logs before starting. Separate from --fresh-book and never implied "
+             "by it: this discards the record of what the venue did, not merely what it was holding",
+    )
+    parser.add_argument(
         "--no-prometheus", action="store_true",
         help="skip components marked metrics_only = true (the Prometheus scraper). "
              "The venue itself still exposes its metrics endpoints; nothing collects them",
@@ -893,7 +988,7 @@ def main() -> None:
 
     if args.subcommand == "start":
         cmd_start(env, ha_enabled, args.delay, debug=args.debug, component=args.component, supervised=args.supervised,
-                  with_prometheus=with_prometheus)
+                  with_prometheus=with_prometheus, fresh_book=args.fresh_book, fresh_wal=args.fresh_wal)
     elif args.subcommand == "stop":
         cmd_stop(env)
     elif args.subcommand == "status":
