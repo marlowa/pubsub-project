@@ -45,22 +45,24 @@ way to name an order it has placed. A request to cancel therefore carries it.
   \uncovered{no scenario sends a cancel that omits the original identifier}
 \end{requirement}
 
-The FIX gateway also requires the order's quantity, which neither FIX nor the binary
-gateway requires. A cancel applies to the whole of an order, so the quantity does not
-affect what the venue does with the request. No grounds for requiring it have been
-established, and it is recorded here as what the venue does rather than as a rule with a
-reason behind it.
+The venue requires nothing else beyond what FIX requires. In particular it does not
+require the order's quantity. A cancel applies to the whole of an order, so the quantity
+cannot change what the venue does with the request, and a member that sends one is sending
+a field the venue reads and discards.
 
-\begin{gap}{}
-  The two gateways disagree on what a request to cancel must carry. The FIX gateway
-  requires the order's quantity and refuses a request that omits it. The binary gateway
-  accepts a request without a quantity, and the load client built against it sends none.
-  FIX 5.0 SP2 agrees with the binary gateway.
+\begin{requirement}{R-0144}{Both gateways accept the same request to cancel}
+  The two gateways shall require the same fields on a request to cancel an order. Where
+  FIX 5.0 SP2 makes a field optional, the venue shall accept a request that omits it,
+  unless this document states a requirement for that field.
+  \rationale{A member choosing between the two gateways is choosing on latency. A member
+  that has to send different messages to the two of them is choosing on message format as
+  well, and a member moving from one to the other has to change its code to do it.
 
-  A member that follows FIX has its cancels refused by one gateway and accepted by the
-  other. Which of the two is right is undecided: the requirement above covers the original
-  identifier, which is well founded, and deliberately does not cover the quantity.
-\end{gap}
+  The requirement is written as a rule about the pair rather than as a list of fields,
+  because the fields will change and the agreement between the gateways is the property
+  worth keeping.}
+  \uncovered{no scenario sends the same cancel to both gateways}
+\end{requirement}
 
 \subsection{What a member is told about a message the venue will not process}
 \label{subsec:refused_message_reply}

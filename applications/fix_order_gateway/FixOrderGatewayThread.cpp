@@ -1892,19 +1892,21 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                "OrigClOrdID={} Symbol={}",
                session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, symbol);
 
-    const std::string missing =
-        missing_field_names({{"ClOrdID", cl_ord_id}, {"OrigClOrdID", orig_cl_ord_id}, {"Symbol", symbol}, {"Side", side_str}, {"OrderQty", order_qty}});
+    // OrderQty is deliberately absent from this list. FIX 5.0 SP2 marks OrderQtyData
+    // optional on an OrderCancelRequest, the binary gateway accepts a cancel without it,
+    // and a cancel applies to the whole of an order, so the quantity cannot change what
+    // the venue does with the request. Requiring it here refused cancels from any client
+    // that follows the specification. See R-0142 in the book's applications chapter.
+    const std::string missing = missing_field_names({{"ClOrdID", cl_ord_id}, {"OrigClOrdID", orig_cl_ord_id}, {"Symbol", symbol}, {"Side", side_str}});
     if (!missing.empty()) {
         // Same reasoning as the NewOrderSingle path above. This one matters more: a member
         // who believes a cancel was accepted, and whose order is in fact still live, is
         // exposed to a market they think they have left.
         //
-        // Note that OrderQty and OrigClOrdID are venue requirements, not FIX ones -- FIX
-        // 5.0 SP2 requires only ClOrdID, Instrument, Side and TransactTime on a cancel. A
-        // conforming client will omit them, so this reject is a message real members will
-        // see and must be able to act on. R-0142 and R-0143 in the book's applications
-        // chapter carry the requirements; the gap box beside them records that the binary
-        // gateway does not require OrderQty and that the disagreement is unresolved.
+        // OrigClOrdID is a venue requirement rather than a FIX one: FIX lets a member name
+        // the order by the OrderID the venue assigned instead, and the venue does not offer
+        // that, because the matching engine's book is keyed on the member's own identifier.
+        // See R-0142 and R-0143 in the book's applications chapter.
         if (cl_ord_id.empty()) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "FixOrderGatewayThread: connection {} OrderCancelRequest has no ClOrdID (missing: {}) -- cannot reject, dropping",
@@ -1965,7 +1967,11 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     ocr.symbol = symbol;
     ocr.side = static_cast<pubsub_itc_fw_app::Side>(side_str[0]);
     ocr.transact_time = parse_fix_utc_timestamp(msg.get(Tag::SendingTime));
-    ocr.order_qty = order_qty;
+    // Optional, so forward it only when the member sent one -- the same guard the
+    // cancel-on-disconnect path uses when it has no stored quantity to pass on.
+    if (!order_qty.empty()) {
+        ocr.order_qty = order_qty;
+    }
 
     // Connection id (cancel-ER routing) and SenderCompID (audit) ride on the
     // WalRecord envelope, not inside the PDU (same mechanism as NOS).

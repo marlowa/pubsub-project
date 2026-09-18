@@ -119,7 +119,11 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
     }
     writer.push_back_field(Tag::Symbol, view.symbol);
     writer.push_back_field(Tag::Side, static_cast<char>(view.side));
-    if (view.has_order_qty) {
+    // The presence flag alone is not enough. A request to cancel need not carry a quantity
+    // (R-0144), and the matching engine copies the quantity into its report with the flag
+    // set whether or not there was one, so a view reaches here holding an empty value.
+    // "38=" with nothing after it is not a valid field, so check the value as well.
+    if (view.has_order_qty && !view.order_qty.empty()) {
         writer.push_back_field(Tag::OrderQty, view.order_qty);
     }
     if (view.has_price) {

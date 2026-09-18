@@ -146,3 +146,4 @@ R-0140     active    2026-09-10  The two connections of one subscription are est
 R-0141     active    2026-09-10  How far a subscriber may fall behind before it is dropped is a stated figure
 R-0142     active    2026-09-18  A request to cancel an order names the order it cancels
 R-0143     active    2026-09-18  A message missing a field the venue requires is answered
+R-0144     active    2026-09-18  Both gateways accept the same request to cancel
