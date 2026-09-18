@@ -20,7 +20,7 @@
       "title": "ITC hop \u2014 $component \u2014 queue wait + wakeup",
       "description": "Time from a message being enqueued to it being dispatched: the queue wait plus the wakeup (the eventfd write and the epoll_wait return). Message construction happens before the stamp, so none of it is in here.",
       "gridPos": {
-        "h": 9,
+        "h": 10,
         "w": 24,
         "x": 0,
         "y": 0
@@ -74,10 +74,10 @@
       "title": "ITC hop \u2014 $component \u2014 percentiles by thread",
       "description": "Watch this across the quiet phases of a trading-day run. A thread that sleeps between messages has to be woken for each one, and the cost of that appears here and nowhere else.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 9
+        "y": 10
       },
       "datasource": {
         "type": "prometheus",
@@ -90,8 +90,8 @@
             "type": "prometheus",
             "uid": "pubsub-prom"
           },
-          "expr": "histogram_quantile(0.50, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{application=\"pubsub\", component=\"$component\"}[$__rate_interval])))",
-          "legendFormat": "{{component}}/{{scope}} p50",
+          "expr": "histogram_quantile(0.90, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{application=\"pubsub\", component=\"$component\"}[$__rate_interval])))",
+          "legendFormat": "{{component}}/{{scope}} p90",
           "editorMode": "code",
           "range": true
         },
@@ -140,10 +140,10 @@
       "title": "ITC samples excluded (unstamped) \u2014 $component",
       "description": "Messages dispatched with no enqueue stamp over the window in view, and therefore NOT in the histogram above. Anything other than zero means the distribution is describing a subset of the traffic while looking complete. Green is zero.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 9
+        "y": 10
       },
       "datasource": {
         "type": "prometheus",
@@ -202,10 +202,10 @@
       "title": "Order round trip \u2014 $component \u2014 distribution over time",
       "description": "Order off the client connection to starting to send its ExecutionReport.",
       "gridPos": {
-        "h": 9,
+        "h": 10,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 21
       },
       "datasource": {
         "type": "prometheus",
@@ -256,10 +256,10 @@
       "title": "Order round trip \u2014 percentiles, all gateways compared",
       "description": "histogram_quantile interpolates inside the bucket the rank falls in, so these are estimates whose quality is a property of the configured bucket bounds.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 26
+        "y": 31
       },
       "datasource": {
         "type": "prometheus",
@@ -272,24 +272,13 @@
             "type": "prometheus",
             "uid": "pubsub-prom"
           },
-          "expr": "histogram_quantile(0.50, sum by (le, component) (rate(order_round_trip_nanoseconds_bucket{application=\"pubsub\"}[$__rate_interval])))",
-          "legendFormat": "{{component}} p50",
-          "editorMode": "code",
-          "range": true
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "pubsub-prom"
-          },
           "expr": "histogram_quantile(0.90, sum by (le, component) (rate(order_round_trip_nanoseconds_bucket{application=\"pubsub\"}[$__rate_interval])))",
           "legendFormat": "{{component}} p90",
           "editorMode": "code",
           "range": true
         },
         {
-          "refId": "C",
+          "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "pubsub-prom"
@@ -333,10 +322,10 @@
       "title": "WAL append \u2014 percentiles, by sequencer",
       "description": "Committing one record to the write-ahead log. The metric on which the lazytime mount option showed up.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 26
+        "y": 31
       },
       "datasource": {
         "type": "prometheus",
@@ -349,8 +338,8 @@
             "type": "prometheus",
             "uid": "pubsub-prom"
           },
-          "expr": "histogram_quantile(0.50, sum by (le, component) (rate(wal_append_nanoseconds_bucket{application=\"pubsub\"}[$__rate_interval])))",
-          "legendFormat": "{{component}} p50",
+          "expr": "histogram_quantile(0.90, sum by (le, component) (rate(wal_append_nanoseconds_bucket{application=\"pubsub\"}[$__rate_interval])))",
+          "legendFormat": "{{component}} p90",
           "editorMode": "code",
           "range": true
         },
@@ -397,12 +386,12 @@
     {
       "type": "timeseries",
       "title": "Protocol comparison \u2014 order round trip, FIX against binary",
-      "description": "Both instances of each protocol are pooled, because the comparison is between protocols rather than between instances -- the per-gateway panel above is where an individual instance is judged. Reads as nothing until both gateways are taking orders; today only the binary side has a load generator.",
+      "description": "p90 and p99 rather than a median: a latency problem lives in the tail, and a p50 that barely moves while p99 triples is the case this panel exists to show. Both instances of each protocol are pooled, because the comparison is between protocols rather than between instances -- the per-gateway panel above is where an individual instance is judged. Reads as nothing until both gateways are taking orders; today only the binary side has a load generator.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 50
+        "y": 42
       },
       "datasource": {
         "type": "prometheus",
@@ -415,8 +404,8 @@
             "type": "prometheus",
             "uid": "pubsub-prom"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(order_round_trip_nanoseconds_bucket{application=\"pubsub\", component=~\"fix_order_gateway.*\"}[$__rate_interval])))",
-          "legendFormat": "FIX p50",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(order_round_trip_nanoseconds_bucket{application=\"pubsub\", component=~\"fix_order_gateway.*\"}[$__rate_interval])))",
+          "legendFormat": "FIX p90",
           "editorMode": "code",
           "range": true
         },
@@ -437,8 +426,8 @@
             "type": "prometheus",
             "uid": "pubsub-prom"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(order_round_trip_nanoseconds_bucket{application=\"pubsub\", component=~\"binary_order_gateway.*\"}[$__rate_interval])))",
-          "legendFormat": "binary p50",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(order_round_trip_nanoseconds_bucket{application=\"pubsub\", component=~\"binary_order_gateway.*\"}[$__rate_interval])))",
+          "legendFormat": "binary p90",
           "editorMode": "code",
           "range": true
         },
@@ -487,10 +476,10 @@
       "title": "Protocol mix \u2014 orders per second by protocol",
       "description": "How the traffic divides between the two protocols. Read alongside the panel beside it: a shift toward one protocol is only evidence about performance if that protocol is actually the faster one under the load it is being given.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 50
+        "y": 42
       },
       "datasource": {
         "type": "prometheus",
@@ -553,10 +542,10 @@
       "title": "Throughput",
       "description": "The trading-day phases should be legible here: bursts at the open and close, trickles between, and two stretches of genuine quiet.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 34
+        "y": 53
       },
       "datasource": {
         "type": "prometheus",
@@ -619,10 +608,10 @@
       "title": "Order book \u2014 $component",
       "description": "Orders resting in the book, with the incremental-rehash migration flag overlaid.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 34
+        "y": 53
       },
       "datasource": {
         "type": "prometheus",
@@ -685,10 +674,10 @@
       "title": "Pool occupancy \u2014 $component / $pool",
       "description": "One pool in one process. Headroom is the gap between allocated and available: a pool that runs it down to nothing is about to chain another, which is what the panel beside this one records.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 0,
-        "y": 42
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -762,10 +751,10 @@
       "title": "Pool pressure \u2014 $component / $pool",
       "description": "The signals that say this pool is sized wrong, and which pool to resize. Expansion events mean it exhausted its initial pools and had to chain another -- on the allocation path, under a mutex. Allocation failures mean chaining did not save it. Both should be flat at zero in a venue whose pools are configured for its load.",
       "gridPos": {
-        "h": 8,
+        "h": 11,
         "w": 12,
         "x": 12,
-        "y": 42
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -843,6 +832,21 @@
           "mode": "multi",
           "sort": "desc"
         }
+      }
+    },
+    {
+      "type": "text",
+      "title": "",
+      "transparent": true,
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 75
+      },
+      "options": {
+        "mode": "markdown",
+        "content": ""
       }
     }
   ],
