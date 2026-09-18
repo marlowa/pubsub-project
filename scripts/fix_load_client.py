@@ -48,24 +48,24 @@ that look fine and mean nothing, which is worse than no numbers.
 WHERE THIS GATEWAY DIFFERS FROM THE BINARY ONE
 ==============================================
 
-Two fields are accepted by the binary gateway and refused by this one. Both were found by
-building this client, and both mean the protocols are not currently carrying identical
-orders -- which matters, because the point of this tool is to compare them.
+One difference remains, and it is real rather than a bug:
 
   * ORDER_QTY IS REQUIRED ON A CANCEL. handle_order_cancel_request treats an empty
     OrderQty as a missing required field and drops the message. BinaryLoadClientMain.cpp
     builds its cancel from ClOrdID, OrigClOrdID, Side, Symbol and TransactTime alone, with
     no quantity, and the binary gateway accepts it.
 
-    The failure is worth describing because it reads deceptively. The gateway logs an Info
-    line reporting the cancel as received, and only then the Warning that drops it, so a log
-    of repeated failures looks like alternating success and failure. It is not intermittent:
-    without OrderQty, every cancel is dropped.
+    The failure reads deceptively: the gateway logs an Info line reporting the cancel as
+    received, and only then the Warning that drops it, so repeated failures look like
+    alternating success and failure. It is not intermittent -- without OrderQty every
+    cancel is dropped.
 
-  * EXEC_INST "1 G" IS REJECTED. The FIX validator answers ValueIsIncorrect for tag 18,
-    while the binary gateway carries the same value verbatim as a MULTIPLECHARVALUE. A
-    space-separated pair is legal FIX for that field, so one of the two is wrong.
-    --exec-inst defaults to "1", which is accepted; pass "1 G" to reproduce.
+A second difference was a defect and has been fixed. ExecInst "1 G" was rejected as
+ValueIsIncorrect because the validator compared the whole field against an enumeration
+holding "1" and "G" separately. ExecInst is MULTIPLECHARVALUE -- a space-separated list --
+and eight other enumerated fields had the same fault, QuoteCondition and TradeCondition
+among them. The dictionary generator now records those types and the validator checks each
+element. The default here is "1 G" again, matching the binary client exactly.
 
 Usage:
 
@@ -280,11 +280,10 @@ class FixSession:
             (TIME_IN_FORCE, "0"),             # Day
             (ACCOUNT, "ACCT-001"),
             (EX_DESTINATION, "XLON"),
-            # binary_load_client sends "1 G" here, but the FIX gateway's validator rejects it:
-            # "ValueIsIncorrect: tag 18 (ExecInst) value '1 G' in D". ExecInst is
-            # MULTIPLECHARVALUE, so a space-separated pair is legal FIX and the binary gateway
-            # accepts it -- the two gateways genuinely disagree about this field. Configurable
-            # so the discrepancy can be probed rather than worked around silently.
+            # "1 G" is what binary_load_client sends, so the two protocols carry identical
+            # orders. ExecInst is MULTIPLECHARVALUE: a space-separated list, here Not-held AND
+            # All-or-none. The FIX validator used to reject this, comparing the whole field
+            # against an enumeration holding the elements separately; fixed in fix_codec.
             *([(EXEC_INST, self.options.exec_inst)] if self.options.exec_inst else []),
             (MIN_QTY, "10"),
             (MAX_FLOOR, "50"),
@@ -433,10 +432,10 @@ def main(argv=None):
     parser.add_argument("--underlyings", type=int, default=3, help="NoUnderlyings instances (default 3)")
     parser.add_argument("--parties", type=int, default=1, help="NoPartyIDs instances (default 1)")
     parser.add_argument("--party-sub-ids", type=int, default=1, help="NoPartySubIDs per party (default 1)")
-    parser.add_argument("--exec-inst", default="1",
-                        help="tag 18. binary_load_client sends '1 G', which this gateway's validator "
-                             "rejects as ValueIsIncorrect even though MULTIPLECHARVALUE permits it. "
-                             "Pass an empty string to omit the field entirely")
+    parser.add_argument("--exec-inst", default="1 G",
+                        help="tag 18, a MULTIPLECHARVALUE: a space-separated list of values. The default "
+                             "matches binary_load_client so both protocols carry identical orders. Pass an "
+                             "empty string to omit the field entirely")
     parser.add_argument("--minimal-order", action="store_true",
                         help="send only the required fields and no groups. Useful to isolate per-field "
                              "cost, but NOT comparable with a binary_load_client run, which sends a full "

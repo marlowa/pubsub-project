@@ -183,6 +183,12 @@ class FixMessageValidator {
                 break;
             case field_format::fix_string:
             case field_format::fix_data:
+            // A multiple-value field has no format constraint of its own: it is free text
+            // whose ELEMENTS must be enum members, and that is checked in
+            // check_field_semantics where the separator is understood. Constraining the
+            // shape here would mean deciding how many spaces are legal, which FIX does not
+            // say and which is not what makes such a field wrong.
+            case field_format::fix_multiple_value:
                 break;
         }
         return FixReject{};
@@ -222,8 +228,31 @@ class FixMessageValidator {
         if (!format_reject.ok()) {
             return format_reject;
         }
-        if (has_enum_values_at(dense_index) && !is_defined_enum_value_at(dense_index, field.value)) {
-            return FixReject{RejectReason::ValueIsIncorrect, tag, type, field.value};
+        if (has_enum_values_at(dense_index)) {
+            // A MULTIPLECHARVALUE or MULTIPLESTRINGVALUE field carries a space-separated LIST
+            // of values from its enumeration, so each element is checked and the whole field
+            // never is. Checking the whole field rejects every legitimate multi-value use:
+            // ExecInst "1 G" is Not-held AND All-or-none, both defined, but "1 G" is not a
+            // member of anything. The same applied to QuoteCondition and TradeCondition,
+            // where several values at once are ordinary rather than exotic.
+            if (field_format_at(dense_index) == field_format::fix_multiple_value) {
+                std::string_view remaining = field.value;
+                while (!remaining.empty()) {
+                    const size_t space = remaining.find(' ');
+                    const std::string_view element = remaining.substr(0, space);
+                    // Tolerates a repeated or trailing space rather than rejecting on it: the
+                    // separator is not the thing being validated here.
+                    if (!element.empty() && !is_defined_enum_value_at(dense_index, element)) {
+                        return FixReject{RejectReason::ValueIsIncorrect, tag, type, field.value};
+                    }
+                    if (space == std::string_view::npos) {
+                        break;
+                    }
+                    remaining.remove_prefix(space + 1);
+                }
+            } else if (!is_defined_enum_value_at(dense_index, field.value)) {
+                return FixReject{RejectReason::ValueIsIncorrect, tag, type, field.value};
+            }
         }
         return FixReject{};
     }

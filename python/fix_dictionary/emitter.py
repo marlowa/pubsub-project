@@ -53,6 +53,14 @@ _FORMAT_BY_FIX_TYPE = {
     "BOOLEAN": "fix_boolean",
     "UTCTIMESTAMP": "fix_utc_timestamp",
     "DATA": "fix_data",
+    # A MULTIPLECHARVALUE or MULTIPLESTRINGVALUE field carries a SPACE-SEPARATED LIST of
+    # values from its enumeration, not one value. Left unmapped these collapsed to fix_string,
+    # and a validator then compared the whole field -- "1 G" -- against an enumeration holding
+    # "1" and "G" separately, so every legitimate multi-value field was rejected with
+    # ValueIsIncorrect. Nine enumerated fields are affected, ExecInst, QuoteCondition and
+    # TradeCondition among them, and multiple values are routine in all three.
+    "MULTIPLECHARVALUE": "fix_multiple_value",
+    "MULTIPLESTRINGVALUE": "fix_multiple_value",
 }
 
 
@@ -221,6 +229,7 @@ def _emit_field_formats(write: Writer, dictionary: Dictionary) -> None:
     write("    fix_boolean,")
     write("    fix_utc_timestamp,")
     write("    fix_data,")
+    write("    fix_multiple_value,")
     write("};")
     write("")
     write("namespace detail {")
