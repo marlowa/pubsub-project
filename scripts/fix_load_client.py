@@ -51,14 +51,17 @@ WHERE THIS GATEWAY DIFFERS FROM THE BINARY ONE
 One difference remains, and it is real rather than a bug:
 
   * ORDER_QTY IS REQUIRED ON A CANCEL. handle_order_cancel_request treats an empty
-    OrderQty as a missing required field and drops the message. BinaryLoadClientMain.cpp
-    builds its cancel from ClOrdID, OrigClOrdID, Side, Symbol and TransactTime alone, with
-    no quantity, and the binary gateway accepts it.
+    OrderQty as a missing required field. BinaryLoadClientMain.cpp builds its cancel from
+    ClOrdID, OrigClOrdID, Side, Symbol and TransactTime alone, with no quantity, and the
+    binary gateway accepts it. FIX 5.0 SP2 agrees with the binary gateway: it requires
+    only ClOrdID, Instrument, Side and TransactTime. This is a venue rule, so a conforming
+    client will trip over it -- see R-0142 and R-0143 in the book's applications chapter.
 
-    The failure reads deceptively: the gateway logs an Info line reporting the cancel as
-    received, and only then the Warning that drops it, so repeated failures look like
-    alternating success and failure. It is not intermittent -- without OrderQty every
-    cancel is dropped.
+    The gateway used to drop such a cancel silently, which read deceptively: an Info line
+    reported the cancel as received and only then a Warning dropped it, so repeated
+    failures looked like alternating success and failure. It was not intermittent --
+    without OrderQty every cancel was lost. It now answers with a rejecting
+    ExecutionReport naming the missing field, which --cancel-without-order-qty exercises.
 
 A second difference was a defect and has been fixed. ExecInst "1 G" was rejected as
 ValueIsIncorrect because the validator compared the whole field against an enumeration
@@ -313,20 +316,21 @@ class FixSession:
         self.orders_sent += 1
 
     def send_cancel(self, target):
-        self.send(self.header(MSG_ORDER_CANCEL_REQUEST) + [
+        fields = self.header(MSG_ORDER_CANCEL_REQUEST) + [
             (CL_ORD_ID, f"{target}-CANCEL"),
             (ORIG_CL_ORD_ID, target),
             (SIDE, "1"),
             (SYMBOL, self.options.symbol),
-            # OrderQty is required here by this gateway, which is worth knowing because the
-            # binary gateway does NOT require it -- BinaryLoadClientMain.cpp builds its cancel
-            # from ClOrdID, OrigClOrdID, Side, Symbol and TransactTime alone. Omitting it here
-            # produces "OrderCancelRequest missing required fields -- dropping", logged AFTER
-            # an Info line that reports the message as received, so the pair reads at a glance
-            # like some cancels succeeding and others failing. They were all failing.
-            (ORDER_QTY, "100"),
-            (TRANSACT_TIME, utc_timestamp()),
-        ])
+        ]
+        # OrderQty is required here by this gateway, which is worth knowing because neither
+        # the binary gateway nor FIX 5.0 SP2 requires it -- BinaryLoadClientMain.cpp builds
+        # its cancel from ClOrdID, OrigClOrdID, Side, Symbol and TransactTime alone. Omitting
+        # it draws a rejecting ExecutionReport naming OrderQty, which is what
+        # --cancel-without-order-qty is for: it is the only way to see that reject from here.
+        if not self.options.cancel_without_order_qty:
+            fields.append((ORDER_QTY, "100"))
+        fields.append((TRANSACT_TIME, utc_timestamp()))
+        self.send(fields)
         self.cancels_sent += 1
 
 
@@ -427,6 +431,8 @@ def main(argv=None):
     parser.add_argument("--first-cl-ord-id", type=int, default=None,
                         help="starting ClOrdID; defaults to something derived from the clock, because a "
                              "ClOrdID the matching engine has seen before is rejected as a duplicate")
+    parser.add_argument("--cancel-without-order-qty", action="store_true",
+                        help="omit OrderQty from cancels, to exercise the gateway's missing-field reject")
     parser.add_argument("--cancel-ratio", type=float, default=0.0,
                         help="fraction of orders also cancelled, so the book does not grow without bound")
     parser.add_argument("--underlyings", type=int, default=3, help="NoUnderlyings instances (default 3)")

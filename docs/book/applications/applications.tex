@@ -12,7 +12,81 @@ accepts and cancels orders and does not match them. Absences of that kind are
 deliberate, and this chapter records which they are, so that a reader can tell
 them from defects.
 
-The rest of this chapter is not yet written, except for the placeholders below.
+The rest of this chapter is not yet written, except for the order gateways' cancel
+requirements and the placeholders below.
+
+\section{The order gateways}
+\label{sec:order_gateways}
+
+Two gateways accept orders from members. The FIX gateway speaks FIX 5.0 SP2 over a
+FIXT.1.1 session. The binary gateway speaks an encoding of the venue's own. Members are
+moving towards the binary gateway for its lower latency, and both are expected to remain.
+
+\subsection{The fields a request to cancel must carry}
+\label{subsec:cancel_required_fields}
+
+FIX 5.0 SP2 requires four things on an OrderCancelRequest: ClOrdID, the instrument, Side
+and TransactTime. It makes OrigClOrdID optional, because a member may instead name the
+order by the OrderID the venue assigned it. It makes the quantity optional as well.
+
+The venue identifies a member's order by the identifier the member submitted it under. The
+matching engine keys its book on that identifier, and the venue offers a member no other
+way to name an order it has placed. A request to cancel therefore carries it.
+
+\begin{requirement}{R-0142}{A request to cancel an order names the order it cancels}
+  A request to cancel an order shall carry the identifier the order was submitted under.
+  The venue shall refuse a request that omits it.
+  \rationale{The identifier on the cancel request is the request's own, not the order's.
+  A request carrying only that identifier names nothing the venue can look up.
+
+  FIX permits a member to name the order by the identifier the venue assigned instead.
+  The venue does not accept that alternative, because the matching engine's book is keyed
+  on the member's identifier and holds no index on its own.}
+  \uncovered{no scenario sends a cancel that omits the original identifier}
+\end{requirement}
+
+The FIX gateway also requires the order's quantity, which neither FIX nor the binary
+gateway requires. A cancel applies to the whole of an order, so the quantity does not
+affect what the venue does with the request. No grounds for requiring it have been
+established, and it is recorded here as what the venue does rather than as a rule with a
+reason behind it.
+
+\begin{gap}{}
+  The two gateways disagree on what a request to cancel must carry. The FIX gateway
+  requires the order's quantity and refuses a request that omits it. The binary gateway
+  accepts a request without a quantity, and the load client built against it sends none.
+  FIX 5.0 SP2 agrees with the binary gateway.
+
+  A member that follows FIX has its cancels refused by one gateway and accepted by the
+  other. Which of the two is right is undecided: the requirement above covers the original
+  identifier, which is well founded, and deliberately does not cover the quantity.
+\end{gap}
+
+\subsection{What a member is told about a message the venue will not process}
+\label{subsec:refused_message_reply}
+
+A member that sends a message the venue refuses is told so. The gateways answer a request
+to cancel that omits a required field with a rejecting execution report naming the fields
+that were missing.
+
+\begin{requirement}{R-0143}{A message missing a field the venue requires is answered}
+  Where the venue refuses a member's order or request to cancel because a field the venue
+  requires is absent, the venue shall answer the member, and shall name the absent fields.
+  Where the message omits the identifier the answer would be addressed by, the venue may
+  discard it.
+  \rationale{A member whose message is discarded without a reply cannot tell refusal from
+  loss. Of the two readings, the member takes the one where the message is still being
+  acted on, which is the more dangerous. A member that believes a cancel was accepted, and
+  whose order is in fact still resting, is exposed to a market it believes it has left.
+
+  Naming the absent fields is what makes the answer usable. A member told only that fields
+  were missing has to search a message of thirty fields for the one the venue objected to,
+  and the venue already knows which it was.
+
+  The exception is narrow. An answer is addressed by the identifier the member put on the
+  message, so a message without one cannot be answered at all.}
+  \uncovered{no scenario sends a message with a required field absent}
+\end{requirement}
 
 \section{The matching engine publisher}
 \label{sec:matching_engine_publisher}

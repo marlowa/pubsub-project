@@ -144,3 +144,5 @@ R-0138     active    2026-09-10  A publisher that loses leadership drops its sub
 R-0139     active    2026-09-10  A signal reaches a subscriber whose delivery connection is saturated
 R-0140     active    2026-09-10  The two connections of one subscription are established and dropped together
 R-0141     active    2026-09-10  How far a subscriber may fall behind before it is dropped is a stated figure
+R-0142     active    2026-09-18  A request to cancel an order names the order it cancels
+R-0143     active    2026-09-18  A message missing a field the venue requires is answered

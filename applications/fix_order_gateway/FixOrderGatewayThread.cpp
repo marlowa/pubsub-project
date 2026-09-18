@@ -162,7 +162,26 @@ constexpr int max_resend_requests = 3;
 // before the venue remembered anything.
 constexpr auto sequence_state_timeout = std::chrono::seconds{5};
 
-} // namespaces
+/**
+ * @brief Name the absent members of a required set, for a reject a member can act on.
+ *
+ * "missing required fields" tells a member nothing they can use: they have to guess which
+ * field, across a message with thirty of them, and the venue already knows the answer.
+ */
+std::string missing_field_names(std::initializer_list<std::pair<const char*, std::string_view>> required) {
+    std::string names;
+    for (const auto& [name, value] : required) {
+        if (value.empty()) {
+            if (!names.empty()) {
+                names += ", ";
+            }
+            names += name;
+        }
+    }
+    return names;
+}
+
+} // un-named namespace
 
 FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger,
                                              pubsub_itc_fw::Reactor& reactor, const FixOrderGatewayConfiguration& config)
@@ -1663,11 +1682,26 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
                symbol, side_str);
 
     // Validate required fields.
-    if (cl_ord_id.empty() || symbol.empty() || side_str.empty() || ord_type_str.empty() || order_qty.empty()) {
+    const std::string missing =
+        missing_field_names({{"ClOrdID", cl_ord_id}, {"Symbol", symbol}, {"Side", side_str}, {"OrdType", ord_type_str}, {"OrderQty", order_qty}});
+    if (!missing.empty()) {
+        // Answered, not dropped. A member whose order vanishes without a reply cannot tell
+        // refusal from loss, and will reasonably assume the order is live -- which is the
+        // more dangerous of the two readings. The over-length path a little further down
+        // already rejects rather than dropping; this now matches it.
+        //
+        // A reject needs a ClOrdID to echo, so a message without one cannot be answered at
+        // all. That is logged at Warning because it is unanswerable rather than merely wrong.
+        if (cl_ord_id.empty()) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixOrderGatewayThread: connection {} NewOrderSingle has no ClOrdID (missing: {}) -- cannot reject, dropping",
+                       session.conn_id.get_value(), missing);
+            return;
+        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixOrderGatewayThread: connection {} NewOrderSingle missing required fields"
-                   " -- dropping",
-                   session.conn_id.get_value());
+                   "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} missing required field(s): {} -- rejecting", session.conn_id.get_value(),
+                   cl_ord_id, missing);
+        send_reject_execution_report(session, msg, "missing required field(s): " + missing, /*is_cancel=*/false);
         return;
     }
 
@@ -1858,11 +1892,29 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                "OrigClOrdID={} Symbol={}",
                session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, symbol);
 
-    if (cl_ord_id.empty() || orig_cl_ord_id.empty() || symbol.empty() || side_str.empty() || order_qty.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "FixOrderGatewayThread: connection {} OrderCancelRequest missing required "
-                   "fields -- dropping",
-                   session.conn_id.get_value());
+    const std::string missing =
+        missing_field_names({{"ClOrdID", cl_ord_id}, {"OrigClOrdID", orig_cl_ord_id}, {"Symbol", symbol}, {"Side", side_str}, {"OrderQty", order_qty}});
+    if (!missing.empty()) {
+        // Same reasoning as the NewOrderSingle path above. This one matters more: a member
+        // who believes a cancel was accepted, and whose order is in fact still live, is
+        // exposed to a market they think they have left.
+        //
+        // Note that OrderQty and OrigClOrdID are venue requirements, not FIX ones -- FIX
+        // 5.0 SP2 requires only ClOrdID, Instrument, Side and TransactTime on a cancel. A
+        // conforming client will omit them, so this reject is a message real members will
+        // see and must be able to act on. R-0142 and R-0143 in the book's applications
+        // chapter carry the requirements; the gap box beside them records that the binary
+        // gateway does not require OrderQty and that the disagreement is unresolved.
+        if (cl_ord_id.empty()) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixOrderGatewayThread: connection {} OrderCancelRequest has no ClOrdID (missing: {}) -- cannot reject, dropping",
+                       session.conn_id.get_value(), missing);
+            return;
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} missing required field(s): {} -- rejecting", session.conn_id.get_value(),
+                   cl_ord_id, missing);
+        send_reject_execution_report(session, msg, "missing required field(s): " + missing, /*is_cancel=*/true);
         return;
     }
 
