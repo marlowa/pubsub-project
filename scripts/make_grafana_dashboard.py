@@ -43,7 +43,10 @@ def tgt(expr, legend, ref="A", fmt=None):
     return t
 
 
-def ts(title, targets, w=12, h=11, unit="ns", desc="", right_axis=()):
+# A series is put on the right axis by NAMING it "... (right axis)", which the override
+# below matches. There is deliberately no parameter for it: the axis has to follow the
+# legend text a reader sees, and two ways of saying it could disagree.
+def ts(title, targets, w=12, h=11, unit="ns", desc=""):
     return {
         "type": "timeseries", "title": title, "description": desc,
         "gridPos": {"h": h, "w": w, "x": 0, "y": 0}, "datasource": DS, "targets": targets,
@@ -197,6 +200,35 @@ panels.append(ts(
          "question -- and a latency comparison taken from it is measuring the offered load, "
          "not the protocol. Both instances of each protocol are pooled, because the "
          "comparison is between protocols rather than between instances."))
+
+# The decode-and-forward panel is the one that can actually answer "which protocol is
+# faster", and it goes next to the round-trip comparison so the two are read together.
+# Measured 2026-09-19: the round trips differed by 57us inside 900us and the inter-thread
+# queue latencies by 1us, because everything after the gateway is the same code for both.
+panels.append(ts(
+    "Protocol comparison — gateway decode and forward p90/p99 (the part that differs)",
+    [tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p90", "A"),
+     tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p99", "B"),
+     tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p90", "C"),
+     tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_ingress_to_forward_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p99", "D"),
+     # Carried for the same reason as on the round-trip panel: a decode time is still a
+     # latency, and a gateway being given more orders per second can queue behind itself.
+     tgt(f'sum(rate(order_ingress_to_forward_nanoseconds_count{{{FIX}}}[{RATE}]))', "FIX rate (right axis)", "E"),
+     tgt(f'sum(rate(order_ingress_to_forward_nanoseconds_count{{{BIN}}}[{RATE}]))', "binary rate (right axis)", "F")],
+    w=24,
+    desc="Parsing, validating and building the envelope -- the work that is the gateway's "
+         "own. THIS is where FIX and binary differ; the round-trip panel above spans the "
+         "sequencer, matching engine and report path, which are identical code for both, so "
+         "it shows that they differ without showing where. Still read the rate lines: a "
+         "decode time is a latency and a busier gateway can queue behind itself."))
+
+panels.append(ts(
+    "Gateway decode and forward — percentiles by gateway instance",
+    [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p90", "A"),
+     tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B")],
+    desc="The same measurement per process rather than pooled by protocol. Two instances of "
+         "one protocol disagreeing is a property of those processes -- what they are pinned "
+         "to, what else they are carrying -- rather than of the encoding."))
 
 panels.append(ts(
     "Protocol mix — orders per second by protocol",
