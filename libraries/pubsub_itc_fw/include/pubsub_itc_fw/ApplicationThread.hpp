@@ -24,6 +24,7 @@
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
+#include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
@@ -872,6 +873,25 @@ class ApplicationThread {
      * constructor body, which keeps it independent of member declaration order.
      */
     CounterHandle framework_pdu_counter_;
+
+    /**
+     * @brief Nanoseconds a message spent between being enqueued and being dispatched.
+     *
+     * One series per thread, bound only when the thread's configuration names a
+     * metrics_scope, exactly as framework_pdu_counter_ above.
+     *
+     * This is the hand-off cost and nothing else: the stamp is written immediately
+     * before the queue push and read as the first act of process_message, so message
+     * construction sits outside it. What it therefore contains is the queue wait plus
+     * the wakeup -- the eventfd write and the epoll_wait return -- which is the part a
+     * lock-free queue and a different wakeup strategy could change.
+     *
+     * Messages that arrive unstamped are counted rather than recorded, because an
+     * unstamped message reads as one enqueued at the epoch, and a handful of those
+     * would put the whole distribution into the overflow bucket.
+     */
+    HistogramHandle itc_queue_latency_histogram_;
+    CounterHandle itc_queue_latency_unstamped_counter_;
 
     std::atomic<bool> is_paused_{false};
     std::atomic<ThreadLifecycleState::Tag> lifecycle_state_{ThreadLifecycleState::NotCreated};

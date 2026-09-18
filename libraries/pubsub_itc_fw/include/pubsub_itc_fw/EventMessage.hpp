@@ -72,6 +72,14 @@ class EventMessage {
     int itc_message_type_{-1};
     int16_t pdu_id_{-1};
     int64_t seq_no_{0};
+    // Monotonic nanoseconds at the moment this message was handed to a thread's queue.
+    // Written by ApplicationThread::enqueue and read once in process_message, so the
+    // difference is time spent queued plus the wakeup -- not time spent building the
+    // message, which happens before the stamp. Zero means never enqueued, which is how
+    // a message that reached process_message by some other route is told apart from one
+    // that arrived instantly; such a message is counted as unstamped rather than
+    // recorded as though it had waited since the epoch.
+    int64_t enqueued_ns_{0};
     SlabHandle slab_id_{invalid_slab_handle}; ///< Owning slab for FrameworkPdu messages; invalid_slab_handle when not slab-allocated.
     // Keeps the MirroredBuffer alive for RawSocketCommunication events so that
     // payload_ remains a valid pointer even if the originating connection's
@@ -124,6 +132,16 @@ class EventMessage {
      */
     [[nodiscard]] int16_t pdu_id() const {
         return pdu_id_;
+    }
+
+    /** @brief Monotonic nanoseconds when this message was enqueued; 0 if it never was. */
+    [[nodiscard]] int64_t enqueued_ns() const {
+        return enqueued_ns_;
+    }
+
+    /** @brief Stamp the enqueue time. Called by ApplicationThread immediately before the hand-off. */
+    void set_enqueued_ns(int64_t value) {
+        enqueued_ns_ = value;
     }
 
     /**

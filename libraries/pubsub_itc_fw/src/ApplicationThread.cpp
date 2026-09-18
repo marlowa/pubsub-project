@@ -94,6 +94,23 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
     if (!thread_config.metrics_scope.empty()) {
         framework_pdu_counter_ = reactor_.metrics().register_counter(thread_config.metrics_scope.c_str(), "framework_pdu_messages_total",
                                                                      "Framework PDU messages delivered to an application thread");
+
+        // Bounds are set here rather than in each component's TOML because this measures the
+        // framework's own hand-off, which costs the same order of magnitude whatever the
+        // application above it does. They span from a hundred nanoseconds -- below any
+        // plausible queue push -- to a hundred milliseconds, so a thread that is merely busy
+        // and a thread that has stopped being scheduled both land somewhere readable rather
+        // than both landing in the overflow bucket.
+        const std::vector<double> itc_queue_latency_buckets = {
+            100.0,    250.0,    500.0,    1000.0,    2500.0,    5000.0,    10000.0,    25000.0,    50000.0,
+            100000.0, 250000.0, 500000.0, 1000000.0, 2500000.0, 5000000.0, 10000000.0, 50000000.0, 100000000.0,
+        };
+        itc_queue_latency_histogram_ =
+            reactor_.metrics().register_histogram(thread_config.metrics_scope.c_str(), "itc_queue_latency_nanoseconds",
+                                                  "Nanoseconds a message spent between being enqueued and being dispatched", itc_queue_latency_buckets);
+        itc_queue_latency_unstamped_counter_ =
+            reactor_.metrics().register_counter(thread_config.metrics_scope.c_str(), "itc_queue_latency_unstamped_total",
+                                                "Messages dispatched with no enqueue stamp, so excluded from itc_queue_latency_nanoseconds");
     }
 
     // resize(), not reserve(): the buffer is a fixed scratch arena addressed via
@@ -179,6 +196,10 @@ void ApplicationThread::resume() {
 }
 
 void ApplicationThread::enqueue(EventMessage message) {
+    // Stamped as late as possible, so what the histogram measures is the hand-off rather
+    // than the caller's work building the message. Reactor::route_message funnels every
+    // cross-thread post through here, which is what makes one stamp site sufficient.
+    message.set_enqueued_ns(HighResolutionClock::now().time_since_epoch().count());
     message_queue_->enqueue(std::move(message));
     constexpr uint64_t one = 1;
     if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
@@ -188,6 +209,9 @@ void ApplicationThread::enqueue(EventMessage message) {
 
 void ApplicationThread::post_message(ThreadID target_thread_id, EventMessage message) const {
     if (target_thread_id == thread_id_) {
+        // The one path that does not go through enqueue() above, so it stamps for itself.
+        // Missing this is how two thirds of a distribution ends up in the overflow bucket.
+        message.set_enqueued_ns(HighResolutionClock::now().time_since_epoch().count());
         message_queue_->enqueue(std::move(message));
         constexpr uint64_t one = 1;
         if (::write(notify_fd_, &one, sizeof(one)) == -1 && errno != EAGAIN) {
@@ -439,6 +463,19 @@ void ApplicationThread::run_internal() {
 }
 
 void ApplicationThread::process_message(const EventMessage& message) {
+    // First act, before any dispatch work, so the reading is the queue wait and the wakeup
+    // and nothing of ours. A message with no stamp is counted, not recorded: treating a zero
+    // stamp as a real one would record the time since the monotonic epoch and put the whole
+    // family into the overflow bucket.
+    if (message.enqueued_ns() != 0) {
+        const int64_t queued_ns = HighResolutionClock::now().time_since_epoch().count() - message.enqueued_ns();
+        if (queued_ns >= 0) {
+            itc_queue_latency_histogram_.observe(static_cast<double>(queued_ns));
+        }
+    } else {
+        itc_queue_latency_unstamped_counter_.increment();
+    }
+
     const EventType type = message.type();
     auto tag = static_cast<EventType::EventTypeTag>(type.as_tag());
 
