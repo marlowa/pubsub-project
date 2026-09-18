@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 91 |
-| Open | 33 (20 defects, 13 tasks) |
+| Bugs recorded | 92 |
+| Open | 34 (21 defects, 13 tasks) |
 | Closed | 58 |
-| Next id | BUG-0092 |
+| Next id | BUG-0093 |
 
 ## Open bugs by severity
 
-12 high, 18 medium, 3 low.
+12 high, 19 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -43,6 +43,7 @@
 | [BUG-0087](#bug_0087) | medium | task | Whether the hot path allocates cannot be established on demand |
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
+| [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2219,6 +2220,62 @@ something happened.
 
 Related: R-0103 and R-0113 in `docs/book`, [BUG-0090](#bug_0090),
 [session_binding.md](availability/session_binding.md).
+
+### BUG-0092: A refused cancel is answered with an execution report rather than an order cancel reject {#bug_0092}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-18 |
+| Recorded | 2026-09-19 |
+| How | Reading the reply on the wire while verifying R-0143, the requirement that a message missing a required field be answered rather than dropped. The reject itself was correct; its message type was not what FIX asks for |
+| Impact | A member's engine receives a message type it has no reason to associate with the request it sent. Whether it connects the two depends on the engine. One that does not leaves the member believing its cancel is still outstanding while the order is still resting |
+
+**What happens.** FIX 5.0 SP2 answers a refused `OrderCancelRequest` with an `OrderCancelReject`
+(`35=9`), carrying `CxlRejResponseTo` (434) to say which request it answers and `CxlRejReason`
+(102) to say why. The venue sends an `ExecutionReport` (`35=8`) instead, with `ExecType` and
+`OrdStatus` both `8` and the reason in `Text`.
+
+Both paths do it. `send_reject_execution_report` sets `Tag::MsgType` to `ExecutionReport`
+unconditionally; its `is_cancel` parameter only adds `OrigClOrdID` to the reply:
+
+```
+er.set(Tag::MsgType, MsgType::ExecutionReport);
+...
+if (is_cancel) {
+    // Cancel-reject convention: echo OrigClOrdID so the client can
+    // correlate the reject with the original order it tried to cancel.
+```
+
+The comment names the problem it is working around. Echoing `OrigClOrdID` is what an
+`OrderCancelReject` would carry anyway, and it is there because the message type does not tell
+the member what the reply is about. A rejection the matching engine produces -- an unknown order,
+for instance -- reaches the member the same way, because `FixErEncoder` emits an execution report
+for every report it is given.
+
+**Why it is not high.** The reply is delivered, and it echoes both `ClOrdID` and `OrigClOrdID`, so
+an engine that correlates on `ClOrdID` will connect it to the request. Nothing is lost and the
+venue does not stop trading. The risk is that a conforming engine is entitled to route `35=8` to
+its order-report handling rather than its cancel-reject handling, and the venue has no way to know
+which engines do.
+
+**Why it is not low.** It is not a documentation or tooling matter. A member cannot work around
+it, and the failure it produces on an engine that does not correlate is the same shape as
+[BUG-0090](#bug_0090): the member believes something is in hand that is not, and sees nothing to
+tell it otherwise.
+
+**What closing it needs.** The gateway holds every field an `OrderCancelReject` requires --
+`ClOrdID`, `OrderID`, `OrigClOrdID` and `OrdStatus` are all set already -- so the work is a second
+message shape rather than new state: emit `35=9` with `CxlRejResponseTo=1` when the refused
+message was a cancel request, map the reason onto `CxlRejReason`, and leave the execution report
+for refused orders. The matching engine's rejections need the gateway to know that the report it
+is encoding answers a cancel, which it does not distinguish today.
+
+**Not yet decided:** whether `ExecInst`-style venue-specific reasons map onto `CxlRejReason`'s
+enumeration or belong in `Text` alongside it. `CxlRejReason` has no "other" value in the sense
+`OrdRejReason` does, and the venue currently sends `OrdRejReason=99`.
+
+Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
 
 ## Closed
 
