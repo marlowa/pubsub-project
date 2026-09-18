@@ -83,7 +83,26 @@ FIX_PHASES = [
     ("post-close quiet",    0.04,   0),
 ]
 
-PROTOCOLS = {"binary": BINARY_PHASES, "fix": FIX_PHASES}
+# Identical shapes, run in lockstep. Matched rates are the precondition for comparing one
+# protocol's latency against the other's: a p99 measured at 185 orders/s against a p99
+# measured at 91 says nothing about the protocols, because the busier one is carrying twice
+# the queueing. The offset tables above deliberately break that precondition -- they exist to
+# answer whether one protocol's burst disturbs the other, which needs the rates to DIFFER and
+# to not coincide. The two questions need two experiments; this is the comparison one.
+COMPARE_PHASES = [
+    ("pre-open quiet",      0.06,   0),
+    ("warm-up",             0.10,  50),
+    ("steady low",          0.20, 100),
+    ("steady medium",       0.20, 200),
+    ("quiet",               0.08,   0),
+    ("steady high",         0.20, 300),
+    ("wind down",           0.10,  50),
+    ("post-close quiet",    0.06,   0),
+]
+
+INTERFERE = {"binary": BINARY_PHASES, "fix": FIX_PHASES}
+COMPARE = {"binary": COMPARE_PHASES, "fix": COMPARE_PHASES}
+MODES = {"interfere": INTERFERE, "compare": COMPARE}
 
 DEFAULT_COMP_ID_PREFIX = "LOADCLIENT"
 DEFAULT_PASSWORD = "loadclientpassword"
@@ -162,7 +181,7 @@ def run_protocol(label, client, schedule, build_command, first_cl_ord_id, args, 
 
 def run(args):
     binary_client, fix_client = resolve_clients(args.prefix)
-    schedules = {name: plan(phases, args.minutes) for name, phases in PROTOCOLS.items()}
+    schedules = {name: plan(phases, args.minutes) for name, phases in MODES[args.mode].items()}
 
     lock = threading.Lock()
 
@@ -189,6 +208,11 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mode", choices=sorted(MODES), default="interfere",
+                        help="interfere: each protocol spikes while the other trickles, so a burst on one "
+                             "can be seen in the other's latency. compare: both protocols run identical "
+                             "rates in lockstep, which is the only condition under which their latencies "
+                             "can fairly be compared (default: interfere)")
     parser.add_argument("--minutes", type=float, default=30.0, help="length of the simulated session (default: 30)")
     parser.add_argument("--prefix", default="installed", help="install prefix holding bin/binary_load_client")
     parser.add_argument("--binary-comp-id", default=DEFAULT_COMP_ID_PREFIX, help="comp id prefix for the binary client")
@@ -204,9 +228,15 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="print both timelines and exit without sending anything")
     args = parser.parse_args(argv)
 
-    schedules = {name: plan(phases, args.minutes) for name, phases in PROTOCOLS.items()}
-    print(f"session: {args.minutes:.1f} minutes, two protocols in parallel, "
+    schedules = {name: plan(phases, args.minutes) for name, phases in MODES[args.mode].items()}
+    print(f"session: {args.minutes:.1f} minutes, mode {args.mode}, two protocols in parallel, "
           f"cancel ratio {args.cancel_ratio}\n")
+    if args.mode == "compare":
+        print("  both protocols run IDENTICAL rates: latency may be compared directly.\n")
+    else:
+        print("  rates differ by design: latencies are NOT comparable between protocols in this\n"
+              "  mode -- use --mode compare for that. This mode answers whether one protocol's\n"
+              "  burst disturbs the other.\n")
     for label, schedule in schedules.items():
         total = sum(orders for _, _, _, orders in schedule)
         print(f"  {label} — {total:,} orders")

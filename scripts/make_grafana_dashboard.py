@@ -43,7 +43,7 @@ def tgt(expr, legend, ref="A", fmt=None):
     return t
 
 
-def ts(title, targets, w=12, h=11, unit="ns", desc=""):
+def ts(title, targets, w=12, h=11, unit="ns", desc="", right_axis=()):
     return {
         "type": "timeseries", "title": title, "description": desc,
         "gridPos": {"h": h, "w": w, "x": 0, "y": 0}, "datasource": DS, "targets": targets,
@@ -52,7 +52,15 @@ def ts(title, targets, w=12, h=11, unit="ns", desc=""):
             # Gaps are drawn as gaps. Grafana's default bridges them, which asserts we
             # measured something during a period when we measured nothing.
             "custom": {"spanNulls": False, "lineWidth": 1, "fillOpacity": 5, "showPoints": "never"},
-        }, "overrides": []},
+        }, "overrides": [
+            # Series whose name ends "(right axis)" are a different quantity from the rest of
+            # the panel and must not share a scale with them.
+            {"matcher": {"id": "byRegexp", "options": ".*\\(right axis\\)$"},
+             "properties": [{"id": "custom.axisPlacement", "value": "right"},
+                            {"id": "unit", "value": "reqps"},
+                            {"id": "custom.lineStyle", "value": {"dash": [8, 4], "fill": "dash"}},
+                            {"id": "custom.fillOpacity", "value": 0}]},
+        ]},
         "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]},
                     "tooltip": {"mode": "multi", "sort": "desc"}},
     }
@@ -170,16 +178,25 @@ FIX = 'application="pubsub", component=~"fix_order_gateway.*"'
 BIN = 'application="pubsub", component=~"binary_order_gateway.*"'
 
 panels.append(ts(
-    "Protocol comparison — order round trip, FIX against binary",
+    "Protocol comparison — round trip p90/p99, with the rate each was measured at",
     [tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p90", "A"),
      tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{FIX}}}[{RATE}])))', "FIX p99", "B"),
      tgt(f'histogram_quantile(0.90, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p90", "C"),
-     tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p99", "D")],
-    desc="p90 and p99 rather than a median: a latency problem lives in the tail, and a p50 "
-         "that barely moves while p99 triples is the case this panel exists to show. Both instances of each protocol are pooled, because the comparison is between "
-         "protocols rather than between instances -- the per-gateway panel above is where an "
-         "individual instance is judged. Reads as nothing until both gateways are taking "
-         "orders; today only the binary side has a load generator."))
+     tgt(f'histogram_quantile(0.99, sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{BIN}}}[{RATE}])))', "binary p99", "D"),
+     # The rates share this panel deliberately. A latency compared against a latency measured
+     # at a different offered rate says nothing about the protocols: the busier one carries
+     # more queueing and looks worse for reasons that have nothing to do with its encoding.
+     # Putting the rates anywhere else invites exactly that reading, so they are here, on a
+     # second axis, where the comparison cannot be seen without them.
+     tgt(f'sum(rate(order_round_trip_nanoseconds_count{{{FIX}}}[{RATE}]))', "FIX rate (right axis)", "E"),
+     tgt(f'sum(rate(order_round_trip_nanoseconds_count{{{BIN}}}[{RATE}]))', "binary rate (right axis)", "F")],
+    w=24,
+    desc="ONLY MEANINGFUL WHEN THE TWO RATE LINES COINCIDE. Run dashboard_load.py --mode "
+         "compare, which drives both protocols at identical rates in lockstep. The default "
+         "interfere mode deliberately runs them at different rates -- it answers a different "
+         "question -- and a latency comparison taken from it is measuring the offered load, "
+         "not the protocol. Both instances of each protocol are pooled, because the "
+         "comparison is between protocols rather than between instances."))
 
 panels.append(ts(
     "Protocol mix — orders per second by protocol",
