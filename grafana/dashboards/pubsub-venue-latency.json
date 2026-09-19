@@ -72,10 +72,10 @@
     {
       "type": "timeseries",
       "title": "ITC hop \u2014 $component \u2014 percentiles by thread",
-      "description": "Watch this across the quiet phases of a trading-day run. A thread that sleeps between messages has to be woken for each one, and the cost of that appears here and nowhere else.",
+      "description": "Watch this across the quiet phases of a trading-day run. A thread that sleeps between messages has to be woken for each one, and the cost of that appears here and nowhere else. Full width because it has one line per thread, and the legend is what makes it readable.",
       "gridPos": {
         "h": 11,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 10
       },
@@ -164,68 +164,6 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
-    },
-    {
-      "type": "stat",
-      "title": "ITC samples excluded (unstamped) \u2014 $component",
-      "description": "Messages dispatched with no enqueue stamp over the window in view, and therefore NOT in the histogram above. Anything other than zero means the distribution is describing a subset of the traffic while looking complete. Green is zero.",
-      "gridPos": {
-        "h": 11,
-        "w": 12,
-        "x": 12,
-        "y": 10
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "pubsub-prom"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "pubsub-prom"
-          },
-          "expr": "increase(itc_queue_latency_unstamped_total{application=\"pubsub\", component=\"$component\"}[$__range])",
-          "legendFormat": "unstamped",
-          "editorMode": "code",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "area"
       }
     },
     {

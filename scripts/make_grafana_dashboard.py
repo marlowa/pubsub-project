@@ -137,18 +137,11 @@ panels.append(ts(
     "ITC hop — $component — percentiles by thread",
     [tgt(f'histogram_quantile(0.90, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))', "{{component}}/{{scope}} p90", "A"),
      tgt(f'histogram_quantile(0.99, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))', "{{component}}/{{scope}} p99", "B")],
+    w=24,
     desc="Watch this across the quiet phases of a trading-day run. A thread that sleeps "
-               "between messages has to be woken for each one, and the cost of that appears here "
-               "and nowhere else."))
-
-panels.append(stat(
-    "ITC samples excluded (unstamped) — $component",
-    [tgt(f'increase(itc_queue_latency_unstamped_total{{{ONE}}}[$__range])', "unstamped", "A")],
-    unit="short",
-    desc="Messages dispatched with no enqueue stamp over the window in view, and therefore NOT in "
-         "the histogram above. "
-         "Anything other than zero means the distribution is describing a subset of the traffic "
-         "while looking complete. Green is zero."))
+         "between messages has to be woken for each one, and the cost of that appears here "
+         "and nowhere else. Full width because it has one line per thread, and the legend is "
+         "what makes it readable."))
 
 # --- the round trip, and its one instrumented interior segment ---
 panels.append(heat(
