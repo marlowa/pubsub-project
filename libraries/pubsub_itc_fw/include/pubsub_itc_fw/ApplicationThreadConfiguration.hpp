@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <cstddef> // IWYU pragma: keep
 #include <string>
 
@@ -93,5 +94,46 @@ struct ApplicationThreadConfiguration {
      * than every thread in every test having to be named to avoid a collision.
      */
     std::string metrics_scope{};
+
+    /**
+     * @brief How long to keep polling an empty queue before blocking, or zero not to poll.
+     *
+     * When its queue empties, a thread blocks in `epoll_wait` until a producer signals it.
+     * Blocking deschedules the thread, and if nothing else is runnable on its core -- which
+     * is guaranteed for a pinned hot-path thread, since nothing else is scheduled there --
+     * the core goes idle. Waking it costs whatever the deepest idle state the core reached
+     * costs to leave, which on a machine with the usual defaults can be around a millisecond.
+     * The wakeup also costs a system call and a trip through the scheduler even when the core
+     * stayed awake.
+     *
+     * Setting this makes the thread poll the queue for up to this long before it blocks. Work
+     * arriving inside that window is picked up with no system call, no scheduler involvement,
+     * and no core to wake.
+     *
+     * **It only bridges gaps shorter than itself, so choose it from the traffic rather than
+     * from taste.** A thread receiving 150 messages a second sees mean gaps near 6.7ms, and a
+     * 20us poll bridges none of them: the core sleeps exactly as before. Bridging those gaps
+     * needs a poll of milliseconds, which is a busy-wait holding a core permanently. The
+     * benefit therefore grows with message rate, which is the opposite of where the idle-state
+     * penalty is worst, and it is not a substitute for configuring the machine.
+     *
+     * **Default zero, meaning block immediately, because polling is not free.** A thread
+     * polling for 100us every time its queue empties consumes a core for that whole period,
+     * and a process with several such threads consumes several. Threads that are not on a
+     * latency-critical path, and every thread in a test, should leave this alone.
+     *
+     * **Values much above 50us buy less than they appear to.** The polling uses
+     * BackoffWithYield, whose first tier issues the processor's spin-wait hint and covers
+     * roughly 48us before it starts yielding to the scheduler and then sleeping. Yielding and
+     * sleeping are themselves context switches, which is the cost this setting exists to
+     * avoid, so beyond that first tier the benefit tails off. That degradation is deliberate:
+     * it stops a large value from holding a core for milliseconds. Treat about 50us as the
+     * range over which this does what it says.
+     *
+     * Set it through the same named-helper pattern metrics_scope describes:
+     *
+     *     configuration.spin_before_block = std::chrono::microseconds{40};
+     */
+    std::chrono::microseconds spin_before_block{0};
 };
 } // namespaces

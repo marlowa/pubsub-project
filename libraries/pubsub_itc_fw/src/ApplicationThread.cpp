@@ -81,6 +81,10 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
     , thread_name_(std::move(thread_name))
     , thread_id_(thread_id)
     , thread_(nullptr) {
+    spin_before_block_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(thread_config.spin_before_block).count();
+    if (spin_before_block_ns_ < 0) {
+        throw PreconditionAssertion(fmt::format("ApplicationThread {}: spin_before_block must not be negative", thread_name_), __FILE__, __LINE__);
+    }
     if (thread_id.get_value() == 0) {
         throw PreconditionAssertion("ThreadID of zero is reserved for the reactor", __FILE__, __LINE__);
     }
@@ -442,6 +446,45 @@ void ApplicationThread::run_internal() {
             }
         }
         deferred_timers.clear();
+
+        // Poll the queue briefly before blocking, when configured to. Work arriving inside
+        // the window is taken with no system call, no scheduler involvement and no core to
+        // wake; work arriving after it costs exactly what it cost before. Nothing is consumed
+        // here -- finding the queue non-empty just restarts the outer loop so the ordinary
+        // drain path handles the message, including the timer prioritisation above.
+        //
+        // The producer has already signalled notify_fd_, so the counter is non-zero and a
+        // later epoll_wait returns at once. That costs one spurious wakeup and no messages.
+#ifndef USING_VALGRIND
+        if (keep_running && !any_processed && spin_before_block_ns_ > 0 && message_queue_ != nullptr) {
+            const int64_t spin_deadline_ns = HighResolutionClock::now().time_since_epoch().count() + spin_before_block_ns_;
+            // cpu_relax rather than BackoffWithYield, which was tried first and measured no
+            // better than blocking. That class yields once its first tier is exhausted, and
+            // on a fast core that happens well inside this window; a yield is itself a
+            // voluntary context switch, so it simply traded one context switch per message
+            // for several. BackoffWithYield remains right for an unbounded wait, where
+            // standing aside eventually matters more. This wait is bounded by the deadline.
+            while (message_queue_->empty()) {
+                if (HighResolutionClock::now().time_since_epoch().count() >= spin_deadline_ns) {
+                    break;
+                }
+                cpu_relax();
+            }
+            if (!message_queue_->empty()) {
+                // Consume the producer's notification. It was written when the message was
+                // enqueued, and the spin found the message without going near epoll_wait, so
+                // without this the counter stays raised and the next wait returns at once on
+                // a signal for work already done -- a wasted system call per message, which
+                // is most of what the spin was meant to save. Anything enqueued after this
+                // read raises the counter again, so no wakeup is lost.
+                uint64_t drained = 0;
+                if (::read(notify_fd_, &drained, sizeof(drained)) == -1 && errno != EAGAIN) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Thread {}: notify_fd_ read failed after spin, errno {}", thread_name_, errno);
+                }
+                continue;
+            }
+        }
+#endif
 
         if (keep_running && !any_processed) {
             // Queue empty: block until a producer signals notify_fd_.  The 1-second

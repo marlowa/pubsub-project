@@ -16,6 +16,29 @@ namespace pubsub_itc_fw {
 /** @ingroup threading_subsystem */
 
 /**
+ * @brief The processor's spin-wait hint: one iteration of waiting that does no work.
+ *
+ * Tells the processor that the surrounding loop is waiting rather than computing. Without the
+ * hint the loop issues speculative loads which are all invalidated the moment the awaited value
+ * changes, and the processor pays a pipeline flush at exactly the instant the work arrives --
+ * the instant the loop exists to make fast. It also hands execution resources back to the other
+ * hardware thread sharing the core, and draws less power.
+ *
+ * This is the primitive BackoffWithYield uses for its first tier. It is exposed separately for
+ * the caller that wants only that tier: a bounded wait which must not yield or sleep, because
+ * yielding and sleeping are context switches and avoiding those is the whole point. Anything
+ * waiting for an unbounded time should use BackoffWithYield instead, so that it eventually
+ * stands aside rather than holding a core indefinitely.
+ */
+inline void cpu_relax() {
+#ifdef __x86_64__
+    _mm_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
+
+/**
  * @brief Utility for exponential backoff in spin-loops.
  * * Provides a tiered strategy:
  * 1. Hardware-hinted spinning (PAUSE) for extremely short waits.
@@ -41,12 +64,7 @@ class BackoffWithYield {
             // Tier 1: Hardware-level pause (exponentially increasing)
             // On Skylake+, one _mm_pause is ~140 cycles.
             for (uint32_t i = 0; i < (1U << count_); ++i) {
-#ifdef __x86_64__
-                _mm_pause();
-#else
-                // Fallback for non-x86 if necessary
-                std::this_thread::yield();
-#endif
+                cpu_relax();
             }
         } else if (count_ < up_to_sleep) {
             // Tier 2: OS-level yield

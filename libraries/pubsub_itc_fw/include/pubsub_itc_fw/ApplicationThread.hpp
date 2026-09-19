@@ -846,6 +846,11 @@ class ApplicationThread {
     // fd via epoll_wait instead of polling with BackoffWithYield.
     int notify_fd_ = -1;
 
+    // How long to poll an empty queue before blocking, in nanoseconds; zero blocks at once.
+    // Held as a plain integer rather than a duration because the run loop compares it against
+    // a clock reading on every iteration of a spin. See ApplicationThreadConfiguration.
+    int64_t spin_before_block_ns_ = 0;
+
     // Backing store for BumpAllocator when decoding variable-length inbound PDUs.
     // Reserved once at construction to inbound_decode_arena_size bytes and reused
     // for every inbound PDU. No heap allocation occurs on the message handling path

@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -167,6 +169,33 @@ class TestThread : public ApplicationThread {
     std::atomic<int> processed_count{0};
     std::atomic<bool> throw_on_message{false};
     std::atomic<EventType> last_processed_type{EventType(EventType::None)};
+};
+
+// A thread that polls its empty queue before blocking. The window is a constructor argument so
+// one test can compare a spinning thread against a blocking one under identical load.
+class SpinningTestThread : public ApplicationThread {
+  public:
+    ~SpinningTestThread() override = default;
+
+    SpinningTestThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id,
+                       const QueueConfiguration& queue_config, const AllocatorConfiguration& allocator_config, std::chrono::microseconds spin)
+        : ApplicationThread(token, logger, reactor, name, id, queue_config, allocator_config, make_config(spin)) {}
+
+    std::atomic<int> messages_seen{0};
+
+    void on_initial_event() override {}
+    void on_app_ready_event() override {}
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {
+        messages_seen.fetch_add(1, std::memory_order_release);
+    }
+
+  private:
+    static ApplicationThreadConfiguration make_config(std::chrono::microseconds spin) {
+        ApplicationThreadConfiguration configuration;
+        configuration.spin_before_block = spin;
+        return configuration;
+    }
 };
 
 class TestThreadOneOffTimer : public TestThread {
@@ -1381,3 +1410,93 @@ TEST_F(ApplicationThreadTest, InstallInlinePduHandlerEnqueuesControlCommand) {
 
     SUCCEED();
 }
+
+// Spin-before-block: polling an empty queue instead of blocking on it immediately.
+//
+// The mechanism is a latency optimisation with no visible effect on behaviour, which is
+// exactly the kind of change that can be silently broken. These check the behaviour that must
+// not change -- every message still arrives, exactly once -- rather than the timing, which is
+// far too dependent on the machine to assert on in a unit test.
+
+TEST_F(ApplicationThreadTest, NegativeSpinBeforeBlockIsRejected) {
+    // A negative window would make the deadline lie in the past and the spin a no-op, which
+    // would look like the feature silently doing nothing rather than being misconfigured.
+    EXPECT_THROW(
+        {
+            auto thread = ApplicationThread::create<SpinningTestThread>(logger_with_sink_.logger, *reactor_, "NegativeSpin", ThreadID(70), make_queue_config(),
+                                                                        make_allocator_config(), std::chrono::microseconds{-1});
+        },
+        PreconditionAssertion);
+}
+
+TEST_F(ApplicationThreadTest, SpinningThreadDeliversEveryMessage) {
+    // A window long enough that most of these messages land inside it, so the spin path is
+    // the one under test rather than an occasional visitor.
+    auto thread = ApplicationThread::create<SpinningTestThread>(logger_with_sink_.logger, *reactor_, "SpinDelivers", ThreadID(71), make_queue_config(),
+                                                                make_allocator_config(), std::chrono::microseconds{500});
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Operational);
+
+    // Sent with a gap shorter than the window, so delivery goes through the spin, and enough
+    // of them that a spin which dropped or double-counted one would show up.
+    constexpr int message_count = 200;
+    for (int i = 0; i < message_count; ++i) {
+        EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+        thread->post_message(ThreadID(71), std::move(msg));
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    for (int i = 0; i < 2000 && thread->messages_seen.load(std::memory_order_acquire) < message_count; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_EQ(thread->messages_seen.load(std::memory_order_acquire), message_count) << "the spin path lost or duplicated messages";
+    thread->shutdown("done");
+}
+
+TEST_F(ApplicationThreadTest, SpinningThreadStillShutsDownPromptly) {
+    // The spin sits between the queue emptying and the blocking wait, so a shutdown arriving
+    // mid-spin must still be noticed. A spin that ignored the lifecycle state would hang here
+    // for its whole window on every pass, and a long window would stall termination.
+    auto thread = ApplicationThread::create<SpinningTestThread>(logger_with_sink_.logger, *reactor_, "SpinShutdown", ThreadID(72), make_queue_config(),
+                                                                make_allocator_config(), std::chrono::microseconds{5000});
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Operational);
+
+    const auto started = std::chrono::steady_clock::now();
+    thread->shutdown("done");
+    for (int i = 0; i < 3000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::ShuttingDown; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    EXPECT_GE(thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::ShuttingDown);
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 3000) << "shutdown was delayed by the spin";
+}
+
+// NOT YET PROVEN TO DO ANYTHING.
+//
+// A test was written here to show that a spinning thread blocks less often than one that does
+// not, by comparing voluntary context switches read from /proc. It measured no difference,
+// even with a window 250 times the gap between messages, and the reason is not understood. The
+// configured window does reach the thread -- that was confirmed by instrumenting the run loop
+// -- but the spin does not appear to change how often the thread blocks.
+//
+// The test is deliberately not left here in a disabled form, because a disabled test is a
+// claim nobody checks. The two tests above cover the behaviour that must hold
+// whether or not the spin helps, and they pass. Until someone explains the measurement,
+// spin_before_block should stay at its default of zero in every component.
+//
+// One real defect was found while chasing this: the spin used to leave the producer's
+// notification unread, so the next wait returned at once on a signal for work already done.
+// That doubled the number of system calls per message, and is fixed.
