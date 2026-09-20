@@ -115,6 +115,25 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
         itc_queue_latency_unstamped_counter_ =
             reactor_.metrics().register_counter(thread_config.metrics_scope.c_str(), "itc_queue_latency_unstamped_total",
                                                 "Messages dispatched with no enqueue stamp, so excluded from itc_queue_latency_nanoseconds");
+
+        // How deep the queue was, recorded for the same messages the latency histogram
+        // records, so that the pair answers a question neither answers alone: a message that
+        // waited a long time behind nothing was waiting for this thread to be scheduled,
+        // and one that waited a long time behind a hundred others was waiting its turn.
+        // Those two call for opposite remedies and are indistinguishable from the latency
+        // alone.
+        //
+        // Counts rather than durations, so the bounds are small integers and are set here
+        // for the same reason the latency bounds are: this is the framework's own hand-off,
+        // and its shape does not depend on the application above it. The top bound is above
+        // the default high watermark of 64, so a queue past the point where the watermark
+        // handler fires still lands somewhere readable rather than in the overflow bucket.
+        const std::vector<double> itc_queue_depth_buckets = {
+            0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 1024.0,
+        };
+        itc_queue_depth_histogram_ =
+            reactor_.metrics().register_histogram(thread_config.metrics_scope.c_str(), "itc_queue_depth",
+                                                  "Messages still waiting on the queue when one was taken off for dispatch", itc_queue_depth_buckets);
     }
 
     // resize(), not reserve(): the buffer is a fixed scratch arena addressed via
@@ -425,6 +444,19 @@ void ApplicationThread::run_internal() {
             }
             any_processed = true;
             EventMessage msg = std::move(*maybe_msg);
+
+            // Read here rather than where the latency is recorded, because here is the moment
+            // the number describes: this message has just been taken off, so the count is how
+            // many are still waiting behind it. A Timer event that prioritise_data_over_timers()
+            // defers is dispatched later in this same drain, by which time the queue has moved
+            // on and a reading taken then would describe a different moment.
+            //
+            // Guarded on the enqueue stamp so this histogram and itc_queue_latency_nanoseconds
+            // observe exactly the same messages. Two histograms over two different populations
+            // cannot be read against each other, which is the only reason to have this one.
+            if (msg.enqueued_ns() != 0) {
+                itc_queue_depth_histogram_.observe(static_cast<double>(message_queue_->size()));
+            }
             if (prioritise && msg.type().as_tag() == EventType::Timer) {
                 deferred_timers.push_back(std::move(msg));
             } else {

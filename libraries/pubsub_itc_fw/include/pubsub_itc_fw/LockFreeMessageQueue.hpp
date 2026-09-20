@@ -97,6 +97,18 @@ template <typename T> class LockFreeMessageQueue {
         return queue_.empty();
     }
 
+    /**
+     * @brief How many elements the queue holds.
+     *
+     * The same accessor the lock-free implementation offers, so that a caller compiled for
+     * Valgrind sees the same interface. See that implementation for what the number means to
+     * a consumer reading it while producers are running.
+     */
+    [[nodiscard]] int size() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return static_cast<int>(queue_.size());
+    }
+
   private:
     mutable std::mutex mutex_;
     std::deque<T> queue_;
@@ -263,6 +275,26 @@ template <typename T> class LockFreeMessageQueue {
         }
 
         return std::nullopt;
+    }
+
+    /**
+     * @brief How many elements the queue holds.
+     *
+     * The count the watermark handlers already maintain: incremented on every push and
+     * decremented on every pop, so reading it costs one relaxed load and adds no sharing
+     * that the pop path was not causing anyway.
+     *
+     * **It is a snapshot, not a guarantee.** Producers run concurrently, so by the time the
+     * caller acts on the number it may already be wrong. That is not a defect here, because
+     * the use it is written for is measurement: the consumer reads it just after taking a
+     * message off, and records how many were still waiting behind that one. Relaxed ordering
+     * is therefore right -- there is nothing to synchronise with, only a count to sample.
+     *
+     * Do not use it to decide whether a dequeue will succeed; `empty()` and the return of
+     * `dequeue()` answer that without racing.
+     */
+    [[nodiscard]] int size() const {
+        return size_.load(std::memory_order_relaxed);
     }
 
     /**

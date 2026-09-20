@@ -204,6 +204,44 @@ TEST(LockFreeMessageQueueTest, BasicEnqueueDequeue) {
     EXPECT_TRUE(queue.empty());
 }
 
+// size() is what the depth histogram in ApplicationThread records, and the number it reports
+// is only meaningful if it counts what is left rather than what has been taken. A consumer
+// samples it immediately after a dequeue and calls the result "how many were waiting behind
+// that message", so the count must already exclude the one just removed.
+//
+// It is tested here with a single thread and no producers running, because that is the only
+// arrangement in which an exact expected value exists: with producers racing, any assertion
+// stronger than a bound would be asserting a scheduling accident.
+TEST(LockFreeMessageQueueTest, SizeCountsWhatIsStillWaiting) {
+    const QueueConfiguration queue_config = make_default_queue_config();
+    const AllocatorConfiguration allocator_config = make_default_allocator_config();
+
+    LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
+    EXPECT_EQ(queue.size(), 0);
+
+    queue.enqueue(TestMessage{1});
+    queue.enqueue(TestMessage{2});
+    queue.enqueue(TestMessage{3});
+    EXPECT_EQ(queue.size(), 3);
+
+    // Each dequeue must drop the count by exactly one, and the reading taken after it is the
+    // number the histogram would record for the message just taken.
+    ASSERT_TRUE(queue.dequeue().has_value());
+    EXPECT_EQ(queue.size(), 2);
+
+    ASSERT_TRUE(queue.dequeue().has_value());
+    EXPECT_EQ(queue.size(), 1);
+
+    ASSERT_TRUE(queue.dequeue().has_value());
+    EXPECT_EQ(queue.size(), 0);
+    EXPECT_TRUE(queue.empty());
+
+    // A dequeue that finds nothing must not take the count below zero. An unsigned reading
+    // would wrap here and report a queue of four billion.
+    EXPECT_FALSE(queue.dequeue().has_value());
+    EXPECT_EQ(queue.size(), 0);
+}
+
 // Multi-producer correctness test: launches several producers
 // concurrently and ensures that all messages are eventually
 // consumed with no loss, corruption, or duplication. This

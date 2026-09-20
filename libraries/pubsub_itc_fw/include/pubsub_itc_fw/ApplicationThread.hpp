@@ -912,6 +912,19 @@ class ApplicationThread {
      */
     HistogramHandle itc_queue_latency_histogram_;
 
+    /**
+     * @brief How many messages were still queued behind each one taken off for dispatch.
+     *
+     * Recorded over exactly the same messages as itc_queue_latency_nanoseconds, so the two
+     * can be read against each other. A long wait behind an empty queue means this thread
+     * was not running; a long wait behind a full one means the thread was running and
+     * behind. The latency alone cannot tell those apart, and they call for opposite fixes.
+     *
+     * Sampled where the message leaves the queue rather than where it is dispatched, so the
+     * count is true at the moment it describes.
+     */
+    HistogramHandle itc_queue_depth_histogram_;
+
     // How the wait for work turned out, counted rather than logged. Written only by this
     // thread's own run loop and read after the fact, so relaxed ordering is enough: nothing
     // depends on when a reader sees an increment, only on the totals once the work is done.
