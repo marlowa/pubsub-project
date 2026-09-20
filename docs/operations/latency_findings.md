@@ -60,6 +60,49 @@ figure below is wrong by a factor of five to seven.
 
 ## Established
 
+### An idle machine is slow to start again, and that is most of the round trip
+
+At 100 orders a second an order arrives every 10 milliseconds. Every thread on the path has
+time to fall asleep between one order and the next, and starting again costs far more than
+any of the work the venue does.
+
+Measured without the venue at all, by two processes passing a 400-byte message back and forth
+over a loopback socket, each pinned to a core of its own:
+
+| Gap between messages | Round trip |
+|---|---|
+| none, sent back to back | 8.4 us |
+| 100 us | 8.6 us |
+| 400 us | 9.2 us |
+| 600 us | 9.3 us |
+| 800 us | 26.3 us |
+| 1 ms | 49.5 us |
+| 10 ms | 50.3 us |
+
+**The same exchange costs six times as much once the receiver has been idle for a
+millisecond**, and the change happens somewhere between 600 microseconds and 1 millisecond.
+
+The venue shows the same thing. Driven hard enough that its threads stop sleeping, it answers
+in less than half the time:
+
+| Offered rate | Gap between orders | First leg | Round trip |
+|---|---|---|---|
+| 100 per second | 10 ms | 50.3 us | 193.8 us |
+| 400 per second | 2.5 ms | 35.7 us | 164.5 us |
+| 800 per second | 1.25 ms | 47.2 us | 191.9 us |
+| 1200 per second | 0.83 ms | 17.1 us | 89.6 us |
+
+**Read every other figure on this page in that light.** They were all taken at 100 orders a
+second, so they describe a venue on an idle machine. Comparisons between them remain sound,
+because both sides of each comparison paid the same charge, but the absolute numbers are not
+what a busy venue would show.
+
+What it is not: the processor's deep idle states, which are switched off, and the two that
+remain cost a microsecond to leave. Nor the socket, which costs 4.2 microseconds one way when
+busy. Nor waking a thread, which a futex round trip puts at about 1.7 microseconds each way.
+What does cost 20 microseconds or more once a core has been idle for a millisecond is not yet
+established.
+
 ### Power settings dominate everything else
 
 The governor and the processor idle states are worth more than every other finding on this page
@@ -88,6 +131,42 @@ two are within 30 microseconds of each other. A quiet period gives a core time t
 idle state, and the first order after the quiet period pays for waking it.
 
 **Neither setting survives a reboot.** Both must be re-applied before anything is measured.
+
+### Three quarters of the round trip is moving messages between processes
+
+Each component records how long an order had been inside the venue when it reached that
+component, all counted from the moment the gateway read it off the client connection, so the
+difference between two of them is the time spent in between. See `order_path_elapsed_nanoseconds`
+in [metrics.md](metrics.md).
+
+Over 6,000 orders at 100 per second:
+
+| Stage | Median | |
+|---|---|---|
+| Gateway decodes and validates the order | 8.6 us | work |
+| Gateway to sequencer | 40.9 us | transport |
+| Sequencer, including the log commit | 12.0 us | work |
+| Sequencer to matching engine | 56.6 us | transport |
+| Matching engine matches | 12.8 us | work |
+| Matching engine to sequencer | 20.5 us | transport |
+| Sequencer handles the report | 5.4 us | work |
+| Sequencer to gateway | 26.0 us | transport |
+| Gateway encodes the report and sends it | 2.2 us | work |
+| **Round trip** | **185.0 us** | |
+
+About 144 microseconds is spent moving messages between processes and about 41 doing work.
+The matching is 12.8 of it and the write-ahead log commit is inside the sequencer's 12.0.
+
+The legs sum to 185.02 against a measured round trip of 185.01, which is the check that the
+points are where they are meant to be. If they ever stop adding up, a point is in the wrong
+place.
+
+**The transport figures are mostly the idleness charge above, not the socket.** A loopback
+message costs 4.2 microseconds one way when the receiver is busy. Every hop is on one machine
+over 127.0.0.1, so no network card is involved in any of it and nothing a card could do would
+change it.
+
+The outbound legs cost about twice the inbound ones, which is not explained.
 
 ### A component's two threads belong on one physical core
 
@@ -173,17 +252,27 @@ does not enter the kernel often enough for a 25-nanosecond charge to reach the m
 hop is measured in. The nanosecond figures were right; the conclusion drawn from them about the
 venue was not.
 
-### Spinning before blocking instead of sleeping
+### Spinning before blocking, as it was measured
 
 `ApplicationThread` can spin on an empty queue before it blocks, which trades processor time for
-the wakeup a blocked thread would otherwise pay. It works, and it is not worth having: a spin
-window catches about one wait in three, buys about 9 per cent of the mean hop and nothing at all
-at the 90th or 99th percentile. A sweep over seven windows found 200 microseconds the best of
-them, and nothing below 100 microseconds is worth having, because the window must reach 200 before
-the median message arrives inside it.
+the wakeup a blocked thread would otherwise pay. Measured with a sweep over seven windows, the
+best of them was 200 microseconds: it caught about one wait in three, bought about 9 per cent of
+the mean inter-thread hop, and nothing at all at the 90th or 99th percentile.
 
-`spin_before_block` is therefore left at zero. It is a field of the thread configuration with no
-key in any TOML file, set only in code, so repeating the sweep means rebuilding.
+**That sweep could not have found the effect that matters, and the conclusion should not be read
+as more than it is.** Every window tried was 200 microseconds or shorter, and the load was 100
+orders a second, which leaves 10 milliseconds between one order and the next. A thread spinning
+for 200 microseconds out of every 10 milliseconds is asleep for 98 per cent of the gap and starts
+again from cold exactly as it would have done. Keeping a thread awake across a gap that long
+means spinning for most of it, which costs a core, and the sweep never tested that.
+
+So `spin_before_block` is left at zero, and what has been ruled out is the cheap version of it.
+Whether a thread that never sleeps at all is worth the core it burns is an open question, and now
+a measurable one: an idle core costs roughly 20 microseconds per hop to restart, and there are
+four hops.
+
+It is a field of the thread configuration with no key in any TOML file, set only in code, so
+repeating the sweep means rebuilding.
 
 Two things make a measurement of it lie, and both are easy to reach for. Printing from inside the
 spin loop puts a blocking system call inside a measurement of blocking. Counting behind a modulo
@@ -215,12 +304,23 @@ Nothing tried so far moves that ratio. Correcting the power settings, correcting
 removing a third of the thread wakeups and isolating the cores each changed the mean, and none of
 them changed the shape.
 
-### The round trip's median does not move
+### Why the round trip's median appeared never to move
 
-It is 175 to 180 microseconds under every machine configuration measured, while the hop underneath
-it has been moved by a factor of one and a half. A round trip crosses several hops and does other
-work besides, so a microsecond or two on one hop is not expected to show; what is unexplained is
-that nothing moves it at all.
+It appeared fixed at 175 to 180 microseconds under every machine configuration tried. Two
+things were behind that, and neither was the venue being insensitive to change.
+
+**Its bucket boundaries could not resolve anything in the range where the orders were.** Of
+12,000 orders, 11,597 fell into a single bucket 150 microseconds wide, between 100 and 250.
+A median drawn from that is not a measurement: it is linear interpolation across one bucket,
+which comes out at 176.9 and stays there for almost any distribution inside it. Boundaries
+between 100 and 250 microseconds have since been added, and the same venue then reads 185 --
+so every round-trip figure recorded before that was understating by roughly 8 microseconds.
+
+**What was left was mostly the idleness charge**, which is the same whatever the boot
+parameters are, so changing them could not move it.
+
+At 1200 orders a second the median is 89.6 microseconds. The round trip moves a great deal;
+it just does not move in response to anything that was being changed.
 
 ### Binary is slower end to end than FIX at the median
 
@@ -232,18 +332,25 @@ The same orders that binary decodes 34 times faster at the median arrive back la
 | 90th percentile | 221.9 us | 235.2 us |
 | 99th percentile | 430.4 us | 388.8 us |
 
+Both sets of figures were taken at 155 orders per second each, which is well inside the range
+where the idleness charge above dominates, so they compare two protocols on an idle machine.
+
 Ruled out: client pacing, since both clients held their offered rate smoothly, and queueing, since
 the inter-thread waits were 3.97 against 3.84 microseconds at the median. The unmeasured stage is
 the outbound half — encoding the execution report and sending it — which needs a second timestamp
 rather than a second metric family, because the report path carries no time origin of its own.
 [metrics.md](metrics.md) lists it under Open.
 
-### Whether a sparse arrival rate still costs a hop
+### Why leaving a core idle costs 20 microseconds
 
-The inter-thread hop was ten times slower at 120 orders per second than at 400, measured before
-the power settings were corrected. Correcting them all but closed the equivalent gap in the round
-trip, so most of that effect was the cost of leaving a deep idle state. It has not been
-re-measured on the hop since, so how much of it the wakeup still accounts for is not known.
+That it does is established above and measured two ways. Why is not. The deep processor idle
+states are switched off and the two remaining cost a microsecond to leave, the socket costs
+4.2 microseconds and waking a thread about 1.7, so none of those accounts for it. The change
+happens between 600 microseconds and 1 millisecond of idleness, which is a clue and not yet an
+answer.
+
+This is the most valuable thing on this page to settle, because it is the largest single term
+in what a member waits for.
 
 ---
 
