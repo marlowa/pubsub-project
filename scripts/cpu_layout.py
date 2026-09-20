@@ -405,7 +405,10 @@ def resolve_layout(
         # materialises.
         remaining_background = len(claimable) - ((allocated + cores_wanted) * threads_per_core)
 
-        if group.demand > remaining_performance:
+        # Cores against cores. Comparing the group's thread demand against a count of
+        # cores refuses a group that fits whenever a component asks for more than one
+        # thread, and the two numbers look alike enough to read past.
+        if cores_wanted > remaining_performance:
             group.reason = (
                 f"needs {cores_wanted} physical P-core(s), only {remaining_performance} remain"
             )

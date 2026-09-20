@@ -186,3 +186,24 @@ def test_a_machine_without_multithreading_is_unaffected(cpu_layout):
     assert layout.idle_sibling_cores == []
     assert len(layout.hot_path_cores) == 5
     assert 0 not in layout.hot_path_cores, "cpu0 should still be reserved"
+
+
+def test_a_group_that_fits_is_admitted_when_components_want_several_threads(cpu_layout):
+    """Cores must be compared against cores.
+
+    Each component here wants two threads, which is one core on a machine presenting two
+    processors per core. Eight cores with one reserved leaves seven, so seven components fit
+    exactly. Comparing the group's thread demand against the remaining core count instead
+    refuses groups that fit, and the two numbers look alike enough to read past -- it reached a
+    deploy before the contradictory message it produced gave it away.
+    """
+    topology = _multithreaded_topology(cpu_layout)
+    layout = _resolve(cpu_layout, topology, component_count=7,
+                      minimum_background_cores=4, threads_each=2, reserve_cpu0=True)
+
+    refused = [group for group in layout.groups if not group.admitted]
+    assert not refused, (
+        "seven components wanting one core each were refused on seven cores: "
+        + "; ".join(f"rank {group.rank} {group.reason}" for group in refused)
+    )
+    assert len(layout.component_cores) == 7
