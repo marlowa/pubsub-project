@@ -68,9 +68,15 @@
 #include <vector>
 
 #include <fcntl.h> // for F_SETFL
+
+#include <fstream>
 #include <pthread.h>
 #include <sched.h>
+#include <set>
+#include <string>
 #include <sys/epoll.h>
+#include <utility>
+#include <vector>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/BackoffWithYield.hpp>
@@ -97,7 +103,47 @@ void pin_current_thread_to_cpu(int cpu_index) {
     CPU_SET(cpu_index, &cpuset);
 
     const int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-    ASSERT_EQ(rc, 0) << "Failed to set thread affinity";
+    ASSERT_EQ(rc, 0) << "Failed to set thread affinity to cpu " << cpu_index;
+}
+
+/**
+ * @brief Two processors that are genuinely on different physical cores, and are online.
+ *
+ * Hardcoded processor numbers were wrong here in two ways. Processors 0 and 1 are the two
+ * hyperthreads of a single physical core on this machine, so a test pinning a producer to one
+ * and a consumer to the other put them on the *same* core sharing every level of cache -- the
+ * opposite of what both tests using this need. And when simultaneous multithreading is turned
+ * off, odd-numbered processors go offline entirely and pinning to them fails with EINVAL.
+ *
+ * Reading the sibling map fixes both. The first processor of each physical core is taken,
+ * which is online whether or not multithreading is enabled, and two different cores are
+ * returned so the caller really does get separate silicon.
+ */
+std::pair<int, int> two_processors_on_different_cores() {
+    std::set<std::string> cores_seen;
+    std::vector<int> chosen;
+    for (int cpu = 0; cpu < CPU_SETSIZE && chosen.size() < 2; ++cpu) {
+        const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(cpu);
+        std::ifstream online(base + "/online");
+        std::string flag;
+        // cpu0 usually publishes no "online" file because it cannot be offlined; treat a
+        // missing file as online and an explicit "0" as offline.
+        if (online && std::getline(online, flag) && flag == "0") {
+            continue;
+        }
+        std::ifstream siblings(base + "/topology/thread_siblings_list");
+        std::string group;
+        if (!siblings || !std::getline(siblings, group)) {
+            continue;
+        }
+        if (cores_seen.insert(group).second) {
+            chosen.push_back(cpu);
+        }
+    }
+    if (chosen.size() < 2) {
+        return {-1, -1};
+    }
+    return {chosen[0], chosen[1]};
 }
 
 AllocatorConfiguration make_default_allocator_config() {
@@ -351,6 +397,10 @@ TEST(LockFreeMessageQueueTest, HeavyMultiProducerStress) {
 // conditions. Ensures the queue behaves correctly when threads
 // do not migrate and memory access patterns are stable.
 TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
+    const auto [producer_cpu, consumer_cpu] = two_processors_on_different_cores();
+    if (producer_cpu < 0) {
+        GTEST_SKIP() << "needs two online processors on different physical cores";
+    }
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
 
@@ -362,7 +412,7 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
     std::atomic<int> consumed{0};
 
     std::thread producer([&] {
-        pin_current_thread_to_cpu(0);
+        pin_current_thread_to_cpu(producer_cpu);
 
         while (!start_flag.load(std::memory_order_acquire)) {
             std::this_thread::yield();
@@ -375,7 +425,7 @@ TEST(LockFreeMessageQueueTest, ProducerConsumerPinnedToSeparateCores) {
     });
 
     std::thread consumer([&] {
-        pin_current_thread_to_cpu(1);
+        pin_current_thread_to_cpu(consumer_cpu);
 
         start_flag.store(true, std::memory_order_release);
 
@@ -464,6 +514,10 @@ TEST(LockFreeMessageQueueTest, SoakTestMillionsOfMessages) {
 // behavior becomes unstable. This test helps detect structural
 // layout issues.
 TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
+    const auto [producer_cpu, consumer_cpu] = two_processors_on_different_cores();
+    if (producer_cpu < 0) {
+        GTEST_SKIP() << "needs two online processors on different physical cores";
+    }
     const QueueConfiguration queue_config = make_default_queue_config();
     const AllocatorConfiguration allocator_config = make_default_allocator_config();
 
@@ -475,7 +529,7 @@ TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
 
     // Producer pinned to CPU 0
     std::thread producer([&] {
-        pin_current_thread_to_cpu(0);
+        pin_current_thread_to_cpu(producer_cpu);
 
         while (!start_flag.load(std::memory_order_acquire)) {
             std::this_thread::yield();
@@ -488,7 +542,7 @@ TEST(LockFreeMessageQueueTest, FalseSharingDetection) {
 
     // Consumer pinned to CPU 1
     std::thread consumer([&] {
-        pin_current_thread_to_cpu(1);
+        pin_current_thread_to_cpu(consumer_cpu);
 
         start_flag.store(true, std::memory_order_release);
 
