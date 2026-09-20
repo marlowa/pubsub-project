@@ -188,6 +188,21 @@ class Wal {
     [[nodiscard]] int64_t last_seq_no() const {
         return last_seq_no_;
     }
+
+    /**
+     * @brief Says which processors the log's segment-preparing helper thread may run on.
+     *
+     * @param[in] cores Processors the helper may use. Empty leaves it wherever it lands.
+     *
+     * Must be called before open(), which starts the helper. A component with a CPU layout
+     * should pass the background processors: the helper inherits the mask of whichever thread
+     * opens the log, which is a hot-path thread, and it has no business on a hot-path
+     * processor. See WalWriter::set_helper_cores().
+     */
+    void set_helper_cores(const std::vector<CpuId>& cores) {
+        writer_.set_helper_cores(cores);
+    }
+
     [[nodiscard]] bool is_open() const {
         return writer_.is_open();
     }

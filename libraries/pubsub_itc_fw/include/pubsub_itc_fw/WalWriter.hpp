@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 
+#include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 
@@ -151,6 +152,19 @@ class WalWriter {
         preparation_enabled_ = false;
     }
 
+    /**
+     * @brief Says which processors the segment-preparing helper thread may run on.
+     *
+     * @param[in] cores Processors the helper may use. Empty leaves it where it lands, which is
+     *                  on whichever processor the thread that opens the log was pinned to.
+     *
+     * Must be called before open(), which is what starts the helper. Calling it afterwards
+     * does nothing, because the helper reads this once as it starts.
+     */
+    void set_helper_cores(const std::vector<CpuId>& cores) {
+        helper_cores_ = cores;
+    }
+
   private:
     // Minimum space for any entry (header + 1 byte payload + CRC32).
     static constexpr size_t min_entry_bytes = 24 + 1 + sizeof(uint32_t);
@@ -221,6 +235,22 @@ class WalWriter {
     ThreadWithJoinTimeout helper_;
     bool helper_running_{false};
     int helper_wake_fd_{-1};
+
+    // Where the helper thread should run, or empty to leave it wherever it lands.
+    //
+    // It needs saying because of how it lands. A new thread inherits the processor mask of the
+    // thread that created it, and the thread that opens the log is the component's application
+    // thread, by then pinned to a processor reserved for the order path. So without this the
+    // helper does its file opening, truncating and memory mapping on that processor, sharing it
+    // with the one thread the venue most needs to be free.
+    //
+    // Set by the component from the layout's background processors, before open() is called.
+    // Left empty by anything that does not care -- the tests, and any use with no layout.
+    std::vector<CpuId> helper_cores_;
+
+    // Set by the helper if it could not move itself. Reported rather than thrown: a log that
+    // works from the wrong processor is better than a component that will not start.
+    std::atomic<bool> helper_placement_failed_{false};
 
     std::atomic<PrepState> prep_state_{PrepState::Idle};
     OpenedSegment prepared_{};

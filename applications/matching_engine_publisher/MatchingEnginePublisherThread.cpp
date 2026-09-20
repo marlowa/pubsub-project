@@ -6,6 +6,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
@@ -61,6 +62,17 @@ MatchingEnginePublisherThread::MatchingEnginePublisherThread(pubsub_itc_fw::Appl
           [](int16_t pdu_id) { return pubsub_itc_fw_app::pdu_in_topic(pdu_id, pubsub_itc_fw_app::Topic::execution_reports); }, config.wal_directory) {}
 
 void MatchingEnginePublisherThread::on_initial_event() {
+    // As the sequencer does, and for the same reason: the log's helper thread would otherwise
+    // inherit this thread's processor, which is reserved for the order path. See BUG-0093.
+    pubsub_itc_fw::CpuLayout helper_layout;
+    const auto [helper_layout_loaded, helper_layout_error] = helper_layout.load(config_.cpu_layout_file, config_.cpu_layout_component);
+    if (helper_layout_loaded) {
+        wal_.set_helper_cores(helper_layout.background_cores());
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MepThread: could not read the CPU layout, so the log's helper thread stays where it lands: {}", helper_layout_error);
+    }
+
     const int64_t recovered_seq = wal_.open(config_.wal_directory, config_.wal_segment_size, nullptr);
     if (recovered_seq > 0) {
         sequencer_cursor_ = recovered_seq;

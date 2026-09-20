@@ -11,12 +11,15 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <fmt/format.h>
+
+#include <pubsub_itc_fw/CpuPinning.hpp>
 
 #include <pubsub_itc_fw/Crc32.hpp>
 #include <pubsub_itc_fw/FileSystemUtils.hpp>
@@ -259,6 +262,28 @@ void WalWriter::wake_helper() {
 }
 
 void WalWriter::helper_loop() {
+    // Two things this thread must do for itself, before any work, because nothing else can do
+    // them for it.
+    //
+    // It names itself. Linux gives a new thread the name of the thread that created it, so
+    // without this the helper appears in every diagnostic as a second thread with the same name
+    // as the component's application thread -- two threads called SequencerThread, on the same
+    // processor, one of them the one whose latency matters. That is confusing when reading a
+    // report and actively misleading when reading a profile.
+    //
+    // It puts itself where it belongs. A new thread also inherits the processor mask of its
+    // creator, and the log is opened by the application thread, by then pinned to a processor
+    // reserved for the order path. Left alone the helper does its file opening, truncating and
+    // memory mapping there, sharing that processor with the thread that sequences every order.
+    // Where no processors were named, it is left where it lands: a test, or any use without a
+    // layout, has nowhere better to put it.
+    pthread_setname_np(pthread_self(), "WalSegmentPrep");
+    if (!helper_cores_.empty() && !apply_thread_affinity_mask(0, helper_cores_)) {
+        // Not fatal, and not worth stopping a log for. The helper still works; it is merely in
+        // the wrong place, which is what it was before anyone asked it to move.
+        helper_placement_failed_ = true;
+    }
+
     while (true) {
         uint64_t drained = 0;
         const ssize_t got = ::read(helper_wake_fd_, &drained, sizeof(drained));

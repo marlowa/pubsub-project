@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 93 |
-| Open | 35 (22 defects, 13 tasks) |
-| Closed | 58 |
+| Open | 34 (21 defects, 13 tasks) |
+| Closed | 59 |
 | Next id | BUG-0094 |
 
 ## Open bugs by severity
 
-12 high, 20 medium, 3 low.
+12 high, 19 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -44,7 +44,6 @@
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
-| [BUG-0093](#bug_0093) | medium | defect | The log writer's helper thread runs unnamed on the hot-path core of whichever component started it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2278,6 +2277,8 @@ enumeration or belong in `Text` alongside it. `CxlRejReason` has no "other" valu
 
 Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
 
+## Closed
+
 ### BUG-0093: The log writer's helper thread runs unnamed on the hot-path core of whichever component started it {#bug_0093}
 
 | | |
@@ -2285,6 +2286,7 @@ Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
 | Severity | medium |
 | Found | 2026-09-20 |
 | Recorded | 2026-09-20 |
+| Fixed | 2026-09-21 |
 | How | A new tool, `scripts/pinning_report.py`, reported two threads of one process pinned to the same processor. It was written to find that class of mistake in another system and found one here on its first run |
 | Impact | Filesystem work -- opening, truncating and memory-mapping a log segment -- runs on the processor reserved for the thread that sequences every order, sharing it with that thread. The sequencer has been observed in uninterruptible sleep for up to 557 ms at a stretch, which is the kind of stall this can cause |
 
@@ -2342,8 +2344,27 @@ for the Quill backend and is the pattern to follow. Failing that, the hot-path t
 account for it, so the layout gives the component a core for it rather than having it arrive
 uninvited.
 
+**Fixed.** The helper now names itself `WalSegmentPrep` and moves itself to the background tier
+as it starts, which are the two things nothing else could do for it: a thread's name and its
+processor mask are both inherited from whichever thread created it, and by the time it is
+created that thread is on a hot-path processor.
 
-## Closed
+Which processors it may use is passed in by the component, from the layout's background set,
+before the log is opened -- because opening the log is what starts the helper. A component with
+no layout to read leaves the set empty, and the helper stays where it lands, which is what a
+test wants and what the behaviour was before.
+
+Verified on the running venue. Both the sequencer and the matching engine publisher now show:
+
+```
+  sequencer          cpus=6
+  SequencerThread    cpus=7
+  WalSegmentPrep     cpus=16-31
+```
+
+and `pinning_report.py`, which found this, reports no threads of one process sharing a
+processor anywhere in the venue.
+
 
 ### BUG-0084: Every absent-assertion in the HA suite passed without reading anything {#bug_0084}
 

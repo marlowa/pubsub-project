@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
@@ -80,6 +81,21 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , epoch_store_(config.wal_directory + "/epoch.state") {}
 
 void SequencerThread::on_initial_event() {
+    // The log starts a helper thread to prepare its next segment, and a new thread inherits the
+    // processor mask of whichever thread created it. This one is created from here, on the
+    // application thread, by then pinned to a processor reserved for the order path -- so
+    // without being told otherwise the helper does its file opening and memory mapping on the
+    // processor this thread sequences every order on. Told before the log is opened, because
+    // opening it is what starts the helper. See BUG-0093.
+    pubsub_itc_fw::CpuLayout helper_layout;
+    const auto [helper_layout_loaded, helper_layout_error] = helper_layout.load(config_.cpu_layout_file, config_.cpu_layout_component);
+    if (helper_layout_loaded) {
+        wal_.set_helper_cores(helper_layout.background_cores());
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: could not read the CPU layout, so the log's helper thread stays where it lands: {}", helper_layout_error);
+    }
+
     if (config_.replay_mode) {
         // Replay mode: open WAL with a buffering callback that accumulates all
         // records into replay_buffer_.  dispatch_replay_records() sends them to

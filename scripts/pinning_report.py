@@ -325,11 +325,17 @@ def find_problems(processes: list[dict]) -> list[str]:
             suspicious.append(f"{label}: {len(pinned)} thread(s) are pinned but {len(unpinned)} {was_were} not -- {names}{more}")
 
         # Restricted, but to more than one processor, so it can still move between them.
-        loose = [thread for thread in pinned if len(thread["processors"]) > 1]
-        if loose:
-            for thread in loose[:6]:
-                suspicious.append(f"{label}: thread {thread['name']} (tid {thread['thread_id']}) may run on "
-                                  f"{format_cpu_list(thread['processors'])}, so it is restricted but not pinned to one processor")
+        # Grouped by the set of processors and reported once for each, not once per thread: a
+        # pool of workers sharing a range is one decision, and a process whose every thread is
+        # on the same range is a tier rather than a mistake.
+        loose: dict[str, list[dict]] = {}
+        for thread in pinned:
+            if len(thread["processors"]) > 1:
+                loose.setdefault(format_cpu_list(thread["processors"]), []).append(thread)
+        for processors, members in sorted(loose.items()):
+            names = ", ".join(sorted({thread["name"] for thread in members})[:4])
+            suspicious.append(f"{label}: {len(members)} thread(s) may run on {processors} rather than one processor "
+                              f"-- {names}")
 
         # Threads of this process on two processors of the same physical core.
         for index, first in enumerate(pinned):
