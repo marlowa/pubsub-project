@@ -379,16 +379,30 @@ The components' own work is where it shows most plainly. The sequencer's handlin
 fell from 12.0 microseconds to 0.8, and the matching engine's from 11.3 to 3.2 -- the same code
 doing the same work at full speed rather than at 800 MHz.
 
-**That 60 microseconds is a lower bound, because the arrangement fights itself.** A component's
-reactor and application threads share the two hyperthreads of one physical core, deliberately,
-so a reactor spinning flat out starves the application thread beside it; only the reactors were
-changed and the application threads still sleep, now next to a thread eating the core. The
-sequencer's handling of the report got 29.5 microseconds worse for that reason.
+**Giving each thread a core of its own makes it worse, not better.** The obvious objection to
+the above is that a spinning reactor starves the application thread sharing its physical core,
+so each thread should have one to itself. Measured, with the same three components and the same
+load:
 
-So the open question is no longer what causes it but what it is worth. A thread that never
-sleeps needs a physical core to itself rather than half of one, which changes the core layout
-and costs real cores -- and is exactly what a kernel-bypass stack spends a core on. Four hops
-at roughly 20 microseconds each is the prize.
+| | threads blocking | threads polling |
+|---|---|---|
+| a component's two threads share one core | 192.70 us | **111.67 us** |
+| each thread on a core of its own | 199.61 us | 146.64 us |
+
+Separating them costs 6.9 microseconds when the threads block and 35.0 when they poll. The
+reason is the one above about level-one cache: the reactor and application threads of one
+component exchange messages constantly, and separating them puts a cache boundary in the middle
+of the hottest exchange the venue has. That costs more than the contention it avoids.
+
+**So the best arrangement is the pairing already deployed, with the threads polling: 111.67
+microseconds against 192.70, a reduction of 42 per cent.** The sequencer's own handling of an
+order falls from 11.7 microseconds to 0.37.
+
+What remains open is the price rather than the arrangement. Each polling thread burns a core,
+and there are only eight performance cores here. Which is also why the figure above beats the
+134.14 measured with the same polling but every component ranked for a hot-path core: taking
+the binary gateway, the publishers and the standby instances off the hot path was worth another
+22 microseconds, because fourteen threads on eight cores costs the three that matter.
 
 ---
 
