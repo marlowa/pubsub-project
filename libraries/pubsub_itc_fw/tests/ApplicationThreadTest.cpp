@@ -1484,19 +1484,101 @@ TEST_F(ApplicationThreadTest, SpinningThreadStillShutsDownPromptly) {
     EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 3000) << "shutdown was delayed by the spin";
 }
 
-// NOT YET PROVEN TO DO ANYTHING.
-//
-// A test was written here to show that a spinning thread blocks less often than one that does
-// not, by comparing voluntary context switches read from /proc. It measured no difference,
-// even with a window 250 times the gap between messages, and the reason is not understood. The
-// configured window does reach the thread -- that was confirmed by instrumenting the run loop
-// -- but the spin does not appear to change how often the thread blocks.
-//
-// The test is deliberately not left here in a disabled form, because a disabled test is a
-// claim nobody checks. The two tests above cover the behaviour that must hold
-// whether or not the spin helps, and they pass. Until someone explains the measurement,
-// spin_before_block should stay at its default of zero in every component.
-//
-// One real defect was found while chasing this: the spin used to leave the producer's
-// notification unread, so the next wait returned at once on a signal for work already done.
-// That doubled the number of system calls per message, and is fixed.
+TEST_F(ApplicationThreadTest, EveryWaitHasExactlyOneOutcome) {
+    // The identity that makes the other numbers worth reading: a thread that polls before
+    // blocking either finds work during the poll or goes on to block, never both and never
+    // neither. If this ever fails, the counting is wrong and nothing else here means anything.
+    auto thread = ApplicationThread::create<SpinningTestThread>(logger_with_sink_.logger, *reactor_, "WaitOutcomes", ThreadID(75), make_queue_config(),
+                                                                make_allocator_config(), std::chrono::microseconds{40});
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Operational);
+
+    constexpr int message_count = 200;
+    for (int i = 0; i < message_count; ++i) {
+        EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+        thread->post_message(ThreadID(75), std::move(msg));
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    for (int i = 0; i < 2000 && thread->messages_seen.load(std::memory_order_acquire) < message_count; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(thread->messages_seen.load(std::memory_order_acquire), message_count);
+
+    thread->shutdown("done");
+    for (int i = 0; i < 3000 && !thread->has_exited(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_EQ(thread->spins_entered(), thread->spins_caught() + thread->waits_blocked())
+        << "entered " << thread->spins_entered() << ", caught " << thread->spins_caught() << ", blocked " << thread->waits_blocked();
+}
+
+TEST_F(ApplicationThreadTest, PollingFindsWorkThatWouldOtherwiseHaveBlocked) {
+    // What the setting claims to do. Messages are posted with a gap well inside the polling
+    // window, so a working poll catches some of them without the thread ever blocking.
+    //
+    // The assertion is only that it catches something, deliberately. How large a share it
+    // catches depends on the machine and on how the drain batches messages -- measured against
+    // a running venue it was about one wait in three -- and pinning a ratio here would produce
+    // a test that fails on a different machine for no useful reason.
+    auto thread = ApplicationThread::create<SpinningTestThread>(logger_with_sink_.logger, *reactor_, "PollingCatches", ThreadID(76), make_queue_config(),
+                                                                make_allocator_config(), std::chrono::microseconds{2000});
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Operational);
+
+    constexpr int message_count = 200;
+    for (int i = 0; i < message_count; ++i) {
+        EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+        thread->post_message(ThreadID(76), std::move(msg));
+        // Busy-wait rather than sleep: the scheduler does not honour a request this short, and
+        // a longer gap would fall outside the window and prove nothing.
+        const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds{300};
+        while (std::chrono::steady_clock::now() < until) {}
+    }
+    for (int i = 0; i < 2000 && thread->messages_seen.load(std::memory_order_acquire) < message_count; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(thread->messages_seen.load(std::memory_order_acquire), message_count);
+
+    EXPECT_GT(thread->spins_caught(), 0U) << "polling never found work in " << thread->spins_entered() << " attempts; the window was 2000us and messages "
+                                          << "were posted 300us apart, so it should have caught many";
+    thread->shutdown("done");
+}
+
+TEST_F(ApplicationThreadTest, AThreadWithNoPollingWindowNeverPolls) {
+    // The control. Without this, a test that passes because the poll is always entered would
+    // look the same as one that passes because the setting works.
+    auto thread = ApplicationThread::create<SpinningTestThread>(logger_with_sink_.logger, *reactor_, "NoPolling", ThreadID(77), make_queue_config(),
+                                                                make_allocator_config(), std::chrono::microseconds{0});
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    for (int i = 0; i < 5000 && thread->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(thread->get_lifecycle_state().as_tag(), ThreadLifecycleState::Operational);
+
+    for (int i = 0; i < 50; ++i) {
+        EventMessage msg = EventMessage::create_itc_message(thread->get_thread_id(), nullptr, 0);
+        thread->post_message(ThreadID(77), std::move(msg));
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    for (int i = 0; i < 2000 && thread->messages_seen.load(std::memory_order_acquire) < 50; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_EQ(thread->spins_entered(), 0U);
+    EXPECT_EQ(thread->spins_caught(), 0U);
+    EXPECT_GT(thread->waits_blocked(), 0U) << "a thread that never polls must block instead";
+    thread->shutdown("done");
+}

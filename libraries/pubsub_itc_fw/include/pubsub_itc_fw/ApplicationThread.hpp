@@ -206,6 +206,21 @@ class ApplicationThread {
      */
     [[nodiscard]] pthread_t get_pthread_id() const;
 
+    /** @brief Times this thread began polling an empty queue instead of blocking straight away. */
+    [[nodiscard]] uint64_t spins_entered() const {
+        return spins_entered_.load(std::memory_order_relaxed);
+    }
+
+    /** @brief Times polling found work, so the thread never blocked. */
+    [[nodiscard]] uint64_t spins_caught() const {
+        return spins_caught_.load(std::memory_order_relaxed);
+    }
+
+    /** @brief Times this thread blocked waiting to be signalled. */
+    [[nodiscard]] uint64_t waits_blocked() const {
+        return waits_blocked_.load(std::memory_order_relaxed);
+    }
+
     /**
      * @brief Returns the collection of extra threads registered by this subclass.
      *
@@ -896,6 +911,17 @@ class ApplicationThread {
      * would put the whole distribution into the overflow bucket.
      */
     HistogramHandle itc_queue_latency_histogram_;
+
+    // How the wait for work turned out, counted rather than logged. Written only by this
+    // thread's own run loop and read after the fact, so relaxed ordering is enough: nothing
+    // depends on when a reader sees an increment, only on the totals once the work is done.
+    //
+    // Every wait has exactly one outcome, so spins_entered() == spins_caught() +
+    // waits_blocked() always holds. That identity is what makes the numbers worth trusting,
+    // and ApplicationThreadTest asserts it.
+    std::atomic<uint64_t> spins_entered_{0};
+    std::atomic<uint64_t> spins_caught_{0};
+    std::atomic<uint64_t> waits_blocked_{0};
     CounterHandle itc_queue_latency_unstamped_counter_;
 
     std::atomic<bool> is_paused_{false};

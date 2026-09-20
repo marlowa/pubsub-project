@@ -457,6 +457,7 @@ void ApplicationThread::run_internal() {
         // later epoll_wait returns at once. That costs one spurious wakeup and no messages.
 #ifndef USING_VALGRIND
         if (keep_running && !any_processed && spin_before_block_ns_ > 0 && message_queue_ != nullptr) {
+            spins_entered_.fetch_add(1, std::memory_order_relaxed);
             const int64_t spin_deadline_ns = HighResolutionClock::now().time_since_epoch().count() + spin_before_block_ns_;
             // cpu_relax rather than BackoffWithYield, which was tried first and measured no
             // better than blocking. That class yields once its first tier is exhausted, and
@@ -471,6 +472,7 @@ void ApplicationThread::run_internal() {
                 cpu_relax();
             }
             if (!message_queue_->empty()) {
+                spins_caught_.fetch_add(1, std::memory_order_relaxed);
                 // Consume the producer's notification. It was written when the message was
                 // enqueued, and the spin found the message without going near epoll_wait, so
                 // without this the counter stays raised and the next wait returns at once on
@@ -487,6 +489,7 @@ void ApplicationThread::run_internal() {
 #endif
 
         if (keep_running && !any_processed) {
+            waits_blocked_.fetch_add(1, std::memory_order_relaxed);
             // Queue empty: block until a producer signals notify_fd_.  The 1-second
             // timeout is a safety net for shutdown races; normal wakeup is immediate.
             struct epoll_event fired[1];
