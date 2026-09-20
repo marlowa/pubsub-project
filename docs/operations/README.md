@@ -6,6 +6,7 @@ Running the venue, watching it, and securing it.
 - [metrics.md](metrics.md) — The Prometheus endpoint, what is exported, and why metrics stay out of the control plane
 - [secure_comms.md](secure_comms.md) — TLS and SCRAM
 - [trading_day_load.md](trading_day_load.md) — The compressed trading-day profile, and what a passing run does and does not prove
+- [latency_findings.md](latency_findings.md) — What is established about this venue's latency, what measurement has ruled out, and what is still unexplained. Read it before changing a machine setting in the hope of a faster venue
 
 ---
 

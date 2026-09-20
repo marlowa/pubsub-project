@@ -312,13 +312,16 @@ IPIs) and have no affinity to set. Those are the ones `isolcpus` with `nohz_full
 
 All five steps are independent and cumulative. Steps 1–3 require no reboot.
 
-| Step | Requires reboot | Expected benefit |
+| Step | Requires reboot | Benefit |
 |------|-----------------|-----------------|
-| 1. Set CPU governor to `performance` | No | Eliminates clock-scaling jitter |
+| 1. Set CPU governor to `performance`, and disable the deep idle states | No | **Measured: worth five to seven times on round-trip latency.** Do this before anything else, and after every reboot |
 | 2. Pin hot-path threads to P-cores only (hybrid CPUs) | No | Avoids E-core latency inconsistency |
 | 3. Grant `rtprio`; set `SCHED_FIFO`; disable RT throttle for benchmarking | No | Prevents userspace preemption |
 | 4. Install `linux-lowlatency` or `PREEMPT_RT` kernel | Yes | Reduces IRQ preemption; 5–20µs jitter range |
-| 5. Add `isolcpus` + `nohz_full` + `rcu_nocbs` to boot params | Yes | Removes all scheduler interference from hot-path CPUs |
+| 5. Add `isolcpus` + `nohz_full` + `rcu_nocbs` to boot params | Yes | **Measured on this workstation and rejected: it costs about a fifth of the inter-thread hop and changes the round trip not at all.** Stops unrelated work being scheduled on the hot-path cores, which is real but not what limits this venue |
+
+Steps 1 and 5 have been measured here rather than predicted; the figures, and what else has been
+ruled out, are in [latency_findings.md](../operations/latency_findings.md).
 
 **Set CPU governor:**
 
@@ -342,12 +345,14 @@ zcat /proc/config.gz | grep PREEMPT
 # CONFIG_PREEMPT_RT         — full RT patch; 5–20µs jitter typical
 ```
 
-**Observed results on development hardware** (Linux Mint, no isolcpus):
+**Observed on development hardware**, with the governor at `performance`, the deep idle states
+disabled, each component's two threads on one physical core and no `isolcpus`: an inter-thread hop
+of 2.6µs at the median and 20µs at the 90th percentile, and an order round trip of 176µs at the
+median. On dedicated hardware with `SCHED_FIFO` and `PREEMPT_RT`, wakeup latencies of 5–15µs are
+reported as achievable; that combination has not been measured here.
 
-- Before pinning: gateway internal latency ~520–660µs
-- After pinning (steps 1–2, no SCHED_FIFO, no isolcpus): best 389µs, typical 490–690µs
-- With SCHED_FIFO + isolcpus on dedicated hardware with PREEMPT_RT: consistent 5–15µs
-  wakeup latency achievable
+Figures taken with the governor left at `powersave` are worse by a factor of five to seven and are
+not comparable with any of these.
 
 ---
 
