@@ -985,6 +985,8 @@ WARN_LOGFILE           =
 # Note: If this tag is empty the current directory is searched.
 
 INPUT                  = mainpage.dox \
+                         README.md \
+                         CHANGELOG.md \
                          docs \
                          libraries/pubsub_itc_fw/include \
                          libraries/pubsub_itc_fw/src \
