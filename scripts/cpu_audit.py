@@ -118,15 +118,24 @@ def is_kernel_thread(pid: int) -> bool:
         return True
 
 
-# Field offsets into /proc/<pid>/task/<tid>/stat, counted from the field after
-# the closing parenthesis of the thread name.  The name may itself contain
-# spaces and parentheses, which is why the line is split on the LAST ") " rather
-# than tokenised from the left.  Numbering follows proc(5): field 3 is the first
-# after the name, so a proc(5) field N sits at index N - 3.
-_STAT_STATE = 0        # proc(5) field 3
-_STAT_UTIME = 11       # proc(5) field 14
-_STAT_STIME = 12       # proc(5) field 15
-_STAT_PROCESSOR = 36   # proc(5) field 39
+# Field offsets into /proc/<pid>/task/<tid>/stat.
+#
+# The fields are documented in proc(5), which numbers them from 1.  The second
+# field is the thread name in parentheses, and a thread may name itself anything
+# at all, including something containing spaces and parentheses -- "kworker/u128:3+
+# dm_vblank_control_workqueue" is a real example from this machine.  Splitting the
+# line from the left would therefore put every later field at an offset that
+# depends on the name, so the line is split on the LAST occurrence of ") " and the
+# fields are counted from what follows it.  That makes the first available field
+# proc(5)'s field 3, so proc(5) field N is at index N - 3 in what remains.
+#
+# The two fields this file depends on are the consumed processor time, which says
+# whether a thread ran at all between two readings, and the processor, which says
+# where it last ran.  Neither is any use without the other: see sample_placement.
+_STAT_STATE = 0        # proc(5) field 3, the run state: R, S, D and so on
+_STAT_UTIME = 11       # proc(5) field 14, ticks spent in user mode
+_STAT_STIME = 12       # proc(5) field 15, ticks spent in kernel mode
+_STAT_PROCESSOR = 36   # proc(5) field 39, the processor this thread last ran on
 
 
 def parse_isolated_cores(cmdline: str) -> list[int]:
@@ -172,18 +181,44 @@ def read_thread_activity(pid: int, tid: int) -> tuple[int, int] | None:
 
 @dataclass
 class Placement:
-    """Where one thread was actually observed running during the sampling window."""
+    """One thread, where its mask allows it to run, and where it was seen to run.
 
+    Both halves are needed to say anything useful.  The mask decides whether a
+    thread is worth watching at all, and what was observed decides whether it
+    actually took any of a hot-path core.
+    """
+
+    # How the thread is named in the report: the process name, the thread name if
+    # it differs from the process name, and the process id.
     label: str
-    component: str | None          # the deployment component it belongs to, or None
-    kind: str                      # "irq", "kernel" or "userspace"
-    permitted: list[int] = field(default_factory=list)  # hot-path cores its mask allows
-    ticks: int = 0                 # CPU time consumed across the window
-    cores: Counter = field(default_factory=Counter)   # core -> intervals seen running there
+
+    # The deployment component this thread belongs to, or None for every thread on
+    # the machine that is not part of the venue.  The distinction decides which
+    # question is being asked of the thread: whether it ran where the layout put
+    # it, or whether it had any business on a hot-path core in the first place.
+    component: str | None
+
+    # One of "irq", "kernel" or "userspace", which is to say what could be done
+    # about this thread if it were found somewhere unwelcome.  See classify().
+    kind: str
+
+    # The hot-path cores this thread's affinity mask permits it to run on.  A
+    # thread with none of them is not sampled at all.
+    permitted: list[int] = field(default_factory=list)
+
+    # Processor time in ticks that this thread consumed while the window was open.
+    # Zero means the thread was asleep throughout, and therefore that nothing at
+    # all is known about where it would have run.
+    ticks: int = 0
+
+    # How many sampling intervals the thread was seen running on each processor.
+    # A count is evidence of having run there; the absence of one is not evidence
+    # of not having, because a thread can come and go between two readings.
+    cores: Counter = field(default_factory=Counter)
 
     @property
     def ran(self) -> bool:
-        """True when this thread consumed any CPU time at all during the window."""
+        """True when this thread consumed any processor time at all during the window."""
         return self.ticks > 0
 
 

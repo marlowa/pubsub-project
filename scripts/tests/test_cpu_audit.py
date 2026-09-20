@@ -34,7 +34,13 @@ WAIT = "import sys, time\nsys.stdin.readline()\n"
 BURN = WAIT + "end = time.monotonic() + {0}\nwhile time.monotonic() < end: pass\n"
 SLEEP = WAIT + "time.sleep({0})\n"
 
-SETTLE = 0.15   # seconds between releasing a child and the first reading of it
+# How long to wait between releasing a child and taking the first reading of it.
+# Processor time is counted in ticks of ten milliseconds, so a child that has just
+# been told to start may have a partly-spent tick still to its name.  Waiting for
+# longer than a tick puts that time safely before the first reading, which is what
+# lets the sleeping child be distinguished from the busy one: both consume a few
+# milliseconds waking up, and only one of them consumes anything afterwards.
+SETTLE = 0.15
 
 
 def quiet_processor() -> int:
