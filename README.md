@@ -8,6 +8,193 @@
 
 **Development is paused.** [docs/project_status.md](docs/project_status.md) says what works, what is known to be wrong, and where anyone picking the project up should start.
 
+---
+
+# Introduction
+
+This section assumes no prior knowledge of the project or of this kind of software, and uses no
+shorthand. If you write software for a living, the technical summary begins further down,
+under **Technical summary**.
+
+## What is in this repository
+
+**The library is the project.** Everything else here exists to serve it.
+
+The library is called pubsub. It is a collection of code that handles the difficult and
+repetitive parts of writing a program that must respond to events very quickly and very
+predictably: managing threads, passing messages between them, sending and receiving data over a
+network, and managing memory. A collection of that kind is usually called a framework, because
+programs are built on top of it rather than calling into it occasionally.
+
+It is written for one particular setting: the computer systems that stock exchanges and
+commodity exchanges run. That setting makes demands which most software never faces, and the
+library is shaped by those demands rather than by general ones. What those demands are, and what
+the library does about them, is the subject of most of this page.
+
+**The applications exist because of the library, not alongside it.** The repository also holds a
+simplified, working version of an exchange, built from the library. It is there for two reasons,
+and neither is that the exchange itself is the goal.
+
+The first reason is to use the library the way a real system would use it. A library exercised
+only by small test programs written to suit it proves very little. Running something with the
+shape and the demands of a real system is what shows whether the library holds up.
+
+The second reason is to find out what the library needs to provide. Building a realistic
+application keeps turning up requirements that no amount of designing in the abstract would have
+produced. The exchange is, in that sense, a way of asking the library questions that its author
+would not have thought to ask.
+
+## What the exchange does
+
+An exchange is a place where people and firms buy and sell things — shares in companies, metals,
+currencies. They do not meet each other directly. Instead each sends instructions to the
+exchange, and the exchange deals with them.
+
+An instruction is called an **order**. A typical order says: buy one hundred of this, at no more
+than this price. The exchange receives the order, records it, decides what happens to it, and
+sends back an answer describing what it did.
+
+That is the whole cycle this project is concerned with. An order arrives, and an answer goes
+back. The exchange carries out every step of that cycle: it accepts the order, checks it is
+valid, writes it down in a permanent record, works out what to do with it, and replies.
+
+**It deliberately stops short of being a real exchange.** The most obvious omission is that it
+does not match buyers with sellers. It accepts orders and it cancels them, and that is enough to
+exercise everything the framework does, which is the point of it. Other absences are equally
+deliberate, and the functional specification in `docs/book` records which ones and why.
+
+## Why speed is the whole point
+
+Everything about how this is built follows from one requirement: the answer must come back
+quickly, and it must come back quickly every single time.
+
+Some sense of the timescale is needed. A **millisecond** is a thousandth of a second, which is
+roughly how long a camera flash lasts. A **microsecond** is a thousandth of a millisecond, a
+millionth of a second. There are more microseconds in one second than there are seconds in eleven
+days.
+
+This system answers a typical order in a few hundred microseconds. Most of that time is spent
+passing the order between the several separate programs that handle it in turn.
+
+## Why being consistently quick is harder than being quick on average
+
+This is the part that shapes every decision in the project, and it is not obvious.
+
+Suppose a system answers a thousand orders. Nine hundred and ninety come back in a hundred
+microseconds, and ten come back in fifty milliseconds — five hundred times slower. The average
+across all thousand is still respectable. But somebody sent each of those ten slow orders, and
+each of them waited.
+
+For a firm trading on an exchange, the slow ones are what matter. They cannot plan around a
+system that is usually fast. So the number worth improving is not the average but the worst
+cases, and almost everything difficult in this project comes from chasing them.
+
+These slow outliers are stubborn. They are rarely caused by the program doing too much work.
+They are caused by the program being made to wait for something it does not control.
+
+## What makes a program wait, and what is done about it here
+
+Four things interrupt a program that is otherwise ready to run. The project takes a position on
+each.
+
+**Asking the operating system for memory.** Most programs request memory whenever they need it
+and hand it back when finished. The request usually returns immediately, but occasionally it
+takes far longer, and there is no way to know in advance which time will be slow. This project
+asks for all the memory it will need when it starts, and then never asks again while it is
+running.
+
+**Waiting for another part of the program to finish.** When two threads need the same piece of
+data, the usual approach is that one waits while the other works. The waiting one stops
+completely, and how long it stops for depends on what else the computer is doing. This project
+uses methods that let threads share data without any of them ever being stopped.
+
+**Waiting for the disk.** Every order is written to a permanent record before it takes effect, so
+that nothing is lost if a program stops unexpectedly. Writing to disk is slow and unpredictable,
+so the work is arranged so that no order waits for a disk write that has not already begun.
+
+**Being moved aside by the operating system.** The operating system decides which program runs on
+which processor, and it will move work around without warning. This project asks for particular
+threads to stay on particular processors, so that the data they are working with stays in the
+fast memory attached to those processors.
+
+## What happens when something breaks
+
+An exchange that stops working is a serious matter, so the framework provides a way to run two
+copies of a program at once. One copy is in charge and the other follows along, keeping itself
+up to date. If the one in charge stops, the follower takes over.
+
+The difficult part is not the taking over. It is making sure that exactly one of them believes it
+is in charge at any moment. Two programs both believing they are in charge would each accept
+orders, and the records would disagree. Separate small programs, whose only job is to settle that
+question, are used to decide.
+
+## How orders arrive
+
+Firms send orders over a network, in one of two languages.
+
+The first is called **FIX**, which stands for Financial Information eXchange. It is the language
+most real exchanges accept, it is written as readable text, and it has been in use since the
+early nineteen-nineties.
+
+The second is a compact format of this project's own, in which each message is a fixed
+arrangement of bytes rather than text. It is faster to read, because there is no text to pick
+apart, and this project measures how much faster.
+
+Both arrive at a program called a **gateway**, whose job is to speak the language, check that
+what arrived makes sense, and pass it on.
+
+## Is this a real product?
+
+No, and it is worth being plain about that.
+
+This is one person's project, written to explore how systems of this kind are built and to have
+somewhere realistic to measure things. No exchange runs it. It is not for sale and nobody is
+supporting it. It is released under the Apache 2.0 licence, so anyone may read it, use it or
+build on it.
+
+Development is currently **paused** at version 0.4.0. [The project status](docs/project_status.md)
+says exactly what works, what is known to be wrong, and where somebody picking it up should
+begin.
+
+## Words you will meet
+
+| Word | What it means here |
+|---|---|
+| Order | An instruction to buy or sell |
+| Execution report | The answer sent back, describing what was done |
+| Gateway | The program that firms connect to, which speaks their language |
+| Sequencer | The program that puts every order into one definite order and writes it down |
+| Matching engine | The program that decides what happens to an order |
+| Latency | How long one order takes from arriving to being answered |
+| Throughput | How many orders can be handled per second |
+| Thread | One sequence of work inside a program; several can run at once |
+| Framework | Code providing the common parts, so each program supplies only what is specific to it |
+
+## Where to go next
+
+**If you are curious but do not write software**, this is probably the right place to stop.
+[The project status](docs/project_status.md) is readable and says where things stand.
+
+**If you write software and want to know whether this is worth your time**, read
+[the project status](docs/project_status.md), then
+[the architecture](docs/orientation/architecture.md), which shows the programs and how an order
+travels between them.
+
+**If you want to build it and run it**, the quick start is further down this page, and
+[building](docs/orientation/building.md) explains the build in full.
+
+**If you want to understand how it works inside**, [the documentation contents](docs/README.md)
+lists every chapter. [The framework chapter](docs/framework/README.md) is where the ideas above
+are implemented.
+
+---
+
+The rest of this page is written for people who build and run the project.
+
+---
+
+## Technical summary
+
 A low-latency, multi-threaded, event-driven application framework for C++17, built around the **reactor pattern**. It provides inter-thread communication, inter-process communication, pub/sub messaging, timers, high availability, and a binary serialisation DSL — all designed for environments where heap allocation on the hot path is not acceptable.
 
 ## Repository layout
@@ -91,277 +278,19 @@ Supported field types include `i8`, `i16`, `i32`, `i64`, `bool`, `datetime_ns`, 
 | Logging | Quill v11.x |
 | Test framework | GoogleTest (C++), pytest (DSL tests) |
 
-## Developer Quick-start (`devsetup.sh`)
+## Building and running
 
-The fastest path from source to a running sandbox is the convenience wrapper, which runs all three steps — build, release, deploy — in sequence:
-
-```bash
-./scripts/devsetup.sh                        # first time (creates DB)
-./scripts/devsetup.sh --skip-create-db       # subsequent runs (DB already exists)
-```
-
-Once setup completes, start the stack:
+The fastest path from a fresh clone to a running system:
 
 ```bash
-python3 scripts/devenv.py start
+./scripts/devsetup.sh                    # build, package and deploy
+python3 scripts/devenv.py start          # start every component
+python3 scripts/devenv.py status         # see what is running
 ```
 
-`devsetup.sh` sets the required environment variables (third-party library paths and versions) and forwards all arguments to `devsetup.py`. Any flag accepted by the build or deploy steps can be passed through — see `./scripts/devsetup.sh --help`.
-
-## Code formatting (clang-format)
-
-C++ is formatted with `clang-format` per the root `.clang-format`. A pinned version is installed with the Python dev extras so every machine (dev and RHEL 8) formats identically, regardless of the OS-provided clang-format:
-
-```bash
-pip install -e python[dev]          # provides the pinned clang-format
-scripts/install-git-hooks.sh        # enable the pre-commit hook (once per clone)
-```
-
-The pre-commit hook (`.githooks/pre-commit`) checks **only the lines each commit touches** via `git clang-format`, so the existing tree does not need to be fully reformatted first. If a staged change is not clean, the commit is blocked with the exact diff and this fix:
-
-```bash
-git clang-format --staged && git add -u
-```
-
-## Building (`build.py` / `build.sh`)
-
-```bash
-./scripts/build.sh
-```
-
-Builds both the C++ components and the Java admin service, runs all tests, and stages the result into `build/installed/`. This staging directory is what `release.py` reads from — it is not the runtime location.
-
-Unit tests and integration tests run automatically. The build script reports signal-based failures (SIGABRT, SIGSEGV, etc.) by name.
-
-Common options:
-
-| Flag | Effect |
-|---|---|
-| `--no-java` | Skip the Java admin service build |
-| `--no-cpp` | Skip the C++ build; build Java only |
-| `--clean` | Clean before building (C++: deletes `build/`; Java: runs `mvn clean`) |
-| `--no-tests` | Skip all tests (C++ unit/integration tests and Maven Surefire) |
-| `--valgrind` | C++ build with Valgrind-compatible options (disables lock-free optimisations) |
-| `--doxygen` | Generate Doxygen documentation after the C++ build |
-| `-j N` | C++ build parallelism (default: all CPUs) |
-
-`build.sh` is a thin wrapper that sets the platform-specific environment variables required by CMake and then calls `build.py`.
-
-## Building on RHEL 8 with Docker
-
-The `Dockerfile` at the project root provides a Rocky Linux 8 build environment that matches the RHEL 8 production target. Use it to verify RHEL 8 compatibility without access to a physical RHEL 8 machine.
-
-### Step 1 — Install Docker (once, on your Mint machine)
-
-```bash
-sudo apt install docker.io
-sudo usermod -aG docker $USER
-```
-
-Log out and back in after the `usermod` step so the group membership takes effect. Verify with:
-
-```bash
-docker run --rm hello-world
-```
-
-### Step 2 — Build the image (once, or when the Dockerfile changes)
-
-From the project root:
-
-```bash
-docker build -t pubsub-rhel8 .
-```
-
-This downloads Rocky Linux 8, installs the compiler toolchain and PostgreSQL, and saves the result as a local image called `pubsub-rhel8`. It takes a few minutes the first time; subsequent builds are fast because Docker caches layers.
-
-### Step 3 — Create the database volume (once, ever)
-
-Docker containers are thrown away when they exit. A **named volume** gives the PostgreSQL data directory a permanent home on your host so the database survives across container runs:
-
-```bash
-docker volume create pubsub-pgdata
-```
-
-### Step 4 — Get a Rocky Linux shell
-
-```bash
-docker run -it --rm \
-    -v "$(pwd)":/workspace \
-    -v /path/to/thirdparty:/development/3rdparty \
-    -v pubsub-pgdata:/var/lib/pgsql/data \
-    pubsub-rhel8
-```
-
-You are now at a bash prompt inside Rocky Linux 8. The flags mean:
-
-| Flag | Effect |
-|---|---|
-| `-it` | Interactive terminal — required for a usable shell |
-| `--rm` | Delete the container automatically when you type `exit` |
-| `-v "$(pwd)":/workspace` | Mounts the project root into the container at `/workspace`; edits are shared instantly in both directions |
-| `-v /path/to/thirdparty:/development/3rdparty` | Pre-built third-party libraries (fmt, quill, etc.) built for Rocky 8. This is the path the real RHEL8 build hosts use, and it must stay outside `/workspace`: CMake leaves directories inside the project tree out of the install RPATH, so a tree mounted under the project links but is not found at run time |
-| `-v pubsub-pgdata:/var/lib/pgsql/data` | Persistent PostgreSQL data directory |
-
-The container entrypoint initialises the PostgreSQL cluster (first run only) and starts the server before dropping you into the shell.
-
-### Step 5 — Set up the database (first time inside the container)
-
-```bash
-./scripts/build-release-deploy.sh --no-java --no-pylint --sudo-postgres
-```
-
-`--sudo-postgres` causes `create_db.py` to run `psql` as the `postgres` Unix user, which is required for peer authentication. `--no-java` is needed because the image does not include Java or Maven.
-
-### Step 6 — Subsequent runs
-
-Start a new shell the same way as Step 4. The database already exists on the volume, so pass `--skip-db`:
-
-```bash
-./scripts/build-release-deploy.sh --no-java --no-pylint --skip-db
-```
-
-### Build and test only (no deploy, no database needed)
-
-If you only want to compile and run the C++ tests, omit the database volume entirely:
-
-```bash
-docker run -it --rm \
-    -v "$(pwd)":/workspace \
-    -v /path/to/thirdparty:/development/3rdparty \
-    pubsub-rhel8
-```
-
-Then inside the container:
-
-```bash
-./scripts/build.sh --no-java --no-pylint
-```
-
-### Notes
-
-- **Pylint:** `--no-pylint` is recommended because the pylint version on Rocky 8 may differ from the development machine and produce false positives.
-- **Ninja vs Make:** `build.sh` respects the `CMAKE_GENERATOR` environment variable. Add `-e CMAKE_GENERATOR=Ninja` to the `docker run` command if ninja is installed in the container.
-- **Java builds:** `admin-service` and `fix-test-client` cannot be built inside the container as supplied. To add Java support, extend the Dockerfile with `java-11-openjdk-devel` and `maven` packages.
-
-## Packaging (`release.py`)
-
-Assembles a versioned deployment artefact from the build staging area:
-
-```bash
-python3 scripts/release.py
-```
-
-Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `build/installed/`. Outputs `build/release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, and a `release.json` manifest.
-
-A build for a platform other than the development host appends its tag, giving
-`pubsub-<version>-<hash>-<mode>-rocky8.tar.gz`. A release tree is not portable between the two —
-a gcc-8.5 build links against an older glibc and names its own third-party tree in the RPATH —
-and the release directory is shared with the Rocky container, so both artefacts land side by
-side and the name is the only thing telling them apart.
-
-Options: `--install-dir` (staging dir, default: `build/installed`), `--env`, `--version`, `--output-dir`, `--no-git-hash`.
-
-## Deployment (`deploy.py`)
-
-Unpacks a release artefact and prepares it for launch:
-
-```bash
-python3 scripts/deploy.py --env environments/prod.toml \
-                  --artefact pubsub-<version>-<hash>.tar.gz \
-                  --install-dir /opt/pubsub \
-                  --skip-certs
-```
-
-Steps performed in order:
-
-1. **Unpack** the artefact into the install directory, stripping its top-level directory.
-2. **Expand config templates** — substitutes `${placeholder}` values in all `etc/**/*.toml` files. Placeholder names are derived mechanically from the environment TOML by flattening every section and key into a single string: `[section] key` → `${section_key}`. For example, `[arbiter_primary] peer_host` in the env TOML becomes `${arbiter_primary_peer_host}` in the component template. A small number of placeholders are injected programmatically by `deploy.py` itself rather than read from the env TOML (currently `${paths_install_dir}`, `${shared_reactor_cpu_registry_shm_path}`, and `${shared_reactor_cpu_registry_lock_file}`). An undefined placeholder causes a hard exit naming the file and the missing key — there are no silent failures.
-
-   **Tracing a placeholder:** if you see `${foo_bar_baz}` in an application template and cannot find its value, either (a) open the env TOML and look for a `[foo]` section with key `bar_baz`, or (b) search `deploy.py` for `namespace["foo_bar_baz"]`.
-3. **Generate TLS certificates** — self-signed via `openssl req -x509` for each `[tls.*]` section. Pass `--skip-certs` when placing CA-signed certificates for production.
-4. **Create the database** — delegates to `db/create_db.py`.
-5. **Export SCRAM credentials** — delegates to `db/export_credentials.py`.
-
-The install directory defaults to `paths.install_dir` from the env TOML (`installed/` for dev, `/opt/pubsub` for prod).
-
-Options: `--skip-certs`, `--force-certs`, `--skip-db`, `--skip-create-db`, `--drop-db`, `--sudo-postgres`, `--liquibase-contexts`.
-
-## Developer Sandbox (`devenv.py`)
-
-`devenv.py` starts, stops, and monitors the full component stack on a developer machine. It reads component definitions and paths from an environment TOML (default: `environments/dev.toml`).
-
-**Prerequisite:** run `devsetup.sh` (or the three steps manually) before the first start.
-
-**Starting everything:**
-
-```bash
-python3 scripts/devenv.py start
-```
-
-Components are started in the order defined in `[startup_order]` in the env TOML, with a 1-second delay between each. Logs go to `installed/log/<name>.log` (application log) and `installed/log/<name>.stdout` (stdout/stderr). PID files go to `/var/tmp/pubsub/run/<name>.pid`.
-
-**Checking status:**
-
-```bash
-python3 scripts/devenv.py status
-```
-
-**Stopping everything:**
-
-```bash
-python3 scripts/devenv.py stop
-```
-
-Components are stopped in reverse startup order. Stale PID files are cleaned up automatically.
-
-**Restarting a single component** (useful during development iteration):
-
-```bash
-python3 scripts/devenv.py restart sequencer
-python3 scripts/devenv.py restart               # restarts everything
-```
-
-**Skipping HA components** (run without arbiters, witness, and secondary instances):
-
-```bash
-python3 scripts/devenv.py --no-ha start
-```
-
-**Using a different environment:**
-
-```bash
-python3 scripts/devenv.py --env environments/test-1.toml start
-```
-
-**Options summary:**
-
-| Flag | Default | Effect |
-|---|---|---|
-| `--env PATH` | `environments/dev.toml` | Environment TOML to use |
-| `--no-ha` | off | Skip components with `ha_only = true` |
-| `--delay SECONDS` | `1.0` | Pause between component starts |
-
-### Optional: netfilter on loopback
-
-Every component runs on one machine in a developer sandbox, so all of the venue's traffic
-crosses `lo`. Netfilter hooks fire on every packet regardless of interface, loopback included,
-and about 13% of the CPU in both the gateway and the matching engine profiles is `nftables`
-and `conntrack` as a result -- `nft_do_chain`, `nft_counter_eval` and `nft_immediate_eval` sit
-near the top of both.
-
-None of it is the venue's doing, and none of it exists in a real deployment, where the
-instances sit on separate machines and the traffic goes over a network card. It is worth
-removing only when the profile itself is what you are looking at, so that two runs compare:
-
-```bash
-sudo nft flush ruleset          # removes the overhead for this boot
-```
-
-**Do not do this on a deployed host.** The ruleset is there deliberately, and flushing it for
-the benefit of a benchmark is a change to that host's firewall. A run made without flushing is
-a valid run; it simply carries a known overhead that production does not.
-
-See [Trading-day load](docs/operations/trading_day_load.md) for the measurements.
+**[Building, deploying and running](docs/orientation/running.md)** covers all of it properly:
+the build wrappers and their flags, the RHEL 8 container build, packaging, deployment, the
+developer sandbox, and the `clang-format` pre-commit hook.
 
 ## Documentation
 
