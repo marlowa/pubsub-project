@@ -987,6 +987,7 @@ WARN_LOGFILE           =
 INPUT                  = mainpage.dox \
                          README.md \
                          CHANGELOG.md \
+                         CLAUDE.md \
                          docs \
                          libraries/pubsub_itc_fw/include \
                          libraries/pubsub_itc_fw/src \

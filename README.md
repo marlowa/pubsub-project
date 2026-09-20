@@ -208,6 +208,7 @@ A low-latency, multi-threaded, event-driven application framework for C++17, bui
 | `environments/` | One TOML per environment; the source of truth for a deployment's hosts, ports and paths |
 | `docs/` | Design notes, the bug list, the roadmap; `docs/README.md` is the way in |
 | `python/` | The serialisation DSL and its test suite |
+| [`CLAUDE.md`](CLAUDE.md) | House rules for anyone using an AI assistant on this repository, read automatically by Claude Code. `coding-rules-for-ai-chatbots.txt` beside it is the full style guide, and applies to everyone |
 
 Scripts are run from the repository root — `python3 scripts/deploy.py`, `./scripts/build.sh` — and each resolves the project root from its own location, so the working directory does not matter.
 
