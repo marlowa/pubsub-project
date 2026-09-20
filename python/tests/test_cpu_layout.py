@@ -3,12 +3,18 @@
 cpu_layout.py lives in scripts/ rather than under python/, so it is loaded by path here, the
 same way test_deploy_flatten.py loads deploy.py.
 
-These cover the property the allocator exists for and did not have: a logical processor is not
-a core. Where simultaneous multithreading is enabled each physical core presents two, sharing
-execution units and level-one cache between them, so two hot-path threads placed on one core
-contend with each other however carefully each was pinned. Counting the processors and calling
-them cores made that invisible -- the layout reported success while handing out half as many
-cores as it thought.
+These cover the policy the allocator exists to enforce, which measurement settled on
+2026-09-20 and which is not the obvious one.
+
+A logical processor is not a core: where simultaneous multithreading is enabled each physical
+core presents two, sharing execution units and level-one cache. The obvious conclusion is that
+two hot-path threads must never share a core. That was measured and is wrong. A component's own
+two threads -- its reactor thread and its application thread -- exchange messages constantly,
+and sharing level-one cache makes that handoff nearly free. Separating them cost 10 per cent of
+the mean inter-thread hop and five times the round trip's 99th percentile.
+
+So sibling sharing is not automatically contention; it depends who the sibling is. The rule is
+that a physical core is filled by one component or left alone.
 """
 
 import importlib.util
@@ -53,56 +59,87 @@ def _multithreaded_topology(cpu_layout, physical_performance_cores=8, efficiency
     return cores
 
 
-def _resolve(cpu_layout, topology, component_count, **kwargs):
+def _resolve(cpu_layout, topology, component_count, threads_each=1, **kwargs):
     names = [f"component_{index}" for index in range(component_count)]
     return cpu_layout.resolve_layout(
         machine="test",
         components_on_machine=names,
         ranks={name: index + 1 for index, name in enumerate(names)},
-        thread_counts={name: 1 for name in names},
+        thread_counts={name: threads_each for name in names},
         topology=topology,
         **kwargs,
     )
 
 
-def test_no_two_hot_path_threads_share_a_physical_core(cpu_layout):
-    """The property the whole change exists for."""
-    topology = _multithreaded_topology(cpu_layout)
-    layout = _resolve(cpu_layout, topology, component_count=7, minimum_background_cores=4)
+def test_a_components_threads_share_one_physical_core(cpu_layout):
+    """The finding that overturned the first guess.
 
-    by_cpu = {core.cpu_id: core for core in topology}
-    physical = [by_cpu[cpu_id].physical_core_id for cpu_id in layout.hot_path_cores]
-
-    assert layout.hot_path_cores, "nothing was admitted, so the test proves nothing"
-    assert len(set(physical)) == len(physical), (
-        f"hot-path processors {layout.hot_path_cores} sit on physical cores {physical}; "
-        f"two threads are sharing a core"
-    )
-
-
-def test_the_sibling_of_a_hot_path_core_is_given_to_nobody(cpu_layout):
-    """Not to the background tier either.
-
-    A background thread on the sibling contends with the hot-path thread exactly as another
-    hot-path thread would, so handing the sibling to the background pool would undo the
-    separation while appearing to use the machine fully.
+    A component's reactor thread and application thread pass messages to each other constantly,
+    and two hyperthreads of one core share level-one cache. Splitting them across cores makes
+    every one of those messages cross a cache boundary.
     """
     topology = _multithreaded_topology(cpu_layout)
-    layout = _resolve(cpu_layout, topology, component_count=7, minimum_background_cores=4)
+    layout = _resolve(cpu_layout, topology, component_count=4,
+                      minimum_background_cores=4, threads_each=2)
+
+    by_cpu = {core.cpu_id: core for core in topology}
+    assert layout.component_cores, "nothing was admitted, so the test proves nothing"
+    for name, cpus in layout.component_cores.items():
+        physical = {by_cpu[cpu_id].physical_core_id for cpu_id in cpus}
+        assert len(physical) == 1, (
+            f"{name} was given cpus {cpus} spanning physical cores {sorted(physical)}; "
+            f"its two threads should share one core"
+        )
+
+
+def test_no_physical_core_is_shared_between_components(cpu_layout):
+    """The other half of the rule, and the half the original allocator broke.
+
+    Two threads of different components cooperate over nothing. They only contend.
+    """
+    topology = _multithreaded_topology(cpu_layout)
+    layout = _resolve(cpu_layout, topology, component_count=6,
+                      minimum_background_cores=4, threads_each=2)
+
+    by_cpu = {core.cpu_id: core for core in topology}
+    owner_of_core = {}
+    for name, cpus in layout.component_cores.items():
+        for cpu_id in cpus:
+            core_id = by_cpu[cpu_id].physical_core_id
+            assert owner_of_core.setdefault(core_id, name) == name, (
+                f"physical core {core_id} is shared by {owner_of_core[core_id]} and {name}"
+            )
+
+
+def test_a_core_given_to_one_component_is_not_lent_to_the_background_tier(cpu_layout):
+    """A background thread on a hot-path core contends exactly as another hot-path thread would."""
+    topology = _multithreaded_topology(cpu_layout)
+    layout = _resolve(cpu_layout, topology, component_count=4,
+                      minimum_background_cores=4, threads_each=2)
 
     by_cpu = {core.cpu_id: core for core in topology}
     hot_path_physical = {by_cpu[cpu_id].physical_core_id for cpu_id in layout.hot_path_cores}
-
     for cpu_id in layout.background_cores:
         assert by_cpu[cpu_id].physical_core_id not in hot_path_physical, (
-            f"background processor {cpu_id} shares a physical core with a hot-path thread"
+            f"background processor {cpu_id} sits on a core already given to the hot path"
         )
 
-    assert layout.idle_sibling_cores, "the siblings were not recorded as set aside"
+
+def test_a_component_wanting_one_thread_still_takes_a_whole_core(cpu_layout):
+    """The spare processor is left unused rather than lent out, and is reported as such."""
+    topology = _multithreaded_topology(cpu_layout)
+    layout = _resolve(cpu_layout, topology, component_count=3,
+                      minimum_background_cores=4, threads_each=1)
+
+    by_cpu = {core.cpu_id: core for core in topology}
+    for name, cpus in layout.component_cores.items():
+        assert len(cpus) == 1, f"{name} asked for one thread and got {cpus}"
+
+    assert layout.idle_sibling_cores, "the unused processors were not reported"
+    hot_path_physical = {by_cpu[cpu_id].physical_core_id for cpu_id in layout.hot_path_cores}
     for cpu_id in layout.idle_sibling_cores:
         assert by_cpu[cpu_id].physical_core_id in hot_path_physical
         assert cpu_id not in layout.background_cores
-        assert cpu_id not in layout.hot_path_cores
 
 
 def test_reserving_cpu0_reserves_its_whole_physical_core(cpu_layout):

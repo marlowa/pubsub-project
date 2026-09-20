@@ -261,6 +261,18 @@ class Layout:
         return [group for group in self.groups if not group.admitted]
 
 
+def _cores_for_threads(thread_count: int, threads_per_core: int) -> int:
+    """How many physical cores a component needs for its threads.
+
+    Rounded up, because a core is given whole: a component with three threads on a
+    machine presenting two per core takes two cores and leaves one CPU of the
+    second unused, rather than lending it to a neighbour.
+    """
+    if thread_count <= 0:
+        return 0
+    return -(-thread_count // max(threads_per_core, 1))
+
+
 def _threads_per_physical_core(cores: list[Core]) -> int:
     """How many logical CPUs each physical core presents, on this machine.
 
@@ -337,18 +349,32 @@ def resolve_layout(
             groups.append(RankGroup(rank=rank, components=[name],
                                     demand=thread_counts.get(name, 0)))
 
-    # One CPU per physical performance core, not one per logical CPU.  Handing out
-    # both threads of a core puts two hot-path threads in contention over one set
-    # of execution units, which is what pinning them separately was meant to
-    # prevent.  The first CPU of each core is taken; its siblings are set aside
-    # below and offered to nobody.
-    seen_core_ids: set[int] = set()
-    performance_pool = []
+    # Physical performance cores, each with every CPU it presents, in order.  The
+    # unit of allocation is the core and not the CPU, for two reasons measured on
+    # 2026-09-20 with the same load and the same processes either way.
+    #
+    # A component's own threads belong together.  The reactor thread and the
+    # application thread exchange messages constantly, and on two hyperthreads of
+    # one core they share level-one cache, so the handoff is nearly free.  Split
+    # across cores, every message between them crosses a cache boundary: the
+    # inter-thread hop's mean went from 6.53us to 7.17us and the round trip's 99th
+    # percentile from 471us to between 2.4ms and 3.0ms.
+    #
+    # Two components' threads do not belong together.  They cooperate over
+    # nothing and simply contend for the same execution units.
+    #
+    # So sibling sharing is not automatically contention -- it depends entirely on
+    # who the sibling is -- and the rule that satisfies both findings is that a
+    # core is filled by one component or left alone.
+    performance_cores: list[list[Core]] = []
+    by_core_id: dict[int, list[Core]] = {}
     for core in claimable:
-        if not core.is_performance_core or core.physical_core_id in seen_core_ids:
+        if not core.is_performance_core:
             continue
-        seen_core_ids.add(core.physical_core_id)
-        performance_pool.append(core)
+        if core.physical_core_id not in by_core_id:
+            by_core_id[core.physical_core_id] = []
+            performance_cores.append(by_core_id[core.physical_core_id])
+        by_core_id[core.physical_core_id].append(core)
     layout = Layout(
         machine=machine,
         claimable=claimable,
@@ -365,21 +391,28 @@ def resolve_layout(
             group.reason = f"admission stopped at rank {stopped_at_rank}, which did not fit"
             continue
 
-        remaining_performance = len(performance_pool) - allocated
-        # Each admitted thread costs the background tier a whole physical core, not
-        # one logical CPU, because the sibling is set aside with it.  Counting
-        # logical CPUs here would promise a background pool that never materialises.
-        cores_per_physical = _threads_per_physical_core(claimable)
-        remaining_background = len(claimable) - ((allocated + group.demand) * cores_per_physical)
+        # Demand is counted in physical cores, because that is what a component is
+        # given.  A component wanting more threads than one core presents takes a
+        # second core rather than borrowing a neighbour's.
+        threads_per_core = _threads_per_physical_core(claimable)
+        cores_wanted = sum(
+            _cores_for_threads(thread_counts.get(name, 0), threads_per_core)
+            for name in group.components
+        )
+        remaining_performance = len(performance_cores) - allocated
+        # Each core handed to the hot path leaves the background tier entirely, with
+        # every CPU it presents. Counting CPUs would promise a pool that never
+        # materialises.
+        remaining_background = len(claimable) - ((allocated + cores_wanted) * threads_per_core)
 
         if group.demand > remaining_performance:
             group.reason = (
-                f"needs {group.demand} core(s), only {remaining_performance} P-core(s) remain"
+                f"needs {cores_wanted} physical P-core(s), only {remaining_performance} remain"
             )
             stopped_at_rank = group.rank
         elif remaining_background < minimum_background_cores:
             group.reason = (
-                f"needs {group.demand} core(s), which would leave {remaining_background} "
+                f"needs {cores_wanted} physical P-core(s), which would leave {remaining_background} "
                 f"background core(s), below the reserve of {minimum_background_cores}"
             )
             stopped_at_rank = group.rank
@@ -387,10 +420,15 @@ def resolve_layout(
             group.admitted = True
             for name in group.components:
                 count = thread_counts.get(name, 0)
-                layout.component_cores[name] = [
-                    core.cpu_id for core in performance_pool[allocated:allocated + count]
-                ]
-                allocated += count
+                wanted = _cores_for_threads(count, threads_per_core)
+                cpus: list[int] = []
+                for core_cpus in performance_cores[allocated:allocated + wanted]:
+                    cpus.extend(core.cpu_id for core in core_cpus)
+                # One CPU per thread. Where a core presents more CPUs than the
+                # component has threads, the rest go unused rather than to anybody
+                # else, because the core belongs to this component.
+                layout.component_cores[name] = cpus[:count]
+                allocated += wanted
 
     # Note that every group below the failure is reported as *stopped*, not as
     # individually rejected, because that is what happened: a later, smaller
@@ -411,6 +449,8 @@ def resolve_layout(
         for core in claimable
         if core.cpu_id not in hot_path and core.physical_core_id not in hot_path_core_ids
     ]
+    # A CPU on a hot-path core that its owning component did not need. It is not
+    # offered to anyone else, because the core belongs to that component.
     layout.idle_sibling_cores = [
         core.cpu_id
         for core in claimable
@@ -503,11 +543,11 @@ def format_layout(layout: Layout) -> str:
     if layout.idle_sibling_cores:
         lines.append("")
         lines.append(
-            f"  set aside : cpu(s) {format_cpu_list(layout.idle_sibling_cores)} -- the other "
-            f"thread of each physical core"
+            f"  set aside : cpu(s) {format_cpu_list(layout.idle_sibling_cores)} -- spare capacity on "
+            f"cores already given"
         )
         lines.append(
-            "              given to the hot path, left unused so nothing contends with it"
+            "              to a component, left unused because the core is that component's"
         )
 
     if layout.unranked:
