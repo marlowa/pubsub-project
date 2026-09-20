@@ -511,7 +511,7 @@ def query_hot_path_thread_count(install_dir: Path, component: dict) -> tuple[int
         return _ASSUMED_HOT_PATH_THREAD_COUNT, False
 
 
-def resolve_cpu_layout(env: dict, install_dir: Path, run_dir: Path) -> Path | None:
+def resolve_cpu_layout(env: dict, install_dir: Path, run_dir: Path, no_ha: bool = False) -> Path | None:
     """Resolve declared hot_path_rank values into core ids for this machine.
 
     Writes one machine-wide layout file into run/ and reports the result.  The
@@ -532,6 +532,33 @@ def resolve_cpu_layout(env: dict, install_dir: Path, run_dir: Path) -> Path | No
 
     components = env.get("components", {})
     on_machine = machine.get("components", [])
+
+    # Without high availability the layout is computed over the reduced set, not
+    # over everything with the absentees skipped at start-up.  Skipping at
+    # start-up leaves their cores reserved and idle, which is the wrong trade on a
+    # machine running the whole venue: the point of turning high availability off
+    # there is to stop imitating a deployment of one process per machine, so the
+    # components that do run should have the cores the others are not using.
+    #
+    # Second instances go with the secondaries.  A "_b" instance is not a high
+    # availability partner -- it is another instance of the same role -- but it
+    # exists for the same reason the secondaries do, and on one machine it is the
+    # same imitation.  Leaving it out is part of the same decision.
+    #
+    # The cost is that a layout computed this way cannot be compared against one
+    # computed the other way: the same component gets different cores. That is why
+    # it is a deploy-time choice a person makes, and not the default.
+    if no_ha:
+        excluded = [
+            name for name in on_machine
+            if components.get(name, {}).get("ha_only", False) or name.endswith("_b")
+        ]
+        if excluded:
+            print(
+                f"  --no-ha   : leaving {len(excluded)} component(s) out of the layout: "
+                f"{', '.join(sorted(excluded))}"
+            )
+            on_machine = [name for name in on_machine if name not in set(excluded)]
 
     unknown = [name for name in on_machine if name not in components]
     if unknown:
@@ -749,6 +776,12 @@ def parse_args() -> argparse.Namespace:
         "--liquibase-contexts", default="", metavar="CONTEXTS",
         help="Liquibase context filter passed to create_db.py, e.g. 'production'",
     )
+    parser.add_argument(
+        "--no-ha", action="store_true",
+        help="compute the CPU layout for a deployment without high availability: "
+             "ha_only components and second instances are left out, so the components "
+             "that do run get more cores each. devenv.py --no-ha then starts that set",
+    )
     return parser.parse_args()
 
 
@@ -866,7 +899,7 @@ def main() -> None:
     # topology, so the same declaration resolves differently on a 32-core
     # workstation, a 20-core host or a VM.
     print("=== resolving CPU core layout ===")
-    resolve_cpu_layout(env, install_dir, cpu_run_dir)
+    resolve_cpu_layout(env, install_dir, cpu_run_dir, no_ha=args.no_ha)
     print()
 
     # Step 4: TLS certificates

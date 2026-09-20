@@ -64,11 +64,23 @@ _CPPC_P_CORE_THRESHOLD_PERCENT = 80
 
 @dataclass(frozen=True)
 class Core:
-    """One online CPU, with everything admission needs to place it."""
+    """One online CPU, with everything admission needs to place it.
+
+    A CPU is not a core.  Where simultaneous multithreading is enabled each
+    physical core presents two of these, and the numbering gives no hint which
+    pairs belong together -- on the development workstation cpu0 and cpu1 are one
+    core, cpu2 and cpu3 the next.  Two threads on one core share execution units
+    and level-one cache, so placing two hot-path threads there puts them in
+    contention with each other however carefully each was pinned.
+
+    physical_core_id is the lowest CPU id of the sibling group, which is stable,
+    comparable, and the same for every CPU on one core.
+    """
 
     cpu_id: int
     numa_node_id: int
     is_performance_core: bool
+    physical_core_id: int
 
     @property
     def core_type_name(self) -> str:
@@ -140,6 +152,22 @@ def _is_performance_core(cpu_id: int, maximum_cppc_performance: int) -> bool:
     return True
 
 
+def _read_physical_core_id(cpu_id: int) -> int:
+    """The lowest CPU id sharing a physical core with this one.
+
+    Read from topology/thread_siblings_list, which lists every CPU on the same
+    physical core including this one.  A machine that publishes no sibling list,
+    or one with multithreading disabled, yields the CPU's own id -- which is the
+    right answer in both cases, because then each CPU is its own core.
+    """
+    siblings_path = _CPU_BASE / f"cpu{cpu_id}" / "topology" / "thread_siblings_list"
+    try:
+        siblings = parse_cpu_list(siblings_path.read_text())
+    except OSError:
+        return cpu_id
+    return min(siblings) if siblings else cpu_id
+
+
 def _read_numa_map() -> dict[int, int]:
     """Map cpu id to NUMA node id, empty when sysfs exposes no NUMA topology."""
     numa_map: dict[int, int] = {}
@@ -180,6 +208,7 @@ def read_topology() -> list[Core]:
             cpu_id=cpu_id,
             numa_node_id=numa_map.get(cpu_id, 0),
             is_performance_core=_is_performance_core(cpu_id, maximum_cppc_performance),
+            physical_core_id=_read_physical_core_id(cpu_id),
         )
         for cpu_id in online
     ]
@@ -213,6 +242,9 @@ class Layout:
     background_cores: list[int]
     minimum_background_cores: int
     reserve_cpu0: bool
+    # The other thread of each physical core the hot path was given.  Deliberately
+    # unused: see the comment where it is filled in.
+    idle_sibling_cores: list[int] = field(default_factory=list)
     component_cores: dict[str, list[int]] = field(default_factory=dict)
     groups: list[RankGroup] = field(default_factory=list)
     unranked: list[str] = field(default_factory=list)
@@ -227,6 +259,22 @@ class Layout:
     def demoted_groups(self) -> list[RankGroup]:
         """Rank groups that were not admitted, each carrying its reason."""
         return [group for group in self.groups if not group.admitted]
+
+
+def _threads_per_physical_core(cores: list[Core]) -> int:
+    """How many logical CPUs each physical core presents, on this machine.
+
+    Two where simultaneous multithreading is enabled, one where it is not.  Taken
+    as the largest sibling group rather than assumed, because a machine can mix
+    the two -- this workstation pairs its performance cores and leaves its
+    efficiency cores single.
+    """
+    if not cores:
+        return 1
+    counts: dict[int, int] = {}
+    for core in cores:
+        counts[core.physical_core_id] = counts.get(core.physical_core_id, 0) + 1
+    return max(counts.values())
 
 
 def resolve_layout(
@@ -256,7 +304,14 @@ def resolve_layout(
         place on a background core -- the C++ ones.  The JVMs have none.
     :raises LayoutError: on a configuration no machine could satisfy (case C).
     """
-    claimable = [core for core in topology if not (reserve_cpu0 and core.cpu_id == 0)]
+    # Reserving cpu0 has to reserve the whole physical core it sits on.  Reserving
+    # the logical CPU alone reserves half a core, and hands its sibling -- which
+    # shares the execution units the operating system is using -- to a hot-path
+    # thread.  That defeats the reservation without reporting anything.
+    reserved_core_ids = set()
+    if reserve_cpu0:
+        reserved_core_ids = {core.physical_core_id for core in topology if core.cpu_id == 0}
+    claimable = [core for core in topology if core.physical_core_id not in reserved_core_ids]
 
     # Case C: not a shortfall but a nonsensical configuration -- no group could
     # ever be admitted whatever the demand.  A hard error, not a demotion.
@@ -282,7 +337,18 @@ def resolve_layout(
             groups.append(RankGroup(rank=rank, components=[name],
                                     demand=thread_counts.get(name, 0)))
 
-    performance_pool = [core for core in claimable if core.is_performance_core]
+    # One CPU per physical performance core, not one per logical CPU.  Handing out
+    # both threads of a core puts two hot-path threads in contention over one set
+    # of execution units, which is what pinning them separately was meant to
+    # prevent.  The first CPU of each core is taken; its siblings are set aside
+    # below and offered to nobody.
+    seen_core_ids: set[int] = set()
+    performance_pool = []
+    for core in claimable:
+        if not core.is_performance_core or core.physical_core_id in seen_core_ids:
+            continue
+        seen_core_ids.add(core.physical_core_id)
+        performance_pool.append(core)
     layout = Layout(
         machine=machine,
         claimable=claimable,
@@ -300,7 +366,11 @@ def resolve_layout(
             continue
 
         remaining_performance = len(performance_pool) - allocated
-        remaining_background = len(claimable) - allocated - group.demand
+        # Each admitted thread costs the background tier a whole physical core, not
+        # one logical CPU, because the sibling is set aside with it.  Counting
+        # logical CPUs here would promise a background pool that never materialises.
+        cores_per_physical = _threads_per_physical_core(claimable)
+        remaining_background = len(claimable) - ((allocated + group.demand) * cores_per_physical)
 
         if group.demand > remaining_performance:
             group.reason = (
@@ -327,7 +397,25 @@ def resolve_layout(
     # group might well have fitted and is deliberately not given the chance.
     layout.groups = groups
     hot_path = set(layout.hot_path_cores)
-    layout.background_cores = [core.cpu_id for core in claimable if core.cpu_id not in hot_path]
+
+    # A physical core given to the hot path is given whole.  Its other thread goes
+    # to nobody -- not to the background tier either, because a background thread
+    # there contends with the hot-path thread exactly as another hot-path thread
+    # would.  That costs one logical CPU per admitted thread and is the price of
+    # the pinning meaning what it says.
+    hot_path_core_ids = {
+        core.physical_core_id for core in claimable if core.cpu_id in hot_path
+    }
+    layout.background_cores = [
+        core.cpu_id
+        for core in claimable
+        if core.cpu_id not in hot_path and core.physical_core_id not in hot_path_core_ids
+    ]
+    layout.idle_sibling_cores = [
+        core.cpu_id
+        for core in claimable
+        if core.cpu_id not in hot_path and core.physical_core_id in hot_path_core_ids
+    ]
 
     # Quill backends are pinned to a specific background core rather than left to
     # drift under the scheduler, which means the background tier needs allocating
@@ -386,11 +474,15 @@ def format_layout(layout: Layout) -> str:
     as unexplained latency is not.  So every group is named, admitted or not,
     and every demotion carries its reason.
     """
+    performance_cpus = [core for core in layout.claimable if core.is_performance_core]
+    physical_performance_cores = len({core.physical_core_id for core in performance_cpus})
+    reserved_note = " (cpu0 and its sibling reserved)" if layout.reserve_cpu0 else ""
+
     lines = [
         f"  machine   : {layout.machine}",
-        f"  claimable : {len(layout.claimable)} core(s)"
-        f"{' (cpu0 reserved)' if layout.reserve_cpu0 else ''}"
-        f", {sum(1 for c in layout.claimable if c.is_performance_core)} P-core(s)",
+        f"  claimable : {len(layout.claimable)} cpu(s){reserved_note}",
+        f"  P-cores   : {physical_performance_cores} physical, presenting "
+        f"{len(performance_cpus)} cpu(s)",
         f"  reserve   : {layout.minimum_background_cores} background core(s) minimum",
         "",
     ]
@@ -407,6 +499,16 @@ def format_layout(layout: Layout) -> str:
         else:
             lines.append(f"  rank {group.rank}  DEMOTED   {members}")
             lines.append(f"            {group.reason}")
+
+    if layout.idle_sibling_cores:
+        lines.append("")
+        lines.append(
+            f"  set aside : cpu(s) {format_cpu_list(layout.idle_sibling_cores)} -- the other "
+            f"thread of each physical core"
+        )
+        lines.append(
+            "              given to the hot path, left unused so nothing contends with it"
+        )
 
     if layout.unranked:
         lines.append(f"  unranked  BACKGROUND  {', '.join(layout.unranked)}")
