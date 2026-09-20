@@ -531,7 +531,7 @@ appears during bursts disappears.
 
 | looking for | detector |
 |---|---|
-| **Unpinned hot threads** | `cpu_audit.py` checks every running thread's real mask in `/proc` against the declared layout and exits non-zero on a mismatch. **Run it after the load as well as before** — a thread created lazily under load escapes a start-up-only audit entirely, which is exactly the case worth catching. |
+| **Unpinned hot threads** | `cpu_audit.py` checks every running thread's real mask in `/proc` against the declared layout and exits non-zero on a mismatch. **Run it after the load as well as before** — a thread created lazily under load escapes a start-up-only audit entirely, which is exactly the case worth catching. **Run it during the load too**: it samples which processor each thread actually ran on, and a thread that consumes no CPU cannot be observed anywhere, so an idle venue yields no placement evidence at all. |
 | **Allocation on the hot path** | The `deploy.py`-generated wrapper already exists as a `perf`/`valgrind` interposition point; a malloc-counting interposer over a phase shows whether the hot path reaches the heap at all. The framework has slab and pool allocators precisely so it should not. |
 | **Costly computations** | `perf record` sliced by phase, per the manifest. |
 

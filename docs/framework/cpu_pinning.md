@@ -85,6 +85,20 @@ compares it against the layout, exiting non-zero on a mismatch so a performance 
 it. Nothing can *prevent* a thread changing its own affinity — the mask is advisory, and some
 NUMA-aware thread pools in third-party libraries do exactly that — so it is detected instead.
 
+A mask answers "where may this thread run", which is not the question a measurement cares about.
+So the audit also samples where threads *did* run, reading `/proc/<pid>/task/<tid>/stat` several
+times over a short window: that file carries both the processor a thread last ran on and the CPU
+time it has consumed, and a thread counts as having run on a core only when its consumed time
+advanced across an interval and it was on that core at the end of it. Consumed time alone says
+when but not where; the processor field alone can be stale for a thread asleep since yesterday.
+
+The two answers are far apart. On this workstation, with no `isolcpus`, around 1,450 threads are
+*permitted* on the hot-path cores and about a dozen are ever *seen* there — a mask-only report
+names Firefox's 112 threads as occupying the hot path when not one of them executes there.
+The audit confines itself to the background tier before sampling, so the polling cannot become
+part of what it measures, and it reports an unobserved core as unobserved rather than as quiet:
+sampling under-reports by construction, since a thread can visit a core between two readings.
+
 ---
 
 ## Configuration
@@ -257,9 +271,17 @@ adds to every order's round trip.
 `cpu_audit.py` reports this, classified separately from unavoidable per-CPU kernel threads:
 
 ```bash
-python3 scripts/cpu_audit.py            # reports occupancy; passes if the layout is consistent
-python3 scripts/cpu_audit.py --strict   # also fails when unrelated userspace threads may run there
+python3 scripts/cpu_audit.py                      # reports occupancy; passes if the layout is consistent
+python3 scripts/cpu_audit.py --strict             # also fails on threads SEEN running on hot-path cores
+python3 scripts/cpu_audit.py --sample-seconds 10  # look harder; the default window is 2 seconds
 ```
+
+Run it while the load is running. An idle venue tells you nothing about placement: its own threads
+consume no CPU, so the audit reports them as unobserved, which is what they are.
+
+`--strict` fails on what was observed rather than on what is permitted. Permitted occupancy is
+reported and never fails, because without `isolcpus` it is nearly every thread on the machine —
+true, unactionable, and a check that is permanently red is one nobody reads.
 
 Or directly:
 

@@ -19,11 +19,29 @@ every thread's real mask from /proc/<pid>/task/<tid>/status, and reports:
   * a Quill backend that is not on its allocated background core;
   * any process not masked to the background tier at all.
 
+A mask, though, answers "where may this thread run", and a measurement is spoiled
+by where threads *did* run.  The two differ by a long way: on a machine without
+isolcpus most threads carry an unrestricted mask, so a mask-only report names
+well over a thousand threads as occupying the hot-path cores when almost none of
+them ever execute there.  A report that is permanently that red is one nobody
+reads.
+
+So placement is sampled as well.  Over a short window every candidate thread is
+read twice or more from /proc/<pid>/task/<tid>/stat, which carries both the CPU
+time it has consumed and the processor it last ran on.  A thread is reported as
+having run on a hot-path core only when its consumed time advanced across an
+interval *and* it was on that core at the end of it -- consumed time alone says
+nothing about where, and the processor field alone can be stale for a thread
+that has been asleep since yesterday.  Sampling under-reports by construction: a
+thread may visit a core between two samples and be gone by the next.  Nothing
+here calls an unobserved core quiet, only unobserved.
+
 Exit status is 0 when reality matches the layout and 1 when it does not, so this
 can gate a performance run rather than being read by eye afterwards.
 
 Usage:
   ./cpu_audit.py [--install-dir PATH] [--env PATH] [--verbose]
+                 [--sample-seconds N] [--sample-interval N] [--strict]
 """
 
 from __future__ import annotations
@@ -38,8 +56,11 @@ except ImportError:
         sys.exit("error: Python 3.11+ or the 'tomli' package is required to parse TOML")
 
 import argparse
+import os
 import sys
-from dataclasses import dataclass
+import time
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cpu_layout
@@ -97,26 +118,124 @@ def is_kernel_thread(pid: int) -> bool:
         return True
 
 
+# Field offsets into /proc/<pid>/task/<tid>/stat, counted from the field after
+# the closing parenthesis of the thread name.  The name may itself contain
+# spaces and parentheses, which is why the line is split on the LAST ") " rather
+# than tokenised from the left.  Numbering follows proc(5): field 3 is the first
+# after the name, so a proc(5) field N sits at index N - 3.
+_STAT_STATE = 0        # proc(5) field 3
+_STAT_UTIME = 11       # proc(5) field 14
+_STAT_STIME = 12       # proc(5) field 15
+_STAT_PROCESSOR = 36   # proc(5) field 39
+
+
+def parse_isolated_cores(cmdline: str) -> list[int]:
+    """Cores the kernel was told to keep out of general scheduling, from a boot line.
+
+    Separate from reading /proc/cmdline so it can be tested on the forms that
+    actually appear. isolcpus accepts flag words before the list, as in
+    `isolcpus=domain,managed_irq,2-15`, and dropping them is the difference
+    between reading the isolated set and reading nothing at all.
+    """
+    for word in cmdline.split():
+        if word.startswith("isolcpus="):
+            ranges = [part for part in word.split("=", 1)[1].split(",") if part and part[0].isdigit()]
+            try:
+                return cpu_layout.parse_cpu_list(",".join(ranges))
+            except ValueError:
+                return []
+    return []
+
+
+def read_isolated_cores() -> list[int]:
+    """The isolated cores of the running kernel, or none if the boot line cannot be read."""
+    try:
+        return parse_isolated_cores(Path("/proc/cmdline").read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+
+def read_thread_activity(pid: int, tid: int) -> tuple[int, int] | None:
+    """One thread's consumed CPU time in ticks and the processor it last ran on.
+
+    Returns None if the thread has gone, which happens constantly and is not an
+    error: threads come and go while this is being read.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/task/{tid}/stat").read_text(encoding="utf-8")
+        fields = raw.rsplit(") ", 1)[1].split()
+        return (int(fields[_STAT_UTIME]) + int(fields[_STAT_STIME]),
+                int(fields[_STAT_PROCESSOR]))
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 @dataclass
-class Occupant:
-    """A thread found to be permitted on a hot-path core it does not own."""
+class Placement:
+    """Where one thread was actually observed running during the sampling window."""
 
     label: str
-    cores: list[int]
-    kind: str  # "irq", "kernel" or "userspace"
+    component: str | None          # the deployment component it belongs to, or None
+    kind: str                      # "irq", "kernel" or "userspace"
+    permitted: list[int] = field(default_factory=list)  # hot-path cores its mask allows
+    ticks: int = 0                 # CPU time consumed across the window
+    cores: Counter = field(default_factory=Counter)   # core -> intervals seen running there
+
+    @property
+    def ran(self) -> bool:
+        """True when this thread consumed any CPU time at all during the window."""
+        return self.ticks > 0
 
 
-def survey_hot_path_occupancy(hot_path_owner: dict[int, str],
-                              deployment_pids: set[int]) -> list[Occupant]:
-    """Find every thread on the machine allowed to run on a hot-path core.
+def sample_placement(targets: dict[tuple[int, int], Placement], seconds: float,
+                     interval: float, read=read_thread_activity) -> None:
+    """Fill in where each target thread ran, by repeated reads of /proc.
 
-    Pinning a thread to a core reserves the core *for* it; it does not reserve
-    the core *from* anything else.  Nothing but `isolcpus` stops an unrelated
-    process being scheduled there, so the layout being internally consistent is
-    not the same as the hot-path cores being quiet -- and it is the second that
-    a latency measurement actually depends on.
+    Attribution is per interval rather than per sample: a thread counts as having
+    run on a core when its consumed CPU time advanced between two consecutive
+    reads and it was sitting on that core at the second of them.  Either signal
+    alone is misleading -- consumed time says when but not where, and the
+    processor field of a sleeping thread records where it last ran, however long
+    ago that was.
 
-    Threads are classified by what can be done about them:
+    At least two reads always happen, so a window of zero still yields the
+    start-to-end comparison; more intervals catch more of what a thread did.
+    """
+    previous: dict[tuple[int, int], tuple[int, int]] = {}
+    deadline = time.monotonic() + seconds
+    passes = 0
+    while True:
+        passes += 1
+        for key, placement in targets.items():
+            reading = read(*key)
+            if reading is None:
+                continue
+            ticks, processor = reading
+            was = previous.get(key)
+            if was is not None and ticks > was[0]:
+                placement.ticks += ticks - was[0]
+                placement.cores[processor] += 1
+            previous[key] = reading
+        if passes >= 2 and time.monotonic() >= deadline:
+            return
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+
+
+def confine_to_background(background: list[int]) -> bool:
+    """Keep this audit off the cores it is auditing, so it cannot become the contamination.
+
+    Sampling is a poll, and a poll that runs on a hot-path core competes with the
+    threads whose placement it is trying to establish.
+    """
+    try:
+        os.sched_setaffinity(0, set(background))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def classify(kernel: bool, thread_name: str) -> str:
+    """What can be done about a thread found on a hot-path core.
 
       kernel    per-CPU housekeeping (cpuhp/N, migration/N, ksoftirqd/N,
                 kworker/N:*). One set exists on every core by construction and
@@ -126,8 +245,26 @@ def survey_hot_path_occupancy(hot_path_owner: dict[int, str],
                 landing on a hot-path core is worth knowing about.
       userspace anything else. Avoidable, and the reason --strict exists.
     """
-    hot_path_cores = set(hot_path_owner)
-    occupants: list[Occupant] = []
+    if not kernel:
+        return "userspace"
+    return "irq" if thread_name.startswith("irq/") else "kernel"
+
+
+def survey_candidates(hot_path_cores: set[int],
+                      deployment_pids: set[int]) -> dict[tuple[int, int], Placement]:
+    """Every thread outside the deployment whose mask permits a hot-path core.
+
+    Pinning a thread to a core reserves the core *for* it; it does not reserve
+    the core *from* anything else.  Nothing but `isolcpus` stops an unrelated
+    process being scheduled there, so the layout being internally consistent is
+    not the same as the hot-path cores being quiet -- and it is the second that
+    a latency measurement actually depends on.
+
+    The mask is the filter and not the finding: a thread that may run on a
+    hot-path core is a candidate for having done so, nothing more.  Which of
+    them actually did is settled by sampling them.
+    """
+    candidates: dict[tuple[int, int], Placement] = {}
 
     for process_dir in Path("/proc").iterdir():
         if not process_dir.name.isdigit():
@@ -149,25 +286,31 @@ def survey_hot_path_occupancy(hot_path_owner: dict[int, str],
             except ValueError:
                 continue
             mask = read_thread_affinity(pid, thread_id)
-            if mask is None:
-                continue
-            overlap = sorted(set(mask) & hot_path_cores)
-            if not overlap:
+            if mask is None or not set(mask) & hot_path_cores:
                 continue
 
             thread_name = read_thread_name(pid, thread_id)
-            if kernel:
-                kind = "irq" if thread_name.startswith("irq/") else "kernel"
-            else:
-                kind = "userspace"
             label = thread_name if thread_name == process_name else f"{process_name}/{thread_name}"
-            occupants.append(Occupant(f"{label} (pid {pid})", overlap, kind))
+            candidates[(pid, thread_id)] = Placement(
+                label=f"{label} (pid {pid})",
+                component=None,
+                kind=classify(kernel, thread_name),
+                permitted=sorted(set(mask) & hot_path_cores))
 
-    return occupants
+    return candidates
 
 
-def audit(layout_path: Path, run_dir: Path, verbose: bool, strict: bool) -> list[str]:
-    """Compare every running thread's real mask against the layout."""
+def audit(layout_path: Path, run_dir: Path, args: argparse.Namespace,
+          metrics_only: set[str]) -> list[str]:
+    """Compare every running thread's real mask, and where it really ran, against the layout.
+
+    `metrics_only` names the processes the env file marks as observing the venue
+    rather than taking part in it. deploy.py allocates them nothing, so holding
+    them to the layout would fail every run on a machine where they are up. They
+    are not waved through either: with no entry to be measured against, they are
+    treated as any other unrelated process and reported if they turn up on a
+    hot-path core.
+    """
     with open(layout_path, "rb") as handle:  # binary: tomllib requires it
         layout = tomllib.load(handle)
 
@@ -188,8 +331,15 @@ def audit(layout_path: Path, run_dir: Path, verbose: bool, strict: bool) -> list
         return [f"no running components found via PID files in {run_dir}"]
 
     problems: list[str] = []
+    verbose = args.verbose
+    deployment_threads: dict[tuple[int, int], Placement] = {}
 
     for name, pid in sorted(running.items()):
+        if name in metrics_only:
+            if verbose:
+                print(f"  --  {name} (pid {pid}) observes the venue rather than taking part; "
+                      f"the layout allocates it nothing")
+            continue
         entry = components.get(name)
         if entry is None:
             problems.append(f"{name} (pid {pid}) is running but has no entry in the layout")
@@ -205,6 +355,9 @@ def audit(layout_path: Path, run_dir: Path, verbose: bool, strict: bool) -> list
                 continue
             thread_name = read_thread_name(pid, tid)
             where = f"{name}/{thread_name} (pid {pid} tid {tid})"
+            deployment_threads[(pid, tid)] = Placement(
+                label=where, component=name, kind="userspace",
+                permitted=sorted(set(mask) & set(hot_path_owner)))
 
             # A thread pinned to exactly one core is claiming that core.
             if len(mask) == 1:
@@ -246,68 +399,183 @@ def audit(layout_path: Path, run_dir: Path, verbose: bool, strict: bool) -> list
                 f"{cpu_layout.format_cpu_list(sorted(unclaimed_own_cores))} "
                 f"but no thread is pinned there")
 
-    problems.extend(report_hot_path_occupancy(hot_path_owner, set(running.values()), strict))
+    venue = {name: pid for name, pid in running.items() if name not in metrics_only}
+    problems.extend(examine_placement(hot_path_owner, background, deployment_threads, venue, args))
     return problems
 
 
-def report_hot_path_occupancy(hot_path_owner: dict[int, str], deployment_pids: set[int],
-                              strict: bool) -> list[str]:
-    """Print who else can run on the hot-path cores; return failures if strict.
+def examine_placement(hot_path_owner: dict[int, str], background: set[int],
+                      deployment_threads: dict[tuple[int, int], Placement],
+                      venue: dict[str, int], args: argparse.Namespace) -> list[str]:
+    """Sample where threads really ran, and report what was found there."""
+    hot_path_cores = set(hot_path_owner)
+    candidates = survey_candidates(hot_path_cores, set(venue.values()))
+    targets = dict(candidates)
+    targets.update(deployment_threads)
 
-    Printed rather than returned by default because on a development workstation
-    without `isolcpus` this is never empty -- a check that is permanently red is
-    a check that gets ignored. It is reported so the contamination is visible
-    when a measurement is being taken, and --strict turns the avoidable part of
-    it into a failure for a machine that is supposed to be quiet.
+    if not confine_to_background(sorted(background)):
+        print("  NOTE: could not confine this audit to the background tier, so its own")
+        print("  polling may be part of what it measures")
+
+    print(f"  sampling {len(targets)} thread(s) for {args.sample_seconds:g}s "
+          f"every {args.sample_interval:g}s")
+    sample_placement(targets, args.sample_seconds, args.sample_interval)
+
+    problems = report_own_placement(hot_path_owner, deployment_threads, args.verbose)
+    problems.extend(report_hot_path_occupancy(hot_path_owner, candidates, args.strict))
+    return problems
+
+
+def report_own_placement(hot_path_owner: dict[int, str],
+                         deployment_threads: dict[tuple[int, int], Placement],
+                         verbose: bool) -> list[str]:
+    """Check the deployment's own threads ran where the layout allocated them.
+
+    A thread that consumed no CPU during the window is reported as unobserved
+    and never as correct: an idle component proves nothing about its placement,
+    and saying otherwise would turn a measurement that did not happen into a
+    pass.
     """
-    occupants = survey_hot_path_occupancy(hot_path_owner, deployment_pids)
-    if not occupants:
-        print("  no other thread on this machine may run on a hot-path core")
-        return []
+    problems: list[str] = []
+    unobserved = 0
 
-    by_kind: dict[str, list[Occupant]] = {"userspace": [], "irq": [], "kernel": []}
-    for occupant in occupants:
-        by_kind[occupant.kind].append(occupant)
+    for placement in deployment_threads.values():
+        if not placement.ran:
+            unobserved += 1
+            continue
+        trespass = {core: count for core, count in placement.cores.items()
+                    if core in hot_path_owner and hot_path_owner[core] != placement.component}
+        if trespass:
+            where = ", ".join(f"CPU {core} ({hot_path_owner[core]}, {count} interval(s))"
+                              for core, count in sorted(trespass.items()))
+            problems.append(f"{placement.label} was observed running on {where}")
+        elif verbose:
+            seen = cpu_layout.format_cpu_list(sorted(placement.cores))
+            print(f"  ran {placement.label} on CPU {seen}")
+
+    if unobserved and verbose:
+        print(f"  {unobserved} deployment thread(s) consumed no CPU during the window, "
+              f"so their placement was not observed either way")
+    return problems
+
+
+def report_hot_path_occupancy(hot_path_owner: dict[int, str],
+                              candidates: dict[tuple[int, int], Placement],
+                              strict: bool) -> list[str]:
+    """Print who else ran on the hot-path cores, and who else may; fail on the first if strict.
+
+    Two questions, kept apart because they have very different answers.  What
+    *ran* there is the contamination a measurement actually suffered.  What *may*
+    run there is the risk it was exposed to, which on a machine without isolcpus
+    is almost every thread on it -- true, unactionable, and not worth failing a
+    check over.
+    """
+    hot_path_cores = set(hot_path_owner)
+    isolated = read_isolated_cores()
+
+    observed: list[tuple[Placement, dict[int, int]]] = []
+    for placement in candidates.values():
+        on_hot_path = {core: count for core, count in placement.cores.items()
+                       if core in hot_path_cores}
+        if on_hot_path:
+            observed.append((placement, on_hot_path))
 
     print()
     print("  Hot-path core occupancy by threads outside the deployment")
     print("  (an affinity mask reserves a core *for* a thread, not *from* others;")
-    print("   only isolcpus does that, and this machine does not use it)")
+    if isolated:
+        covered = "all" if hot_path_cores <= set(isolated) else "some"
+        print(f"   only isolcpus does that, and this machine isolates "
+              f"{cpu_layout.format_cpu_list(sorted(isolated))} -- {covered} of the hot path)")
+    else:
+        print("   only isolcpus does that, and this boot does not use it)")
+
+    report_observed(observed)
+    report_permitted(candidates)
+
+    if strict and any(placement.kind == "userspace" for placement, _ in observed):
+        count = sum(1 for placement, _ in observed if placement.kind == "userspace")
+        return [f"{count} unrelated userspace thread(s) were observed running on hot-path "
+                f"cores -- this machine is not quiet enough for a latency measurement "
+                f"(see isolcpus in docs/framework/cpu_pinning.md)"]
+    return []
+
+
+def report_observed(observed: list[tuple[Placement, dict[int, int]]]) -> None:
+    """The threads actually seen executing on a hot-path core during the window."""
+    if not observed:
+        print()
+        print("  Observed: no thread outside the deployment was seen running on a hot-path")
+        print("  core during the window. Sampling under-reports, so this means unobserved")
+        print("  rather than proven absent -- lengthen --sample-seconds to look harder.")
+        return
+
+    by_kind: dict[str, list[tuple[Placement, dict[int, int]]]] = {
+        "userspace": [], "irq": [], "kernel": []}
+    for entry in observed:
+        by_kind[entry[0].kind].append(entry)
+
+    print()
+    print(f"  Observed running on hot-path cores: {len(observed)} thread(s)")
+    for kind, heading in (("userspace", "unrelated userspace"),
+                          ("irq", "interrupt handler"),
+                          ("kernel", "per-CPU kernel")):
+        entries = by_kind[kind]
+        if not entries:
+            continue
+        print(f"\n    {len(entries)} {heading} thread(s):")
+        # Heaviest first: the intervals a thread was seen running are a better
+        # measure of how much of the core it took than the number of threads.
+        for placement, cores in sorted(entries, key=lambda e: -sum(e[1].values()))[:12]:
+            where = ", ".join(f"CPU {core} x{count}" for core, count in sorted(cores.items()))
+            print(f"      {placement.label}: {where}")
+        if len(entries) > 12:
+            print(f"      ... and {len(entries) - 12} more")
+
+
+def report_permitted(candidates: dict[tuple[int, int], Placement]) -> None:
+    """The threads whose mask allows a hot-path core, whether or not they used it."""
+    by_kind: dict[str, list[Placement]] = {"userspace": [], "irq": [], "kernel": []}
+    for placement in candidates.values():
+        by_kind[placement.kind].append(placement)
+
+    if not candidates:
+        print("\n  Permitted: no other thread on this machine may run on a hot-path core")
+        return
+
+    print(f"\n  Permitted to run there, in total: {len(candidates)} thread(s)")
 
     if by_kind["irq"]:
-        count = len(by_kind["irq"])
-        print(f"\n  {count} interrupt handler(s) on hot-path cores -- these are steerable:")
-        for occupant in sorted(by_kind["irq"], key=lambda o: o.cores):
-            print(f"    CPU {cpu_layout.format_cpu_list(occupant.cores)}: {occupant.label}")
+        print(f"\n    {len(by_kind['irq'])} interrupt handler(s) -- these are steerable:")
+        for placement in sorted(by_kind["irq"], key=lambda p: p.permitted):
+            ran = "ran" if placement.ran else "not seen running"
+            print(f"      CPU {cpu_layout.format_cpu_list(placement.permitted)}: "
+                  f"{placement.label} ({ran})")
 
     if by_kind["userspace"]:
         # Ranked by thread count: a browser with 150 threads is a far bigger
         # contaminant than a daemon with one, and they all span the same cores.
-        weights: dict[str, int] = {}
-        for occupant in by_kind["userspace"]:
-            name = occupant.label.rsplit(" (pid", 1)[0].split("/")[0]
-            weights[name] = weights.get(name, 0) + 1
-        count = len(by_kind["userspace"])
-        print(f"\n  {count} unrelated userspace thread(s), from {len(weights)} process name(s).")
-        print("    Heaviest first:")
-        for name, count in sorted(weights.items(), key=lambda item: -item[1])[:12]:
-            print(f"    {count:>5} threads  {name}")
+        weights: Counter = Counter()
+        seen_running: Counter = Counter()
+        for placement in by_kind["userspace"]:
+            name = placement.label.rsplit(" (pid", 1)[0].split("/")[0]
+            weights[name] += 1
+            if placement.cores:
+                seen_running[name] += 1
+        print(f"\n    {len(by_kind['userspace'])} unrelated userspace thread(s), "
+              f"from {len(weights)} process name(s). Heaviest first:")
+        for name, count in weights.most_common(12):
+            print(f"      {count:>5} threads  {name:<28} {seen_running[name]} seen on a hot-path core")
 
         if "irqbalance" in weights:
-            print("\n    NOTE: irqbalance is running. It moves interrupt affinity around at will,")
-            print("    so any hand-steering of the IRQs above will be undone. Stop or restrict it")
-            print("    before relying on IRQ placement for a measurement.")
+            print("\n      NOTE: irqbalance is running. It moves interrupt affinity around at will,")
+            print("      so any hand-steering of the IRQs above will be undone. Stop or restrict it")
+            print("      before relying on IRQ placement for a measurement.")
 
     if by_kind["kernel"]:
-        count = len(by_kind["kernel"])
-        print(f"\n  {count} per-CPU kernel thread(s) (cpuhp, migration, ksoftirqd, kworker).")
-        print("    One set exists on every core by construction and cannot be moved.")
-
-    if strict and by_kind["userspace"]:
-        return [f"{len(by_kind['userspace'])} unrelated userspace thread(s) may run on "
-                f"hot-path cores -- this machine is not quiet enough for a latency "
-                f"measurement (see isolcpus in docs/framework/cpu_pinning.md)"]
-    return []
+        print(f"\n    {len(by_kind['kernel'])} per-CPU kernel thread(s) "
+              f"(cpuhp, migration, ksoftirqd, kworker).")
+        print("      One set exists on every core by construction and cannot be moved.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -320,9 +588,18 @@ def parse_args() -> argparse.Namespace:
                         help="install directory (default: paths.install_dir from the env TOML)")
     parser.add_argument("--verbose", action="store_true",
                         help="also report threads that are correctly placed")
+    parser.add_argument("--sample-seconds", type=float, default=2.0, metavar="N",
+                        help="how long to sample real placement for (default: 2.0). "
+                             "0 takes two readings back to back, which sees only what is "
+                             "running at that instant")
+    parser.add_argument("--sample-interval", type=float, default=0.2, metavar="N",
+                        help="seconds between readings while sampling (default: 0.2). "
+                             "Shorter catches more and costs more; the audit confines itself "
+                             "to the background tier so the cost does not land on the hot path")
     parser.add_argument("--strict", action="store_true",
-                        help="fail when unrelated userspace threads may run on hot-path cores "
-                             "(expected to fail on a workstation without isolcpus)")
+                        help="fail when unrelated userspace threads are observed running on "
+                             "hot-path cores. Threads merely permitted there are reported but "
+                             "never fail, since without isolcpus that is nearly every thread")
     return parser.parse_args()
 
 
@@ -350,7 +627,10 @@ def main() -> None:
     print(f"  layout : {layout_path}")
     print()
 
-    problems = audit(layout_path, run_dir, args.verbose, args.strict)
+    metrics_only = {name for name, entry in env.get("components", {}).items()
+                    if isinstance(entry, dict) and entry.get("metrics_only")}
+
+    problems = audit(layout_path, run_dir, args, metrics_only)
 
     print()
     if problems:
