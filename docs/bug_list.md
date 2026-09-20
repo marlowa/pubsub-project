@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 92 |
-| Open | 34 (21 defects, 13 tasks) |
+| Bugs recorded | 93 |
+| Open | 35 (22 defects, 13 tasks) |
 | Closed | 58 |
-| Next id | BUG-0093 |
+| Next id | BUG-0094 |
 
 ## Open bugs by severity
 
-12 high, 19 medium, 3 low.
+12 high, 20 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -44,6 +44,7 @@
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
+| [BUG-0093](#bug_0093) | medium | defect | The log writer's helper thread runs unnamed on the hot-path core of whichever component started it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2276,6 +2277,71 @@ enumeration or belong in `Text` alongside it. `CxlRejReason` has no "other" valu
 `OrdRejReason` does, and the venue currently sends `OrdRejReason=99`.
 
 Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
+
+### BUG-0093: The log writer's helper thread runs unnamed on the hot-path core of whichever component started it {#bug_0093}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-20 |
+| Recorded | 2026-09-20 |
+| How | A new tool, `scripts/pinning_report.py`, reported two threads of one process pinned to the same processor. It was written to find that class of mistake in another system and found one here on its first run |
+| Impact | Filesystem work -- opening, truncating and memory-mapping a log segment -- runs on the processor reserved for the thread that sequences every order, sharing it with that thread. The sequencer has been observed in uninterruptible sleep for up to 557 ms at a stretch, which is the kind of stall this can cause |
+
+**What happens.** `WalWriter` starts a helper thread so that the next log segment is opened and
+mapped before it is needed, which is what stops the writer blocking when one fills. The helper is
+started from whichever thread opened the log, which for the sequencer and the matching engine
+publisher is their application thread -- by then already pinned to a hot-path processor.
+
+```
+helper_.start([this]() { helper_loop(); });
+```
+
+The helper does not set its own processor affinity, so it inherits the mask of the thread that
+created it. It also does not set its own name, so Linux leaves it carrying the creating thread's
+name. Both components therefore run two threads called `SequencerThread` or `MepThread` on the
+same processor:
+
+```
+  sequencer          166644     cpus=6
+  QuillBackend       166645     cpus=28
+  SequencerThread    166646     cpus=7
+  civetweb-worker    166647     cpus=16-31
+  civetweb-worker    166648     cpus=16-31
+  civetweb-master    166649     cpus=16-31
+  SequencerThread    166650     cpus=7      <- the helper
+```
+
+The matching engine and both gateways have six threads and no such pair, because they do not
+write a log.
+
+**Why nothing caught it.** `cpu_audit.py` compares each thread's mask against the declared layout,
+and this thread's mask matches the processor that layout allocated to the component exactly. It
+looks correct. What is wrong is that a second thread is there at all, which needs a check on how
+many threads claim a processor rather than on what each one is allowed.
+
+The declared hot-path thread count is wrong by one for these two components, and
+`verify_hot_path_thread_count()` does not notice, because the helper starts after the check.
+
+**Why it is not high.** The helper is idle almost all the time: it wakes once per log segment, and
+both threads observed had consumed no measurable processor time. The harm is bounded by how often
+a segment is prepared. It is not low because what it does when it does wake is blocking filesystem
+work, on the processor the venue most needs free, and because the sharing is invisible to the
+audit that exists to prevent exactly this.
+
+**What to do.** Two separate fixes, and the first is worth doing whatever is decided about the
+second.
+
+Name the thread. Every thread this project starts should name itself, so that two threads in one
+process never share a name. A helper appearing in every diagnostic under the name of the thread it
+is competing with is why this took a while to identify.
+
+Then place it deliberately. It belongs on the background tier with the log backends, where the
+other work that is not on the order path already goes -- `apply_background_affinity()` does this
+for the Quill backend and is the pattern to follow. Failing that, the hot-path thread count must
+account for it, so the layout gives the component a core for it rather than having it arrive
+uninvited.
+
 
 ## Closed
 
