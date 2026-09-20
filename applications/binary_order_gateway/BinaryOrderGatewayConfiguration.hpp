@@ -228,6 +228,15 @@ struct BinaryOrderGatewayConfiguration {
      * Must match the FIX gateway's exactly -- see GatewayMetrics.hpp.
      */
     std::vector<double> order_ingress_to_forward_buckets;
+
+    /** @brief Bucket bounds in nanoseconds for order_path_elapsed_nanoseconds, ascending.
+     *
+     *  Empty when metrics are disabled, in which case nothing registers and it is unused.
+     *
+     *  **Must match every other component on the order path exactly**, not merely the other
+     *  gateway: the metric is read as the difference between checkpoints recorded by
+     *  different processes. See OrderPathMetrics.hpp. */
+    std::vector<double> order_path_elapsed_buckets;
 };
 
 } // namespaces

@@ -16,6 +16,7 @@
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
 #include "GatewayMetrics.hpp"
+#include "OrderPathMetrics.hpp"
 
 namespace binary_order_gateway {
 
@@ -125,6 +126,7 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
     if (config.metrics_configuration.enabled) {
         config.order_round_trip_buckets = gateway_metrics::load_order_round_trip_buckets(toml);
         config.order_ingress_to_forward_buckets = gateway_metrics::load_order_ingress_to_forward_buckets(toml);
+        config.order_path_elapsed_buckets = order_path_metrics::load_order_path_elapsed_buckets(toml);
     }
     toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

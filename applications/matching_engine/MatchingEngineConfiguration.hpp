@@ -6,6 +6,7 @@
 #include <cstdint> // IWYU pragma: keep
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
@@ -249,6 +250,15 @@ struct MatchingEngineConfiguration {
      * Copied into ReactorConfiguration, which is where the Reactor reads it from.
      */
     pubsub_itc_fw::MetricsConfiguration metrics_configuration;
+
+    /** @brief Bucket bounds in nanoseconds for order_path_elapsed_nanoseconds, ascending.
+     *
+     *  Empty when metrics are disabled, in which case nothing registers and it is unused.
+     *
+     *  **Must match every other component on the order path exactly**, because the metric is
+     *  read as the difference between checkpoints recorded by different processes. See
+     *  OrderPathMetrics.hpp. */
+    std::vector<double> order_path_elapsed_buckets;
 };
 
 } // namespaces

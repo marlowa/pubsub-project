@@ -468,9 +468,74 @@ the total stay exact. What degrades is quantile resolution, since `histogram_qua
 cannot interpolate within an unbounded bucket. That is the reason the top bound belongs well
 above the working range, not a reason to try to cap it.
 
-The dev bounds run from 10µs to 5s. The range is set by measurement: round trips of 119,
-356 and 528 microseconds were recorded at 4, 20 and 40 concurrent sessions at the same
-offered rate.
+The dev bounds run from 10µs to 5s, with the boundaries between 100µs and 250µs set by
+measurement rather than guessed. Over 12,000 orders at 100 per second, 11,597 of them landed
+between those two figures. With nothing in between, a median could only be arrived at by
+assuming the orders were spread evenly across a gap 150 microseconds wide, which they are
+not: the figure that came out barely moved whatever happened inside the gap, which reads as a
+venue whose timing never changes. Those boundaries are the same ones
+`order_path_elapsed_nanoseconds` uses, so a figure from one can be subtracted from a figure
+from the other.
+
+### `order_path_elapsed_nanoseconds`
+
+Where an order's time goes on its way through the venue.
+
+The round trip says how long an order took altogether and nothing about which part of the
+journey was slow. So every component on the path records, at each point an order or its
+report passes through, how long that order had already been inside the venue when it got
+there. Every one of them counts from the same moment -- when a gateway read the order off the
+client connection -- so subtracting one component's figure from the next one's gives how long
+the order spent in between.
+
+    order_path_elapsed_nanoseconds{component="sequencer_primary",scope="order_in"}
+    order_path_elapsed_nanoseconds{component="matching_engine_primary",scope="order_in"}
+    order_path_elapsed_nanoseconds{component="fix_order_gateway_a",scope="er_in"}
+
+The `scope` label says which point on the journey: `order_in` and `order_out` on the way out,
+`er_in` and `er_out` on the way back. It names the point and not the component, because the
+`component` label already says which process recorded it.
+
+This needs no extra plumbing, because the order carries its own starting time. The gateway
+writes it into the envelope's `gateway_ingress_ns` field, the sequencer passes it on to the
+matching engine and keeps a copy to put back on the report, and the matching engine sends it
+back with the report it produces.
+
+Read it as differences and not as values. One point's figure on its own only says how far
+along the journey that point sits, which is a fact about the venue's shape rather than about
+its speed.
+
+**A reading is only recorded when it can be a true one.** An envelope with no starting time
+records nothing: records one sequencer sends another have no originating client, reports the
+matching engine produces after a failover never had one, and an order replayed from the log
+carries a starting time from hours ago, which the sequencer deliberately does not pass on.
+A negative elapsed time records nothing either, which happens after a gateway failover when
+the two ends of the measurement were taken by different processes. Only the report that
+acknowledges a new order is timed, matching the orders the round trip is measured over --
+every report for an order carries the same starting time, so timing a Canceled report would
+record the whole period the order rested on the book.
+
+The whole journey therefore reads as a list of legs that add up to the round trip, which is
+also the check that the points are in the right places. Measured over 6,000 orders at 100 per
+second, the legs summed to 185.02 microseconds against a round trip of 185.01.
+
+### `itc_queue_depth`
+
+How many messages were still waiting on an application thread's queue when one was taken off
+for dispatch.
+
+    itc_queue_depth{application="pubsub",component="sequencer_primary",scope="sequencer_thread"}
+
+Recorded by `ApplicationThread` over exactly the same messages as
+`itc_queue_latency_nanoseconds`, so the two can be read against each other. That pairing is
+the point of it: a message that waited a long time behind an empty queue was waiting for its
+thread to be scheduled, and one that waited a long time behind a hundred others was waiting
+its turn. The two call for opposite remedies and the waiting time alone cannot tell them
+apart.
+
+The count is taken as the message leaves the queue, so it is how many are still behind it.
+Reading it costs one relaxed atomic load of a count the queue already maintains for its
+watermark handlers.
 
 ---
 
@@ -520,22 +585,9 @@ that seam if it turns out to be wanted.
 
 ## Open
 
-- **Most components still set no `metrics_scope`.** The matching engine and both order
-  gateways are opted in; the sequencer, arbiter, witness, authentication services, matching
-  engine publisher and topic probe are not, so they expose no per-thread series. Opting the
-  sequencer in is the obvious next one, since it sits between the two ends of the round trip.
-- **The outbound half of the gateway-internal breakdown.** The inbound half is now
-  measured: `order_ingress_to_forward_nanoseconds` covers decode, validation and envelope
-  construction, which is where the protocols differ on the way in. Encoding the outbound
-  ExecutionReport is not measured, and on the FIX side that is real work the binary gateway
-  does differently. It needs a second stamp rather than a second metric family, because the
-  ER path has no time origin of its own the way the inbound path has `gateway_ingress_ns`.
-  **Instrument both gateways identically or the comparison measures the instrumentation:**
-  the first attempt at this comparison was dominated by *logging*, at 32% of the FIX
-  gateway's samples against 11% for binary, more than three times the cost of FIX parsing.
-- **A queue-depth gauge**, so a round-trip percentile can be read as service time or as
-  queueing. Without it the two are indistinguishable, and the interpretation of every
-  latency figure depends on which it is.
+- **Several components still set no `metrics_scope`.** Both order gateways, the matching
+  engine and the sequencer are opted in; the arbiter, witness, authentication services,
+  matching engine publisher and topic probe are not, so they expose no per-thread series.
 - **Bucket boundaries beyond the gateway histogram**, for any later latency metric.
 - **Scrape interval and retention**, and whether a Prometheus server is deployed alongside
   the venue or scrapes from outside it.

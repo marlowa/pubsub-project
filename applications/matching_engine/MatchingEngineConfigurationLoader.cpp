@@ -3,6 +3,7 @@
 
 #include "MatchingEngineConfigurationLoader.hpp"
 
+#include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
@@ -151,6 +152,14 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         // concerns, and the test harnesses read their ground truth from these counters, so a
         // component must expose them whether or not it is pinned.
         config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+
+        // Read through the shared loader so this component is validated exactly as its
+        // neighbours on the order path are, and only when metrics are on: a disabled endpoint
+        // registers nothing, so requiring the bounds would make turning metrics off mean
+        // filling in a value nothing reads.
+        if (config.metrics_configuration.enabled) {
+            config.order_path_elapsed_buckets = order_path_metrics::load_order_path_elapsed_buckets(toml);
+        }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);

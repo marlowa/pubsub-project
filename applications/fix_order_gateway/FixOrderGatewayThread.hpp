@@ -572,6 +572,12 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
     pubsub_itc_fw::HistogramHandle order_ingress_to_forward_histogram_;
 
+    // How much of the round trip had already gone by the time the report reached this
+    // thread. Its difference from order_round_trip_nanoseconds is what encoding and sending
+    // the report costs -- the outbound half, which no metric could express before, because
+    // the report path carries no time origin of its own. See OrderPathMetrics.hpp.
+    pubsub_itc_fw::HistogramHandle er_in_elapsed_histogram_;
+
     // Publishes the open-order pool's statistics. Deliberately identical to the binary
     // gateway's -- same metric family, same scope, same sample interval -- since a
     // difference in any of them would make a comparison between the two protocols measure

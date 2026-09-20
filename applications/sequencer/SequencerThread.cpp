@@ -10,6 +10,7 @@
 #include <chrono>
 #include <deque>
 
+#include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -161,6 +162,24 @@ void SequencerThread::on_initial_event() {
         wal_append_histogram_ = get_reactor().metrics().register_histogram(
             "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log, on the reactor thread",
             config_.wal_append_buckets);
+    }
+
+    // One family, four children, told apart by scope. Registered together so that a
+    // deployment cannot end up with some checkpoints of the path and not others, which would
+    // read as a stage taking no time rather than as a stage not being measured.
+    if (!config_.order_path_elapsed_buckets.empty()) {
+        order_in_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::order_in_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
+        order_out_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::order_out_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
+        er_in_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::er_in_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
+        er_out_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::er_out_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
     }
 
     // A mount option decides whether this component meets its latency requirement, and nothing
@@ -504,6 +523,18 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         const int64_t seq = next_sequence_number_++;
         const int64_t wall_time_ns = config_.wall_clock->now_ns();
 
+        // The first checkpoint this process contributes, reusing the sequencing stamp rather
+        // than reading the clock again: they describe the same instant, and two readings would
+        // differ by the cost of taking them.
+        //
+        // NewOrderSingle only, which is the population the round-trip histogram measures. A
+        // cancel travels the same path and would otherwise be mixed into the same series,
+        // leaving a profile whose stages cannot be added up against a round trip drawn from
+        // orders alone.
+        if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
+            order_path_metrics::observe_checkpoint(order_in_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns, wall_time_ns);
+        }
+
         // Stamp the envelope with the assigned seq_no and sequencing wall time. The
         // inner FIX payload (a BytesView into the inbound slab) stays valid until
         // release_pdu_payload(message) below, after every send has copied it.
@@ -516,6 +547,14 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.gateway_session_conn_id = inbound.gateway_session_conn_id;
         envelope.has_sender_comp_id = inbound.has_sender_comp_id;
         envelope.sender_comp_id = inbound.sender_comp_id;
+
+        // The time the gateway read this order off the client connection travels on to the
+        // matching engine as well as being remembered above. The sequencer does not need it
+        // there -- it keeps its own copy for the report coming back -- but the matching
+        // engine cannot time its own part of the journey without it, because every timing on
+        // the path is counted from this one moment. See OrderPathMetrics.hpp.
+        envelope.has_gateway_ingress_ns = inbound.has_gateway_ingress_ns;
+        envelope.gateway_ingress_ns = inbound.gateway_ingress_ns;
 
         // WAL commit: only the leader appends from the direct gateway PDU. Followers
         // write their WAL exclusively via WalRecord from the leader, keeping WALs
@@ -600,6 +639,20 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // field hand-copy.
         send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope);
 
+        // Immediately after the send rather than before it, so that order_in to order_out
+        // covers everything this component did with the order, the write-ahead log commit
+        // included. The clock is read again here because real time has passed since the
+        // sequencing stamp -- the commit is the slowest thing on this path and is exactly
+        // what the difference is meant to expose.
+        //
+        // Replication and the external subscriber stream come after this point and are
+        // deliberately outside the measurement: the order is already on its way to the
+        // matching engine, so that work is not in front of the member's report.
+        if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
+            order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns,
+                                                   config_.wall_clock->now_ns());
+        }
+
         // Replicate to the peer follower before releasing the slab so the inner
         // payload pointer stays valid.
         if (config_.ha_enabled) {
@@ -653,6 +706,25 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ExecutionReport -- dropping");
             release_pdu_payload(message);
             return;
+        }
+
+        // The report that acknowledges a new order is the only one the order-path checkpoints
+        // record, matching the population the gateway's round-trip histogram measures. Every
+        // report for an order carries the same ingress stamp, so a Canceled report would be
+        // recorded as though the path had taken as long as the order rested on the book --
+        // which would swamp the distribution rather than merely widen it.
+        //
+        // ord_status is already decoded here for the routing map, so the restriction costs
+        // nothing beyond the comparison.
+        const bool is_new_order_ack = (view.ord_status == pubsub_itc_fw_app::OrdStatus::New);
+
+        // The report has arrived from the matching engine. Against the matching engine's own
+        // er_out this gives the hop between the two processes; against er_out below it gives
+        // what this component costs the report, which includes sequencing it into the log and
+        // any wait for the follower to acknowledge it.
+        if (is_new_order_ack) {
+            order_path_metrics::observe_checkpoint(er_in_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns,
+                                                   config_.wall_clock->now_ns());
         }
 
         // Route the ER back to the originating FIX session. The ME echoes the order's
@@ -809,7 +881,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 
         if (!needs_wal_ack()) {
-            send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope);
+            send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
             note_report_forwarded(routing_identity);
             release_pdu_payload(message);
             if (erase_routing_entry) {
@@ -820,7 +892,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             if (acked_it != wal_acked_seq_nos_.end()) {
                 // Follower already acked this seq_no; forward immediately.
                 wal_acked_seq_nos_.erase(acked_it);
-                send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope);
+                send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
                 note_report_forwarded(routing_identity);
                 release_pdu_payload(message);
                 if (erase_routing_entry) {
@@ -836,6 +908,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 pending.has_gateway_ingress_ns = has_routing_ingress_ns;
                 pending.gateway_ingress_ns = routing_ingress_ns;
                 pending.poss_resend = inbound.poss_resend;
+                pending.is_new_order_ack = is_new_order_ack;
                 pending.erase_routing_entry = erase_routing_entry;
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower",
                            er_seq_no, gate_seq_no);
@@ -1654,7 +1727,8 @@ void SequencerThread::flush_pending_er() {
     wal_acked_seq_nos_.clear();
 }
 
-void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope) {
+void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,
+                                                bool is_new_order_ack) {
     const pubsub_itc_fw::ConnectionID* connection = gateway_connection(protocol, instance);
     if (connection == nullptr) {
         // Distinguish "configured but not currently connected", which is transient and
@@ -1679,6 +1753,20 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
         return;
     }
     send_pdu(*connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
+
+    // The last checkpoint this component contributes, recorded here rather than at each of
+    // the three call sites because this is the one place a report leaves for a gateway. Two
+    // of those sites are the immediate path and the wait-for-follower path, and the third is
+    // a report released long after the fact; a checkpoint written out at each would be three
+    // chances to record a different thing.
+    //
+    // After the send, so that the stage it closes includes handing the report to the reactor.
+    // Nothing is recorded when the report never left: the early returns above are a gateway
+    // that is not connected, and a report that was dropped is not a stage that was fast.
+    if (is_new_order_ack) {
+        order_path_metrics::observe_checkpoint(er_out_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
+                                               config_.wall_clock->now_ns());
+    }
 }
 
 const fix_common::SessionDestination* SequencerThread::session_destination(const fix_common::SessionIdentity& identity) const {
@@ -2280,7 +2368,7 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     envelope.poss_resend = pending.poss_resend;
 
     if (destination != nullptr) {
-        send_er_to_origin_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope);
+        send_er_to_origin_gateway(pending.identity.protocol, destination->instance, pending.seq_no, envelope, pending.is_new_order_ack);
         note_report_forwarded(pending.identity);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: buffered ER seq={} forwarded to protocol={} instance={}", pending.seq_no,
                    pending.identity.protocol, destination->instance);

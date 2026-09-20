@@ -106,6 +106,21 @@ order_round_trip_buckets = ${shared_metrics_order_round_trip_buckets}
 # gateways, so bounds that differ between them make the comparison meaningless.
 order_ingress_to_forward_buckets = ${shared_metrics_order_ingress_to_forward_buckets}
 
+# An order is timed at several points on its way through the venue: when it reaches the
+# sequencer, when it reaches the matching engine, when its report comes back through each of
+# them, and when it reaches the gateway again. At every one of those points the component
+# records how long the order had been inside the venue when it got there, counting from the
+# moment the gateway read it off the client connection. Subtracting one point's time from the
+# next gives how long the order spent on that leg of the journey, which is the whole reason
+# for measuring this way.
+#
+# The numbers below are the boundaries of that histogram's buckets, in nanoseconds.
+#
+# They come from one shared value because every component has to use the same boundaries.
+# Subtracting a time measured against one set of boundaries from a time measured against a
+# different set does not give a rough answer; it gives a meaningless one.
+order_path_elapsed_buckets = ${shared_metrics_order_path_elapsed_buckets}
+
 [reactor]
 cpu_pinning_enabled    = true
 cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}

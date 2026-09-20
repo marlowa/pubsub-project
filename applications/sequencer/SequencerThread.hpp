@@ -159,6 +159,22 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::GaugeHandle wal_segments_filled_inline_gauge_;
     pubsub_itc_fw::GaugeHandle wal_segments_waited_for_gauge_;
 
+    // Four points on the order's journey, each recording how much of the round trip had
+    // already elapsed when it got here. The sequencer contributes four of the family's
+    // checkpoints because the order passes through it twice: once outbound to the matching
+    // engine and once more as the report coming back.
+    //
+    // The pairs are what the numbers are for. order_in against order_out is what this
+    // component costs an order, which includes the write-ahead log commit; er_in against
+    // er_out is what it costs the report. order_out against the matching engine's order_in
+    // is the hop between the two processes, which nothing else measures at all.
+    //
+    // See OrderPathMetrics.hpp for why they share one metric name and differ only by scope.
+    pubsub_itc_fw::HistogramHandle order_in_elapsed_histogram_;
+    pubsub_itc_fw::HistogramHandle order_out_elapsed_histogram_;
+    pubsub_itc_fw::HistogramHandle er_in_elapsed_histogram_;
+    pubsub_itc_fw::HistogramHandle er_out_elapsed_histogram_;
+
     // External WAL subscriber registry and active connection set.
     // The registry tracks each subscriber's cursor for WAL truncation.
     // wal_subscriber_conn_ids_ is the set of connections that have completed
@@ -234,6 +250,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         // configuration the venue actually runs.
         bool has_gateway_ingress_ns{false};
         int64_t gateway_ingress_ns{0};
+        // Whether this is the report that acknowledges a new order, which is the only kind
+        // the order-path checkpoints record. Carried through the wait for the same reason
+        // the ingress stamp above is: the buffered path is the live HA path, so a value
+        // dropped here is a value missing in the configuration the venue actually runs --
+        // and a checkpoint missing on one leg of the path is worse than no checkpoint at
+        // all, because the difference against its neighbour reads as a stage taking no time.
+        bool is_new_order_ack{false};
         // Whether this report repeats one the member may already hold. Carried through the
         // wait for the same reason the ingress stamp is: the buffered path is the live HA
         // path, so a mark dropped here is a mark the member never sees in the configuration
@@ -326,7 +349,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * the client behind it has no route, and no other instance can serve its session
      * until session provisioning and report replay land (steps 4-6 of gateway_ha.md).
      */
-    void send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope);
+    void send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope, bool is_new_order_ack);
 
     // External WAL subscriber helpers (MEP primary and secondary).
     void handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);

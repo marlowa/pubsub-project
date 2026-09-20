@@ -7,6 +7,7 @@
 
 #include <cstdio>
 
+#include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -237,6 +238,15 @@ void MatchingEngineThread::on_app_ready_event() {
     // Registered here rather than in the constructor because the reactor's metrics
     // endpoint is what gauges bind to, and it is ready by this point.
     book_metrics_.register_metrics(get_reactor().metrics(), book_metrics_scope);
+
+    if (!config_.order_path_elapsed_buckets.empty()) {
+        order_in_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::order_in_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
+        er_out_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::er_out_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
+    }
     book_metrics_timer_id_ = start_recurring_timer(book_metrics_sample_interval);
     // Started before anything else can take time, and stamped once immediately: a successor
     // measures its absence from this, so a gap here would be counted against the next process.
@@ -441,6 +451,12 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
 void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = message.pdu_id();
 
+    // Forgotten here, at the start of every message, and remembered again further down only
+    // where a client order is being handled. Clearing it first is what stops the time
+    // belonging to one order being read while a later, unrelated message is being processed.
+    has_current_order_ingress_ns_ = false;
+    current_order_ingress_ns_ = 0;
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: sequenced PDU received on connection {} pdu_id={}",
                message.connection_id().get_value(), pdu_id);
 
@@ -515,6 +531,20 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
             release_pdu_payload(message);
             return;
         }
+        // Before the matching work rather than after it, so the stage this closes is the
+        // journey to here and the stage it opens is what this component does. New orders
+        // only, which is the same set of orders the round trip is measured over; a cancel
+        // arriving here is a different journey and belongs to no round trip.
+        order_path_metrics::observe_checkpoint(order_in_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
+                                               config_.wall_clock->now_ns());
+
+        // Remembered for as long as this one order is being handled. Any acknowledgement the
+        // matching engine produces from here until this message is finished with was caused
+        // by this order, which is how send_er_to_sequencer can time the acknowledgement
+        // leaving without the ten call sites in between having to carry the value.
+        has_current_order_ingress_ns_ = envelope.has_gateway_ingress_ns;
+        current_order_ingress_ns_ = envelope.gateway_ingress_ns;
+
         handle_new_order_single(view, message.seq_no(), envelope.wall_time_ns, session_identity_from(envelope));
 
     } else if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
@@ -1115,11 +1145,38 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     envelope.origin_gateway_id = session.protocol;
     envelope.poss_resend = repeat == ReportIsRepeat::yes;
 
+    // The time the gateway read the order that caused this report, sent back with it so the
+    // sequencer can time its own handling of the return leg. Absent for every report with no
+    // client order behind it, which is what has_current_order_ingress_ns_ records.
+    //
+    // This is not how the gateway learns the time. The sequencer keeps its own copy, filed
+    // under the order's sequence number, and writes that onto the report it forwards --
+    // overwriting whatever arrives here. That copy stays the authoritative one because it
+    // survives cases this one cannot, such as a report for an order placed before the
+    // matching engine now running had started.
+    envelope.has_gateway_ingress_ns = has_current_order_ingress_ns_;
+    envelope.gateway_ingress_ns = current_order_ingress_ns_;
+
     if (sequencer_er_conn_id_.is_valid()) {
         send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope);
     }
     if (sequencer_er_secondary_conn_id_.is_valid()) {
         send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope);
+    }
+
+    // The order has now been matched and its acknowledgement handed to the reactor, so this
+    // is the moment the matching engine is finished with it.
+    //
+    // Only an acknowledgement of a new order is timed, and that restriction is what makes
+    // reading the remembered time safe rather than merely likely to be right. This function
+    // is reached from ten places -- reports that a halt has cancelled an order, reports
+    // reconciled after a failover, fills of orders that have rested on the book for hours --
+    // and none of those has a client order behind it whose start time could be meant. Every
+    // one of them carries a status other than New, so none of them reaches the line below,
+    // whether or not an order happens to be being handled at the time.
+    if (er.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
+        order_path_metrics::observe_checkpoint(er_out_elapsed_histogram_, has_current_order_ingress_ns_, current_order_ingress_ns_,
+                                               config_.wall_clock->now_ns());
     }
 }
 

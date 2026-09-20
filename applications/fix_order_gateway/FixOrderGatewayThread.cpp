@@ -6,6 +6,7 @@
 #include "FixGroupExtractor.hpp"
 #include "GatewayMetrics.hpp"
 #include "OpenOrderRemoval.hpp"
+#include "OrderPathMetrics.hpp"
 
 #include <openssl/rand.h>
 
@@ -209,6 +210,9 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
         order_ingress_to_forward_histogram_ =
             get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_ingress_to_forward_metric_name,
                                                        gateway_metrics::order_ingress_to_forward_help, config_.order_ingress_to_forward_buckets);
+        er_in_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::er_in_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
     }
 
     // Start the reusable ER wire buffer at the common-case size; the ER send path grows
@@ -688,6 +692,21 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: failed to decode ExecutionReport -- dropping");
         release_pdu_payload(message);
         return;
+    }
+
+    // The last checkpoint before the round trip closes, and the one that makes the outbound
+    // half of this gateway measurable at last. The difference between this and
+    // order_round_trip_nanoseconds is encoding the report and handing it to the reactor,
+    // which is real work on the FIX side and different work on the binary side -- and which
+    // until now had no time origin of its own to be measured against. It does not need one:
+    // both readings are taken from the same ingress stamp, so their difference is the stage.
+    //
+    // Restricted to the report that acknowledges a new order, exactly as the round trip
+    // below is and for the same reason: every report for an order carries the same ingress
+    // stamp, so a Canceled report would record the whole time the order rested on the book.
+    if (view.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
+        order_path_metrics::observe_checkpoint(er_in_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
+                                               config_.wall_clock->now_ns());
     }
 
     // Route to the exact FIX session identified by gateway_session_conn_id, which

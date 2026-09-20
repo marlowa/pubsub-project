@@ -302,6 +302,17 @@ struct SequencerConfiguration {
      *  a default is the one value nobody revisits, and bounds that do not bracket what is
      *  actually served are worse than no histogram at all. */
     std::vector<double> wal_append_buckets;
+
+    /** @brief Bucket bounds in nanoseconds for order_path_elapsed_nanoseconds, ascending.
+     *
+     *  Empty when metrics are disabled, in which case nothing registers and it is unused.
+     *
+     *  **Must match every other component on the order path exactly.** The metric's only use
+     *  is the difference between two checkpoints recorded by two different processes, and a
+     *  difference between percentiles drawn from histograms with unequal boundaries is not an
+     *  approximation of anything. That is why the value comes from a single shared placeholder
+     *  expanded into every component's file. See OrderPathMetrics.hpp. */
+    std::vector<double> order_path_elapsed_buckets;
 };
 
 } // namespaces

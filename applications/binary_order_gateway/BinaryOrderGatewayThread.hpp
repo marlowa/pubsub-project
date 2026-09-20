@@ -265,6 +265,12 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::HistogramHandle order_round_trip_histogram_;
     pubsub_itc_fw::HistogramHandle order_ingress_to_forward_histogram_;
 
+    // How much of the round trip had gone by the time the report reached this thread. Its
+    // difference from order_round_trip_nanoseconds is what encoding and sending the report
+    // costs, which is the half of the protocol comparison that was never measured. Placed
+    // identically to the FIX gateway's. See OrderPathMetrics.hpp.
+    pubsub_itc_fw::HistogramHandle er_in_elapsed_histogram_;
+
     // Publishes the open-order pool's statistics. The pool records nothing itself -- it
     // computes the numbers and offers them -- so something has to sample it, and this
     // thread is the only one allowed to touch the pool. Refreshed from a recurring timer

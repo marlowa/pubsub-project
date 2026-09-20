@@ -23,6 +23,7 @@
 
 #include "GatewayMetrics.hpp"
 #include "OpenOrderRemoval.hpp"
+#include "OrderPathMetrics.hpp"
 
 namespace binary_order_gateway {
 
@@ -92,6 +93,9 @@ BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThr
         order_ingress_to_forward_histogram_ =
             get_reactor().metrics().register_histogram("gateway_thread", gateway_metrics::order_ingress_to_forward_metric_name,
                                                        gateway_metrics::order_ingress_to_forward_help, config_.order_ingress_to_forward_buckets);
+        er_in_elapsed_histogram_ =
+            get_reactor().metrics().register_histogram(order_path_metrics::er_in_scope, order_path_metrics::order_path_elapsed_metric_name,
+                                                       order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
     }
 }
 
@@ -793,6 +797,15 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         pubsub_itc_fw_app::decode(report, envelope.payload.data, envelope.payload.size, report_bytes_consumed, arena, arena_bytes_needed);
     if (report_decoded) {
         track_open_order(it->second, report);
+
+        // The outbound half begins here. Placed and restricted identically to the FIX
+        // gateway's, because the whole point of the pair is to compare the two protocols on
+        // the way out, and a checkpoint taken at a different point on each would measure the
+        // instrumentation rather than the encoders. See OrderPathMetrics.hpp.
+        if (report.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
+            order_path_metrics::observe_checkpoint(er_in_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
+                                                   config_.wall_clock->now_ns());
+        }
     } else {
         // Relay it regardless: the client is the report's audience, and a gateway that
         // cannot read a message still has no business withholding it.

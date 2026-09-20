@@ -5,6 +5,7 @@
 
 #include <tuple>
 
+#include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
@@ -255,6 +256,12 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             if (config.wal_append_buckets[index] <= config.wal_append_buckets[index - 1]) {
                 throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: metrics.wal_append_buckets must be strictly ascending");
             }
+        }
+        // The order-path checkpoints, read through the shared loader so that this component is
+        // held to the same validation as every other one on the path. Same rule as above about
+        // only reading it when metrics are on.
+        if (config.metrics_configuration.enabled) {
+            config.order_path_elapsed_buckets = order_path_metrics::load_order_path_elapsed_buckets(toml);
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 

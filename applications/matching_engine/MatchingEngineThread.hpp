@@ -18,6 +18,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/CounterHandle.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/IncrementalRehashMap.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
@@ -195,6 +196,31 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // on the order path would put metrics work in the hot path to buy resolution
     // nobody reads.
     fix_common::OrderBookMetricsReporter book_metrics_;
+
+    // How long the order had already been inside the venue when it arrived here, and again
+    // when its acknowledgement was sent back. The difference between the two is what the
+    // matching engine costs an order. See OrderPathMetrics.hpp for how the measurement works.
+    pubsub_itc_fw::HistogramHandle order_in_elapsed_histogram_;
+    pubsub_itc_fw::HistogramHandle er_out_elapsed_histogram_;
+
+    // The time the gateway first read the order that is being handled right now, and whether
+    // there is one. Both are cleared at the start of every inbound message and set again only
+    // where a client order is unwrapped, so outside the handling of an order there is nothing
+    // here to read.
+    //
+    // This exists so that the departure of an acknowledgement can be timed without the value
+    // being passed down to it. Reports leave through send_er_to_sequencer(), which is called
+    // from ten places, and most of them -- a report that a halt has cancelled an order, a
+    // report reconciled after a failover, a fill of an order that has rested for hours -- have
+    // no client order behind them at all. Adding a parameter to all ten would be one chance
+    // per call site to supply the wrong thing, and the wrong thing would be recorded silently.
+    //
+    // What makes reading it correct is that only an acknowledgement whose status is New is
+    // ever timed. Such an acknowledgement can only arise from handling a new order, which is
+    // the very order whose time is remembered here. Every other kind of report carries some
+    // other status and never reads these at all.
+    bool has_current_order_ingress_ns_{false};
+    int64_t current_order_ingress_ns_{0};
 
     // Scope for the book's gauges. A metric key token, so [A-Za-z0-9_]+ only.
     static constexpr const char* book_metrics_scope = "order_book";
