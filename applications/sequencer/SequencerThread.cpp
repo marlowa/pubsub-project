@@ -45,6 +45,20 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfi
     return allocator_configuration;
 }
 
+// A named helper rather than a designated initialiser at the call site: this project builds
+// as C++17, where designated initialisers are a C++20 feature and -Werror rejects them.
+//
+// Naming the scope is what opts this thread into the framework's per-thread metrics, and it
+// matters more here than anywhere else on the order path. The sequencer sits between the two
+// ends of the round trip -- every order reaches the matching engine through it and every
+// report comes back through it -- so a round trip that is slow for want of this thread being
+// scheduled is indistinguishable, from outside, from one that is slow anywhere else.
+pubsub_itc_fw::ApplicationThreadConfiguration make_thread_config() {
+    pubsub_itc_fw::ApplicationThreadConfiguration configuration;
+    configuration.metrics_scope = "sequencer_thread";
+    return configuration;
+}
+
 } // namespaces
 
 // PDU IDs for the leader-follower and external WAL subscriber protocols.
@@ -52,7 +66,7 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const SequencerConfi
 SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
                                  const SequencerConfiguration& config)
     : ApplicationThread(token, logger, reactor, "SequencerThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
-                        pubsub_itc_fw::ApplicationThreadConfiguration{})
+                        make_thread_config())
     , config_(config)
     , order_inbound_svc_("inbound:" + std::to_string(config.listen_port))
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
