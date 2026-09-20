@@ -398,11 +398,32 @@ of the hottest exchange the venue has. That costs more than the contention it av
 microseconds against 192.70, a reduction of 42 per cent.** The sequencer's own handling of an
 order falls from 11.7 microseconds to 0.37.
 
-What remains open is the price rather than the arrangement. Each polling thread burns a core,
-and there are only eight performance cores here. Which is also why the figure above beats the
-134.14 measured with the same polling but every component ranked for a hot-path core: taking
-the binary gateway, the publishers and the standby instances off the hot path was worth another
-22 microseconds, because fourteen threads on eight cores costs the three that matter.
+**Polling the application threads as well buys little for double the cores.** Three
+arrangements, same build, same load, same three components:
+
+| what polls | round trip | threads burned |
+|---|---|---|
+| nothing | 192.12 us | none |
+| each component's reactor thread | 111.84 us | 3 |
+| its reactor and its application thread | 102.56 us | 6 |
+
+The reactors are where nearly all of it is: they buy 80 microseconds for three threads. Adding
+the application threads buys 9 more for another three, and part of that is given straight back
+-- the sequencer's handling of the report went from 6.6 microseconds to 17.6, because a
+component's two threads share one physical core and both were now spinning on it.
+
+So the arrangement worth having is the reactors polling and the application threads left to
+block: 42 per cent, for three of the seven performance cores this machine has for the hot path.
+
+This is also why that figure beats the 134.14 measured with the same polling but every component
+ranked for a hot-path core: taking the binary gateway, the publishers and the standby instances
+off the hot path was worth another 22 microseconds, because fourteen threads on eight cores
+costs the three that matter.
+
+**None of this is committed.** The measurements were taken with a spin in `Reactor::event_loop`
+and a window in `spin_before_block`, both switched on by an environment variable naming the
+components, and both reverted. What lands, if anything, is a decision about whether a venue that
+is quiet between orders should spend cores to stay awake.
 
 ---
 
