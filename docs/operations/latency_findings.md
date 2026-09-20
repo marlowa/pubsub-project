@@ -97,11 +97,38 @@ second, so they describe a venue on an idle machine. Comparisons between them re
 because both sides of each comparison paid the same charge, but the absolute numbers are not
 what a busy venue would show.
 
+**A core that has been idle executes at about one seventh of its speed for the first forty
+microseconds after it is woken.** Measured by timing a fixed piece of dependent integer
+arithmetic, in registers, touching no memory at all, in twelve equal pieces as the core wakes:
+
+| | piece 1 | 2 | 3 | 4 | 5 onwards |
+|---|---|---|---|---|---|
+| busy, no gap | 2.19 us | 2.19 | 2.19 | 2.19 | 2.19 |
+| after 10 ms idle, thread blocking | 15.09 us | 15.09 | 15.08 | 5.58 | 2.20 |
+| after 10 ms idle, thread polling | 2.20 us | 2.42 | 2.68 | 2.68 | 2.68 |
+
+The ratio names the cause exactly: 15.09 divided by 2.19 is 6.89, and 5500 MHz divided by
+6.89 is 798, which is the 800 MHz an idle core reports. It is the clock, not cold cache --
+nothing in that loop can miss one.
+
+**It is the thread blocking that does it, not the gap.** The third row has the same 10
+millisecond gap as the second and runs at full speed from the first instruction, because a
+thread that polls never lets its core go idle. Polling settles about 20 per cent below peak,
+at the turbo frequency a core sustains under continuous work, which is a small price against
+a sevenfold penalty.
+
 What it is not: the processor's deep idle states, which are switched off, and the two that
-remain cost a microsecond to leave. Nor the socket, which costs 4.2 microseconds one way when
-busy. Nor waking a thread, which a futex round trip puts at about 1.7 microseconds each way.
-What does cost 20 microseconds or more once a core has been idle for a millisecond is not yet
-established.
+remain cost a microsecond to leave. Nor the socket, at 4.2 microseconds one way when busy.
+Nor waking a thread, which a futex round trip puts at about 1.7 microseconds each way.
+
+**Raising the frequency floor does not help.** `min_perf_pct` has no effect on this machine,
+where `intel_pstate` runs in active mode with hardware P-states -- it is accepted and never
+reaches the per-processor policy. Setting `scaling_min_freq` to the maximum on all eight
+performance cores does reach it, and still changes nothing: the hardware chooses frequency
+from observed utilisation, and a core whose thread is blocked has none. It moved the knee in
+the loopback measurement from 800 microseconds of idleness to about 1.2 milliseconds and left
+the venue at 100 orders a second exactly where it was, at 193 microseconds. Not worth the
+power it costs.
 
 ### Power settings dominate everything else
 
@@ -341,16 +368,27 @@ the outbound half — encoding the execution report and sending it — which nee
 rather than a second metric family, because the report path carries no time origin of its own.
 [metrics.md](metrics.md) lists it under Open.
 
-### Why leaving a core idle costs 20 microseconds
+### What it would cost to stop the venue's threads sleeping
 
-That it does is established above and measured two ways. Why is not. The deep processor idle
-states are switched off and the two remaining cost a microsecond to leave, the socket costs
-4.2 microseconds and waking a thread about 1.7, so none of those accounts for it. The change
-happens between 600 microseconds and 1 millisecond of idleness, which is a clue and not yet an
-answer.
+Not letting a thread sleep removes the penalty, which is established: with the reactor threads
+of the gateway, the sequencer and the matching engine polling for work instead of sleeping on
+it, the same load at 100 orders a second gave a round trip of **134.1 microseconds against
+194.8**, a saving of 60.
 
-This is the most valuable thing on this page to settle, because it is the largest single term
-in what a member waits for.
+The components' own work is where it shows most plainly. The sequencer's handling of an order
+fell from 12.0 microseconds to 0.8, and the matching engine's from 11.3 to 3.2 -- the same code
+doing the same work at full speed rather than at 800 MHz.
+
+**That 60 microseconds is a lower bound, because the arrangement fights itself.** A component's
+reactor and application threads share the two hyperthreads of one physical core, deliberately,
+so a reactor spinning flat out starves the application thread beside it; only the reactors were
+changed and the application threads still sleep, now next to a thread eating the core. The
+sequencer's handling of the report got 29.5 microseconds worse for that reason.
+
+So the open question is no longer what causes it but what it is worth. A thread that never
+sleeps needs a physical core to itself rather than half of one, which changes the core layout
+and costs real cores -- and is exactly what a kernel-bypass stack spends a core on. Four hops
+at roughly 20 microseconds each is the prize.
 
 ---
 
