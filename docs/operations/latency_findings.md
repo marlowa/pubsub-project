@@ -330,6 +330,28 @@ The setting does work, and the control proves it: raised to 4096 it took the sam
 whatever else the hand-off costs swamps it. Looking more often only buys back time that is not
 being spent.
 
+### The reactor being slow to come back and look
+
+The reactor notices nothing between two calls to `epoll_wait`, so a message from another process
+waits for the next one, and on average half that interval. If that interval were long it would
+explain the twenty-two microseconds unaccounted for between the matching engine and the sequencer.
+It is not. `reactor_lap_nanoseconds`, over 6,000 orders at 100 per second:
+
+| Component | Laps | p50 | p90 | p99 | mean |
+|---|---|---|---|---|---|
+| gateway | 25,434,461 | 3.28 us | 4.66 us | 4.97 us | 2.53 us |
+| sequencer | 25,279,343 | 3.19 us | 4.64 us | 4.97 us | 2.55 us |
+| matching engine | 25,379,464 | 3.50 us | 4.70 us | 4.97 us | 2.54 us |
+
+Every reactor comes back about every three microseconds, the tail reaches five, and all three
+agree. A message waits about 1.6 microseconds on average to be noticed, which cannot be a
+twenty-two microsecond leg.
+
+**The figure also corroborates two earlier measurements it was not designed to test.** Sixty-four
+quiet spins at the 30.1 nanoseconds measured for one `PAUSE` is 1.9 microseconds, and asking the
+kernel costs about one more. That is the three microseconds observed, from two numbers taken by
+different means on different days.
+
 ### Kernel core isolation
 
 `isolcpus=2-15 nohz_full=2-15 rcu_nocbs=2-15 irqaffinity=0,1,16-31` was applied, measured and

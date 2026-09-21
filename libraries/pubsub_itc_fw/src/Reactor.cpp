@@ -1001,6 +1001,17 @@ uint16_t Reactor::get_inbound_listener_port(int index) const {
     return inbound_manager_.get_listener_port(index);
 }
 
+void Reactor::record_look_for_work() {
+    const int64_t now_ns = HighResolutionClock::now().time_since_epoch().count();
+    if (last_look_for_work_ns_ != 0) {
+        const int64_t since_last_ns = now_ns - last_look_for_work_ns_;
+        if (since_last_ns >= 0) {
+            reactor_lap_histogram_.observe(static_cast<double>(since_last_ns));
+        }
+    }
+    last_look_for_work_ns_ = now_ns;
+}
+
 void Reactor::stop_polling_for_work() {
     // A sequentially consistent store, which on this processor carries a full barrier, so that
     // the look at the queue below cannot be run before other threads can see the flag go false.
@@ -1051,6 +1062,7 @@ int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns,
             send_is_blocked = false;
         }
 
+        record_look_for_work();
         const int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), 0);
         if (nfds != 0) {
             stop_polling_for_work();
@@ -1101,6 +1113,7 @@ void Reactor::event_loop() {
             nfds = poll_for_work(events, spin_ns, quiet_spins);
         }
         if (nfds == 0) {
+            record_look_for_work();
             nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), spin_ns > 0 ? 0 : -1);
         }
         if (nfds == 0 && spin_ns > 0) {
@@ -1136,6 +1149,8 @@ void Reactor::register_command_latency_metrics() {
     reactor_command_latency_histogram_ = metrics_endpoint_.register_histogram(
         "reactor", "reactor_command_latency_nanoseconds",
         "Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up", waited_buckets);
+    reactor_lap_histogram_ = metrics_endpoint_.register_histogram(
+        "reactor", "reactor_lap_nanoseconds", "Nanoseconds between one look for work and the next, during which nothing is noticed", waited_buckets);
     reactor_command_latency_unstamped_counter_ = metrics_endpoint_.register_counter(
         "reactor", "reactor_command_latency_unstamped_total", "Commands picked up with no enqueue stamp, so excluded from reactor_command_latency_nanoseconds");
 }

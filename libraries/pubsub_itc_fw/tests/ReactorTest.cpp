@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <utility>
 
@@ -27,6 +28,7 @@
 #include <pubsub_itc_fw/EventType.hpp>
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
+#include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -1001,4 +1003,95 @@ TEST_F(ReactorTest, NoCommandIsLostWhileTheReactorKeepsEnteringAndLeavingItsPoll
     EXPECT_TRUE(became_true_within([&] { return thread->distinct_timers_fired() == 64; }, std::chrono::milliseconds(5000)))
         << "only " << thread->distinct_timers_fired() << " of 64 timers fired, so a command was lost crossing to the reactor";
     EXPECT_EQ(thread->timers_scheduled(), 64u);
+}
+
+/*
+===============================================================================
+ The reactor's lap: how long between one look for work and the next
+===============================================================================
+
+A reactor notices nothing between two calls to epoll_wait. Bytes that arrive from another
+process just after one call wait until the following one, so this interval decides how late a
+message is seen, and on average a message waits half of it. It is the part of the journey
+between two components that no other measurement covers.
+
+The test below does not assert a value, because the right value is a property of the machine
+and of what the reactor is carrying. It asserts that the measurement RESPONDS: a reactor told
+to spin quietly 4096 times between looks must show a longer lap than one told to spin once,
+because that is the one thing known to lengthen a lap. An instrument that reported the same
+figure either way would be reporting nothing, and would still have looked perfectly healthy.
+===============================================================================
+*/
+
+namespace {
+
+/** @brief The mean of a histogram, read back out of a real scrape rather than a fake. */
+double mean_from_exposition(const std::string& exposition, const std::string& family) {
+    double total = 0.0;
+    double count = 0.0;
+    std::istringstream stream(exposition);
+    std::string line;
+    while (std::getline(stream, line)) {
+        const auto value_at = line.rfind(' ');
+        if (value_at == std::string::npos) {
+            continue;
+        }
+        const std::string value = line.substr(value_at + 1);
+        if (line.rfind(family + "_sum", 0) == 0) {
+            total = std::stod(value);
+        } else if (line.rfind(family + "_count", 0) == 0) {
+            count = std::stod(value);
+        }
+    }
+    return count > 0.0 ? total / count : 0.0;
+}
+
+/** @brief Runs a polling reactor for a moment and returns its mean lap, in nanoseconds. */
+double mean_lap_with_quiet_spins(LoggerWithSink& logger_with_sink, const ServiceRegistry& registry, int32_t quiet_spins) {
+    ReactorConfiguration cfg;
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
+    cfg.shutdown_timeout_ = std::chrono::milliseconds(200);
+    cfg.inactivity_check_interval_ = std::chrono::seconds{60};
+    cfg.spin_before_block = std::chrono::microseconds{5000000};
+    cfg.quiet_spins_between_polls = quiet_spins;
+    cfg.metrics_configuration.enabled = true;
+    // Port 0 lets the operating system choose, so parallel test binaries do not collide. The
+    // host has to be given as well: the default is empty, which CivetWeb refuses to bind, and
+    // the reactor treats a metrics listener it cannot start as fatal.
+    cfg.metrics_configuration.listen_endpoint = NetworkEndpointConfiguration{"127.0.0.1", 0};
+
+    Reactor reactor(cfg, registry, logger_with_sink.logger);
+    auto thread = ApplicationThread::create<CooperativeShutdownThread>(logger_with_sink.logger, reactor, "idle", ThreadID{1}, make_queue_config(),
+                                                                       make_allocator_config());
+    reactor.register_thread(thread);
+
+    ThreadWithJoinTimeout reactor_thread([&reactor] { reactor.run(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const std::string exposition = reactor.metrics().exposition_text();
+    reactor.shutdown("lap measurement finished");
+    if (!reactor_thread.join_with_timeout(std::chrono::seconds(2))) {
+        ADD_FAILURE() << "the reactor thread did not join after shutdown";
+    }
+
+    return mean_from_exposition(exposition, "reactor_lap_nanoseconds");
+}
+
+} // namespaces
+
+TEST_F(ReactorTest, LapMeasurementRespondsToHowLongTheReactorSpinsBetweenLooks) {
+    // Each arm builds a reactor of its own, because the setting under test is fixed when a
+    // reactor is constructed. The fixture's reactor is left alone: it is never run, and
+    // clearing it would leave TearDown dereferencing nothing.
+
+    const double busy_lap = mean_lap_with_quiet_spins(logger_with_sink_, service_registry_, 1);
+    const double idle_lap = mean_lap_with_quiet_spins(logger_with_sink_, service_registry_, 4096);
+
+    ASSERT_GT(busy_lap, 0.0) << "no laps were recorded at all, so the measurement is not running";
+    ASSERT_GT(idle_lap, 0.0) << "no laps were recorded at all, so the measurement is not running";
+
+    // 4096 quiet spins against 1. The exact ratio depends on what a quiet spin costs on this
+    // processor, so the test asks only for a clear separation rather than a figure.
+    EXPECT_GT(idle_lap, busy_lap * 4.0) << "spinning 4096 times between looks gave a mean lap of " << idle_lap << "ns against " << busy_lap
+                                        << "ns for spinning once. The lap measurement is not responding to the one "
+                                        << "thing known to change it, so it is not measuring what it claims";
 }

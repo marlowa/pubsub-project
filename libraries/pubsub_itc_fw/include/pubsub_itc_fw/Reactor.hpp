@@ -474,6 +474,14 @@ class Reactor : public ThreadLookupInterface {
     void stop_polling_for_work();
 
     /**
+     * @brief Records that the reactor is about to look for work, and how long since it last did.
+     *
+     * Called immediately before every epoll_wait, in both the polling loop and the sleeping one,
+     * so that the interval covers the gap during which nothing could be noticed.
+     */
+    void record_look_for_work();
+
+    /**
      * @brief Carries out commands an application thread has asked for.
      *
      * @param[in] max_commands The most to deal with before returning, or zero for as many as
@@ -679,6 +687,25 @@ class Reactor : public ThreadLookupInterface {
      * true, this pools them.
      */
     HistogramHandle reactor_command_latency_histogram_;
+
+    /**
+     * @brief How long between one look for work and the next.
+     *
+     * The reactor notices nothing between two calls to epoll_wait. Bytes that arrive just after
+     * one call wait until the following one, so this interval sets the delay before a message
+     * from another process is even seen, and on average a message waits half of it. It is the
+     * one part of the journey between two components that no other measurement covers: the
+     * hand-offs at each end are measured, the socket is a known cost, and this is what is left.
+     *
+     * It is not a measure of how busy the reactor is, although a busy reactor has a longer one.
+     * A lap includes whatever the reactor did with what the previous look returned, so a single
+     * long lap may be one slow piece of work rather than a backlog.
+     */
+    HistogramHandle reactor_lap_histogram_;
+
+    /** @brief When this reactor last looked for work, for the histogram above. Zero until the
+     *  first look, whose interval is meaningless and is not recorded. */
+    int64_t last_look_for_work_ns_{0};
 
     /**
      * @brief Commands picked up with no enqueue stamp, and so left out of the histogram above.
