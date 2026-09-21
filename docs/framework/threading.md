@@ -65,6 +65,101 @@ All producer call sites in `Reactor.cpp`, `InboundConnectionManager.cpp`,
 `TlsRawBytesProtocolHandler.cpp` were updated from `thing->get_queue().enqueue(msg)` to
 `thing->enqueue(std::move(msg))`.
 
+## Waiting for work: spinning, PAUSE, and who shares your core
+
+A thread with nothing to do can either block, and be woken when work arrives, or spin, and
+notice for itself. This framework blocks, for the reasons in the section above. Where spinning
+is being considered instead, there is a piece of conventional advice that comes with it: put a
+`PAUSE` instruction in the loop. This section records what that advice is actually worth,
+because on modern processors it is worth much less than it used to be, and because whether it is
+worth anything at all depends on how the threads are pinned.
+
+Everything below was measured on the development workstation with
+`libraries/pubsub_itc_fw/performance/src/SpinWaitBench.cpp`, which is built as
+`spin_wait_bench` and takes the two processors to use. The numbers are a property of the
+processor rather than of this project, so re-run it anywhere the answer matters rather than
+quoting these.
+
+### What a PAUSE costs
+
+Thirty nanoseconds. One loop iteration takes 1.37 nanoseconds without it and 31.47 with, so the
+instruction itself accounts for 30.10. On a 5500 MHz core that is roughly 165 cycles.
+
+That is the whole difficulty with the conventional advice. `PAUSE` used to cost around ten
+cycles, and Intel lengthened it substantially from the Skylake generation onwards; the 165
+cycles measured here is consistent with that change. Advice written before it was describing a
+different instruction. A loop that contains one now spends most of its time inside it, and
+therefore looks at the thing it is waiting for far less often than a loop without one.
+
+### What it buys
+
+Only one thing: the other hardware thread of the same physical core gets more done.
+
+Two hardware threads of one core share that core's execution resources. A thread spinning as
+fast as it can takes a large share of them, and the thread beside it slows down. `PAUSE` stands
+the spinning thread down between checks and hands those resources over.
+
+Measured, with a neighbour doing ordinary memory-touching work for a fixed period:
+
+| Arrangement | Neighbour's work | Noticing latency |
+|---|---|---|
+| Neighbour on a **different** physical core | 182,155 rounds | 95 ns |
+| Sharing a core, spinner **without** PAUSE | 180,805 rounds | 97 ns |
+| Sharing a core, spinner **with** PAUSE | 182,340 rounds | 121 ns |
+
+So sharing a core with a spinner costs the neighbour about 0.7 per cent of its throughput, and
+`PAUSE` gives all of it back -- the third row matches the first. The effect is real, it is
+exactly what `PAUSE` is for, and it is small.
+
+### What it costs
+
+About 25 nanoseconds of the only thing a waiting thread is for, which is noticing that work has
+arrived. In the table above, 97 nanoseconds becomes 121.
+
+That figure is not a coincidence and is worth understanding, because it says the cost cannot be
+tuned away. One `PAUSE` takes 30 nanoseconds. A loop is, on average, somewhere in the middle of
+one when the thing it is watching changes, so it finds out roughly one `PAUSE` later. The cost
+of being polite is the length of the instruction, and the instruction is now long.
+
+### Why this is a pinning question
+
+**The entire benefit of `PAUSE` goes to the other hardware thread of the same physical core.**
+If there is no such thread -- if the layout gives a spinning thread a whole core to itself --
+then there is nobody to be polite to, and `PAUSE` is pure cost. The control row above shows
+this: with the neighbour on a different core, `PAUSE` still costs its 17 nanoseconds of
+noticing and buys nothing, because there was nothing to buy.
+
+So the two decisions cannot be made separately, and which way each falls depends on the other:
+
+  A spinning thread with a core to itself should not use `PAUSE`. It pays the noticing cost and
+  there is no neighbour to benefit.
+
+  A spinning thread sharing a core with a thread that matters should use it. Giving up 25
+  nanoseconds of noticing to hand a neighbour back 0.7 per cent of its throughput is a
+  reasonable trade when that neighbour is the thread being waited for.
+
+This project pins a component's two hot-path threads onto the two hardware threads of one
+physical core deliberately, because they exchange messages constantly and sharing level-one
+cache makes the handoff nearly free -- see
+[cpu_pinning_anti_affinity.md](cpu_pinning_anti_affinity.md). That decision puts any spinning
+thread in the second case, next to a neighbour that matters a great deal. `BackoffWithYield`'s
+`cpu_relax()` uses `_mm_pause()` accordingly.
+
+### The thing that matters more than either
+
+**How a thread spins matters far more than whether it says `PAUSE`.**
+
+A loop that calls into the kernel on every iteration -- `epoll_wait` with a zero timeout, for
+instance -- is doing something far more disruptive than a quiet loop over a memory location.
+Measured on this venue, with a reactor thread polling that way on a core shared with its
+application thread, the application thread's handling of an execution report went from 6.6
+microseconds to 17.6. That is nearly three times, against `PAUSE`'s 0.7 per cent, and it
+happened with `PAUSE` present.
+
+So the first question to ask about a spin loop is not whether it is polite but what it does on
+each pass. A loop that reads one memory location and pauses is cheap for its neighbour. A loop
+that enters the kernel is not, and no amount of `PAUSE` will fix it.
+
 ## Inter-Thread Communication (ITC)
 Threads communicate by posting `EventMessage` values to each other's queues. The reactor and
 its managers are the primary producers; `ApplicationThread` subclasses may also post to each

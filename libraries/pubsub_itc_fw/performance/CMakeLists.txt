@@ -37,6 +37,33 @@ endif()
 message(STATUS "  Added performance harness: fixed_pool_bench")
 
 # -----------------------------------------------------------------------------
+# spin_wait_bench: what a spin loop costs, and what PAUSE in it is worth.
+#
+# Deliberately links nothing of this project: it measures the processor, not the framework,
+# and it is meant to be runnable on any machine whose behaviour is in question.
+add_executable(spin_wait_bench
+    src/SpinWaitBench.cpp
+)
+
+target_link_libraries(spin_wait_bench PRIVATE
+    fmt::fmt
+    pthread
+)
+
+target_compile_options(spin_wait_bench PRIVATE
+    -g
+    -fno-omit-frame-pointer
+)
+
+if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "11.0")
+    target_compile_options(spin_wait_bench PRIVATE -mcx16 -march=x86-64-v2)
+else()
+    target_compile_options(spin_wait_bench PRIVATE -mcx16 -msse4.2 -mpopcnt)
+endif()
+
+message(STATUS "  Added performance harness: spin_wait_bench")
+
+# -----------------------------------------------------------------------------
 # topic_pubsub_bench: end-to-end topic pub/sub throughput + latency harness
 # -----------------------------------------------------------------------------
 add_executable(topic_pubsub_bench
@@ -69,6 +96,6 @@ target_compile_options(topic_pubsub_bench PRIVATE
 message(STATUS "  Added performance harness: topic_pubsub_bench")
 
 # Install performance harnesses -> bin
-install(TARGETS fixed_pool_bench topic_pubsub_bench
+install(TARGETS fixed_pool_bench topic_pubsub_bench spin_wait_bench
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )
