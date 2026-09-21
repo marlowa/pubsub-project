@@ -135,8 +135,10 @@ panels.append(heat(
 
 panels.append(ts(
     "ITC hop — $component — percentiles by thread",
-    [tgt(f'histogram_quantile(0.90, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))', "{{component}}/{{scope}} p90", "A"),
-     tgt(f'histogram_quantile(0.99, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))', "{{component}}/{{scope}} p99", "B")],
+    [tgt(f'histogram_quantile(0.90, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))',
+         "{{component}}/{{scope}} p90", "A"),
+     tgt(f'histogram_quantile(0.99, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))',
+         "{{component}}/{{scope}} p99", "B")],
     w=24,
     desc="Watch this across the quiet phases of a trading-day run. A thread that sleeps "
          "between messages has to be woken for each one, and the cost of that appears here "
@@ -149,19 +151,40 @@ panels.append(heat(
     f'sum by (le) (rate(order_round_trip_nanoseconds_bucket{{{ONE}}}[{RATE}]))',
     desc="Order off the client connection to starting to send its ExecutionReport."))
 
+# One percentile per panel, and deliberately so.
+#
+# When both p90 and p99 for every gateway shared one chart, there were four lines on it and
+# four names in the legend for what a reader thinks of as two things. The eye then compares
+# the highest line against the lowest and concludes that one gateway is slower than the other,
+# when what it has actually compared is one gateway's p99 against the other's p90. Splitting
+# them means every line on a panel is the same percentile, so the vertical distance between
+# two lines is a difference between gateways and nothing else.
+ROUND_TRIP_ESTIMATE_NOTE = ("histogram_quantile interpolates inside whichever bucket the rank falls in, so these "
+                            "are estimates whose accuracy is a property of the configured bucket bounds.")
+
 panels.append(ts(
-    "Order round trip — percentiles, all gateways compared",
-    [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(order_round_trip_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p90", "A"),
-     tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(order_round_trip_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B")],
-    desc="histogram_quantile interpolates inside the bucket the rank falls in, so these are "
-                "estimates whose quality is a property of the configured bucket bounds."))
+    "Order round trip — p90, all gateways compared",
+    [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(order_round_trip_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}}", "A")],
+    desc="One line per gateway, all of them the ninetieth percentile, so a line above another "
+         "means that gateway really is slower. " + ROUND_TRIP_ESTIMATE_NOTE))
+
+panels.append(ts(
+    "Order round trip — p99, all gateways compared",
+    [tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(order_round_trip_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}}", "A")],
+    desc="The same gateways at the ninety-ninth percentile, on its own scale. The tail is "
+         "several times the typical figure, so plotting it beside p90 flattens p90 into a line "
+         "along the bottom where differences between gateways cannot be seen. "
+         + ROUND_TRIP_ESTIMATE_NOTE))
 
 panels.append(ts(
     "WAL append — percentiles, by sequencer",
     [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(wal_append_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p90", "A"),
      tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(wal_append_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B")],
+    w=24,
     desc="Committing one record to the write-ahead log. The metric on which the lazytime "
-                 "mount option showed up."))
+                 "mount option showed up. Two percentiles share this chart because only one "
+                 "sequencer is ever the leader, so there is only ever one pair of lines on it "
+                 "and there is nothing to confuse them with."))
 
 # --- protocol comparison: the one case where two executables belong on one chart ---
 #
