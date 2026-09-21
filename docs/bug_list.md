@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 93 |
-| Open | 34 (21 defects, 13 tasks) |
+| Bugs recorded | 94 |
+| Open | 35 (22 defects, 13 tasks) |
 | Closed | 59 |
-| Next id | BUG-0094 |
+| Next id | BUG-0095 |
 
 ## Open bugs by severity
 
-12 high, 19 medium, 3 low.
+12 high, 20 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -44,6 +44,7 @@
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
+| [BUG-0094](#bug_0094) | medium | defect | A reactor under sustained socket load serves its timers fifteen times more slowly |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2276,6 +2277,61 @@ enumeration or belong in `Text` alongside it. `CxlRejReason` has no "other" valu
 `OrdRejReason` does, and the venue currently sends `OrdRejReason=99`.
 
 Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
+
+### BUG-0094: A reactor under sustained socket load serves its timers fifteen times more slowly {#bug_0094}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-21 |
+| Recorded | 2026-09-21 |
+| How | An integration test that loads every source of work a reactor serves at once, and watches a timer that competes for none of them |
+| Impact | Timers are how this venue notices that something has stopped: heartbeats, session monitoring and the deferral clocks in the availability design are all timers. Under sustained load a reactor serves them at a fraction of their configured rate, so the things those timers are watching for are noticed late. The load it takes is well above anything the venue has been measured carrying, so nothing observed so far is explained by this |
+
+**What happens.** One reactor thread serves four sources of work: bytes arriving on sockets,
+messages passed between threads, timers, and the queue of commands its application threads use to
+ask for sends. `Reactor::dispatch_events` walks the descriptors epoll returned from the start of
+the array and deals with each one completely before moving to the next. Which source gets served
+first is therefore decided by the order the kernel happens to return the descriptors in, and a
+descriptor that always has more to read is dealt with in full every time round.
+
+**Measured.** One reactor, a recurring timer every 10 milliseconds on an application thread with
+no other work, and the same timer measured twice on the same reactor two seconds apart:
+
+| | Beats in 2 seconds |
+|---|---|
+| reactor otherwise idle | 199 |
+| reactor also serving 28,151 socket messages, 7,841 messages from other threads and 7,841 commands | 13 |
+
+199 is the rate the timer was asked for. 13 is one beat every 154 milliseconds against a
+configured 10.
+
+**It is not the polling loop.** The same measurement with the reactor sleeping in `epoll_wait`
+between events, which is the older of the two ways it can wait, gives 12 beats. Both ways of
+waiting show it and the difference between them is noise, so this is older than either.
+
+**What would need to change.** Two things, and they are separate.
+
+Serving each source a bounded share per pass, rather than serving whichever the kernel named
+first until it is exhausted. `Reactor::process_control_commands` already takes such a bound;
+sockets do not.
+
+Not always starting at the same end. A bound stops one descriptor being served without limit, but
+walking the returned descriptors in the same order every time still favours whoever is early in
+that order. Starting at a different point each pass, or shuffling the order, removes the bias
+without anyone having to work out what a fair schedule would be. This is an old remedy for an old
+problem: multiplexing several sockets naively gives some connections better service than others,
+and the cure has long been to stop the order being systematic.
+
+**How to see it.** `FrameworkPduBurstIntegrationTest.DISABLED_PollingReactorKeepsServingEverySourceWhileOneIsBusy`
+in `libraries/pubsub_itc_fw/integration_tests/PduBurstIntegrationTest.cpp`. It is disabled because
+it fails, and it fails because the defect is real rather than because the test is wrong: it
+measures the same timer on the same reactor with and without load, so a timer that was simply
+mis-configured or coalescing would fail its first assertion instead. Run it with
+`--gtest_also_run_disabled_tests`.
+
+Related: [BUG-0060](#bug_0060), which asks what the venue does about microbursts. A burst is
+exactly the condition under which this appears.
 
 ## Closed
 

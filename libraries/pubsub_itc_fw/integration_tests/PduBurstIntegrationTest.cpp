@@ -114,14 +114,37 @@ static constexpr uint16_t any_os_assigned_port = 0;
 
 namespace {
 
-ReactorConfiguration make_reactor_config() {
+ReactorConfiguration make_reactor_config(std::chrono::microseconds spin_before_block = std::chrono::microseconds{0},
+                                         std::chrono::milliseconds inactivity_check_interval = std::chrono::milliseconds{100}) {
     ReactorConfiguration cfg{};
-    cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
+
+    // The reactor's own housekeeping timer is an epoll event, and any epoll event takes a
+    // polling reactor out of its loop, which empties the command queue on the way past. Left at
+    // a tenth of a second it carries sends through by itself, and a test meant to show that the
+    // polling loop finds them would pass with that loop removed. The polling tests below push it
+    // beyond the length of the test so that the polling loop is the only way a send gets out.
+    cfg.inactivity_check_interval_ = inactivity_check_interval;
     cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
     cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
     cfg.connect_timeout = std::chrono::milliseconds(2000);
+
+    // Zero, the default, means the reactor sleeps in epoll_wait whenever it has nothing to do,
+    // and an application thread wanting something sent has to wake it. Anything above zero puts
+    // the reactor in its polling loop instead, where it finds the request itself and the sending
+    // thread writes no wakeup at all. The two are different code paths through every send in this
+    // file, so the tests below run the same burst down each of them.
+    cfg.spin_before_block = spin_before_block;
     return cfg;
 }
+
+// How long a polling reactor keeps looking before it would give up and sleep. Long enough that
+// it never does so during a test, which is what makes the polling path the one under test rather
+// than a mixture of the two.
+constexpr std::chrono::microseconds keep_polling_throughout{30000000};
+
+// A housekeeping interval longer than any test here, so that a polling reactor gets no epoll
+// event it did not earn and cannot be carried by one.
+constexpr std::chrono::milliseconds no_housekeeping_during_the_test{60000};
 
 } // un-named namespace
 
@@ -672,6 +695,532 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstUnderConcurrentRawP
     EXPECT_GT(receiver_thread->raw_bytes_received.load(std::memory_order_acquire), 0)
         << "Receiver never saw any raw bytes -- concurrent pressure condition not exercised";
     EXPECT_GT(raw_bytes_sent.load(std::memory_order_acquire), 0) << "Raw client never sent any bytes -- concurrent pressure condition not exercised";
+}
+
+/*
+ * Sending through a polling reactor, and doing it for long enough to trust it
+ * -------------------------------------------------------------------------
+ *
+ * An application thread that calls send_pdu does not touch the socket. It puts a command on its
+ * reactor's queue, and the reactor writes the bytes. How the reactor comes to look at that queue
+ * depends on what it is doing:
+ *
+ *   Sleeping in epoll_wait -- the sending thread writes to the reactor's wakeup descriptor,
+ *   which is a system call on the sender and another on the reactor to drain it again.
+ *
+ *   Polling -- the reactor is already going round a loop looking at the queue, so the sending
+ *   thread writes nothing.
+ *
+ * Every test above this point runs the first route, because that is the default. These two run
+ * the second. They are integration tests rather than unit tests because the thing worth checking
+ * cannot be seen from inside one process boundary: the bytes have to leave an application thread,
+ * cross to a reactor, go out over a real socket, be read by a second reactor and arrive at a
+ * second application thread, all with no test scaffolding standing in for any of it.
+ *
+ * The soak is the second of the two. A hand-off that is wrong once in a great many attempts
+ * looks exactly like a hand-off that is right when you try it a hundred times, and a single
+ * burst of a hundred PDUs is a hundred attempts. The soak sends a hundred thousand, in bursts
+ * separated by pauses, because the pauses are what make the reactor's queue go empty and fill
+ * again -- and a hand-off between two threads is at its most delicate on the edges, when the
+ * queue has just become empty or has just stopped being so.
+ */
+
+namespace {
+
+// Enough sends that a fault which shows up rarely has many chances to show up, while keeping the
+// test inside the time an ordinary build is willing to spend.
+constexpr int soak_burst_size = 500;
+constexpr int soak_burst_count = 200;
+constexpr int soak_total = soak_burst_size * soak_burst_count;
+
+} // un-named namespace
+
+/**
+ * @brief Sends bursts of PDUs with pauses between them, for a long time.
+ *
+ * The pauses are the reason this exists rather than one enormous burst. Inside a burst the
+ * reactor's command queue always has something on it, which is the easy case. It is when the
+ * queue has just gone empty, and then something lands on it again, that the sending thread and
+ * the reactor have to agree about whether the reactor is still looking -- and getting that wrong
+ * shows up as a message that is never sent. A timer between bursts puts the venue through that
+ * changeover thousands of times.
+ *
+ * Nothing is stored per message. The only thing worth checking over this many sends is that
+ * every one of them arrived, exactly once and in order, and the sequence number says that in
+ * constant memory.
+ */
+class SoakSenderThread : public ApplicationThread {
+  public:
+    SoakSenderThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "SoakSenderThread", ThreadID{1}, make_queue_config(), make_allocator_config("SoakSenderPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<int> sent_count{0};
+    std::atomic<bool> all_bursts_sent{false};
+
+  protected:
+    void on_app_ready_event() override {
+        connect_to_service(receiver_service);
+    }
+
+    void on_connection_established(ConnectionID id) override {
+        conn_id_ = id;
+        connection_established.store(true, std::memory_order_release);
+
+        // One millisecond between bursts. Long enough that the reactor finishes the burst and
+        // finds nothing left, which is the state the next burst has to wake it out of.
+        burst_timer_ = schedule_timer(std::chrono::microseconds(1000), TimerType(TimerType::Recurring));
+    }
+
+    void on_connection_failed(const std::string&) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
+    void on_raw_socket_message(const EventMessage&) override {}
+    void on_framework_pdu_message(const EventMessage&) override {}
+    void on_itc_message(const EventMessage&) override {}
+
+    void on_timer_event(pubsub_itc_fw::TimerID id) override {
+        if (id != burst_timer_ || bursts_done_ >= soak_burst_count) {
+            return;
+        }
+        send_one_burst();
+        ++bursts_done_;
+        if (bursts_done_ >= soak_burst_count) {
+            cancel_timer(burst_timer_);
+            all_bursts_sent.store(true, std::memory_order_release);
+        }
+    }
+
+  private:
+    void send_one_burst() {
+        for (int i = 0; i < soak_burst_size; ++i) {
+            ++next_seq_no_;
+            cl_ord_id_ = "ord" + std::to_string(next_seq_no_);
+
+            pubsub_itc_fw_app::ExecutionReport er{};
+            er.order_id = order_id_storage_;
+            er.exec_id = exec_id_storage_;
+            er.exec_type = pubsub_itc_fw_app::ExecType::Trade;
+            er.ord_status = pubsub_itc_fw_app::OrdStatus::Filled;
+            er.symbol = symbol_storage_;
+            er.side = pubsub_itc_fw_app::Side::Buy;
+            er.leaves_qty = zero_storage_;
+            er.cum_qty = qty_storage_;
+            er.avg_px = price_storage_;
+            er.transact_time = 0;
+            er.has_cl_ord_id = true;
+            er.cl_ord_id = cl_ord_id_;
+
+            constexpr auto pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
+            send_pdu(conn_id_, pdu_id, next_seq_no_, er);
+            sent_count.fetch_add(1, std::memory_order_release);
+        }
+    }
+
+    ConnectionID conn_id_{};
+    TimerID burst_timer_{};
+    int bursts_done_{0};
+    int64_t next_seq_no_{0};
+    std::string cl_ord_id_;
+
+    const std::string order_id_storage_ = "ME-ORD-1";
+    const std::string exec_id_storage_ = "ME-EXEC-1";
+    const std::string symbol_storage_ = "BHP";
+    const std::string zero_storage_ = "0";
+    const std::string qty_storage_ = "100.0";
+    const std::string price_storage_ = "42.0";
+};
+
+/** @brief Counts arrivals and checks the sequence, without keeping any of them. */
+class SoakReceiverThread : public ApplicationThread {
+  public:
+    SoakReceiverThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "SoakReceiverThread", ThreadID{2}, make_queue_config(), make_allocator_config("SoakReceiverPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<int> received_count{0};
+
+    /** @brief The first sequence number that did not follow the one before it, or zero. */
+    std::atomic<int64_t> first_break_in_sequence{0};
+
+  protected:
+    void on_framework_pdu_message(const EventMessage& message) override {
+        const int64_t seq_no = message.seq_no();
+        if (seq_no != expected_seq_no_ && first_break_in_sequence.load(std::memory_order_acquire) == 0) {
+            first_break_in_sequence.store(seq_no, std::memory_order_release);
+        }
+        expected_seq_no_ = seq_no + 1;
+        received_count.fetch_add(1, std::memory_order_release);
+        release_pdu_payload(message);
+    }
+
+    void on_connection_established(ConnectionID) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
+    void on_raw_socket_message(const EventMessage&) override {}
+    void on_itc_message(const EventMessage&) override {}
+    void on_timer_event(pubsub_itc_fw::TimerID) override {}
+
+  private:
+    int64_t expected_seq_no_{1};
+};
+
+TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesAPollingReactor) {
+    // ----- Receiver -----
+    const ServiceRegistry receiver_registry;
+    auto receiver_reactor =
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), receiver_registry, logger_->logger);
+
+    receiver_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2});
+
+    auto receiver_thread = ApplicationThread::create<ReceiverThread>(logger_->logger, *receiver_reactor);
+    receiver_reactor->register_thread(receiver_thread);
+
+    std::thread receiver_reactor_thread([&]() { receiver_reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return receiver_reactor->is_initialized(); })) << "Receiver reactor did not initialise within timeout";
+    const uint16_t receiver_port = receiver_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(receiver_port, 0U) << "OS did not assign a valid listening port";
+
+    // ----- Sender -----
+    ServiceRegistry sender_registry;
+    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", receiver_port}, NetworkEndpointConfiguration{});
+
+    auto sender_reactor =
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), sender_registry, logger_->logger);
+
+    auto sender_thread = ApplicationThread::create<SenderThread>(logger_->logger, *sender_reactor, burst_size);
+    sender_reactor->register_thread(sender_thread);
+
+    std::thread sender_reactor_thread([&]() { sender_reactor->run(); });
+
+    set_watched_reactors(*sender_reactor, *receiver_reactor);
+
+    ASSERT_TRUE(wait_for([&]() { return sender_reactor->is_initialized(); }))
+        << "Sender reactor did not initialise within timeout: " << last_wait_failure_description();
+
+    EXPECT_TRUE(wait_for([&]() { return sender_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Sender: outbound connection to receiver not established: " << last_wait_failure_description();
+
+    EXPECT_TRUE(wait_for([&]() { return sender_thread->burst_sent.load(std::memory_order_acquire); }))
+        << "Sender: burst of " << burst_size << " send_pdu calls did not complete: " << last_wait_failure_description();
+
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= burst_size; }, 10000))
+        << "Receiver: did not receive all " << burst_size << " PDUs through a polling reactor (got "
+        << receiver_thread->received_count.load(std::memory_order_acquire) << "). A send that a polling reactor never picked up looks "
+        << "exactly like this: " << last_wait_failure_description();
+
+    shutdown_and_join(*sender_reactor, sender_reactor_thread);
+    shutdown_and_join(*receiver_reactor, receiver_reactor_thread);
+
+    // ----- Assertions -----
+    // The same byte-for-byte comparison the sleeping-reactor test makes. Arriving is not enough:
+    // the point of checking the bytes is that a send picked up halfway through being written,
+    // or written twice, would still arrive.
+
+    ASSERT_EQ(static_cast<int>(receiver_thread->captured_.size()), burst_size) << "Receiver captured PDU count does not match burst size";
+    ASSERT_EQ(static_cast<int>(sender_thread->sent_payloads_.size()), burst_size) << "Sender recorded payload count does not match burst size";
+
+    for (int i = 0; i < burst_size; ++i) {
+        const auto& cap = receiver_thread->captured_[static_cast<size_t>(i)];
+        const auto& sent_payload = sender_thread->sent_payloads_[static_cast<size_t>(i)];
+        const std::string expected = "ord" + std::to_string(i + 1);
+
+        EXPECT_EQ(cap.seq_no, static_cast<int64_t>(i + 1)) << "PDU at index " << i << ": seq_no mismatch (got " << cap.seq_no << ")";
+        EXPECT_TRUE(cap.decode_ok) << "PDU at index " << i << " (expected cl_ord_id=" << expected << "): failed to decode";
+        EXPECT_EQ(cap.decoded_cl_ord_id, expected) << "PDU at index " << i << ": decoded cl_ord_id mismatch";
+
+        ASSERT_EQ(cap.payload.size(), sent_payload.size())
+            << "PDU at index " << i << ": payload byte count mismatch (sender wrote " << sent_payload.size() << ", receiver got " << cap.payload.size() << ")";
+
+        const bool bytes_equal = std::memcmp(cap.payload.data(), sent_payload.data(), sent_payload.size()) == 0;
+        EXPECT_TRUE(bytes_equal) << "PDU at index " << i << ": payload bytes differ from what sender produced";
+    }
+}
+
+TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorLosesNothingOverAHundredThousandSends) {
+    // ----- Receiver -----
+    const ServiceRegistry receiver_registry;
+    auto receiver_reactor =
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), receiver_registry, logger_->logger);
+
+    receiver_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2});
+
+    auto receiver_thread = ApplicationThread::create<SoakReceiverThread>(logger_->logger, *receiver_reactor);
+    receiver_reactor->register_thread(receiver_thread);
+
+    std::thread receiver_reactor_thread([&]() { receiver_reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return receiver_reactor->is_initialized(); })) << "Receiver reactor did not initialise within timeout";
+    const uint16_t receiver_port = receiver_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(receiver_port, 0U) << "OS did not assign a valid listening port";
+
+    // ----- Sender -----
+    ServiceRegistry sender_registry;
+    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", receiver_port}, NetworkEndpointConfiguration{});
+
+    auto sender_reactor =
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), sender_registry, logger_->logger);
+
+    auto sender_thread = ApplicationThread::create<SoakSenderThread>(logger_->logger, *sender_reactor);
+    sender_reactor->register_thread(sender_thread);
+
+    std::thread sender_reactor_thread([&]() { sender_reactor->run(); });
+
+    set_watched_reactors(*sender_reactor, *receiver_reactor);
+
+    ASSERT_TRUE(wait_for([&]() { return sender_reactor->is_initialized(); }))
+        << "Sender reactor did not initialise within timeout: " << last_wait_failure_description();
+    EXPECT_TRUE(wait_for([&]() { return sender_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Sender: outbound connection to receiver not established: " << last_wait_failure_description();
+
+    // 200 bursts a millisecond apart is a little under a second of sending, but the machine this
+    // runs on may be loaded and the receiver has to keep up as well, so the wait is generous.
+    // A timeout here is a genuine failure, not impatience: it means sends stopped happening.
+    EXPECT_TRUE(wait_for([&]() { return sender_thread->all_bursts_sent.load(std::memory_order_acquire); }, 60000))
+        << "Sender: only " << sender_thread->sent_count.load(std::memory_order_acquire) << " of " << soak_total
+        << " sends were made. The burst timer stopped firing, which means a command asking for it never reached the reactor: "
+        << last_wait_failure_description();
+
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->received_count.load(std::memory_order_acquire) >= soak_total; }, 60000))
+        << "Receiver: " << receiver_thread->received_count.load(std::memory_order_acquire) << " of " << soak_total
+        << " PDUs arrived. Every send that a polling reactor failed to pick up is one of the missing: " << last_wait_failure_description();
+
+    shutdown_and_join(*sender_reactor, sender_reactor_thread);
+    shutdown_and_join(*receiver_reactor, receiver_reactor_thread);
+
+    // ----- Assertions -----
+
+    EXPECT_EQ(sender_thread->sent_count.load(std::memory_order_acquire), soak_total);
+    EXPECT_EQ(receiver_thread->received_count.load(std::memory_order_acquire), soak_total) << "arrivals do not match sends";
+
+    // Counting alone would not notice one PDU lost and another delivered twice. The sequence
+    // number would.
+    EXPECT_EQ(receiver_thread->first_break_in_sequence.load(std::memory_order_acquire), 0)
+        << "sequence number " << receiver_thread->first_break_in_sequence.load(std::memory_order_acquire)
+        << " did not follow the one before it, so a PDU was lost, duplicated or overtaken";
+}
+
+/*
+ * Fairness between the things a reactor has to serve at once
+ * ----------------------------------------------------------
+ *
+ * One reactor thread serves four different sources of work:
+ *
+ *   bytes arriving on sockets, which may be a whole message, several messages, or part of one;
+ *   messages passed between threads in this process;
+ *   timers;
+ *   and the queue of commands its application threads use to ask for sends.
+ *
+ * None of them may be allowed to crowd out the others. The risk is specific and it is easy to
+ * create by accident: whichever source the reactor looks at first, if it keeps looking at that
+ * one until there is nothing left, then a source that is continuously busy leaves the others
+ * waiting for as long as it stays busy.
+ *
+ * This test runs all four at once, hard, and watches a timer that has nothing to do with any of
+ * them. A heartbeat every ten milliseconds should fire about a hundred times in a second no
+ * matter what else is going on. If the reactor is being held by one source, the heartbeat is
+ * the thing that visibly stops -- it does not compete for anything, it merely needs the reactor
+ * to come back round to it.
+ */
+
+namespace {
+
+constexpr auto fairness_run_time = std::chrono::milliseconds{2000};
+constexpr auto heartbeat_interval = std::chrono::microseconds{10000};
+
+// Ten milliseconds apart over two seconds is about two hundred beats. Half of that is the floor
+// for calling the reactor fair: it leaves room for an ordinary loaded build machine, while a
+// reactor that is actually being starved shows single figures or none at all.
+constexpr int fewest_acceptable_heartbeats = 100;
+
+} // un-named namespace
+
+/**
+ * @brief Takes work from every source at once and reports what it saw of each.
+ *
+ * The ITC messages are what drives the command queue: each one is answered by asking the
+ * reactor for a timer, so a test thread pushing messages in as fast as it can is also pushing
+ * commands in as fast as it can.
+ */
+class AllSourcesThread : public ApplicationThread {
+  public:
+    AllSourcesThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "AllSourcesThread", ThreadID{2}, make_queue_config(), make_allocator_config("AllSourcesPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<int> pdus_from_socket{0};
+    std::atomic<int> messages_from_threads{0};
+    std::atomic<int> heartbeats{0};
+    std::atomic<int> timers_asked_for{0};
+    std::atomic<bool> ready{false};
+
+  protected:
+    void on_app_ready_event() override {
+        ready.store(true, std::memory_order_release);
+    }
+
+    void on_framework_pdu_message(const EventMessage& message) override {
+        pdus_from_socket.fetch_add(1, std::memory_order_release);
+        release_pdu_payload(message);
+    }
+
+    void on_itc_message(const EventMessage&) override {
+        messages_from_threads.fetch_add(1, std::memory_order_release);
+
+        // Answering with a request to the reactor is what puts this test's load on the command
+        // queue. Single-shot, so each one is asked for and then goes away by itself.
+        schedule_timer(std::chrono::microseconds(50000), TimerType(TimerType::SingleShot));
+        timers_asked_for.fetch_add(1, std::memory_order_release);
+    }
+
+    void on_timer_event(pubsub_itc_fw::TimerID) override {}
+
+    void on_connection_established(ConnectionID) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
+    void on_raw_socket_message(const EventMessage&) override {}
+};
+
+/**
+ * @brief Does nothing but count a heartbeat, on a thread with no other work.
+ *
+ * The heartbeat has to live on a thread of its own. Put on the busy thread it measures that
+ * thread's backlog rather than the reactor's fairness: a timer is delivered to an application
+ * thread like anything else, so a thread working through tens of thousands of messages reports
+ * its beats late whatever the reactor does, and a test reading that as unfairness would be
+ * blaming the wrong component. On an otherwise idle thread the only thing between the timer
+ * expiring and this counter moving is the reactor coming back round to look.
+ */
+class HeartbeatThread : public ApplicationThread {
+  public:
+    HeartbeatThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "HeartbeatThread", ThreadID{3}, make_queue_config(), make_allocator_config("HeartbeatPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    std::atomic<int> heartbeats{0};
+    std::atomic<bool> ready{false};
+
+  protected:
+    void on_app_ready_event() override {
+        schedule_timer(heartbeat_interval, TimerType(TimerType::Recurring));
+        ready.store(true, std::memory_order_release);
+    }
+
+    void on_timer_event(pubsub_itc_fw::TimerID) override {
+        heartbeats.fetch_add(1, std::memory_order_release);
+    }
+
+    void on_framework_pdu_message(const EventMessage& message) override {
+        release_pdu_payload(message);
+    }
+
+    void on_connection_established(ConnectionID) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
+    void on_raw_socket_message(const EventMessage&) override {}
+    void on_itc_message(const EventMessage&) override {}
+};
+
+// Disabled because it fails, and it fails because it has found something. See BUG-0094 in
+// docs/bug_list.md: a reactor under sustained socket load serves a timer at about a fifteenth of
+// the rate it serves the same timer when idle, and it does so whichever way the reactor waits, so
+// it is older than the polling loop. The test is left here, written and working, because the day
+// that is fixed this is what says so. Run it with --gtest_also_run_disabled_tests.
+TEST_F(FrameworkPduBurstIntegrationTest, DISABLED_PollingReactorKeepsServingEverySourceWhileOneIsBusy) {
+    // ----- The reactor under test -----
+    const ServiceRegistry busy_registry;
+    auto busy_reactor =
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), busy_registry, logger_->logger);
+
+    busy_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2});
+
+    auto busy_thread = ApplicationThread::create<AllSourcesThread>(logger_->logger, *busy_reactor);
+    busy_reactor->register_thread(busy_thread);
+
+    auto heartbeat_thread = ApplicationThread::create<HeartbeatThread>(logger_->logger, *busy_reactor);
+    busy_reactor->register_thread(heartbeat_thread);
+
+    std::thread busy_reactor_thread([&]() { busy_reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return busy_reactor->is_initialized(); })) << "Reactor under test did not initialise within timeout";
+    ASSERT_TRUE(wait_for([&]() { return busy_thread->ready.load(std::memory_order_acquire); })) << "Busy thread did not reach app-ready";
+    ASSERT_TRUE(wait_for([&]() { return heartbeat_thread->ready.load(std::memory_order_acquire); })) << "Heartbeat thread did not reach app-ready";
+    const uint16_t busy_port = busy_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(busy_port, 0U) << "OS did not assign a valid listening port";
+
+    // ----- First, how fast the heartbeat runs with nothing else going on -----
+    //
+    // This is the test's own control, and it is not optional. A recurring timer that is read
+    // late does not replay the beats it missed: the descriptor reports how many expiries have
+    // built up and the framework delivers one event for that read. So a low count can mean the
+    // reactor was too busy to come back to it, or it can mean the timer never ran at the rate
+    // this test assumed. Measuring the quiet rate first tells those apart, and everything below
+    // is stated as a fraction of it rather than of a number worked out on paper.
+
+    const int quiet_beats_before = heartbeat_thread->heartbeats.load(std::memory_order_acquire);
+    std::this_thread::sleep_for(fairness_run_time);
+    const int quiet_beats = heartbeat_thread->heartbeats.load(std::memory_order_acquire) - quiet_beats_before;
+
+    ASSERT_GE(quiet_beats, fewest_acceptable_heartbeats)
+        << "the heartbeat managed only " << quiet_beats << " beats in " << fairness_run_time.count()
+        << "ms with nothing else happening at all. Nothing can be concluded about fairness from a timer that is already slow on an idle reactor";
+
+    // ----- Now the same measurement with every source busy at once -----
+
+    ServiceRegistry sender_registry;
+    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", busy_port}, NetworkEndpointConfiguration{});
+
+    auto sender_reactor =
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), sender_registry, logger_->logger);
+
+    auto sender_thread = ApplicationThread::create<SoakSenderThread>(logger_->logger, *sender_reactor);
+    sender_reactor->register_thread(sender_thread);
+
+    std::thread sender_reactor_thread([&]() { sender_reactor->run(); });
+
+    set_watched_reactors(*sender_reactor, *busy_reactor);
+    ASSERT_TRUE(wait_for([&]() { return sender_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Sender: outbound connection not established: " << last_wait_failure_description();
+
+    std::atomic<bool> keep_pushing{true};
+    std::thread message_pusher([&]() {
+        while (keep_pushing.load(std::memory_order_acquire)) {
+            busy_reactor->route_message(ThreadID{2}, EventMessage::create_itc_message(ThreadID{2}, nullptr, 0));
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+    });
+
+    const int busy_beats_before = heartbeat_thread->heartbeats.load(std::memory_order_acquire);
+    std::this_thread::sleep_for(fairness_run_time);
+    const int busy_beats = heartbeat_thread->heartbeats.load(std::memory_order_acquire) - busy_beats_before;
+
+    keep_pushing.store(false, std::memory_order_release);
+    message_pusher.join();
+
+    const int pdus = busy_thread->pdus_from_socket.load(std::memory_order_acquire);
+    const int messages = busy_thread->messages_from_threads.load(std::memory_order_acquire);
+    const int commands = busy_thread->timers_asked_for.load(std::memory_order_acquire);
+
+    shutdown_and_join(*sender_reactor, sender_reactor_thread);
+    shutdown_and_join(*busy_reactor, busy_reactor_thread);
+
+    // ----- Assertions -----
+    //
+    // First that the test did what it set out to do. A fairness result means nothing if the
+    // sources it was meant to be loading were quiet, and that failure would otherwise look
+    // exactly like a pass.
+
+    EXPECT_GT(pdus, 0) << "no PDUs arrived over the socket, so the socket source was never busy and this test proved nothing";
+    EXPECT_GT(messages, 0) << "no messages arrived from other threads, so that source was never busy and this test proved nothing";
+    EXPECT_GT(commands, 0) << "no commands were asked for, so the command queue was never busy and this test proved nothing";
+
+    // And now the fairness itself, measured against the rate this same timer managed a moment
+    // ago on the same reactor. A reactor that keeps serving every source keeps much of that
+    // rate. One that has been captured by a single source loses nearly all of it.
+
+    const int floor_under_load = quiet_beats / 4;
+    EXPECT_GE(busy_beats, floor_under_load) << "the heartbeat managed " << quiet_beats << " beats while the reactor was idle but only " << busy_beats
+                                            << " while it was also serving " << pdus << " socket message(s), " << messages
+                                            << " message(s) from other threads and " << commands
+                                            << " command(s). One of those sources is being served at the expense of the others";
 }
 
 } // namespaces

@@ -463,7 +463,39 @@ class Reactor : public ThreadLookupInterface {
      */
     void register_command_latency_metrics();
 
-    void process_control_commands();
+    /**
+     * @brief Leaves the polling state, and picks up anything that arrived on the way out.
+     *
+     * Called on every path out of poll_for_work. Clearing the flag and then looking at the queue
+     * is the reactor's half of the handshake described on polling_for_work_, and the look is not
+     * optional: it is what catches a command whose sender decided against a wakeup a moment
+     * before the flag was cleared.
+     */
+    void stop_polling_for_work();
+
+    /**
+     * @brief Carries out commands an application thread has asked for.
+     *
+     * @param[in] max_commands The most to deal with before returning, or zero for as many as
+     *                         there are.
+     *
+     * The bound exists for fairness. This reactor is the only thread serving several sources of
+     * work at once: bytes arriving on sockets, some of them whole messages and some of them
+     * fragments of one; messages between threads; timers; and this queue. An application thread
+     * that asks for sends faster than they can be carried out would, with no bound, keep this
+     * function running and leave the sockets unread for as long as it kept asking. A bound
+     * returns to the caller with commands still queued, and the caller goes back to the other
+     * sources before coming here again.
+     *
+     * Draining without a bound is right where this is reached from the wakeup descriptor,
+     * because that is already one event among the batch that epoll returned, and the rest of
+     * the batch is dealt with immediately afterwards.
+     *
+     * @return How many commands were dealt with. Zero alongside a queue that is not empty means
+     *         a socket would not accept the bytes and the command is waiting for the connection
+     *         to report itself writable again; there is no point coming straight back.
+     */
+    size_t process_control_commands(size_t max_commands = 0);
 
     /**
      * @brief Promote the reactor thread and registered ApplicationThreads onto
@@ -595,6 +627,36 @@ class Reactor : public ThreadLookupInterface {
      * It grows by allocating new pools as needed. No fixed capacity exists.
      */
     LockFreeMessageQueue<ReactorControlCommand> command_queue_;
+
+    /**
+     * @brief Whether this reactor is inside its polling loop and will find a command by itself.
+     *
+     * An application thread that wants the reactor to send something puts a command on
+     * command_queue_ and then has to make sure the reactor looks. When the reactor is asleep in
+     * epoll_wait the only way to do that is to write to its wakeup descriptor, which is a system
+     * call on the sending thread and a second one on the reactor to drain it. When the reactor is
+     * polling it is already going round a loop looking at that queue, so both system calls are
+     * pure cost: the reactor would have found the command anyway.
+     *
+     * This flag is how the sender can tell. It is true only while the reactor is inside
+     * poll_for_work, which only happens when the component is configured to poll.
+     *
+     * THE ORDERING THAT MAKES THIS SAFE. The danger is a command enqueued in the instant the
+     * reactor stops polling: the sender sees "polling" and sends no wakeup, the reactor stops
+     * looking, and the command sits there until something unrelated wakes the reactor. Both
+     * sides therefore do two things in a fixed order with a full barrier between them.
+     *
+     *   The sender  puts the command on the queue, then reads this flag.
+     *   The reactor clears this flag, then looks at the queue.
+     *
+     * If the sender reads "polling", its read came before the reactor's clear, so its enqueue
+     * came before it too, and the reactor's look afterwards finds the command. If the sender
+     * reads "not polling" it writes the wakeup as it always did. There is no third case. The
+     * barriers are what rule out the processor reordering either pair, and a plain acquire and
+     * release pair would not: what has to be prevented is a store followed by a load moving past
+     * each other, which is the one reordering x86 allows.
+     */
+    std::atomic<bool> polling_for_work_{false};
 
     /**
      * @brief How long a command waited between an application thread enqueueing it and this

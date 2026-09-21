@@ -771,6 +771,21 @@ void Reactor::enqueue_control_command(ReactorControlCommand command) {
     // possible: what the reading is meant to show is the wait, not the caller's own work.
     command.enqueued_ns_ = HighResolutionClock::now().time_since_epoch().count();
     command_queue_.enqueue(std::move(command));
+
+    // The command is on the queue. If the reactor is going round its polling loop it will find
+    // it without being told, and telling it would cost a system call here and another one there
+    // to drain the descriptor again.
+    //
+    // The barrier is not decoration. Without it this processor is allowed to run the read of the
+    // flag before the enqueue above has become visible, which is exactly the case that loses a
+    // command: the read would see a reactor that was still polling when in truth it had stopped
+    // looking before the command arrived. See the note on Reactor::polling_for_work_ for the
+    // whole handshake and why both sides need one.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (polling_for_work_.load(std::memory_order_relaxed)) {
+        return;
+    }
+
     uint64_t one = 1;
     ssize_t n{0};
 
@@ -986,6 +1001,18 @@ uint16_t Reactor::get_inbound_listener_port(int index) const {
     return inbound_manager_.get_listener_port(index);
 }
 
+void Reactor::stop_polling_for_work() {
+    // A sequentially consistent store, which on this processor carries a full barrier, so that
+    // the look at the queue below cannot be run before other threads can see the flag go false.
+    polling_for_work_.store(false, std::memory_order_seq_cst);
+
+    // A sender that saw "polling" a moment ago sent no wakeup, so nothing but this look will
+    // find its command.
+    if (!command_queue_.empty()) {
+        process_control_commands();
+    }
+}
+
 int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns, int32_t quiet_spins) {
     // Asking the kernel is what costs. It is around a microsecond, and it disturbs whatever
     // shares this physical core -- measured, a reactor asking flat out made its own application
@@ -993,18 +1020,61 @@ int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns,
     // nanoseconds and disturbs nothing, while keeping the core just as awake.
     const int64_t deadline_ns = HighResolutionClock::now().time_since_epoch().count() + spin_ns;
 
+    polling_for_work_.store(true, std::memory_order_seq_cst);
+
+    // True when a command could not be dealt with because a socket would not accept the bytes.
+    // The command stays on the queue until the connection reports itself writable again, so the
+    // queue being non-empty stops meaning "there is work to do here and now". Without this the
+    // loop below would see a queue that never empties and ask the kernel as fast as it could,
+    // which is the one thing the quiet spins exist to avoid.
+    bool send_is_blocked = false;
+
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
+        // Commands first, and directly rather than through the wakeup descriptor. An application
+        // thread's send is on the order path of every message the venue puts on a socket, and
+        // while this loop is running there is nothing to wait for: the queue is one load away.
+        if (!command_queue_.empty()) {
+            // A bounded share, then on to the sockets. This reactor serves sockets, timers,
+            // messages between threads and this queue, and the one thing it must not do is
+            // spend all of its time on whichever source happens to be busiest. The bound is the
+            // same as the number of epoll events taken in one go, so a pass of this loop gives
+            // the queue no more attention than it gives the sockets.
+            //
+            // Whatever is left over is still there on the next pass, which is microseconds away.
+            const size_t dealt_with = process_control_commands(events.size());
+
+            // Nothing dealt with, yet the queue is not empty: a socket would not accept the
+            // bytes, and the command waits for that connection to say it is writable again.
+            // Anything else means progress was made and the rest can wait for the next pass.
+            send_is_blocked = (dealt_with == 0) && !command_queue_.empty();
+        } else {
+            send_is_blocked = false;
+        }
+
         const int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), 0);
         if (nfds != 0) {
+            stop_polling_for_work();
             return nfds;
         }
         if (HighResolutionClock::now().time_since_epoch().count() >= deadline_ns) {
+            stop_polling_for_work();
             return 0;
         }
+
+        // Quiet spins, but looking at the command queue between each one. The queue is a load of
+        // a line this thread already reads, with no system call and no kernel entry, so it costs
+        // a fraction of what asking the kernel costs and can be afforded every time round. That
+        // is what takes the delay in noticing a send from the interval between two epoll calls
+        // down to the length of one spin.
         for (int32_t spin = 0; spin < quiet_spins; ++spin) {
             cpu_relax();
+            if (!send_is_blocked && !command_queue_.empty()) {
+                break;
+            }
         }
     }
+
+    stop_polling_for_work();
     return 0;
 }
 
@@ -1070,21 +1140,26 @@ void Reactor::register_command_latency_metrics() {
         "reactor", "reactor_command_latency_unstamped_total", "Commands picked up with no enqueue stamp, so excluded from reactor_command_latency_nanoseconds");
 }
 
-void Reactor::process_control_commands() {
+size_t Reactor::process_control_commands(size_t max_commands) {
     // Drain any blocked SendPdu commands from both managers before touching
     // the command queue. Each manager owns its own pending_send_ slot.
     if (!inbound_manager_.drain_pending_send()) {
-        return;
+        return 0;
     }
     if (!outbound_manager_.drain_pending_send()) {
-        return;
+        return 0;
     }
 
+    size_t dealt_with = 0;
     for (;;) {
+        if (max_commands != 0 && dealt_with >= max_commands) {
+            break;
+        }
         auto maybe_command = command_queue_.dequeue();
         if (!maybe_command.has_value()) {
             break;
         }
+        ++dealt_with;
 
         const ReactorControlCommand& command = maybe_command.value();
 
@@ -1153,7 +1228,7 @@ void Reactor::process_control_commands() {
                 // Without this guard every subsequent SendPdu would overwrite the
                 // single pending_send_ slot, silently dropping all but the last PDU.
                 if (outbound_manager_.is_send_blocked() || inbound_manager_.is_send_blocked()) {
-                    return;
+                    return dealt_with;
                 }
                 break;
             }
@@ -1217,6 +1292,8 @@ void Reactor::process_control_commands() {
             }
         }
     }
+
+    return dealt_with;
 }
 
 void Reactor::dispatch_events(int nfds, epoll_event* events) {

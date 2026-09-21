@@ -5,8 +5,11 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <thread>
 #include <utility>
 
@@ -191,6 +194,88 @@ class TestApplicationThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {
         // Not used in this test.
     }
+};
+
+/**
+ * @brief Schedules a number of recurring timers and records which of them fire.
+ *
+ * Scheduling a timer is how a test can send the reactor a control command and then see, from
+ * the outside, whether the reactor acted on it. The application thread asks for the timer, the
+ * request crosses to the reactor as a ReactorControlCommand, and the reactor creates the
+ * descriptor. A command that is lost produces a timer that never fires, which is the failure
+ * these tests are looking for.
+ *
+ * Recurring rather than single-shot, so that a timer which fires late still fires at all and the
+ * test is not a race against one chance.
+ */
+class TimerSchedulingThread : public ApplicationThread {
+  public:
+    TimerSchedulingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id, const QueueConfiguration& qc,
+                          const AllocatorConfiguration& ac)
+        : ApplicationThread(token, logger, reactor, name, id, qc, ac, ApplicationThreadConfiguration{}) {}
+
+    /** @brief How many timers to ask for. Set before the reactor is run. */
+    int timers_wanted{1};
+
+    /**
+     * @brief Whether to wait for a message before asking for the timers.
+     *
+     * This matters more than it looks. on_app_ready_event runs while the reactor is still
+     * starting its threads, which is before the reactor reaches its event loop and therefore
+     * before it is polling for work. A timer asked for there always takes the wakeup route, so a
+     * test that schedules from there is not testing the polling route at all, whatever it says
+     * in its name.
+     *
+     * With this set, the thread asks for its timers when the test sends it a message, which the
+     * test does only once the reactor has been running long enough to be inside its polling
+     * loop.
+     */
+    bool schedule_when_messaged{false};
+
+    /** @brief How many distinct timers have fired at least once. */
+    [[nodiscard]] size_t distinct_timers_fired() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return fired_.size();
+    }
+
+    /** @brief How many timers were successfully asked for. */
+    [[nodiscard]] size_t timers_scheduled() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return scheduled_.size();
+    }
+
+  protected:
+    void on_initial_event() override {}
+
+    void on_app_ready_event() override {
+        if (!schedule_when_messaged) {
+            ask_for_the_timers();
+        }
+    }
+
+    void on_timer_event(TimerID id) override {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        fired_.insert(id.get_value());
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {
+        if (schedule_when_messaged) {
+            ask_for_the_timers();
+        }
+    }
+
+  private:
+    void ask_for_the_timers() {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        for (int i = 0; i < timers_wanted; ++i) {
+            const TimerID id = schedule_timer(std::chrono::microseconds(1000), TimerType(TimerType::Recurring));
+            scheduled_.insert(id.get_value());
+        }
+    }
+
+    mutable std::mutex mutex_;
+    std::set<int> scheduled_;
+    std::set<int> fired_;
 };
 
 class FakeThread : public ApplicationThread {
@@ -786,4 +871,134 @@ TEST_F(ReactorTest, PinningDisabledWithoutRegistryPathsStartsNormally) {
 
     EXPECT_TRUE(reactor_->is_initialized());
     EXPECT_TRUE(logger_with_sink_.contains_message("CPU pinning disabled"));
+}
+
+/*
+===============================================================================
+ Getting a command from an application thread to the reactor
+===============================================================================
+
+An application thread never touches a socket or a timer descriptor. It puts a
+ReactorControlCommand on the reactor's queue and the reactor carries it out. Making sure the
+reactor looks at that queue is done one of two ways, and which one is used depends on what the
+reactor is doing at the time:
+
+  Sleeping in epoll_wait. The only thing that can wake it is a write to its wakeup descriptor,
+  so the sending thread makes that write.
+
+  Going round its polling loop. It is already looking at the queue every time round, so the
+  sending thread writes nothing and saves two system calls.
+
+The second case is an optimisation of the first, and the danger in it is a command enqueued in
+the moment the reactor stops polling: if the sender decides against a wakeup just as the reactor
+stops looking, the command waits until something unrelated happens. The three tests below cover
+both routes and the changeover between them.
+
+Each test observes the command path through a timer, because a timer is a command whose effect
+can be seen from outside the reactor: the application thread asks for one, the request crosses as
+a command, and a timer that was asked for and never fires is a command that went missing.
+===============================================================================
+*/
+
+namespace {
+
+/** @brief Waits for a predicate to come true, and says whether it did. */
+bool became_true_within(const std::function<bool()>& predicate, std::chrono::milliseconds limit) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    BackoffWithYield backoff;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        backoff.pause();
+    }
+    return predicate();
+}
+
+} // namespaces
+
+TEST_F(ReactorTest, PollingReactorFindsACommandWithoutBeingWoken) {
+    ReactorConfiguration cfg;
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
+
+    // A spin window far longer than the test is prepared to wait. That combination is the whole
+    // point: the reactor cannot leave its polling loop during the test, so the only way the
+    // timer can be created is the polling loop noticing the command by itself. A reactor that
+    // only looked at the queue on the way out of the loop would be caught here, where a longer
+    // deadline than the spin window would have let it pass as merely slow.
+    cfg.spin_before_block = std::chrono::microseconds{5000000};
+
+    // The reactor's own housekeeping timer is an epoll event like any other, and any epoll event
+    // takes the reactor out of its polling loop, which drains the command queue on the way past.
+    // Left at its default of one second that alone would carry the command through, and the test
+    // would pass with the polling loop's own check removed -- which is exactly what it did until
+    // this line was added. Pushed well beyond the length of the test, there is nothing else that
+    // can wake this reactor: no sockets, no signals, and no wakeup from the sender, because the
+    // sender was told the reactor was polling. The polling loop is then the only way through.
+    cfg.inactivity_check_interval_ = std::chrono::seconds{60};
+    reactor_ = std::make_unique<Reactor>(cfg, service_registry_, logger_with_sink_.logger);
+
+    auto thread = ApplicationThread::create<TimerSchedulingThread>(logger_with_sink_.logger, *reactor_, "timers", ThreadID{1}, make_queue_config(),
+                                                                   make_allocator_config());
+    thread->timers_wanted = 1;
+    thread->schedule_when_messaged = true;
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    // Wait for the reactor to be running and then a little longer, so that it is inside
+    // poll_for_work and has told senders so, before the thread is asked for a timer.
+    ASSERT_TRUE(became_true_within([this] { return reactor_->is_initialized(); }, std::chrono::milliseconds(2000)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    reactor_->route_message(ThreadID{1}, EventMessage::create_itc_message(ThreadID{1}, nullptr, 0));
+
+    // One second against a five second spin window. The timer is asked for with an interval of
+    // one millisecond, so a working polling loop has it firing hundreds of times over.
+    EXPECT_TRUE(became_true_within([&] { return thread->distinct_timers_fired() == 1; }, std::chrono::milliseconds(1000)))
+        << "the timer never fired while the reactor was polling, so the polling loop is not "
+           "finding commands by itself -- and no wakeup was sent, because it said it was polling";
+    EXPECT_EQ(thread->timers_scheduled(), 1u);
+}
+
+TEST_F(ReactorTest, SleepingReactorIsStillWokenByACommand) {
+    ReactorConfiguration cfg;
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
+
+    // Zero is the default and means the reactor sleeps in epoll_wait as soon as it has nothing
+    // to do, so every command here takes the route through the wakeup descriptor. This is the
+    // behaviour the polling route must not have broken.
+    cfg.spin_before_block = std::chrono::microseconds{0};
+    reactor_ = std::make_unique<Reactor>(cfg, service_registry_, logger_with_sink_.logger);
+
+    auto thread = ApplicationThread::create<TimerSchedulingThread>(logger_with_sink_.logger, *reactor_, "timers", ThreadID{1}, make_queue_config(),
+                                                                   make_allocator_config());
+    thread->timers_wanted = 1;
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    EXPECT_TRUE(became_true_within([&] { return thread->distinct_timers_fired() == 1; }, std::chrono::milliseconds(3000)))
+        << "the timer never fired, so the wakeup did not reach a sleeping reactor";
+    EXPECT_EQ(thread->timers_scheduled(), 1u);
+}
+
+TEST_F(ReactorTest, NoCommandIsLostWhileTheReactorKeepsEnteringAndLeavingItsPollingLoop) {
+    ReactorConfiguration cfg;
+    cfg.init_phase_timeout_ = std::chrono::milliseconds(2000);
+
+    // A spin window this short makes the reactor fall out of its polling loop almost at once and
+    // go straight back in, over and over. That changeover is the only moment at which a command
+    // can be lost: the sender reads "polling" and sends no wakeup while the reactor is on its way
+    // out of the loop. Running it constantly is how the test gets many chances to catch it.
+    cfg.spin_before_block = std::chrono::microseconds{1};
+    reactor_ = std::make_unique<Reactor>(cfg, service_registry_, logger_with_sink_.logger);
+
+    auto thread = ApplicationThread::create<TimerSchedulingThread>(logger_with_sink_.logger, *reactor_, "timers", ThreadID{1}, make_queue_config(),
+                                                                   make_allocator_config());
+    thread->timers_wanted = 64;
+    reactor_->register_thread(thread);
+    reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
+
+    EXPECT_TRUE(became_true_within([&] { return thread->distinct_timers_fired() == 64; }, std::chrono::milliseconds(5000)))
+        << "only " << thread->distinct_timers_fired() << " of 64 timers fired, so a command was lost crossing to the reactor";
+    EXPECT_EQ(thread->timers_scheduled(), 64u);
 }
