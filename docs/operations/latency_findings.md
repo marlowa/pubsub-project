@@ -10,6 +10,42 @@ conclusion depends on that hardware, it says so.
 
 ---
 
+## Where this stands
+
+An order takes about **98 microseconds** from the moment a gateway reads it off a member's
+connection to the first byte of its report going back. Of that:
+
+| | |
+|---|---|
+| The venue doing its work: decoding, sequencing, the log commit, matching, encoding | about 14 us |
+| Moving messages between four processes | about 84 us |
+
+**So six sevenths of an order's life is spent in transit between processes on one machine**, and
+that is the finding everything else here should be read against. Within it, a crossing between two
+processes costs five to eight microseconds and there are four of them, so roughly 25 microseconds
+is the kernel carrying bytes. The rest is threads handing messages to each other inside each
+component.
+
+**Every part of that path is now measured.** Both halves of every inter-thread hand-off, the
+reactor's own send and receive work, how often a reactor looks for work, and each stage of an
+order's journey. Two of the four legs between components account for themselves exactly: gateway
+to sequencer to within 0.08 microseconds, sequencer to gateway to within 0.62.
+
+**The other two cannot be accounted for, and not for want of an instrument.** Each figure is a
+median over every message of its kind a component handled, and subtracting a median of one
+population from a median of another is not valid arithmetic. Three instruments have shown this;
+a fourth will not help. What would is measuring one order rather than averaging many, as
+`order_path_elapsed_nanoseconds` already does for the stages.
+
+**What is worth doing next is probably not more measurement.** The round trip has come down from
+193.8 microseconds to 98 through the work recorded below, and what remains is dominated by a cost
+that measurement can describe but not remove: four processes passing messages over loopback
+sockets. The levers that would move it are architectural -- fewer process hops on the order path,
+or a transport between components on one host that is not a socket. That is a design question and
+it is not answered here.
+
+---
+
 ## The instruments
 
 | Metric | What it measures | Where to read it |
