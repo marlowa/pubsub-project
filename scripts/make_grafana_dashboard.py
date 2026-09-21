@@ -46,6 +46,25 @@ def tgt(expr, legend, ref="A", fmt=None):
 # A series is put on the right axis by NAMING it "... (right axis)", which the override
 # below matches. There is deliberately no parameter for it: the axis has to follow the
 # legend text a reader sees, and two ways of saying it could disagree.
+# A panel is only as tall as its legend lets it be. The legend is a table underneath the
+# chart, one row per series, and Grafana does not grow the panel to fit it: rows past the
+# bottom edge are simply not shown. A reader then sees coloured lines with no key, which has
+# happened twice on this dashboard and both times looked like a fault in the data rather
+# than in the layout. So a panel with more than four series is given the room for them.
+#
+# This only works where the series can be counted here. A query whose legend is a template,
+# such as "{{component}}/{{scope}}", draws one line per thread the venue happens to be running
+# and its count is not known until Grafana asks Prometheus. Those panels are given full width
+# and read by hovering rather than by the legend.
+def height_for(series_count, base=11):
+    """Grid height that leaves the legend room for every series.
+
+    @param[in] series_count How many named series the panel draws.
+    @param[in] base         Height for a panel of up to four series.
+    """
+    return base + max(0, series_count - 4)
+
+
 def ts(title, targets, w=12, h=11, unit="ns", desc=""):
     return {
         "type": "timeseries", "title": title, "description": desc,
@@ -209,7 +228,7 @@ panels.append(ts(
      # second axis, where the comparison cannot be seen without them.
      tgt(f'sum(rate(order_round_trip_nanoseconds_count{{{FIX}}}[{RATE}]))', "FIX rate (right axis)", "E"),
      tgt(f'sum(rate(order_round_trip_nanoseconds_count{{{BIN}}}[{RATE}]))', "binary rate (right axis)", "F")],
-    w=24,
+    w=24, h=height_for(6),
     desc="ONLY MEANINGFUL WHEN THE TWO RATE LINES COINCIDE. Run dashboard_load.py --mode "
          "compare, which drives both protocols at identical rates in lockstep. The default "
          "interfere mode deliberately runs them at different rates -- it answers a different "
@@ -231,7 +250,7 @@ panels.append(ts(
      # latency, and a gateway being given more orders per second can queue behind itself.
      tgt(f'sum(rate(order_ingress_to_forward_nanoseconds_count{{{FIX}}}[{RATE}]))', "FIX rate (right axis)", "E"),
      tgt(f'sum(rate(order_ingress_to_forward_nanoseconds_count{{{BIN}}}[{RATE}]))', "binary rate (right axis)", "F")],
-    w=24,
+    w=24, h=height_for(6),
     desc="Parsing, validating and building the envelope -- the work that is the gateway's "
          "own. THIS is where FIX and binary differ; the round-trip panel above spans the "
          "sequencer, matching engine and report path, which are identical code for both, so "
@@ -266,7 +285,7 @@ panels.append(ts(
          '{application="pubsub", component=~".*order_gateway.*", scope="er_in"}[' + RATE + '])))', "7. report back at the gateway", "G"),
      tgt('histogram_quantile(0.50, sum by (le) (rate(order_round_trip_nanoseconds_bucket'
          '{application="pubsub"}[' + RATE + '])))', "8. report sent to the member", "H")],
-    w=24,
+    w=24, h=height_for(8),
     desc="Read the GAPS, not the lines. Each line is how much of the round trip had already "
          "gone by the time an order reached that point, so the distance between two of them is "
          "the time spent in between. The topmost line is the round trip itself, and the legs "
