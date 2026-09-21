@@ -488,6 +488,48 @@ successive points and every figure describes that order. The same approach insid
 checkpoints on the frames of the order path, counted from the same origin -- would give a profile
 that adds up by construction, with no medians subtracted from one another.
 
+### Eight bytes on every frame costs about four microseconds, and it is not understood
+
+`PduHeader` grew from 24 bytes to 32 to carry a send time. Eight runs of the same load, alternating
+between the two builds on one machine in one sitting:
+
+| Header | Runs, round-trip median | Mean |
+|---|---|---|
+| 32 bytes | 100.98, 101.43, 101.73, 102.47, 104.49 | 102.22 us |
+| 24 bytes | 97.58, 98.22, 98.22 | 98.01 us |
+
+The lowest 32-byte run is above the highest 24-byte run, so the effect is real rather than run to
+run variation. The 32-byte builds are also noticeably less repeatable: they span 3.5 microseconds
+where the 24-byte builds span 0.6.
+
+**It is the bytes, not the work done with them.** A third build kept the 32-byte header and did no
+stamping and no recording: 101.43 and 102.47, which is the 32-byte figure. The clock reads and
+histogram observations cost about 1.2 microseconds of the total; the rest follows the size of the
+frame.
+
+**Three things it is not.**
+
+The allocator. No difference in expansions, slow-path allocations or slab chaining between the two
+builds.
+
+The gateway. Every gateway-local measurement is the same in both: its own decode and forward
+within 0.13 microseconds, its request wait within 0.14, its send path within 0.01, its receive
+path within 0.01, its queue wait within 0.04.
+
+The outward path. The stages from the member to the matching engine agree between builds to within
+0.25 microseconds. The difference accumulates entirely on the report path.
+
+**What the traffic suggests.** Every PDU in the venue grew, and components send very different
+numbers of them. Over one run of 23,377 orders and cancels: the gateway sent 46,861 PDUs, the
+matching engine 35,455, and the sequencer 95,888 -- about four per message, because it also
+replicates to the standby, feeds the subscriber stream and acknowledges the log. A per-PDU cost
+would therefore fall most heavily where the sequencer works, which is where the difference appears.
+That is consistent with the measurements and is not established by them.
+
+**Why it matters beyond the instrument that found it.** If frame size has an effect of this
+magnitude, it applies to any message that grows, not only to this one. Whatever is behind it is a
+property of the message path.
+
 ### The hop is in two populations
 
 In every configuration measured — with kernel isolation and without, with the client pinned and
