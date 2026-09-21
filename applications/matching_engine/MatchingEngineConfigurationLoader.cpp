@@ -162,6 +162,17 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         }
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 
+        // Optional: absent means the reactor sleeps as soon as it has nothing to do, which is
+        // what it has always done. A component is opted in by its deployed file naming a
+        // duration, written with its unit -- "50ms" -- as every other duration here is.
+        const auto [has_spin, spin_error] = toml.get_required("reactor.spin_before_block", config.reactor_spin_before_block);
+        if (!has_spin) {
+            config.reactor_spin_before_block = std::chrono::microseconds{0};
+        }
+        if (config.reactor_spin_before_block.count() < 0) {
+            throw pubsub_itc_fw::ConfigurationException("reactor.spin_before_block must not be negative");
+        }
+
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);
         toml.get_required_except("event_queue_pool.initial_slabs", config.event_queue_pool_initial_slabs);
         if (config.event_queue_pool_objects_per_slab < 1) {

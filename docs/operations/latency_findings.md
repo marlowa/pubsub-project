@@ -432,10 +432,31 @@ ranked for a hot-path core: taking the binary gateway, the publishers and the st
 off the hot path was worth another 22 microseconds, because fourteen threads on eight cores
 costs the three that matter.
 
-**None of this is committed.** The measurements were taken with a spin in `Reactor::event_loop`
-and a window in `spin_before_block`, both switched on by an environment variable naming the
-components, and both reverted. What lands, if anything, is a decision about whether a venue that
-is quiet between orders should spend cores to stay awake.
+**This is now a setting rather than an experiment.** `reactor.spin_before_block` in a
+component's configuration says how long its reactor keeps looking for work before it sleeps, and
+the four components of the order round trip are switched on in the development environment. The
+other environments are left off, because whether a deployment spends cores on waiting is a
+decision about that deployment.
+
+Measured as deployed, with nothing edited by hand:
+
+| | Round trip |
+|---|---|
+| Every reactor sleeping | 193.53 us |
+| The four on the order path looking | **93.13 us** |
+
+That is 52 per cent, for four cores of the seven the hot path has.
+
+**Two details decide most of it.** The first is that the loop mostly spins quietly and asks the
+kernel only now and then -- a quiet spin costs about 30 nanoseconds and keeps the core just as
+awake as a system call does, while a system call costs a thousand times that and disturbs
+whatever shares the physical core. An earlier attempt that asked the kernel every iteration made
+its own application thread nearly three times slower.
+
+The second is that **the standby sequencer has to be looking too**. The primary holds each
+report until the standby acknowledges the log record, so a sleeping standby puts its wake-up
+cost straight onto the member's critical path: with it asleep that single leg cost 31.59
+microseconds, and with it awake, 1.09.
 
 ---
 

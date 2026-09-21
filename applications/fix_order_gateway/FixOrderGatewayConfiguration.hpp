@@ -216,6 +216,16 @@ struct FixOrderGatewayConfiguration {
     /** @brief How long to wait between "still disconnected" log warnings during outbound retry. */
     std::chrono::milliseconds connect_retry_warning_interval;
 
+    /** @brief How long the reactor looks for work before sleeping, or zero to sleep at once.
+     *
+     *  Read from a duration written with its unit, such as "50ms".
+     *
+     *  Optional, and zero where the file says nothing, which is the behaviour without it.
+     *  Setting it uses a whole core whether or not orders arrive, so it belongs only on the
+     *  components of the order path and only where the venue is quiet between orders. See
+     *  ReactorConfiguration::spin_before_block. */
+    std::chrono::microseconds reactor_spin_before_block{0};
+
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
 
     /** @brief Number of objects in each fixed-size memory pool slab.

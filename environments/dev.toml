@@ -444,10 +444,10 @@ metrics_application = "pubsub"
 # reaching it is itself the finding. At 5s it held 1.87% of an ordinary run, which makes it
 # a bucket rather than an overflow, and nothing about a value landing there was remarkable.
 #
-# The boundaries between 100 and 250 millionths of a second exist because that is where the
+# The boundaries between 100 and 250 microseconds exist because that is where the
 # orders actually land. Measured over 12,000 orders, 11,597 of them fell between those two
 # figures -- so with nothing in between, a median could only ever be worked out by assuming
-# the orders were spread evenly across a gap 150 millionths of a second wide, which they are
+# the orders were spread evenly across a gap 150 microseconds wide, which they are
 # not. The reported figure then barely moves whatever happens inside the gap, which reads as
 # a venue whose timing never changes. These boundaries are the same ones the order-path
 # measurements use, so a figure from one can be subtracted from a figure from the other.
@@ -456,7 +456,9 @@ metrics_application = "pubsub"
 # alternative are bucket bounds that are useless in whichever regime is not being run
 # that day.
 metrics_order_round_trip_buckets = [
-    10000, 25000, 50000, 100000,          # 10us 25us 50us 100us   -- service time
+    10000, 25000, 40000, 50000,           # 10us 25us 40us 50us    -- service time
+    60000, 70000, 80000, 90000, 100000,   # 60us 70us 80us 90us 100us -- where a venue whose
+                                          #   threads do not sleep between orders now lands
     115000, 130000, 145000, 160000,       # 115us 130us 145us 160us -- where nearly every
     175000, 190000, 205000, 220000,       # 175us 190us 205us 220us    healthy order lands
     240000,                               # 240us
@@ -528,13 +530,13 @@ metrics_order_ingress_to_forward_buckets = [
 # against one set of boundaries from a time measured against a different set does not give a
 # rough answer, it gives a meaningless one.
 #
-# The boundaries are close together between ten and a quarter of a millionth of a second,
+# The boundaries are close together between 10 and 250 microseconds,
 # because that is where the whole journey happens and the legs being compared differ from one
-# another by tens of millionths. Boundaries spaced more widely than the legs themselves cannot
+# another by tens of microseconds. Boundaries spaced more widely than the legs themselves cannot
 # tell them apart: a point measured late in the journey can then read as earlier than a point
 # measured before it, purely because the two estimates fall in differently sized buckets.
 #
-# Above a quarter of a millionth of a second they spread out again. A journey that far gone is
+# Above 250 microseconds they spread out again. A journey that far gone is
 # no longer a question of which leg was slow, and the round-trip measurement is where a stall
 # of that size is meant to be read.
 metrics_order_path_elapsed_buckets = [
@@ -547,6 +549,24 @@ metrics_order_path_elapsed_buckets = [
     260000, 300000, 400000, 500000,       # 260us 300us 400us 500us -- a slow journey
     750000, 1000000, 2500000, 5000000,    # 750us 1ms 2.5ms 5ms     -- a stage is holding things up
     10000000, 25000000, 100000000 ]       # 10ms 25ms 100ms         -- a stall, not a stage
+
+# How long a reactor keeps looking for work before it goes to sleep is set PER COMPONENT,
+# beside that component's other settings further down this file, not here. Which components
+# spend a whole core on waiting is a decision about each of them: there are seven fast cores to
+# go round, and a component that is a standby, or is not on the order round trip, should not
+# take one.
+#
+# What it buys, measured on this venue at a hundred orders a second: with the four components of
+# the order round trip looking rather than sleeping, the round trip falls from 193 to 93
+# microseconds. A core with no thread running on it drops to a fraction of its speed and takes
+# tens of microseconds of continuous work to climb back, and at that rate there is 10
+# milliseconds between orders, so every thread falls asleep every time.
+#
+# What it costs: one core each, used whether or not any orders arrive, running hot.
+#
+# When it is worth nothing at all: when orders arrive faster than about one a millisecond, since
+# then the threads never get the chance to sleep.
+
 
 reactor_cpu_pinning_reserve_cpu0   = true
 # The CPU registry file and its lock live under install_dir/run/ and are set
@@ -619,6 +639,8 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 64
 
 [matching_engine]
+# Reactor waiting: on the order round trip. See the note near the top of this file.
+reactor_spin_before_block = "50ms"
 # Where the leadership epoch outlives the process, so a restart cannot reuse a
 # generation the venue has already spent. Kept outside the versioned tree in
 # the deployed environments for the same reason the WAL is.
@@ -665,6 +687,8 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 10240
 
 [matching_engine_secondary]
+# Reactor waiting: a standby, so it should not hold a core waiting. See the note near the top of this file.
+reactor_spin_before_block = "0s"
 # Where the leadership epoch outlives the process, so a restart cannot reuse a
 # generation the venue has already spent. Kept outside the versioned tree in
 # the deployed environments for the same reason the WAL is.
@@ -708,6 +732,8 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 10240
 
 [fix_order_gateway_a]
+# Reactor waiting: on the order round trip. See the note near the top of this file.
+reactor_spin_before_block = "50ms"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9211
 gateway_instance_id        = 1
@@ -744,6 +770,8 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 
 [fix_order_gateway_b]
+# Reactor waiting: a standby, so it should not hold a core waiting. See the note near the top of this file.
+reactor_spin_before_block = "0s"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9212
 gateway_instance_id        = 2
@@ -841,6 +869,8 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 
 [sequencer_primary]
+# Reactor waiting: on the order round trip. See the note near the top of this file.
+reactor_spin_before_block = "50ms"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9207
 network_listen_host        = "127.0.0.1"
@@ -894,6 +924,8 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 81920
 
 [sequencer_secondary]
+# Reactor waiting: the primary waits for this one to acknowledge each record before a report goes out. See the note near the top of this file.
+reactor_spin_before_block = "50ms"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9208
 network_listen_host        = "127.0.0.1"

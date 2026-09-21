@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -436,6 +437,20 @@ class Reactor : public ThreadLookupInterface {
 
   private:
     [[nodiscard]] bool initialize_threads();
+
+    /**
+     * @brief Looks for work for a while without sleeping, and reports what it found.
+     *
+     * @param[in,out] events      Where any events found are written, as epoll_wait fills them.
+     * @param[in] spin_ns         How long to keep looking before giving up, in nanoseconds.
+     * @param[in] quiet_spins     Quiet spins between two looks at the sockets.
+     * @return The number of events found, or 0 if the time ran out with nothing to do.
+     *
+     * Only called when the configuration asks for it. See ReactorConfiguration::spin_before_block
+     * for what it buys, what it costs, and when it is worth having.
+     */
+    int poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns, int32_t quiet_spins);
+
     void event_loop();
     bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name);
     void broadcast_reactor_event(EventType::EventTypeTag tag);

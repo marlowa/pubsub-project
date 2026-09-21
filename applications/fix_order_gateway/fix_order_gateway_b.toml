@@ -130,6 +130,14 @@ cpu_layout_file = "${shared_reactor_cpu_layout_file}"
 cpu_layout_component = "${component_name}"
 connect_retry_warning_interval = "15m"
 
+# How long this reactor keeps looking for work before it goes to sleep, written with its
+# unit as every duration here is. "0s" means it sleeps as soon as it has nothing to do.
+#
+# Set per component rather than from a shared value, because a component that keeps looking
+# holds a whole core whether or not orders arrive, and there are only seven to go round. A
+# standby, or anything not on the order round trip, should not take one. See the note near the
+# top of the environment file for what it buys and what it costs.
+spin_before_block = "${fix_order_gateway_b_reactor_spin_before_block}"
 [event_queue_pool]
 # Single pre-allocated pool sized for observed peak (50 clients, burst=10).
 # Previous peak 21,504; still exhausted at 22,528 once full pipeline active.

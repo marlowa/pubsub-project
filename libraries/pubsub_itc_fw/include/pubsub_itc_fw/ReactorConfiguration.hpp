@@ -154,6 +154,42 @@ struct ReactorConfiguration {
     std::chrono::milliseconds connect_retry_warning_interval_{std::chrono::minutes{15}};
 
     /**
+     * @brief How long the reactor keeps looking for work before it sleeps, or zero to sleep at once.
+     *
+     * A reactor with nothing to do normally sleeps until the kernel wakes it. That is the right
+     * thing on a machine doing other work, and it is expensive on one that is not: a core with
+     * no thread on it drops to a fraction of its speed, and takes tens of microseconds of
+     * continuous work to climb back. A thread that never sleeps never lets that happen, and on
+     * this venue that was worth around forty per cent of the order round trip at low rates.
+     *
+     * The cost is a core. A reactor that keeps looking is using one whether or not any orders
+     * arrive, and there are only so many. Set this only for the components on the order path,
+     * and only where the venue is expected to be quiet between orders -- if orders arrive faster
+     * than about one a millisecond the threads never sleep anyway and this buys nothing.
+     *
+     * Zero, the default, means sleep immediately, which is the behaviour without this setting.
+     */
+    std::chrono::microseconds spin_before_block{0};
+
+    /**
+     * @brief How many quiet spins to make between two looks at the sockets, while spinning.
+     *
+     * Looking at the sockets means asking the kernel, which costs on the order of a microsecond
+     * and, worse, disturbs whatever shares the physical core: a reactor polling the kernel flat
+     * out was measured making its own application thread nearly three times slower. Spinning
+     * quietly in between costs about thirty nanoseconds a time and disturbs nothing.
+     *
+     * That trade is possible because looking often is not what helps. What helps is the core
+     * never going idle, and a quiet spin keeps it busy just as well as a system call does. So
+     * the loop mostly spins and looks now and then.
+     *
+     * The default of 64 is roughly two microseconds between looks on a machine where a quiet
+     * spin costs thirty nanoseconds, which is the same order as the latency being saved. Raise
+     * it to disturb the neighbour less and notice later; lower it for the reverse.
+     */
+    int32_t quiet_spins_between_polls{64};
+
+    /**
      * @brief Size in bytes of each slab used by the reactor's inbound PDU slab allocator.
      *
      * The inbound allocator receives payload bytes directly from the socket into

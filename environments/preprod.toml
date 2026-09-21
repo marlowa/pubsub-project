@@ -302,10 +302,10 @@ metrics_application = "pubsub"
 # reaching it is itself the finding. At 5s it held 1.87% of an ordinary run, which makes it
 # a bucket rather than an overflow, and nothing about a value landing there was remarkable.
 #
-# The boundaries between 100 and 250 millionths of a second exist because that is where the
+# The boundaries between 100 and 250 microseconds exist because that is where the
 # orders actually land. Measured over 12,000 orders, 11,597 of them fell between those two
 # figures -- so with nothing in between, a median could only ever be worked out by assuming
-# the orders were spread evenly across a gap 150 millionths of a second wide, which they are
+# the orders were spread evenly across a gap 150 microseconds wide, which they are
 # not. The reported figure then barely moves whatever happens inside the gap, which reads as
 # a venue whose timing never changes. These boundaries are the same ones the order-path
 # measurements use, so a figure from one can be subtracted from a figure from the other.
@@ -314,7 +314,9 @@ metrics_application = "pubsub"
 # alternative are bucket bounds that are useless in whichever regime is not being run
 # that day.
 metrics_order_round_trip_buckets = [
-    10000, 25000, 50000, 100000,          # 10us 25us 50us 100us   -- service time
+    10000, 25000, 40000, 50000,           # 10us 25us 40us 50us    -- service time
+    60000, 70000, 80000, 90000, 100000,   # 60us 70us 80us 90us 100us -- where a venue whose
+                                          #   threads do not sleep between orders now lands
     115000, 130000, 145000, 160000,       # 115us 130us 145us 160us -- where nearly every
     175000, 190000, 205000, 220000,       # 175us 190us 205us 220us    healthy order lands
     240000,                               # 240us
@@ -386,13 +388,13 @@ metrics_order_ingress_to_forward_buckets = [
 # against one set of boundaries from a time measured against a different set does not give a
 # rough answer, it gives a meaningless one.
 #
-# The boundaries are close together between ten and a quarter of a millionth of a second,
+# The boundaries are close together between 10 and 250 microseconds,
 # because that is where the whole journey happens and the legs being compared differ from one
-# another by tens of millionths. Boundaries spaced more widely than the legs themselves cannot
+# another by tens of microseconds. Boundaries spaced more widely than the legs themselves cannot
 # tell them apart: a point measured late in the journey can then read as earlier than a point
 # measured before it, purely because the two estimates fall in differently sized buckets.
 #
-# Above a quarter of a millionth of a second they spread out again. A journey that far gone is
+# Above 250 microseconds they spread out again. A journey that far gone is
 # no longer a question of which leg was slow, and the round-trip measurement is where a stall
 # of that size is meant to be read.
 metrics_order_path_elapsed_buckets = [
@@ -405,6 +407,8 @@ metrics_order_path_elapsed_buckets = [
     260000, 300000, 400000, 500000,       # 260us 300us 400us 500us -- a slow journey
     750000, 1000000, 2500000, 5000000,    # 750us 1ms 2.5ms 5ms     -- a stage is holding things up
     10000000, 25000000, 100000000 ]       # 10ms 25ms 100ms         -- a stall, not a stage
+
+
 
 reactor_cpu_pinning_reserve_cpu0   = false
 # The CPU registry file and its lock live under install_dir/run/ and are set
@@ -457,6 +461,9 @@ network_listen_port  = 11071
 admin_listen_port    = 11073
 
 [matching_engine]
+# Reactor waiting: left off here. Whether this deployment spends a core on waiting is its own
+# decision; see the note in environments/dev.toml for what it buys and what it costs.
+reactor_spin_before_block = "0s"
 # Where the leadership epoch outlives the process, so a restart cannot reuse a
 # generation the venue has already spent. Kept outside the versioned tree in
 # the deployed environments for the same reason the WAL is.
@@ -484,6 +491,9 @@ sequencer_er_secondary_host   = "sequencer-secondary.preprod.exchange.internal" 
 sequencer_er_secondary_port   = 11022
 
 [fix_order_gateway_a]
+# Reactor waiting: left off here. Whether this deployment spends a core on waiting is its own
+# decision; see the note in environments/dev.toml for what it buys and what it costs.
+reactor_spin_before_block = "0s"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9211
 gateway_instance_id        = 1
@@ -524,6 +534,9 @@ open_order_pool_objects_per_pool = 4096
 open_order_pool_initial_pools    = 1
 
 [sequencer_primary]
+# Reactor waiting: left off here. Whether this deployment spends a core on waiting is its own
+# decision; see the note in environments/dev.toml for what it buys and what it costs.
+reactor_spin_before_block = "0s"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9207
 network_listen_host        = "0.0.0.0"
@@ -561,6 +574,9 @@ wal_subscriber_listen_host = "0.0.0.0"
 wal_subscriber_listen_port = 11030
 
 [sequencer_secondary]
+# Reactor waiting: left off here. Whether this deployment spends a core on waiting is its own
+# decision; see the note in environments/dev.toml for what it buys and what it costs.
+reactor_spin_before_block = "0s"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9208
 network_listen_host        = "0.0.0.0"

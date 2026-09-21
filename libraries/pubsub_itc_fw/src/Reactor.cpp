@@ -982,11 +982,55 @@ uint16_t Reactor::get_inbound_listener_port(int index) const {
     return inbound_manager_.get_listener_port(index);
 }
 
+int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns, int32_t quiet_spins) {
+    // Asking the kernel is what costs. It is around a microsecond, and it disturbs whatever
+    // shares this physical core -- measured, a reactor asking flat out made its own application
+    // thread nearly three times slower. Spinning quietly between asks costs about thirty
+    // nanoseconds and disturbs nothing, while keeping the core just as awake.
+    const int64_t deadline_ns = HighResolutionClock::now().time_since_epoch().count() + spin_ns;
+
+    while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
+        const int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), 0);
+        if (nfds != 0) {
+            return nfds;
+        }
+        if (HighResolutionClock::now().time_since_epoch().count() >= deadline_ns) {
+            return 0;
+        }
+        for (int32_t spin = 0; spin < quiet_spins; ++spin) {
+            cpu_relax();
+        }
+    }
+    return 0;
+}
+
 void Reactor::event_loop() {
     std::array<epoll_event, 64> events{};
 
+    // Looking for work for a while before sleeping, where the configuration asks for it. What
+    // this buys is not that work is noticed sooner but that the core never goes idle: an idle
+    // core runs at a fraction of its speed for the first tens of microseconds after something
+    // lands on it, and on this venue that was most of what a member waited for at low order
+    // rates. See "Waiting for work" in docs/framework/threading.md.
+    const int64_t spin_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(config_.spin_before_block).count();
+    const int32_t quiet_spins = config_.quiet_spins_between_polls > 0 ? config_.quiet_spins_between_polls : 1;
+    if (spin_ns > 0) {
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor: looking for work for up to {}us before sleeping, {} quiet spin(s) between looks -- this uses a core",
+                   config_.spin_before_block.count(), quiet_spins);
+    }
+
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
-        const int nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), -1);
+        int nfds = 0;
+        if (spin_ns > 0) {
+            nfds = poll_for_work(events, spin_ns, quiet_spins);
+        }
+        if (nfds == 0) {
+            nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), spin_ns > 0 ? 0 : -1);
+        }
+        if (nfds == 0 && spin_ns > 0) {
+            // Nothing after all that looking, and the lifecycle may have changed underneath.
+            continue;
+        }
         if (nfds == -1) {
             if (errno == EINTR) {
                 continue;
