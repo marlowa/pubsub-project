@@ -171,41 +171,51 @@ idle state, and the first order after the quiet period pays for waking it.
 
 **Neither setting survives a reboot.** Both must be re-applied before anything is measured.
 
-### Three quarters of the round trip is moving messages between processes
+### Almost all of the round trip is moving messages between processes
 
 Each component records how long an order had been inside the venue when it reached that
 component, all counted from the moment the gateway read it off the client connection, so the
 difference between two of them is the time spent in between. See `order_path_elapsed_nanoseconds`
 in [metrics.md](metrics.md).
 
-Over 6,000 orders at 100 per second:
+Measured over a thirty-minute trading-day session driving both gateways in lockstep at identical
+rates, 234,000 orders through each, with the reactor threads polling for work as they are
+configured to do. The session moves through the phases a trading day has, from fifty orders a
+second to three hundred, so these medians are taken across that whole range rather than at one
+rate.
 
 | Stage | Median | |
 |---|---|---|
-| Gateway decodes and validates the order | 8.6 us | work |
-| Gateway to sequencer | 40.9 us | transport |
-| Sequencer, including the log commit | 12.0 us | work |
-| Sequencer to matching engine | 56.6 us | transport |
-| Matching engine matches | 12.8 us | work |
-| Matching engine to sequencer | 20.5 us | transport |
-| Sequencer handles the report | 5.4 us | work |
-| Sequencer to gateway | 26.0 us | transport |
-| Gateway encodes the report and sends it | 2.2 us | work |
-| **Round trip** | **185.0 us** | |
+| Gateway decodes and validates the order | 3.79 us | work |
+| Gateway to sequencer | 18.89 us | transport |
+| Sequencer, including the log commit | 1.38 us | work |
+| Sequencer to matching engine | 13.91 us | transport |
+| Matching engine matches | 3.40 us | work |
+| Matching engine to sequencer | 24.42 us | transport |
+| Sequencer handles the report | 6.21 us | work |
+| Sequencer to gateway | 29.30 us | transport |
+| Gateway encodes the report and sends it | 0.88 us | work |
+| **Round trip** | **102.19 us** | |
 
-About 144 microseconds is spent moving messages between processes and about 41 doing work.
-The matching is 12.8 of it and the write-ahead log commit is inside the sequencer's 12.0.
+**About 87 microseconds is spent moving messages between processes and about 16 doing work.** The
+matching is 3.40 of it and the write-ahead log commit is inside the sequencer's 1.38.
 
-The legs sum to 185.02 against a measured round trip of 185.01, which is the check that the
-points are where they are meant to be. If they ever stop adding up, a point is in the wrong
-place.
+The legs sum to 102.19 against a measured round trip of 102.19, which is the check that the points
+are where they are meant to be. If they ever stop adding up, a point is in the wrong place.
 
-**The transport figures are mostly the idleness charge above, not the socket.** A loopback
-message costs 4.2 microseconds one way when the receiver is busy. Every hop is on one machine
-over 127.0.0.1, so no network card is involved in any of it and nothing a card could do would
-change it.
+The gateway's decode is measured on the FIX gateway. The sequencer and matching engine checkpoints
+carry no label saying which protocol an order arrived by, so every other row is both gateways
+pooled. The binary gateway decodes in about 0.05 microseconds, so for an order arriving that way
+the first row is very nearly zero and the leg after it is correspondingly longer.
 
-The outbound legs cost about twice the inbound ones, which is not explained.
+**Eighty-five per cent of what remains is transport, and it is not the socket.** A message over the
+loopback interface costs about 4.2 microseconds one way when the receiver is busy, so four hops
+should cost somewhere near 17 microseconds rather than 87. Every hop is on one machine over
+127.0.0.1, so no network card is involved in any of it and nothing a card could do would change it.
+Where the rest of the time goes is the largest open question about this venue's latency.
+
+The outbound legs cost about twice the inbound ones -- 24.42 and 29.30 against 18.89 and 13.91 --
+and that is not explained either.
 
 ### A component's two threads belong on one physical core
 
