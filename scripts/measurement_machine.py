@@ -237,11 +237,22 @@ def restore_previous_state() -> int:
     except OSError:
         pass
 
-    return report_state()
+    return report_state(after_revert=True)
 
 
-def report_state() -> int:
-    """Print what state the machine is in. Returns 0 when measurements would mean something."""
+def report_state(after_revert: bool = False) -> int:
+    """Print what state the machine is in.
+
+    Returns 0 when measurements would mean something, which is what the measurement tooling
+    checks. The one exception is after --off, where being unfit to measure is the point: see
+    after_revert below.
+
+    @param after_revert True when this is the report at the end of --off. Without it the same
+                        words appear either way, and someone who has just asked for the machine
+                        to be put back is told that a measurement would not mean much and that
+                        they should fix it -- which reads as a failure when it is the thing they
+                        asked for.
+    """
     ready, problems = describe_state()
 
     using = governors()
@@ -254,7 +265,21 @@ def report_state() -> int:
 
     print()
     if ready:
+        if after_revert:
+            # Everything was put back and the machine still reads as fit to measure on, which
+            # means it was already in that state before --on ever ran. Worth saying, because
+            # somebody left it that way on purpose and --off has not changed it.
+            print("This machine is still in a state where a latency measurement means something,")
+            print("which means it was already set up that way before any of this ran.")
+            return 0
         print("This machine is in a state where a latency measurement means something.")
+        return 0
+
+    if after_revert:
+        print("This machine is back to its ordinary settings. It is not fit to measure latency on,")
+        print("and that is the point: the measuring settings cost power and fan noise continuously.")
+        print()
+        print("Before the next measuring session:  sudo python3 scripts/measurement_machine.py --on")
         return 0
 
     print("A latency measurement taken now would not mean much:")
@@ -275,7 +300,12 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Report, apply, or revert. Exit status is 0 when the machine is fit to measure on."""
+    """Report, apply, or revert.
+
+    Exit status is 0 when the machine is fit to measure on, which is what the measurement tooling
+    reads. After --off it is 0 when the machine was successfully put back, because there the
+    operation succeeded and reporting a failure would stop any script that checks.
+    """
     arguments = parse_arguments()
     if arguments.on:
         return apply_measuring_state()
