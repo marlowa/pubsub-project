@@ -68,6 +68,12 @@ std::tuple<bool, std::string> PduParser::receive() {
             current_pdu_id_ = static_cast<int16_t>(ntohs(static_cast<uint16_t>(hdr->pdu_id)));
             current_seq_no_ = static_cast<int64_t>(be64toh(static_cast<uint64_t>(hdr->seq_no)));
 
+            // Here, as soon as the header is whole and trusted, rather than after the payload
+            // has arrived: this is the moment the frame's own journey between two processes
+            // ends, and waiting for the rest of the bytes would add the time they took to
+            // arrive to a figure that is meant to be about the crossing.
+            target_thread_.observe_wire_crossing(static_cast<int64_t>(be64toh(static_cast<uint64_t>(hdr->sent_at_ns))));
+
             PUBSUB_LOG(logger_, FwLogLevel::Trace,
                        "TRACE PduParser::receive: connection_id={} decoded header: "
                        "canary=0x{:08x} byte_count={} pdu_id={} version={}",

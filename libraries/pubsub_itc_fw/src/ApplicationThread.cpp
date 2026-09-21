@@ -715,6 +715,10 @@ TimerID ApplicationThread::schedule_timer(std::chrono::microseconds interval, Ti
     return id;
 }
 
+void ApplicationThread::observe_wire_crossing(int64_t sent_at_ns) {
+    reactor_.observe_wire_crossing(sent_at_ns);
+}
+
 void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, SlabHandle slab_id, void* chunk, uint32_t payload_bytes,
                                                  MemberIsWaitingFlag member_is_waiting) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendPdu);

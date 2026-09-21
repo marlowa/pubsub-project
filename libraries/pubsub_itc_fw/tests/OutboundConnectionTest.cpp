@@ -563,9 +563,10 @@ class OutboundConnectionManagerTest : public ::testing::Test {
         hdr->byte_count = htonl(static_cast<uint32_t>(payload_size));
         hdr->pdu_id = htons(static_cast<uint16_t>(42));
         hdr->version = 1;
-        hdr->filler_a = 0;
+        hdr->alignment_a = 0;
         hdr->canary = htonl(pdu_canary_value);
-        hdr->filler_b = 0;
+        hdr->alignment_b = 0;
+        hdr->sent_at_ns = 0;
         std::memset(static_cast<uint8_t*>(chunk) + sizeof(PduHeader), 0xAB, payload_size);
         return {slab_id, chunk, total};
     }
@@ -836,7 +837,8 @@ TEST_F(OutboundConnectionManagerTest, OnDataReadyParseErrorTeardownsConnection) 
     bad_hdr.byte_count = htonl(4);
     bad_hdr.pdu_id = htons(static_cast<uint16_t>(99));
     bad_hdr.canary = htonl(0xDEADBEEFu); // wrong canary
-    bad_hdr.filler_b = 0;
+    bad_hdr.alignment_b = 0;
+    bad_hdr.sent_at_ns = 0;
     const ssize_t written = ::write(peer_fd_, reinterpret_cast<const char*>(&bad_hdr), sizeof(bad_hdr));
     ASSERT_EQ(written, static_cast<ssize_t>(sizeof(bad_hdr)));
     ::close(peer_fd_);

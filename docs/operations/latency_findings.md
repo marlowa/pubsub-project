@@ -438,66 +438,55 @@ part of the method and not a finding about the venue.
 
 ## Unexplained
 
-### Where a leg between two components goes, and what is left
+### The crossing between two processes, measured rather than inferred
 
-A message crossing from one component to the next passes through five things, four of which are
-measured. What is left over should be the kernel carrying the bytes, which costs about four
-microseconds over the loopback interface.
+`PduHeader::sent_at_ns` carries `CLOCK_MONOTONIC` nanoseconds, written by the sending reactor as
+it hands the frame to a socket and read back by the receiving parser as soon as the header is
+whole. `pdu_wire_nanoseconds` is the difference: the kernel's carriage of the bytes plus however
+long the receiving reactor took to come back and look. It is comparable only between processes on
+one host, and a reading that is negative or beyond a quarter of a second is counted in
+`pdu_wire_unusable_total` rather than recorded.
 
-| Part | Metric |
-|---|---|
-| The sending thread's request waits for its reactor | `reactor_command_latency_nanoseconds` |
-| The reactor turns the request into bytes on a socket | `reactor_send_path_nanoseconds` |
-| The kernel carries them | *not measured* |
-| The receiving reactor turns readable bytes into a message | `reactor_receive_path_nanoseconds` |
-| The message waits for the receiving application thread | `itc_queue_latency_nanoseconds` |
-
-The first two carry a `scope` label saying whether a member was waiting for the message.
-`order_path` is a send on an order's journey; `other` is everything else a component sends --
-replication, the external subscriber stream, write-ahead log acknowledgements, heartbeats,
-arbitration. The two hold different messages rather than one holding a subset of the other.
-
-Medians over 6,000 orders at 100 per second, on a venue started with an empty log and book. The
-first two columns are the `order_path` series:
-
-| Component | Request waits | Send path | Receive path | Queue wait | Lap |
-|---|---|---|---|---|---|
-| gateway | 3.90 us | 3.84 us | 3.32 us | 2.93 us | 3.40 us |
-| sequencer | 11.91 us | 3.80 us | 3.61 us | 2.32 us | 3.36 us |
-| matching engine | 6.04 us | 3.73 us | 4.14 us | 3.69 us | 3.63 us |
-
-Each leg against those parts:
-
-| Leg | Leg | Named | Left over |
+| Receiving component | Crossings | Median | 90th |
 |---|---|---|---|
-| gateway to sequencer | 13.86 us | 13.78 us | **0.08 us** |
-| sequencer to matching engine | 15.26 us | 23.34 us | **-8.07 us** |
-| matching engine to sequencer | 25.77 us | 15.81 us | **9.96 us** |
-| sequencer to gateway | 32.31 us | 21.94 us | **10.37 us** |
+| gateway, reports from the sequencer | 12,008 | 5.74 us | 9.16 us |
+| matching engine, orders from the sequencer | 12,105 | 7.66 us | 9.96 us |
+| sequencer, several senders pooled | 72,355 | 14.57 us | 42.13 us |
 
-Round trip 97.93 microseconds.
+**A crossing costs five to eight microseconds, not four.** The four microseconds quoted elsewhere
+on this page came from two processes doing nothing else; these are components under load.
 
-**The gateway to sequencer leg accounts for itself to within 0.08 microseconds.** Every part of
-it is named, and its remainder is where a loopback crossing would be if the crossing were the
-only thing left. A component that makes one kind of send on the order path accounts cleanly.
+### Adding up medians does not work, and three instruments have now shown it
 
-**A negative remainder means the arithmetic is wrong, not that a leg is fast, and the sequencer's
-legs still have one.** Separating what a member waits for from what nobody waits for did not fix
-it, and it also showed why not: the sequencer's order-path sends wait 11.91 microseconds and its
-other traffic waits 11.74. The two populations behave the same, so mixing them was never what
-inflated the figure.
+With the crossing measured, a leg should be five measured parts and nothing left over. One is:
 
-**What inflates it is a level of mixing below that.** The sequencer makes two different sends on
-the order path -- the order onward to the matching engine, and the report back to a gateway --
-which is why it records two order-path commands per order. Those two are on different legs, at
-different moments in an order's life, and one median over both describes neither. The same
-objection applies to any component making more than one kind of send on the path.
+| Leg | Leg | Request wait | Send | Crossing | Receive | Queue | Left over |
+|---|---|---|---|---|---|---|---|
+| sequencer to gateway | 28.79 us | 12.26 | 3.84 | 5.74 | 2.79 | 3.52 | **0.62 us** |
+| sequencer to matching engine | 15.29 us | 12.26 | 3.84 | 7.66 | 5.20 | 3.64 | **-17.31 us** |
 
-**So a per-component median cannot account for a particular leg, and no further splitting of
-these metrics will fix that.** What would is measuring a leg directly rather than inferring it:
-a send time carried with the message, compared by the receiver, which gives the crossing for that
-message rather than a difference between two medians drawn from different populations. Nothing
-constrains the wire format yet, so there is room to put it there.
+The second is impossible, and it is impossible in a way that rules out a missing instrument
+rather than suggesting one. **The receiving side alone -- crossing 7.66, receive path 5.20, queue
+wait 3.64, totalling 16.50 -- already exceeds the whole 15.29 microsecond leg**, before the
+sending component contributes anything.
+
+**The reason is the arithmetic, not the measurements.** Every figure in that table is a median
+over every message of its kind that the component handled. The matching engine's crossings
+include replication and book updates as well as orders; its receive path and queue wait likewise.
+Subtracting a median drawn from one population from a median drawn from another is not a valid
+operation, and it happens to come out right only when one population dominates. That is why the
+gateway leg closes and the matching engine leg does not.
+
+**This has now been demonstrated three times with three different instruments**: separating the
+sending half from the receiving half, separating what a member waits for from what nobody waits
+for, and measuring the crossing directly. Each closed one more leg and left the same objection
+standing. A fourth per-component histogram will not help.
+
+**What would work is measuring one order rather than averaging many.**
+`order_path_elapsed_nanoseconds` already does this for the stages: it stamps the same order at
+successive points and every figure describes that order. The same approach inside the reactor --
+checkpoints on the frames of the order path, counted from the same origin -- would give a profile
+that adds up by construction, with no medians subtracted from one another.
 
 ### The hop is in two populations
 

@@ -15,6 +15,7 @@
 
 #include <csignal>
 #include <cstdlib>
+#include <endian.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
@@ -38,6 +39,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/MillisecondClock.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
+#include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PduProtocolHandler.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -1012,6 +1014,24 @@ void Reactor::record_look_for_work() {
     last_look_for_work_ns_ = now_ns;
 }
 
+void Reactor::observe_wire_crossing(int64_t sent_at_ns) {
+    // A quarter of a second. Anything beyond that is not a loopback crossing: it is two hosts
+    // whose monotonic clocks have no relation to one another, and recording it would put a
+    // meaningless number into a histogram that is read as though it meant something.
+    constexpr int64_t largest_believable_crossing_ns = 250L * 1000L * 1000L;
+
+    if (sent_at_ns == 0) {
+        pdu_wire_unusable_counter_.increment();
+        return;
+    }
+    const int64_t crossed_in_ns = HighResolutionClock::now().time_since_epoch().count() - sent_at_ns;
+    if (crossed_in_ns < 0 || crossed_in_ns > largest_believable_crossing_ns) {
+        pdu_wire_unusable_counter_.increment();
+        return;
+    }
+    pdu_wire_histogram_.observe(static_cast<double>(crossed_in_ns));
+}
+
 void Reactor::observe_receive_path(int64_t started_ns) {
     const int64_t elapsed_ns = HighResolutionClock::now().time_since_epoch().count() - started_ns;
     if (elapsed_ns >= 0) {
@@ -1182,6 +1202,10 @@ void Reactor::register_command_latency_metrics() {
     reactor_receive_path_histogram_ = metrics_endpoint_.register_histogram(
         "reactor", "reactor_receive_path_nanoseconds", "Nanoseconds the reactor took to turn readable bytes into a message on an application thread's queue",
         waited_buckets);
+    pdu_wire_histogram_ = metrics_endpoint_.register_histogram(
+        "reactor", "pdu_wire_nanoseconds", "Nanoseconds a frame spent between the sending process writing it and this one reading it", waited_buckets);
+    pdu_wire_unusable_counter_ = metrics_endpoint_.register_counter("reactor", "pdu_wire_unusable_total",
+                                                                    "Frames whose send time was absent or implausible, so excluded from pdu_wire_nanoseconds");
     reactor_lap_histogram_ = metrics_endpoint_.register_histogram(
         "reactor", "reactor_lap_nanoseconds", "Nanoseconds between one look for work and the next, during which nothing is noticed", waited_buckets);
     reactor_command_latency_unstamped_counter_ = metrics_endpoint_.register_counter(
@@ -1273,6 +1297,15 @@ size_t Reactor::process_control_commands(size_t max_commands) {
             }
 
             case ReactorControlCommand::SendPdu: {
+                // The send time goes in here, at the last moment before the bytes are handed to
+                // a socket, and not where the header was built. The header is built on an
+                // application thread, and between there and here the command waits on a queue --
+                // a wait that is already measured on its own. Stamping early would fold it into
+                // the crossing and describe neither.
+                if (command.pdu_chunk_ptr_ != nullptr && command.pdu_byte_count_ > 0) {
+                    auto* header = static_cast<PduHeader*>(command.pdu_chunk_ptr_);
+                    header->sent_at_ns = static_cast<int64_t>(htobe64(static_cast<uint64_t>(HighResolutionClock::now().time_since_epoch().count())));
+                }
                 if (!outbound_manager_.process_send_pdu_command(command)) {
                     if (!inbound_manager_.process_send_pdu_command(command)) {
                         PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for SendPdu",

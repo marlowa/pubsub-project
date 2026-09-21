@@ -138,10 +138,11 @@ class StubStream : public ByteStreamInterface {
         hdr.byte_count = htonl(payload_size);
         hdr.pdu_id = htons(static_cast<uint16_t>(pdu_id));
         hdr.version = version;
-        hdr.filler_a = 0;
+        hdr.alignment_a = 0;
         hdr.seq_no = 0;
         hdr.canary = htonl(pdu_canary_value);
-        hdr.filler_b = 0;
+        hdr.alignment_b = 0;
+        hdr.sent_at_ns = 0;
 
         const auto* hdr_bytes = reinterpret_cast<const uint8_t*>(&hdr);
         for (size_t i = 0; i < sizeof(PduHeader); ++i) {
@@ -220,10 +221,10 @@ TEST_F(PduFramerParserTest, SendWritesHeaderAndPayload) {
     EXPECT_EQ(ntohl(hdr->byte_count), static_cast<uint32_t>(sizeof(payload)));
     EXPECT_EQ(static_cast<int16_t>(ntohs(static_cast<uint16_t>(hdr->pdu_id))), 100);
     EXPECT_EQ(hdr->version, 1);
-    EXPECT_EQ(hdr->filler_a, 0u);
+    EXPECT_EQ(hdr->alignment_a, 0u);
     EXPECT_EQ(static_cast<int64_t>(be64toh(static_cast<uint64_t>(hdr->seq_no))), 0);
     EXPECT_EQ(ntohl(hdr->canary), pdu_canary_value);
-    EXPECT_EQ(hdr->filler_b, 0u);
+    EXPECT_EQ(hdr->alignment_b, 0u);
 
     // Verify payload bytes.
     const uint8_t* sent_payload = stream_.sent_bytes.data() + sizeof(PduHeader);
@@ -325,10 +326,11 @@ std::vector<uint8_t> make_prebuilt_frame(int16_t pdu_id, int8_t version, const u
     hdr->byte_count = htonl(payload_size);
     hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
     hdr->version = version;
-    hdr->filler_a = 0;
+    hdr->alignment_a = 0;
     hdr->seq_no = 0;
     hdr->canary = htonl(pdu_canary_value);
-    hdr->filler_b = 0;
+    hdr->alignment_b = 0;
+    hdr->sent_at_ns = 0;
     std::memcpy(frame.data() + sizeof(PduHeader), payload, payload_size);
     return frame;
 }
@@ -535,10 +537,11 @@ TEST_F(PduFramerParserTest, ParseDetectsCanaryMismatch) {
     hdr.byte_count = htonl(sizeof(payload));
     hdr.pdu_id = htons(100);
     hdr.version = 1;
-    hdr.filler_a = 0;
+    hdr.alignment_a = 0;
     hdr.seq_no = 0;
     hdr.canary = htonl(0xDEADBEEFU); // wrong canary
-    hdr.filler_b = 0;
+    hdr.alignment_b = 0;
+    hdr.sent_at_ns = 0;
 
     const auto* hdr_bytes = reinterpret_cast<const uint8_t*>(&hdr);
     for (size_t i = 0; i < sizeof(PduHeader); ++i) {

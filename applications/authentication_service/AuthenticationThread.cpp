@@ -35,6 +35,12 @@ constexpr uint16_t pdu_id_restore_credential_result = 515;
 
 // PDU header layout (24 bytes, all fields big-endian):
 //   byte_count(4) pdu_id(2) version(1) filler(1) seq_no(8) canary(4) filler(4)
+// The admin channel's own framing, built and parsed a byte at a time here and in
+// scripts/auth_service_test.py. It resembles pubsub_itc_fw::PduHeader and is deliberately NOT
+// that structure: this channel carries credential changes between the admin service and this
+// process and has nothing to do with the order path, so it does not follow PduHeader when
+// PduHeader changes. Anyone tempted to make the two agree should add a field here on purpose,
+// not by copying.
 constexpr size_t admin_pdu_header_size = 24;
 constexpr uint32_t admin_pdu_canary = 0xC0FFEE00;
 constexpr uint8_t admin_pdu_version = 1;
@@ -587,14 +593,14 @@ void AuthenticationThread::send_admin_pdu(const pubsub_itc_fw::ConnectionID& con
     h[4] = static_cast<uint8_t>((pdu_id >> 8) & 0xFF);
     h[5] = static_cast<uint8_t>(pdu_id & 0xFF);
     h[6] = admin_pdu_version;
-    h[7] = 0; // filler_a
+    h[7] = 0; // the byte between version and seq_no
     // seq_no (bytes 8-15): zero for admin PDUs
     h[8] = h[9] = h[10] = h[11] = h[12] = h[13] = h[14] = h[15] = 0;
     h[16] = static_cast<uint8_t>((admin_pdu_canary >> 24) & 0xFF);
     h[17] = static_cast<uint8_t>((admin_pdu_canary >> 16) & 0xFF);
     h[18] = static_cast<uint8_t>((admin_pdu_canary >> 8) & 0xFF);
     h[19] = static_cast<uint8_t>(admin_pdu_canary & 0xFF);
-    h[20] = h[21] = h[22] = h[23] = 0; // filler_b
+    h[20] = h[21] = h[22] = h[23] = 0; // trailing slack
 
     if (payload_size > 0) {
         std::memcpy(h + admin_pdu_header_size, payload, payload_size);
