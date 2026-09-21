@@ -46,33 +46,26 @@ def tgt(expr, legend, ref="A", fmt=None):
 # A series is put on the right axis by NAMING it "... (right axis)", which the override
 # below matches. There is deliberately no parameter for it: the axis has to follow the
 # legend text a reader sees, and two ways of saying it could disagree.
-# A panel is only as tall as its legend lets it be. The legend is a table underneath the
-# chart, one row per series, and Grafana does not grow the panel to fit it: rows past the
-# bottom edge are simply not shown. A reader then sees coloured lines with no key, which has
-# happened twice on this dashboard and both times looked like a fault in the data rather
-# than in the layout. So a panel with more than four series is given the room for them.
-#
-# This only works where the series can be counted here. A query whose legend is a template,
-# such as "{{component}}/{{scope}}", draws one line per thread the venue happens to be running
-# and its count is not known until Grafana asks Prometheus. Those panels are given full width
-# and read by hovering rather than by the legend.
-def height_for(series_count, base=11):
-    """Grid height that leaves the legend room for every series.
+# How many series a panel can list under its chart before the last one is cut in half.
+# Grafana gives the legend a share of the panel rather than as much room as it asks for, so a
+# panel with a long legend clips no matter how tall the panel is made -- which took three
+# attempts at growing panels to establish. Past this many series the legend goes beside the
+# chart instead, where it has the panel's whole height to use.
+legend_rows_that_fit_below = 4
 
-    @param[in] series_count How many named series the panel draws.
-    @param[in] base         Height for a panel of up to two series.
 
-    Two, not four. The legend table also has a header row carrying the Name, Mean and Max
-    column titles, and the default height was already close to its limit at four series -- which
-    is why adding one row per series past the fourth still clipped the top row off a
-    six-series panel. A grid row is taller than a legend row, so this errs generous: the cost of
-    too much height is some empty chart, and the cost of too little is a reader who cannot tell
-    which line is which.
+def ts(title, targets, w=12, h=11, unit="ns", desc="", many_series=False):
+    """A time series panel.
+
+    @param[in] many_series Say so when the legend is a template such as "{{component}}" and
+                           will draw one line per thing the venue is running. Those cannot be
+                           counted here -- Grafana learns how many there are when it asks
+                           Prometheus -- so the panel has to declare it.
     """
-    return base + max(0, series_count - 2)
-
-
-def ts(title, targets, w=12, h=11, unit="ns", desc=""):
+    # Counted here rather than passed in, so that adding a query to a panel cannot leave a
+    # legend that silently stops showing the last line. A reader who cannot see which line is
+    # which reasonably decides the chart is wrong, and has twice.
+    legend_placement = "right" if many_series or len(targets) > legend_rows_that_fit_below else "bottom"
     return {
         "type": "timeseries", "title": title, "description": desc,
         "gridPos": {"h": h, "w": w, "x": 0, "y": 0}, "datasource": DS, "targets": targets,
@@ -90,7 +83,7 @@ def ts(title, targets, w=12, h=11, unit="ns", desc=""):
                             {"id": "custom.lineStyle", "value": {"dash": [8, 4], "fill": "dash"}},
                             {"id": "custom.fillOpacity", "value": 0}]},
         ]},
-        "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"]},
+        "options": {"legend": {"displayMode": "table", "placement": legend_placement, "calcs": ["mean", "max"]},
                     "tooltip": {"mode": "multi", "sort": "desc"}},
     }
 
@@ -166,6 +159,7 @@ panels.append(ts(
      tgt(f'histogram_quantile(0.99, sum by (le, component, scope) (rate(itc_queue_latency_nanoseconds_bucket{{{ONE}}}[{RATE}])))',
          "{{component}}/{{scope}} p99", "B")],
     w=24,
+    many_series=True,
     desc="Watch this across the quiet phases of a trading-day run. A thread that sleeps "
          "between messages has to be woken for each one, and the cost of that appears here "
          "and nowhere else. Full width because it has one line per thread, and the legend is "
@@ -235,7 +229,7 @@ panels.append(ts(
      # second axis, where the comparison cannot be seen without them.
      tgt(f'sum(rate(order_round_trip_nanoseconds_count{{{FIX}}}[{RATE}]))', "FIX rate (right axis)", "E"),
      tgt(f'sum(rate(order_round_trip_nanoseconds_count{{{BIN}}}[{RATE}]))', "binary rate (right axis)", "F")],
-    w=24, h=height_for(6),
+    w=24,
     desc="ONLY MEANINGFUL WHEN THE TWO RATE LINES COINCIDE. Run dashboard_load.py --mode "
          "compare, which drives both protocols at identical rates in lockstep. The default "
          "interfere mode deliberately runs them at different rates -- it answers a different "
@@ -257,7 +251,7 @@ panels.append(ts(
      # latency, and a gateway being given more orders per second can queue behind itself.
      tgt(f'sum(rate(order_ingress_to_forward_nanoseconds_count{{{FIX}}}[{RATE}]))', "FIX rate (right axis)", "E"),
      tgt(f'sum(rate(order_ingress_to_forward_nanoseconds_count{{{BIN}}}[{RATE}]))', "binary rate (right axis)", "F")],
-    w=24, h=height_for(6),
+    w=24,
     desc="Parsing, validating and building the envelope -- the work that is the gateway's "
          "own. THIS is where FIX and binary differ; the round-trip panel above spans the "
          "sequencer, matching engine and report path, which are identical code for both, so "
@@ -292,7 +286,7 @@ panels.append(ts(
          '{application="pubsub", component=~".*order_gateway.*", scope="er_in"}[' + RATE + '])))', "7. report back at the gateway", "G"),
      tgt('histogram_quantile(0.50, sum by (le) (rate(order_round_trip_nanoseconds_bucket'
          '{application="pubsub"}[' + RATE + '])))', "8. report sent to the member", "H")],
-    w=24, h=height_for(8),
+    w=24,
     desc="Read the GAPS, not the lines. Each line is how much of the round trip had already "
          "gone by the time an order reached that point, so the distance between two of them is "
          "the time spent in between. The topmost line is the round trip itself, and the legs "
@@ -320,6 +314,7 @@ panels.append(ts(
     "Gateway decode and forward — percentiles by gateway instance",
     [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p90", "A"),
      tgt(f'histogram_quantile(0.99, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p99", "B")],
+    w=24, many_series=True,
     desc="The same measurement per process rather than pooled by protocol. Two instances of "
          "one protocol disagreeing is a property of those processes -- what they are pinned "
          "to, what else they are carrying -- rather than of the encoding."))
