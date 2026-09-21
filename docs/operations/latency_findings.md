@@ -252,6 +252,29 @@ The figure pools every command a component sends, including replication and the 
 subscriber stream, which no member waits for. So it describes the queue the order's own command
 sits in rather than the order's command alone.
 
+### A polling reactor should find a send itself rather than be told
+
+An application thread that wants something sent puts a command on its reactor's queue. Waking the
+reactor to look at it costs a system call on the sending thread and another on the reactor to
+drain the wakeup descriptor. A reactor that is polling is already going round a loop and will find
+the command by itself, so both are avoidable: it checks the queue every time round, including
+between the quiet spins, and the sender skips the wakeup while the reactor says it is polling.
+
+Over 6,000 orders at 100 per second, first run discarded, client pinned:
+
+| | Before | After |
+|---|---|---|
+| Round trip, median | 99.74 us | 93.66 us |
+| Matching engine, application thread to reactor | 6.55 us | 4.09 us |
+| Gateway, application thread to reactor | 6.50 us | 6.09 us |
+
+The round trip is repeatable: two runs of the changed venue gave 93.66 and 93.50 microseconds.
+
+**The sequencer's own hand-off cannot be read from this.** Two runs of identical code gave 19.14
+and 10.57 microseconds, so the figure is not stable between runs at this sample size and nothing
+should be concluded from a difference in it either way. The sequencer sends roughly eight commands
+per message, far more than the other components, and how they fall into batches evidently varies.
+
 ### A component's two threads belong on one physical core
 
 Each component has two hot-path threads, the reactor thread and the application thread, and they
