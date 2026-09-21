@@ -416,6 +416,43 @@ part of the method and not a finding about the venue.
 
 ## Unexplained
 
+### Twenty-two microseconds between the matching engine and the sequencer
+
+Measured on a venue started with an empty log and an empty book, 6,000 orders at 100 per second,
+first run discarded. Each leg between two components is split into the two inter-thread hand-offs
+it contains, both of which are now instrumented, leaving the socket and whatever else as the
+remainder:
+
+| Leg | Leg total | Out: application thread to reactor | In: reactor to application thread | Remainder |
+|---|---|---|---|---|
+| gateway to sequencer | 14.35 us | 3.25 us | 2.53 us | 8.57 us |
+| sequencer to matching engine | 13.99 us | 10.47 us | 3.63 us | -0.11 us |
+| matching engine to sequencer | 28.80 us | 4.25 us | 2.53 us | **22.01 us** |
+| sequencer to gateway | 27.20 us | 10.47 us | 3.44 us | 13.29 us |
+
+Round trip 98.07 microseconds, of which about 84 is moving messages between processes and about
+14 is the components doing their work.
+
+**The sequencer to matching engine leg is fully accounted for.** The sequencer's own outward
+hand-off is the whole of it, which is what a leg should look like when the instruments cover it.
+
+**The matching engine to sequencer leg is not.** Twenty-two microseconds sit between the matching
+engine's reactor being handed the report and the sequencer's application thread receiving it, and
+neither hand-off explains it. A message over the loopback interface costs about 4.2 microseconds
+one way when the receiver is busy.
+
+**It is not that the sequencer's reactor is slow to read a socket.** The gateway sends to that
+same reactor and leaves only 8.57 microseconds unexplained. What differs is when in an order's
+life the message arrives: the order reaches the sequencer about 18 microseconds in, and the report
+comes back at about 65, by which time the sequencer has committed that order to the log and
+started replicating it.
+
+**One caveat on the arithmetic.** `reactor_command_latency_nanoseconds` pools every command a
+component sends, including replication and the subscriber stream, which no member waits for. The
+sequencer sends roughly eight commands per message, so its 10.47 microseconds is the median of a
+mixed population rather than of the one command the order is waiting for. Subtracting it is good
+enough to say which leg is anomalous and not good enough to say by exactly how much.
+
 ### The hop is in two populations
 
 In every configuration measured — with kernel isolation and without, with the client pinned and
