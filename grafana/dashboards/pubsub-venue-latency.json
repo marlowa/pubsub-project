@@ -494,7 +494,7 @@
       "title": "Protocol comparison \u2014 round trip p90/p99, with the rate each was measured at",
       "description": "ONLY MEANINGFUL WHEN THE TWO RATE LINES COINCIDE. Run dashboard_load.py --mode compare, which drives both protocols at identical rates in lockstep. The default interfere mode deliberately runs them at different rates -- it answers a different question -- and a latency comparison taken from it is measuring the offered load, not the protocol. Both instances of each protocol are pooled, because the comparison is between protocols rather than between instances.",
       "gridPos": {
-        "h": 13,
+        "h": 15,
         "w": 24,
         "x": 0,
         "y": 53
@@ -635,10 +635,10 @@
       "title": "Protocol comparison \u2014 gateway decode and forward p90/p99 (the part that differs)",
       "description": "Parsing, validating and building the envelope -- the work that is the gateway's own. THIS is where FIX and binary differ; the round-trip panel above spans the sequencer, matching engine and report path, which are identical code for both, so it shows that they differ without showing where. Still read the rate lines: a decode time is a latency and a busier gateway can queue behind itself.",
       "gridPos": {
-        "h": 13,
+        "h": 15,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 68
       },
       "datasource": {
         "type": "prometheus",
@@ -776,10 +776,10 @@
       "title": "Where the time goes \u2014 how far through the venue an order is at each point (median)",
       "description": "Read the GAPS, not the lines. Each line is how much of the round trip had already gone by the time an order reached that point, so the distance between two of them is the time spent in between. The topmost line is the round trip itself, and the legs below it should add up to it -- if they stop adding up, a measurement point is in the wrong place.",
       "gridPos": {
-        "h": 15,
+        "h": 17,
         "w": 24,
         "x": 0,
-        "y": 79
+        "y": 83
       },
       "datasource": {
         "type": "prometheus",
@@ -942,7 +942,7 @@
         "h": 11,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 100
       },
       "datasource": {
         "type": "prometheus",
@@ -1050,7 +1050,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 105
+        "y": 111
       },
       "datasource": {
         "type": "prometheus",
@@ -1147,7 +1147,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 105
+        "y": 111
       },
       "datasource": {
         "type": "prometheus",
@@ -1244,7 +1244,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 116
+        "y": 122
       },
       "datasource": {
         "type": "prometheus",
@@ -1341,7 +1341,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 116
+        "y": 122
       },
       "datasource": {
         "type": "prometheus",
@@ -1438,7 +1438,7 @@
         "h": 11,
         "w": 12,
         "x": 0,
-        "y": 127
+        "y": 133
       },
       "datasource": {
         "type": "prometheus",
@@ -1546,7 +1546,7 @@
         "h": 11,
         "w": 12,
         "x": 12,
-        "y": 127
+        "y": 133
       },
       "datasource": {
         "type": "prometheus",
@@ -1665,7 +1665,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 138
+        "y": 144
       },
       "options": {
         "mode": "markdown",

@@ -60,9 +60,16 @@ def height_for(series_count, base=11):
     """Grid height that leaves the legend room for every series.
 
     @param[in] series_count How many named series the panel draws.
-    @param[in] base         Height for a panel of up to four series.
+    @param[in] base         Height for a panel of up to two series.
+
+    Two, not four. The legend table also has a header row carrying the Name, Mean and Max
+    column titles, and the default height was already close to its limit at four series -- which
+    is why adding one row per series past the fourth still clipped the top row off a
+    six-series panel. A grid row is taller than a legend row, so this errs generous: the cost of
+    too much height is some empty chart, and the cost of too little is a reader who cannot tell
+    which line is which.
     """
-    return base + max(0, series_count - 4)
+    return base + max(0, series_count - 2)
 
 
 def ts(title, targets, w=12, h=11, unit="ns", desc=""):
