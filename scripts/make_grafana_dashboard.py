@@ -392,7 +392,18 @@ dashboard = {
     "tags": ["pubsub", "latency"],
     "timezone": "browser", "schemaVersion": 39, "version": 0,
     "refresh": "10s", "id": None,
-    "time": {"from": "now-30m", "to": "now"},
+    # Six hours, because almost every panel on this dashboard plots a percentile of a RATE, and a
+    # rate is zero whenever no orders are flowing. A percentile of a distribution with nothing in
+    # it is undefined, so Grafana draws nothing at all rather than a line along the bottom. The
+    # dashboard therefore looks broken during any period when the venue is simply idle, which is
+    # most of the time: load runs last half an hour and the venue sits up for the rest of the day.
+    #
+    # Half an hour showed only a run that was happening at the moment the dashboard was opened.
+    # Six hours reaches back over a working session, so a run finished earlier is still on the
+    # chart when you come to look at it. If a run is older than that, set the picker to the run's
+    # own start and end time -- the measurements are kept for ninety days and none of this loses
+    # them, it only decides what is on screen when the page first loads.
+    "time": {"from": "now-6h", "to": "now"},
     "panels": lay_out(panels + [spacer()]),
     "templating": TEMPLATING,
 }

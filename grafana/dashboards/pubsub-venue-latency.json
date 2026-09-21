@@ -11,7 +11,7 @@
   "refresh": "10s",
   "id": null,
   "time": {
-    "from": "now-30m",
+    "from": "now-6h",
     "to": "now"
   },
   "panels": [
