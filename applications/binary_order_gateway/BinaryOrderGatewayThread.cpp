@@ -729,14 +729,17 @@ void BinaryOrderGatewayThread::announce_session_unbound(const BinarySession& ses
 
 void BinaryOrderGatewayThread::forward_envelope_to_sequencers(const pubsub_itc_fw_app::WalRecord& envelope) {
     if (sequencer_primary_conn_id_.get_value() != 0) {
-        send_pdu(sequencer_primary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, envelope);
+        // A member is waiting for this: it is the order on its way to be matched.
+        send_pdu(sequencer_primary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, envelope,
+                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "BinaryOrderGatewayThread: primary sequencer not connected -- order not forwarded to primary");
     }
     if (config_.ha_enabled) {
         if (sequencer_secondary_conn_id_.get_value() != 0) {
-            send_pdu(sequencer_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, envelope);
+            send_pdu(sequencer_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, envelope,
+                     pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "BinaryOrderGatewayThread: secondary sequencer not connected -- order not forwarded to secondary");

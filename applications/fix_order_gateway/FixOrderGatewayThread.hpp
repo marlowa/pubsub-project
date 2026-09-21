@@ -250,14 +250,15 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // until then there is only one target.
     template <typename MsgT> void forward_pdu_to_sequencers(int16_t pdu_id, const MsgT& msg) {
         if (sequencer_primary_conn_id_.get_value() != 0) {
-            send_pdu(sequencer_primary_conn_id_, pdu_id, 0, msg);
+            // A member is waiting for this: it is the order on its way to be matched.
+            send_pdu(sequencer_primary_conn_id_, pdu_id, 0, msg, pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
         } else {
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "FixOrderGatewayThread: primary sequencer not connected -- PDU not forwarded to primary");
         }
         if (config_.ha_enabled) {
             if (sequencer_secondary_conn_id_.get_value() != 0) {
-                send_pdu(sequencer_secondary_conn_id_, pdu_id, 0, msg);
+                send_pdu(sequencer_secondary_conn_id_, pdu_id, 0, msg, pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
             } else {
                 PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                                "FixOrderGatewayThread: secondary sequencer not connected -- PDU not forwarded to secondary");

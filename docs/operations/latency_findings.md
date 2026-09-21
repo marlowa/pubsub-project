@@ -440,55 +440,64 @@ part of the method and not a finding about the venue.
 
 ### Where a leg between two components goes, and what is left
 
-A message crossing from one component to the next passes through five things. All five are now
-measured, so a leg can be accounted for rather than guessed at, and what is left over is the
-socket and anything still missing.
+A message crossing from one component to the next passes through five things, four of which are
+measured. What is left over should be the kernel carrying the bytes, which costs about four
+microseconds over the loopback interface.
 
 | Part | Metric |
 |---|---|
 | The sending thread's request waits for its reactor | `reactor_command_latency_nanoseconds` |
 | The reactor turns the request into bytes on a socket | `reactor_send_path_nanoseconds` |
-| The kernel carries them | *not measurable from inside one process* |
+| The kernel carries them | *not measured* |
 | The receiving reactor turns readable bytes into a message | `reactor_receive_path_nanoseconds` |
 | The message waits for the receiving application thread | `itc_queue_latency_nanoseconds` |
 
-Medians over 6,000 orders at 100 per second, on a venue started with an empty log and book:
+The first two carry a `scope` label saying whether a member was waiting for the message.
+`order_path` is a send on an order's journey; `other` is everything else a component sends --
+replication, the external subscriber stream, write-ahead log acknowledgements, heartbeats,
+arbitration. The two hold different messages rather than one holding a subset of the other.
+
+Medians over 6,000 orders at 100 per second, on a venue started with an empty log and book. The
+first two columns are the `order_path` series:
 
 | Component | Request waits | Send path | Receive path | Queue wait | Lap |
 |---|---|---|---|---|---|
-| gateway | 3.92 us | 4.03 us | 2.70 us | 3.49 us | 3.40 us |
-| sequencer | 11.58 us | 3.84 us | 3.50 us | 2.48 us | 3.36 us |
-| matching engine | 4.33 us | 3.85 us | 4.01 us | 3.60 us | 3.63 us |
+| gateway | 3.90 us | 3.84 us | 3.32 us | 2.93 us | 3.40 us |
+| sequencer | 11.91 us | 3.80 us | 3.61 us | 2.32 us | 3.36 us |
+| matching engine | 6.04 us | 3.73 us | 4.14 us | 3.69 us | 3.63 us |
 
-Each leg against the parts that make it up:
+Each leg against those parts:
 
-| Leg | Leg | Request wait | Send | Receive | Queue | Left over |
-|---|---|---|---|---|---|---|
-| gateway to sequencer | 13.70 us | 3.92 | 4.03 | 3.50 | 2.48 | **-0.23 us** |
-| sequencer to matching engine | 15.32 us | 11.58 | 3.84 | 4.01 | 3.60 | **-7.71 us** |
-| matching engine to sequencer | 25.22 us | 4.33 | 3.85 | 3.50 | 2.48 | **11.06 us** |
-| sequencer to gateway | 33.25 us | 11.58 | 3.84 | 2.70 | 3.49 | **11.64 us** |
+| Leg | Leg | Named | Left over |
+|---|---|---|---|
+| gateway to sequencer | 13.86 us | 13.78 us | **0.08 us** |
+| sequencer to matching engine | 15.26 us | 23.34 us | **-8.07 us** |
+| matching engine to sequencer | 25.77 us | 15.81 us | **9.96 us** |
+| sequencer to gateway | 32.31 us | 21.94 us | **10.37 us** |
 
-Round trip 97.63 microseconds.
+Round trip 97.93 microseconds.
 
-**The gateway to sequencer leg is now fully accounted for**, to within a fifth of a microsecond.
-Every part of it is named.
+**The gateway to sequencer leg accounts for itself to within 0.08 microseconds.** Every part of
+it is named, and its remainder is where a loopback crossing would be if the crossing were the
+only thing left. A component that makes one kind of send on the order path accounts cleanly.
 
-**The matching engine to sequencer leg has 11.06 microseconds left over.** A loopback crossing
-costs about four, so roughly seven microseconds of one leg remain unexplained. That is the
-smallest the unexplained part of this path has been.
+**A negative remainder means the arithmetic is wrong, not that a leg is fast, and the sequencer's
+legs still have one.** Separating what a member waits for from what nobody waits for did not fix
+it, and it also showed why not: the sequencer's order-path sends wait 11.91 microseconds and its
+other traffic waits 11.74. The two populations behave the same, so mixing them was never what
+inflated the figure.
 
-**A negative remainder is a measurement fault, not a fast leg, and there is one.** The two legs
-where the sequencer is the sender account for more than the leg contains. The reason is known:
-`reactor_command_latency_nanoseconds` pools every command a component sends, and the sequencer
-sends roughly eight per message -- replication, the subscriber stream, the write-ahead log --
-none of which a member waits for. Its 11.58 microseconds is the median of that mixture, and the
-sequencer to matching engine leg proves it is too large by at least 7.71, because nothing can
-account for more of a leg than the leg holds.
+**What inflates it is a level of mixing below that.** The sequencer makes two different sends on
+the order path -- the order onward to the matching engine, and the report back to a gateway --
+which is why it records two order-path commands per order. Those two are on different legs, at
+different moments in an order's life, and one median over both describes neither. The same
+objection applies to any component making more than one kind of send on the path.
 
-**So the next instrument is decided by arithmetic rather than by argument:** the sending side
-needs to distinguish the command an order is waiting for from the commands it is not. Until then
-the two legs where the sequencer sends cannot be accounted for at all.
+**So a per-component median cannot account for a particular leg, and no further splitting of
+these metrics will fix that.** What would is measuring a leg directly rather than inferring it:
+a send time carried with the message, compared by the receiver, which gives the crossing for that
+message rather than a difference between two medians drawn from different populations. Nothing
+constrains the wire format yet, so there is room to put it there.
 
 ### The hop is in two populations
 

@@ -1158,10 +1158,13 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     envelope.gateway_ingress_ns = current_order_ingress_ns_;
 
     if (sequencer_er_conn_id_.is_valid()) {
-        send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope);
+        // A member is waiting for this: it is the report on its way back to them.
+        send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope,
+                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
     }
     if (sequencer_er_secondary_conn_id_.is_valid()) {
-        send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope);
+        send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq_no, envelope,
+                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
     }
 
     // The order has now been matched and its acknowledgement handed to the reactor, so this

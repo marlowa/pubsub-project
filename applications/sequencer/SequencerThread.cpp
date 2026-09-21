@@ -653,7 +653,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // wall_time_ns as the sequencing time (transact_time during replay), and
         // decodes the inner FIX PDU. The FIX payload is passed through opaque -- no
         // field hand-copy.
-        send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope);
+        // A member is waiting for this: it is the order on its way to be matched. The
+        // replication and subscriber sends further down this file are deliberately not
+        // marked -- nobody is waiting on a client connection for any of them.
+        send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope,
+                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
 
         // Immediately after the send rather than before it, so that order_in to order_out
         // covers everything this component did with the order, the write-ahead log commit
@@ -1768,7 +1772,9 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
                    protocol, instance, er_seq_no);
         return;
     }
-    send_pdu(*connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope);
+    // A member is waiting for this: it is the report on its way back to them.
+    send_pdu(*connection, pubsub_itc_fw_app::WalRecord::message_pdu_id, er_seq_no, envelope,
+             pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
 
     // The last checkpoint this component contributes, recorded here rather than at each of
     // the three call sites because this is the one place a report leaves for a gateway. Two

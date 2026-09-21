@@ -486,8 +486,9 @@ class Reactor : public ThreadLookupInterface {
     void observe_receive_path(int64_t started_ns);
 
     /** @brief Records how long the reactor spent turning a send request into bytes on a socket.
-     *  @param[in] started_ns When the reactor picked the command off the queue. */
-    void observe_send_path(int64_t started_ns);
+     *  @param[in] started_ns When the reactor picked the command off the queue.
+     *  @param[in] on_order_path Whether a member is waiting for this send. */
+    void observe_send_path(int64_t started_ns, bool on_order_path);
 
     /**
      * @brief Carries out commands an application thread has asked for.
@@ -696,6 +697,9 @@ class Reactor : public ThreadLookupInterface {
      */
     HistogramHandle reactor_command_latency_histogram_;
 
+    /** @brief As reactor_command_latency_histogram_, for commands nobody is waiting for. */
+    HistogramHandle reactor_other_command_latency_histogram_;
+
     /**
      * @brief How long between one look for work and the next.
      *
@@ -728,6 +732,11 @@ class Reactor : public ThreadLookupInterface {
      * it had been written would report a fast send that never happened.
      */
     HistogramHandle reactor_send_path_histogram_;
+
+    /** @brief As reactor_send_path_histogram_, for sends nobody is waiting for: replication,
+     *  subscriber streams, heartbeats and the rest. Kept apart so that neither series is the
+     *  average of a mixture. */
+    HistogramHandle reactor_other_send_path_histogram_;
 
     /**
      * @brief How long the reactor takes to turn readable bytes into a queued message.

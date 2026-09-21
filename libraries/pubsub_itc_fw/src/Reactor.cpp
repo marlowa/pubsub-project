@@ -1019,10 +1019,15 @@ void Reactor::observe_receive_path(int64_t started_ns) {
     }
 }
 
-void Reactor::observe_send_path(int64_t started_ns) {
+void Reactor::observe_send_path(int64_t started_ns, bool on_order_path) {
     const int64_t elapsed_ns = HighResolutionClock::now().time_since_epoch().count() - started_ns;
-    if (elapsed_ns >= 0) {
+    if (elapsed_ns < 0) {
+        return;
+    }
+    if (on_order_path) {
         reactor_send_path_histogram_.observe(static_cast<double>(elapsed_ns));
+    } else {
+        reactor_other_send_path_histogram_.observe(static_cast<double>(elapsed_ns));
     }
 }
 
@@ -1160,11 +1165,20 @@ void Reactor::register_command_latency_metrics() {
         100.0,    250.0,    500.0,    1000.0,    2500.0,    5000.0,    10000.0,    25000.0,    50000.0,
         100000.0, 250000.0, 500000.0, 1000000.0, 2500000.0, 5000000.0, 10000000.0, 50000000.0, 100000000.0,
     };
-    reactor_command_latency_histogram_ = metrics_endpoint_.register_histogram(
-        "reactor", "reactor_command_latency_nanoseconds",
-        "Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up", waited_buckets);
-    reactor_send_path_histogram_ = metrics_endpoint_.register_histogram(
-        "reactor", "reactor_send_path_nanoseconds", "Nanoseconds the reactor took to turn a send request into bytes on a socket", waited_buckets);
+    const char* const command_help =
+        "Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up; scope says whether a member was waiting";
+    reactor_command_latency_histogram_ =
+        metrics_endpoint_.register_histogram("order_path", "reactor_command_latency_nanoseconds", command_help, waited_buckets);
+    reactor_other_command_latency_histogram_ =
+        metrics_endpoint_.register_histogram("other", "reactor_command_latency_nanoseconds", command_help, waited_buckets);
+    // The two scopes of each family must be given identical help text. Prometheus allows one
+    // help string per metric family, and the endpoint refuses a second registration that
+    // disagrees -- which is worth knowing because the refusal arrives as an exception out of the
+    // event loop and shuts the component down. So the text describes both populations and the
+    // scope label says which one a series holds.
+    const char* const send_path_help = "Nanoseconds the reactor took to turn a send request into bytes on a socket; scope says whether a member was waiting";
+    reactor_send_path_histogram_ = metrics_endpoint_.register_histogram("order_path", "reactor_send_path_nanoseconds", send_path_help, waited_buckets);
+    reactor_other_send_path_histogram_ = metrics_endpoint_.register_histogram("other", "reactor_send_path_nanoseconds", send_path_help, waited_buckets);
     reactor_receive_path_histogram_ = metrics_endpoint_.register_histogram(
         "reactor", "reactor_receive_path_nanoseconds", "Nanoseconds the reactor took to turn readable bytes into a message on an application thread's queue",
         waited_buckets);
@@ -1205,7 +1219,15 @@ size_t Reactor::process_control_commands(size_t max_commands) {
         if (command.enqueued_ns_ != 0) {
             const int64_t waited_ns = picked_up_ns - command.enqueued_ns_;
             if (waited_ns >= 0) {
-                reactor_command_latency_histogram_.observe(static_cast<double>(waited_ns));
+                // Two series, and they hold different populations rather than one holding a
+                // subset of the other, so they can be added together and neither describes the
+                // mixture. A send on an order's journey is what a member waits for; everything
+                // else a component sends is not.
+                if (command.on_order_path_) {
+                    reactor_command_latency_histogram_.observe(static_cast<double>(waited_ns));
+                } else {
+                    reactor_other_command_latency_histogram_.observe(static_cast<double>(waited_ns));
+                }
             }
         } else {
             reactor_command_latency_unstamped_counter_.increment();
@@ -1269,7 +1291,7 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                     // when the connection next reports itself writable.
                     return dealt_with;
                 }
-                observe_send_path(picked_up_ns);
+                observe_send_path(picked_up_ns, command.on_order_path_);
                 break;
             }
 
@@ -1282,7 +1304,7 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                     }
                 }
                 if (!outbound_manager_.is_send_blocked() && !inbound_manager_.is_send_blocked()) {
-                    observe_send_path(picked_up_ns);
+                    observe_send_path(picked_up_ns, command.on_order_path_);
                 }
                 break;
             }

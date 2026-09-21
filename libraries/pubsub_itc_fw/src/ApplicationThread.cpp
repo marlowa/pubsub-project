@@ -715,8 +715,10 @@ TimerID ApplicationThread::schedule_timer(std::chrono::microseconds interval, Ti
     return id;
 }
 
-void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, SlabHandle slab_id, void* chunk, uint32_t payload_bytes) {
+void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, SlabHandle slab_id, void* chunk, uint32_t payload_bytes,
+                                                 MemberIsWaitingFlag member_is_waiting) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendPdu);
+    cmd.on_order_path_ = member_is_waiting.is_set();
     cmd.connection_id_ = conn_id;
     cmd.allocator_ = &outbound_allocator_;
     cmd.slab_id_ = slab_id;

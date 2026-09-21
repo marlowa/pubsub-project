@@ -158,6 +158,23 @@ class ReactorControlCommand {
      */
     int64_t enqueued_ns_{0};
 
+    /**
+     * @brief Whether a member is waiting for this send.
+     *
+     * A component sends far more than the messages on an order's journey. The sequencer alone
+     * sends replication records, the external subscriber stream, write-ahead log
+     * acknowledgements, heartbeats and arbitration reports, and nobody is waiting on the other
+     * end of a client connection for any of them. Timing all of those together produces a figure
+     * that describes none of them: measured that way the sequencer's sends appeared to account
+     * for more time than the journey they were part of, which cannot be true and is how the
+     * mixture gave itself away.
+     *
+     * Set by the sending thread at the few places a message on an order's journey leaves a
+     * component, and used only to decide which of two histograms records the wait. It never
+     * changes what is sent or where it goes.
+     */
+    bool on_order_path_{false};
+
     // AddTimer / CancelTimer payload fields
 
     ThreadID owner_thread_id_{};

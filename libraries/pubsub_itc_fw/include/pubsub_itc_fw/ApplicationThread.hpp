@@ -26,6 +26,7 @@
 #include <pubsub_itc_fw/HighResolutionClock.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/LockFreeMessageQueue.hpp>
+#include <pubsub_itc_fw/MemberIsWaitingFlag.hpp>
 #include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -669,8 +670,19 @@ class ApplicationThread {
      *                     (e.g. a gateway emitting an inbound order PDU). The sequencer
      *                     itself passes its own monotonic counter.
      * @param[in] msg      The DSL message struct to encode and send.
+     * @param[in] member_is_waiting Says whether a member is waiting for this message -- whether it
+     *                     is one of the
+     *                     few sends that carry an order towards the matching engine or its
+     *                     report back. It decides nothing about the send itself, only which of
+     *                     two histograms records how long the request waited for the reactor.
+     *                     Left false, the send is counted as the component's other traffic --
+     *                     replication, subscriber streams, heartbeats and the rest -- which
+     *                     nobody is waiting for and which would otherwise be averaged in with
+     *                     the sends that matter. See ReactorControlCommand::on_order_path_.
      */
-    template <typename MsgT> void send_pdu(const ConnectionID& conn_id, int16_t pdu_id, int64_t seq_no, const MsgT& msg) {
+    template <typename MsgT>
+    void send_pdu(const ConnectionID& conn_id, int16_t pdu_id, int64_t seq_no, const MsgT& msg,
+                  MemberIsWaitingFlag member_is_waiting = MemberIsWaitingFlag{MemberIsWaitingFlag::NoMemberIsWaiting}) {
         // Pass 1: measure payload size. encode() with out_size=0 sets bytes_needed
         // without writing anything. The call cannot fail on the measuring pass
         // (out_size=0 guarantees the buffer-too-small branch is not reached for
@@ -704,7 +716,7 @@ class ApplicationThread {
         // where Reactor is fully defined. This avoids an incomplete-type error when
         // send_pdu is instantiated in translation units that only have a forward
         // declaration of Reactor.
-        enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written));
+        enqueue_send_pdu_command(conn_id, slab_id, chunk, static_cast<uint32_t>(bytes_written), member_is_waiting);
     }
 
     /**
@@ -879,7 +891,8 @@ class ApplicationThread {
     // Non-template helper for send_pdu. Defined in ApplicationThread.cpp where
     // Reactor is fully defined, avoiding incomplete-type errors in translation
     // units that include ApplicationThread.hpp with only a forward-declared Reactor.
-    void enqueue_send_pdu_command(const ConnectionID& conn_id, SlabHandle slab_id, void* chunk, uint32_t payload_bytes);
+    void enqueue_send_pdu_command(const ConnectionID& conn_id, SlabHandle slab_id, void* chunk, uint32_t payload_bytes,
+                                  MemberIsWaitingFlag member_is_waiting = MemberIsWaitingFlag{MemberIsWaitingFlag::NoMemberIsWaiting});
 
     std::string thread_name_;
     ThreadID thread_id_;
