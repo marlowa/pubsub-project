@@ -66,12 +66,15 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1221,6 +1224,233 @@ TEST_F(FrameworkPduBurstIntegrationTest, DISABLED_PollingReactorKeepsServingEver
                                             << " while it was also serving " << pdus << " socket message(s), " << messages
                                             << " message(s) from other threads and " << commands
                                             << " command(s). One of those sources is being served at the expense of the others";
+}
+
+/*
+ * Fairness between several clients on one reactor
+ * -----------------------------------------------
+ *
+ * The test above asks whether one reactor divides its attention fairly between DIFFERENT KINDS
+ * of work. This one asks a narrower and more damaging question: does it divide its attention
+ * fairly between SEVERAL CLIENTS DOING THE SAME THING?
+ *
+ * That is the arrangement a gateway is actually in. Several members hold connections to one
+ * gateway and all of them send orders. If the reactor serves whichever descriptor the kernel
+ * names first, and serves it until there is nothing left to read, then a member sending steadily
+ * can be served ahead of another member every time round, and the second member's orders wait.
+ * Nothing in the venue would report this. Both members are connected, nothing is dropped, no
+ * error is logged, and the only evidence is that one of them is consistently slower than the
+ * other for no reason either of them can see.
+ *
+ * Five clients, all sending as hard as they can for the same period, over one reactor. Fair
+ * service means they get served about equally. The test states that as a ratio between the
+ * best-served and the worst-served connection rather than as an absolute figure, because what
+ * matters is the difference between them and not how fast the machine happens to be.
+ */
+
+namespace {
+
+constexpr int fairness_client_count = 5;
+constexpr size_t client_frame_payload_bytes = 200;
+
+// The same amount for every client, and enough of it that all five are still contending for the
+// reactor's attention for most of the run. That second part matters: with a small amount each,
+// the clients that are served first finish and stop competing, and the ones behind them then get
+// the reactor to themselves -- so everyone finishes and nothing is learned. Unfairness is only
+// visible while there is something to be unfair about.
+constexpr int64_t bytes_each_client_sends = 200 * 1024 * 1024;
+
+// Generous against that: this deadline is not measuring speed, it is there so that a connection
+// the reactor has effectively stopped serving produces a failure rather than a hung test.
+constexpr auto client_fairness_deadline = std::chrono::milliseconds{20000};
+
+// Five clients sending equally hard should be served equally. Half is a generous floor -- it
+// allows for a loaded build machine and for the ordinary unevenness of five sockets -- while
+// still failing the case this test exists for, where a connection is served a small fraction of
+// what its neighbours get or is not served at all.
+constexpr double worst_acceptable_share_of_the_best = 0.5;
+
+} // un-named namespace
+
+/** @brief Counts raw bytes per connection, so that one starved connection is visible. */
+class PerClientCountingThread : public ApplicationThread {
+  public:
+    PerClientCountingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "PerClientCountingThread", ThreadID{2}, make_queue_config(), make_allocator_config("PerClientPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+    /** @brief Bytes taken from each connection, keyed by connection id. */
+    [[nodiscard]] std::map<int, int64_t> bytes_per_connection() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return bytes_taken_;
+    }
+
+  protected:
+    /*
+     * The commit accounting is kept per connection rather than once for the thread. Each
+     * connection has a MirroredBuffer of its own with positions of its own, so a single running
+     * total across all of them would commit one connection's bytes against another's buffer.
+     */
+    void on_raw_socket_message(const EventMessage& message) override {
+        const int connection = message.connection_id().get_value();
+        const int64_t event_tail = message.tail_position();
+        const auto event_bytes = static_cast<int64_t>(message.payload_size());
+        const int64_t absolute_head_now = event_tail + event_bytes;
+
+        const std::lock_guard<std::mutex> lock(mutex_);
+        int64_t& head_seen = head_seen_[connection];
+        int64_t& committed = committed_[connection];
+
+        if (absolute_head_now > head_seen) {
+            head_seen = absolute_head_now;
+        }
+        const int64_t to_commit = head_seen - committed;
+        if (to_commit > 0) {
+            bytes_taken_[connection] += to_commit;
+            commit_raw_bytes(message.connection_id(), to_commit);
+            committed = head_seen;
+        }
+    }
+
+    void on_connection_established(ConnectionID) override {}
+    void on_connection_lost(const ConnectionID&, const std::string&) override {}
+    void on_framework_pdu_message(const EventMessage& message) override {
+        release_pdu_payload(message);
+    }
+    void on_itc_message(const EventMessage&) override {}
+    void on_timer_event(pubsub_itc_fw::TimerID) override {}
+
+  private:
+    mutable std::mutex mutex_;
+    std::map<int, int64_t> bytes_taken_;
+    std::map<int, int64_t> head_seen_;
+    std::map<int, int64_t> committed_;
+};
+
+TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorServesSeveralClientsEvenly) {
+    const ServiceRegistry registry;
+    auto reactor = std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), registry, logger_->logger);
+
+    reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                       raw_buffer_capacity);
+
+    auto counting_thread = ApplicationThread::create<PerClientCountingThread>(logger_->logger, *reactor);
+    reactor->register_thread(counting_thread);
+
+    std::thread reactor_thread([&]() { reactor->run(); });
+
+    ASSERT_TRUE(wait_for([&]() { return reactor->is_initialized(); })) << "Reactor did not initialise within timeout";
+    const uint16_t port = reactor->get_inbound_listener_port(0);
+    ASSERT_NE(port, 0U) << "OS did not assign a valid listening port";
+
+    // ----- Five clients, each with exactly the same amount to send -----
+    //
+    // The same amount each, rather than each sending as hard as it can for a fixed time. Those
+    // sound alike and they are not. A client sending flat out can only send as fast as its
+    // socket is drained, so a client that is being served badly also sends little, and a test
+    // that measured bytes over a fixed time could not say which of those was the cause. Giving
+    // every client an identical amount to deliver removes the question: the work offered is
+    // equal by construction, so anything left over is a difference in how they were served.
+
+    std::vector<std::thread> clients;
+    std::vector<std::atomic<int64_t>> bytes_sent(fairness_client_count);
+    std::vector<std::atomic<int64_t>> finished_after_ms(fairness_client_count);
+    for (auto& counter : bytes_sent) {
+        counter.store(0, std::memory_order_release);
+    }
+    for (auto& counter : finished_after_ms) {
+        counter.store(0, std::memory_order_release);
+    }
+
+    const auto started_at = std::chrono::steady_clock::now();
+
+    for (int client = 0; client < fairness_client_count; ++client) {
+        clients.emplace_back([&, client]() {
+            const int sock = connect_raw_socket(port);
+            if (sock == -1) {
+                ADD_FAILURE() << "client " << client << " could not connect";
+                return;
+            }
+            const std::string payload(client_frame_payload_bytes, static_cast<char>('a' + client));
+            const auto frame_bytes = static_cast<int64_t>(sizeof(uint32_t) + payload.size());
+            int64_t delivered = 0;
+            while (delivered < bytes_each_client_sends) {
+                const uint32_t len_be = htonl(static_cast<uint32_t>(payload.size()));
+                if (!send_all(sock, &len_be, sizeof(len_be)) || !send_all(sock, payload.data(), payload.size())) {
+                    break;
+                }
+                delivered += frame_bytes;
+                bytes_sent[static_cast<size_t>(client)].store(delivered, std::memory_order_release);
+            }
+            finished_after_ms[static_cast<size_t>(client)].store(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at).count(), std::memory_order_release);
+            ::close(sock);
+        });
+    }
+
+    // Wait for every client to finish, or for the deadline. A client that cannot finish is the
+    // finding, so the deadline has to be generous enough that slowness alone does not produce
+    // one: five clients sending this much over the loopback interface is well under a second of
+    // work when they are served evenly.
+    const bool all_finished = wait_for(
+        [&]() {
+            for (const auto& counter : bytes_sent) {
+                if (counter.load(std::memory_order_acquire) < bytes_each_client_sends) {
+                    return false;
+                }
+            }
+            return true;
+        },
+        static_cast<int>(client_fairness_deadline.count()));
+
+    const auto finished_at = std::chrono::steady_clock::now();
+
+    for (auto& client : clients) {
+        client.join();
+    }
+
+    const std::map<int, int64_t> served = counting_thread->bytes_per_connection();
+    shutdown_and_join(*reactor, reactor_thread);
+
+    // ----- Assertions -----
+
+    std::string per_client;
+    for (int client = 0; client < fairness_client_count; ++client) {
+        per_client += " client " + std::to_string(client) + " delivered " + std::to_string(bytes_sent[static_cast<size_t>(client)].load()) + " of " +
+                      std::to_string(bytes_each_client_sends) + ";";
+    }
+
+    ASSERT_EQ(static_cast<int>(served.size()), fairness_client_count)
+        << "only " << served.size() << " of " << fairness_client_count << " connections delivered any bytes at all";
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(finished_at - started_at);
+    EXPECT_TRUE(all_finished) << "not every client got its " << bytes_each_client_sends << " bytes through within " << client_fairness_deadline.count()
+                              << "ms, although all of them had exactly the same amount to send and were sending it at the same time. "
+                              << "A client that cannot finish is one whose connection the reactor is not coming back to:" << per_client;
+
+    if (all_finished) {
+        // Everything got through in the end. The remaining question is whether some clients were
+        // made to wait a great deal longer than others for it, which is what unfair service
+        // looks like once every client has a finite amount to deliver: the same work, the same
+        // starting moment, and very different finishing times.
+        int64_t first_finished = finished_after_ms[0].load(std::memory_order_acquire);
+        int64_t last_finished = first_finished;
+        std::string finishing_times;
+        for (int client = 0; client < fairness_client_count; ++client) {
+            const int64_t when = finished_after_ms[static_cast<size_t>(client)].load(std::memory_order_acquire);
+            first_finished = std::min(first_finished, when);
+            last_finished = std::max(last_finished, when);
+            finishing_times += " client " + std::to_string(client) + " finished after " + std::to_string(when) + "ms;";
+        }
+
+        ASSERT_GT(first_finished, 0) << "a client finished before it started, which means the timing is wrong rather than the reactor";
+
+        const double spread = static_cast<double>(first_finished) / static_cast<double>(last_finished);
+        EXPECT_GE(spread, worst_acceptable_share_of_the_best)
+            << "the first client to finish took " << first_finished << "ms and the last took " << last_finished
+            << "ms, for identical amounts of data sent from the same moment over five connections to one reactor. "
+            << "A reactor coming back to every connection evenly finishes them at about the same time:" << finishing_times;
+    }
 }
 
 } // namespaces

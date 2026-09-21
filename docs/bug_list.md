@@ -2330,6 +2330,20 @@ measures the same timer on the same reactor with and without load, so a timer th
 mis-configured or coalescing would fail its first assertion instead. Run it with
 `--gtest_also_run_disabled_tests`.
 
+**Several clients of the same kind are served evenly, and that was checked separately.** The
+unfairness here is between different kinds of work, not between peers doing the same thing. Five
+clients each sending 200 megabytes at once over five connections to one reactor finished after
+1957, 1977, 1986, 1989 and 2539 milliseconds -- four of them within 32 milliseconds of each other
+and the fifth 30 per cent behind, which is unremarkable.
+`FrameworkPduBurstIntegrationTest.PollingReactorServesSeveralClientsEvenly` keeps that honest.
+
+**What the remedy looks like elsewhere.** Servers that carry this kind of load take a bounded
+amount from each ready descriptor and then come back round, rather than reading one to exhaustion
+before looking at the next. A framework that hands an application a callback per ready descriptor
+cannot impose such a bound, because it does not know how much work the callback will do -- which
+is a reason this tends to be solved in servers rather than in the general-purpose frameworks they
+are built on.
+
 Related: [BUG-0060](#bug_0060), which asks what the venue does about microbursts. A burst is
 exactly the condition under which this appears.
 
