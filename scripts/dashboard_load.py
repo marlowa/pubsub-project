@@ -39,6 +39,10 @@ import threading
 import time
 from pathlib import Path
 
+# A sibling script rather than a package, so it is imported by path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import measurement_machine  # noqa: E402  -- needs the path set above
+
 # Each protocol gets its own shape, and the shapes are OFFSET on purpose.
 #
 # A mixed run exists to answer one question a single-protocol run cannot: does load on one
@@ -236,6 +240,35 @@ def run(args):
     return 0
 
 
+def warn_if_the_machine_is_not_fit_to_measure_on():
+    """Say so, loudly, when the processor settings make the resulting dashboard misleading.
+
+    This script's output is a picture somebody keeps. With the processor settings at their
+    defaults every latency figure on that picture is several times too large, the run completes
+    normally, and nothing on the dashboard records which machine state produced it -- so the
+    screenshot outlives the session and is believed. A warning here is the only thing between
+    that and someone quoting a round trip six times worse than the venue's.
+
+    The other load scripts already do this. perf_run.py refuses outright; fix_load_client.py
+    warns. This one warns, because a dashboard of throughput, protocol mix and the shape of a
+    trading day is still worth having on an untuned machine -- only its latency panels are not.
+    """
+    try:
+        ready, problems = measurement_machine.describe_state()
+    except Exception:  # pylint: disable=broad-except
+        return  # Reporting the machine is a courtesy; never let it stop a run.
+    if ready:
+        return
+    print("WARNING: this machine's processor settings make every latency figure meaningless:")
+    for problem in problems:
+        print(f"           {problem}")
+    print("         Throughput, protocol mix and the shape of the day will still be right.")
+    print("         The latency panels will read several times too high, and the dashboard")
+    print("         does not record that, so a screenshot of them will mislead whoever sees it.")
+    print("         Put it right with: sudo python3 scripts/measurement_machine.py --on")
+    print()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -258,6 +291,9 @@ def main(argv=None):
                              "matching engine has already seen is rejected as a duplicate")
     parser.add_argument("--dry-run", action="store_true", help="print both timelines and exit without sending anything")
     args = parser.parse_args(argv)
+
+    # Before anything else, so it is read rather than scrolled past at the end of a long run.
+    warn_if_the_machine_is_not_fit_to_measure_on()
 
     schedules = {name: plan(phases, args.minutes) for name, phases in MODES[args.mode].items()}
     print(f"session: {args.minutes:.1f} minutes, mode {args.mode}, two protocols in parallel, "
