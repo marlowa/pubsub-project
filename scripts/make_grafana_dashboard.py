@@ -215,6 +215,58 @@ panels.append(ts(
          "it shows that they differ without showing where. Still read the rate lines: a "
          "decode time is a latency and a busier gateway can queue behind itself."))
 
+# Where an order's time actually goes, stage by stage.
+#
+# Every component records how long an order had already been inside the venue when it reached
+# that component, all counted from the moment a gateway read it off the client connection. So
+# these lines are cumulative and they only ever go up along the path: the useful reading is the
+# GAP between two neighbouring lines, which is the time spent in between. A line on its own
+# says how far along the journey that point sits, which is a fact about the venue's shape and
+# not about its speed.
+#
+# Ordered here as an order meets them, so the chart is read from bottom to top.
+panels.append(ts(
+    "Where the time goes — how far through the venue an order is at each point (median)",
+    [tgt('histogram_quantile(0.50, sum by (le) (rate(order_path_elapsed_nanoseconds_bucket'
+         '{application="pubsub", component=~"sequencer.*", scope="order_in"}[' + RATE + '])))', "1. reached the sequencer", "A"),
+     tgt('histogram_quantile(0.50, sum by (le) (rate(order_path_elapsed_nanoseconds_bucket'
+         '{application="pubsub", component=~"sequencer.*", scope="order_out"}[' + RATE + '])))', "2. sequencer sent it on", "B"),
+     tgt('histogram_quantile(0.50, sum by (le) (rate(order_path_elapsed_nanoseconds_bucket'
+         '{application="pubsub", component=~"matching_engine.*", scope="order_in"}[' + RATE + '])))', "3. reached the matching engine", "C"),
+     tgt('histogram_quantile(0.50, sum by (le) (rate(order_path_elapsed_nanoseconds_bucket'
+         '{application="pubsub", component=~"matching_engine.*", scope="er_out"}[' + RATE + '])))', "4. matched, report sent", "D"),
+     tgt('histogram_quantile(0.50, sum by (le) (rate(order_path_elapsed_nanoseconds_bucket'
+         '{application="pubsub", component=~"sequencer.*", scope="er_in"}[' + RATE + '])))', "5. report back at the sequencer", "E"),
+     tgt('histogram_quantile(0.50, sum by (le) (rate(order_path_elapsed_nanoseconds_bucket'
+         '{application="pubsub", component=~"sequencer.*", scope="er_out"}[' + RATE + '])))', "6. sequencer sent the report on", "F"),
+     tgt('histogram_quantile(0.50, sum by (le) (rate(order_path_elapsed_nanoseconds_bucket'
+         '{application="pubsub", component=~".*order_gateway.*", scope="er_in"}[' + RATE + '])))', "7. report back at the gateway", "G"),
+     tgt('histogram_quantile(0.50, sum by (le) (rate(order_round_trip_nanoseconds_bucket'
+         '{application="pubsub"}[' + RATE + '])))', "8. report sent to the member", "H")],
+    w=24,
+    desc="Read the GAPS, not the lines. Each line is how much of the round trip had already "
+         "gone by the time an order reached that point, so the distance between two of them is "
+         "the time spent in between. The topmost line is the round trip itself, and the legs "
+         "below it should add up to it -- if they stop adding up, a measurement point is in "
+         "the wrong place."))
+
+# Waiting and queueing are different problems with opposite remedies, and the wait alone
+# cannot tell them apart. Both are recorded over exactly the same messages so they can be
+# read against each other on one chart.
+panels.append(ts(
+    "Waiting for a thread, or waiting in a queue — $component",
+    [tgt('histogram_quantile(0.90, sum by (le) (rate(itc_queue_latency_nanoseconds_bucket'
+         '{application="pubsub", component="$component"}[' + RATE + '])))', "wait p90", "A"),
+     tgt('histogram_quantile(0.99, sum by (le) (rate(itc_queue_latency_nanoseconds_bucket'
+         '{application="pubsub", component="$component"}[' + RATE + '])))', "wait p99", "B"),
+     tgt('histogram_quantile(0.90, sum by (le) (rate(itc_queue_depth_bucket'
+         '{application="pubsub", component="$component"}[' + RATE + '])))', "messages behind it, p90 (right axis)", "C")],
+    w=24,
+    desc="A message that waited a long time behind an EMPTY queue was waiting for its thread "
+         "to be scheduled. One that waited a long time behind a hundred others was waiting its "
+         "turn. Those call for opposite remedies -- give the thread a core, or give the work "
+         "less to do -- and the waiting time on its own cannot tell you which."))
+
 panels.append(ts(
     "Gateway decode and forward — percentiles by gateway instance",
     [tgt(f'histogram_quantile(0.90, sum by (le, component) (rate(order_ingress_to_forward_nanoseconds_bucket{{{APP}}}[{RATE}])))', "{{component}} p90", "A"),
