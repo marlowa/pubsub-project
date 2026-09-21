@@ -10,12 +10,14 @@ conclusion depends on that hardware, it says so.
 
 ---
 
-## The two instruments
+## The instruments
 
 | Metric | What it measures | Where to read it |
 |---|---|---|
-| `itc_queue_latency_nanoseconds` | One inter-thread hop: enqueue to dispatch | Every component |
+| `itc_queue_latency_nanoseconds` | A message arriving at an application thread: enqueue to dispatch | Every component |
+| `reactor_command_latency_nanoseconds` | A command leaving an application thread for its reactor | Every component |
 | `order_round_trip_nanoseconds` | Order off the connection to the first byte of its report | The gateway that received it |
+| `order_path_elapsed_nanoseconds` | How far through the venue an order was when it reached a given point | Every component on the path |
 
 The hop is the sensitive instrument. It has roughly nineteen thousand observations in a run of six
 thousand orders, so its median and 90th percentile are stable to within a few per cent between
@@ -217,6 +219,39 @@ Where the rest of the time goes is the largest open question about this venue's 
 The outbound legs cost about twice the inbound ones -- 24.42 and 29.30 against 18.89 and 13.91 --
 and that is not explained either.
 
+### Most of the transport cost is the hand-off out of a component, not the socket
+
+Every message a component sends crosses two inter-thread hand-offs and one socket. The
+application thread does not touch the socket: it puts a command on the reactor's queue and wakes
+the reactor, and the reactor does the writing. At the far end the receiving reactor reads the
+socket and puts the message on its own application thread's queue.
+
+| Direction | Metric |
+|---|---|
+| Application thread to its reactor, on the way out | `reactor_command_latency_nanoseconds` |
+| Reactor to its application thread, on the way in | `itc_queue_latency_nanoseconds` |
+
+Over 6,000 orders at 100 per second, the outward half costs several times the inward one:
+
+| Component | Out: application thread to reactor | In: reactor to application thread |
+|---|---|---|
+| sequencer | 13.27 us | 2.34 us |
+| matching engine | 6.55 us | 3.56 us |
+| FIX order gateway | 6.50 us | 3.39 us |
+
+Medians. The order path crosses eight of these hand-offs, which comes to about 51 microseconds
+against the 87 the stage profile attributes to moving messages between processes. Four socket
+crossings at the measured 4.2 microseconds each account for about 17 more.
+
+**The wait is on the order's own critical path, not merely somewhere in the component.** Raising
+one component's `quiet_spins_between_polls` from 64 to 4096 raised its own outward hand-off from
+13.27 microseconds to 100.44 and the round trip from 99.74 to 367.93. An order crosses the
+sequencer twice, so a hand-off charge appearing twice over is what that looks like.
+
+The figure pools every command a component sends, including replication and the external
+subscriber stream, which no member waits for. So it describes the queue the order's own command
+sits in rather than the order's command alone.
+
 ### A component's two threads belong on one physical core
 
 Each component has two hot-path threads, the reactor thread and the application thread, and they
@@ -256,6 +291,21 @@ lower processor cost per order and far less variation, not a faster end-to-end r
 ---
 
 ## Ruled out by measurement
+
+### Looking for work more often
+
+A polling reactor spins quietly between one look for work and the next, and
+`reactor.quiet_spins_between_polls` sets how many spins. At the default of 64, and a measured
+30.1 nanoseconds per spin, that is about 1.9 microseconds between looks.
+
+Lowering it to 8 changed nothing: a round-trip median of 101.31 microseconds against 99.74, and
+the outward hand-off unmoved at 14.57 microseconds against 13.27. Both differences are within the
+run-to-run spread.
+
+The setting does work, and the control proves it: raised to 4096 it took the same hand-off to
+100.44 microseconds and the round trip to 367.93. It is simply already small enough at 64 that
+whatever else the hand-off costs swamps it. Looking more often only buys back time that is not
+being spent.
 
 ### Kernel core isolation
 
