@@ -41,6 +41,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# A sibling script rather than a package, so it is imported by path as the others here are.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import measurement_machine  # noqa: E402  -- needs the path set above
+
 # ── fix8 authentication ───────────────────────────────────────────────────────
 # fix8's f8test never sends tag 554 (Password), so it authenticates with an
 # empty password.  FIX8_COMP_ID is the SenderCompID in myfix_gateway_client.xml.
@@ -1359,6 +1363,10 @@ def main() -> None:
                              "standard SCRAM-SHA-256 with an empty password (fix8 sends no "
                              "tag 554).  'proprietary': skip SCRAM credential rewrite, used "
                              "when testing on RHEL8 with the proprietary logon path.")
+    parser.add_argument("--allow-untuned-machine", action="store_true",
+                        help="run even though this machine's processor settings make latency figures meaningless. "
+                             "For a run wanted for something other than latency")
+
     args = parser.parse_args()
     if args.burst < 1:
         parser.error("--burst must be >= 1")
@@ -1383,6 +1391,30 @@ def main() -> None:
     # rather than making each caller remember it.
     if args.profile and args.gateway != "binary":
         args.gateway = "binary"
+
+    # Refuse a run this machine cannot measure honestly.
+    #
+    # A trading-day run takes nearly two hours, and its whole purpose is the numbers at the end.
+    # With the processor settings left at their defaults those numbers are wrong by a factor of
+    # five to seven, and nothing about the run says so: it completes, the report renders, and the
+    # figures are simply untrue. That has already happened once on this project, in September,
+    # when it turned out every latency figure taken until then had been distorted that way.
+    #
+    # Refused rather than warned, because a warning printed at the start of a two-hour run is a
+    # warning nobody is present to read. --allow-untuned-machine is there for the case where the
+    # run is wanted for something other than latency.
+    ready, machine_problems = measurement_machine.describe_state()
+    if not ready and not args.allow_untuned_machine:
+        print("This machine is not in a state where a latency measurement would mean anything:")
+        for problem in machine_problems:
+            print(f"  - {problem}")
+        print()
+        print("Put it right with:  sudo python3 scripts/measurement_machine.py --on")
+        print("Or run anyway with: --allow-untuned-machine")
+        sys.exit(1)
+    if not ready:
+        print("WARNING: running on a machine whose latency figures will be wrong by several times, because")
+        print("         --allow-untuned-machine was given. Do not compare these numbers with any others.")
 
     project_root = Path(__file__).resolve().parent.parent
     prefix     = resolve_prefix(str(project_root / args.prefix)

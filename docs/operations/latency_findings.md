@@ -56,6 +56,18 @@ rather than through Prometheus, so that nothing depends on scrape alignment.
 **Check the machine's power settings first.** They do not survive a reboot, and without them every
 figure below is wrong by a factor of five to seven.
 
+    python3 scripts/measurement_machine.py              # which state is this machine in?
+    sudo python3 scripts/measurement_machine.py --on    # make measurements mean something
+    sudo python3 scripts/measurement_machine.py --off   # put it back afterwards
+
+They are deliberately not left switched on. Disabling the deep idle states costs power and fan
+noise continuously, and on a machine used for anything else that is a poor trade for most of its
+life. Switch them on for a measuring session and off after it.
+
+Forgetting is the failure that actually costs something, because it is silent: the run completes,
+the report renders, and the figures are simply untrue. So `perf_run.py` refuses to start on a
+machine in that state, and `fix_load_client.py` says so before it connects.
+
 ---
 
 ## Established

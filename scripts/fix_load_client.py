@@ -80,6 +80,11 @@ import random
 import socket
 import sys
 import time
+from pathlib import Path
+
+# A sibling script rather than a package, so it is imported by path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import measurement_machine  # noqa: E402  -- needs the path set above
 
 SOH = "\x01"
 
@@ -344,8 +349,34 @@ def field(message, tag):
     return message[start:end] if end != -1 else message[start:]
 
 
+def warn_if_the_machine_cannot_be_measured():
+    """Say so, loudly, when this machine's processor settings make the timings meaningless.
+
+    A warning rather than a refusal, because this client is used for smoke tests and for getting
+    order flow through a venue as well as for measuring, and neither of those cares.
+
+    It is worth saying at all because the failure is silent. With the processor settings at their
+    defaults every latency figure is several times too large, the run completes normally, and
+    nothing in the output suggests the numbers should not be compared with any others. That has
+    already produced one set of wrong conclusions on this project.
+    """
+    try:
+        ready, problems = measurement_machine.describe_state()
+    except Exception:  # pylint: disable=broad-except
+        return  # Reporting the machine is a courtesy; never let it stop the client running.
+    if ready:
+        return
+    print("WARNING: this machine's processor settings make latency figures meaningless:")
+    for problem in problems:
+        print(f"           {problem}")
+    print("         Timings from this run should not be compared with any others.")
+    print("         Put it right with: sudo python3 scripts/measurement_machine.py --on")
+    print()
+
+
 def run(options):
     session = FixSession(options, options.comp_id)
+    warn_if_the_machine_cannot_be_measured()
     print(f"connecting to {options.host}:{options.port} as {options.comp_id}")
     session.connect_and_logon()
     print(f"  logged on, {options.bursts} burst(s) of {options.orders_per_burst} at "
