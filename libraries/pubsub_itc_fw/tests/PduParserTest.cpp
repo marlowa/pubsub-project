@@ -58,11 +58,10 @@ class PduParserTestStream : public ByteStreamInterface {
         hdr.byte_count = htonl(payload_size);
         hdr.pdu_id = htons(static_cast<uint16_t>(pdu_id));
         hdr.version = version;
-        hdr.alignment_a = 0;
+        hdr.filler_a = 0;
         hdr.seq_no = 0;
         hdr.canary = htonl(pdu_canary_value);
-        hdr.alignment_b = 0;
-        hdr.sent_at_ns = 0;
+        hdr.filler_b = 0;
         const auto* b = reinterpret_cast<const uint8_t*>(&hdr);
         for (size_t i = 0; i < sizeof(PduHeader); ++i) {
             receive_bytes.push_back(b[i]);

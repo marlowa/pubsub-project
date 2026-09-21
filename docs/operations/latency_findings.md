@@ -438,23 +438,33 @@ part of the method and not a finding about the venue.
 
 ## Unexplained
 
-### The crossing between two processes, measured rather than inferred
+### The crossing between two processes, and why it is not measured continuously
 
-`PduHeader::sent_at_ns` carries `CLOCK_MONOTONIC` nanoseconds, written by the sending reactor as
-it hands the frame to a socket and read back by the receiving parser as soon as the header is
-whole. `pdu_wire_nanoseconds` is the difference: the kernel's carriage of the bytes plus however
-long the receiving reactor took to come back and look. It is comparable only between processes on
-one host, and a reading that is negative or beyond a quarter of a second is counted in
-`pdu_wire_unusable_total` rather than recorded.
+A send time carried in the frame header gives the crossing directly: the sending reactor writes
+`CLOCK_MONOTONIC` nanoseconds as it hands the frame to the socket, and the receiving parser reads
+it back as soon as the header is whole. The difference is the kernel's carriage of the bytes plus
+however long the receiving reactor took to come back and look.
+
+Measured that way, over 6,000 orders at 100 per second:
 
 | Receiving component | Crossings | Median | 90th |
 |---|---|---|---|
 | gateway, reports from the sequencer | 12,008 | 5.74 us | 9.16 us |
 | matching engine, orders from the sequencer | 12,105 | 7.66 us | 9.96 us |
-| sequencer, several senders pooled | 72,355 | 14.57 us | 42.13 us |
 
-**A crossing costs five to eight microseconds, not four.** The four microseconds quoted elsewhere
-on this page came from two processes doing nothing else; these are components under load.
+**A crossing costs five to eight microseconds**, not the four measured between two processes doing
+nothing else.
+
+**The venue does not carry this, because the field costs more than it is worth.** Putting eight
+bytes into every frame costs about four microseconds of the round trip -- see "Eight bytes on
+every frame" below, where that is measured and the alternatives ruled out. Four microseconds of a
+98 microsecond round trip is too much to spend on an instrument, so the field is not in the
+header. Anyone wanting the figure again should add it, measure, and take it out, and should expect
+every round-trip figure taken while it is in to be about four microseconds high.
+
+A send time is only ever meaningful between processes on one host, since `CLOCK_MONOTONIC` is
+system-wide on Linux and unrelated across machines. A reading that is negative or beyond a quarter
+of a second has to be discarded rather than recorded.
 
 ### Adding up medians does not work, and three instruments have now shown it
 
@@ -464,6 +474,9 @@ With the crossing measured, a leg should be five measured parts and nothing left
 |---|---|---|---|---|---|---|---|
 | sequencer to gateway | 28.79 us | 12.26 | 3.84 | 5.74 | 2.79 | 3.52 | **0.62 us** |
 | sequencer to matching engine | 15.29 us | 12.26 | 3.84 | 7.66 | 5.20 | 3.64 | **-17.31 us** |
+
+Those crossing figures came from the send time described above, which the venue no longer carries.
+The rest of the columns are measured continuously.
 
 The second is impossible, and it is impossible in a way that rules out a missing instrument
 rather than suggesting one. **The receiving side alone -- crossing 7.66, receive path 5.20, queue

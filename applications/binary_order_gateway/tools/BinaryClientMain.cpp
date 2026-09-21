@@ -160,11 +160,10 @@ template <typename MessageType> bool send_pdu(int socket_fd, int16_t pdu_id, con
     header->byte_count = htonl(static_cast<uint32_t>(bytes_needed));
     header->pdu_id = static_cast<int16_t>(htons(static_cast<uint16_t>(pdu_id)));
     header->version = 1;
-    header->alignment_a = 0;
+    header->filler_a = 0;
     header->seq_no = 0;
     header->canary = htonl(pubsub_itc_fw::pdu_canary_value);
-    header->alignment_b = 0;
-    header->sent_at_ns = 0;
+    header->filler_b = 0;
 
     if (!encode(message, frame.data() + sizeof(pubsub_itc_fw::PduHeader), bytes_needed, bytes_written, bytes_needed)) {
         return false;

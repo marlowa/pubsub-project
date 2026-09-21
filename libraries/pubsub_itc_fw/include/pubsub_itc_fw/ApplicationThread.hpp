@@ -286,19 +286,6 @@ class ApplicationThread {
     void enqueue(EventMessage message);
 
     /**
-     * @brief Records how long a frame spent crossing from another process, on this thread's
-     *        reactor.
-     *
-     * Exists so the PDU parser can record it. The parser runs on the reactor thread and holds a
-     * reference to this thread rather than to the reactor, and the reactor is reachable from
-     * here only within the class, so the call is passed through. It records a measurement and
-     * changes nothing.
-     *
-     * @param[in] sent_at_ns The frame header's send time, in host byte order.
-     */
-    void observe_wire_crossing(int64_t sent_at_ns);
-
-    /**
      * @brief Returns a reference to the logger.
      * @return QuillLogger& The logger instance.
      */
@@ -712,11 +699,10 @@ class ApplicationThread {
         hdr->byte_count = htonl(static_cast<uint32_t>(bytes_needed));
         hdr->pdu_id = static_cast<int16_t>(htons(static_cast<uint16_t>(pdu_id)));
         hdr->version = 1;
-        hdr->alignment_a = 0;
+        hdr->filler_a = 0;
         hdr->seq_no = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
         hdr->canary = htonl(pdu_canary_value);
-        hdr->alignment_b = 0;
-        hdr->sent_at_ns = 0;
+        hdr->filler_b = 0;
 
         // Pass 2: encode payload directly into the slab chunk after the header.
         // The buffer is sized exactly to bytes_needed so this must succeed.
@@ -769,11 +755,10 @@ class ApplicationThread {
         header->byte_count = htonl(static_cast<uint32_t>(size));
         header->pdu_id = static_cast<int16_t>(htons(static_cast<uint16_t>(pdu_id)));
         header->version = 1;
-        header->alignment_a = 0;
+        header->filler_a = 0;
         header->seq_no = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
         header->canary = htonl(pdu_canary_value);
-        header->alignment_b = 0;
-        header->sent_at_ns = 0;
+        header->filler_b = 0;
 
         std::memcpy(static_cast<uint8_t*>(chunk) + sizeof(PduHeader), payload, size);
 

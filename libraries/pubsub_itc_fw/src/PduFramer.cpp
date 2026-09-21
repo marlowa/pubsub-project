@@ -31,11 +31,10 @@ std::tuple<bool, std::string> PduFramer::send(int16_t pdu_id, int8_t version, in
     hdr->byte_count = htonl(size);
     hdr->pdu_id = htons(static_cast<uint16_t>(pdu_id));
     hdr->version = version;
-    hdr->alignment_a = 0;
+    hdr->filler_a = 0;
     hdr->seq_no = static_cast<int64_t>(htobe64(static_cast<uint64_t>(seq_no)));
     hdr->canary = htonl(pdu_canary_value);
-    hdr->alignment_b = 0;
-    hdr->sent_at_ns = 0;
+    hdr->filler_b = 0;
     std::memcpy(frame_buffer_ + sizeof(PduHeader), payload, size);
 
     active_frame_ptr_ = frame_buffer_;

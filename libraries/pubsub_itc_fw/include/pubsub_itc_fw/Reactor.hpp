@@ -283,17 +283,6 @@ class Reactor : public ThreadLookupInterface {
     }
 
     /**
-     * @brief Records how long a frame spent crossing from another process to this one.
-     *
-     * Called by the PDU parser on the reactor thread, once per frame, with the send time taken
-     * out of the frame header. A send time of zero means the frame was never stamped and is
-     * counted rather than recorded.
-     *
-     * @param[in] sent_at_ns The header's send time, already in host byte order.
-     */
-    void observe_wire_crossing(int64_t sent_at_ns);
-
-    /**
      * @brief Returns the inbound slab allocator.
      *
      * ApplicationThreads use this to deallocate inbound PDU payload chunks
@@ -710,29 +699,6 @@ class Reactor : public ThreadLookupInterface {
 
     /** @brief As reactor_command_latency_histogram_, for commands nobody is waiting for. */
     HistogramHandle reactor_other_command_latency_histogram_;
-
-    /**
-     * @brief How long bytes spent between one process writing them and another reading them.
-     *
-     * The one part of the journey between two components that cannot be worked out from either
-     * end alone. The sending reactor writes the clock into the frame header as it hands the
-     * bytes to the socket; the receiving parser reads it back and records the difference. It is
-     * therefore the kernel's own carriage of the bytes plus however long the receiving reactor
-     * took to come back and look, and nothing else.
-     *
-     * It replaces an accounting that could not work. Subtracting one component's median from
-     * another's assumes each median describes the one message in question, and a component that
-     * makes several different sends has a median that describes none of them -- which showed up
-     * as legs appearing to contain less time than their parts.
-     *
-     * Only meaningful between processes on one host; see PduHeader::sent_at_ns. A reading that
-     * is negative or implausibly large is discarded rather than recorded, because across two
-     * hosts the two clocks have no relation and the arithmetic is meaningless rather than wrong.
-     */
-    HistogramHandle pdu_wire_histogram_;
-
-    /** @brief Frames whose send time was zero or implausible, and so were not recorded. */
-    CounterHandle pdu_wire_unusable_counter_;
 
     /**
      * @brief How long between one look for work and the next.

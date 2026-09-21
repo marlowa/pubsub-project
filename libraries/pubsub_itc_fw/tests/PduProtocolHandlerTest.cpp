@@ -174,11 +174,10 @@ class PduProtocolHandlerTest : public ::testing::Test {
         header->byte_count = htonl(static_cast<uint32_t>(payload_size));
         header->pdu_id = htons(static_cast<uint16_t>(42));
         header->version = 1;
-        header->alignment_a = 0;
+        header->filler_a = 0;
         header->seq_no = 0;
         header->canary = htonl(pdu_canary_value);
-        header->alignment_b = 0;
-        header->sent_at_ns = 0;
+        header->filler_b = 0;
 
         // Fill payload with a recognisable pattern.
         auto* payload = static_cast<uint8_t*>(chunk) + sizeof(PduHeader);
