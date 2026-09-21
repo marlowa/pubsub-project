@@ -170,6 +170,23 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
             throw pubsub_itc_fw::ConfigurationException("reactor.spin_before_block must not be negative");
         }
 
+        // Optional: how many quiet spins the reactor puts between one look for work and the
+        // next while it is looking rather than sleeping. Asking the kernel costs about a
+        // microsecond and disturbs whatever shares the physical core; a quiet spin costs about
+        // thirty nanoseconds and disturbs nothing, but the reactor cannot notice work during
+        // one. The number therefore sets how late work is noticed: at thirty nanoseconds a
+        // spin, sixty-four of them is roughly two microseconds between looks.
+        //
+        // Absent means the framework's default. Zero and one both mean look every time round.
+        int32_t quiet_spins_from_file{0};
+        const auto [has_quiet_spins, quiet_spins_error] = toml.get_required("reactor.quiet_spins_between_polls", quiet_spins_from_file);
+        if (has_quiet_spins) {
+            if (quiet_spins_from_file < 0) {
+                throw pubsub_itc_fw::ConfigurationException("reactor.quiet_spins_between_polls must not be negative");
+            }
+            config.reactor_quiet_spins_between_polls = quiet_spins_from_file;
+        }
+
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);
         toml.get_required_except("event_queue_pool.initial_slabs", config.event_queue_pool_initial_slabs);
         if (config.event_queue_pool_objects_per_slab < 1) {

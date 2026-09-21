@@ -176,6 +176,18 @@ struct BinaryOrderGatewayConfiguration {
      *  ReactorConfiguration::spin_before_block. */
     std::chrono::microseconds reactor_spin_before_block{0};
 
+    /**
+     * @brief Quiet spins between one look for work and the next, while the reactor is looking
+     *        for work rather than sleeping on it.
+     *
+     * Negative means the deployed file did not say, and the framework's own default is used.
+     * That is why this is not initialised to the default itself: a second copy of the number
+     * here could drift away from ReactorConfiguration::quiet_spins_between_polls without
+     * anything failing, and the symptom would be a component quietly polling at a rate nobody
+     * chose.
+     */
+    int32_t reactor_quiet_spins_between_polls{-1};
+
     /** @brief Objects per slab in the reactor command queue pool. */
     int32_t command_queue_pool_objects_per_slab{4096};
 

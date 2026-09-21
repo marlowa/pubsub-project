@@ -454,6 +454,15 @@ class Reactor : public ThreadLookupInterface {
     void event_loop();
     bool wait_for_all_threads(std::function<bool(const ApplicationThread&)> predicate, const std::string& phase_name);
     void broadcast_reactor_event(EventType::EventTypeTag tag);
+
+    /**
+     * @brief Registers the command-latency metrics, once, before the event loop starts.
+     *
+     * Kept out of the constructor because a component decides whether metrics are enabled at
+     * all through its configuration, and registration is cheap but not free.
+     */
+    void register_command_latency_metrics();
+
     void process_control_commands();
 
     /**
@@ -586,6 +595,40 @@ class Reactor : public ThreadLookupInterface {
      * It grows by allocating new pools as needed. No fixed capacity exists.
      */
     LockFreeMessageQueue<ReactorControlCommand> command_queue_;
+
+    /**
+     * @brief How long a command waited between an application thread enqueueing it and this
+     *        reactor picking it up.
+     *
+     * This is the outward half of a component's inter-thread hand-off. An application thread
+     * that wants to send anything does not touch the socket: it puts a command on the queue
+     * above and wakes this reactor, and the reactor does the writing. The time in between is
+     * on the order path of every message the venue sends and was not measured anywhere until
+     * this histogram existed.
+     *
+     * Read it with itc_queue_latency_nanoseconds, which measures the inward half -- a message
+     * arriving at an application thread. A message crossing from one component to the next
+     * pays both, plus the socket in between, so neither figure is a whole hand-off.
+     *
+     * Registered under the scope "reactor" rather than under a thread's scope, because one
+     * reactor serves every application thread in the process and the command carries no record
+     * of which thread sent it. In the components on the order path one thread sends nearly all
+     * of the commands, so the distribution is that thread's; in a process where that is not
+     * true, this pools them.
+     */
+    HistogramHandle reactor_command_latency_histogram_;
+
+    /**
+     * @brief Commands picked up with no enqueue stamp, and so left out of the histogram above.
+     *
+     * A command built directly rather than through enqueue_control_command has a zero stamp.
+     * Recording it would measure the time since the monotonic clock's epoch and put the whole
+     * family into the overflow bucket, so it is counted here instead.
+     */
+    CounterHandle reactor_command_latency_unstamped_counter_;
+
+    /** @brief Whether the two members above have been registered yet. */
+    bool command_latency_metrics_registered_{false};
 
     std::string shutdown_reason_;
 

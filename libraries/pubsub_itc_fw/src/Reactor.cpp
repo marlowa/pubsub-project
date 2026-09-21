@@ -766,6 +766,10 @@ bool Reactor::pin_registered_threads() {
 }
 
 void Reactor::enqueue_control_command(ReactorControlCommand command) {
+    // Stamped here rather than by the caller so that every command carries one, whichever of
+    // the several enqueue sites it came from, and so that the stamp is taken as late as
+    // possible: what the reading is meant to show is the wait, not the caller's own work.
+    command.enqueued_ns_ = HighResolutionClock::now().time_since_epoch().count();
     command_queue_.enqueue(std::move(command));
     uint64_t one = 1;
     ssize_t n{0};
@@ -1007,6 +1011,8 @@ int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns,
 void Reactor::event_loop() {
     std::array<epoll_event, 64> events{};
 
+    register_command_latency_metrics();
+
     // Looking for work for a while before sleeping, where the configuration asks for it. What
     // this buys is not that work is noticed sooner but that the core never goes idle: an idle
     // core runs at a fraction of its speed for the first tens of microseconds after something
@@ -1044,6 +1050,26 @@ void Reactor::event_loop() {
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Event loop has finished");
 }
 
+void Reactor::register_command_latency_metrics() {
+    if (command_latency_metrics_registered_) {
+        return;
+    }
+    command_latency_metrics_registered_ = true;
+
+    // The same bounds as itc_queue_latency_nanoseconds, deliberately: the two measure the two
+    // halves of one hand-off, and they can only be added together or compared with each other
+    // if a given duration falls in the same bucket in both.
+    const std::vector<double> waited_buckets = {
+        100.0,    250.0,    500.0,    1000.0,    2500.0,    5000.0,    10000.0,    25000.0,    50000.0,
+        100000.0, 250000.0, 500000.0, 1000000.0, 2500000.0, 5000000.0, 10000000.0, 50000000.0, 100000000.0,
+    };
+    reactor_command_latency_histogram_ = metrics_endpoint_.register_histogram(
+        "reactor", "reactor_command_latency_nanoseconds",
+        "Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up", waited_buckets);
+    reactor_command_latency_unstamped_counter_ = metrics_endpoint_.register_counter(
+        "reactor", "reactor_command_latency_unstamped_total", "Commands picked up with no enqueue stamp, so excluded from reactor_command_latency_nanoseconds");
+}
+
 void Reactor::process_control_commands() {
     // Drain any blocked SendPdu commands from both managers before touching
     // the command queue. Each manager owns its own pending_send_ slot.
@@ -1061,6 +1087,17 @@ void Reactor::process_control_commands() {
         }
 
         const ReactorControlCommand& command = maybe_command.value();
+
+        // First act on the command, before anything is done with it, so the reading is the
+        // wait and the wakeup and none of the reactor's own work.
+        if (command.enqueued_ns_ != 0) {
+            const int64_t waited_ns = HighResolutionClock::now().time_since_epoch().count() - command.enqueued_ns_;
+            if (waited_ns >= 0) {
+                reactor_command_latency_histogram_.observe(static_cast<double>(waited_ns));
+            }
+        } else {
+            reactor_command_latency_unstamped_counter_.increment();
+        }
 
         PUBSUB_LOG(logger_, FwLogLevel::Debug, "Reactor process_control_commands picked up command {}", command.as_string());
 

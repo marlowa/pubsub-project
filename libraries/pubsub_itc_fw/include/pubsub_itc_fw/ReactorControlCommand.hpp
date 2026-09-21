@@ -140,6 +140,24 @@ class ReactorControlCommand {
     }
 
   public:
+    /**
+     * @brief When an application thread put this command on the reactor's queue.
+     *
+     * Nanoseconds on the same monotonic clock the rest of the framework reads, set by
+     * Reactor::enqueue_control_command and read once by the reactor when it picks the command
+     * up. The difference is how long the command waited, which is the half of a component's
+     * inter-thread hand-off that leads out of it.
+     *
+     * The other half, a message arriving at an application thread, is measured by
+     * itc_queue_latency_nanoseconds. Every message leaving a component crosses both, so
+     * neither figure describes a whole hand-off on its own.
+     *
+     * Zero means the command was built without going through enqueue_control_command, which
+     * happens in tests. The reactor counts those separately rather than recording a duration
+     * measured from the monotonic epoch.
+     */
+    int64_t enqueued_ns_{0};
+
     // AddTimer / CancelTimer payload fields
 
     ThreadID owner_thread_id_{};
