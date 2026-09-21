@@ -438,42 +438,57 @@ part of the method and not a finding about the venue.
 
 ## Unexplained
 
-### Twenty-two microseconds between the matching engine and the sequencer
+### Where a leg between two components goes, and what is left
 
-Measured on a venue started with an empty log and an empty book, 6,000 orders at 100 per second,
-first run discarded. Each leg between two components is split into the two inter-thread hand-offs
-it contains, both of which are now instrumented, leaving the socket and whatever else as the
-remainder:
+A message crossing from one component to the next passes through five things. All five are now
+measured, so a leg can be accounted for rather than guessed at, and what is left over is the
+socket and anything still missing.
 
-| Leg | Leg total | Out: application thread to reactor | In: reactor to application thread | Remainder |
-|---|---|---|---|---|
-| gateway to sequencer | 14.35 us | 3.25 us | 2.53 us | 8.57 us |
-| sequencer to matching engine | 13.99 us | 10.47 us | 3.63 us | -0.11 us |
-| matching engine to sequencer | 28.80 us | 4.25 us | 2.53 us | **22.01 us** |
-| sequencer to gateway | 27.20 us | 10.47 us | 3.44 us | 13.29 us |
+| Part | Metric |
+|---|---|
+| The sending thread's request waits for its reactor | `reactor_command_latency_nanoseconds` |
+| The reactor turns the request into bytes on a socket | `reactor_send_path_nanoseconds` |
+| The kernel carries them | *not measurable from inside one process* |
+| The receiving reactor turns readable bytes into a message | `reactor_receive_path_nanoseconds` |
+| The message waits for the receiving application thread | `itc_queue_latency_nanoseconds` |
 
-Round trip 98.07 microseconds, of which about 84 is moving messages between processes and about
-14 is the components doing their work.
+Medians over 6,000 orders at 100 per second, on a venue started with an empty log and book:
 
-**The sequencer to matching engine leg is fully accounted for.** The sequencer's own outward
-hand-off is the whole of it, which is what a leg should look like when the instruments cover it.
+| Component | Request waits | Send path | Receive path | Queue wait | Lap |
+|---|---|---|---|---|---|
+| gateway | 3.92 us | 4.03 us | 2.70 us | 3.49 us | 3.40 us |
+| sequencer | 11.58 us | 3.84 us | 3.50 us | 2.48 us | 3.36 us |
+| matching engine | 4.33 us | 3.85 us | 4.01 us | 3.60 us | 3.63 us |
 
-**The matching engine to sequencer leg is not.** Twenty-two microseconds sit between the matching
-engine's reactor being handed the report and the sequencer's application thread receiving it, and
-neither hand-off explains it. A message over the loopback interface costs about 4.2 microseconds
-one way when the receiver is busy.
+Each leg against the parts that make it up:
 
-**It is not that the sequencer's reactor is slow to read a socket.** The gateway sends to that
-same reactor and leaves only 8.57 microseconds unexplained. What differs is when in an order's
-life the message arrives: the order reaches the sequencer about 18 microseconds in, and the report
-comes back at about 65, by which time the sequencer has committed that order to the log and
-started replicating it.
+| Leg | Leg | Request wait | Send | Receive | Queue | Left over |
+|---|---|---|---|---|---|---|
+| gateway to sequencer | 13.70 us | 3.92 | 4.03 | 3.50 | 2.48 | **-0.23 us** |
+| sequencer to matching engine | 15.32 us | 11.58 | 3.84 | 4.01 | 3.60 | **-7.71 us** |
+| matching engine to sequencer | 25.22 us | 4.33 | 3.85 | 3.50 | 2.48 | **11.06 us** |
+| sequencer to gateway | 33.25 us | 11.58 | 3.84 | 2.70 | 3.49 | **11.64 us** |
 
-**One caveat on the arithmetic.** `reactor_command_latency_nanoseconds` pools every command a
-component sends, including replication and the subscriber stream, which no member waits for. The
-sequencer sends roughly eight commands per message, so its 10.47 microseconds is the median of a
-mixed population rather than of the one command the order is waiting for. Subtracting it is good
-enough to say which leg is anomalous and not good enough to say by exactly how much.
+Round trip 97.63 microseconds.
+
+**The gateway to sequencer leg is now fully accounted for**, to within a fifth of a microsecond.
+Every part of it is named.
+
+**The matching engine to sequencer leg has 11.06 microseconds left over.** A loopback crossing
+costs about four, so roughly seven microseconds of one leg remain unexplained. That is the
+smallest the unexplained part of this path has been.
+
+**A negative remainder is a measurement fault, not a fast leg, and there is one.** The two legs
+where the sequencer is the sender account for more than the leg contains. The reason is known:
+`reactor_command_latency_nanoseconds` pools every command a component sends, and the sequencer
+sends roughly eight per message -- replication, the subscriber stream, the write-ahead log --
+none of which a member waits for. Its 11.58 microseconds is the median of that mixture, and the
+sequencer to matching engine leg proves it is too large by at least 7.71, because nothing can
+account for more of a leg than the leg holds.
+
+**So the next instrument is decided by arithmetic rather than by argument:** the sending side
+needs to distinguish the command an order is waiting for from the commands it is not. Until then
+the two legs where the sequencer sends cannot be accounted for at all.
 
 ### The hop is in two populations
 

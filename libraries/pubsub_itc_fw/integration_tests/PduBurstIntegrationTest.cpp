@@ -118,7 +118,7 @@ static constexpr uint16_t any_os_assigned_port = 0;
 namespace {
 
 ReactorConfiguration make_reactor_config(std::chrono::microseconds spin_before_block = std::chrono::microseconds{0},
-                                         std::chrono::milliseconds inactivity_check_interval = std::chrono::milliseconds{100}) {
+                                         std::chrono::milliseconds inactivity_check_interval = std::chrono::milliseconds{100}, bool with_metrics = false) {
     ReactorConfiguration cfg{};
 
     // The reactor's own housekeeping timer is an epoll event, and any epoll event takes a
@@ -137,7 +137,30 @@ ReactorConfiguration make_reactor_config(std::chrono::microseconds spin_before_b
     // thread writes no wakeup at all. The two are different code paths through every send in this
     // file, so the tests below run the same burst down each of them.
     cfg.spin_before_block = spin_before_block;
+
+    // Off unless a test asks, because it starts a listener per reactor. Port 0 lets the
+    // operating system choose one, so parallel test binaries do not collide; the host has to be
+    // given as well, since the default is empty and a metrics listener that cannot bind stops
+    // the reactor.
+    cfg.metrics_configuration.enabled = with_metrics;
+    cfg.metrics_configuration.listen_endpoint = NetworkEndpointConfiguration{"127.0.0.1", 0};
     return cfg;
+}
+
+/** @brief How many observations a histogram family holds, read from a real scrape. */
+int64_t observation_count(const std::string& exposition, const std::string& family) {
+    std::istringstream stream(exposition);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.rfind(family + "_count", 0) != 0) {
+            continue;
+        }
+        const auto value_at = line.rfind(' ');
+        if (value_at != std::string::npos) {
+            return static_cast<int64_t>(std::stod(line.substr(value_at + 1)));
+        }
+    }
+    return -1;
 }
 
 // How long a polling reactor keeps looking before it would give up and sleep. Long enough that
@@ -871,7 +894,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesAPollingRea
     // ----- Receiver -----
     const ServiceRegistry receiver_registry;
     auto receiver_reactor =
-        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), receiver_registry, logger_->logger);
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test, true), receiver_registry, logger_->logger);
 
     receiver_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2});
 
@@ -889,7 +912,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesAPollingRea
     sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", receiver_port}, NetworkEndpointConfiguration{});
 
     auto sender_reactor =
-        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), sender_registry, logger_->logger);
+        std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test, true), sender_registry, logger_->logger);
 
     auto sender_thread = ApplicationThread::create<SenderThread>(logger_->logger, *sender_reactor, burst_size);
     sender_reactor->register_thread(sender_thread);
@@ -912,8 +935,26 @@ TEST_F(FrameworkPduBurstIntegrationTest, ExecutionReportBurstSurvivesAPollingRea
         << receiver_thread->received_count.load(std::memory_order_acquire) << "). A send that a polling reactor never picked up looks "
         << "exactly like this: " << last_wait_failure_description();
 
+    // Read before the reactors are shut down: the handles point into each reactor's own
+    // registry, which does not outlive it.
+    const std::string sender_metrics = sender_reactor->metrics().exposition_text();
+    const std::string receiver_metrics = receiver_reactor->metrics().exposition_text();
+
     shutdown_and_join(*sender_reactor, sender_reactor_thread);
     shutdown_and_join(*receiver_reactor, receiver_reactor_thread);
+
+    // ----- The reactor's own two halves of the journey -----
+    //
+    // Both are new instruments and both are only exercised by a real socket, so this is where
+    // they get to prove they record at all. The sending reactor turns a command into bytes; the
+    // receiving one turns readable bytes into a queued message. A burst of PDUs went from one to
+    // the other, so both must have observations, and a zero count means the timing was put
+    // somewhere the code does not go.
+
+    EXPECT_GT(observation_count(sender_metrics, "reactor_send_path_nanoseconds"), 0)
+        << "the sending reactor wrote " << burst_size << " PDUs and recorded no send path at all";
+    EXPECT_GT(observation_count(receiver_metrics, "reactor_receive_path_nanoseconds"), 0)
+        << "the receiving reactor read " << burst_size << " PDUs and recorded no receive path at all";
 
     // ----- Assertions -----
     // The same byte-for-byte comparison the sleeping-reactor test makes. Arriving is not enough:

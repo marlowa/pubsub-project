@@ -1012,6 +1012,20 @@ void Reactor::record_look_for_work() {
     last_look_for_work_ns_ = now_ns;
 }
 
+void Reactor::observe_receive_path(int64_t started_ns) {
+    const int64_t elapsed_ns = HighResolutionClock::now().time_since_epoch().count() - started_ns;
+    if (elapsed_ns >= 0) {
+        reactor_receive_path_histogram_.observe(static_cast<double>(elapsed_ns));
+    }
+}
+
+void Reactor::observe_send_path(int64_t started_ns) {
+    const int64_t elapsed_ns = HighResolutionClock::now().time_since_epoch().count() - started_ns;
+    if (elapsed_ns >= 0) {
+        reactor_send_path_histogram_.observe(static_cast<double>(elapsed_ns));
+    }
+}
+
 void Reactor::stop_polling_for_work() {
     // A sequentially consistent store, which on this processor carries a full barrier, so that
     // the look at the queue below cannot be run before other threads can see the flag go false.
@@ -1149,6 +1163,11 @@ void Reactor::register_command_latency_metrics() {
     reactor_command_latency_histogram_ = metrics_endpoint_.register_histogram(
         "reactor", "reactor_command_latency_nanoseconds",
         "Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up", waited_buckets);
+    reactor_send_path_histogram_ = metrics_endpoint_.register_histogram(
+        "reactor", "reactor_send_path_nanoseconds", "Nanoseconds the reactor took to turn a send request into bytes on a socket", waited_buckets);
+    reactor_receive_path_histogram_ = metrics_endpoint_.register_histogram(
+        "reactor", "reactor_receive_path_nanoseconds", "Nanoseconds the reactor took to turn readable bytes into a message on an application thread's queue",
+        waited_buckets);
     reactor_lap_histogram_ = metrics_endpoint_.register_histogram(
         "reactor", "reactor_lap_nanoseconds", "Nanoseconds between one look for work and the next, during which nothing is noticed", waited_buckets);
     reactor_command_latency_unstamped_counter_ = metrics_endpoint_.register_counter(
@@ -1179,9 +1198,12 @@ size_t Reactor::process_control_commands(size_t max_commands) {
         const ReactorControlCommand& command = maybe_command.value();
 
         // First act on the command, before anything is done with it, so the reading is the
-        // wait and the wakeup and none of the reactor's own work.
+        // wait and the wakeup and none of the reactor's own work. The same clock reading opens
+        // the send path below, because the two meet exactly here: the wait ends and the
+        // reactor's own work on the command begins.
+        const int64_t picked_up_ns = HighResolutionClock::now().time_since_epoch().count();
         if (command.enqueued_ns_ != 0) {
-            const int64_t waited_ns = HighResolutionClock::now().time_since_epoch().count() - command.enqueued_ns_;
+            const int64_t waited_ns = picked_up_ns - command.enqueued_ns_;
             if (waited_ns >= 0) {
                 reactor_command_latency_histogram_.observe(static_cast<double>(waited_ns));
             }
@@ -1243,8 +1265,11 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                 // Without this guard every subsequent SendPdu would overwrite the
                 // single pending_send_ slot, silently dropping all but the last PDU.
                 if (outbound_manager_.is_send_blocked() || inbound_manager_.is_send_blocked()) {
+                    // Not recorded: the bytes were stashed rather than written, and they go out
+                    // when the connection next reports itself writable.
                     return dealt_with;
                 }
+                observe_send_path(picked_up_ns);
                 break;
             }
 
@@ -1255,6 +1280,9 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                                    command.connection_id_.get_value());
                         command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
                     }
+                }
+                if (!outbound_manager_.is_send_blocked() && !inbound_manager_.is_send_blocked()) {
+                    observe_send_path(picked_up_ns);
                 }
                 break;
             }
@@ -1372,7 +1400,9 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         }
                     }
                     if (ev & (EPOLLIN | EPOLLERR)) {
+                        const int64_t readable_at_ns = HighResolutionClock::now().time_since_epoch().count();
                         outbound_manager_.on_data_ready(*conn);
+                        observe_receive_path(readable_at_ns);
                     }
                 } else if (conn->is_established()) {
                     if ((ev & EPOLLOUT) && conn->has_pending_send()) {
@@ -1397,7 +1427,9 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         process_control_commands();
                     }
                     if (ev & EPOLLIN) {
+                        const int64_t readable_at_ns = HighResolutionClock::now().time_since_epoch().count();
                         outbound_manager_.on_data_ready(*conn);
+                        observe_receive_path(readable_at_ns);
                     }
                 }
                 continue;
@@ -1430,7 +1462,9 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         process_control_commands();
                     }
                     if (ev & EPOLLIN) {
+                        const int64_t readable_at_ns = HighResolutionClock::now().time_since_epoch().count();
                         inbound_manager_.on_data_ready(*conn);
+                        observe_receive_path(readable_at_ns);
                     }
                 }
                 continue;

@@ -481,6 +481,14 @@ class Reactor : public ThreadLookupInterface {
      */
     void record_look_for_work();
 
+    /** @brief Records how long the reactor spent turning readable bytes into a queued message.
+     *  @param[in] started_ns When the reactor began dealing with the readable descriptor. */
+    void observe_receive_path(int64_t started_ns);
+
+    /** @brief Records how long the reactor spent turning a send request into bytes on a socket.
+     *  @param[in] started_ns When the reactor picked the command off the queue. */
+    void observe_send_path(int64_t started_ns);
+
     /**
      * @brief Carries out commands an application thread has asked for.
      *
@@ -706,6 +714,35 @@ class Reactor : public ThreadLookupInterface {
     /** @brief When this reactor last looked for work, for the histogram above. Zero until the
      *  first look, whose interval is meaningless and is not recorded. */
     int64_t last_look_for_work_ns_{0};
+
+    /**
+     * @brief How long the reactor takes to turn a send request into bytes on a socket.
+     *
+     * From picking the command off the queue to the write returning. It is the reactor's own
+     * work on the outbound path, and it sits between the two figures already measured: the wait
+     * before the reactor picked the command up, and the wait at the far end before the receiving
+     * application thread was given the message.
+     *
+     * A send the socket would not accept is not recorded. The bytes have not gone anywhere: the
+     * command is stashed until the connection reports itself writable, and timing it as though
+     * it had been written would report a fast send that never happened.
+     */
+    HistogramHandle reactor_send_path_histogram_;
+
+    /**
+     * @brief How long the reactor takes to turn readable bytes into a queued message.
+     *
+     * From the socket being reported readable to the read and the framing being finished and the
+     * message on an application thread's queue. It is the reactor's own work on the inbound path,
+     * and it is the last unmeasured piece of the journey from one component to the next.
+     *
+     * The kernel's own transfer is not in this and never can be from inside one process. What
+     * remains after this, the send path and the two queue waits are subtracted from a leg is the
+     * socket, and that remainder is the check on the whole accounting: a loopback message costs
+     * about four microseconds one way, so a remainder far from that means a measurement point is
+     * in the wrong place.
+     */
+    HistogramHandle reactor_receive_path_histogram_;
 
     /**
      * @brief Commands picked up with no enqueue stamp, and so left out of the histogram above.
