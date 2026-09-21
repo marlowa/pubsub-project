@@ -821,7 +821,7 @@ void Reactor::create_timer_fd(TimerID timer_id, ThreadID owner_thread_id, std::c
                                     __LINE__);
     }
 
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor created timer id {}", timer_id.get_value());
+    PUBSUB_LOG(logger_, FwLogLevel::Debug, "Reactor created timer id {}", timer_id.get_value());
     const Timer timer(owner_thread_id, timer_id, type, interval);
     auto timer_handler = std::make_unique<TimerHandler>(timer, *this);
     thread_timers.insert(timer_id);
