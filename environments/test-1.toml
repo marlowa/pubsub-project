@@ -517,6 +517,9 @@ sequencer_secondary_host              = "sequencer-secondary.test-1.exchange.int
 sequencer_secondary_port              = 11002
 
 [binary_order_gateway_a]
+# Reactor waiting: set to match the FIX gateway, so a comparison between the two protocols
+# measures the protocols rather than their configuration.
+reactor_spin_before_block = "0s"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9213
 gateway_instance_id        = 1

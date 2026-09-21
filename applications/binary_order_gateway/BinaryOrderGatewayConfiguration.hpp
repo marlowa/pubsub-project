@@ -166,6 +166,16 @@ struct BinaryOrderGatewayConfiguration {
     /** @brief How often to warn while an outbound connection is retrying. */
     std::chrono::minutes connect_retry_warning_interval{15};
 
+    /** @brief How long the reactor looks for work before sleeping, or zero to sleep at once.
+     *
+     *  Read from a duration written with its unit, such as "50ms".
+     *
+     *  Present here as well as on the FIX gateway, because a comparison between the two
+     *  protocols where only one of them may keep looking compares their configuration rather
+     *  than the protocols. Setting it uses a whole core whether or not orders arrive. See
+     *  ReactorConfiguration::spin_before_block. */
+    std::chrono::microseconds reactor_spin_before_block{0};
+
     /** @brief Objects per slab in the reactor command queue pool. */
     int32_t command_queue_pool_objects_per_slab{4096};
 

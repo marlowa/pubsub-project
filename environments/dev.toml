@@ -808,6 +808,9 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 
 [binary_order_gateway_a]
+# Reactor waiting: set to match the FIX gateway, so a comparison between the two protocols
+# measures the protocols rather than their configuration.
+reactor_spin_before_block = "50ms"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9213
 gateway_instance_id        = 1
@@ -843,6 +846,9 @@ event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
 
 [binary_order_gateway_b]
+# Reactor waiting: set to match the FIX gateway, so a comparison between the two protocols
+# measures the protocols rather than their configuration.
+reactor_spin_before_block = "0s"
 metrics_listen_host = "127.0.0.1"
 metrics_listen_port = 9214
 gateway_instance_id        = 2

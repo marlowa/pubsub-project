@@ -361,24 +361,27 @@ parameters are, so changing them could not move it.
 At 1200 orders a second the median is 89.6 microseconds. The round trip moves a great deal;
 it just does not move in response to anything that was being changed.
 
-### Binary is slower end to end than FIX at the median
+### Binary against FIX, end to end
 
-The same orders that binary decodes 34 times faster at the median arrive back later:
+Both gateways driven at identical rates in lockstep by `dashboard_load.py --mode compare`,
+31,200 orders each, with both reactors looking for work rather than sleeping:
 
-| | FIX | Binary |
-|---|---|---|
-| median | 94.2 us | 163.0 us |
-| 90th percentile | 221.9 us | 235.2 us |
-| 99th percentile | 430.4 us | 388.8 us |
+| | The gateway's own decode | End to end, median | p90 | p99 |
+|---|---|---|---|---|
+| FIX | 3.78 us | 105.12 us | 146.17 us | 186.29 us |
+| Binary | **0.05 us** | **103.29 us** | **132.39 us** | **174.68 us** |
 
-Both sets of figures were taken at 155 orders per second each, which is well inside the range
-where the idleness charge above dominates, so they compare two protocols on an idle machine.
+Binary is faster on every measure, and only slightly so at the median: it decodes 76 times
+faster and that buys 1.8 microseconds of the round trip. The round trip is dominated by what
+the two protocols share -- the sequencer, the matching engine, the log, and the report path --
+and the decode is a small part of it. The clearer gain is at the tail, 13.8 microseconds at the
+90th percentile and 11.6 at the 99th, which is an argument about consistency rather than speed.
 
-Ruled out: client pacing, since both clients held their offered rate smoothly, and queueing, since
-the inter-thread waits were 3.97 against 3.84 microseconds at the median. The unmeasured stage is
-the outbound half — encoding the execution report and sending it — which needs a second timestamp
-rather than a second metric family, because the report path carries no time origin of its own.
-[metrics.md](metrics.md) lists it under Open.
+**This reverses an earlier finding and the earlier one should not be quoted.** It said binary
+was *slower* end to end at the median, by 69 microseconds, despite decoding far faster. That
+was measured at 155 orders a second, which is well inside the range where a core waking from
+idle dominated every figure, so it compared which gateway happened to wake more slowly rather
+than the protocols themselves.
 
 ### What it would cost to stop the venue's threads sleeping
 
