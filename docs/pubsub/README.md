@@ -8,6 +8,7 @@ not yet built**, and the documents describing it are the design of record rather
 - [mep_oar.md](mep_oar.md) — The MEP and OAR design sketch. The MEP half is built; the OAR half is not
 - [mep_rewire_and_oar.md](mep_rewire_and_oar.md) — Rewiring the MEP onto TopicPublisher (done) and building OAR (planned)
 - [oar_bus_deduplication.md](oar_bus_deduplication.md) — Evidence gathered on broker-side deduplication for OAR's bus publisher
+- [oar_external_stream.md](oar_external_stream.md) — How OAR publishes to the external messaging system, Pulsar or Kafka: the interface, the Avro schema, schema evolution and registration, ordering, and configuration. **Design, not implemented**
 
 ---
 
