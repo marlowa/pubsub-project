@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 94 |
-| Open | 34 (21 defects, 13 tasks) |
+| Bugs recorded | 96 |
+| Open | 36 (23 defects, 13 tasks) |
 | Closed | 60 |
-| Next id | BUG-0095 |
+| Next id | BUG-0097 |
 
 ## Open bugs by severity
 
-12 high, 19 medium, 3 low.
+12 high, 21 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -44,6 +44,8 @@
 | [BUG-0089](#bug_0089) | medium | task | A member cannot ask the venue what it is holding |
 | [BUG-0091](#bug_0091) | medium | task | A member's standing instructions die with the gateway that received them |
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
+| [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
+| [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -2276,6 +2278,88 @@ enumeration or belong in `Text` alongside it. `CxlRejReason` has no "other" valu
 `OrdRejReason` does, and the venue currently sends `OrdRejReason=99`.
 
 Related: R-0142, R-0143 and R-0144 in `docs/book`, and the sections they sit in.
+
+### BUG-0095: Checking the format of a FIX price or quantity overflows a signed integer on long values {#bug_0095}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-26 |
+| Recorded | 2026-09-26 |
+| How | Reading `FixField::as_decimal` while establishing where the venue handles decimal values, for the design of the order activity recorder's published prices |
+| Impact | A member can send a price or quantity long enough to overflow a signed 64-bit integer inside the FIX gateway's validation. Signed overflow is undefined behaviour in C++, so what the gateway then does is not defined by the language |
+
+**What happens.** The FIX order gateway checks the format of every field whose FIX type is decimal:
+`QTY`, `PRICE`, `FLOAT`, `AMT`, `PERCENTAGE` and `PRICEOFFSET`. `python/fix_dictionary/emitter.py`
+maps each of those types to `fix_decimal`, and `FixMessageValidator::check_format` checks a
+`fix_decimal` field by calling `FixField::as_decimal` (`libraries/fix_codec/FixField.hpp`).
+
+`as_decimal` builds the number up one digit at a time in an `int64_t`, as `digits = digits * 10 +
+(character - '0')`, with no check for overflow. A value with more than eighteen digits, counting
+those after the decimal point, overflows it. In practice the value usually wraps round and the
+check still passes, because the validator only looks at whether `as_decimal` returned true, but the
+language gives no such assurance.
+
+**Nothing uses the number.** The validator discards the mantissa and exponent `as_decimal` returns;
+it only needs to know whether the text is well formed. No other code calls `as_decimal`. The venue
+does no arithmetic with prices or quantities anywhere: it carries them as the text the member sent,
+from the gateway through the matching engine to the execution report.
+
+**Why it is not high.** In the common case the overflow wraps and the message is handled normally,
+so nothing has been seen to go wrong. The fault is that correct behaviour depends on what the
+compiler happens to do with undefined behaviour.
+
+**Why it is not low.** The input comes from outside the venue, from any member, and reaches this
+code before anything else looks at the field.
+
+**What closing it needs.** Check the format by looking at the characters alone: an optional sign,
+at least one digit, at most one decimal point, and nothing else. Build no number, so there is no
+limit on the number of digits, in keeping with the rule that the venue imposes no maximum size on a
+FIX value. `as_decimal` then has no caller and is removed, with its tests in
+`libraries/fix_codec/tests/FixFieldTest.cpp` rewritten against the character check. A test must
+include a value of more than nineteen digits.
+
+Related: [BUG-0096](#bug_0096), and `docs/pubsub/oar_external_stream.md` section 4.6, which relies on
+prices and quantities being well-formed decimal text.
+
+### BUG-0096: The binary order gateway passes on prices and quantities without checking their format {#bug_0096}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-09-26 |
+| Recorded | 2026-09-26 |
+| How | Checking whether both order gateways validate the decimal text of prices and quantities, while designing the order activity recorder's published events |
+| Impact | A price or quantity that is not decimal text, such as `abc` or `1e5`, can enter the venue through the binary order gateway, be accepted, and appear in the execution report. The same order sent through the FIX gateway is rejected |
+
+**What happens.** The binary order gateway forwards a `NewOrderSingle` or an `OrderCancelRequest`
+without decoding it. `BinaryOrderGatewayThread::handle_new_order_single` passes the payload
+straight to `forward_order_in_envelope`, and its comment gives the reason: decoding the order would
+undo what makes the gateway cheap. So no field of the order is checked there, and the price and
+quantity reach the sequencer and the matching engine exactly as the member encoded them. The
+matching engine does not examine the price either.
+
+The FIX gateway checks the same fields through `FixMessageValidator` ([BUG-0095](#bug_0095)), so the
+two gateways accept different orders.
+
+**Why it matters beyond the member.** The venue passes prices and quantities on as text, and the
+order activity recorder publishes that text unchanged for systems outside the venue to parse
+(`docs/pubsub/oar_external_stream.md` section 4.6). A malformed value would reach those systems,
+which could not parse it and would have to set the event aside.
+
+**Why it is not high.** Only a member using the binary protocol can send such a value, the venue
+does not calculate with it, and nothing inside the venue fails because of it.
+
+**What closing it needs.** A decision on where the check belongs, because the gateway deliberately
+does not decode orders:
+
+- in the binary gateway, decoding only the price and quantity fields, at some cost to the gateway's
+  speed; or
+- in the matching engine, which already decodes every order, so that both gateways' orders pass the
+  same check at the same point. The FIX gateway's check would then be a second line of defence.
+
+Either way the check is the character check that closing BUG-0095 introduces, and both gateways'
+orders must be tested against it with the same malformed values.
 
 ## Closed
 

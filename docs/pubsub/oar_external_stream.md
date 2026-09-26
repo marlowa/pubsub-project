@@ -8,7 +8,7 @@
 ## 1. What this document covers
 
 The order activity recorder (OAR) subscribes to the topics of the matching engine publisher and
-publishes an event for each order to a system outside the venue. That system is called the
+publishes an event for each outcome of an order to a system outside the venue. That system is called the
 external messaging system in this document: Apache Pulsar or Apache Kafka. "External" distinguishes
 it from the venue's own pub/sub, which works quite differently. Other systems learn what happened to orders at the
 venue by consuming what OAR publishes there.
@@ -75,7 +75,7 @@ Three consequences follow, and each shapes something later in this document.
 ## 3. The external messaging library
 
 The interface and its implementations live in a library of their own, separate from the framework
-library `pubsub_itc_fw`. Its working name is `external_messaging`. The
+library `pubsub_itc_fw`. It is called `external_messaging`. The
 library knows nothing about orders, topics of the matching engine publisher, or OAR. It publishes
 bytes, with the information needed to publish them correctly.
 
@@ -210,19 +210,33 @@ one topic that both Pulsar and Kafka check fully.
   therefore appears to require that topic's strategy to be set to always compatible, which switches
   the check off. This has not yet been confirmed against a running Pulsar.
 
-An `OrderEvent` has three groups of fields.
+### 4.4 What an event records: outcomes
 
-**Fields every event has.**
+OAR exists so that systems outside the venue can maintain order books and show live orders. Each
+event therefore records an **outcome** that changes the set of live orders: something that happened
+to an order at the venue. It does not record a request a member made. The venue tells the member of every outcome with an execution
+report, so OAR's events are derived from execution reports, and OAR takes its input from the
+matching engine publisher's `execution_reports` topic.
 
-| Field | Contents |
-|-------|----------|
-| `seq_no` | The sequence number the venue assigned to the record this event came from. |
-| `producer_id` | OAR's producer identity (section 3.2). |
-| `event_kind` | Which kind of event this is. See below. |
-| `symbol` | The instrument. |
-| `cl_ord_id` | The member's identifier for the order or request (FIX `ClOrdID`). |
-| `venue_time_ns` | When the venue recorded the record, in nanoseconds since the Unix epoch. |
-| `published_time_ns` | When OAR published the event, in nanoseconds since the Unix epoch. |
+Recording outcomes rather than requests matters in two cases:
+
+- A cancellation request can be refused, for example when the order has already gone. A record of
+  requests would show the order as cancelled when it was not.
+- The venue cancels some orders itself, and those cancellations appear only as execution reports,
+  never as a request on the `orders` topic. A record of requests would miss them.
+
+The kinds of event, and the execution reports they come from:
+
+| Event kind | Execution report's `ExecType` | Meaning |
+|------------|-------------------------------|---------|
+| `Added` | `New` | The venue accepted the order and it is now open. |
+| `Amended` | `Replaced` | The venue changed an open order. The venue cannot yet amend an order, so no event of this kind is published yet. |
+| `Cancelled` | `Canceled` | The order is no longer open because it was cancelled, whether at the member's request or by the venue itself. |
+
+The matching engine currently produces execution reports of three kinds: `New`, `Canceled` and
+`Rejected`. It produces no fills. `Rejected` reports are not published. A rejected order was never
+added, so it never appears in an order book or among live orders, and it is of no interest to the
+systems OAR serves.
 
 **The kind of event.** `event_kind` is an Avro enum with the symbols `Unknown`, `Added`, `Amended`
 and `Cancelled`, and a default symbol of `Unknown`. The default matters for schema evolution. When
@@ -234,24 +248,87 @@ reaches older programs as `Unknown`, and they can skip it.
 It costs nothing now, and it means amendment needs no change to the kinds of event when the venue
 supports it.
 
-**Fields that apply to some kinds of event only.** Each of these is declared as either null or a
-value, with a default of null. For example:
+### 4.5 The fields of an event
 
-| Field | Filled in for |
-|-------|---------------|
-| `orig_cl_ord_id` | `Amended` and `Cancelled`: the identifier of the order being changed (FIX `OrigClOrdID`). |
-| `side` | All kinds. |
-| `ord_type` | `Added` and `Amended`. |
-| `order_qty` | All kinds. |
-| `price` | `Added` and `Amended`, for orders that have a price. |
-| `time_in_force` | `Added` and `Amended`. |
-| `account` | Whenever the member supplied one. |
-| `transact_time_ns` | Whenever the member supplied it: the member's own time for the order or request. |
+The fields follow the pattern of the execution report the event comes from. Fields that exist only
+for fills are left out, because the venue produces no fills. If it comes to produce them, they are
+added as optional fields with defaults, which is a compatible change (section 6).
 
-The final list of fields depends on two open decisions: whether events record requests, outcomes
-or both, and where the member's identity comes from (section 12, questions 4 and 5).
+**Fields every event has:**
 
-**Why one record with optional fields, and not a choice between several record types.** Avro also
+| Field | Avro type | Contents |
+|-------|-----------|----------|
+| `seq_no` | `long` | The sequence number the venue assigned to the execution report. |
+| `producer_id` | `string` | OAR's producer identity (section 3.2). |
+| `event_kind` | enum | Which kind of event this is (section 4.4). |
+| `exec_id` | `string` | The venue's identifier for the execution report (FIX `ExecID`). |
+| `order_id` | `string` | The venue's identifier for the order (FIX `OrderID`). |
+| `symbol` | `string` | The instrument. |
+| `side` | enum | Buy or sell. |
+| `leaves_qty` | `string` | The quantity still open after this event (section 4.6). |
+| `cum_qty` | `string` | The quantity executed so far. Always 0 while the venue produces no fills. |
+| `transact_time_ns` | `long` | The venue's time for the event, in nanoseconds since the Unix epoch (FIX `TransactTime`). |
+| `venue_time_ns` | `long` | When the venue recorded the execution report, in nanoseconds since the Unix epoch. |
+| `published_time_ns` | `long` | When OAR published the event, in nanoseconds since the Unix epoch. |
+
+**Fields that are present when the execution report carries them.** Each is declared as either
+null or a value, with a default of null:
+
+| Field | Avro type | Contents |
+|-------|-----------|----------|
+| `cl_ord_id` | `string` | The member's identifier for the order (FIX `ClOrdID`). |
+| `orig_cl_ord_id` | `string` | For `Amended` and `Cancelled`, the member's identifier of the order as it was before (FIX `OrigClOrdID`). |
+| `ord_type` | enum | The order type. |
+| `price` | `string` | The limit price (section 4.6). |
+| `stop_px` | `string` | The stop price. |
+| `order_qty` | `string` | The order's total quantity. |
+| `time_in_force` | enum | How long the order stays open. |
+| `expire_time_ns` | `long` | When the order expires, in nanoseconds since the Unix epoch. |
+| `account` | `string` | The member's account, if one was given. |
+| `min_qty`, `max_floor` | `string` | The minimum and displayed quantities, if given. |
+| `parties` | array of records | The parties to the order, as in the execution report's parties group. |
+| `text` | `string` | Free text the execution report carries. |
+
+How the member is identified is still to be confirmed
+against what consumers of such a stream need (section 12, question 3); until then the design follows the
+execution report, which identifies the member through `account` and `parties`.
+
+### 4.6 Prices and quantities
+
+Prices and quantities are published as Avro `string` values, holding the decimal text exactly as the
+venue carries it, for example `101.25` or `1500`. The venue carries them this way from end to end:
+FIX writes them as decimal text, and the DSL generator maps the FIX types `PRICE`, `QTY`, `AMT` and
+`FLOAT` to strings. OAR copies the text into the event unchanged, so no conversion can fail and no
+value can be altered.
+
+The venue never needs a price or a quantity as a number. It does no arithmetic with them and does
+not store them in a database; it only passes them on. Text is therefore sufficient, and it is also
+safer than any numeric type, because none both represents every such value exactly and has no
+limit on its size:
+
+- **Binary floating point** cannot represent most decimal fractions exactly. 0.1, for example, has
+  no exact binary representation.
+- **An integer holding the value multiplied by a fixed factor** is exact but limited. With a 64-bit
+  integer and a factor of 1,000,000, the largest whole amount that fits is 9,223,372,036,854, which
+  is thirteen digits. Amounts in currencies such as the yen can have sixteen or more significant
+  figures.
+- **Avro's `decimal` type** fixes a precision and scale in the schema, which imposes the same kind
+  of limit, and changing it later is not a compatible change.
+
+The text is in FIX's decimal format: an optional sign, digits, and at most one decimal point, with
+no exponent and no limit on the number of digits. The FIX order gateway checks every decimal field
+against this format, although the check itself has a defect ([BUG-0095](../bug_list.md#bug_0095)).
+The binary order gateway does not check it at all ([BUG-0096](../bug_list.md#bug_0096)). Until both
+are fixed, a malformed value can reach the published events.
+
+**What this asks of consumers.** A consumer that needs to calculate or compare with a price parses
+the text into an exact decimal type of its own, such as Java's `BigDecimal` or Python's
+`decimal.Decimal`. Prices must be compared by value, never as text: `101.25` and `101.250` are the
+same price, and the venue passes on whichever form the member sent.
+
+### 4.7 Why one record with optional fields
+
+**Why not a choice between several record types.** Avro also
 offers a union: a field that holds one of several record types, with a small index in the encoding
 saying which. A union of an "added" record, an "amended" record and a "cancelled" record looks
 tidy. But adding a fourth kind of event later means adding a fourth choice to the union, and a
@@ -322,8 +399,7 @@ DSL types map to Avro types as follows:
 | `list<T>` | an Avro `array` of T |
 
 Prices and quantities are strings in the venue's messages, because FIX represents them as decimal
-text. Whether `OrderEvent` keeps them as strings or uses Avro's `decimal` type is open (section 12,
-question 6).
+text. `OrderEvent` carries them as text too (section 4.6).
 
 ---
 
@@ -460,7 +536,7 @@ error.
 **The registry is a separate process.** Apache Kafka has no schema registry. The registries in use
 implement an HTTP interface with JSON bodies that Confluent defined for its own registry. Two
 registries under the Apache 2.0 licence implement it: Apicurio Registry and Karapace. Which one is
-open (section 12, question 3).
+open (section 12, question 2).
 
 **The registry's numbers.** The registry groups the versions of one schema under a name it calls a
 subject. Because each topic carries one message type (section 5.1), each topic has one subject,
@@ -725,19 +801,11 @@ consumer topics, and nothing else.
 
 ```toml
 [external_messaging_setup]
-# How long events are kept. This is a policy decision about the record the venue keeps outside
-# itself, not a technical one, and whoever owns that policy has to state it.
-retention = "${external_messaging_retention}"
-
 # How many copies of each event are kept, and how many must hold it before it counts as stored.
 # A single-machine development environment can only have one; production needs three and two, so
 # that one machine can fail without losing a confirmed event or stopping publishing.
 copies_kept = 3
 copies_required_for_confirmation = 2
-
-# Only for topics whose retention differs from the default above. The key is the declared name.
-[external_messaging_setup.retention_overrides]
-order_events = "${external_messaging_retention_order_events}"
 ```
 
 The deploy step translates the two settings about copies into each system's terms: for Kafka, the
@@ -745,13 +813,19 @@ topic's replication factor and its `min.insync.replicas`; for Pulsar, the namesp
 size, write quorum and acknowledgement quorum. Kafka's `min.insync.replicas` defaults to 1, and with
 it an event can be confirmed while only one machine holds it.
 
-Pulsar's retention needs particular care. By default Pulsar deletes an event once every subscription
-has acknowledged it, and keeps nothing for a topic with no subscriptions. Without a retention policy,
-events OAR publishes before any consumer subscribes are discarded. The deploy step therefore always
-sets retention, and refuses an environment that does not state it.
+**Retention is set in the external messaging system, not by this project.** How long events are
+kept is decided and configured by whoever runs the external messaging system, because it depends on
+obligations outside the venue, such as how long records must be kept for regulatory reasons. The
+deploy step does not set it. In the development environment, where the project runs its own broker,
+retention is seven days.
 
-An override that names a topic that is not declared is an error. Every error names the topic
-concerned.
+Pulsar's default needs particular care. By default Pulsar deletes an event once every subscription
+has acknowledged it, and keeps nothing for a topic with no subscriptions. With no retention policy,
+events OAR publishes before any consumer subscribes are discarded, which is the loss R-0049 forbids.
+So the deploy step reads each topic's retention without changing it, and refuses to continue if a
+Pulsar topic has no retention policy at all, saying that its administrator must set one.
+
+Every error the deploy step reports names the topic concerned.
 
 ### 10.6 How librdkafka's properties are set
 
@@ -813,7 +887,7 @@ A consumer adds:
 | `auto.offset.reset` | `largest` (the newest) | Named | `start_when_no_saved_position` |
 | `enable.auto.commit` | true | Fixed | false. With it true, librdkafka records a position in the background whether or not the event has been processed, which loses events the same way section 2 prevents on the producing side. |
 
-### 10.7 How the configuration is read, and how unknown keys are found
+### 10.7 How the configuration is read
 
 Reading reuses what exists. `pubsub_itc_fw::TomlConfiguration` already reads strings, booleans,
 integers, floating-point numbers, durations and arrays of tables. The framework already has loaders
@@ -823,43 +897,15 @@ messaging configuration follows the same pattern: an `ExternalMessagingConfigura
 an `ExternalMessagingConfigurationLoader`, in the external messaging library, so that every program
 that produces or consumes gets the same code and the same checks.
 
-Three things are missing from `TomlConfiguration`:
+`TomlConfiguration` needs one addition for this: reading an array of strings. It reads an array of
+numbers into a `std::vector<double>`, but has nothing for strings, which `bootstrap_servers`,
+`producer_topics` and `consumer_topics` need.
 
-1. **Arrays of strings.** It reads an array of numbers into a `std::vector<double>`, but has nothing
-   for strings, which `bootstrap_servers`, `producer_topics` and `consumer_topics` need.
-2. **Finding unknown keys.** Nothing currently notices a key that no loader reads, so a mistyped key
-   is silently ignored.
-3. **Reporting every problem at once.** The existing loaders stop at the first problem.
-
-**The proposed way of finding unknown keys** is for `TomlConfiguration` to record the full name of
-every key that any loader reads, and to report every key in the file that nobody read.
-
-- **The reads are the definition of what is known.** There is no separate list of known keys to
-  keep in step with the code. A separate list repeats every key name, and a name that stays in the
-  list after the code stops reading it would be accepted and ignored, which is the very fault being
-  prevented.
-- **The check runs once, at the end.** The component's own loader calls it after every section
-  loader has run, because they all share the one `TomlConfiguration` object. All the unread keys
-  are reported together, each with its full name, for example
-  `external_messaging.kafka.sasl.mechanism`.
-- **A key that is deliberately unused must be said to be.** Some keys are legitimately present but
-  not read: the Pulsar section when the system is Kafka, or the high availability keys when high
-  availability is switched off. The loader declares these explicitly, naming the section or key and
-  the reason, for example "external_messaging.pulsar: system is kafka". Each such declaration is
-  logged at Info when the program starts, so the log shows what was ignored and why.
-- **All reading happens while loading.** A key read only later, on some other code path, would be
-  reported as unknown. That is already how the loaders work: each one returns a filled structure,
-  and nothing reads the file afterwards.
-
-The check is tested by making it fail on purpose: a configuration with a mistyped key must stop the
-program and name the key. A configuration using every key must pass. Each declared exception must
-be tested with its condition both true and false.
-
-Applied to the whole venue, the check will probably find keys in the existing templates that no
-loader reads any more. So the check is first run over every template, as `deploy.py` renders them,
-and anything it finds is corrected before refusal is switched on. Whether the check, and reporting
-every problem at once, are adopted for the whole venue or only for the external messaging
-configuration is open (section 12, question 7).
+Refusing unknown keys, and reporting every problem at once, apply to every configuration file the
+venue reads, not only to this one. They are described in
+[configuration_files.md](../framework/configuration_files.md). The external messaging configuration
+relies on both. Its loader declares the section for the system that was not chosen as present on
+purpose, for example "external_messaging.pulsar: system is kafka".
 
 `deploy.py` already covers the neighbouring case: it refuses to write a configuration that still
 contains a `${...}` placeholder with no value.
@@ -903,34 +949,17 @@ This project includes a test consumer that checks OAR's output and does each of 
      needs no signature.
    - Pulsar's registry is part of the broker. Kafka needs a separate registry process.
 
-2. **The library's name.** The working name is `external_messaging`.
-
-3. **Which registry, if Kafka is used.** Apicurio Registry (Java) or Karapace (Python). Whether
+2. **Which registry, if Kafka is used.** Apicurio Registry (Java) or Karapace (Python). Whether
    either installs from a release tarball without network access, and runs on RHEL8, has not been
    checked.
 
-4. **Whether events record requests, outcomes, or both.** The `orders` topic carries requests: a
-   `NewOrderSingle` and an `OrderCancelRequest`. A cancellation request can be refused, for example
-   when the order has already been filled. Some cancellations are made by the venue itself and
-   appear only as execution reports, never as a request on the `orders` topic. R-0049 requires
-   every record the venue produces to reach the external messaging system. Whether a `Cancelled` event means
-   "a cancellation was requested" or "the order was cancelled" must be settled before the fields of
-   `OrderEvent` are final, and it decides whether OAR publishes events derived from execution
-   reports.
+3. **How the member is identified.** Section 4.5 follows the execution report, which identifies the
+   member through `account` and the parties group. This is to be confirmed against what consumers of
+   such a stream actually need.
 
-5. **Where the member's identity comes from.** An `OrderEvent` should say which member an order
-   belongs to. The order messages on the `orders` topic do not carry it as a field of their own.
-   Where OAR obtains it has not been established.
+4. **Whether the number of copies kept is also set by whoever runs the external messaging system**,
+   as retention is (section 10.5), rather than by the deploy step.
 
-6. **How prices and quantities are represented.** As strings, which is how the venue's messages
-   carry them, or as Avro's `decimal` type, which consumers can use as numbers without parsing but
-   which fixes a precision and scale in the schema.
-
-7. **Whether unknown keys are refused, and every problem reported at once, for the whole venue.**
-   Both are needed for the external messaging configuration (section 10.7). Applying them to every
-   component changes how all the existing loaders work, and will need the existing templates to be
-   corrected first.
-
-8. **The tuning values for the Kafka implementation** (section 10.6), chosen from measurement:
-   how long librdkafka waits to fill a batch, how many unconfirmed events it may hold, and whether
-   events are compressed.
+5. **The tuning values for the Kafka implementation** (section 10.6), chosen from measurement: how
+   long librdkafka waits to fill a batch, how many unconfirmed events it may hold, and whether events
+   are compressed.

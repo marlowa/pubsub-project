@@ -11,6 +11,7 @@ the primitive rather than the venue: a component here is a building block, not a
 - [cpu_pinning_anti_affinity.md](cpu_pinning_anti_affinity.md) — Declared core allocation, and background-by-default for everything undeclared
 - [socket_comms.md](socket_comms.md) — Inbound and outbound connection management, retries, and idle reaping
 - [serialisation_dsl.md](serialisation_dsl.md) — The DSL that generates PDU encoders and decoders
+- [configuration_files.md](configuration_files.md) — How configuration files are read, and refusing keys nobody reads. **The refusal is design, not implemented**
 - <a href="summary.md">summary.md</a> — Project summary: quick facts, component inventory, and where each piece lives
 - [topology.md](topology.md) — Companion to the PlantUML deployment diagram: what it shows and what it deliberately does not
 
