@@ -290,7 +290,7 @@ null or a value, with a default of null:
 | `text` | `string` | Free text the execution report carries. |
 
 How the member is identified is still to be confirmed
-against what consumers of such a stream need (section 12, question 3); until then the design follows the
+against what consumers of such a stream need (section 12, question 2); until then the design follows the
 execution report, which identifies the member through `account` and `parties`.
 
 ### 4.6 Prices and quantities
@@ -536,7 +536,7 @@ error.
 **The registry is a separate process.** Apache Kafka has no schema registry. The registries in use
 implement an HTTP interface with JSON bodies that Confluent defined for its own registry. Two
 registries under the Apache 2.0 licence implement it: Apicurio Registry and Karapace. Which one is
-open (section 12, question 2).
+open (section 12, question 1).
 
 **The registry's numbers.** The registry groups the versions of one schema under a name it calls a
 subject. Because each topic carries one message type (section 5.1), each topic has one subject,
@@ -939,31 +939,59 @@ This project includes a test consumer that checks OAR's output and does each of 
 
 ---
 
+### 10.8 The first implementation, and the sizes of the deployments
+
+**Kafka is implemented first.** Its storage is simpler to reason about than Pulsar's, which adds a
+separate storage layer (Apache BookKeeper) with its own rules. The interface stays independent of
+the system, so the Pulsar implementation can follow without changing OAR.
+
+The considerations that were weighed:
+
+- On the target platform, RHEL8 with gcc 8.5, neither client is available at a usable version from
+  Red Hat's repositories or EPEL, so both are built from release tarballs. librdkafka is the easier
+  build: everything it depends on is packaged for RHEL8. RHEL8's own packaged librdkafka is version
+  0.11.4, which is too old to use. The Pulsar C++ client also needs protobuf 3.20 or later, where
+  RHEL8 packages 3.5.
+- librdkafka does not run cleanly under ThreadSanitizer, so the Kafka implementation is not built in
+  the ThreadSanitizer configuration. Section 3.3 explains how the hand-over of confirmations to OAR's
+  thread is still checked there.
+- A pull request to librdkafka cannot be approved until the contributor has signed Confluent's
+  contributor licence agreement, whose text is not published where it can be read beforehand. The
+  Pulsar C++ client is an Apache Software Foundation project, where an ordinary pull request needs
+  no signature.
+- Pulsar's registry is part of the broker. Kafka needs a separate registry process.
+
+**The sizes of the deployments:**
+
+| Environment | Kafka machines | What it survives |
+|-------------|----------------|------------------|
+| Development | 1 | Nothing. It exists to develop and test against, and its environment file says that it is a single machine, which is the one case where the deploy step accepts a single copy of each event as confirmed (section 10.5). |
+| Production | 3, for now | The death of any one machine, without losing a confirmed event and without stopping publishing. |
+
+On three machines, each machine runs both a Kafka broker, which stores events, and a KRaft
+controller, which is one member of the group that agrees the cluster's metadata using the Raft
+consensus algorithm. Three controllers keep a majority when one dies. With a replication factor of 3
+and `min.insync.replicas` of 2, which are the administrator's settings (section 10.5), every event
+is stored on all three machines, and confirmed once two have it. When one machine dies, the other
+two still form a majority of controllers, and still satisfy `min.insync.replicas`, so publishing
+continues. When two die, publishing stops rather than confirm an event that only one machine holds.
+
+Whether three machines is the right minimum for production is still to be settled (section 12, question 4).
+
 ## 12. Open decisions {#oar_external_stream_open}
 
-1. **Pulsar or Kafka for the first implementation.**
-   - On the target platform, RHEL8 with gcc 8.5, neither client is available at a usable version
-     from Red Hat's repositories or EPEL. Both must be built from release tarballs.
-   - librdkafka is the easier build: everything it depends on is packaged for RHEL8. RHEL8's own
-     packaged librdkafka is version 0.11.4, which is too old to use.
-   - The Pulsar C++ client needs protobuf 3.20 or later, and RHEL8 packages 3.5, so protobuf is a
-     second tarball build. Whether the current client builds with gcc 8.5 has not been checked.
-   - librdkafka does not run cleanly under ThreadSanitizer, so the Kafka implementation is not built
-     in the ThreadSanitizer configuration.
-   - A pull request to librdkafka cannot be approved until the contributor has signed Confluent's
-     contributor licence agreement, whose text is not published where it can be read beforehand.
-     The Pulsar C++ client is an Apache Software Foundation project, where an ordinary pull request
-     needs no signature.
-   - Pulsar's registry is part of the broker. Kafka needs a separate registry process.
-
-2. **Which registry, if Kafka is used.** Apicurio Registry (Java) or Karapace (Python). Whether
+1. **Which registry to use with Kafka.** Apicurio Registry (Java) or Karapace (Python). Whether
    either installs from a release tarball without network access, and runs on RHEL8, has not been
    checked.
 
-3. **How the member is identified.** Section 4.5 follows the execution report, which identifies the
+2. **How the member is identified.** Section 4.5 follows the execution report, which identifies the
    member through `account` and the parties group. This is to be confirmed against what consumers of
    such a stream actually need.
 
-4. **The tuning values for the Kafka implementation** (section 10.6), chosen from measurement: how
+3. **The tuning values for the Kafka implementation** (section 10.6), chosen from measurement: how
    long librdkafka waits to fill a batch, how many unconfirmed events it may hold, and whether events
    are compressed.
+
+4. **The minimum size of a production deployment.** Three machines for now (section 10.8). Whether
+   that is enough, how split-brain is prevented at each layer, and what Pulsar would need, given
+   its separate storage and metadata layers, is still to be settled.
