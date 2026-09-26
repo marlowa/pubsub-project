@@ -195,9 +195,20 @@ written with. How it does so differs between Pulsar and Kafka, and is described 
 Every event OAR publishes is an `OrderEvent`. It is a single record type able to describe every
 kind of order event. Messaging systems call a record used this way an envelope.
 
-It has to be a single type because all events for an order must be published to one topic, so that
-they stay in order (section 9). The schema registry used with Kafka, and Pulsar's built-in registry,
-both expect one schema for each topic.
+It is a single type because all events for an order must be published to one topic, so that they
+stay in order (section 9), and one record type is the only way to carry several kinds of event on
+one topic that both Pulsar and Kafka check fully.
+
+- **Kafka.** The registries used with Kafka decide which subject a schema belongs to by a subject
+  name strategy. The default, `TopicNameStrategy`, gives each topic one subject, so every record on
+  the topic must conform to one schema's history. The alternatives, `RecordNameStrategy` and
+  `TopicRecordNameStrategy`, name the subject after the record type, so that one topic can carry
+  several record types, each with its own history and its own compatibility check. Every consumer
+  must then be configured with the same strategy.
+- **Pulsar.** Pulsar keeps one list of schema versions for each topic, and checks each new version
+  against the topic's compatibility strategy. Carrying several unrelated record types on one topic
+  therefore appears to require that topic's strategy to be set to always compatible, which switches
+  the check off. This has not yet been confirmed against a running Pulsar.
 
 An `OrderEvent` has three groups of fields.
 
@@ -272,8 +283,10 @@ list of topics that exist and the schema each one carries.
 
 **Each topic carries exactly one message type.** Where several kinds of event must stay in order
 relative to each other, they share a topic, and that topic's message type is an envelope such as
-`OrderEvent`. This keeps to the registries' expectation of one schema for each topic, which most
-consumers and tools also assume. It also makes the ordering promise explicit: events on different
+`OrderEvent`. One message type for each topic works identically on Pulsar and Kafka, keeps each
+topic's full compatibility check switched on in both, and uses the Kafka registries' default subject
+naming, which most consumers and tools assume. Section 4.3 explains why several record types on one
+topic would not. The rule also makes the ordering promise explicit: events on different
 topics have no guaranteed order relative to each other, so which topic an event goes to is a
 reviewed design decision.
 
