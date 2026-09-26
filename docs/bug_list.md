@@ -2350,16 +2350,16 @@ which could not parse it and would have to set the event aside.
 **Why it is not high.** Only a member using the binary protocol can send such a value, the venue
 does not calculate with it, and nothing inside the venue fails because of it.
 
-**What closing it needs.** A decision on where the check belongs, because the gateway deliberately
-does not decode orders:
-
-- in the binary gateway, decoding only the price and quantity fields, at some cost to the gateway's
-  speed; or
-- in the matching engine, which already decodes every order, so that both gateways' orders pass the
-  same check at the same point. The FIX gateway's check would then be a second line of defence.
-
-Either way the check is the character check that closing BUG-0095 introduces, and both gateways'
-orders must be tested against it with the same malformed values.
+**What closing it needs.** The check belongs in the gateway through which the order enters,
+whichever protocol it uses, and not in the matching engine. Checking that a member's input is well
+formed is the gateway's job; the matching engine is entitled to receive orders that have already
+passed it. So the binary gateway decodes the price and quantity fields of each order, which it
+does not do today, and checks them with the same character check that closing
+[BUG-0095](#bug_0095) introduces for the FIX gateway. It rejects an order that fails and tells the member why,
+as the FIX gateway does for the same order; which message the binary protocol uses for that is
+part of the fix. The cost to the gateway's speed is measured
+before and after. Both gateways' orders are tested with the same malformed values, and must be
+treated identically.
 
 ## Closed
 

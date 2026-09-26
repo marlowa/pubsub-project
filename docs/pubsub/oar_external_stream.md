@@ -785,45 +785,52 @@ be shorter than what the code does; its value is in the permissions it lets the 
 
 ### 10.5 The setup of the external messaging system
 
-The deploy step reads this from the environment file, applies it to every declared topic, and checks
-it. It creates whatever is missing, and refuses to continue if an existing topic differs from what
-is required. It never changes a live topic silently. Changing the number of partitions of an
-existing topic, for example, would break ordering.
+The setup is divided between the deploy step and whoever runs the external messaging system.
 
-**Fixed by the deploy step, not configurable:** one partition, or a non-partitioned topic in
-Pulsar; the schema policies of section 8; the released schema versions, registered in order.
+**What the deploy step does.** For every declared topic, the deploy step creates the topic if it
+is missing, and refuses to continue if an existing topic differs from what the design requires. It
+never changes a live topic silently. Changing the number of partitions of an existing topic, for
+example, would break ordering. The deploy step fixes these, and none of them is configurable:
+
+- one partition, or a non-partitioned topic in Pulsar;
+- the schema policies of section 8;
+- the released schema versions, registered in order.
 
 **Permissions.** From each program's `producer_topics` and `consumer_topics`, the deploy step grants
 that program's identity permission to write exactly its producer topics and read exactly its
 consumer topics, and nothing else.
 
-**Configured for each environment:**
+**What whoever runs the external messaging system decides.** How the system stores events is
+decided and configured by whoever runs it, not by this project, because it depends on things
+outside the venue: the machines the system runs on, and obligations such as how long records must
+be kept for regulatory reasons. That covers two things:
 
-```toml
-[external_messaging_setup]
-# How many copies of each event are kept, and how many must hold it before it counts as stored.
-# A single-machine development environment can only have one; production needs three and two, so
-# that one machine can fail without losing a confirmed event or stopping publishing.
-copies_kept = 3
-copies_required_for_confirmation = 2
-```
+- **Retention:** how long events are kept. In the development environment, where the project runs
+  its own broker, retention is seven days.
+- **Copies on separate machines.** Kafka and Pulsar each run on several machines, and store each
+  event on more than one of them, so that an event is not lost when one machine fails. Two numbers
+  control this: how many machines store each event, and how many of them must have stored it before
+  the producer is told the event is stored. In Kafka these are the topic's replication factor and
+  its `min.insync.replicas`; in Pulsar, the namespace's ensemble size, write quorum and
+  acknowledgement quorum.
 
-The deploy step translates the two settings about copies into each system's terms: for Kafka, the
-topic's replication factor and its `min.insync.replicas`; for Pulsar, the namespace's ensemble
-size, write quorum and acknowledgement quorum. Kafka's `min.insync.replicas` defaults to 1, and with
-it an event can be confirmed while only one machine holds it.
+When the deploy step creates a topic, it creates it with the storage settings the system's
+administrator has configured as defaults: in Kafka, the brokers' default replication factor; in
+Pulsar, the namespace's policies.
 
-**Retention is set in the external messaging system, not by this project.** How long events are
-kept is decided and configured by whoever runs the external messaging system, because it depends on
-obligations outside the venue, such as how long records must be kept for regulatory reasons. The
-deploy step does not set it. In the development environment, where the project runs its own broker,
-retention is seven days.
+**What the deploy step checks, without changing anything.** Two of the systems' defaults can lose
+events that OAR has been told are stored, which is the loss R-0049 forbids. The deploy step reads
+each topic's settings, and refuses to continue if either applies, saying what its administrator
+must change:
 
-Pulsar's default needs particular care. By default Pulsar deletes an event once every subscription
-has acknowledged it, and keeps nothing for a topic with no subscriptions. With no retention policy,
-events OAR publishes before any consumer subscribes are discarded, which is the loss R-0049 forbids.
-So the deploy step reads each topic's retention without changing it, and refuses to continue if a
-Pulsar topic has no retention policy at all, saying that its administrator must set one.
+- **Only one machine must store an event before it is confirmed.** Kafka's `min.insync.replicas`
+  defaults to 1. With it, OAR can be told an event is stored while one machine holds it, and if that
+  machine then fails, the event is gone after OAR has moved past it. The same applies to a Pulsar
+  acknowledgement quorum of 1. A single-machine development environment is the exception, and says
+  so in its environment file.
+- **A Pulsar topic with no retention policy at all.** By default Pulsar deletes an event once every
+  subscription has acknowledged it, and keeps nothing for a topic with no subscriptions. Events OAR
+  publishes before any consumer subscribes would be discarded.
 
 Every error the deploy step reports names the topic concerned.
 
@@ -957,9 +964,6 @@ This project includes a test consumer that checks OAR's output and does each of 
    member through `account` and the parties group. This is to be confirmed against what consumers of
    such a stream actually need.
 
-4. **Whether the number of copies kept is also set by whoever runs the external messaging system**,
-   as retention is (section 10.5), rather than by the deploy step.
-
-5. **The tuning values for the Kafka implementation** (section 10.6), chosen from measurement: how
+4. **The tuning values for the Kafka implementation** (section 10.6), chosen from measurement: how
    long librdkafka waits to fill a batch, how many unconfirmed events it may hold, and whether events
    are compressed.
