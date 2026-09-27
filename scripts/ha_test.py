@@ -874,124 +874,80 @@ def _me_primary_restart_step() -> RestartStep:
 
 # ── scenario catalogue ────────────────────────────────────────────────────────
 #
+# How leadership is decided, which every scenario below depends on. Each pair -- the two
+# sequencers, the two matching engines, the two arbiters -- has three voters. For a component
+# pair they are its two instances and the arbiter pool, which votes through whichever arbiter is
+# active; for the arbiters they are the two arbiters and the witness. An instance leads only while
+# its peer or the third voter has granted it a lease that has not run out, so its own vote and one
+# grant make a majority. The lease period is 3 s and a leader renews every second. The rules are in
+# docs/availability/majority_leases.md; scenario-specific notes are beside each scenario below.
+#
 # Scenario 1 — Primary sequencer death
-#   The sequencer pair uses a heartbeat/timeout mechanism: the leader sends a
-#   heartbeat PDU to its peer every 5 s; the follower arms a 15 s one-shot
-#   timeout that resets on each received heartbeat.  When sequencer_primary is
-#   SIGKILLed, both peer TCP connections (ports 7003/7004) close with RST.  The
-#   running timeout on sequencer_secondary fires at its remaining value (worst
-#   case 15 s).  The secondary then contacts the active arbiter to request the
-#   leader role and transitions.  The gateway already has a sequencer_secondary
-#   connection (port 7002), so it passes the "at least one sequencer connected"
-#   guard and forwards new orders to the secondary.  The matching engine already
-#   has an outbound ER connection to the secondary ER listener (7022), so ERs
-#   flow to the secondary immediately.
+#   sequencer_primary is killed. Its peer and the active arbiter had promised it their votes, and
+#   those promises run out a lease period after its last renewal. sequencer_secondary then asks
+#   to lead, the arbiter grants it, and it leads. The gateway already has a connection to the
+#   secondary and forwards new orders to it; the matching engine already sends its execution
+#   reports to both sequencers, so they reach the secondary at once.
 #
 # Scenario 2 — Primary arbiter death
-#   The arbiter pair mirrors the sequencer pair's heartbeat/timeout scheme
-#   (15 s timeout, 5 s heartbeat interval).  When arbiter_primary is killed,
-#   the arbiter_secondary detects it via its peer heartbeat timeout and
-#   self-promotes via the witness.  The sequencer_primary is already the leader
-#   and does not need to re-elect; it loses its arbiter_primary connection and
-#   retries it harmlessly.  Order flow is continuous during arbiter failover.
+#   arbiter_primary, the active arbiter, is killed. arbiter_secondary asks the witness once the
+#   witness's promise to the primary has run out, is granted, and becomes active. It then grants
+#   no component a lease for one lease period, because it does not know what the other promised.
+#   Leaders renew with their peers meanwhile, so order flow continues. The pair of matching
+#   engines is run for this reason: a lone engine would renew with nobody during that period.
 #
 # Scenario 3 — Secondary sequencer death
-#   The primary sequencer is the leader.  Killing sequencer_secondary causes
-#   the primary to log a peer-connection-lost warning and continue retrying the
-#   outbound peer connection (port 7004), which is normal behaviour.  No role
-#   transition occurs.  Orders continue without any disruption because the
-#   sequencer_primary is unaffected.
+#   The follower is killed. sequencer_primary renews with the arbiter alone and goes on leading.
+#   No role changes, and orders continue.
 #
 # Scenario 4 — Secondary arbiter death
-#   The primary arbiter is active.  Killing arbiter_secondary removes the peer
-#   connection from the primary arbiter's perspective, but the primary remains
-#   active and keeps retrying.  No sequencer state changes.  Orders continue.
+#   The passive arbiter is killed. arbiter_primary renews with the witness alone and stays
+#   active. No component notices, and orders continue.
 #
 # Scenario 5 — Witness death
-#   The witness is a quorum member for arbiter elections (it provides a tie-
-#   breaking vote so neither arbiter can self-promote without a majority).
-#   Once arbiter_primary has been elected active (during Phase 2), the arbiters
-#   communicate over their direct peer connection (ports 7203/7204) for ongoing
-#   heartbeats; the witness is not on the critical path for that traffic.
-#   Killing the witness has no observable effect on established roles or order
-#   flow.  NOTE: if both arbiters were to restart after this scenario, they
-#   would be unable to elect a new active without the witness.
+#   The witness is the third voter for the arbiters only. The active arbiter renews with its peer
+#   arbiter instead, and nothing else changes. If the active arbiter were then lost as well, the
+#   remaining arbiter would hold only its own vote and could not become active: scenario 8.
 #
 # Scenario 6 — Both arbiters dead
-#   Killing both arbiters leaves the system without any arbiter.  The
-#   sequencer_primary is already the leader and continues sequencing because
-#   the per-order hot path does not consult the arbiters.  The
-#   sequencer_secondary will keep retrying its arbiter connections, which is
-#   harmless.  No role transition occurs; orders continue.  HA is degraded:
-#   if sequencer_primary then dies, sequencer_secondary cannot elect a new
-#   leader (it would contact arbiters for the role grant, but none are
-#   reachable), leaving the service down until an arbiter is restarted.
+#   Every leader renews with its peer, whose vote with its own is a majority, so no role changes
+#   and orders continue. What is lost is the ability to fail over: a leader lost now leaves its
+#   group without a leader until an arbiter returns (R-0147), which scenario 9 tests.
 #
 # Scenario 7 — Sequential cascade: arbiter_primary then sequencer_primary
-#   First kills arbiter_primary and waits for arbiter_secondary to become the
-#   active arbiter (same mechanism as scenario 2, ≤15 s).  Then kills
-#   sequencer_primary: sequencer_secondary detects the heartbeat timeout,
-#   contacts the now-active arbiter_secondary for a role grant, and transitions
-#   to leader.  Verifies that a freshly-promoted arbiter correctly mediates a
-#   sequencer election.
+#   As scenario 2, then as scenario 1 with arbiter_secondary as the active arbiter. The sequencer
+#   takeover waits for the new active arbiter's lease period to pass as well. Shows that an
+#   arbiter that has just become active grants a component lease correctly.
 #
-# Scenario 8 — Witness-less arbiter election
-#   Kills the witness first (SETTLE_AFTER_KILL is enough — the arbiters use
-#   only their direct peer connection for ongoing heartbeats once elected).
-#   Then kills arbiter_primary.  When arbiter_secondary's peer_heartbeat_timeout
-#   fires (~15 s), it finds no witness connection and so has nobody to ask.
+# Scenario 8 — An arbiter left with only its own vote
+#   The witness is killed, then the active arbiter. arbiter_secondary holds only its own vote, so
+#   it does not become active, and it reports that the arbiters have no leader. Component leaders
+#   renew with their peers, so order flow is uninterrupted.
 #
-#   It declines.  An arbiter cannot tell a dead peer from an unreachable one,
-#   and this scenario kills the peer for real -- but the arbiter cannot know
-#   that, and the same silence is what a partition produces.  Promoting on it
-#   is how two arbiters both become active, each granting entitlements under
-#   generations it numbers itself.  So only the lower of the two configured
-#   identities may promote unasked, and only while it has never seen its peer
-#   acting; arbiter_secondary is neither.  The venue is left with no arbiter,
-#   which is scenario 9's condition and a defined one: nothing can move an
-#   entitlement until an arbiter or the witness returns, and the instances
-#   already holding theirs carry on.  Hence sequencer_primary stays leader and
-#   order flow is uninterrupted.
+# Scenario 9 — No arbiters, then the leader lost (R-0147)
+#   Both arbiters are killed, then sequencer_primary. sequencer_secondary cannot tell a dead
+#   leader from being cut off itself, and holds only its own vote, so it must not lead. It reports
+#   that the group has no leader, and no orders are sent afterwards. This is the case in which
+#   trading halts, by design, until an arbiter or the leader returns.
 #
-# Scenario 9 — Degraded sequencer election (no arbiters)
-#   Kills both arbiters in rapid succession (SETTLE_AFTER_KILL = 1 s each,
-#   well below the 15 s peer_heartbeat_timeout, so neither arbiter ever
-#   re-elects before being killed).  Then kills sequencer_primary.
-#   sequencer_secondary detects the heartbeat timeout and contacts the
-#   arbiters for a role grant; all arbiters are unreachable, so it hits
-#   arbitration_timeout (3 s) and self-promotes via the instance-id fallback
-#   (SequencerThread.cpp line ~531).  Recovery orders must flow through the
-#   newly self-promoted sequencer_secondary.
+# Scenario 10 — Matching engine death and restart
+#   The single matching engine is killed, its log deleted, and it is restarted. Its record of
+#   leading, kept on disk since this boot of the machine, lets it ask to lead again at once, and
+#   the arbiter grants it. It reconnects to both sequencers and recovery orders are confirmed in
+#   its new log.
 #
-# Scenario 10 — Matching engine death and restart (simple)
-#   Kills matching_engine, deletes its log, and restarts it.  ME reconnects
-#   to both sequencer ER listeners (7021 primary, 7022 secondary).  Because
-#   the ME has no WAL, order_id_counter_ resets to 0 on restart; recovery
-#   orders therefore begin at ME-ORD-1.  Phase 5 reads the new ME log from
-#   byte 0 and waits for ME-ORD-{orders_after*1000}.
+# Scenario 11 — Matching engine death with primary arbiter death
+#   As scenario 2 for the arbiters, then as scenario 10 for the matching engine. The restarted
+#   engine is granted its lease by the arbiter that has become active, once that arbiter's lease
+#   period has passed.
 #
-# Scenario 11 — ME death with primary arbiter death
-#   Kills arbiter_primary (waits for arbiter_secondary to become active,
-#   ≤15 s), then kills and restarts matching_engine.  Both sequencers remain
-#   alive and the sequencer_primary is still leader, so the ME reconnects to
-#   both ER listeners immediately.  Recovery orders are sequenced by the
-#   unchanged sequencer_primary.
+# Scenario 12 — Matching engine restart with both arbiters dead
+#   Both arbiters are killed, then the primary of the pair of matching engines is restarted. It
+#   reads its record of leading, asks again at once, and its peer grants it, because the peer's
+#   vote is promised to it. It keeps the lead with no arbiter at all, and recovery orders flow.
 #
-# Scenario 12 — ME death with both arbiters dead
-#   Kills arbiter_primary then arbiter_secondary in rapid succession (1 s
-#   settle each — well below the 15 s heartbeat timeout so no arbiter
-#   failover occurs), then kills and restarts matching_engine.  The
-#   sequencer_primary stays leader; ME reconnects to both ER listeners.
-#   HA is degraded: a future sequencer failure would leave no re-election
-#   path.
-#
-# Scenario 13 — ME death with both arbiters and witness dead
-#   Kills witness, arbiter_primary, and arbiter_secondary in rapid succession
-#   (1 s settle each), then kills and restarts matching_engine.  No HA
-#   component survives.  The sequencer_primary is already leader and keeps
-#   sequencing; ME reconnects to both ER listeners after restart.  The system
-#   is in a severely degraded state: a full restart of witness + both arbiters
-#   is required to restore HA capability.
+# Scenario 13 — as scenario 12, with the witness dead as well
+#   The witness takes no part in deciding which matching engine leads, so the outcome is the same.
 #
 _SCENARIOS: list[Scenario] = [
     # 1 — primary sequencer death: expect sequencer_secondary to become leader
