@@ -66,6 +66,9 @@ Two claims in the design documents do not survive checking:
 
 Writing the specifications raised further questions before the checker ran. Section 7 lists those.
 
+Section 11 checks a proposed replacement design, in which an instance leads only while a majority of three voters
+grants it a lease. It is specified in a third file, `MajorityLeaseHA.tla`.
+
 ### 1.1 Which findings the code now addresses
 
 The code now addresses these findings:
@@ -626,3 +629,122 @@ with nothing left to do, and that is not an error.
 To reproduce one finding, copy the configuration file, set the budgets given for that finding in
 section 5, and list only its property under `INVARIANTS`. TLC stops at the first property it finds
 broken. Every run in this document completes in under a minute on an ordinary machine.
+
+---
+
+## 11. The proposed design: leadership by majority, with leases
+
+Sections 1 to 10 check the design the code implements. This section checks a proposed replacement,
+described in [../majority_leases.md](../majority_leases.md). It is specified in `MajorityLeaseHA.tla`.
+
+In the proposed design, an instance may lead only while a majority of three voters has granted it a
+lease that has not run out. For a component pair the voters are the two instances and the active
+arbiter. For the arbiters they are the two arbiters and the witness. One specification covers both
+places: voters 1 and 2 may lead, and voter 3 never does. A change of active arbiter is modelled as
+voter 3 restarting, because the new active arbiter knows nothing of what the previous one promised
+and must wait as a restarted voter does.
+
+### 11.1 How this specification differs from the other two
+
+- **It models time.** Every promise, lease and restart wait is a count of clock ticks remaining,
+  and one step of the model advances the clock by a tick. A lease design cannot be checked without
+  this, because its safety argument is an argument about time.
+- **Messages may take any number of ticks, or be lost.** The safety results below therefore do not
+  depend on how quickly messages arrive. There is no `Quiet` setting for safety.
+- **Liveness is checked with `Prompt` on.** Whether a leader is eventually chosen does depend on
+  timing, so those checks assume that every message arrives within the tick it was sent in, and that
+  a leader asks for renewal in every tick. Weak fairness is assumed for every step the design takes,
+  and for restarts and link recoveries.
+- **Clock drift is not modelled.** The design shortens each lease by the largest drift allowed.
+
+### 11.2 The properties
+
+| Property | Kind | What it says |
+|----------|------|--------------|
+| `AtMostOneActing` | Safety | Two instances never act as leader at the same moment. An instance acts only while it holds an unexpired grant from a voter other than itself. |
+| `EpochNamesOneLeader` | Safety | No epoch is ever led by two different instances. |
+| `NoRegression` | Safety | No instance begins leading at an epoch below one the other instance has led in. It does not hold; see 11.5. |
+| `EventuallyLeaderForGood` | Liveness | From some point on, an instance acts as leader for good. |
+
+### 11.3 What held
+
+Every run below is exhaustive: TLC visited every reachable state within the budgets given. `MaxEpoch`
+bounds how many generations of epoch can be issued. With `MaxEpoch = 0` each instance can lead in one
+epoch only; with `MaxEpoch = 1`, in two. The lease is 2 ticks.
+
+| Failures allowed | `MaxEpoch` | Distinct states | Result |
+|------------------|-----------:|----------------:|--------|
+| One instance crash, one restart of voter 3, one link failure | 0 | 42,179,802 | Both safety properties hold |
+| Two instance crashes | 0 | 9,008,358 | Both hold |
+| Two link failures | 0 | 4,323,990 | Both hold |
+| Voter 3 down at the start; one instance crash; one link failure | 0 | 15,881,941 | Both hold |
+| One instance crash | 1 | 84,646,945 | Both hold |
+| One restart of voter 3 | 1 | 72,310,837 | Both hold |
+| One link failure | 1 | 47,402,987 | Both hold |
+
+Each extra generation of epochs multiplies the number of states by about twenty, which is why the
+larger failure budgets are run with `MaxEpoch = 0`.
+
+The liveness property, with `Prompt` on and `MaxEpoch = 1`:
+
+| Situation | Result |
+|-----------|--------|
+| Voter 3 down from the start and never restarted | Holds: the two instances elect a leader between themselves |
+| Voter 3 crashes at some point and never restarts | Holds |
+| One instance crash, which is followed by a restart | Holds |
+| One link failure, which later recovers | Holds |
+| One restart of voter 3 | Holds |
+
+The first two rows are the concern that degraded self-promotion was meant to address: losing the
+arbiter tier alone does not stop the pair.
+
+### 11.4 Each rule is needed
+
+Each rule of the design was removed in turn, to confirm that the checks can fail and that the rule is
+doing work. Every one of these runs fails, with every other rule in place.
+
+| Setting | Property broken | What happens | Trace |
+|---------|-----------------|--------------|-------|
+| `HolderCountsFromSend = FALSE` | `AtMostOneActing` | Instance 1 counts its lease from when the grant arrived, which was a tick after instance 2 granted it. Instance 2's promise runs out first, it asks to lead, voter 3 grants it, and for a moment both act. | `traces/lease-1-holder-counts-from-arrival.txt` |
+| `WaitOutOwnGrant = FALSE` | `AtMostOneActing` | Instance 1 grants instance 2 a lease and then at once asks to lead itself. Voter 3 grants instance 1, and both act. | `traces/lease-2-candidate-ignores-own-grant.txt` |
+| `RestartWaits = FALSE` | `AtMostOneActing` | Instance 1 grants instance 2 a lease, crashes, restarts having forgotten the grant, and asks to lead. Voter 3 grants it while instance 2 still acts. | `traces/lease-3-restart-does-not-wait.txt` |
+| `DegradedPromotion = TRUE` | `AtMostOneActing` | Both instances ask to lead at the same moment, and each promotes itself on its own vote. | `traces/lease-4-degraded-promotion.txt` |
+| `CandidateYields = FALSE`, voter 3 down | `EventuallyLeaderForGood` | Both instances ask to lead at the same moment, each refuses the other, both give up, and the same thing repeats for ever at the same epochs. | `traces/lease-6-no-yield-livelock.txt` |
+| `PeerVotes = FALSE`, voter 3 down | `EventuallyLeaderForGood` | Without the peer's vote, no instance can gather two of the three votes while voter 3 is down, so nobody ever leads. | `traces/lease-7-no-peer-vote.txt` |
+
+### 11.5 An epoch can go backwards
+
+`NoRegression` fails within two ticks, with one restart of voter 3 (`traces/lease-5-epoch-regresses.txt`):
+
+1. Instance 2 asks to lead at epoch 2. Voter 3 grants it, and instance 2 leads. Instance 1 has not yet
+   received instance 2's request, so it still holds epoch 0.
+2. Voter 3 crashes and restarts. It has forgotten that it granted epoch 2, and waits out one lease
+   period, as it must.
+3. Instance 2 has no grant left from anyone, so its lease runs out and it stops acting.
+4. Instance 1 asks to lead at epoch 1. Voter 3 grants it, and instance 1 leads at epoch 1, below
+   epoch 2.
+
+`AtMostOneActing` is not broken: instance 2 had stopped acting before instance 1 began. The cost is
+availability. A receiver that saw epoch 2 discards what instance 1 sends at epoch 1. Rule 8 of the
+design recovers from this: instance 1 learns of epoch 2 when its peer refuses to renew at epoch 1, or
+from a receiver, and it stops and asks again above epoch 2. The specification models the peer's
+refusal. It does not model receivers.
+
+### 11.6 Limits
+
+- The larger failure budgets were checked only with one generation of epochs, so behaviours that
+  need three or more elections of the same instance under those budgets were not explored.
+- Liveness was checked only with `Prompt` on, and only with two generations of epochs.
+- Clock drift, receivers on the order path, and the catch-up a new leader performs are not modelled.
+- The specification checks the design. No code implements it yet.
+
+### 11.7 Files
+
+| File | What it is |
+|------|------------|
+| `MajorityLeaseHA.tla` | The proposed design |
+| `MajorityLeaseHA.cfg` | The design's settings: every rule on, one failure of each kind. Change the constants as the tables above say to reproduce each run. |
+| `traces/lease-*.txt` | The counterexamples in 11.4 and 11.5 |
+
+A liveness run uses `SPECIFICATION LiveSpec` and `PROPERTY EventuallyLeaderForGood` in place of
+`SPECIFICATION Spec` and the invariants, with `Prompt = TRUE`.

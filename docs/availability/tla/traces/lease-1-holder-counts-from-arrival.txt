@@ -1,0 +1,16 @@
+Error: Invariant AtMostOneActing is violated.
+Columns. up, epoch, promise and quiet list voters 1, 2 and 3 in that order; role lists instances 1 and 2.
+promise "toX:N" means the voter has promised its vote to instance X for N more ticks, and "-" means no promise.
+held lists, for instance 1 and then instance 2, its own count of the ticks left on the grant from each voter 1, 2, 3.
+quiet is the ticks left in which a newly restarted voter grants nothing. msgs lists messages in flight as
+"type from>to eEPOCH". An instance acts as leader only while its role is lead and one of its own held counts is
+above zero, so "lead" with every held count at zero is a leader whose lease has run out and that has not yet tidied up.
+  1 Initial                up=<<T,T,T>>      role=unkn,unkn  epoch=<<0,0,0>> promise=- - -        held=<<<<0,0,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={}
+  2 StartCandidacy(1)      up=<<T,T,T>>      role=cand,unkn  epoch=<<0,0,0>> promise=to1:2 - -    held=<<<<0,0,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={req 1>2 e1, req 1>3 e1}
+  3 a message arrives      up=<<T,T,T>>      role=cand,foll  epoch=<<0,1,0>> promise=to1:2 to1:2 - held=<<<<0,0,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={ack 2>1 e1, req 1>3 e1}
+  4 Tick                   up=<<T,T,T>>      role=cand,foll  epoch=<<0,1,0>> promise=to1:2 to1:1 - held=<<<<0,0,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={ack 2>1 e1, req 1>3 e1}
+  5 a message arrives      up=<<T,T,T>>      role=lead,foll  epoch=<<1,1,0>> promise=to1:2 to1:1 - held=<<<<0,2,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={req 1>3 e1}
+  6 Tick                   up=<<T,T,T>>      role=lead,foll  epoch=<<1,1,0>> promise=to1:2 - -    held=<<<<0,1,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={}
+  7 StartCandidacy(2)      up=<<T,T,T>>      role=lead,cand  epoch=<<1,1,0>> promise=to1:2 to2:2 - held=<<<<0,1,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={req 2>1 e2, req 2>3 e2}
+  8 a message arrives      up=<<T,T,T>>      role=lead,cand  epoch=<<1,1,2>> promise=to1:2 to2:2 to2:2 held=<<<<0,1,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={ack 3>2 e2, req 2>1 e2}
+  9 a message arrives      up=<<T,T,T>>      role=lead,lead  epoch=<<1,2,2>> promise=to1:2 to2:2 to2:2 held=<<<<0,1,0>>,<<0,0,2>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={req 2>1 e2}
