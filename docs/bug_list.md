@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 97 |
-| Open | 36 (23 defects, 13 tasks) |
+| Bugs recorded | 98 |
+| Open | 37 (23 defects, 14 tasks) |
 | Closed | 61 |
-| Next id | BUG-0098 |
+| Next id | BUG-0099 |
 
 ## Open bugs by severity
 
-12 high, 21 medium, 3 low.
+12 high, 22 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -46,6 +46,7 @@
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
+| [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -145,6 +146,38 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- documentation |
+| Found | 2026-09-27 |
+| Recorded | 2026-09-27 |
+| How | Checking, after leadership moved to majority leases, where the documents still claim that the lowest instance id is preferred |
+| Impact | A reader of either document learns a mechanism the venue does not have: arbitration requests and decisions, peer heartbeats, promotion timeouts, a lowest-id rule, and self-promotion when no arbiter answers |
+
+**What is wrong.** Leadership is decided by a majority of three voters, each granting leases, as
+`docs/availability/majority_leases.md` and `docs/availability/design_notes.md` section 11f state.
+Two documents still describe the mechanism that replaced:
+
+- `docs/availability/wal_and_ha.md`: the table of which components have high availability, the
+  whole "Leader-Follower Protocol" section (the message summary, epoch semantics, startup
+  election, leader death and promotion, split-brain protection), the matching engine failover
+  steps, the "Arbiter" section, and the timing items that refer to heartbeats.
+- `docs/framework/summary.md`: its account of the leader and follower messages and of what
+  happens during a network partition.
+
+The messages they name -- `StatusQuery` in its old role, `Heartbeat`, `ArbitrationReport`,
+`ArbitrationDecision` -- are gone from `leader_follower.dsl`, replaced by `LeaseRequest`,
+`LeaseGrant` and `LeaseRefusal`.
+
+**What to do.** Rewrite those parts to describe what the code does now, pointing to
+`majority_leases.md` for the rules rather than restating them, so there is one account to keep
+current. Say nothing about what the sections used to describe.
+
+---
 
 ### BUG-0083: Scenario 26 failed once inside the suite and has not been reproduced {#bug_0083}
 

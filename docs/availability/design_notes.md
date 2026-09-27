@@ -114,12 +114,16 @@ Hardware and kernel remain healthy. We use a **Shared Memory (SHM) Journal** app
 ### Dealing with Machine Death (Outer Loop)
 Total silence from a node requires a "Last Resort" failover.
 
-* **Trigger:** Heartbeat timer expires and the primary fails to reconnect
-    after the local recovery grace period.
-* **Safety:** Follower uses STONITH to ensure the primary is dead before
-    promoting, preventing split-brain.
-* **Asymmetric Strictness:** In the absence of an arbiter, use "Lowest
-    Instance ID Wins" as a tie-breaker.
+* **Trigger:** The leader's lease runs out because nothing renewed it, and the
+    follower's own promise to the leader runs out with it. A local restart
+    that finishes within the lease period keeps the lead instead (section 11).
+* **Safety:** The follower takes over only with a majority: its own vote and
+    the arbiter pool's. The old leader, if it is alive but cut off, has already
+    stopped acting, because its lease ran out first. No node is removed by
+    force (section 10).
+* **With no arbiter:** The follower does not take over. It cannot tell a dead
+    leader from being cut off itself, so the group has no leader until an
+    arbiter or the leader returns (R-0147).
 
 ---
 
@@ -185,39 +189,20 @@ it also does not stop, and it may hold resources until someone intervenes.
 
 ## 11. Restart of a failed process: what role does it come back as? {#ha_restart_role}
 
-Agreed 2026-08-22, while designing process supervision.
+**A process that dies on a machine that is still alive is restarted, and it comes back holding no
+position.** It leads only once a majority of its three voters has granted it a lease, as
+[section 11f](#ha_majority_leases) describes. What it gets depends on what happened while it was
+down:
 
-**A process that dies on a machine that is still alive should be restarted, and it should come
-back as a follower unless it discovers there is no leader.** If it came back believing it led,
-there would be two leaders whenever the peer had already been promoted -- the split-brain the
-arbiter exists to prevent.
+* **It was leading, and its supervisor restarted it within the lease period.** It finds its record
+  of leading, written to disk during the same boot of the machine, and asks to lead again at once.
+  Its peer and the arbiter grant it, because both promised their votes to it, so it keeps the
+  lead and its peer never takes over.
+* **Its peer took over while it was down.** Its request is refused, it grants the peer's next
+  renewal, and it follows. It never takes the lead back because of which instance it is.
 
-Coming back as a follower also means the restart can be made as fast as we like. There is no
-window in which a hurried restart might collide with a promotion that is already under way,
-because whichever of the two happens first, the restarted instance ends up following.
-
-**The lowest-instance-id preference is a cold-start tie-break, not a leadership policy.** It
-exists because at startup the two instances can come up in either order with a delay between
-them, and something has to make that deterministic.
-
-It is the wrong rule for a restart, because by then one of the two may already be leading and
-serving traffic. Applying a preference at that point moves leadership for no reason other than
-which id is lower, and the instance it moves leadership *to* is the one that just failed. The
-arbiter currently applies it to both cases -- see
-`docs/bug_list.md`, BUG-0031.
-
-The rule that distinguishes them:
-
-* **If a leader is recorded for the group and that instance is still connected, it keeps
-  leadership.** A restarted primary becomes the follower.
-* **Otherwise the lowest instance id wins.** This covers a genuine cold start, and it covers
-  the primary restarting to find the secondary's machine gone -- it cannot reach the peer, the
-  arbiter sees no peer connection, and the primary takes leadership.
-* **The arbiter decides in every case.** A restarting node never promotes itself, so no
-  sequence of restarts can produce two leaders.
-
-**Why the pair must be able to swap repeatedly.** If the secondary is promoted and later dies,
-the primary -- by then a follower -- must be able to take over again.
+No sequence of restarts can produce two leaders, because each leader needs two of the three votes
+and every voter grants one instance at a time.
 
 So the two words must not be confused. **Primary and secondary are permanent names**, fixed to
 instance ids in configuration, and they never change for the life of a deployment. **Leader and
@@ -225,19 +210,24 @@ follower are positions**, and either instance can hold either one at any time. A
 "the primary is the follower" is not a contradiction; after one failover it is the normal
 state.
 
+**The names matter in one place only: a pair that starts together.** Neither instance asks to
+lead during its first lease period, and the secondary waits one renewal interval longer than the
+primary before it first asks. So when both start within about a second of each other, the primary
+asks first and leads. Started further apart, whichever started first leads, and that is correct:
+what matters is that exactly one leads. After a failover, whichever instance leads keeps the lead.
+
 **Two consequences that are easy to miss.**
 
-* **Resuming leadership must wait for reconciliation, not for the decision.** A restarted
-  process has lost its state; that is why it restarted. A leader with an empty order book does
-  not know what is resting, so a member's cancel for a live order is rejected and the venue has
-  quietly lost state it still holds.
-* **The grace period is not a number to be chosen; it is measured.** The follower waits before
-  promoting so that a quick local restart can make promotion unnecessary. Set that wait shorter
-  than a restart takes and the venue fails over to another machine for a failure that did not
-  need it. Set it far longer and a genuinely dead machine is tolerated for longer than it
-  should be. The right value is therefore whatever a supervised restart actually takes, plus a
-  margin -- which cannot be known until restarts have been timed, and is a reason to build the
-  restart before tuning the timer.
+* **Leading must wait for the catch-up, not only for the lease.** A restarted process may have
+  missed orders while it was down. An instance granted a lease catches up from the sequencer's
+  log before it acts, so a member's cancel for a live order is never rejected by a leader that
+  does not know the order is resting.
+* **A restart keeps the lead only if it finishes within the lease period.** The peer cannot take
+  over until its own promise to the leader and the arbiter's have both run out, which is at least
+  one lease period after the leader's last renewal. So the lease period must be longer than a
+  supervised restart takes, and how long a restart takes is measured rather than assumed
+  (R-0081). A longer lease period tolerates slower restarts, and makes the venue slower to fail
+  over when a machine is really lost.
 
 ---
 

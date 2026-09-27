@@ -411,9 +411,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     pubsub_itc_fw::TimerID book_metrics_timer_id_{};
 
-    // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
-    // The pair's fixed identities. Primary is always the lower id -- the arbiter's cold-start
-    // preference relies on it -- and neither ever changes for the life of a deployment.
+    // The pair's fixed identities. Neither ever changes for the life of a deployment. The only
+    // preference between them is that the secondary waits longer before it first asks to lead, so
+    // the primary leads when both start together; see fix_common/PairLeaseAgent.hpp.
     // Which of them LEADS is a separate question and moves; see docs/availability/design_notes.md#ha_restart_role.
     static constexpr int64_t primary_instance_id = 1;
     static constexpr int64_t secondary_instance_id = 2;

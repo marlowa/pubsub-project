@@ -228,11 +228,13 @@ those components rather than of members.
 
 \begin{requirement}{R-0062}{An instance already acting keeps its entitlement when another returns}
   Where an instance holds the entitlement and is still present, an instance
-  rejoining the group shall be told to follow, whatever its configured name.
+  rejoining the group shall follow it, whatever its configured name.
   \rationale{Preferring the configured primary at this point moves the
   entitlement for no reason but a name. It also moves the entitlement to the
-  instance that has just failed, and away from one that is serving. The
-  configured preference is a cold-start tie-break.}
+  instance that has just failed, and away from one that is serving. The only
+  preference the configured names give is at a start: the secondary waits
+  longer than the primary before it first asks, so the primary acts when the two
+  start together.}
   \covers{ha_test:24, ha_test:25}
 \end{requirement}
 

@@ -1888,11 +1888,10 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
 
     if (!reconciling_to_lead_) {
         // Current, and that is all. This catch-up was done at startup so that nothing is
-        // served on a stale book; whether this instance may act is a separate question and
-        // belongs to the arbiter. Promoting here would have every instance that manages to
-        // catch up decide for itself that it leads, which is the condition arbitration exists
-        // to prevent -- and with no arbiter reachable it would also skip the degraded rule
-        // that says only the lower instance id may promote.
+        // served on a stale book; whether this instance may act is a separate question, and is
+        // answered by whether a majority grants it a lease. Leading here would have every
+        // instance that manages to catch up decide for itself that it leads, which is the two
+        // leaders the lease rules exist to prevent.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: caught up at seq_no={} with {} order(s) on the book -- current, and waiting to be told what it may do",
                    ack.last_seq_no, order_book_.size());
