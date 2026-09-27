@@ -8,6 +8,8 @@ What it enforces:
 * every identifier used in the book is listed in ``docs/book/requirement_ids.txt``, and is listed there once;
 * every requirement gives a reason for existing;
 * every scenario a requirement claims to be verified by exists in ``scripts/ha_test.py``;
+* every TLA+ counterexample a requirement claims to be verified by (``tla:NAME``) is listed in ``scripts/tla_trace_pages.py``, which reruns each one at
+  install time;
 * every scenario in ``ha_test.py`` verifies at least one requirement.  Reported, and fatal only under ``--strict``.
 
 It also counts the gaps the book records, and checks that every defect a gap cites exists in ``docs/bug_list.md`` and is still open there.  A gap is a
@@ -30,6 +32,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LEDGER = _PROJECT_ROOT / "docs" / "book" / "requirement_ids.txt"
 _HA_TEST = _PROJECT_ROOT / "scripts" / "ha_test.py"
 _BUG_LIST = _PROJECT_ROOT / "docs" / "bug_list.md"
+_TLA_TRACE_PAGES = _PROJECT_ROOT / "scripts" / "tla_trace_pages.py"
 
 _ID_PATTERN = re.compile(r"^R-\d{4}$")
 
@@ -123,6 +126,11 @@ def read_scenarios(path: Path) -> set[int]:
     return {int(n) for n in re.findall(r"^\s*number=(\d+),", path.read_text(), re.M)}
 
 
+def read_counterexamples(path: Path) -> set[str]:
+    """The names of the TLA+ counterexamples tla_trace_pages.py reruns: the first argument of each Counterexample entry."""
+    return set(re.findall(r"Counterexample\(\s*'([^']+)'", path.read_text()))
+
+
 def check(req_path: Path) -> tuple[list[str], list[str]]:
     """Every complaint, as (errors, unlinked scenarios) in the order a reader would want to fix them."""
     problems: list[str] = []
@@ -134,6 +142,7 @@ def check(req_path: Path) -> tuple[list[str], list[str]]:
     allocated, ledger_problems = read_ledger(_LEDGER)
     problems.extend(ledger_problems)
     scenarios = read_scenarios(_HA_TEST)
+    counterexamples = read_counterexamples(_TLA_TRACE_PAGES)
 
     seen: dict[str, str] = {}
     claimed: set[int] = set()
@@ -160,9 +169,14 @@ def check(req_path: Path) -> tuple[list[str], list[str]]:
             problems.append(f"{where}: says nothing about what verifies it -- use \\covers or \\uncovered")
 
         for reference in req.get("covers", []):
+            tla = re.fullmatch(r"tla:([\w-]+)", reference)
+            if tla is not None:
+                if tla.group(1) not in counterexamples:
+                    problems.append(f"{where}: claims TLA+ counterexample {tla.group(1)}, which {_TLA_TRACE_PAGES.name} does not list")
+                continue
             match = re.fullmatch(r"ha_test:(\d+)", reference)
             if match is None:
-                problems.append(f"{where}: coverage '{reference}' is not of the form ha_test:N")
+                problems.append(f"{where}: coverage '{reference}' is not of the form ha_test:N or tla:NAME")
                 continue
             number = int(match.group(1))
             claimed.add(number)
@@ -201,6 +215,7 @@ def main() -> int:
     requirements = read_requirements(args.req_file)
     covered = sum(1 for r in requirements if r.get("covers"))
     scenarios = read_scenarios(_HA_TEST)
+    counterexamples = read_counterexamples(_TLA_TRACE_PAGES)
 
     print(f"requirements stated: {len(requirements)}, verified by at least one scenario: {covered}, awaiting coverage: {len(requirements) - covered}")
     print(f"ha_test scenarios: {len(scenarios)}, verifying at least one requirement: {len(scenarios) - len(unlinked)}, verifying none: {len(unlinked)}")

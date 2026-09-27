@@ -274,28 +274,6 @@ when.
   the venue's largest structure, so a per-order size increase is not free. Deferred rather than active:
   nothing is broken today, but the next missing field is a matter of time.
 
-- **Check the high availability design with TLA+** (high availability).  
-  TLA+ is a language for describing a system's design precisely enough for a tool to check it. The
-  description states what the system's state can be, which steps can change it -- a message sent,
-  delayed or lost, a process crashing or restarting -- and which properties must always hold. Its
-  model checker, TLC, then explores every reachable state of a small version of the system, covering
-  every ordering of messages and every crash at every point, and reports the exact sequence of steps
-  that breaks a property if one exists. It checks the design, not the code.  
-  The venue's high availability design is the kind of protocol it is meant for: primary and
-  secondary instances whose leader and follower roles change, the pair of arbiters that decides
-  which instance leads, the witness that the leader-follower protocol uses as a third party, the
-  epochs that stop a replaced leader from acting, promotion, and the rule that an engine catches up
-  before it acts. The properties to check include that two instances never act as leader at the
-  same time, that a promoted instance never acts on state older than what its predecessor had
-  confirmed, and that the arbiter declines rather than guesses. Several open defects are the result
-  of failure sequences of exactly this kind, among them [BUG-0010](bug_list.md#bug_0010),
-  [BUG-0062](bug_list.md#bug_0062) and [BUG-0085](bug_list.md#bug_0085).  
-  Deferred because it is a project of its own, with a real learning curve: the specification has to
-  be written from the design documents in `docs/availability`, kept small enough for the model
-  checker to finish, and then compared with what the code actually does. The value is in finding a
-  design error before a failure in production does, and in turning the design documents' claims into
-  checked statements.
-
 - **Adopt Conan for C++ dependency management** (build tooling).  
   Replace the current `THIRDPARTY_DIR` + `*_VERSION` env-var scheme with a Conan `conanfile.py` pinning the C++ third-party deps (fmt, quill, argparse, tsl-robin-map, googletest — all in ConanCenter) plus a gcc / `cppstd=17` profile. Low-churn fit: the build already uses config-mode `find_package(<pkg> CONFIG)`, so Conan's `CMakeDeps` / `CMakeToolchain` generators slot in with minimal `CMakeLists` change. Conan is pip-installable, so no root needed on RHEL8. **Must be designed first:** the Docker build is deliberately offline/air-gapped (deps prebuilt, liquibase copied from host), whereas Conan defaults to fetching from ConanCenter — so it needs a local Conan remote or a pre-seeded cache baked into the image. Approach when picked up: spike on a branch, validate the offline path in the Rocky 8 container. Deferred for now — the current env-var scheme works; not urgent.
 
@@ -303,6 +281,18 @@ when.
 
 Kept as a record of what the "Active / Next" and "Deferred" lists used to hold. The full
 account of each is in `pubsub_itc_fw_summary.md` under the same item number.
+
+- **Check the high availability design with TLA+** (high availability) -- done 2026-09-27.
+  The design the code implements is specified in two TLA+ descriptions, one of the sequencer pair
+  and its arbiter and one of the arbiter pool and the witness, and checked with the model checker
+  TLC. Model checking found eight defects; the code addresses six in full and part of another. A
+  third description specifies a proposed replacement, in which an instance leads only while a
+  majority of three voters grants it a lease, and it is a proposal only. The results are in
+  [findings.md](availability/tla/findings.md), the proposal in
+  [majority_leases.md](availability/majority_leases.md), and the functional specification states
+  the checking and its requirement (R-0145) in the high availability chapter. The install step
+  reruns every recorded counterexample and writes a page that steps through them; see
+  [building.md](orientation/building.md#tla_pages).
 
 - **Pub/sub WAL** (item 7) — done as slice 10. Topic-based fan-out over the WAL, streamed and
   socket-paced, with replay from a cursor. See [Pub/Sub](pubsub/pubsub.md). The MEP is the

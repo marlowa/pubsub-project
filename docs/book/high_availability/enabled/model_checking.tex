@@ -1,0 +1,84 @@
+\subsection{How the design is checked}
+\label{sec:ha:enabled:model_checking}
+
+The scenarios in \texttt{scripts/ha\_test.py} run the venue and inject failures.
+Each scenario tries one sequence of events. The failures that matter most in this
+section depend on the order in which events happen: a message arriving just
+after a restart, or two timeouts firing close together. A scenario that passes
+says nothing about the orders it did not try.
+
+\textbf{The design is therefore also checked by model checking.} The design is
+written down in TLA+, a language for describing a system precisely enough for a
+program to check it. The description states what each component holds, which
+steps can change it, and which properties must always hold. The model checker,
+TLC, then visits every state that a small version of the system can reach, in
+every order of events, and reports any sequence of steps that breaks a property.
+That sequence is called a counterexample.
+
+The check has two limits. It covers a small version of the system: two instances,
+one arbiter or two, and one or two failures at a time. It checks the design as
+written in TLA+, so each property it confirms holds in the code only as far as
+the TLA+ description matches the code.
+
+\subsubsection{What is checked}
+\label{sec:ha:enabled:model_checking:scope}
+
+Two TLA+ descriptions model the design the code implements:
+
+\begin{itemize}
+  \item the two sequencer instances and the arbiter they report to; and
+  \item the two arbiters and the witness, which decide which arbiter is active.
+\end{itemize}
+
+Both include crashes and restarts of every party, the failure of any link, and
+messages that arrive after the state they describe has changed.
+
+Model checking found eight defects in that design. The code now addresses six of
+them in full and part of one more. The properties that now hold within the limits
+checked are these:
+
+\begin{itemize}
+  \item no two leaders ever lead in the same epoch, so a receiver can always tell
+        them apart;
+  \item two leaders that can hear each other always resolve to one; and
+  \item two active arbiters that can hear each other always resolve to one.
+\end{itemize}
+
+\textbf{Two instances can still both lead while a partition lasts.} An instance
+that can reach no arbiter promotes itself, as \reqref{R-0095} permits. When the
+real cause is that the instance has been cut off, the pair has two leaders until
+the partition heals. The arbiter pool can likewise have two active arbiters during
+a partition, because it does not yet decide by majority.
+
+A replacement design removes promotion without an arbiter. In the replacement, an
+instance leads only while a majority of three voters has granted it a lease that
+has not run out. It is a proposal, described in
+\texttt{docs/availability/majority\_leases.md}, and nothing in the code implements
+it. A third TLA+ description specifies it. Model checking that description found
+no state in which two instances act as leader at once. It also showed that each
+rule of the replacement is needed: with any one rule removed, TLC finds two
+instances acting as leader at once within a few steps.
+
+The descriptions, the counterexamples and the full results are in
+\texttt{docs/availability/tla/}, with the results in \texttt{findings.md}.
+
+\subsubsection{What the venue's build must do}
+\label{sec:ha:enabled:model_checking:behaviour}
+
+\begin{requirement}{R-0145}{The build reproduces every recorded counterexample}
+  The build shall rerun each counterexample recorded against a TLA+ description of
+  the high availability design, and shall fail if any of them no longer breaks the
+  property it is recorded against.
+  \rationale{A counterexample is the evidence that a rule of the design is needed.
+  A later change to the TLA+ description can stop a counterexample failing, and
+  the description then no longer shows what the recorded results say it shows.
+  Nothing else in the build would notice. Rerunning every counterexample takes a
+  few seconds.}
+  \covers{tla:lease-1-holder-counts-from-arrival, tla:lease-2-candidate-ignores-own-grant,
+  tla:lease-3-restart-does-not-wait, tla:lease-4-degraded-promotion,
+  tla:lease-5-epoch-regresses, tla:lease-6-no-yield-livelock, tla:lease-7-no-peer-vote}
+\end{requirement}
+
+The counterexamples reproduced today are those of the replacement design.
+\texttt{scripts/tla\_trace\_pages.py} reruns them at install time, and writes a web
+page that steps through each one.
