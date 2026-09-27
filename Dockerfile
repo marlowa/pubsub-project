@@ -66,6 +66,19 @@ RUN ln -s /opt/liquibase/liquibase /usr/bin/liquibase
 RUN dnf install -y --enablerepo=powertools doxygen graphviz \
     && dnf clean all
 
+# TLA+ tools (the TLC model checker), used by scripts/tla_trace_pages.py to reproduce the
+# counterexamples of docs/availability/tla/MajorityLeaseHA.tla at install time. Not packaged
+# for Rocky 8: it is a single jar published on the TLA+ project's GitHub releases page, and runs
+# on the Java 17 installed above. The release and its checksum are pinned so the counterexamples
+# are reproduced by the same checker on every build.
+ARG TLA_TOOLS_VERSION=1.7.4
+ARG TLA_TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+RUN mkdir -p /opt/tla2tools-${TLA_TOOLS_VERSION} \
+    && wget -q -O /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar \
+       https://github.com/tlaplus/tlaplus/releases/download/v${TLA_TOOLS_VERSION}/tla2tools.jar \
+    && echo "${TLA_TOOLS_SHA256}  /opt/tla2tools-${TLA_TOOLS_VERSION}/tla2tools.jar" | sha256sum -c -
+ENV TLA2TOOLS_JAR=/opt/tla2tools-1.7.4/tla2tools.jar
+
 # Configure git to allow /workspace
 RUN git config --global --add safe.directory /workspace
 

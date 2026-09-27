@@ -251,6 +251,57 @@ answers in a second, where the build answers one warning at a time.
 
 ---
 
+## The TLA+ counterexample pages {#tla_pages}
+
+The install step also reruns the counterexamples recorded for the proposed leadership design, which is
+specified in TLA+ in `docs/availability/tla/MajorityLeaseHA.tla`. It is done by
+`scripts/tla_trace_pages.py`, attached to the install through an `install(CODE ...)` hook in the same way
+as Doxygen, and it takes a few seconds.
+
+Each counterexample is a run of the model checker TLC with one rule of the design removed or changed,
+in which TLC finds a sequence of events that breaks a property. It is the evidence that the rule is
+needed. For each one the script runs TLC, checks that the expected property is reported broken, and turns
+TLC's output into a table of states and a plain English caption for every step. It then writes:
+
+- one text file per counterexample, a table of states;
+- `majority_lease_counterexamples.html`, a single self-contained page that steps through all of them,
+  with a diagram of the three voters, the messages in flight, and each voter's promises and leases.
+
+Both go into `build/tla_pages/` and are installed into the documentation directory under `tla/`, beside
+the Doxygen output. The page opens directly in a browser. It asks Google Fonts for its typefaces and uses
+the browser's own fonts where there is no network.
+
+**The install fails if:**
+
+- a counterexample no longer breaks the property it is listed against. That means the specification has
+  changed in a way that no longer shows what `docs/availability/tla/findings.md` section 11 says it shows.
+  Each run allows only the failures its counterexample needs, so this is reported within about two minutes;
+- a committed safety trace in `docs/availability/tla/traces/` differs from what TLC now produces. After
+  a deliberate change to the specification, run
+  `scripts/tla_trace_pages.py --output-dir build/tla_pages --update-traces` and commit the new traces.
+  The two liveness traces are not compared, because TLC reports one of several loops that break a liveness
+  property and which one varies from run to run;
+- a constant listed for a counterexample does not appear in `MajorityLeaseHA.cfg`, which is how a
+  misspelt name is caught instead of silently leaving the default in place.
+
+**What it needs.** Java 11 or later, and `tla2tools.jar` from release 1.7.4 of the TLA+ tools, published
+at `https://github.com/tlaplus/tlaplus/releases`. The jar is taken from `-DTLA2TOOLS_JAR`, then the
+`TLA2TOOLS_JAR` environment variable, then `$THIRDPARTY_DIR/tla2tools-1.7.4/tla2tools.jar`. On a host with
+no network, copy the jar there by hand. Without Java or the jar the step is skipped and CMake says why;
+`-DENABLE_TLA_PAGES=OFF` turns it off. The Rocky 8 container downloads the pinned release and checks its
+SHA-256 checksum, and sets `TLA2TOOLS_JAR`.
+
+**The release is pinned** because a different release of TLC can report a different, equally valid
+counterexample for the same run, and then the committed traces would no longer match. A newer release
+means rerunning with `--update-traces` and checking that each counterexample's summary still describes
+what the new trace shows.
+
+**To add a counterexample**, add an entry to `COUNTEREXAMPLES` in the script: the constants to change,
+the specification and property to check, the property TLC must report broken, and the title, change and
+summary the page shows. Run the script with `--update-traces` and commit the new trace. The captions are
+written for the variables of `MajorityLeaseHA.tla`, so a counterexample from another specification needs
+caption rules of its own first. The page's layout is `scripts/tla_trace_page.html`.
+
 ## Coverage reports
 
 ```bash

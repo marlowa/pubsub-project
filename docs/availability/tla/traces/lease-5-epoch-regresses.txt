@@ -5,6 +5,7 @@ held lists, for instance 1 and then instance 2, its own count of the ticks left 
 quiet is the ticks left in which a newly restarted voter grants nothing. msgs lists messages in flight as
 "type from>to eEPOCH". An instance acts as leader only while its role is lead and one of its own held counts is
 above zero, so "lead" with every held count at zero is a leader whose lease has run out and that has not yet tidied up.
+Reproduced by scripts/tla_trace_pages.py, entry lease-5-epoch-regresses.
   1 Initial                up=<<T,T,T>>      role=unkn,unkn  epoch=<<0,0,0>> promise=- - -        held=<<<<0,0,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={}
   2 StartCandidacy(2)      up=<<T,T,T>>      role=unkn,cand  epoch=<<0,0,0>> promise=- to2:2 -    held=<<<<0,0,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={req 2>1 e2, req 2>3 e2}
   3 a message arrives      up=<<T,T,T>>      role=unkn,cand  epoch=<<0,0,2>> promise=- to2:2 to2:2 held=<<<<0,0,0>>,<<0,0,0>>>>  quiet=<<0,0,0>> links={12,13,23}         msgs={ack 3>2 e2, req 2>1 e2}

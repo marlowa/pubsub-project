@@ -336,6 +336,71 @@ else()
 endif()
 
 # ------------------------------------------------------------
+# TLA+ counterexample pages (run at install time)
+#
+# scripts/tla_trace_pages.py reruns each counterexample recorded for the proposed leadership
+# design (docs/availability/tla/MajorityLeaseHA.tla) with the TLC model checker. It fails if any
+# of them no longer breaks the property it is listed against, or if a committed safety trace in
+# docs/availability/tla/traces/ no longer matches what TLC produces. It writes the traces and a
+# web page that steps through them into ${CMAKE_BINARY_DIR}/tla_pages, which is installed beside
+# the Doxygen output. The whole run takes a few seconds.
+#
+# TLC needs Java and tla2tools.jar, release 1.7.4 from https://github.com/tlaplus/tlaplus/releases.
+# The jar is taken from -DTLA2TOOLS_JAR, then the TLA2TOOLS_JAR environment variable, then
+# $THIRDPARTY_DIR/tla2tools-1.7.4/tla2tools.jar. Without Java or the jar the step is skipped with
+# a message, in the same way as Doxygen when it is not installed.
+# ------------------------------------------------------------
+option(ENABLE_TLA_PAGES "Reproduce the TLA+ counterexamples and write their web page at install time" ON)
+set(TLA2TOOLS_JAR "" CACHE FILEPATH "Path to tla2tools.jar, release 1.7.4")
+
+set(_pubsub_tla_jar "${TLA2TOOLS_JAR}")
+if(NOT _pubsub_tla_jar AND DEFINED ENV{TLA2TOOLS_JAR})
+    set(_pubsub_tla_jar "$ENV{TLA2TOOLS_JAR}")
+endif()
+if(NOT _pubsub_tla_jar AND DEFINED ENV{THIRDPARTY_DIR})
+    set(_pubsub_tla_jar "$ENV{THIRDPARTY_DIR}/tla2tools-1.7.4/tla2tools.jar")
+endif()
+
+find_package(Java COMPONENTS Runtime QUIET)
+if(ENABLE_TLA_PAGES AND Java_JAVA_EXECUTABLE AND _pubsub_tla_jar AND EXISTS "${_pubsub_tla_jar}")
+    set(_pubsub_tla_output_dir "${CMAKE_BINARY_DIR}/tla_pages")
+    add_custom_target(tla_trace_pages
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/tla_trace_pages.py"
+                --output-dir "${_pubsub_tla_output_dir}"
+                --jar "${_pubsub_tla_jar}"
+                --java "${Java_JAVA_EXECUTABLE}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        COMMENT "Reproducing the TLA+ counterexamples with TLC"
+        VERBATIM
+    )
+
+    install(CODE "
+        message(STATUS \"Reproducing the TLA+ counterexamples...\")
+        execute_process(
+            COMMAND \"${CMAKE_COMMAND}\" --build \"${CMAKE_BINARY_DIR}\" --target tla_trace_pages
+            RESULT_VARIABLE _tla_result
+        )
+        if(NOT _tla_result EQUAL 0)
+            # Fatal for the same reason as Doxygen: a warning scrolls past unnoticed.
+            message(FATAL_ERROR \"The TLA+ counterexample check failed with exit code \${_tla_result}\")
+        endif()
+    ")
+
+    install(DIRECTORY "${_pubsub_tla_output_dir}/"
+        DESTINATION "${CMAKE_INSTALL_DOCDIR}/tla"
+        OPTIONAL
+    )
+    message(STATUS "TLA+ counterexample pages: enabled, using ${_pubsub_tla_jar}")
+elseif(NOT ENABLE_TLA_PAGES)
+    message(STATUS "TLA+ counterexample pages disabled (ENABLE_TLA_PAGES=OFF)")
+elseif(NOT Java_JAVA_EXECUTABLE)
+    message(STATUS "TLA+ counterexample pages skipped: no Java runtime found")
+else()
+    message(STATUS "TLA+ counterexample pages skipped: tla2tools.jar not found "
+                   "(set TLA2TOOLS_JAR, or place it in \$THIRDPARTY_DIR/tla2tools-1.7.4/)")
+endif()
+
+# ------------------------------------------------------------
 # Python DSL generator install
 # ------------------------------------------------------------
 install(CODE "

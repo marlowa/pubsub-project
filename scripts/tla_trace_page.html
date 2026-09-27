@@ -1,0 +1,370 @@
+<!--
+  The layout of the page written by scripts/tla_trace_pages.py. That script replaces __TRACES_JSON__ with the
+  counterexamples it reproduced, and fills in the lease period and the TLA+ tools version.
+-->
+<title>Majority Lease Counterexamples</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+:root{
+  --ground:#eef2f0; --panel:#fbfcfb; --ink:#18221f; --muted:#5a6964; --rule:#d3dcd8;
+  --accent:#0d6b67; --accent-soft:#d5ebe8;
+  --lead:#0d6b67; --lead-ink:#ffffff; --cand:#a15c00; --cand-soft:#f6e7cf; --foll:#6d7a76; --foll-soft:#e3e9e6;
+  --req:#2f5fa7; --ack:#2e7d4f; --nack:#b3261e; --bad:#b3261e; --bad-soft:#f8dedb; --down:#9aa6a2;
+  --changed:#fff2b8;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#111816; --panel:#18211e; --ink:#e4ece9; --muted:#9aaba5; --rule:#2c3a36;
+    --accent:#4fb8b0; --accent-soft:#1d3b38;
+    --lead:#3aa59d; --lead-ink:#0b1311; --cand:#e0a24a; --cand-soft:#3a2c17; --foll:#9aaba5; --foll-soft:#26322f;
+    --req:#7aa7ea; --ack:#6cc592; --nack:#f0857b; --bad:#f0857b; --bad-soft:#3d1f1c; --down:#55635f;
+    --changed:#4a4220;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#111816; --panel:#18211e; --ink:#e4ece9; --muted:#9aaba5; --rule:#2c3a36;
+  --accent:#4fb8b0; --accent-soft:#1d3b38;
+  --lead:#3aa59d; --lead-ink:#0b1311; --cand:#e0a24a; --cand-soft:#3a2c17; --foll:#9aaba5; --foll-soft:#26322f;
+  --req:#7aa7ea; --ack:#6cc592; --nack:#f0857b; --bad:#f0857b; --bad-soft:#3d1f1c; --down:#55635f;
+  --changed:#4a4220;
+  color-scheme: dark;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:15px/1.5 "IBM Plex Sans",system-ui,sans-serif;padding-inline:16px;padding-block:24px 48px}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+h1{font:600 clamp(26px,4vw,34px)/1.15 "IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;margin:0;text-wrap:balance;letter-spacing:.01em}
+h2{font:600 20px/1.25 "IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;margin:0;text-wrap:balance}
+p{margin:0}
+.intro{display:flex;flex-direction:column;gap:8px;max-width:70ch;color:var(--muted)}
+.intro strong{color:var(--ink);font-weight:600}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.picker{display:flex;flex-wrap:wrap;gap:8px}
+.picker button{
+  font:500 13px/1.3 "IBM Plex Sans",sans-serif;
+  color:var(--ink);
+  background:var(--panel);
+  border:1px solid var(--rule);
+  border-radius:6px;
+  padding:8px 12px;
+  cursor:pointer;
+  text-align:left;
+  display:flex;
+  gap:8px;
+  align-items:baseline;
+}
+.picker button .n{font-family:"IBM Plex Mono",monospace;color:var(--muted);font-size:12px}
+.picker button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.picker button:focus-visible,.controls button:focus-visible,.steps button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.about{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:16px 18px;display:flex;flex-direction:column;gap:8px}
+.about .change{font-size:14px;color:var(--muted)}
+.about .change b{color:var(--ink);font-weight:600}
+.verdict{
+  display:inline-flex;
+  align-self:flex-start;
+  font:500 12px/1 "IBM Plex Mono",monospace;
+  padding:5px 8px;
+  border-radius:4px;
+  background:var(--bad-soft);
+  color:var(--bad);
+  letter-spacing:.02em;
+}
+.main{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:20px;align-items:start}
+@media (max-width:860px){.main{grid-template-columns:1fr}}
+.stage{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:14px}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.controls button{
+  font:500 13px/1 "IBM Plex Sans",sans-serif;
+  background:var(--ground);
+  color:var(--ink);
+  border:1px solid var(--rule);
+  border-radius:6px;
+  padding:8px 12px;
+  cursor:pointer;
+  min-width:44px;
+}
+.controls button:disabled{opacity:.4;cursor:default}
+.controls .pos{margin-left:auto;font-size:13px;color:var(--muted)}
+.caption{font-size:15px;min-height:4.5em;padding:12px 14px;border-radius:6px;background:var(--ground);border-left:3px solid var(--accent)}
+.caption.bad{border-left-color:var(--bad);background:var(--bad-soft)}
+.caption .end{display:block;margin-top:6px;font-weight:600;color:var(--bad)}
+.diagram{overflow-x:auto}
+svg{display:block;width:100%;max-width:640px;margin:0 auto;height:auto}
+svg text{font-family:"IBM Plex Sans",sans-serif;fill:var(--ink)}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media (max-width:620px){.cards{grid-template-columns:1fr}}
+.card{border:1px solid var(--rule);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;font-size:13px}
+.card.acting{border-color:var(--lead);box-shadow:0 0 0 1px var(--lead) inset}
+.card.isdown{background:repeating-linear-gradient(135deg,transparent 0 8px,color-mix(in srgb,var(--down) 18%,transparent) 8px 10px)}
+.card h3{margin:0;font:600 14px/1.2 "IBM Plex Sans",sans-serif;display:flex;justify-content:space-between;gap:6px;align-items:center}
+.pill{font:500 11px/1 "IBM Plex Mono",monospace;padding:4px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+.pill.leader{background:var(--lead);color:var(--lead-ink)}
+.pill.leader.expired{background:var(--foll-soft);color:var(--lead);outline:1px dashed var(--lead)}
+.pill.candidate{background:var(--cand-soft);color:var(--cand)}
+.pill.follower,.pill.unknown,.pill.voter{background:var(--foll-soft);color:var(--foll)}
+.pill.down{background:transparent;color:var(--down);outline:1px solid var(--down)}
+.row{display:flex;justify-content:space-between;gap:8px;color:var(--muted)}
+.row span:last-child{color:var(--ink);text-align:right}
+.changed{background:var(--changed);border-radius:3px;padding:0 3px}
+.meter{display:flex;gap:3px;align-items:center}
+.meter i{display:block;width:14px;height:8px;border-radius:2px;background:var(--rule)}
+.meter i.on{background:var(--lead)}
+.steps{
+  background:var(--panel);
+  border:1px solid var(--rule);
+  border-radius:8px;
+  padding:8px;
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  max-height:78vh;
+  overflow-y:auto;
+}
+.steps button{all:unset;display:grid;grid-template-columns:28px 1fr;gap:8px;padding:8px 10px;border-radius:5px;cursor:pointer;font-size:13.5px;line-height:1.45}
+.steps button .k{font-family:"IBM Plex Mono",monospace;color:var(--muted);font-size:12px;padding-top:1px}
+.steps button .t{display:block;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--muted)}
+.steps button[aria-current="step"]{background:var(--accent-soft)}
+.steps button.future{color:var(--muted)}
+.steps button.last{box-shadow:inset 3px 0 0 var(--bad)}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:var(--muted)}
+.legend span{display:inline-flex;gap:6px;align-items:center}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px}
+footer{font-size:13px;color:var(--muted);max-width:75ch}
+@media (prefers-reduced-motion:no-preference){.card,.caption{transition:background-color .2s,border-color .2s}}
+</style>
+<div class="wrap">
+  <header class="intro">
+    <h1>Majority lease counterexamples</h1>
+    <p>
+      Each of these is a sequence of events that the model checker TLC found in <span class="mono">MajorityLeaseHA.tla</span>,
+      the specification of the proposed leadership design. Six of them come from runs with one rule removed or changed, which
+      shows that the rule is needed. One comes from the design as proposed, and shows that an epoch can go backwards.
+    </p>
+    <p>
+      There are three voters: <strong>instance 1</strong>, <strong>instance 2</strong> and <strong>the arbiter</strong>. (When
+      the same design is applied to the two arbiters, the third voter is the witness.) An instance acts as leader only while
+      it holds two of the three votes: its own, plus an unexpired lease from one of the others. Step through with the buttons
+      or the arrow keys. Values that changed at a step are highlighted.
+    </p>
+  </header>
+
+  <nav class="picker" id="picker" aria-label="Counterexamples"></nav>
+
+  <section class="about" id="about" aria-live="polite"></section>
+
+  <div class="main">
+    <section class="stage" aria-label="State at the current step">
+      <div class="controls">
+        <button id="first" type="button" aria-label="First step">&#8676;</button>
+        <button id="prev" type="button">Previous</button>
+        <button id="next" type="button">Next</button>
+        <button id="last" type="button" aria-label="Last step">&#8677;</button>
+        <span class="pos mono" id="pos"></span>
+      </div>
+      <div class="caption" id="caption" aria-live="polite"></div>
+      <div class="diagram">
+        <svg id="svg" viewBox="0 0 640 330" role="img" aria-label="The three voters, the links between them, and the messages in flight">
+        </svg>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--req)"></i>request for a vote</span>
+        <span><i style="background:var(--ack)"></i>grant</span>
+        <span><i style="background:var(--nack)"></i>refusal</span>
+        <span><i style="background:var(--lead)"></i>acting as leader</span>
+      </div>
+      <div class="cards" id="cards"></div>
+    </section>
+    <aside class="steps" id="steps" aria-label="Steps"></aside>
+  </div>
+
+  <footer>
+    A tick is one unit of the model's clock, and the lease period is __LEASE_TICKS__ ticks. A message can take any number of
+    ticks to arrive, or be lost. Epochs record which instance leads in them: an epoch whose remainder on division by four is
+    1 is led by instance 1, and one whose remainder is 2 by instance 2. The full results are in <span
+    class="mono">docs/availability/tla/findings.md</span>, section 11, and the design is in <span
+    class="mono">docs/availability/majority_leases.md</span>. This page is generated by <span
+    class="mono">scripts/tla_trace_pages.py</span>, which reruns each counterexample with TLC from the TLA+ tools release
+    __TLA_TOOLS_VERSION__.
+  </footer>
+</div>
+<script>
+const TRACES = __TRACES_JSON__;
+const NAMES = ['Instance 1', 'Instance 2', 'The arbiter'];
+const SHORT = ['Instance 1', 'Instance 2', 'Arbiter'];
+const ROLE_WORD = {leader: 'leader', candidate: 'asking to lead', follower: 'follower', unknown: 'no role'};
+const POS = [{x: 120, y: 250}, {x: 520, y: 250}, {x: 320, y: 70}];
+const LINK_ENDS = {'12': [0, 1], '13': [0, 2], '23': [1, 2]};
+let traceIndex = 0, stepIndex = 0;
+const $ = id => document.getElementById(id);
+
+function acting(st, i) { return st.role[i] === 'leader' && (st.alone[i] || st.held[i].some(h => h > 0)); }
+
+function buildPicker() {
+  const p = $('picker');
+  TRACES.forEach((t, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `<span class="n">${i + 1}</span><span>${t.title}</span>`;
+    b.addEventListener('click', () => { traceIndex = i; stepIndex = 0; renderTrace(); });
+    p.appendChild(b);
+  });
+}
+
+function renderTrace() {
+  const t = TRACES[traceIndex];
+  [...$('picker').children].forEach((b, i) => b.setAttribute('aria-pressed', String(i === traceIndex)));
+  let what = 'Two instances act as leader at once';
+  if (t.liveness) what = 'Nobody ever leads for good';
+  else if (t.violation.includes('NoRegression')) what = 'A leader begins below an earlier epoch';
+  $('about').innerHTML = `<h2>${t.title}</h2><p class="change"><b>What was changed:</b> ${t.change}</p><p>${t.summary}</p><span class="verdict">${what}</span>`;
+  const s = $('steps'); s.innerHTML = '';
+  t.steps.forEach((st, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = `<span class="k">${i + 1}</span><span>${st.caption}<span class="t">tick ${st.tick}</span></span>`;
+    b.addEventListener('click', () => { stepIndex = i; renderStep(); });
+    if (i === t.steps.length - 1) b.classList.add('last');
+    s.appendChild(b);
+  });
+  renderStep();
+}
+
+function meter(n) { return `<span class="meter" aria-label="${n} of 2 ticks">${[0, 1].map(k => `<i class="${k < n ? 'on' : ''}"></i>`).join('')}</span>`; }
+function mark(changed, html) { return changed ? `<span class="changed">${html}</span>` : html; }
+function promiseText(p, v) {
+  if (p.left === 0) return 'none';
+  if (p.to === v + 1) return 'to itself';
+  return `to ${SHORT[p.to - 1].toLowerCase()}, ${p.left} tick${p.left === 1 ? '' : 's'} left`;
+}
+
+function renderStep() {
+  const t = TRACES[traceIndex], st = t.steps[stepIndex], pv = stepIndex ? t.steps[stepIndex - 1] : st;
+  const last = stepIndex === t.steps.length - 1;
+  $('pos').textContent = `step ${stepIndex + 1} of ${t.steps.length} · tick ${st.tick}`;
+  $('first').disabled = $('prev').disabled = stepIndex === 0;
+  $('next').disabled = $('last').disabled = last;
+  const cap = $('caption');
+  cap.classList.toggle('bad', last);
+  let end = '';
+  if (last) {
+    if (t.liveness) end = `From here the behaviour returns to step ${t.loop} and repeats for ever, so no instance ever leads for good.`;
+    else if (t.violation.includes('NoRegression')) end = 'Instance 1 now leads at epoch 1, below epoch 2, which instance 2 led in.';
+    else end = 'Instance 1 and instance 2 are both acting as leader.';
+  }
+  cap.innerHTML = st.caption + (end ? `<span class="end">${end}</span>` : '');
+  [...$('steps').children].forEach((b, i) => {
+    if (i === stepIndex) { b.setAttribute('aria-current', 'step'); b.scrollIntoView({block: 'nearest'}); }
+    else b.removeAttribute('aria-current');
+    b.classList.toggle('future', i > stepIndex);
+  });
+  renderCards(st, pv);
+  renderDiagram(st);
+}
+
+function renderCards(st, pv) {
+  const cards = $('cards'); cards.innerHTML = '';
+  for (let v = 0; v < 3; v++) {
+    const up = st.up[v];
+    const isInst = v < 2;
+    const act = isInst && acting(st, v);
+    let pillClass, pillText;
+    if (!up) { pillClass = 'down'; pillText = 'down'; }
+    else if (!isInst) { pillClass = 'voter'; pillText = 'voter'; }
+    else if (st.role[v] === 'leader' && !act) { pillClass = 'leader expired'; pillText = 'lease run out'; }
+    else { pillClass = st.role[v]; pillText = ROLE_WORD[st.role[v]]; }
+    const rows = [];
+    const epochText = isInst && st.role[v] === 'candidate' ? `${st.epoch[v]} (asking for ${st.candEpoch[v]})` : String(st.epoch[v]);
+    const pvEpoch = isInst && pv.role[v] === 'candidate' ? `${pv.epoch[v]} (asking for ${pv.candEpoch[v]})` : String(pv.epoch[v]);
+    rows.push(['Highest epoch', mark(epochText !== pvEpoch, epochText)]);
+    const pt = promiseText(st.promise[v], v);
+    rows.push(['Vote promised', mark(pt !== promiseText(pv.promise[v], v), pt)]);
+    if (st.quiet[v] > 0 || pv.quiet[v] > 0) {
+      const wait = `${st.quiet[v]} tick${st.quiet[v] === 1 ? '' : 's'}`;
+      rows.push(['Restart wait', mark(st.quiet[v] !== pv.quiet[v], wait)]);
+    }
+    if (isInst) {
+      const others = [v === 0 ? 1 : 0, 2];
+      others.forEach(o => {
+        const n = st.held[v][o], was = pv.held[v][o];
+        rows.push([`Lease from ${SHORT[o].toLowerCase()}`, mark(n !== was, meter(n))]);
+      });
+    }
+    const el = document.createElement('div');
+    el.className = 'card' + (act ? ' acting' : '') + (up ? '' : ' isdown');
+    el.innerHTML = `<h3>${NAMES[v]}<span class="pill ${pillClass}">${pillText}</span></h3>` +
+      rows.map(([k, val]) => `<div class="row"><span>${k}</span><span class="mono">${val}</span></div>`).join('');
+    cards.appendChild(el);
+  }
+}
+
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function renderDiagram(st) {
+  const svg = $('svg'); const NS = 'http://www.w3.org/2000/svg';
+  svg.innerHTML = '';
+  const add = (tag, attrs, text) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (text !== undefined) e.textContent = text;
+    svg.appendChild(e);
+    return e;
+  };
+  Object.entries(LINK_ENDS).forEach(([l, [a, b]]) => {
+    const up = st.links.includes(l);
+    add('line', {x1: POS[a].x, y1: POS[a].y, x2: POS[b].x, y2: POS[b].y,
+                 stroke: up ? css('--rule') : css('--bad'), 'stroke-width': up ? 3 : 2, 'stroke-dasharray': up ? '' : '6 6'});
+  });
+  // Messages in flight, placed along their link, nearer the sender.
+  const perLink = {};
+  st.msgs.forEach(m => {
+    const [type, from, to, epoch] = m;
+    const a = from - 1, b = to - 1;
+    const k = [a, b].sort().join('');
+    const n = (perLink[k] = (perLink[k] || 0) + 1) - 1;
+    const f = 0.34 + 0.12 * (n % 3);
+    const x = POS[a].x + (POS[b].x - POS[a].x) * f, y = POS[a].y + (POS[b].y - POS[a].y) * f;
+    const dx = POS[b].x - POS[a].x, dy = POS[b].y - POS[a].y, len = Math.hypot(dx, dy);
+    const ox = -dy / len * (n % 2 ? -16 : 16), oy = dx / len * (n % 2 ? -16 : 16);
+    const colour = css(type === 'req' ? '--req' : type === 'ack' ? '--ack' : '--nack');
+    const word = type === 'req' ? 'request' : type === 'ack' ? 'grant' : 'refusal';
+    const label = `${word} e${epoch} → ${to === 3 ? 'A' : to}`;
+    const w = label.length * 6.4 + 12;
+    add('rect', {x: x + ox - w / 2, y: y + oy - 10, width: w, height: 20, rx: 4, fill: css('--panel'), stroke: colour, 'stroke-width': 1.5});
+    add('text', {x: x + ox, y: y + oy + 4, 'text-anchor': 'middle', 'font-size': 11, style: `fill:${colour};font-family:'IBM Plex Mono',monospace`}, label);
+  });
+  for (let v = 0; v < 3; v++) {
+    const {x, y} = POS[v]; const up = st.up[v]; const act = v < 2 && acting(st, v);
+    const fill = !up ? css('--ground') : act ? css('--lead') : css('--panel');
+    const stroke = !up ? css('--down') : act ? css('--lead') : v < 2 && st.role[v] === 'candidate' ? css('--cand') : css('--foll');
+    add('rect', {x: x - 62, y: y - 30, width: 124, height: 60, rx: 8, fill, stroke, 'stroke-width': 2, 'stroke-dasharray': up ? '' : '5 4'});
+    const ink = act ? css('--lead-ink') : up ? css('--ink') : css('--down');
+    add('text', {x, y: y - 6, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': 600, style: `fill:${ink}`}, SHORT[v]);
+    let sub;
+    if (!up) sub = 'down';
+    else if (v === 2) sub = st.quiet[2] ? `waiting ${st.quiet[2]}` : 'voter';
+    else if (act) sub = `leading · epoch ${st.epoch[v]}`;
+    else if (st.role[v] === 'leader') sub = 'lease run out';
+    else sub = ROLE_WORD[st.role[v]];
+    add('text', {x, y: y + 14, 'text-anchor': 'middle', 'font-size': 12, style: `fill:${ink}`}, sub);
+  }
+}
+
+$('first').addEventListener('click', () => { stepIndex = 0; renderStep(); });
+$('prev').addEventListener('click', () => { if (stepIndex > 0) { stepIndex--; renderStep(); } });
+$('next').addEventListener('click', () => { if (stepIndex < TRACES[traceIndex].steps.length - 1) { stepIndex++; renderStep(); } });
+$('last').addEventListener('click', () => { stepIndex = TRACES[traceIndex].steps.length - 1; renderStep(); });
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input,textarea')) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); $('next').click(); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); $('prev').click(); }
+});
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderStep);
+new MutationObserver(renderStep).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+buildPicker();
+renderTrace();
+</script>
