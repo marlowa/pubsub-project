@@ -440,33 +440,42 @@ wrong direction.
 **The rule that replaced it:**
 
 * **The peer is visible.** The peers settle it themselves. Leadership goes to the lower
-  instance id and the new generation is one past the higher of the two epochs. Both sides
-  compute both values from the same two inputs, so they reach the same answer without
-  needing to agree on anything further. `max` is symmetric, so they still agree when one of
-  them has lost its stored epoch and the other has not.
+  instance id, and the new generation is the next epoch above the higher of the two in which
+  that instance leads (see "Every epoch names its leader" below). Both sides compute both
+  values from the same two inputs, so they reach the same answer without needing to agree on
+  anything further. `max` is symmetric, so they still agree when one of them has lost its
+  stored epoch and the other has not.
 * **The peer is not visible.** The arbiter decides. This is the case a node cannot settle
   alone, and the only one where a second claimant might exist unseen -- which is what the
   arbiter is for.
 
-**Why that is not two issuers after all.** The two are mutually exclusive by construction. A
-node only resolves locally when it can see its peer, and a peer that is visible is running
-the same local resolution rather than reporting. The arbiter only issues on receiving a
-report, and a node only reports when it cannot see its peer. So for any group, at any
-moment, exactly one of them is in a position to issue. Regression is closed separately, by
-both of them using the same rule -- strictly greater than every epoch known -- which is only
-truthful because the epoch now survives a restart.
+**There are three issuers, and they are not mutually exclusive.** Besides the two above, an
+instance that can see neither its peer nor an arbiter promotes itself (the degraded path). Model
+checking the design showed all three issuing at overlapping times: an instance can already have a
+report outstanding at the arbiter when its peer becomes visible, and a follower takes no part in
+resolution between peers, because it already holds a role. If each issuer takes "the highest epoch
+it knows, plus one", two of them working from the same known epoch issue the same number for
+different leaders, and every receiver accepts both. See `docs/availability/tla/findings.md`,
+finding 1.
 
-The residual case is visibility that is briefly asymmetric: A sees B while B does not see A,
-so B reports while A resolves locally. The lease closes it. A node that takes leadership
-tells the arbiter immediately rather than at the next heartbeat, and an arbiter holding a
-confirmed incumbent confirms that incumbent instead of issuing a fresh generation. Measured,
-the lease reaches the arbiter around a tenth of a millisecond after leadership is adopted.
+**Every epoch names its leader.** So the value of a new epoch records which instance leads in it:
+its remainder on division by 4 is that instance's id. Every issuer takes the next such number above
+every epoch it knows, for the instance it is making leader (`fix_common/LeaderEpoch.hpp`). Two
+different instances then never lead at the same epoch, whoever issued it and however the issuers'
+timing falls, and ordinary integer comparison still orders generations correctly. The two arbiters
+use the same rule for which of them is active.
 
-**This is weaker than a single issuer and deliberately so.** Sole-issuer was a structural
-guarantee; this one depends on visibility being symmetric, with the lease narrowing the
-window where it is not. What it buys is a venue that elects a leader in about a second
-instead of having no leader for the ten seconds an arbiter spends learning. Anyone tempted
-to restore the tidier rule should re-read the measurement above first.
+**Why not a single issuer instead.** Routing every election to the arbiter would also give each
+epoch one leader, and remains rejected for the reason measured above: a venue that is starting is
+exactly when an arbiter that has just started declines to arbitrate, and it would have no leader for
+the ten seconds the arbiter spends learning. Epochs that name their leader give the same guarantee
+without that cost.
+
+**Two leaders resolve when they can hear each other.** Heartbeats say whether the sender leads. A
+leader that hears its peer leading at a higher epoch, or at the same epoch from a lower instance
+id, stands down and follows it. Without it, two leaders left over from a partition would never
+resolve, because a leader has no timeout and never asks the arbiter anything. What a leader
+sequenced while it wrongly led stays in its log; that is `docs/bug_list.md`, BUG-0097.
 
 ### The sequencer and the matching engine are deliberately different
 

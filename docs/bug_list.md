@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 96 |
-| Open | 36 (23 defects, 13 tasks) |
+| Bugs recorded | 97 |
+| Open | 37 (24 defects, 13 tasks) |
 | Closed | 60 |
-| Next id | BUG-0097 |
+| Next id | BUG-0098 |
 
 ## Open bugs by severity
 
-12 high, 21 medium, 3 low.
+13 high, 21 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0085](#bug_0085) | high | defect | A degraded promotion advances a generation the arbiter never learns |
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
+| [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -2360,6 +2361,42 @@ as the FIX gateway does for the same order; which message the binary protocol us
 part of the fix. The cost to the gateway's speed is measured
 before and after. Both gateways' orders are tested with the same malformed values, and must be
 treated identically.
+
+### BUG-0097: A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's {#bug_0097}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-27 |
+| Recorded | 2026-09-27 |
+| How | Designing the rule that a leader stands down when it hears its peer leading at a newer generation, after the TLA+ checking in `docs/availability/tla/findings.md` showed that two leaders otherwise never resolve |
+| Impact | Orders a sequencer accepted while it wrongly believed it led can be left in its own log only, or overwritten in meaning by different orders carrying the same sequence numbers from its new leader. The two instances' records of what the venue accepted then disagree, and nothing reports it |
+
+**What happens.** Two sequencer instances can both hold the leader role for a time, for example
+during a partition in which the follower promotes itself on the degraded path. Each leader sequences
+the orders it receives and writes them to its own log. When one of them stops leading, today because
+an arbitration decision names its peer, it becomes a follower and appends every record its new
+leader replicates to it. `install_peer_wal_inline_handler` passes each replicated record straight to
+`append_to_wal`, with no comparison against the records the instance already holds. So:
+
+- the orders the demoted instance accepted as leader stay in its log, and its new leader never had
+  them;
+- the new leader's records can carry sequence numbers the demoted instance has already used for
+  different orders.
+
+**Why it matters more now.** The rule that a leader stands down on hearing its peer leading at a
+newer generation (TLA+ findings, finding 2) makes the demotion happen after every healed partition,
+not only when the arbiter happens to decide. The demotion is correct, but it exposes this defect
+more often.
+
+**What closing it needs.** A decision on what the venue does with orders a superseded leader
+accepted: whether they are replicated to the new leader, reported to their members as rejected or
+unknown, or discarded with the member told. This is the custody question in the functional
+specification (`docs/book`), and it needs its own design before any code. Whatever the answer, a
+follower must detect a replicated record whose sequence number it already holds with different
+content, and refuse to append it silently.
+
+Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
 ## Closed
 

@@ -19,25 +19,40 @@
 #  Rules:
 #    1. A node that has never participated in an election starts
 #       with epoch 0.
-#    2. When arbiter arbitration is used, the arbiter assigns the
-#       epoch in ArbitrationDecision. Both nodes adopt this value.
-#    3. When a follower detects leader death and promotes itself
-#       to leader without arbiter contact, it increments its own
-#       epoch by 1. This is the sole mechanism for local epoch
-#       advancement.
-#    4. When a restarting node connects and receives a
+#    2. The value of every new epoch records which instance leads
+#       in it: its remainder on division by 4 is that instance's
+#       id. Whoever starts a generation -- the arbiter, the two
+#       peers resolving between themselves, or an instance
+#       promoting itself -- takes the next such epoch above every
+#       epoch it knows, for the instance it is making leader. Two
+#       different instances therefore never lead at the same
+#       epoch. See fix_common/LeaderEpoch.hpp.
+#    3. When arbiter arbitration is used, the arbiter assigns the
+#       epoch in ArbitrationDecision and both nodes adopt it. A node
+#       that is made leader by a decision whose epoch is below its
+#       own takes the next epoch above its own in which it leads.
+#    4. When a follower detects leader death and promotes itself
+#       to leader without arbiter contact, it takes the next epoch
+#       above its own in which it leads.
+#    5. When a restarting node connects and receives a
 #       StatusResponse, it compares epochs. If the peer's epoch
 #       is higher, the restarting node is stale: it adopts the
 #       follower role immediately without contacting the arbiter.
-#    5. A heartbeat carrying an epoch lower than the receiver's
+#    6. A heartbeat carrying an epoch lower than the receiver's
 #       own epoch indicates a stale sender; the receiver logs a
 #       warning and ignores the heartbeat.
+#    7. A leader whose peer's heartbeat says it leads, at a higher
+#       epoch or at the same epoch from a lower instance id, stands
+#       down and follows the peer in the peer's epoch.
 #
 #  TOPOLOGY
 #  --------
 #  Three machines in the arbiter pool: arbiter-primary,
-#  arbiter-secondary, witness. Three votes, majority is two.
-#  Tolerates any single-machine failure.
+#  arbiter-secondary, witness. The witness breaks the tie when the
+#  two arbiters cannot see each other. It keeps no record of the
+#  votes it has granted, and an arbiter does not check that it
+#  still has a majority behind it, so this is not a majority
+#  system: see docs/availability/tla/findings.md, findings 7 and 8.
 #
 #  Components (sequencer pair, ME pair) each open connections to
 #  BOTH arbiter machines. Heartbeats and lease-renewal requests
@@ -140,10 +155,17 @@ end
 #    - No heartbeat counter needed because TCP is ordered and reliable
 #    - A heartbeat with epoch lower than the receiver's epoch indicates
 #      a stale sender; receiver logs a warning and ignores it
-#    - Liveness and epoch, and nothing else. Leadership is asserted by
-#      LeadershipLease (117) and not by this message, which is why
-#      BOTH instances of a pair send it: an arbiter needs to know that
-#      a follower is there, not only that a leader is.
+#    - Leadership towards the arbiter is asserted by LeadershipLease (118),
+#      not by this message, which is why BOTH instances of a pair send it:
+#      an arbiter needs to know that a follower is there, not only that a
+#      leader is.
+#    - current_role tells the PEER whether the sender leads. A leader that
+#      hears its peer leading at a higher epoch, or at the same epoch from a
+#      lower instance id, stands down and follows it. Without this, two
+#      leaders left over from a partition never resolve after it heals,
+#      because a leader otherwise ignores its peer's heartbeats. See
+#      docs/availability/tla/findings.md, finding 2. Between the two
+#      arbiters, leader means active.
 #    - Heartbeat loss triggers leader/follower death detection; see
 #      epoch rule 3 in the file header for follower-promotion behaviour
 # ------------------------------------------------------------
@@ -151,6 +173,7 @@ message Heartbeat (id=102, version=1)
     i64 instance_id        # sender identity
     i32 epoch              # sender's current epoch
     ComponentGroup group   # HA pair this sender belongs to (arbiter registration)
+    Role current_role      # whether the sender leads (or, between arbiters, is active)
 end
 
 # ------------------------------------------------------------

@@ -26,8 +26,16 @@ CONSTANTS
     MaxArbiterCrashes,
     MaxWitnessCrashes,
     MaxLinkFailures,
-    Quiet      \* TRUE: no failure while a message is in flight, and no timeout on an
-               \* arbiter while a message to it is in flight
+    Quiet,     \* TRUE: no failure while a message is in flight, and no timeout while
+               \* any message is in flight
+    UniqueEpochsAndStandDown, \* TRUE: an arbiter epoch records which arbiter is active in it
+               \* (its remainder on division by 4 is that arbiter's id); the witness and a
+               \* promoting arbiter issue epochs that way; heartbeats say whether the sender
+               \* is active, and an active arbiter that hears its peer active at a higher
+               \* epoch, or the same epoch from a lower id, becomes passive.
+    WithFixes  \* FALSE models the code at commit 42d29e9. TRUE models the fix for the
+               \* liveness half of finding 8: an arbiter told by the witness that its peer
+               \* is active re-arms its heartbeat timeout even if it was already passive.
 
 Arb == {1, 2}
 Peer(a) == IF a = 1 THEN 2 ELSE 1
@@ -75,9 +83,23 @@ HeartbeatsFlowing(a) ==
     /\ arole[Peer(a)] # "unknown"
     /\ aepoch[Peer(a)] >= aepoch[a]
 
+NextFor(x, l) ==
+    LET base == (x \div 4) * 4 IN IF base + l > x THEN base + l ELSE base + 4 + l
+NewEpoch(x, l) == IF UniqueEpochsAndStandDown THEN NextFor(x, l) ELSE x + 1
+Gen(e) == IF UniqueEpochsAndStandDown THEN e \div 4 ELSE e
+
+(* An active arbiter hears its peer active at a higher epoch, or the same  *)
+(* epoch from a lower id.                                                    *)
+StandDownDue(a) ==
+    /\ aup[a] /\ arole[a] = "active" /\ PeerLinkUp /\ arole[Peer(a)] = "active"
+    /\ \/ aepoch[Peer(a)] > aepoch[a]
+       \/ aepoch[Peer(a)] = aepoch[a] /\ Peer(a) < a
+
 InFlightTo(a) == \E m \in amsgs : (m.type # "votereq" /\ m.to = a)
                                   \/ (m.type = "votereq" /\ m.from = a)
-Settled == amsgs = {} /\ \A a \in Arb : (aup[a] /\ arole[a] = "passive" /\ HeartbeatsFlowing(a)) => atimer[a]
+Settled == /\ amsgs = {}
+           /\ \A a \in Arb : (aup[a] /\ arole[a] = "passive" /\ HeartbeatsFlowing(a)) => atimer[a]
+           /\ UniqueEpochsAndStandDown => \A a \in Arb : ~StandDownDue(a)
 
 -----------------------------------------------------------------------------
 Init ==
@@ -157,12 +179,18 @@ ReceiveHeartbeat(a) ==
     /\ UNCHANGED <<aup, arole, aepoch, seenActive, voteWait, wup, wmax, alink, amsgs,
                    arbCrashes, witCrashes, linkFailures>>
 
+StandDown(a) ==
+    /\ UniqueEpochsAndStandDown /\ StandDownDue(a)
+    /\ aepoch' = [aepoch EXCEPT ![a] = aepoch[Peer(a)]]
+    /\ AdoptRole(a, "passive")
+    /\ UNCHANGED <<aup, seenActive, wup, wmax, alink, amsgs, arbCrashes, witCrashes, linkFailures>>
+
 (* promote_if_nothing_else_can_be_active: with no witness to ask, the lower *)
 (* id promotes if it has never seen its peer active; otherwise it declines  *)
 (* and asks again later.                                                    *)
 PromoteIfNothingElse(a) ==
     IF ~seenActive[a] /\ a < Peer(a)
-    THEN /\ aepoch' = [aepoch EXCEPT ![a] = aepoch[a] + 1]
+    THEN /\ aepoch' = [aepoch EXCEPT ![a] = NewEpoch(aepoch[a], a)]
          /\ AdoptRole(a, "active")
     ELSE /\ atimer' = [atimer EXCEPT ![a] = TRUE]
          /\ voteWait' = [voteWait EXCEPT ![a] = FALSE]
@@ -206,7 +234,7 @@ WitnessVotes(m) ==
                                               IF WitnessSees(2) THEN aepoch[2] ELSE 0)))
            granted == IF WitnessSees(Peer(a)) THEN 1 ELSE a
        IN /\ wmax' = seen
-          /\ amsgs' = (amsgs \ {m}) \cup {VoteResp(a, granted, seen + 1)}
+          /\ amsgs' = (amsgs \ {m}) \cup {VoteResp(a, granted, NewEpoch(seen, granted))}
     /\ UNCHANGED <<aup, arole, aepoch, seenActive, atimer, voteWait, wup, alink,
                    arbCrashes, witCrashes, linkFailures>>
 
@@ -220,7 +248,8 @@ ReceiveVote(m) ==
        /\ voteWait' = [voteWait EXCEPT ![a] = FALSE]
        /\ arole' = [arole EXCEPT ![a] = IF m.granted = a THEN "active" ELSE "passive"]
        /\ atimer' = [atimer EXCEPT ![a] = IF m.granted = a THEN FALSE
-                                          ELSE IF arole[a] # "passive" THEN TRUE ELSE atimer[a]]
+                                          ELSE IF WithFixes \/ arole[a] # "passive" THEN TRUE
+                                          ELSE atimer[a]]
     /\ UNCHANGED <<aup, seenActive, wup, wmax, alink, arbCrashes, witCrashes, linkFailures>>
 
 -----------------------------------------------------------------------------
@@ -293,6 +322,7 @@ Next ==
     \/ \E m \in amsgs : WitnessVotes(m)
     \/ \E m \in amsgs : ReceiveVote(m)
     \/ \E a \in Arb : ReceiveHeartbeat(a)
+    \/ \E a \in Arb : StandDown(a)
     \/ \E a \in Arb : HeartbeatTimeout(a)
     \/ \E a \in Arb : VoteTimeout(a)
     \/ \E a \in Arb : ArbiterCrash(a)
@@ -304,7 +334,7 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-EpochBound == \A a \in Arb : aepoch[a] <= MaxEpoch
+EpochBound == \A a \in Arb : Gen(aepoch[a]) <= MaxEpoch
 
 -----------------------------------------------------------------------------
 (* Properties. *)
@@ -317,10 +347,11 @@ TypeOK ==
 AtMostOneActive == ~(aup[1] /\ aup[2] /\ arole[1] = "active" /\ arole[2] = "active")
 
 (* Two active arbiters that can see each other again, with nothing left in *)
-(* flight, have nothing that will ever make one of them stand down.         *)
+(* flight and neither due to stand down, will stay that way for good.       *)
 NoLastingTwoActive ==
     ~(aup[1] /\ aup[2] /\ arole[1] = "active" /\ arole[2] = "active"
-      /\ "aa" \in alink /\ amsgs = {})
+      /\ "aa" \in alink /\ amsgs = {}
+      /\ ~(UniqueEpochsAndStandDown /\ (StandDownDue(1) \/ StandDownDue(2))))
 
 (* A passive arbiter's epoch is never above the active arbiter's. When it *)
 (* is, the passive arbiter treats the active one's heartbeats as coming     *)

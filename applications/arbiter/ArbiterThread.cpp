@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include <LeaderEpoch.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -291,7 +292,7 @@ void ArbiterThread::promote_if_nothing_else_can_be_active() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "ArbiterThread: promoting unwitnessed -- my instance_id={} is lower than peer instance_id={} and the peer has never been seen active",
                    config_.instance_id, peer_instance_id_);
-        ++epoch_;
+        epoch_ = fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id));
         adopt_role(pubsub_itc_fw_app::Role::leader);
         return;
     }
@@ -340,6 +341,7 @@ void ArbiterThread::send_peer_heartbeat() {
     pubsub_itc_fw_app::Heartbeat hb{};
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
+    hb.current_role = role_;
     send_pdu(target, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: Heartbeat sent to peer (epoch={})", epoch_);
 }
@@ -456,6 +458,20 @@ void ArbiterThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& mes
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: Heartbeat received from peer (instance_id={} epoch={})", hb.instance_id,
                hb.epoch);
 
+    // Two active arbiters, left over from a partition. Without this they never resolve: an active
+    // arbiter has no timeout and elect_role does nothing once a role is held. The one in the newer
+    // generation stays active, and a tie goes to the lower instance id. See
+    // docs/availability/tla/findings.md, findings 2 and 7.
+    const bool peer_active_in_newer_generation = hb.epoch > epoch_ || (hb.epoch == epoch_ && hb.instance_id < static_cast<int64_t>(config_.instance_id));
+    if (role_ == pubsub_itc_fw_app::Role::leader && hb.current_role == pubsub_itc_fw_app::Role::leader && peer_active_in_newer_generation) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "ArbiterThread: peer (instance_id={}) is active at epoch {} while this arbiter is active at epoch {} -- standing down to passive",
+                   hb.instance_id, hb.epoch, epoch_);
+        epoch_ = hb.epoch;
+        adopt_role(pubsub_itc_fw_app::Role::follower);
+        return;
+    }
+
     if (role_ == pubsub_itc_fw_app::Role::follower) {
         cancel_timer(peer_heartbeat_timeout_timer_id_);
         peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
@@ -536,6 +552,15 @@ void ArbiterThread::handle_arbiter_vote_response(const pubsub_itc_fw::EventMessa
     if (resp.granted_to_instance_id == static_cast<int64_t>(config_.instance_id)) {
         adopt_role(pubsub_itc_fw_app::Role::leader);
     } else {
+        // An arbiter that was already passive asked because its heartbeat timeout fired, and
+        // adopt_role changes nothing for the role it already holds. Without arming the timeout
+        // again here, nothing would: it is re-armed by the peer's heartbeats, and those can be
+        // discarded as stale, because the epoch just taken from the witness is newer than the
+        // one the active arbiter holds. The arbiter would then never notice the active one dying.
+        if (role_ == pubsub_itc_fw_app::Role::follower) {
+            cancel_timer(peer_heartbeat_timeout_timer_id_);
+            peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        }
         adopt_role(pubsub_itc_fw_app::Role::follower);
     }
 }
@@ -617,21 +642,24 @@ void ArbiterThread::decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group
                                          const pubsub_itc_fw::ConnectionID& requester_conn_id) {
     const ComponentKey peer_key{group, peer_instance_id};
 
-    LeadershipDecision::Inputs inputs;
-    inputs.self_instance_id = self_instance_id;
-    inputs.peer_instance_id = peer_instance_id;
-    inputs.peer_connected = component_connections_.count(peer_key) > 0;
-    inputs.reported_epoch = epoch;
+    LeadershipDecision::Inputs report;
+    report.self_instance_id = self_instance_id;
+    report.peer_instance_id = peer_instance_id;
+    report.peer_connected = component_connections_.count(peer_key) > 0;
+    report.reported_epoch = epoch;
+    report.lift_incumbent_above_report = group == pubsub_itc_fw_app::ComponentGroup::sequencer;
 
+    LeadershipDecision::Record record;
     const auto incumbent = leadership_state_.find(group);
-    const bool lease_expired = incumbent != leadership_state_.end() && std::chrono::steady_clock::now() - incumbent->second.leased_at > leadership_lease_ttl;
-    if (incumbent != leadership_state_.end() && incumbent->second.leadership_confirmed && !lease_expired) {
-        inputs.has_incumbent = true;
-        inputs.incumbent_instance_id = incumbent->second.leader_instance_id;
-        inputs.incumbent_epoch = incumbent->second.epoch;
-        const ComponentKey incumbent_key{group, incumbent->second.leader_instance_id};
-        inputs.incumbent_connected = component_connections_.count(incumbent_key) > 0;
+    if (incumbent != leadership_state_.end()) {
+        const bool lease_expired = std::chrono::steady_clock::now() - incumbent->second.leased_at > leadership_lease_ttl;
+        record.exists = true;
+        record.trusted = incumbent->second.leadership_confirmed && !lease_expired;
+        record.leader_instance_id = incumbent->second.leader_instance_id;
+        record.leader_connected = component_connections_.count(ComponentKey{group, incumbent->second.leader_instance_id}) > 0;
+        record.epoch = incumbent->second.epoch;
     }
+    const LeadershipDecision::Inputs inputs = LeadershipDecision::inputs_for(report, record);
 
     // An arbiter that has just started has an empty map whether or not there is genuinely no
     // leader, and cannot tell those apart. Guessing means applying the cold-start tie-break,

@@ -41,6 +41,23 @@ CONSTANTS
     FailuresAfterStart,  \* TRUE: failures begin only once the pair has first settled, with
                          \* one leader, one follower, and the arbiter holding a confirmed
                          \* record. Used to look past the cold-start races.
+    WithFixes,           \* FALSE models the code at commit 42d29e9, which findings.md
+                         \* describes. TRUE models the code with the fixes for findings 3, 5
+                         \* and 6: every role adopted cancels any arbitration round in
+                         \* progress, a follower re-arms its heartbeat timeout whenever it is
+                         \* told it follows, and the arbiter bounds a new epoch by its record
+                         \* whether or not the record is confirmed.
+    UniqueEpochs,        \* TRUE: an epoch's value records which instance leads in it. Its
+                         \* remainder on division by 4 is that instance's id, and every party
+                         \* that starts a generation takes the next such number above what it
+                         \* knows, so two instances can never lead at the same epoch.
+    LeaderStandsDown,    \* TRUE: heartbeats say whether the sender leads, and a leader that
+                         \* hears its peer leading at a higher epoch (or the same epoch, from a
+                         \* lower instance id) becomes the peer's follower.
+    ArbiterLiftsIncumbent, \* TRUE: when the arbiter confirms a connected incumbent but the
+                         \* report carries a higher epoch than the incumbent's, it confirms the
+                         \* incumbent in a new generation above that epoch, so the leader moves
+                         \* above the follower instead of the follower being left ahead of it.
     LateStart,           \* TRUE: the primary starts later than the secondary, so the
                          \* secondary's startup timeout can fire before its peer exists.
     Quiet                \* TRUE: messages arrive promptly. No failure, restart or timeout
@@ -97,6 +114,15 @@ HeartbeatsFlowing(s) ==
     /\ role[Peer(s)] # "unknown"
     /\ epoch[Peer(s)] >= epoch[s]
 
+(* A heartbeat saying the peer leads has reached a leader, at a higher      *)
+(* epoch, or at the same epoch from a lower instance id: with               *)
+(* LeaderStandsDown, this leader is due to stand down.                      *)
+StandDownDue(s) ==
+    /\ up[s] /\ role[s] = "leader"
+    /\ "ss" \in link /\ up[Peer(s)] /\ role[Peer(s)] = "leader"
+    /\ \/ epoch[Peer(s)] > epoch[s]
+       \/ epoch[Peer(s)] = epoch[s] /\ Peer(s) < s
+
 (* Quiet also means that what flows continuously has caught up: a follower *)
 (* receiving heartbeats has followed its leader's epoch and has its timeout  *)
 (* armed, and a leader connected to the arbiter has had its lease recorded. *)
@@ -107,10 +133,22 @@ LeasesCaughtUp ==
     \A s \in Seq : (role[s] = "leader" /\ Connected(s) /\ epoch[s] >= rec.epoch)
                     => rec = [leader |-> s, epoch |-> epoch[s], confirmed |-> TRUE]
 NothingInFlight == msgs = {} /\ HeartbeatsCaughtUp /\ LeasesCaughtUp
+                   /\ (LeaderStandsDown => \A s \in Seq : ~StandDownDue(s))
 InFlightTo(s) == \E m \in msgs : (m.type # "report" /\ m.to = s)
                                  \/ (m.type = "report" /\ m.from = s)
 
 (* An instance becomes leader at epoch e. History is recorded here. *)
+(* The next epoch above x in which instance l leads. *)
+NextFor(x, l) ==
+    LET base == (x \div 4) * 4 IN IF base + l > x THEN base + l ELSE base + 4 + l
+
+(* The epoch a party issues when it starts a generation led by instance l,  *)
+(* above an epoch x it already knows.                                        *)
+NewEpoch(x, l) == IF UniqueEpochs THEN NextFor(x, l) ELSE x + 1
+
+(* The generation an epoch belongs to, used to bound the model. *)
+Gen(e) == IF UniqueEpochs THEN e \div 4 ELSE e
+
 RegressesAt(s, e) == \E p \in leaderAt : p[1] # s /\ p[2] > e
 
 -----------------------------------------------------------------------------
@@ -143,15 +181,24 @@ Adopt(s, r, e) ==
     /\ role' = [role EXCEPT ![s] = r]
     /\ epoch' = [epoch EXCEPT ![s] = e]
     /\ timer' = [timer EXCEPT ![s] = IF r = "leader" THEN FALSE
-                                     ELSE IF role[s] # "follower" THEN TRUE
+                                     ELSE IF WithFixes \/ role[s] # "follower" THEN TRUE
                                      ELSE timer[s]]
     /\ leaderAt' = IF r = "leader" THEN leaderAt \cup {<<s, e>>} ELSE leaderAt
     /\ regressed' = (regressed \/ (r = "leader" /\ RegressesAt(s, e)))
     /\ UNCHANGED belowRecord
 
+(* What adopting a role does to an arbitration round in progress. In the    *)
+(* code at 42d29e9 nothing: only an arbitration decision ends a round. With *)
+(* the fix, adopting any role ends it.                                       *)
+RoundAfterAdopt(s) ==
+    IF WithFixes
+    THEN /\ pending' = [pending EXCEPT ![s] = FALSE]
+         /\ attempts' = [attempts EXCEPT ![s] = 0]
+    ELSE UNCHANGED <<pending, attempts>>
+
 (* resolve_with_visible_peer: the new generation is one past the higher of *)
 (* the two epochs, and the lower instance id leads.                         *)
-ResolveTarget(s, peerEpoch) == Max(epoch[s], peerEpoch) + 1
+ResolveTarget(s, peerEpoch) == NewEpoch(Max(epoch[s], peerEpoch), IF s < Peer(s) THEN s ELSE Peer(s))
 ResolveRole(s) == IF s < Peer(s) THEN "leader" ELSE "follower"
 
 (* A status response from the peer reaches s, and elect_role runs on it.   *)
@@ -161,14 +208,15 @@ ReceiveStatus(m) ==
        /\ up[s]
        /\ msgs' = msgs \ {m}
        /\ IF role[s] # "unknown"
-          THEN UNCHANGED <<role, epoch, timer, leaderAt, belowRecord, regressed>>
-          ELSE IF m.role = "leader"
-               THEN IF m.epoch > epoch[s] THEN Adopt(s, "follower", m.epoch)
-                    ELSE IF m.epoch < epoch[s]
-                         THEN Adopt(s, ResolveRole(s), ResolveTarget(s, m.epoch))
-                         ELSE Adopt(s, "follower", epoch[s])
-               ELSE Adopt(s, ResolveRole(s), ResolveTarget(s, m.epoch))
-       /\ UNCHANGED <<up, pending, attempts, arbUp, learning, rec, link,
+          THEN UNCHANGED <<role, epoch, timer, pending, attempts, leaderAt, belowRecord, regressed>>
+          ELSE /\ RoundAfterAdopt(s)
+               /\ IF m.role = "leader"
+                  THEN IF m.epoch > epoch[s] THEN Adopt(s, "follower", m.epoch)
+                       ELSE IF m.epoch < epoch[s]
+                            THEN Adopt(s, ResolveRole(s), ResolveTarget(s, m.epoch))
+                            ELSE Adopt(s, "follower", epoch[s])
+                  ELSE Adopt(s, ResolveRole(s), ResolveTarget(s, m.epoch))
+       /\ UNCHANGED <<up, arbUp, learning, rec, link,
                       crashes, linkFailures, arbRestarts, settled, restartedInRound>>
 
 (* A heartbeat from the peer reaches a follower: it follows a newer epoch  *)
@@ -180,6 +228,16 @@ ReceiveHeartbeat(s) ==
     /\ timer' = [timer EXCEPT ![s] = TRUE]
     /\ UNCHANGED <<up, role, pending, attempts, arbUp, learning, rec, link, msgs,
                    crashes, linkFailures, arbRestarts, settled, restartedInRound, leaderAt, belowRecord, regressed>>
+
+(* With LeaderStandsDown: a heartbeat saying the peer leads, at a higher     *)
+(* epoch, or at the same epoch from a lower instance id, reaches a leader,   *)
+(* which becomes the peer's follower in the peer's generation.              *)
+StandDown(s) ==
+    /\ LeaderStandsDown /\ StandDownDue(s)
+    /\ Adopt(s, "follower", epoch[Peer(s)])
+    /\ RoundAfterAdopt(s)
+    /\ UNCHANGED <<up, arbUp, learning, rec, link, msgs, crashes, linkFailures, arbRestarts,
+                   settled, restartedInRound>>
 
 (* The heartbeat (or startup) timeout fires on an instance that does not   *)
 (* lead. With an arbiter connection it reports; with none it promotes      *)
@@ -197,8 +255,9 @@ HeartbeatTimeout(s) ==
             /\ msgs' = msgs \cup {ReportMsg(s, epoch[s])}
             /\ UNCHANGED <<role, epoch, leaderAt, belowRecord, regressed>>
        ELSE IF DegradedPromotion
-            THEN /\ Adopt(s, "leader", epoch[s] + 1)
-                 /\ UNCHANGED <<pending, attempts, msgs>>
+            THEN /\ Adopt(s, "leader", NewEpoch(epoch[s], s))
+                 /\ RoundAfterAdopt(s)
+                 /\ UNCHANGED msgs
             ELSE /\ timer' = [timer EXCEPT ![s] = TRUE]
                  /\ UNCHANGED <<role, epoch, pending, attempts, msgs, leaderAt, belowRecord, regressed>>
     /\ UNCHANGED <<up, arbUp, learning, rec, link, crashes, linkFailures, arbRestarts>>
@@ -223,7 +282,7 @@ ArbitrationTimeout(s) ==
        ELSE IF DegradedPromotion
             THEN /\ pending' = [pending EXCEPT ![s] = FALSE]
                  /\ attempts' = [attempts EXCEPT ![s] = 0]
-                 /\ Adopt(s, "leader", epoch[s] + 1)
+                 /\ Adopt(s, "leader", NewEpoch(epoch[s], s))
                  /\ UNCHANGED msgs
             ELSE /\ pending' = [pending EXCEPT ![s] = FALSE]
                  /\ attempts' = [attempts EXCEPT ![s] = 0]
@@ -245,8 +304,11 @@ ArbiterDecides(m) ==
            incumbentConnected == hasIncumbent /\ rec.leader # NoLeader /\ Connected(rec.leader)
            leader == IF incumbentConnected THEN rec.leader
                      ELSE IF peerConnected THEN 1 ELSE s
-           newEpoch == IF incumbentConnected THEN rec.epoch
-                       ELSE Max(IF hasIncumbent THEN rec.epoch ELSE 0, m.epoch) + 1
+           newEpoch == IF incumbentConnected
+                       THEN IF ArbiterLiftsIncumbent /\ m.epoch > rec.epoch
+                            THEN NewEpoch(m.epoch, rec.leader)
+                            ELSE rec.epoch
+                       ELSE NewEpoch(Max(IF hasIncumbent \/ WithFixes THEN rec.epoch ELSE 0, m.epoch), leader)
        IN IF learning /\ ~hasIncumbent
           THEN \* Declines, silently: nothing is sent back.
                /\ msgs' = msgs \ {m}
@@ -265,7 +327,9 @@ ArbiterDecides(m) ==
 ReceiveDecision(m) ==
     /\ m \in msgs /\ m.type = "decision"
     /\ LET s == m.to
-           e == Max(epoch[s], m.epoch)
+           e == IF UniqueEpochs /\ m.leader = s /\ m.epoch < epoch[s]
+                THEN NextFor(epoch[s], s)
+                ELSE Max(epoch[s], m.epoch)
        IN /\ up[s]
           /\ msgs' = msgs \ {m}
           /\ pending' = [pending EXCEPT ![s] = FALSE]
@@ -403,6 +467,7 @@ Next ==
     \/ \E m \in msgs : ArbiterDecides(m)
     \/ \E m \in msgs : ReceiveDecision(m)
     \/ \E s \in Seq : ReceiveHeartbeat(s)
+    \/ \E s \in Seq : StandDown(s)
     \/ \E s \in Seq : HeartbeatTimeout(s)
     \/ \E s \in Seq : ArbitrationTimeout(s)
     \/ \E s \in Seq : LeaseArrives(s)
@@ -418,7 +483,7 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 (* Keeps the model finite. *)
-EpochBound == \A s \in Seq : epoch[s] <= MaxEpoch
+EpochBound == \A s \in Seq : Gen(epoch[s]) <= MaxEpoch
 
 -----------------------------------------------------------------------------
 (* Properties. *)
@@ -426,7 +491,7 @@ EpochBound == \A s \in Seq : epoch[s] <= MaxEpoch
 TypeOK ==
     /\ up \in [Seq -> BOOLEAN]
     /\ role \in [Seq -> {"unknown", "leader", "follower"}]
-    /\ epoch \in [Seq -> 0..(MaxEpoch + 2)]
+    /\ epoch \in [Seq -> 0..((MaxEpoch + 2) * 4 + 3)]
     /\ timer \in [Seq -> BOOLEAN]
     /\ pending \in [Seq -> BOOLEAN]
 
@@ -462,6 +527,13 @@ FollowerCanNotice ==
             => \/ timer[s] \/ pending[s]
                \/ \E m \in msgs : (m.type = "report" /\ m.from = s)
                                  \/ (m.type = "decision" /\ m.to = s)
+
+(* Two leaders that can hear each other, with nothing in flight, and       *)
+(* neither with any reason to stand down, stay that way for good.           *)
+NoLastingTwoLeaders ==
+    ~(/\ up[1] /\ up[2] /\ role[1] = "leader" /\ role[2] = "leader"
+      /\ "ss" \in link /\ msgs = {}
+      /\ ~(LeaderStandsDown /\ (StandDownDue(1) \/ StandDownDue(2))))
 
 (* The dangerous case of two leaders: both running and both holding the   *)
 (* same epoch, so that every receiver accepts both.                         *)

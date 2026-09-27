@@ -7,6 +7,7 @@
 
 #include <cstdio>
 
+#include <LeaderEpoch.hpp>
 #include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -1253,7 +1254,7 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: no ArbitrationDecision after {} attempts -- self-promoting via instance-id rule (degraded)",
                        startup_arbitration_attempts_);
-            set_epoch(epoch_ + 1);
+            set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
             // Through become_leader_when_current, not begin_reconciliation: reconciling towards
             // leading is what sets reconciling_to_lead_, and a reconciliation begun without it is
             // a start. A start ends "current, and waiting to be told what it may do" -- so this
@@ -1504,7 +1505,7 @@ void MatchingEngineThread::send_arbitration_report() {
         // No arbiter reachable -- degrade to the local instance-id rule and self-promote.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "MatchingEngineThread: no arbiter connected -- self-promoting via instance-id rule (degraded)");
-        set_epoch(epoch_ + 1);
+        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
         // As above: this must reconcile towards leading, or it reconciles towards being current
         // and stops there. An instance that has already caught up adopts the role outright.
         become_leader_when_current();
@@ -1558,7 +1559,15 @@ void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::Even
     }
 
     cancel_timer(startup_arbitration_timer_id_);
-    set_epoch(decision.epoch);
+    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id) && decision.epoch < epoch_) {
+        // Made leader in a generation below one this instance has already seen, which the arbiter
+        // did not know of. Leading at this instance's own epoch would put it in a generation that
+        // records its peer as leader, so it takes the next epoch in which it leads itself. See
+        // fix_common/LeaderEpoch.hpp.
+        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
+    } else {
+        set_epoch(decision.epoch);
+    }
 
     if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
         // The decision settles the role. Whether this instance must catch up first is a

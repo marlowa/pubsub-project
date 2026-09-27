@@ -5,6 +5,7 @@ add_executable(arbiter
 )
 
 target_include_directories(arbiter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${FIX_DSL_INCLUDE_DIR}
 )
@@ -39,10 +40,13 @@ add_executable(arbiter_tests
 )
 
 target_include_directories(arbiter_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# pubsub_itc_fw for fmt and PreconditionAssertion, which LeaderEpoch.hpp uses.
 target_link_libraries(arbiter_tests PRIVATE
+        pubsub_itc_fw
         GTest::gtest_main
 )
 

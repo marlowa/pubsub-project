@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include <LeaderEpoch.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -128,11 +129,15 @@ void WitnessThread::handle_arbiter_vote_request(const pubsub_itc_fw::ConnectionI
                req.self_instance_id, req.peer_instance_id, req.epoch);
 
     max_observed_epoch_ = std::max(max_observed_epoch_, req.epoch);
-    const int32_t new_epoch = max_observed_epoch_ + 1;
 
     // Grant to requester if peer arbiter is not connected; else to the lower instance_id.
     const bool peer_connected = instance_to_conn_id_.count(req.peer_instance_id) > 0;
     const int64_t granted_to = peer_connected ? std::min(req.self_instance_id, req.peer_instance_id) : req.self_instance_id;
+
+    // The new arbiter generation records which arbiter is active in it, so two arbiters can never
+    // be active at the same epoch, and the one that learns of the other active at a newer epoch
+    // stands down. See fix_common/LeaderEpoch.hpp.
+    const int32_t new_epoch = fix_common::LeaderEpoch::next_for(max_observed_epoch_, granted_to);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: vote granted to instance_id={} epoch={} (peer_connected={})", granted_to,
                new_epoch, peer_connected);

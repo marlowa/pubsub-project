@@ -5,6 +5,7 @@ add_executable(witness
 )
 
 target_include_directories(witness PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${FIX_DSL_INCLUDE_DIR}
 )

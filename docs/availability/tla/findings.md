@@ -66,6 +66,48 @@ Two claims in the design documents do not survive checking:
 
 Writing the specifications raised further questions before the checker ran. Section 7 lists those.
 
+### 1.1 Which findings the code now addresses
+
+The code now addresses these findings:
+
+| Finding | What the code does now |
+|---------|------------------------|
+| 1 | Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`fix_common/LeaderEpoch.hpp`). Every issuer takes the next such epoch above what it knows, so two different instances never lead at the same epoch. This applies to the sequencer, the matching engine, the arbiter's decisions for every group, and the arbiters' own epochs. |
+| 2 | Heartbeats say whether the sender leads. A sequencer leader that hears its peer leading at a higher epoch, or the same epoch from a lower instance id, stands down and follows it. An active arbiter does the same. The matching engine does not yet, because its peer protocol has not been modelled. |
+| 3 | `SequencerThread::adopt_role` ends any arbitration round in progress whenever a role is adopted, by any route. |
+| 4 | For the sequencer group, when the arbiter confirms a connected leader but the report carries a higher epoch, it confirms that leader in a new generation above the report's epoch. The leader moves above the follower, and the follower accepts its heartbeats again. |
+| 5 | A sequencer instance told again that it follows re-arms its heartbeat timeout. |
+| 6 | The arbiter bounds a new epoch by the epoch on record, whether or not the record is still trusted. The inputs are built by `LeadershipDecision::inputs_for`, which the unit tests exercise directly. |
+| 8, liveness | An arbiter that the witness tells to stay passive re-arms its heartbeat timeout. |
+
+The specifications model the code with all of these through their constants. For
+`SequencerPairHA.tla`, the constants are `WithFixes`, `UniqueEpochs`, `LeaderStandsDown` and
+`ArbiterLiftsIncumbent`. For `ArbiterPoolHA.tla`, they are `WithFixes` and
+`UniqueEpochsAndStandDown`. With every constant off, each specification models the code at
+`42d29e9`. With them all on, and the strict timing rules, these results hold within the budgets in
+section 5:
+
+- two leaders never share an epoch, and an epoch never names two leaders, in any combination;
+- two leaders that can hear each other always resolve, and so do two active arbiters;
+- every property that held before still holds, and the fair-weather runs still pass.
+
+**What remains open:**
+
+- **Two leaders during a partition, briefly.** The degraded path, which is kept deliberately, can
+  still produce two leaders while a partition lasts. An instance that promotes itself while
+  isolated can also land in a higher generation than the one the arbiter issues on the other side.
+  Receivers that can see the isolated instance then prefer it until the partition heals.
+- **Two active arbiters during a partition.** Preventing this needs the arbiter pool to become a
+  genuine majority (finding 7), which is not done.
+- **The epoch half of finding 8.** The witness's vote still gives the passive arbiter a newer epoch
+  than the active one. With the timeout now re-armed, that costs a vote at every heartbeat timeout
+  rather than the ability to take over.
+- **What a leader wrote while it wrongly led.** When a leader stands down, the orders it sequenced
+  during the partition stay in its log, and its log can disagree with its new leader's. That is
+  `docs/bug_list.md`, BUG-0097.
+- **The matching engine's stand-down and lifting.** Not done until its peer protocol has been
+  modelled.
+
 ---
 
 ## 2. What was modelled
@@ -565,9 +607,9 @@ These are options to decide between, not decisions.
 | File | What it is |
 |------|------------|
 | `SequencerPairHA.tla` | The sequencer pair and its arbiter |
-| `SequencerPairHA.cfg` | Default settings: `Quiet` on, one crash and one link failure; it reproduces finding 5 |
+| `SequencerPairHA.cfg` | Default settings: `Quiet` on, `WithFixes` off, one crash and one link failure; it reproduces finding 5, and passes with `WithFixes` on |
 | `ArbiterPoolHA.tla` | The two arbiters and the witness |
-| `ArbiterPoolHA.cfg` | Default settings: `Quiet` on, one arbiter crash and one link failure |
+| `ArbiterPoolHA.cfg` | Default settings: `Quiet` on, `WithFixes` off, one arbiter crash and one link failure |
 | `traces/` | One counterexample per file, as a table of states |
 
 TLC is in `tla2tools.jar`, from the TLA+ project's releases at

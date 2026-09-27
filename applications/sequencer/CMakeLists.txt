@@ -41,6 +41,7 @@ install(FILES
 add_executable(sequencer_tests
         tests/SequencerConfigurationLoaderTest.cpp
         tests/EpochStoreTest.cpp
+        tests/LeaderEpochTest.cpp
         SequencerConfigurationLoader.cpp
 )
 

@@ -109,9 +109,19 @@ TEST(LeadershipDecisionTest, ADisconnectedIncumbentLosesLeadershipToTheSurvivor)
     EXPECT_TRUE(decision.leadership_changed);
 }
 
+// The new epoch is the next one above the record's in which the new leader, the primary, leads:
+// its remainder on division by 4 is 1.
 TEST(LeadershipDecisionTest, ChangingLeadershipAdvancesTheEpoch) {
     const LeadershipDecision decision = LeadershipDecision::decide(with_incumbent(primary, secondary, secondary, false, 4));
     EXPECT_EQ(decision.epoch, 5);
+}
+
+TEST(LeadershipDecisionTest, TheNewEpochRecordsWhichInstanceLeads) {
+    const LeadershipDecision to_primary = LeadershipDecision::decide(with_incumbent(primary, secondary, secondary, false, 4));
+    const LeadershipDecision to_secondary = LeadershipDecision::decide(with_incumbent(secondary, primary, primary, false, 4));
+    EXPECT_EQ(to_primary.epoch % fix_common::LeaderEpoch::epoch_stride, primary);
+    EXPECT_EQ(to_secondary.epoch % fix_common::LeaderEpoch::epoch_stride, secondary);
+    EXPECT_NE(to_primary.epoch, to_secondary.epoch) << "two different leaders must never be given the same epoch";
 }
 
 // A restart inside the follower's grace period: the secondary never promoted, so the primary is
@@ -133,14 +143,16 @@ TEST(LeadershipDecisionTest, AStaleReportedEpochCannotWindTheSequenceBack) {
     LeadershipDecision::Inputs inputs = with_incumbent(primary, secondary, secondary, false, 9);
     inputs.reported_epoch = 2; // the restarted instance is behind
     const LeadershipDecision decision = LeadershipDecision::decide(inputs);
-    EXPECT_EQ(decision.epoch, 10) << "the arbiter's own record should have won";
+    // The next epoch above the record's 9 in which the primary leads.
+    EXPECT_EQ(decision.epoch, 13) << "the arbiter's own record should have won";
 }
 
 TEST(LeadershipDecisionTest, AnAheadReportedEpochIsRespected) {
     LeadershipDecision::Inputs inputs = with_incumbent(primary, secondary, secondary, false, 3);
     inputs.reported_epoch = 7;
     const LeadershipDecision decision = LeadershipDecision::decide(inputs);
-    EXPECT_EQ(decision.epoch, 8);
+    // The next epoch above the reported 7 in which the primary leads.
+    EXPECT_EQ(decision.epoch, 9);
 }
 
 // -- The property that matters most -------------------------------------------
@@ -169,4 +181,117 @@ TEST(LeadershipDecisionTest, LeaderAndFollowerAreAlwaysTheTwoDistinctInstances) 
             }
         }
     }
+}
+
+// -- The inputs the arbiter builds ---------------------------------------------
+//
+// These go through inputs_for, which is what ArbiterThread uses, so they test the inputs the
+// arbiter really hands to decide() rather than inputs chosen by the test.
+
+namespace {
+
+LeadershipDecision::Inputs report_from(int64_t asked_by, bool peer_connected, int32_t reported_epoch) {
+    LeadershipDecision::Inputs report;
+    report.self_instance_id = asked_by;
+    report.peer_instance_id = (asked_by == primary) ? secondary : primary;
+    report.peer_connected = peer_connected;
+    report.reported_epoch = reported_epoch;
+    return report;
+}
+
+} // un-named namespace
+
+// The case the arbiter once got wrong. The secondary led at 2 and has disconnected, so the record
+// is no longer trusted to name the leader. The primary returns with the epoch it held before the
+// secondary took over. The new generation must be above 2, the epoch the secondary led in, or two
+// leaders share an epoch that receivers accept from both.
+TEST(LeadershipDecisionTest, ARecordNoLongerTrustedStillBoundsTheNewEpoch) {
+    LeadershipDecision::Record record;
+    record.exists = true;
+    record.trusted = false;
+    record.leader_instance_id = secondary;
+    record.leader_connected = false;
+    record.epoch = 2;
+    const LeadershipDecision decision = LeadershipDecision::decide(LeadershipDecision::inputs_for(report_from(primary, false, 1), record));
+    EXPECT_EQ(decision.leader_instance_id, primary);
+    // The next epoch above the record's 2 in which the primary leads.
+    EXPECT_EQ(decision.epoch, 5) << "the epoch on record was issued, trusted or not, and the new one must be above it";
+}
+
+TEST(LeadershipDecisionTest, ARecordNoLongerTrustedIsNotTreatedAsAnIncumbent) {
+    LeadershipDecision::Record record;
+    record.exists = true;
+    record.trusted = false;
+    record.leader_instance_id = secondary;
+    record.leader_connected = true;
+    record.epoch = 2;
+    const LeadershipDecision::Inputs inputs = LeadershipDecision::inputs_for(report_from(primary, true, 2), record);
+    EXPECT_FALSE(inputs.has_incumbent);
+    EXPECT_FALSE(inputs.incumbent_connected);
+    EXPECT_EQ(inputs.incumbent_epoch, 2);
+}
+
+TEST(LeadershipDecisionTest, ATrustedConnectedRecordIsConfirmed) {
+    LeadershipDecision::Record record;
+    record.exists = true;
+    record.trusted = true;
+    record.leader_instance_id = secondary;
+    record.leader_connected = true;
+    record.epoch = 4;
+    const LeadershipDecision decision = LeadershipDecision::decide(LeadershipDecision::inputs_for(report_from(primary, true, 4), record));
+    EXPECT_EQ(decision.leader_instance_id, secondary);
+    EXPECT_EQ(decision.epoch, 4);
+    EXPECT_FALSE(decision.leadership_changed);
+}
+
+TEST(LeadershipDecisionTest, WithNoRecordTheReportedEpochIsTheBound) {
+    const LeadershipDecision::Record no_record;
+    const LeadershipDecision decision = LeadershipDecision::decide(LeadershipDecision::inputs_for(report_from(secondary, false, 5), no_record));
+    EXPECT_EQ(decision.leader_instance_id, secondary);
+    // The next epoch above the reported 5 in which the secondary leads.
+    EXPECT_EQ(decision.epoch, 6);
+}
+
+// -- Lifting the incumbent -----------------------------------------------------
+//
+// A follower that promoted itself while cut off, then was told to follow again, holds an epoch
+// above its leader's and discards the leader's heartbeats as stale. Its report must move the
+// leader above it, keeping the same leader.
+TEST(LeadershipDecisionTest, AReportAboveTheIncumbentLiftsItIntoANewerGeneration) {
+    LeadershipDecision::Inputs inputs = with_incumbent(secondary, primary, primary, true, 5);
+    inputs.reported_epoch = 6;
+    inputs.lift_incumbent_above_report = true;
+    const LeadershipDecision decision = LeadershipDecision::decide(inputs);
+    EXPECT_EQ(decision.leader_instance_id, primary);
+    EXPECT_FALSE(decision.leadership_changed);
+    EXPECT_EQ(decision.epoch, 9) << "the next epoch above the follower's 6 in which the primary leads";
+}
+
+TEST(LeadershipDecisionTest, WithoutLiftingAReportAboveTheIncumbentLeavesItsEpoch) {
+    LeadershipDecision::Inputs inputs = with_incumbent(secondary, primary, primary, true, 5);
+    inputs.reported_epoch = 6;
+    const LeadershipDecision decision = LeadershipDecision::decide(inputs);
+    EXPECT_EQ(decision.leader_instance_id, primary);
+    EXPECT_EQ(decision.epoch, 5);
+}
+
+TEST(LeadershipDecisionTest, AReportAtOrBelowTheIncumbentDoesNotLiftIt) {
+    LeadershipDecision::Inputs inputs = with_incumbent(secondary, primary, primary, true, 5);
+    inputs.reported_epoch = 5;
+    inputs.lift_incumbent_above_report = true;
+    EXPECT_EQ(LeadershipDecision::decide(inputs).epoch, 5);
+}
+
+TEST(LeadershipDecisionTest, InputsForCarriesTheLiftingChoiceThrough) {
+    LeadershipDecision::Inputs report = report_from(secondary, true, 6);
+    report.lift_incumbent_above_report = true;
+    LeadershipDecision::Record record;
+    record.exists = true;
+    record.trusted = true;
+    record.leader_instance_id = primary;
+    record.leader_connected = true;
+    record.epoch = 5;
+    const LeadershipDecision decision = LeadershipDecision::decide(LeadershipDecision::inputs_for(report, record));
+    EXPECT_EQ(decision.leader_instance_id, primary);
+    EXPECT_EQ(decision.epoch, 9);
 }

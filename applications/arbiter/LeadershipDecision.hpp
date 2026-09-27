@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstdint>
 
+#include <LeaderEpoch.hpp>
+
 namespace arbiter {
 
 /**
@@ -40,9 +42,21 @@ namespace arbiter {
  * while it is doing nothing wrong. The epoch advances when the answer changes, and not
  * otherwise.
  *
- * When it does advance it is taken from the higher of the arbiter's record and the reporter's,
- * so a component that has been away and comes back with a stale epoch cannot wind the sequence
- * backwards.
+ * When it does advance it is the next epoch above the higher of the arbiter's record and the
+ * reporter's in which the new leader leads (fix_common/LeaderEpoch.hpp). So a component that has
+ * been away and comes back with a stale epoch cannot wind the sequence backwards, and the epoch
+ * records which instance leads in it, so no other issuer can hand the same epoch to the other
+ * instance.
+ *
+ * **Lifting the incumbent**
+ *
+ * One exception to "the epoch moves only when leadership does". A follower can hold an epoch
+ * above its leader's: it promoted itself while cut off from the arbiter, then was told to follow
+ * again, and its epoch cannot go backwards. It then discards its leader's heartbeats as stale,
+ * for good (docs/bug_list.md, BUG-0085). When the caller asks for it, a report carrying an epoch
+ * above a connected incumbent's confirms the incumbent in a new generation above the report's
+ * epoch, so the leader moves above the follower. The leader is unchanged, so leadership_changed
+ * stays false.
  */
 struct LeadershipDecision {
     /// What the arbiter knows at the moment it is asked.
@@ -59,11 +73,62 @@ struct LeadershipDecision {
         int64_t incumbent_instance_id{0};
         /// Whether that instance currently holds a connection to this arbiter.
         bool incumbent_connected{false};
-        /// The epoch of the decision on record.
+        /// The epoch on record for the group, whether or not the record is still trusted to name
+        /// the leader. A record stops being trusted when its leader disconnects or its lease
+        /// lapses, but the epoch it holds was issued all the same, and a new generation must be
+        /// above it. Zero when no record has ever been held.
         int32_t incumbent_epoch{0};
         /// The epoch the reporting instance believes is in force.
         int32_t reported_epoch{0};
+        /// Whether a report above a connected incumbent's epoch confirms the incumbent in a new
+        /// generation above it. Set for the sequencer pair, whose protocol has been model checked
+        /// with this rule; see docs/availability/tla/findings.md.
+        bool lift_incumbent_above_report{false};
     };
+
+    /// What the arbiter holds on record for a group at the moment it is asked.
+    struct Record {
+        /// Whether any record is held for the group at all.
+        bool exists{false};
+        /// Whether the record is still trusted to name the leader: confirmed, and its lease
+        /// renewed recently enough.
+        bool trusted{false};
+        /// The instance the record names as leader.
+        int64_t leader_instance_id{0};
+        /// Whether that instance currently holds a connection to this arbiter.
+        bool leader_connected{false};
+        /// The epoch the record holds.
+        int32_t epoch{0};
+    };
+
+    /**
+     * @brief Builds the inputs for decide() from an arbitration report and the record.
+     *
+     * Kept apart from decide() and used by ArbiterThread, so that the unit tests exercise the
+     * inputs the arbiter really builds. Without it, a test could hand decide() an incumbent that
+     * is on record but disconnected, pass, and say nothing about the arbiter, which never built
+     * such an input: it stopped passing the record's epoch as soon as the record stopped being
+     * trusted.
+     *
+     * @param[in] report The report's own fields: self_instance_id, peer_instance_id,
+     *                   peer_connected, reported_epoch and lift_incumbent_above_report. Its
+     *                   incumbent fields are ignored.
+     * @param[in] record What the arbiter holds on record for the group.
+     * @return The complete inputs for decide().
+     */
+    [[nodiscard]] static Inputs inputs_for(const Inputs& report, const Record& record) {
+        Inputs inputs;
+        inputs.self_instance_id = report.self_instance_id;
+        inputs.peer_instance_id = report.peer_instance_id;
+        inputs.peer_connected = report.peer_connected;
+        inputs.reported_epoch = report.reported_epoch;
+        inputs.lift_incumbent_above_report = report.lift_incumbent_above_report;
+        inputs.has_incumbent = record.exists && record.trusted;
+        inputs.incumbent_instance_id = inputs.has_incumbent ? record.leader_instance_id : 0;
+        inputs.incumbent_connected = inputs.has_incumbent && record.leader_connected;
+        inputs.incumbent_epoch = record.exists ? record.epoch : 0;
+        return inputs;
+    }
 
     int64_t leader_instance_id{0};
     int64_t follower_instance_id{0};
@@ -79,14 +144,16 @@ struct LeadershipDecision {
         // restarted, and it must not displace a peer that has been serving in its absence.
         if (inputs.has_incumbent && inputs.incumbent_connected) {
             decision.leader_instance_id = inputs.incumbent_instance_id;
-            decision.epoch = inputs.incumbent_epoch;
+            decision.epoch = (inputs.lift_incumbent_above_report && inputs.reported_epoch > inputs.incumbent_epoch)
+                                 ? fix_common::LeaderEpoch::next_for(inputs.reported_epoch, inputs.incumbent_instance_id)
+                                 : inputs.incumbent_epoch;
             decision.leadership_changed = false;
         } else {
             // Cold start, or the incumbent has gone. Prefer the lower id, but only when the
             // peer is actually there: with no peer connected the reporter is the only
             // candidate and takes leadership whatever its id.
             decision.leader_instance_id = inputs.peer_connected ? std::min(inputs.self_instance_id, inputs.peer_instance_id) : inputs.self_instance_id;
-            decision.epoch = std::max(inputs.incumbent_epoch, inputs.reported_epoch) + 1;
+            decision.epoch = fix_common::LeaderEpoch::next_for(std::max(inputs.incumbent_epoch, inputs.reported_epoch), decision.leader_instance_id);
             decision.leadership_changed = true;
         }
 

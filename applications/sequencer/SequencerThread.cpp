@@ -10,6 +10,7 @@
 #include <chrono>
 #include <deque>
 
+#include <LeaderEpoch.hpp>
 #include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -160,7 +161,7 @@ void SequencerThread::on_initial_event() {
 
     if (!config_.ha_enabled) {
         // Single-node mode: start as leader immediately, no election needed.
-        set_epoch(epoch_ + 1);
+        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
         adopt_role(pubsub_itc_fw_app::Role::leader);
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=false -- starting as leader immediately");
     } else {
@@ -1008,7 +1009,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             // in a new generation.
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "SequencerThread: no arbiter connected -- assuming leadership, peer is not responding (degraded)");
-            set_epoch(epoch_ + 1);
+            set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
             adopt_role(pubsub_itc_fw_app::Role::leader);
         }
         return;
@@ -1031,7 +1032,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: no arbitration decision and peer is not responding -- assuming leadership (degraded)");
         arbitration_outstanding_ = false;
-        set_epoch(epoch_ + 1);
+        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
         adopt_role(pubsub_itc_fw_app::Role::leader);
         return;
     }
@@ -1049,7 +1050,26 @@ pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const {
 }
 
 void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
+    // A role settled by any route ends any arbitration round in progress. Rounds are started by
+    // a timeout, but roles are also settled between visible peers and by degraded promotion. A
+    // round left running after the role is settled goes on retrying, and when it finds no
+    // arbiter connected it takes the degraded path: a follower beside a healthy leader promotes
+    // itself. See docs/availability/tla/findings.md, finding 3.
+    cancel_timer(arbitration_timeout_timer_id_);
+    arbitration_timeout_timer_id_ = pubsub_itc_fw::TimerID{};
+    arbitration_outstanding_ = false;
+    arbitration_attempts_ = 0;
+
     if (new_role == role_) {
+        // A follower told again that it follows has usually just had an arbitration decision
+        // confirm its peer, and the heartbeat timeout that sent it to the arbiter has already
+        // fired. Arm it again, or the only thing that would re-arm it is a heartbeat from the
+        // leader, and if the leader dies none comes: this instance would never take over. See
+        // docs/availability/tla/findings.md, finding 5.
+        if (new_role == pubsub_itc_fw_app::Role::follower) {
+            cancel_timer(peer_heartbeat_timeout_timer_id_);
+            peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+        }
         return;
     }
 
@@ -1214,12 +1234,14 @@ void SequencerThread::resolve_with_visible_peer(int64_t peer_instance_id, int32_
     // epochs, so both reach the same answer independently and no exchange of
     // agreement is needed.
     //
-    // The new generation is one past the higher of the two epochs, which puts it
-    // ahead of anything either node has led in before. Taking the higher of the
-    // two matters when one node has lost its stored epoch: max is symmetric, so
-    // the node that still remembers carries the other one forward, and both
-    // still compute the same number.
-    set_epoch(std::max(epoch_, peer_epoch) + 1);
+    // The new generation is the next epoch above the higher of the two in which
+    // the lower instance id leads, which puts it ahead of anything either node has
+    // led in before, and records who leads it. Taking the higher of the two
+    // matters when one node has lost its stored epoch: max is symmetric, so the
+    // node that still remembers carries the other one forward, and both still
+    // compute the same number.
+    const int64_t leader_instance_id = std::min(static_cast<int64_t>(config_.instance_id), peer_instance_id);
+    set_epoch(fix_common::LeaderEpoch::next_for(std::max(epoch_, peer_epoch), leader_instance_id));
 
     if (static_cast<int64_t>(config_.instance_id) < peer_instance_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: my instance_id={} < peer instance_id={} -- adopting leader (epoch={})",
@@ -1263,6 +1285,7 @@ void SequencerThread::send_peer_heartbeat() {
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
+    hb.current_role = role_;
     send_pdu(target, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
 }
@@ -1272,6 +1295,7 @@ void SequencerThread::send_arbiter_heartbeat() {
     hb.instance_id = static_cast<int64_t>(config_.instance_id);
     hb.epoch = epoch_;
     hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
+    hb.current_role = role_;
     if (arbiter_primary_conn_id_.is_valid()) {
         send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
     }
@@ -1359,7 +1383,15 @@ void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMess
     arbitration_attempts_ = 0;
     arbitration_outstanding_ = false;
 
-    set_epoch(decision.epoch);
+    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id) && decision.epoch < epoch_) {
+        // Made leader in a generation below one this instance has already seen, which the arbiter
+        // did not know of. Leading at this instance's own epoch would put it in a generation that
+        // records its peer as leader, so it takes the next epoch in which it leads itself. Its
+        // lease then carries that epoch to the arbiter.
+        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
+    } else {
+        set_epoch(decision.epoch);
+    }
 
     if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
         adopt_role(pubsub_itc_fw_app::Role::leader);
@@ -1458,6 +1490,23 @@ void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& m
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: Heartbeat received from peer (instance_id={} epoch={})", hb.instance_id,
                hb.epoch);
+
+    // Two leaders, left over from a partition in which each led on its own side. Without this,
+    // they never resolve after the partition heals: a leader has no timeout and never asks the
+    // arbiter anything, so nothing else would ever demote either. The one in the newer generation
+    // keeps leading, and a tie, which only epochs issued before generations recorded their leader
+    // can produce, goes to the lower instance id. What this instance sequenced while it wrongly led
+    // stays in its log; see docs/bug_list.md, BUG-0097. See also docs/availability/tla/findings.md,
+    // finding 2.
+    const bool peer_leads_newer_generation = hb.epoch > epoch_ || (hb.epoch == epoch_ && hb.instance_id < static_cast<int64_t>(config_.instance_id));
+    if (role_ == pubsub_itc_fw_app::Role::leader && hb.current_role == pubsub_itc_fw_app::Role::leader && peer_leads_newer_generation) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: peer (instance_id={}) leads at epoch {} while this instance leads at epoch {} -- standing down to follow it",
+                   hb.instance_id, hb.epoch, epoch_);
+        set_epoch(hb.epoch);
+        adopt_role(pubsub_itc_fw_app::Role::follower);
+        return;
+    }
 
     // Follow the leader's generation. Without this a follower keeps whatever
     // epoch it had when it was elected while the leader moves on, the two drift
