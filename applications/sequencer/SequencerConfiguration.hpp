@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
@@ -139,11 +140,12 @@ struct SequencerConfiguration {
     uint16_t arbiter_secondary_port{7201};
 
     /**
-     * @brief How long to wait for an ArbitrationDecision from the active arbiter
-     * before self-promoting using the local instance-id rule (degraded mode).
-     * Only applies when ha_enabled=true.
+     * @brief The timings of the leases that decide which sequencer leads. Only applies when ha_enabled=true.
+     *
+     * Expanded from the environment's [shared] section, because every voter and every instance
+     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
      */
-    int32_t arbitration_timeout_seconds{3};
+    fix_common::LeaseTiming lease{};
 
     // HA mode -- when false, the sequencer starts as leader immediately
     // with no peer election. Set to true only when running a paired
@@ -162,8 +164,8 @@ struct SequencerConfiguration {
     // Each sequencer binds a dedicated listener for peer PDUs and connects
     // outbound to the other sequencer's peer listener. Primary listens on
     // 7003 and connects to 7004; secondary listens on 7004 and connects to
-    // 7003. The heartbeat mechanism is used for liveness detection and
-    // leader election.
+    // 7003. The peer link carries the lease requests that decide which
+    // sequencer leads, and the write-ahead log records the leader replicates.
 
     /** @brief Host address on which the peer PDU listener binds. */
     std::string peer_listen_host{"127.0.0.1"};
@@ -176,24 +178,6 @@ struct SequencerConfiguration {
 
     /** @brief TCP port of the peer sequencer's peer listener (7004 primary, 7003 secondary). */
     uint16_t peer_port{7004};
-
-    /** @brief How often this node sends Heartbeat PDUs to the peer, in seconds. */
-    int32_t heartbeat_interval_seconds{5};
-
-    /**
-     * @brief How long to wait at startup for a peer to appear before self-promoting to leader.
-     *
-     * This is the initial election window: if no peer contact is made within this
-     * many seconds of startup, the node unilaterally promotes itself to leader.
-     * Should be short (>= connect_retry_interval) so that single-node deployments
-     * become operational quickly without waiting for the full heartbeat timeout.
-     *
-     * Default: 3 seconds (allows one connection retry cycle on the peer side).
-     */
-    int32_t startup_election_timeout_seconds{3};
-
-    /** @brief How long without a Heartbeat before the follower promotes itself, in seconds. */
-    int32_t heartbeat_timeout_seconds{15};
 
     // WAL -- mmap'd on-disk write-ahead log
 

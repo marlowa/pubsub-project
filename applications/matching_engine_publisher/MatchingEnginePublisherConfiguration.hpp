@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 
+#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 
@@ -66,17 +67,19 @@ struct MatchingEnginePublisherConfiguration {
     std::string arbiter_secondary_host{"127.0.0.1"};
     uint16_t arbiter_secondary_port{7201};
 
-    int32_t arbitration_timeout_seconds{3};
-
     std::string peer_listen_host{"127.0.0.1"};
     uint16_t peer_listen_port{7044};
 
     std::string peer_host{"127.0.0.1"};
     uint16_t peer_port{7045};
 
-    int32_t heartbeat_interval_seconds{5};
-    int32_t heartbeat_timeout_seconds{15};
-    int32_t startup_election_timeout_seconds{3};
+    /**
+     * @brief The timings of the leases that decide which publisher leads. Only applies when ha_enabled=true.
+     *
+     * Expanded from the environment's [shared] section, because every voter and every instance
+     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
+     */
+    fix_common::LeaseTiming lease{};
 
     // Subscriber flow control
 

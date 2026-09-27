@@ -263,6 +263,21 @@ ha_only = false
 # ── Template substitution values ──────────────────────────────────────────────
 
 [shared]
+# How leadership of a pair is decided: an instance leads only while a majority of three voters
+# has granted it a lease that has not run out. See docs/availability/majority_leases.md.
+#
+# Declared once here, because every voter and every instance holding a lease must use the same
+# period. A voter that took the lease to be shorter than the instance holding it would promise
+# its vote to someone else while the holder still relied on it.
+#
+# The period decides how quickly a follower takes over from a leader that has died: roughly one
+# period plus one renewal interval. The drift allowance is how much shorter than the period an
+# instance takes a lease it holds to be. It covers clocks running at slightly different rates,
+# which PTP keeps to microseconds, and the moment between a leader checking its lease and what
+# it then sends leaving the machine.
+lease_period_milliseconds = 3000
+lease_drift_allowance_milliseconds = 250
+lease_renewal_interval_milliseconds = 1000
 # Metrics for the whole venue. One edit turns the scrape endpoints on or off
 # everywhere; each component still has its own listener host and port below.
 metrics_enabled     = false
@@ -423,6 +438,7 @@ network_listen_host = "0.0.0.0"
 network_listen_port = 11100
 
 [arbiter_primary]
+lease_promise_file   = "/opt/pubsub/var/arbiter_primary_lease_promise.state"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9201
 network_listen_host  = "0.0.0.0"
@@ -435,6 +451,7 @@ witness_host         = "witness.preprod.exchange.internal"            # REPLACE
 witness_port         = 11100
 
 [arbiter_secondary]
+lease_promise_file   = "/opt/pubsub/var/arbiter_secondary_lease_promise.state"
 metrics_listen_host = "0.0.0.0"
 metrics_listen_port = 9202
 network_listen_host  = "0.0.0.0"

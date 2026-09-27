@@ -3,6 +3,7 @@
 
 #include "WitnessConfigurationLoader.hpp"
 
+#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
@@ -21,6 +22,7 @@ WitnessConfiguration WitnessConfigurationLoader::load(const std::string& file_pa
 
     try {
         toml.get_required_except("ha.enabled", config.ha_enabled);
+        config.lease = fix_common::LeaseTiming::load(toml, "WitnessConfigurationLoader");
         toml.get_required_except("network.listen_host", config.listen_host);
 
         int32_t listen_port = 0;

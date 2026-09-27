@@ -89,6 +89,11 @@ CONSTANTS
     HolderCountsFromSend,  \* rule 2: FALSE counts the lease from when the grant arrived
     WaitOutOwnGrant,       \* rule 5
     RestartWaits,          \* rule 6
+    \* TRUE: an instance keeps its promises on disk, so a crash does not make it forget them,
+    \* and it needs no wait after restarting (rule 6 applies to the third voter only). A kept
+    \* promise goes on running down while the instance is down. The vote an instance gave
+    \* itself is not kept: a restarted instance holds no role.
+    InstancesKeepPromises,
     PeerVotes,             \* an instance votes for its peer at all; FALSE leaves the third
                            \* voter as the only voter other than the instance itself
     CandidateYields,       \* rule 9
@@ -348,7 +353,8 @@ Crash(v) ==
     /\ role' = IF v \in Cand THEN [role EXCEPT ![v] = "unknown"] ELSE role
     \* An instance keeps its epoch on disk; the third voter holds its only in memory.
     /\ epoch' = IF v = Third THEN [epoch EXCEPT ![v] = 0] ELSE epoch
-    /\ promise' = [promise EXCEPT ![v] = NoPromise]
+    /\ promise' = [promise EXCEPT ![v] = IF v \in Cand /\ InstancesKeepPromises /\ promise[v].to # v
+                                          THEN promise[v] ELSE NoPromise]
     /\ quiet' = [quiet EXCEPT ![v] = 0]
     /\ held' = IF v \in Cand THEN [held EXCEPT ![v] = ClearedHeld] ELSE held
     /\ alone' = IF v \in Cand THEN [alone EXCEPT ![v] = FALSE] ELSE alone
@@ -361,7 +367,7 @@ Restart(v) ==
     /\ ~up[v]
     /\ v = Third => ~ThirdStaysDown
     /\ up' = [up EXCEPT ![v] = TRUE]
-    /\ quiet' = [quiet EXCEPT ![v] = IF RestartWaits THEN Lease ELSE 0]
+    /\ quiet' = [quiet EXCEPT ![v] = IF RestartWaits /\ ~(v \in Cand /\ InstancesKeepPromises) THEN Lease ELSE 0]
     /\ UNCHANGED <<role, epoch, candEpoch, promise, held, sent, backoff, alone, link, msgs,
                    crashes, thirdRestarts, linkFailures, leaderAt, regressed>>
 

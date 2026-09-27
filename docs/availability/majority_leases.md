@@ -1,13 +1,12 @@
-# Deciding leadership by majority, with leases: a design proposal {#majority_leases}
+# Deciding leadership by majority, with leases {#majority_leases}
 
-This document proposes how the venue decides which instance of a pair leads. It applies in two places:
+This document describes how the venue decides which instance of a pair leads. It applies in two places:
 
-- **A pair of component instances**, such as the two sequencers or the two matching engines.
+- **A pair of component instances**: the two sequencers, the two matching engines, and the two matching engine publishers.
 - **The two arbiters**, which decide between themselves which one is active.
 
-It is a proposal. Nothing in the code works this way yet. The design has been specified in TLA+ and model checked, and
-[tla/findings.md](tla/findings.md) section 11 reports what that checking found. Section 10 below lists what would have to
-change in the requirements, the tests and the code.
+The design has been specified in TLA+ and model checked, and [tla/findings.md](tla/findings.md) section 11 reports what
+that checking found. Section 10 says where each part is implemented and what checks it.
 
 ---
 
@@ -22,14 +21,13 @@ From where the follower sits, the two look exactly the same. If it takes over in
 If it takes over in the second case, the venue has two leaders. Every design has to decide what to do given that the
 follower cannot tell the difference.
 
-The design this proposal replaces lets an instance that can reach no arbiter promote itself. That keeps the venue
-trading when the arbiters are down, but when the real cause is a cut-off follower it produces two leaders. Model checking
-confirmed that this happens (findings 1, 2 and 4 in [tla/findings.md](tla/findings.md)). The same checking showed that
-the arbiter pool, which the design documents describe as a majority of three, does not behave as one (findings 7 and 8).
+An instance that promotes itself whenever it can reach no arbiter keeps the venue trading when the arbiters are down,
+but when the real cause is a cut-off follower it produces two leaders. Model checking shows this happening (findings 1, 2
+and 4 in [tla/findings.md](tla/findings.md)), so no instance of this venue promotes itself.
 
-This design removes promotion without an arbiter, and in its place uses a rule taken from the standard literature on
-consensus: **an instance may lead only while a majority of three voters agrees that it should, and each voter's agreement
-lasts for a fixed period and must be renewed.** The agreement that lasts for a fixed period is called a lease.
+The venue uses instead a rule taken from the standard literature on consensus: **an instance may lead only while a
+majority of three voters agrees that it should, and each voter's agreement lasts for a fixed period and must be
+renewed.** The agreement that lasts for a fixed period is called a lease.
 
 ## 2. The voters
 
@@ -60,6 +58,36 @@ vote of just one other voter: either its peer or the third voter.
 6. **A voter that restarts has forgotten what it promised, so it grants nothing for one lease period after it
    starts.** The same applies to an arbiter that becomes the active arbiter: it knows nothing of what the previously
    active arbiter promised, so it grants no component lease for one component lease period.
+
+   A component instance does not forget, and so does not wait. It writes each promise to disk before it sends the
+   grant, and while it leads it writes that it is leading. When its process restarts, it reads the record back and
+   carries on from it: it votes at once, and if it was leading it asks to lead again at once, without the
+   secondary's head start. This is what lets a supervisor restart a leading process without its peer taking over
+   (section 5).
+
+   The vote a leader gave itself is not carried across the restart. It was a vote for a process that has died, and
+   the lease that process held died with it, so nothing can be acting on it. Keeping it would only make the restarted
+   instance refuse a peer that took over while it was down; with the arbiters also down, that would leave the peer
+   with only its own vote, and the group with no leader, for no reason.
+
+   The record holds each promise's expiry as a time on the steady clock. On Linux that clock counts from when the
+   machine booted and is the same for every process on it, so a time recorded by one process means the same moment to
+   the next. After a reboot the time means nothing, so the record also holds the kernel's boot id
+   (`/proc/sys/kernel/random/boot_id`), and a record from a different boot is ignored: the instance has then
+   forgotten, and waits. A missing or damaged record is treated the same way. The expiry written is ten seconds later
+   than the true one, so that a follower granting a renewal every second rewrites the file only now and then. A later
+   expiry only makes the restarted instance stricter. If a promise cannot be written, it is not made: the instance
+   refuses the request.
+
+   Each arbiter keeps such a record for its own lease, the one deciding which arbiter is active, so a supervised
+   restart of the active arbiter does not make the other one active. An arbiter keeps no record of its votes for the
+   components, so an arbiter that becomes active still waits before granting any component a lease. The witness and
+   the matching engine publisher keep no record, and always wait.
+
+   An instance resuming a lead it recorded may find its epoch refused as behind: an arbiter keeps no epoch on disk, so
+   it first asks below the epoch it led in. It then asks again above that epoch at once, without the random wait of
+   rule 10. That wait keeps two candidates from colliding, and there is no second candidate, because both other voters
+   promised their votes to the instance resuming.
 7. **Each voter remembers the highest epoch it has granted, and grants no lower one.** A new leader's epoch records
    which instance leads in it, as `fix_common/LeaderEpoch.hpp` already does, so no two instances ever lead at the same
    epoch. A voter that refuses a request says in its refusal what the highest epoch it has granted is.
@@ -103,6 +131,7 @@ The table describes a component pair. The arbiters behave the same way, with the
 | Nothing | The leader renews its lease with both its peer and the arbiter. |
 | The arbiter pool, entirely | **Trading continues.** The leader renews its lease with its peer alone. |
 | The follower | Trading continues. The leader renews its lease with the arbiter alone. |
+| The leader's process, restarted by its supervisor within the lease period | The restarted leader reads its record, asks to lead again at once, and its peer and the arbiter grant it, because both promised their votes to it. It keeps the lead, and the follower does not take over (rule 6). |
 | The leader, with the arbiters running | The follower's promise to the leader runs out, and so does the arbiter's. The follower asks to lead, the arbiter grants it, and the follower takes over. |
 | The link between the two instances | The leader renews with the arbiter. The follower asks the arbiter to let it lead, and the arbiter refuses, because it has promised its vote to the leader. |
 | The link between the leader and the arbiter | The leader renews with its peer. Nothing changes for members. |
@@ -135,9 +164,11 @@ its peer's refusal to renew, or from a receiver, stops, and asks again at epoch 
 learns of epoch 6 at its first renewal. When its peer is down, only a receiver can tell it, which is why rule 8 names
 receivers as well as voters.
 
-A voter that keeps its highest epoch on disk would narrow this, but would not close it. When a different arbiter becomes
-active, the new one does not know the highest epoch the previous one granted. Rule 8 covers both cases, so this proposal
-relies on it and keeps the arbiters free of stored state.
+Two things narrow this further. The active arbiter tells the passive one the highest epoch granted in each group, so a
+change of active arbiter does not forget it; only both arbiters restarting does. Rule 8's recovery from a voter's refusal
+is implemented. Its recovery from a receiver is not yet: receivers refuse the lower epoch but do not tell the leader, so
+a leader regressed while its peer is down stays refused until the peer returns. The functional specification records
+this as a gap under R-0064.
 
 ## 7. The one case in which trading halts
 
@@ -178,51 +209,64 @@ alone, so a change of active arbiter costs nothing when every component pair has
 
 ## 9. Timing
 
-The lease period is a configuration setting. A follower takes over roughly one lease period plus one renewal interval
-after its leader dies: its own promise to the old leader must run out, and so must the arbiter's. With a lease period of
-three seconds and renewals every second, a failover takes about four seconds, plus the time the new leader needs to catch
-up. The value to use has not been decided.
+The lease timings are configuration, set once in each environment file's `[shared]` section so that every voter uses the
+same values: `lease_period_milliseconds` (3000), `lease_drift_allowance_milliseconds` (250) and
+`lease_renewal_interval_milliseconds` (1000). The configuration check refuses a drift allowance below two ticks of the
+lease rules, which run every 100 milliseconds, and a renewal interval longer than half of the period less the allowance.
+
+A follower takes over roughly one lease period plus one renewal interval after its leader dies: its own promise to the
+old leader must run out, and so must the arbiter's. With these values, `ha_test.py` scenario 1 measures a sequencer
+failover of about five and a half seconds, including the new leader's first orders.
+
+The drift allowance covers clocks running at slightly different rates, which PTP keeps to microseconds, and the moment
+between a leader checking its lease and what it then sends leaving the machine. Each machine measures elapsed time on its
+own steady clock, so a difference between two clocks' readings does not matter; only a difference in their rates does.
 
 A shorter lease period gives faster failover. The cost is that a leader stalled for longer than the lease period, by a
 long garbage collection pause in a Java component or a machine under heavy load, loses its lease and stops even though
 nothing has failed.
 
-## 10. What would change
-
-**Requirements.**
-
-- R-0095, "An instance may act with no arbiter reachable, and says that it did", would be replaced by a requirement
-  that an instance leads only while it holds leases from a majority of its voters.
-- R-0093, "The venue trades while a group is reduced to one instance", stays true with one qualification: when the
-  surviving instance is the follower, it needs an arbiter to take over.
-- The statement in the arbiter chapter that the venue goes on trading with both arbiters and the witness gone stays true
-  for a leader whose peer is running.
-- A new requirement would state the halt in section 7, with its rationale, so that it is a documented decision rather
-  than a surprise.
-
-**Test scenarios.** `ha_test` scenario 9, "degraded sequencer election", would expect the venue to halt and report
-why, instead of expecting the secondary to promote itself. Scenarios 8, 35 and 39 also cite R-0095 and would need to be
-checked against the new requirement. Scenario 6, in which both arbiters die and the leader continues, stays as it is.
+## 10. Where it is implemented, and what checks it
 
 **Code.**
 
-- The degraded promotion paths in the sequencer and the matching engine would be removed.
-- A leader would stop acting when its leases run out, which it does not do now.
-- A follower would vote for its leader by answering its renewal requests, and would not ask to lead until its promise
-  had run out.
-- An instance asking to lead would give way to its peer's request at a higher epoch (rule 9), and would wait a varying
-  time before asking again after a failed attempt (rule 10).
-- The arbiter would grant component leases as a voter under rules 1, 6 and 7, instead of issuing decisions.
-- The arbiters and the witness would follow the same rules among themselves. The witness would grant leases instead of
-  answering one-off vote requests.
-- The unique epochs of `fix_common/LeaderEpoch.hpp` stay. The rule that a leader stands down on hearing a peer leading
-  at a higher epoch stays as well: under this design it should never be needed, and it costs nothing to keep.
+- The rules are in `applications/fix_common/`: `LeaseVoter.hpp` (rules 1, 6 and 7), `LeaseHolder.hpp` (rule 2),
+  `LeaseParticipant.hpp` (rules 4, 5, 9 and 10), and `PairLeaseAgent.hpp`, which drives them for an instance: asking,
+  renewing, giving up a request that goes unanswered, answering the peer, and reporting what changed. `LeaseTiming.hpp`
+  reads and checks the timings.
+- The sequencer, the matching engine, the matching engine publisher and the arbiter each own a `PairLeaseAgent`, and
+  supply only the connections it sends on. An instance that stops leading stops acting at once.
+- The arbiter votes for the components through `applications/arbiter/ComponentLeaseVoters.hpp`, which applies rule 6 to
+  an arbiter that has just become active, and carries the highest epoch in each group across a change of active arbiter.
+- The witness is a `LeaseVoter`.
+- A component instance keeps its promises in `applications/fix_common/LeasePromiseStore.hpp`. The sequencer's file is
+  `lease_promise.state` in its write-ahead log directory; the matching engine's is its epoch file's name with
+  `.lease_promise` added; each arbiter's is `[lease] promise_file` in its configuration. The matching engine
+  publisher keeps no record, so it waits after every restart.
+- The messages are `LeaseRequest`, `LeaseGrant` and `LeaseRefusal` in `leader_follower.dsl`.
 
-**How it was checked.** [tla/findings.md](tla/findings.md) section 11 gives the results. In summary: two instances
-acting as leader at once was not found in any of seven exhaustive runs covering crashes, restarts of the third voter and
-link failures, with between 4 and 85 million states each. Removing any one of rules 2, 5 and 6, or adding promotion
-without a majority, produces two leaders acting at once within a few steps. With the third voter down for good, the two
-instances always elect a leader between themselves, and they fail to without rule 9 or without the peer's vote.
+**Tests.**
 
-**The documents that disagree.** [wal_and_ha.md](wal_and_ha.md) says an instance that cannot reach the arbiter must not
-promote, while the functional specification says it may. Under this design the two would agree.
+- `applications/sequencer/tests/LeaseRulesTest.cpp`: one or more tests per rule.
+- `applications/sequencer/tests/LeaseSimulationTest.cpp`: a randomised simulation of a pair and its third voter, with
+  messages delayed beyond a lease period or lost, links failing, and every party crashing and restarting, checking after
+  every step that two instances never act as leader at once. A run in which the third voter's clock gains more than the
+  drift allowance must find two leaders, which shows the check can fail.
+- `applications/sequencer/tests/PairLeaseAgentTest.cpp` and `applications/arbiter/tests/ComponentLeaseVotersTest.cpp`.
+  The agent tests restart a leader after its process has been down for 1.5 seconds, with and without its record, and
+  show that it keeps the lead only with the record.
+- `applications/sequencer/tests/LeasePromiseStoreTest.cpp`: the record is read back during the same boot, and ignored
+  when it comes from another boot, is missing, or is damaged.
+- `scripts/ha_test.py`, which runs the whole venue. Scenario 8 checks that an arbiter left with only its own vote does
+  not become active, scenario 9 the halt of section 7, and scenario 15 each step of a follower being granted the lead.
+
+**Requirements.** R-0146 states the majority rule, R-0147 the halt in section 7, and R-0059 the wait of an arbiter that
+does not know what was promised. R-0093 is qualified: when the surviving instance is the follower, it needs an arbiter to
+take over.
+
+**How it was checked before it was built.** [tla/findings.md](tla/findings.md) section 11 gives the results. In summary:
+two instances acting as leader at once was not found in any of seven exhaustive runs covering crashes, restarts of the
+third voter and link failures, with between 4 and 85 million states each. Removing any one of rules 2, 5 and 6, or adding
+promotion without a majority, produces two leaders acting at once within a few steps. With the third voter down for good,
+the two instances always elect a leader between themselves, and they fail to without rule 9 or without the peer's vote.
+Every build reruns those counterexamples.

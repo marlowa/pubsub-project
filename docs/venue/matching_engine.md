@@ -72,21 +72,23 @@ either `"cancel"` or `"keep"`:
   catch-up that follows it. See R-0073 and R-0101 in the functional specification, and
   `docs/bug_list.md` BUG-0074.
 - Halt-on-failure is preserved as a fallback for failure modes that cannot be cleanly
-  reconciled (WAL corruption, arbiter unreachable), and cancelling is unconditional there
+  reconciled (WAL corruption), and cancelling is unconditional there
   whatever the policy says.
 
 See [WAL and High Availability](../availability/wal_and_ha.md) for the full cancel-on-failover
 correctness rule and the 7-step promotion sequence.
 
-**Current status:** Implemented (slices A–D) and verified. On ME-primary loss the secondary
-detects the dropped book-replication channel, waits out the promotion timeout, requests
-arbitration, reconciles its replicated book against the sequencer's WAL
+**Current status:** Implemented and verified. Which instance leads is decided by leases: an
+instance leads only while a majority of itself, its peer and the arbiter pool has granted it a
+lease (see [Deciding leadership by majority, with leases](../availability/majority_leases.md)).
+On ME-primary loss the secondary's promise to it runs out, it asks for and is granted a lease,
+reconciles its replicated book against the sequencer's WAL
 (`MePositionRequest`/`MePositionAck`), issues cancel ERs for genuinely-outstanding orders,
 and adopts leader; the leader sequencer promotes its standby connection so sequenced orders
 route to the promoted ME. Verified by `ha_test.py` scenario 16 (ME failover), a live perf run
 through a failover, and an orders-in-flight-during-the-gap run (gap orders are WAL-committed
 and recovered — none dropped). Halt-on-failure remains the fallback for irreconcilable
-failure modes (WAL corruption, arbiter unreachable).
+failure modes (WAL corruption).
 
 ## Configuration
 

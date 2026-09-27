@@ -3,9 +3,8 @@
 
 #include "WitnessThread.hpp"
 
-#include <algorithm>
+#include <chrono>
 
-#include <LeaderEpoch.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -36,6 +35,23 @@ pubsub_itc_fw::AllocatorConfiguration make_allocator_config(const WitnessConfigu
     return allocator_configuration;
 }
 
+// The witness's identity as a voter. The arbiters are 1 and 2.
+constexpr int64_t witness_voter_id = 3;
+
+pubsub_itc_fw_app::LeaseRefusalReason refusal_reason_for(fix_common::LeaseVoter::Verdict verdict) {
+    switch (verdict) {
+        case fix_common::LeaseVoter::Verdict::RefusedWhileRestarting:
+            return pubsub_itc_fw_app::LeaseRefusalReason::restarting;
+        case fix_common::LeaseVoter::Verdict::RefusedPromisedElsewhere:
+            return pubsub_itc_fw_app::LeaseRefusalReason::promised_elsewhere;
+        case fix_common::LeaseVoter::Verdict::RefusedEpochBehind:
+            return pubsub_itc_fw_app::LeaseRefusalReason::epoch_behind;
+        case fix_common::LeaseVoter::Verdict::Granted:
+            break;
+    }
+    return pubsub_itc_fw_app::LeaseRefusalReason::unknown;
+}
+
 } // namespaces
 
 WitnessThread::WitnessThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
@@ -44,7 +60,13 @@ WitnessThread::WitnessThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config) {}
 
-void WitnessThread::on_initial_event() {}
+void WitnessThread::on_initial_event() {
+    voter_.emplace(config_.lease.period, std::chrono::steady_clock::now(), 0);
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "WitnessThread: voting on which arbiter is active (lease period={} ms); no vote is granted during the first period",
+               config_.lease.period.count());
+}
 
 void WitnessThread::on_app_ready_event() {}
 
@@ -54,27 +76,18 @@ void WitnessThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
 
 void WitnessThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter connection {} lost: {}", id.get_value(), reason);
-
-    const auto conn_it = conn_to_instance_id_.find(id.get_value());
-    if (conn_it != conn_to_instance_id_.end()) {
-        const int64_t instance_id = conn_it->second;
-        instance_to_conn_id_.erase(instance_id);
-        conn_to_instance_id_.erase(conn_it);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter instance_id={} unregistered", instance_id);
-    }
 }
 
 void WitnessThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const auto pdu_id = message.pdu_id();
 
-    if (pdu_id == pubsub_itc_fw_app::ArbiterHeartbeat::message_pdu_id) {
-        handle_arbiter_heartbeat(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw_app::ArbiterVoteRequest::message_pdu_id) {
-        handle_arbiter_vote_request(conn_id, message);
+    if (pdu_id == pubsub_itc_fw_app::LeaseRequest::message_pdu_id) {
+        handle_lease_request(conn_id, message);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "WitnessThread: unexpected PDU pdu_id={} on connection {} -- dropping (witness only handles arbiter PDUs)", pdu_id, conn_id.get_value());
+                   "WitnessThread: unexpected PDU pdu_id={} on connection {} -- dropping (the witness answers only lease requests from arbiters)", pdu_id,
+                   conn_id.get_value());
     }
 
     release_pdu_payload(message);
@@ -84,74 +97,51 @@ void WitnessThread::on_timer_event([[maybe_unused]] pubsub_itc_fw::TimerID id) {
 
 void WitnessThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
 
-// Protocol handlers
-
-void WitnessThread::handle_arbiter_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+void WitnessThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::ArbiterHeartbeatView hb{};
+    pubsub_itc_fw_app::LeaseRequestView request{};
 
-    if (!pubsub_itc_fw_app::decode(hb, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "WitnessThread: failed to decode ArbiterHeartbeat -- dropping");
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "WitnessThread: failed to decode LeaseRequest -- dropping");
+        return;
+    }
+    if (request.group != pubsub_itc_fw_app::ComponentGroup::arbiter) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "WitnessThread: LeaseRequest for group={} -- dropping, the witness votes only on arbiters",
+                   pubsub_itc_fw_app::to_string(request.group));
         return;
     }
 
-    const bool already_known = conn_to_instance_id_.count(conn_id.get_value()) > 0;
-    conn_to_instance_id_[conn_id.get_value()] = hb.instance_id;
-    instance_to_conn_id_[hb.instance_id] = conn_id;
-    max_observed_epoch_ = std::max(max_observed_epoch_, hb.epoch);
+    const fix_common::LeaseVoter::Answer answer = voter_->consider(request.candidate_instance_id, request.epoch, std::chrono::steady_clock::now());
 
-    if (!already_known) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: arbiter instance_id={} registered on connection {} (epoch={})",
-                   hb.instance_id, conn_id.get_value(), hb.epoch);
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "WitnessThread: ArbiterHeartbeat from instance_id={} (epoch={})", hb.instance_id, hb.epoch);
-    }
-}
-
-void WitnessThread::handle_arbiter_vote_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::ArbiterVoteRequestView req{};
-
-    if (!pubsub_itc_fw_app::decode(req, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "WitnessThread: failed to decode ArbiterVoteRequest -- dropping");
+    if (answer.verdict == fix_common::LeaseVoter::Verdict::Granted) {
+        pubsub_itc_fw_app::LeaseGrant grant{};
+        grant.voter_instance_id = witness_voter_id;
+        grant.group = pubsub_itc_fw_app::ComponentGroup::arbiter;
+        grant.epoch = request.epoch;
+        grant.request_id = request.request_id;
+        send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+        // Logged when the arbiter holding the vote changes, not at every renewal.
+        if (request.candidate_instance_id != last_granted_to_) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: vote granted to arbiter {} at epoch {}", request.candidate_instance_id,
+                       request.epoch);
+            last_granted_to_ = request.candidate_instance_id;
+        }
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: ArbiterVoteRequest from instance_id={} (peer_instance_id={} epoch={})",
-               req.self_instance_id, req.peer_instance_id, req.epoch);
-
-    max_observed_epoch_ = std::max(max_observed_epoch_, req.epoch);
-
-    // Grant to requester if peer arbiter is not connected; else to the lower instance_id.
-    const bool peer_connected = instance_to_conn_id_.count(req.peer_instance_id) > 0;
-    const int64_t granted_to = peer_connected ? std::min(req.self_instance_id, req.peer_instance_id) : req.self_instance_id;
-
-    // The new arbiter generation records which arbiter is active in it, so two arbiters can never
-    // be active at the same epoch, and the one that learns of the other active at a newer epoch
-    // stands down. See fix_common/LeaderEpoch.hpp.
-    const int32_t new_epoch = fix_common::LeaderEpoch::next_for(max_observed_epoch_, granted_to);
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: vote granted to instance_id={} epoch={} (peer_connected={})", granted_to,
-               new_epoch, peer_connected);
-
-    send_arbiter_vote_response(conn_id, granted_to, new_epoch);
-}
-
-void WitnessThread::send_arbiter_vote_response(const pubsub_itc_fw::ConnectionID& conn_id, int64_t granted_to_instance_id, int32_t epoch) {
-    pubsub_itc_fw_app::ArbiterVoteResponse resp{};
-    resp.granted_to_instance_id = granted_to_instance_id;
-    resp.epoch = epoch;
-    send_pdu(conn_id, pubsub_itc_fw_app::ArbiterVoteResponse::message_pdu_id, 0, resp);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "WitnessThread: ArbiterVoteResponse sent to connection {} (granted_to={} epoch={})",
-               conn_id.get_value(), granted_to_instance_id, epoch);
+    pubsub_itc_fw_app::LeaseRefusal refusal{};
+    refusal.voter_instance_id = witness_voter_id;
+    refusal.group = pubsub_itc_fw_app::ComponentGroup::arbiter;
+    refusal.highest_epoch = answer.highest_epoch;
+    refusal.request_id = request.request_id;
+    refusal.reason = refusal_reason_for(answer.verdict);
+    send_pdu(conn_id, pubsub_itc_fw_app::LeaseRefusal::message_pdu_id, 0, refusal);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "WitnessThread: refused arbiter {} at epoch {} ({})", request.candidate_instance_id,
+               request.epoch, pubsub_itc_fw_app::to_string(refusal.reason));
 }
 
 } // namespaces

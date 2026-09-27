@@ -3,10 +3,10 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <chrono>
 #include <cstdint> // IWYU pragma: keep
+#include <map>
+#include <optional>
 #include <string>
-#include <unordered_map>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -14,30 +14,34 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
+#include <LeaseLinksInterface.hpp>
+#include <LeasePromiseStore.hpp>
+#include <PairLeaseAgent.hpp>
 #include <leader_follower.hpp>
 
 #include "ArbiterConfiguration.hpp"
-#include "LeadershipDecision.hpp"
+#include "ComponentLeaseVoters.hpp"
 
 namespace arbiter {
 
 /**
- * @brief ApplicationThread subclass implementing the arbiter business logic.
+ * @brief ApplicationThread subclass implementing the arbiter.
  *
- * The arbiter manages the leadership-state map for component pairs (sequencer
- * pair, ME pair). Two arbiter instances form an HA pair. One is the active
- * arbiter (makes leadership decisions for components); the other is the passive
- * arbiter (replicates state, ready to take over on active failure).
+ * The arbiter pool is the third voter in deciding which instance of each component pair leads: the
+ * sequencers, the matching engines and the matching engine publishers. An instance leads only while
+ * a majority of three voters -- itself, its peer and the arbiter pool -- has granted it a lease that
+ * has not run out. See docs/availability/majority_leases.md.
  *
- * The arbiter pair elects active/passive using the same StatusQuery /
- * StatusResponse / Heartbeat protocol as the sequencer peer election. When
- * both arbiters are undecided, the witness breaks the tie via
- * ArbiterVoteRequest / ArbiterVoteResponse.
+ * Two arbiters form the pool, and it votes through whichever of them is active. An arbiter is active
+ * only while a majority of three other voters -- the two arbiters and the witness -- has granted it a
+ * lease in turn. Its own vote is one of the three, so it needs a grant from its peer or the witness.
+ * An active arbiter that can reach neither stops being active when its lease runs out, so at most one
+ * arbiter is ever active.
  *
- * Components (sequencer, ME) connect to BOTH arbiter instances:
- *  - Active arbiter: processes ArbitrationReport (200), replies with
- *    ArbitrationDecision (201), replicates result to passive.
- *  - Passive arbiter: drops ArbitrationReport with a log warning.
+ * Components connect to both arbiters and send each request for a lease to both. The active arbiter
+ * answers; the passive one stays silent (see ComponentLeaseVoters). An arbiter that becomes active
+ * grants nothing to any component for one lease period, because it does not know what the previously
+ * active arbiter promised.
  *
  * Threading: ThreadID 1.
  */
@@ -56,161 +60,74 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void on_itc_message(const pubsub_itc_fw::EventMessage& message) override;
 
   private:
+    // How the lease rules reach the other two voters in deciding which arbiter is active: the peer
+    // arbiter and the witness.
+    class PoolLinks : public fix_common::LeaseLinksInterface {
+      public:
+        explicit PoolLinks(ArbiterThread& owner) : owner_(owner) {}
+        void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) override;
+        void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) override;
+        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) override;
+        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) override;
+
+      private:
+        ArbiterThread& owner_;
+    };
+
     const ArbiterConfiguration& config_;
 
-    // Own active/passive role (independent of component leadership).
+    // Whether this arbiter is active, as last decided by the lease rules, and the epoch it is active in.
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
     int32_t epoch_{0};
 
-    // Timer ids for this thread's timers (default-constructed = not scheduled).
-    // on_timer_event recognises a fired timer by comparing against these.
-    pubsub_itc_fw::TimerID peer_heartbeat_timer_id_{};
-    pubsub_itc_fw::TimerID witness_heartbeat_timer_id_{};
-    pubsub_itc_fw::TimerID peer_heartbeat_timeout_timer_id_{};
-    pubsub_itc_fw::TimerID vote_timeout_timer_id_{};
+    // Drives the lease rules. Recurring, every LeaseTiming::tick_interval.
+    pubsub_itc_fw::TimerID lease_tick_timer_id_{};
 
     // Peer arbiter connections (outbound + inbound).
     pubsub_itc_fw::ConnectionID peer_conn_id_;
     pubsub_itc_fw::ConnectionID peer_inbound_conn_id_;
 
-    // The peer's instance_id. Seeded from configuration so that it is known before the two have
-    // ever spoken, and overwritten by what the peer says of itself in StatusQuery/StatusResponse.
+    // The peer's instance_id, from configuration.
     int64_t peer_instance_id_{0};
-
-    // Whether the peer has ever been known to hold the active role. It is not cleared when contact
-    // is lost: losing contact is not evidence that the peer stopped acting, and this exists to
-    // answer the question asked at exactly that moment.
-    bool peer_seen_active_{false};
-
-    // Whether the decline below has already been reported. Declining re-arms the timeout, so the
-    // question is asked again every few seconds for as long as the condition lasts; saying so once
-    // is the report, and saying it repeatedly is only volume. Cleared by a change of role, which
-    // is the thing that would make it worth reporting again.
-    bool decline_reported_{false};
 
     // Witness connection (outbound).
     pubsub_itc_fw::ConnectionID witness_conn_id_;
 
-    // A component is identified by (group, instance_id). The arbiter pool is
-    // shared by several independent HA pairs (sequencer, matching_engine, ...),
-    // each numbering its members instance_id 1/2; the group disambiguates them so
-    // one pair's election cannot contaminate another's leadership state.
-    struct ComponentKey {
-        pubsub_itc_fw_app::ComponentGroup group{pubsub_itc_fw_app::ComponentGroup::unknown};
-        int64_t instance_id{0};
-        bool operator==(const ComponentKey& other) const {
-            return group == other.group && instance_id == other.instance_id;
-        }
-    };
-    struct ComponentKeyHash {
-        size_t operator()(const ComponentKey& key) const {
-            return (static_cast<size_t>(key.group) * 1099511628211ULL) ^ static_cast<size_t>(key.instance_id);
-        }
-    };
+    PoolLinks pool_links_{*this};
 
-    // Leadership-state map: (group, instance_id) -> assigned leader/follower/epoch.
-    // Tracks the epoch for each component pair's last decision.
-    struct ComponentState {
-        int64_t leader_instance_id{0};
-        int64_t follower_instance_id{0};
-        int32_t epoch{0};
+    // This arbiter's side of the lease rules for deciding which arbiter is active. Constructed at
+    // the initial event, because it needs the moment this arbiter started.
+    std::optional<fix_common::PairLeaseAgent> pool_lease_;
 
-        // Whether this instance is still believed to hold leadership, as opposed to merely
-        // having held it once. A lease that never expires is not a lease, it is a fact -- and
-        // treating it as one meant the arbiter kept naming an instance as leader after that
-        // instance had restarted and come back as a follower, because it was still connected
-        // and connection says nothing about leadership. Cleared when the recorded leader
-        // disconnects, and when the lease goes unrenewed; set again only by a lease or a
-        // fresh decision. See docs/availability/design_notes.md#ha_lease_expiry.
-        bool leadership_confirmed{false};
-        std::chrono::steady_clock::time_point leased_at{};
-    };
+    // The pool's vote on which instance of each component pair leads, held while this arbiter is active.
+    ComponentLeaseVoters component_voters_;
 
-    /// How long a lease stands without renewal before the arbiter stops believing it.
-    ///
-    /// A backstop rather than the mechanism: disconnection is the precise signal and clears
-    /// the record at once. This catches what disconnection cannot -- a leader that holds its
-    /// socket open and stops renewing, which from the outside looks identical to a healthy one.
-    static constexpr std::chrono::seconds leadership_lease_ttl{10};
-    // Keyed by GROUP, not by instance. "Which instance leads the matching engine?" has one
-    // answer, and keying it per instance made it unanswerable without already knowing who to
-    // ask about -- which is exactly what a rejoining instance does not know. See
-    // LeadershipDecision.hpp.
-    std::unordered_map<pubsub_itc_fw_app::ComponentGroup, ComponentState> leadership_state_;
+    // Where this arbiter's promise in deciding which arbiter is active outlives the process, until the
+    // machine reboots.
+    fix_common::LeasePromiseStore lease_promise_store_;
 
-    // When this arbiter started. leadership_state_ is memory only and nothing reads it back,
-    // so a restarted arbiter begins knowing nothing -- and an arbiter that knows nothing
-    // would apply the cold-start tie-break and hand leadership to the lower instance id,
-    // which after a failover is the instance that just restarted with no state. For a short
-    // period after starting it therefore declines to decide about a group it has heard
-    // nothing about, rather than deciding wrongly. See docs/availability/design_notes.md#ha_arbiter_relearns.
-    std::chrono::steady_clock::time_point started_at_{std::chrono::steady_clock::now()};
+    // The instance last granted a lease in each group, so that a change of leader is logged and a
+    // renewal is not.
+    std::map<pubsub_itc_fw_app::ComponentGroup, int64_t> last_granted_to_;
 
-    /// How long after startup the arbiter waits to be informed before it will guess.
-    static constexpr std::chrono::seconds startup_learning_period{10};
-
-    /// True while this arbiter may still be ignorant rather than genuinely facing a cold start.
-    [[nodiscard]] bool within_startup_learning_period() const {
-        return std::chrono::steady_clock::now() - started_at_ < startup_learning_period;
-    }
-
-    /// Replays what this arbiter knows about leadership to a peer that has just connected.
-    void replay_leadership_to_peer(const pubsub_itc_fw::ConnectionID& conn_id);
-
-    /// Records who leads a group, as asserted by the instance that holds it.
-    void handle_leadership_lease(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-
-    // Pending arbitration requests: (group, instance_id) -> conn_id of requestor.
-    // Held until we can send ArbitrationDecision.
-    std::unordered_map<ComponentKey, pubsub_itc_fw::ConnectionID, ComponentKeyHash> pending_requests_;
-
-    // Track all connected component instances: (group, instance_id) -> ConnectionID.
-    std::unordered_map<ComponentKey, pubsub_itc_fw::ConnectionID, ComponentKeyHash> component_connections_;
-
-    // Reverse map: connection value -> (group, instance_id) (populated on Heartbeat).
-    std::unordered_map<int32_t, ComponentKey> conn_to_component_instance_;
-
-    // Arbiter peer helpers (mirror sequencer peer protocol).
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
-    void elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role);
-    void send_status_query(const pubsub_itc_fw::ConnectionID& conn_id);
-    void send_status_response(const pubsub_itc_fw::ConnectionID& conn_id);
-    void send_peer_heartbeat();
-    void send_witness_heartbeat();
-    void request_witness_vote();
 
-    /// Whether this arbiter may make itself active on its own judgement, the witness having said nothing.
-    ///
-    /// True only for the lower of the two configured identities, and only while it has no evidence that its
-    /// peer is already acting. At most one arbiter can satisfy that, whatever either can see of the other,
-    /// which is what keeps a partition from producing two of them. See docs/bug_list.md, BUG-0075.
-    [[nodiscard]] bool may_promote_unwitnessed() const;
+    /// Changes this arbiter's role to follow what the lease rules have just decided.
+    void act_on(fix_common::PairLeaseAgent::Change change);
 
-    /// Becomes active if nothing else can be, and otherwise stays passive and arms the timeout to try again.
-    void promote_if_nothing_else_can_be_active();
+    void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
+    void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);
 
-    // Peer PDU handlers.
+    /// A component instance asks the arbiter pool for a lease.
+    void handle_component_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+
+    /// Tells the peer arbiter the highest epoch granted in @p group, so that it is not forgotten if the peer becomes active.
+    void send_highest_epoch_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group, int32_t epoch);
+
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
-    void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
     void handle_arbiter_state_record(const pubsub_itc_fw::EventMessage& message);
-    void handle_arbiter_state_ack(const pubsub_itc_fw::EventMessage& message);
-
-    // Witness PDU handlers.
-    void handle_arbiter_vote_response(const pubsub_itc_fw::EventMessage& message);
-
-    // Component PDU handlers.
-    void handle_component_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_arbitration_report(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-
-    // Decision helpers.
-    void decide_and_broadcast(pubsub_itc_fw_app::ComponentGroup group, int64_t self_instance_id, int64_t peer_instance_id, int32_t epoch,
-                              const pubsub_itc_fw::ConnectionID& requester_conn_id);
-    void send_arbitration_decision(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group, int64_t leader_id, int64_t follower_id,
-                                   int32_t epoch);
-    void replicate_state_to_peer(pubsub_itc_fw_app::ComponentGroup group, int64_t component_instance_id, int64_t leader_id, int32_t epoch);
 };
 
 } // namespaces

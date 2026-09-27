@@ -3,6 +3,7 @@
 
 #include "MatchingEngineConfigurationLoader.hpp"
 
+#include <LeaseTiming.hpp>
 #include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
@@ -111,16 +112,12 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
             validate_port(arbiter_secondary_port, "arbiter_secondary.port");
             config.arbiter_secondary_port = static_cast<uint16_t>(arbiter_secondary_port);
 
-            toml.get_required_except("ha_timing.heartbeat_timeout_seconds", config.heartbeat_timeout_seconds);
-            toml.get_required_except("ha_timing.heartbeat_interval_seconds", config.heartbeat_interval_seconds);
-            if (config.heartbeat_timeout_seconds < 1) {
-                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha_timing.heartbeat_timeout_seconds must be >= 1, got " +
-                                                            std::to_string(config.heartbeat_timeout_seconds));
+            toml.get_required_except("ha_timing.catch_up_retry_seconds", config.catch_up_retry_seconds);
+            if (config.catch_up_retry_seconds < 1) {
+                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha_timing.catch_up_retry_seconds must be >= 1, got " +
+                                                            std::to_string(config.catch_up_retry_seconds));
             }
-            if (config.heartbeat_interval_seconds < 1) {
-                throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha_timing.heartbeat_interval_seconds must be >= 1, got " +
-                                                            std::to_string(config.heartbeat_interval_seconds));
-            }
+            config.lease = fix_common::LeaseTiming::load(toml, "MatchingEngineConfigurationLoader");
         }
 
         std::string applog_level_str;

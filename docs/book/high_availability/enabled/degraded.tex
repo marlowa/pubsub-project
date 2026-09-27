@@ -5,10 +5,11 @@ Every failure in this section leaves the venue in some state. For several of
 them, the venue is working and can no longer survive the next failure.
 
 A group whose second instance has not yet been restarted serves from one
-instance. A venue that has lost both arbiters goes on trading, and cannot move an
-entitlement if it needs to. Neither condition stops anything, neither produces an
-error, and an observer outside the venue cannot distinguish either from a venue
-in full health.
+instance, whose lease is granted by the arbiter pool alone. A venue that has lost
+both arbiters goes on trading, because each group's leader renews its lease with
+its peer, and cannot replace a leader that fails. Neither condition stops
+anything, neither produces an error, and an observer outside the venue cannot
+distinguish either from a venue in full health.
 
 \textbf{The venue must go on running in these states.} Stopping when it loses
 redundancy would turn the loss of a second instance into the outage that second
@@ -20,7 +21,8 @@ such a state, because the exposure lasts until somebody restores what was lost.
 
 \begin{requirement}{R-0093}{The venue trades while a group is reduced to one instance}
   The loss of one instance of a group shall not stop members trading, and shall
-  not stop the surviving instance acting.
+  not stop the surviving instance acting, provided the arbiter pool has an active
+  arbiter to grant the surviving instance its lease.
   \rationale{A pair reduced to one instance has lost its protection against the next failure,
   and has lost nothing else. Refusing to work in that state produces an outage now
   instead of risking one later.}
@@ -39,13 +41,33 @@ such a state, because the exposure lasts until somebody restores what was lost.
   \uncovered{no scenario asks whether a group is running single, and nothing answers}
 \end{requirement}
 
-\begin{requirement}{R-0095}{An instance may act with no arbiter reachable, and says that it did}
-  Where no arbiter can be reached and an entitlement must be settled, an instance
-  may take it by the rule that orders a cold start, and shall record that it did
-  so without arbitration.
-  \rationale{Refusing to act because the arbiter is unreachable stops the venue for the
-  failure of a component that holds no venue state and sits off the order path. It
-  is also the one moment at which the venue has no protection against a second
-  claimant, so the venue must record that it acted without arbitration.}
-  \covers{ha_test:8, ha_test:9, ha_test:35, ha_test:39}
+\begin{requirement}{R-0147}{The venue halts, and says why, when the arbiter pool and the leader are lost together}
+  Where a group's leader and every arbiter are unavailable at the same time, the
+  surviving instance shall not take the lead, and the venue shall report that the
+  group has no leader and why. Trading in that group shall resume when an arbiter
+  or the other instance returns.
+  \rationale{The surviving instance hears from nobody, and cannot tell whether the
+  leader has died along with the arbiters or whether it has itself been cut off
+  from everything while the leader goes on trading, perhaps with the arbiters
+  beside it. Taking the lead is safe in the first case and produces two leaders in
+  the second, accepting and matching orders at once, after which nothing can
+  establish which trades are valid. The instance cannot tell the two apart, so it
+  must not take the lead.
+
+  This needs two failures together: the machine running the leader, and every
+  arbiter machine, which is two of the three arbiter-pool machines at least. The
+  loss of the arbiter pool alone never stops trading, because each leader renews
+  its lease with its peer.
+
+  A member can be told this in these words: the venue runs every critical
+  component as a pair, and a separate set of arbiter processes on other machines
+  decides which member of each pair is in charge. If a component in charge fails,
+  its partner takes over, which requires the arbiters' agreement. If the arbiters
+  are also unavailable at that moment, the partner cannot tell whether the
+  component it would replace has really stopped or has only become unreachable.
+  Taking over in that situation could leave two components each believing it is
+  in charge, each accepting and matching orders, with no way afterwards to say
+  which trades are valid. The venue therefore stops trading until the arbiters are
+  available again, rather than risk that.}
+  \covers{ha_test:9, ha_test:35}
 \end{requirement}

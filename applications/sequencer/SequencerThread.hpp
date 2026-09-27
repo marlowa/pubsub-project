@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,6 +27,9 @@
 
 #include "EpochStore.hpp"
 #include "GatewayIds.hpp"
+#include "LeaseLinksInterface.hpp"
+#include "LeasePromiseStore.hpp"
+#include "PairLeaseAgent.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
@@ -140,7 +144,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID arbiter_secondary_conn_id_;
 
     // instance_id of the peer sequencer, learned from StatusQuery/StatusResponse.
-    // Used to populate ArbitrationReport.peer_instance_id.
     int64_t peer_instance_id_{0};
 
     // mmap'd on-disk write-ahead log. Opened in on_initial_event()
@@ -194,40 +197,34 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // whenever the epoch moves.
     fix_common::EpochStore epoch_store_;
 
-    // Context for an arbitration request that is still outstanding, so the
-    // timeout can fall back the way this particular request needs.
-    //
-    // The two callers face different situations. A peer heartbeat timeout means
-    // the peer is believed gone, so taking leadership unopposed is right. An
-    // election triggered by a peer's StatusQuery means the peer is demonstrably
-    // alive and asking the same question, so taking leadership unopposed would
-    // produce two leaders; that case has to be settled by a rule both sides
-    // compute identically.
+    // Where this instance's promises in deciding which instance leads outlive the process, until
+    // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
+    fix_common::LeasePromiseStore lease_promise_store_;
 
-    // A freshly started arbiter refuses to arbitrate for a short while, because
-    // an empty leadership map looks the same whether there is genuinely no
-    // leader or it simply has not been told yet. It says so and asks the
-    // component to retry. This counts the retries so that a silent arbiter still
-    // ends in a decision rather than an indefinite wait.
-    int32_t arbitration_attempts_{0};
+    // How the lease rules reach the other two voters in deciding which sequencer leads: the peer
+    // sequencer, and the arbiter pool on both arbiter connections.
+    class SequencerLeaseLinks : public fix_common::LeaseLinksInterface {
+      public:
+        explicit SequencerLeaseLinks(SequencerThread& owner) : owner_(owner) {}
+        void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) override;
+        void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) override;
+        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) override;
+        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) override;
 
-    // True from asking the arbiter until it answers or the retries run out.
-    // The peer exchange runs an election on both the query and the response, so
-    // without this a single startup sends the arbiter four identical reports.
-    bool arbitration_outstanding_{false};
+      private:
+        SequencerThread& owner_;
+    };
+    SequencerLeaseLinks lease_links_{*this};
 
-    // Enough attempts to outlast the arbiter's learning period at the configured
-    // arbitration timeout, with room to spare. Running out means no arbiter is
-    // coming, not that one is still warming up.
-    static constexpr int32_t max_arbitration_attempts{6};
+    // Decides whether this sequencer leads: it does only while a majority of three voters -- itself,
+    // its peer and the arbiter pool -- has granted it a lease that has not run out. Constructed at
+    // the initial event when high availability is on. See fix_common/PairLeaseAgent.hpp.
+    std::optional<fix_common::PairLeaseAgent> lease_agent_;
 
     // Timer ids (default-constructed = not scheduled); on_timer_event compares
     // a fired timer's id against these to identify it.
     pubsub_itc_fw::TimerID wal_snapshot_timer_id_{};
-    pubsub_itc_fw::TimerID peer_heartbeat_timer_id_{};
-    pubsub_itc_fw::TimerID peer_heartbeat_timeout_timer_id_{};
-    pubsub_itc_fw::TimerID arbiter_heartbeat_timer_id_{};
-    pubsub_itc_fw::TimerID arbitration_timeout_timer_id_{};
+    pubsub_itc_fw::TimerID lease_tick_timer_id_{};
 
     // WAL replication state (Slice 7).
     //
@@ -291,20 +288,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
     void set_epoch(int32_t new_epoch);
-    bool request_arbitration();
-    void send_leadership_lease();
-    void resolve_with_visible_peer(int64_t peer_instance_id, int32_t peer_epoch);
-    void elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role);
+    /// Changes this sequencer's role to follow what the lease rules have just decided.
+    void act_on(fix_common::PairLeaseAgent::Change change);
     void send_status_query(const pubsub_itc_fw::ConnectionID& conn_id);
     void send_status_response(const pubsub_itc_fw::ConnectionID& conn_id);
-    void send_peer_heartbeat();
-    void send_arbiter_heartbeat();
-    void send_arbitration_report();
     void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
-    void handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
+    void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
+    void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);
 
     // Replay mode helpers.
     //

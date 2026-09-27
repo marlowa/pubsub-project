@@ -44,20 +44,15 @@ checked are these:
   \item two active arbiters that can hear each other always resolve to one.
 \end{itemize}
 
-\textbf{Two instances can still both lead while a partition lasts.} An instance
-that can reach no arbiter promotes itself, as \reqref{R-0095} permits. When the
-real cause is that the instance has been cut off, the pair has two leaders until
-the partition heals. The arbiter pool can likewise have two active arbiters during
-a partition, because it does not yet decide by majority.
-
-A replacement design removes promotion without an arbiter. In the replacement, an
-instance leads only while a majority of three voters has granted it a lease that
-has not run out. It is a proposal, described in
-\texttt{docs/availability/majority\_leases.md}, and nothing in the code implements
-it. A third TLA+ description specifies it. Model checking that description found
-no state in which two instances act as leader at once. It also showed that each
-rule of the replacement is needed: with any one rule removed, TLC finds two
-instances acting as leader at once within a few steps.
+Model checking also showed that no fix within that design could stop two
+instances leading while a partition lasts, because an instance that could reach no
+arbiter promoted itself. The venue therefore decides leadership by majority, with
+leases (\reqref{R-0146}), which removes promotion without an arbiter. A third TLA+
+description specifies that design. Model checking it found no state in which two
+instances act as leader at once. It also showed that each rule is needed: with any
+one rule removed, TLC finds two instances acting as leader at once within a few
+steps. The design is described in
+\texttt{docs/availability/majority\_leases.md}.
 
 The descriptions, the counterexamples and the full results are in
 \texttt{docs/availability/tla/}, with the results in \texttt{findings.md}.
@@ -79,6 +74,6 @@ The descriptions, the counterexamples and the full results are in
   tla:lease-5-epoch-regresses, tla:lease-6-no-yield-livelock, tla:lease-7-no-peer-vote}
 \end{requirement}
 
-The counterexamples reproduced today are those of the replacement design.
+The counterexamples reproduced today are those of the majority design.
 \texttt{scripts/tla\_trace\_pages.py} reruns them at install time, and writes a web
 page that steps through each one.

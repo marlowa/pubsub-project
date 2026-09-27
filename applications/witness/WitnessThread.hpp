@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint> // IWYU pragma: keep
+#include <optional>
 #include <string>
-#include <unordered_map>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -13,6 +13,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
+#include <LeaseVoter.hpp>
 #include <leader_follower.hpp>
 
 #include "WitnessConfiguration.hpp"
@@ -20,22 +21,18 @@
 namespace witness {
 
 /**
- * @brief ApplicationThread subclass implementing the witness side of the
- *        arbiter pool.
+ * @brief ApplicationThread subclass implementing the witness: the third voter in deciding which arbiter is active.
  *
- * The witness holds NO state. Its sole purpose is to break ties between the
- * two arbiter instances:
+ * An arbiter is active only while a majority of three voters -- the two arbiters and the witness --
+ * has granted it a lease that has not run out. The witness is the voter that is never a candidate:
+ * it answers each arbiter's LeaseRequest with a LeaseGrant or a LeaseRefusal, by the rules in
+ * fix_common/LeaseVoter.hpp. It grants a lease to at most one arbiter at a time, grants nothing for
+ * one lease period after it starts, and never grants an epoch below one it has granted.
  *
- *   - Accepts inbound connections from arbiter-primary and arbiter-secondary.
- *   - Identifies each connection from the instance_id in ArbiterHeartbeat PDUs.
- *   - Receives ArbiterVoteRequest PDUs (pdu_id=301) from an arbiter that is
- *     contemplating promotion to the active role.
- *   - Replies with ArbiterVoteResponse PDUs (pdu_id=302) granting the vote to
- *     the arbiter with the lower instance_id (or to the requester if its peer
- *     is not currently connected to the witness).
+ * It keeps nothing on disk. Waiting out one lease period at startup is what makes that safe: any
+ * promise it made before it stopped has run out by the time it grants again.
  *
- * The witness never interacts with sequencer or ME instances directly.
- * Sequencer/ME election is managed by the arbiter pair, not the witness.
+ * The witness never interacts with sequencer or matching engine instances.
  *
  * Threading: ThreadID 1.
  */
@@ -56,19 +53,14 @@ class WitnessThread : public pubsub_itc_fw::ApplicationThread {
   private:
     const WitnessConfiguration& config_;
 
-    // Highest epoch seen from any arbiter. Used to assign the epoch in
-    // ArbiterVoteResponse (max_observed_epoch_ + 1).
-    int32_t max_observed_epoch_{0};
+    // The witness's promises. Constructed at the initial event, because it needs the moment the
+    // witness started.
+    std::optional<fix_common::LeaseVoter> voter_;
 
-    // connection value -> arbiter instance_id, populated on first ArbiterHeartbeat.
-    std::unordered_map<int32_t, int64_t> conn_to_instance_id_;
+    // The arbiter the witness last granted to, so that a change of holder is logged and a renewal is not.
+    int64_t last_granted_to_{0};
 
-    // arbiter instance_id -> ConnectionID, used to identify connected arbiters.
-    std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> instance_to_conn_id_;
-
-    void handle_arbiter_heartbeat(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_arbiter_vote_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void send_arbiter_vote_response(const pubsub_itc_fw::ConnectionID& conn_id, int64_t granted_to_instance_id, int32_t epoch);
+    void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 };
 
 } // namespaces

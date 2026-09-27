@@ -42,6 +42,10 @@ add_executable(sequencer_tests
         tests/SequencerConfigurationLoaderTest.cpp
         tests/EpochStoreTest.cpp
         tests/LeaderEpochTest.cpp
+        tests/LeaseRulesTest.cpp
+        tests/LeaseSimulationTest.cpp
+        tests/PairLeaseAgentTest.cpp
+        tests/LeasePromiseStoreTest.cpp
         SequencerConfigurationLoader.cpp
 )
 

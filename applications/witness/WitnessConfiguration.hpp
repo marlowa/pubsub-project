@@ -7,6 +7,7 @@
 #include <cstdint> // IWYU pragma: keep
 #include <string>
 
+#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 
@@ -15,14 +16,12 @@ namespace witness {
 /**
  * @brief Configuration for the witness process.
  *
- * The witness is a lightweight process that implements only the witness side
- * of the leader-follower protocol. It has no involvement in the order flow.
- * It listens for connections from both sequencer instances, receives
- * ArbitrationReport PDUs, and replies with ArbitrationDecision PDUs to
- * break leader-election ties.
+ * The witness is the third voter in deciding which arbiter is active. It has
+ * no involvement in the order flow. It listens for connections from both
+ * arbiters and answers each lease request with a grant or a refusal.
  */
 struct WitnessConfiguration {
-    /** @brief Host address on which the witness listens for sequencer connections. */
+    /** @brief Host address on which the witness listens for arbiter connections. */
     std::string listen_host{"127.0.0.1"};
 
     /** @brief TCP port on which the witness listens. */
@@ -38,6 +37,14 @@ struct WitnessConfiguration {
      * operator will later trust. See docs/bug_list.md, BUG-0061.
      */
     bool ha_enabled{true};
+
+    /**
+     * @brief The timings of the leases the witness grants when the arbiters decide which of them is active.
+     *
+     * Expanded from the environment's [shared] section, because every voter and every instance
+     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
+     */
+    fix_common::LeaseTiming lease{};
 
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};

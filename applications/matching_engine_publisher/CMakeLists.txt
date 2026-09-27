@@ -5,6 +5,7 @@ add_executable(matching_engine_publisher
 )
 
 target_include_directories(matching_engine_publisher PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${FIX_DSL_INCLUDE_DIR}
 )

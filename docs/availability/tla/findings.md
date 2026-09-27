@@ -94,22 +94,18 @@ section 5:
 - two leaders that can hear each other always resolve, and so do two active arbiters;
 - every property that held before still holds, and the fair-weather runs still pass.
 
+**What the majority design resolves.** The venue now decides leadership by majority, with leases, as section 11 and
+[../majority_leases.md](../majority_leases.md) describe. That removes promotion without an arbiter, which was the cause of
+two leaders during a partition, and makes the arbiter pool a genuine majority, which resolves finding 7 and both halves
+of finding 8: the witness no longer issues epochs, and an arbiter becomes active only with a grant. The matching engine
+decides by the same rules as the sequencer, so it needs no stand-down of its own.
+
 **What remains open:**
 
-- **Two leaders during a partition, briefly.** The degraded path, which is kept deliberately, can
-  still produce two leaders while a partition lasts. An instance that promotes itself while
-  isolated can also land in a higher generation than the one the arbiter issues on the other side.
-  Receivers that can see the isolated instance then prefer it until the partition heals.
-- **Two active arbiters during a partition.** Preventing this needs the arbiter pool to become a
-  genuine majority (finding 7), which is not done.
-- **The epoch half of finding 8.** The witness's vote still gives the passive arbiter a newer epoch
-  than the active one. With the timeout now re-armed, that costs a vote at every heartbeat timeout
-  rather than the ability to take over.
-- **What a leader wrote while it wrongly led.** When a leader stands down, the orders it sequenced
-  during the partition stay in its log, and its log can disagree with its new leader's. That is
-  `docs/bug_list.md`, BUG-0097.
-- **The matching engine's stand-down and lifting.** Not done until its peer protocol has been
-  modelled.
+- **An epoch can go backwards** after both arbiters restart, as section 11.5 shows. Two instances still never act at
+  once, and a leader learns of the higher epoch from its peer. Learning it from a receiver is not built.
+- **What the old leader had not replicated when it stopped.** A leader that loses its lease stops at once, but its log
+  may hold records its follower never received. That is `docs/bug_list.md`, BUG-0097.
 
 ---
 

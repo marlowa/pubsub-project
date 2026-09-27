@@ -32,9 +32,12 @@ the same sentence had already made untrue.
 adopts `Role::leader` in `on_initial_event`, skips the arbiter and peer connections, and
 skips WAL replication. ERs are emitted immediately without waiting for a WalAck.
 
-**`ha_enabled = true`**: the sequencer connects to its peer and to the arbiter, runs the
-startup election flow (StatusQuery / StatusResponse / ArbitrationReport /
-ArbitrationDecision), and begins WAL replication on the peer connection.
+**`ha_enabled = true`**: the sequencer connects to its peer and to both arbiters, and leads
+only while a majority of three voters -- itself, its peer and the arbiter pool -- has granted
+it a lease that has not run out. It asks both other voters, and while leading renews every
+renewal interval. When its lease runs out it stops leading at once. See
+[Deciding leadership by majority, with leases](../availability/majority_leases.md). The
+leader replicates the WAL to the follower on the peer connection.
 
 **`--replay` flag:** when passed on the command line, the sequencer loads its most recent
 snapshot and replays the WAL tail before joining the cluster. Used for cold restart and for
@@ -110,8 +113,7 @@ Key `sequencer.toml` sections:
 | `[wal] directory` | WAL segment storage path |
 | `[wal] segment_size` | Segment file size in bytes |
 | `ha_enabled` | Enables peer and arbiter connections, WAL replication, ER gating |
-| `heartbeat_interval_seconds` | Default 5 s |
-| `heartbeat_timeout_seconds` | Default 15 s |
+| `[lease] period_milliseconds`, `drift_allowance_milliseconds`, `renewal_interval_milliseconds` | The lease timings, expanded from the environment's `[shared]` section so that every voter agrees |
 
 ## See Also
 

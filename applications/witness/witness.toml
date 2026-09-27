@@ -6,6 +6,14 @@ listen_port = ${witness_network_listen_port}
 # The venue-wide switch. The witness refuses to start when it is false; see BUG-0061.
 enabled = ${ha_enabled}
 
+# How long a lease the witness grants lasts. Shared across the venue, because every voter must
+# agree; see environments/*.toml. The witness holds no lease itself, but it needs all three to
+# check the configuration is consistent.
+[lease]
+period_milliseconds = ${shared_lease_period_milliseconds}
+drift_allowance_milliseconds = ${shared_lease_drift_allowance_milliseconds}
+renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"

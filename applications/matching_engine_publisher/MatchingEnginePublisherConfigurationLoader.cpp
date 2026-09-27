@@ -3,6 +3,7 @@
 
 #include "MatchingEnginePublisherConfigurationLoader.hpp"
 
+#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
@@ -78,41 +79,18 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
             validate_port(arbiter_secondary_port, "ha.arbiter_secondary_port");
             config.arbiter_secondary_port = static_cast<uint16_t>(arbiter_secondary_port);
 
-            int32_t arbitration_timeout_seconds = 0;
-            toml.get_required_except("ha.arbitration_timeout_seconds", arbitration_timeout_seconds);
-            if (arbitration_timeout_seconds <= 0) {
-                throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: ha.arbitration_timeout_seconds must be positive");
-            }
-            config.arbitration_timeout_seconds = arbitration_timeout_seconds;
-
             toml.get_required_except("ha.peer_listen_host", config.peer_listen_host);
             toml.get_required_except("ha.peer_host", config.peer_host);
 
             int32_t peer_listen_port = 0;
             int32_t peer_port = 0;
-            int32_t heartbeat_interval_seconds = 0;
-            int32_t heartbeat_timeout_seconds = 0;
-            int32_t startup_election_timeout_seconds = 0;
             toml.get_required_except("ha.peer_listen_port", peer_listen_port);
             toml.get_required_except("ha.peer_port", peer_port);
-            toml.get_required_except("ha.heartbeat_interval_seconds", heartbeat_interval_seconds);
-            toml.get_required_except("ha.heartbeat_timeout_seconds", heartbeat_timeout_seconds);
-            toml.get_required_except("ha.startup_election_timeout_seconds", startup_election_timeout_seconds);
             validate_port(peer_listen_port, "ha.peer_listen_port");
             validate_port(peer_port, "ha.peer_port");
-            if (heartbeat_interval_seconds <= 0) {
-                throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: ha.heartbeat_interval_seconds must be positive");
-            }
-            if (heartbeat_timeout_seconds <= 0) {
-                throw pubsub_itc_fw::ConfigurationException("MatchingEnginePublisherConfigurationLoader: ha.heartbeat_timeout_seconds must be positive");
-            }
             config.peer_listen_port = static_cast<uint16_t>(peer_listen_port);
             config.peer_port = static_cast<uint16_t>(peer_port);
-            config.heartbeat_interval_seconds = heartbeat_interval_seconds;
-            config.heartbeat_timeout_seconds = heartbeat_timeout_seconds;
-            if (startup_election_timeout_seconds > 0) {
-                config.startup_election_timeout_seconds = startup_election_timeout_seconds;
-            }
+            config.lease = fix_common::LeaseTiming::load(toml, "MatchingEnginePublisherConfigurationLoader");
         }
 
         int64_t max_lag_records = 0;

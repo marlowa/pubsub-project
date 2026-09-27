@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 97 |
-| Open | 37 (24 defects, 13 tasks) |
-| Closed | 60 |
+| Open | 36 (23 defects, 13 tasks) |
+| Closed | 61 |
 | Next id | BUG-0098 |
 
 ## Open bugs by severity
 
-13 high, 21 medium, 3 low.
+12 high, 21 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,7 +22,6 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0085](#bug_0085) | high | defect | A degraded promotion advances a generation the arbiter never learns |
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
@@ -146,63 +145,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0085: A degraded promotion advances a generation the arbiter never learns {#bug_0085}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-09-08 |
-| Recorded | 2026-09-08 |
-| How | `ha_test.py` scenario 57 failing for a reason it was not written to test: the guard added for [BUG-0082](#bug_0082) fired correctly and the instance still refused to follow its leader |
-| Impact | An instance whose stored generation has outrun the venue's refuses the legitimate leader's announcement as stale, forever, and then self-promotes beside it. Two leaders, reached by the path that has no arbiter |
-
-**What was measured.** Primary holding epoch 224, secondary leading at epoch 216. The primary
-restarts, hears the announcement, and logs *"peer (instance_id=2) claims leader at epoch 216 but
-this node has seen epoch 223 -- not following a stale leader"*. It then waits out the startup
-arbitration deadline and adopts `LEADER` at 224. The refusal is deliberate and right in itself:
-following a generation the venue has left would undo a failover. What is wrong is that the two
-generations diverged in the first place.
-
-**How they diverge.** The degraded self-promotion does `set_epoch(epoch_ + 1)` and persists it. It
-runs precisely when no arbiter is reachable, so no arbiter learns of it. `ArbiterThread` takes a
-component's epoch from an `ArbitrationReport` and from an incumbent it already holds, and nothing
-else: `handle_component_heartbeat` logs `hb.epoch` and never advances
-`leadership_state_[group].epoch` from it. So the arbiter goes on issuing decisions from its own,
-lower, line while the instance that degraded is permanently ahead, and the gap widens by one with
-every degraded promotion.
-
-**It does not heal.** The instance will not accept the leader's announcement, and the arbiter's
-decision -- when one arrives -- carries the lower epoch too. `set_epoch` refuses to move backwards,
-correctly, so the divergence is one-way.
-
-**How fast it opens.** Both epoch files were cleared to zero and a single `ha_test.py --scenario
-all` run was started. By scenario 55 the primary held 25 against a leader genuinely leading at 20:
-five generations of divergence in one pass, one for each degraded promotion the suite performs.
-
-**It is already making the suite lie.** Scenario 55 arranges an instance that catches up beside a
-live leader and must hold its reports until it is told it may serve. With the generations in their
-proper relation that instance defers to the peer and discards, which is scenario 54's ending, not
-55's -- so 55 only reaches its own assertion because the drift makes the instance refuse a leader
-that is genuinely leading. It was rewritten on 2026-09-08 to take the peer away instead, so that it
-no longer depends on this defect to pass.
-
-**Not the same as [BUG-0010](#bug_0010)**, which is about both nodes sharing a condition. This is
-about two records of the same venue's generation drifting apart, and only one of them being
-authoritative.
-
-**Held by** `ha_test.py` scenario 57, marked `expected_failure` against this entry. It passes on a
-venue whose epoch files have just been cleared and fails once the suite has run for twenty minutes,
-which is the defect and not a flake: the deferral it tests works and is visible in the log --
-*"says it leads at epoch 26 while this instance is still catching up -- remembered"* -- and is then
-refused against a generation that has drifted. Take the marking off when this is fixed.
-
-**Where to start.** The arbiter learns a component's generation from its heartbeat, which is the
-message that already carries it and already arrives from both instances in every role. Whether
-learning it is enough, or whether a degraded promotion must be reconciled with the arbiter
-explicitly when one returns, is the question to answer first.
-
----
 
 ### BUG-0083: Scenario 26 failed once inside the suite and has not been reproduced {#bug_0083}
 
@@ -2400,6 +2342,66 @@ Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085
 
 ## Closed
 
+### BUG-0085: A degraded promotion advances a generation the arbiter never learns {#bug_0085}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-08 |
+| Recorded | 2026-09-08 |
+| Fixed | 2026-09-27 -- by removing the promotion that caused it: an instance now leads only with a majority of three votes |
+| How | `ha_test.py` scenario 57 failing for a reason it was not written to test: the guard added for [BUG-0082](#bug_0082) fired correctly and the instance still refused to follow its leader |
+| Impact | An instance whose stored generation has outrun the venue's refuses the legitimate leader's announcement as stale, forever, and then self-promotes beside it. Two leaders, reached by the path that has no arbiter |
+
+**What was measured.** Primary holding epoch 224, secondary leading at epoch 216. The primary
+restarts, hears the announcement, and logs *"peer (instance_id=2) claims leader at epoch 216 but
+this node has seen epoch 223 -- not following a stale leader"*. It then waits out the startup
+arbitration deadline and adopts `LEADER` at 224. The refusal is deliberate and right in itself:
+following a generation the venue has left would undo a failover. What is wrong is that the two
+generations diverged in the first place.
+
+**How they diverge.** The degraded self-promotion does `set_epoch(epoch_ + 1)` and persists it. It
+runs precisely when no arbiter is reachable, so no arbiter learns of it. `ArbiterThread` takes a
+component's epoch from an `ArbitrationReport` and from an incumbent it already holds, and nothing
+else: `handle_component_heartbeat` logs `hb.epoch` and never advances
+`leadership_state_[group].epoch` from it. So the arbiter goes on issuing decisions from its own,
+lower, line while the instance that degraded is permanently ahead, and the gap widens by one with
+every degraded promotion.
+
+**It does not heal.** The instance will not accept the leader's announcement, and the arbiter's
+decision -- when one arrives -- carries the lower epoch too. `set_epoch` refuses to move backwards,
+correctly, so the divergence is one-way.
+
+**How fast it opens.** Both epoch files were cleared to zero and a single `ha_test.py --scenario
+all` run was started. By scenario 55 the primary held 25 against a leader genuinely leading at 20:
+five generations of divergence in one pass, one for each degraded promotion the suite performs.
+
+**It is already making the suite lie.** Scenario 55 arranges an instance that catches up beside a
+live leader and must hold its reports until it is told it may serve. With the generations in their
+proper relation that instance defers to the peer and discards, which is scenario 54's ending, not
+55's -- so 55 only reaches its own assertion because the drift makes the instance refuse a leader
+that is genuinely leading. It was rewritten on 2026-09-08 to take the peer away instead, so that it
+no longer depends on this defect to pass.
+
+**Not the same as [BUG-0010](#bug_0010)**, which is about both nodes sharing a condition. This is
+about two records of the same venue's generation drifting apart, and only one of them being
+authoritative.
+
+**How it was closed.** The degraded self-promotion no longer exists. An instance leads only while
+a majority of its three voters -- itself, its peer and the arbiter pool -- has granted it a lease,
+as `docs/availability/majority_leases.md` states, so no instance advances its generation without
+at least one other voter granting that generation. Every voter refuses a generation below the
+highest it has granted and says in its refusal what that is, so an instance that asks too low
+learns the right generation and asks again above it. Scenario 57, which was written against this
+entry and relied on the self-promotion, is retired; scenario 24 and
+`applications/sequencer/tests/PairLeaseAgentTest.cpp` cover a restarted instance deferring to the
+peer that leads.
+
+The generation can still go backwards in one case, which is a different defect: see
+`docs/availability/majority_leases.md` section 6.
+
+---
+
 ### BUG-0093: The log writer's helper thread runs unnamed on the hot-path core of whichever component started it {#bug_0093}
 
 | | |
@@ -2571,12 +2573,11 @@ a peer leading at epoch 210. An announcement heard while reconciling is now reme
 when the catch-up ends.
 
 **Left behind:** [BUG-0084](#bug_0084), which is why none of this was caught, and
-[BUG-0085](#bug_0085), which is the one remaining way an instance still refuses to defer to a
-leader that is genuinely leading.
+[BUG-0085](#bug_0085), since closed.
 
-**Held by** `ha_test.py` scenario 56, which reaches the state with no peer and no arbiter so that
-it is arrived at rather than raced for, and scenario 57, which asserts no second leader appears
-while the peer is alive.
+**Held by** `ha_test.py` scenario 55, in which an instance that is current and holding its reports
+is granted the lead and releases them. An instance with no peer and no arbiter now does not lead
+at all (R-0147), which scenario 35 asserts.
 
 ---
 

@@ -22,7 +22,7 @@ target_sources(arbiter PRIVATE
         ArbiterConfigurationLoader.hpp
         ArbiterThread.hpp
         Arbiter.hpp
-        LeadershipDecision.hpp
+        ComponentLeaseVoters.hpp
 )
 
 install(TARGETS arbiter
@@ -36,15 +36,18 @@ install(FILES
 )
 
 add_executable(arbiter_tests
-        tests/LeadershipDecisionTest.cpp
+        tests/ComponentLeaseVotersTest.cpp
 )
 
 target_include_directories(arbiter_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${FIX_DSL_INCLUDE_DIR}
 )
 
-# pubsub_itc_fw for fmt and PreconditionAssertion, which LeaderEpoch.hpp uses.
+add_dependencies(arbiter_tests leader_follower_generated)
+
+# pubsub_itc_fw for fmt and PreconditionAssertion, which LeaseVoter.hpp uses.
 target_link_libraries(arbiter_tests PRIVATE
         pubsub_itc_fw
         GTest::gtest_main

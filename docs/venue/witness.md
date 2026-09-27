@@ -2,30 +2,26 @@
 
 ## Role
 
-The witness is a small stateless process whose sole purpose is to break ties in the
-arbiter's own election. It holds no leadership-state and never interacts with sequencer
-or ME instances directly.
+The witness is the third voter in deciding which of the two arbiters is active. An arbiter is active
+only while a majority of three voters -- the two arbiters and the witness -- has granted it a lease
+that has not run out. The witness is the voter that is never a candidate: it only answers the
+arbiters' requests. It never interacts with sequencer, matching engine or publisher instances.
 
-When both arbiter instances lose contact with each other and both are undecided, each
-contacts the witness asking "may I become active?". The witness grants the vote to the
-arbiter with the lower `instance_id`, ensuring exactly one arbiter promotes itself. If
-only one arbiter is connected to the witness, that arbiter's vote is automatically
-granted.
+It answers each request by the rules every voter follows (`applications/fix_common/LeaseVoter.hpp`):
 
-That last grant is safe because the witness is the only party being asked, not because
-the absent arbiter is inert. This document used to say the peer "cannot see the witness
-either, so there is no risk of split-brain", and the conclusion does not follow from the
-premise: an arbiter that cannot see the witness does not sit still. It reaches its own
-decision, and until BUG-0075 was fixed that decision was to promote itself outright. What
-makes the pair safe is the rule the arbiters apply when they cannot ask — only the lower
-of the two configured identities may promote unasked, and only while it has never seen
-its peer acting — and not any assumption about what an unreachable arbiter is doing.
+- It grants a lease to at most one arbiter at a time. Granting one is a promise not to grant a lease
+  to the other arbiter until the lease period has passed, counted from the moment of granting.
+- It grants nothing for one lease period after it starts.
+- It never grants an epoch below the highest it has granted.
 
-The witness must be deployed on **failure-independent infrastructure** — different power
-supply, different network switch, ideally a different rack — from both arbiter machines.
-If the witness shares a failure domain with one arbiter, a single event can isolate that
-arbiter and the witness simultaneously, leaving the other arbiter unable to reach a
-majority. The witness's value depends entirely on its independence.
+It keeps nothing on disk. Waiting out one lease period at startup is what makes that safe: any
+promise it made before it stopped has run out by the time it grants again.
+
+The witness must be deployed on **failure-independent infrastructure** -- different power supply,
+different network switch, ideally a different rack -- from both arbiter machines. If the witness
+shares a failure domain with one arbiter, a single event can take out that arbiter and the witness
+together, and the surviving arbiter then holds only its own vote and cannot be active. The witness's
+value depends entirely on its independence.
 
 ---
 
@@ -33,36 +29,20 @@ majority. The witness's value depends entirely on its independence.
 
 | PDU | ID | Direction | Purpose |
 |-----|----|-----------|---------|
-| `ArbiterHeartbeat` | 300 | Active arbiter → Witness | Liveness; witness tracks which arbiter instance is connected |
-| `ArbiterVoteRequest` | 301 | Passive arbiter → Witness | Request permission to promote to active |
-| `ArbiterVoteResponse` | 302 | Witness → Passive arbiter | Grant (with assigned epoch) or deny |
+| `LeaseRequest` | 130 | Arbiter → witness | Ask to be the active arbiter, or renew |
+| `LeaseGrant` | 131 | Witness → arbiter | Grant it, as voter 3 |
+| `LeaseRefusal` | 132 | Witness → arbiter | Refuse it, with the highest epoch the witness has granted and the reason |
 
-The witness identifies each arbiter by the `instance_id` carried in `ArbiterHeartbeat`.
-It tracks which instance is connected via `conn_to_instance_id_` and
-`instance_to_conn_id_` maps.
-
-**Vote grant rule:** the witness grants the vote to the arbiter with the lower
-`instance_id` (deterministic tiebreak). If the peer arbiter is not currently connected
-to the witness, the requester's vote is automatically granted. The requester names its
-peer in `ArbiterVoteRequest`, and that identity now comes from the requester's own
-configuration rather than only from a peer it may never have reached — so an arbiter that
-has never spoken to its peer no longer has its vote granted automatically while that peer
-is sitting connected to the witness.
-
-**Epoch:** the witness tracks `max_observed_epoch_` from received heartbeats and assigns
-`max_observed_epoch_ + 1` in `ArbiterVoteResponse`, so the newly-promoted active arbiter
-starts with a fresh epoch that any stale components will recognise as newer.
+The witness logs when the arbiter it grants to changes, not at every renewal.
 
 ---
 
 ## What the Witness Does NOT Do
 
-- It does not store any leadership state.
-- It does not contact sequencer or ME instances.
-- It does not initiate connections — it only accepts inbound connections from the
-  two arbiters.
-- It does not participate in sequencer or ME elections directly; those are handled by
-  the arbiter pair.
+- It does not store anything on disk.
+- It does not contact sequencer, matching engine or publisher instances.
+- It does not initiate connections -- it only accepts inbound connections from the two arbiters.
+- It does not vote on which instance of a component pair leads; the arbiter pool does that.
 
 ---
 
@@ -70,21 +50,24 @@ starts with a fresh epoch that any stale components will recognise as newer.
 
 | Port | Usage |
 |------|-------|
-| 7100 | Inbound connections from arbiters (heartbeats and vote requests) |
+| 7100 | Inbound connections from arbiters (lease requests) |
 
 ---
 
 ## Configuration
 
-`witness.toml` is minimal — the witness needs only a listen port and logging settings.
-
 | Key | Purpose |
 |-----|---------|
 | `[network] listen_port` | Inbound arbiter connections (default 7100) |
+| `[lease] period_milliseconds` | How long a grant lasts, and how long the witness grants nothing after starting |
+| `[lease] drift_allowance_milliseconds`, `renewal_interval_milliseconds` | Read so the configuration can be checked for consistency; the witness holds no lease itself |
+
+The `[lease]` values are expanded from the environment's `[shared]` section, because every voter
+must use the same values.
 
 ---
 
 ## See Also
 
-- [Arbiter](arbiter.md) — the two full arbiter instances that use the witness for tiebreaking
-- [WAL and High Availability](../availability/wal_and_ha.md) — PSA topology, failure-independence requirement, why exactly three machines
+- [Arbiter](arbiter.md) -- the two arbiters the witness votes on
+- [Deciding leadership by majority, with leases](../availability/majority_leases.md) -- the rules and what happens in each failure

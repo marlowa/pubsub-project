@@ -21,6 +21,9 @@ namespace matching_engine {
 
 namespace {
 
+// The arbiter pool's identity as a voter in deciding which matching engine leads. The engines are 1 and 2.
+constexpr int64_t arbiter_pool_voter_id = 3;
+
 // PDU id for BookUpdate messages (must match the id in matching_engine_replication.dsl).
 
 // Leader-follower protocol PDU ids (must match leader_follower.dsl).
@@ -154,7 +157,8 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , sequencer_er_conn_id_{}
     , sequencer_er_secondary_conn_id_{}
     , order_book_(&book_growth_reporter_)
-    , epoch_store_(config.epoch_state_file) {
+    , epoch_store_(config.epoch_state_file)
+    , lease_promise_store_(config.epoch_state_file + ".lease_promise", fix_common::LeasePromiseStore::current_boot_id()) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
     // completely uninstrumented: the pool and slab allocators cover objects with a message
@@ -267,25 +271,21 @@ void MatchingEngineThread::on_app_ready_event() {
         connect_to_service("me_peer_replication");
     }
 
-    if (ha_enabled_ && is_primary_) {
-        // Arm the startup arbitration timer HERE, not only when an arbiter connection comes
-        // up. The degraded fallback lived inside the path taken on arbiter connect, so an
-        // instance starting with the arbiter pool down never asked, never degraded, and sat
-        // in UNKNOWN indefinitely -- the venue with no matching engine leader, announced by
-        // nothing but connection-refused retries. Armed unconditionally, the timer fires,
-        // finds the role still unresolved, and applies the instance-id rule.
-        //
-        // Only the primary arms it. The secondary starts as a follower and waits, so the
-        // instance that degrades unilaterally is always the lower id -- which is the rule the
-        // design specifies for the no-arbiter case, satisfied by construction rather than by
-        // a check that could be got wrong.
-        cancel_timer(startup_arbitration_timer_id_);
-        startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+    if (ha_enabled_) {
+        const int64_t self_id = static_cast<int64_t>(config_.instance_id);
+        lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::matching_engine, self_id,
+                             peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_);
+        lease_agent_->keep_promises_in(lease_promise_store_, lease_promise_store_.load(), std::chrono::steady_clock::now());
+        lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for during the first "
+                   "period",
+                   config_.lease.period.count());
     }
 
     if (ha_enabled_) {
-        // Both roles connect to the arbiter pool: the primary heartbeats to hold
-        // its lease; the secondary requests arbitration on primary loss.
+        // Both roles connect to the arbiter pool, which is one of the three voters.
         connect_to_service("arbiter_primary");
         connect_to_service("arbiter_secondary");
     }
@@ -316,25 +316,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // than waiting on an arbiter that may decline while it is still learning.
         announce_role();
     } else if (svc == "arbiter_primary") {
-        const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-primary connection {} established", id.get_value());
-        if (first_arbiter) {
-            start_arbiter_heartbeats();
-        }
-        if (first_arbiter && is_primary_) {
-            request_startup_arbitration();
-        }
     } else if (svc == "arbiter_secondary") {
-        const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter-secondary connection {} established", id.get_value());
-        if (first_arbiter) {
-            start_arbiter_heartbeats();
-        }
-        if (first_arbiter && is_primary_) {
-            request_startup_arbitration();
-        }
     } else if (ha_enabled_ && svc == replication_inbound_svc) {
         // The peer's dial to us. This is the channel we receive book updates on while we
         // follow, and losing it is how we learn the leader has gone -- which is why both
@@ -348,14 +334,6 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // arbitration, and a leader saying so here lets it settle immediately rather
         // than waiting on an arbiter that may decline while it is still learning.
         announce_role();
-        // Slice C: if a promotion was pending (primary had dropped and we armed
-        // the timeout), the primary has reconnected first -- cancel the promotion.
-        if (promotion_pending_) {
-            cancel_timer(promotion_timeout_timer_id_);
-            promotion_pending_ = false;
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                           "MatchingEngineThread: primary reconnected before promotion -- timer cancelled, staying FOLLOWER");
-        }
     } else if (!is_primary_ && ha_enabled_ && svc == order_inbound_svc) {
         // Secondary: inbound order connection from the sequencer. While in FOLLOWER
         // mode this is idle (order PDUs are discarded). If we are already RECONCILING
@@ -419,27 +397,14 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MatchingEngineThread: ME-primary replication connection {} lost: {} -- replica book is now stale (last seq={})", id.get_value(), reason,
                    last_replicated_seq_no_);
-        // Slice C: primary loss on the follower triggers arbiter-mediated promotion.
-        // Arm the promotion timer; if the primary reconnects before it fires we cancel it.
-        if (ha_role_state_ == MeRole::Follower) {
-            promotion_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-            promotion_pending_ = true;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: promotion timeout armed ({}s) -- will request arbitration if primary does not reconnect",
-                       config_.heartbeat_timeout_seconds);
-        }
+        // Nothing is armed here. Losing the link is not how a follower decides its leader has gone:
+        // the lease rules decide, when the promise this instance made to the leader runs out.
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
-        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-        }
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
-        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-        }
     } else if (sequencer_order_conn_ids_.count(id) > 0) {
         sequencer_order_conn_ids_.erase(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: inbound sequencer order connection {} lost: {}", id.get_value(),
@@ -462,24 +427,30 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
                message.connection_id().get_value(), pdu_id);
 
     // ---- HA control PDUs (Slice C+D) --------------------------------------
-    if (pdu_id == pubsub_itc_fw_app::ArbitrationDecision::message_pdu_id) {
-        handle_arbitration_decision(message);
+    if (pdu_id == pubsub_itc_fw_app::LeaseRequest::message_pdu_id) {
+        handle_lease_request(message.connection_id(), message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (pdu_id == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+        handle_lease_grant(message);
+        release_pdu_payload(message);
+        return;
+    }
+    if (pdu_id == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+        handle_lease_refusal(message);
         release_pdu_payload(message);
         return;
     }
     if (pdu_id == pubsub_itc_fw_app::RoleAnnouncement::message_pdu_id) {
-        handle_peer_role_announcement(message);
+        // The peer saying which role it holds. Nothing to act on: which instance leads is decided
+        // by leases, and the announcement is for the sequencers, which route orders by it.
         release_pdu_payload(message);
         return;
     }
 
     if (pdu_id == pubsub_itc_fw_app::MePositionAck::message_pdu_id) {
         handle_me_position_ack(message);
-        release_pdu_payload(message);
-        return;
-    }
-    if (pdu_id == pubsub_itc_fw_app::Heartbeat::message_pdu_id) {
-        // Heartbeat echoes from the arbiter -- liveness only, nothing to do.
         release_pdu_payload(message);
         return;
     }
@@ -521,6 +492,24 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         // is authoritative; the follower's book is maintained via BookUpdate replication).
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: FOLLOWER -- discarding order PDU inner_pdu_id={} on connection {}",
                    inner_pdu_id, message.connection_id().get_value());
+        release_pdu_payload(message);
+        return;
+    }
+    if (is_order_pdu && ha_enabled_ && ha_role_state_ == MeRole::Unknown) {
+        // With high availability on, Unknown means this instance holds no lease: it has not yet
+        // been granted one, or it has caught up and is waiting to be. It must not match orders,
+        // or an instance that no majority chose would be acting (R-0146). Nothing is lost by
+        // discarding them: they are in the sequencer's log, and whichever instance leads catches
+        // up from that log before it acts. With high availability off, Unknown is the ordinary
+        // state of the single instance, and it processes everything.
+        //
+        // Discarding one means this instance is no longer current, even if it caught up a moment
+        // ago. So it is marked as needing a catch-up, and becoming leader then catches up again,
+        // including this order, before it acts.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "MatchingEngineThread: holding no lease -- discarding order PDU inner_pdu_id={} on connection {}", inner_pdu_id,
+                   message.connection_id().get_value());
+        has_reconciled_ = false;
         release_pdu_payload(message);
         return;
     }
@@ -1225,59 +1214,8 @@ void MatchingEngineThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
-    if (id == startup_arbitration_timer_id_) {
-        if (ha_role_state_ == MeRole::Reconciling) {
-            // The catch-up is still running, so the role question is not settled -- and it has not
-            // been asked either, because request_startup_arbitration acts only from UNKNOWN and an
-            // arbiter that connected during the catch-up found this instance RECONCILING. Dropping
-            // the deadline here spends the only exit the instance has: it reaches UNKNOWN with the
-            // timer gone and no report sent, and nothing else speaks to that state (BUG-0082).
-            // Rearmed rather than counted, because nobody has failed to answer yet.
-            startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-            return;
-        }
-        if (ha_role_state_ == MeRole::Unknown) {
-            // Silence from a connected arbiter is not absence. An arbiter that has itself just
-            // restarted declines to answer until it knows who leads, precisely so that it does
-            // not guess -- and self-promoting against that decision would produce the second
-            // leader the decline exists to prevent. So ask again, and only give up after
-            // enough attempts that the arbiter is evidently not going to answer at all.
-            ++startup_arbitration_attempts_;
-            if (startup_arbitration_attempts_ < max_startup_arbitration_attempts) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "MatchingEngineThread: no ArbitrationDecision within {}s (attempt {} of {}) -- asking again", config_.heartbeat_timeout_seconds,
-                           startup_arbitration_attempts_, max_startup_arbitration_attempts);
-                send_arbitration_report();
-                startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-                return;
-            }
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: no ArbitrationDecision after {} attempts -- self-promoting via instance-id rule (degraded)",
-                       startup_arbitration_attempts_);
-            set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
-            // Through become_leader_when_current, not begin_reconciliation: reconciling towards
-            // leading is what sets reconciling_to_lead_, and a reconciliation begun without it is
-            // a start. A start ends "current, and waiting to be told what it may do" -- so this
-            // path raised the epoch, caught up, and promoted nothing.
-            become_leader_when_current();
-        }
-        return;
-    }
-
-    if (id == promotion_timeout_timer_id_) {
-        // Slice C: the primary did not reconnect in time. Request arbitration.
-        promotion_pending_ = false;
-        if (ha_role_state_ != MeRole::Follower) {
-            return; // state changed (e.g. primary reconnected) -- nothing to do
-        }
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: promotion timeout fired -- requesting arbitration from arbiter pool");
-        send_arbitration_report();
-        return;
-    }
-
-    if (id == arbiter_heartbeat_timer_id_) {
-        send_arbiter_heartbeat();
+    if (id == lease_tick_timer_id_) {
+        act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
         return;
     }
 }
@@ -1392,25 +1330,6 @@ void MatchingEngineThread::apply_book_update(const pubsub_itc_fw::EventMessage& 
 
 // HA state machine (Slice C+D)
 
-void MatchingEngineThread::request_startup_arbitration() {
-    // Only from Unknown. A role already settled -- by an earlier decision, or by the
-    // reconciliation a promotion starts -- must not be reopened because a second arbiter
-    // connection happened to come up.
-    if (ha_role_state_ != MeRole::Unknown) {
-        return;
-    }
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: asking the arbiter which instance leads before adopting any role");
-    send_arbitration_report();
-
-    // send_arbitration_report() self-promotes outright when no arbiter is connected at all.
-    // This covers the other silence: an arbiter is there and does not answer, which would
-    // otherwise leave the venue with no matching engine leader and nothing to say so.
-    if (ha_role_state_ == MeRole::Unknown) {
-        cancel_timer(startup_arbitration_timer_id_);
-        startup_arbitration_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-    }
-}
-
 void MatchingEngineThread::publish_book_metrics() {
     // capacity() spans both tables while the book is being moved into a larger one,
     // so it steps up during a migration and back down when the old table goes. That
@@ -1472,9 +1391,6 @@ void MatchingEngineThread::adopt_leader_role() {
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
     ha_role_state_ = MeRole::Leader;
-    // The timer already runs -- it is started when the arbiter connection comes up, in every
-    // role. Send one now so the lease is asserted immediately rather than at the next tick.
-    send_arbiter_heartbeat();
     announce_role();
 
     // This instance is going to serve, so anything it caught up on and held back is owed to the
@@ -1488,106 +1404,112 @@ void MatchingEngineThread::adopt_leader_role() {
     act_on_pending_halt();
 }
 
-void MatchingEngineThread::send_arbitration_report() {
-    pubsub_itc_fw_app::ArbitrationReport report{};
-    report.self_instance_id = static_cast<int64_t>(config_.instance_id);
-    report.peer_instance_id = peer_instance_id();
-    report.epoch = epoch_;
-    report.proposed_role = pubsub_itc_fw_app::Role::leader;
-    report.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
-    if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
+void MatchingEngineThread::act_on(fix_common::PairLeaseAgent::Change change) {
+    set_epoch(lease_agent_->highest_epoch());
+    switch (change) {
+        case fix_common::PairLeaseAgent::Change::BecameLeader:
+            // The lease settles the role. Whether this instance must catch up first is a separate
+            // question, answered by what it has done so far: a follower was passive and may be
+            // behind, while an instance that caught up at its first sequencer connection is current.
+            become_leader_when_current();
+            break;
+        case fix_common::PairLeaseAgent::Change::StoppedLeading:
+            // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
+            // routing orders here.
+            reconciling_to_lead_ = false;
+            enter_follower_state();
+            break;
+        case fix_common::PairLeaseAgent::Change::AgreedPeerLeads:
+            if (ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead_) {
+                // Catching up at startup: follow once the catch-up ends.
+                peer_leader_heard_while_reconciling_ = true;
+                peer_leader_instance_id_ = peer_instance_id();
+                peer_leader_epoch_ = lease_agent_->highest_epoch();
+            } else if (ha_role_state_ == MeRole::Unknown) {
+                static_cast<void>(follow_peer_claiming_leadership(peer_instance_id(), lease_agent_->highest_epoch()));
+            }
+            break;
+        case fix_common::PairLeaseAgent::Change::Nothing:
+            break;
     }
-    if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
-    }
-    if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-        // No arbiter reachable -- degrade to the local instance-id rule and self-promote.
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "MatchingEngineThread: no arbiter connected -- self-promoting via instance-id rule (degraded)");
-        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
-        // As above: this must reconcile towards leading, or it reconciles towards being current
-        // and stops there. An instance that has already caught up adopts the role outright.
-        become_leader_when_current();
-        return;
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ArbitrationReport sent (self_instance_id={} peer_instance_id={} epoch={})",
-               report.self_instance_id, report.peer_instance_id, report.epoch);
 }
 
-void MatchingEngineThread::handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message) {
+void MatchingEngineThread::EngineLeaseLinks::send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) {
+    const pubsub_itc_fw::ConnectionID peer =
+        owner_.outbound_replication_conn_id_.is_valid() ? owner_.outbound_replication_conn_id_ : owner_.inbound_replication_conn_id_;
+    if (peer.is_valid()) {
+        owner_.send_pdu(peer, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+    }
+}
+
+void MatchingEngineThread::EngineLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) {
+    // Both arbiters: only the active one answers, and which one that is may have changed.
+    for (const pubsub_itc_fw::ConnectionID& conn : {owner_.arbiter_primary_conn_id_, owner_.arbiter_secondary_conn_id_}) {
+        if (conn.is_valid()) {
+            owner_.send_pdu(conn, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+        }
+    }
+}
+
+void MatchingEngineThread::EngineLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+}
+
+void MatchingEngineThread::EngineLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseRefusal::message_pdu_id, 0, refusal);
+}
+
+void MatchingEngineThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::ArbitrationDecisionView decision{};
-
-    if (!pubsub_itc_fw_app::decode(decision, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode ArbitrationDecision -- dropping");
+    pubsub_itc_fw_app::LeaseRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode LeaseRequest -- dropping");
         return;
     }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: ArbitrationDecision received (group={} leader={} follower={} epoch={})",
-               pubsub_itc_fw_app::to_string(decision.group), decision.leader_instance_id, decision.follower_instance_id, decision.epoch);
-
-    // Defence in depth: reject any decision not addressed to the matching_engine
-    // group so a routing mistake can never drive a spurious ME promotion.
-    if (decision.group != pubsub_itc_fw_app::ComponentGroup::matching_engine) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: ArbitrationDecision addressed to group={} (not matching_engine) -- ignoring",
-                   pubsub_itc_fw_app::to_string(decision.group));
+    if (request.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: LeaseRequest for group={} -- dropping",
+                   pubsub_itc_fw_app::to_string(request.group));
         return;
     }
+    act_on(lease_agent_->on_request(conn_id, request.candidate_instance_id, request.epoch, request.request_id, std::chrono::steady_clock::now()));
+}
 
-    // The ME sends ArbitrationReport to both arbiters, so both may reply. Ignore a
-    // duplicate decision once we are already promoting (Reconciling) or promoted
-    // (Leader): re-running reconciliation would wrongly cancel orders accepted
-    // after the first promotion completed.
-    // A decision carrying an epoch we have already reached is the second arbiter's copy of one
-    // we have acted on, and re-running reconciliation on it would wrongly cancel orders
-    // accepted since. A NEWER epoch is not a duplicate whatever role we hold: it is the
-    // arbiter telling us the answer has changed, and discarding it is how an instance that
-    // promoted itself stays wrong. That is not hypothetical -- it is the bug this check used
-    // to cause; see docs/bug_list.md, BUG-0042.
-    const bool already_settled = ha_role_state_ == MeRole::Reconciling || ha_role_state_ == MeRole::Leader;
-    if (already_settled && decision.epoch <= epoch_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: already {} at epoch {} -- ignoring duplicate ArbitrationDecision (epoch={})",
-                   ha_role_state_ == MeRole::Leader ? "LEADER" : "RECONCILING", epoch_, decision.epoch);
+void MatchingEngineThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::LeaseGrantView grant{};
+    if (!pubsub_itc_fw_app::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode LeaseGrant -- dropping");
         return;
     }
-
-    cancel_timer(startup_arbitration_timer_id_);
-    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id) && decision.epoch < epoch_) {
-        // Made leader in a generation below one this instance has already seen, which the arbiter
-        // did not know of. Leading at this instance's own epoch would put it in a generation that
-        // records its peer as leader, so it takes the next epoch in which it leads itself. See
-        // fix_common/LeaderEpoch.hpp.
-        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
-    } else {
-        set_epoch(decision.epoch);
+    if (grant.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
+        return;
     }
+    act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, std::chrono::steady_clock::now()));
+}
 
-    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        // The decision settles the role. Whether this instance must catch up first is a
-        // separate question, answered by what it has done so far rather than by what it has
-        // just been told: a promoted follower was passive and may be behind, while an instance
-        // that has been serving since it started is current already, having applied every
-        // record as it arrived. This decision can land seconds after an instance began working
-        // -- an arbiter takes its time when the whole venue is starting, and again at a new
-        // epoch when something else changes hands -- and reconciling then would take a working
-        // engine out of service and have it read the live orders still arriving as replay:
-        // applied silently, with no acceptance reported to the member.
-        become_leader_when_current();
-    } else if (decision.follower_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        // We remain the follower: stay passive.
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: arbiter assigned follower role -- staying passive");
-        enter_follower_state();
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MatchingEngineThread: ArbitrationDecision does not mention this instance (instance_id={}) -- ignoring", config_.instance_id);
+void MatchingEngineThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::LeaseRefusalView refusal{};
+    if (!pubsub_itc_fw_app::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode LeaseRefusal -- dropping");
+        return;
     }
+    if (refusal.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
+        return;
+    }
+    act_on(lease_agent_->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, std::chrono::steady_clock::now()));
 }
 
 void MatchingEngineThread::enter_follower_state() {
@@ -1598,6 +1520,7 @@ void MatchingEngineThread::enter_follower_state() {
     // starts as a follower and is then confirmed as one has not changed anything, and
     // "role now FOLLOWER (was FOLLOWER)" is noise dressed as an event.
     if (previous != MeRole::Follower) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: role now FOLLOWER (was {}, epoch={}) -- passive, not accepting orders",
                    me_role_name(previous), epoch_);
     }
@@ -1605,64 +1528,7 @@ void MatchingEngineThread::enter_follower_state() {
     // the leader answered those members from its own catch-up.
     discard_held_reports("this instance is a follower and serves nobody");
 
-    // The timer is deliberately left running. A follower still sends liveness; what it stops
-    // sending is the lease, which send_arbiter_heartbeat decides by role.
     announce_role();
-}
-
-void MatchingEngineThread::handle_peer_role_announcement(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::RoleAnnouncementView announcement{};
-
-    if (!pubsub_itc_fw_app::decode(announcement, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode peer RoleAnnouncement -- dropping");
-        return;
-    }
-
-    if (announcement.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || announcement.instance_id == static_cast<int64_t>(config_.instance_id)) {
-        return;
-    }
-
-    // This path may only ever give leadership up, never take it. Deferring cannot
-    // produce a second leader whatever the peer is confused about, so it is safe
-    // to act on the peer's word alone. Claiming would mean issuing a generation,
-    // which needs the arbiter, so a node that hears nothing useful here simply
-    // carries on waiting for arbitration.
-    if (announcement.current_role != pubsub_itc_fw_app::Role::leader) {
-        return;
-    }
-
-    // A catch-up done at startup is the one case where this must be kept rather than dropped.
-    // The instance is not in a state to defer yet, but it is about to be: it reaches UNKNOWN a
-    // moment later, having heard the only announcement a healthy leader was ever going to send.
-    // Discarding it here is what left an instance with nothing telling it a leader existed, so
-    // the startup arbitration deadline degraded it into a second one (BUG-0082).
-    //
-    // Only for a start. An instance reconciling towards leading has been told by the arbiter
-    // that it leads, and that question is settled by an authority this announcement is not.
-    if (ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead_) {
-        peer_leader_heard_while_reconciling_ = true;
-        peer_leader_instance_id_ = announcement.instance_id;
-        peer_leader_epoch_ = announcement.epoch;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "MatchingEngineThread: peer (instance_id={}) says it leads at epoch {} while this instance is still catching up -- remembered, and acted "
-                   "on once the catch-up ends",
-                   announcement.instance_id, announcement.epoch);
-        return;
-    }
-
-    // Only from a standing start. Once this instance is leading, reconciling
-    // towards leading, or already a follower, the question is settled and a
-    // late-arriving announcement must not disturb it.
-    if (ha_role_state_ != MeRole::Unknown) {
-        return;
-    }
-
-    follow_peer_claiming_leadership(announcement.instance_id, announcement.epoch);
 }
 
 bool MatchingEngineThread::follow_peer_claiming_leadership(int64_t instance_id, int32_t announced_epoch) {
@@ -1677,13 +1543,12 @@ bool MatchingEngineThread::follow_peer_claiming_leadership(int64_t instance_id, 
     }
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "MatchingEngineThread: peer (instance_id={}) is already leader at epoch {} -- adopting follower without arbitration", instance_id,
+               "MatchingEngineThread: peer (instance_id={}) leads at epoch {} -- this instance granted it a lease, and follows it", instance_id,
                announced_epoch);
 
     // Take the peer's generation rather than inventing one: this is deference, and
     // the generation being deferred to is the peer's.
     set_epoch(announced_epoch);
-    cancel_timer(startup_arbitration_timer_id_);
     enter_follower_state();
     return true;
 }
@@ -1728,45 +1593,6 @@ void MatchingEngineThread::announce_role() {
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: announced role {} at epoch {} to the sequencers and the peer",
                pubsub_itc_fw_app::to_string(announcement.current_role), epoch_);
-}
-
-void MatchingEngineThread::start_arbiter_heartbeats() {
-    cancel_timer(arbiter_heartbeat_timer_id_);
-    arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
-    // One immediately, so the arbiter registers this instance without waiting an interval.
-    send_arbiter_heartbeat();
-}
-
-void MatchingEngineThread::send_arbiter_heartbeat() {
-    // Liveness only, and sent whatever role this instance holds. The arbiter registers a
-    // component when it hears from it, and it needs to know a follower is there as well as a
-    // leader -- its own cold-start rule asks whether the peer is connected.
-    pubsub_itc_fw_app::Heartbeat hb{};
-    hb.instance_id = static_cast<int64_t>(config_.instance_id);
-    hb.epoch = epoch_;
-    hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
-    for (const pubsub_itc_fw::ConnectionID& conn : {arbiter_primary_conn_id_, arbiter_secondary_conn_id_}) {
-        if (conn.is_valid()) {
-            send_pdu(conn, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
-        }
-    }
-
-    // Leadership is a separate assertion, made only by whoever holds it. Keeping it out of
-    // the heartbeat is what lets a follower send one at all.
-    if (ha_role_state_ == MeRole::Leader) {
-        pubsub_itc_fw_app::LeadershipLease lease{};
-        lease.instance_id = static_cast<int64_t>(config_.instance_id);
-        lease.group = pubsub_itc_fw_app::ComponentGroup::matching_engine;
-        lease.epoch = epoch_;
-        for (const pubsub_itc_fw::ConnectionID& conn : {arbiter_primary_conn_id_, arbiter_secondary_conn_id_}) {
-            if (conn.is_valid()) {
-                send_pdu(conn, pubsub_itc_fw_app::LeadershipLease::message_pdu_id, 0, lease);
-            }
-        }
-    }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MatchingEngineThread: arbiter heartbeat sent (instance_id={} epoch={} leader={})",
-               hb.instance_id, hb.epoch, ha_role_state_ == MeRole::Leader);
 }
 
 // WAL reconciliation (Slice D)
@@ -1871,8 +1697,6 @@ void MatchingEngineThread::become_leader_when_current() {
 }
 
 void MatchingEngineThread::begin_reconciliation() {
-    // Cancel the promotion timer (it fired or arbitration is complete).
-    cancel_timer(promotion_timeout_timer_id_);
     if (ha_role_state_ != MeRole::Reconciling) {
         // Read before the state is overwritten, and only on the way in: this is re-entered
         // when the sequencer's connection arrives, and a re-entry must not turn a promotion
@@ -1905,7 +1729,7 @@ void MatchingEngineThread::begin_reconciliation() {
     reconciliation_records_at_last_tick_ = 0;
     reconciliation_reports_sent_ = 0;
     cancel_timer(reconciliation_timer_id_);
-    reconciliation_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+    reconciliation_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.catch_up_retry_seconds));
 }
 
 void MatchingEngineThread::send_me_position_request() {

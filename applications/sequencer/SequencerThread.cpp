@@ -30,6 +30,9 @@ namespace sequencer {
 
 namespace {
 
+// The arbiter pool's identity as a voter in deciding which sequencer leads. The sequencers are 1 and 2.
+constexpr int64_t arbiter_pool_voter_id = 3;
+
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
     queue_configuration.low_watermark = 1;
@@ -79,7 +82,8 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , peer_inbound_conn_id_{}
     , arbiter_primary_conn_id_{}
     , arbiter_secondary_conn_id_{}
-    , epoch_store_(config.wal_directory + "/epoch.state") {}
+    , epoch_store_(config.wal_directory + "/epoch.state")
+    , lease_promise_store_(config.wal_directory + "/lease_promise.state", fix_common::LeasePromiseStore::current_boot_id()) {}
 
 void SequencerThread::on_initial_event() {
     // The log starts a helper thread to prepare its next segment, and a new thread inherits the
@@ -146,7 +150,7 @@ void SequencerThread::on_initial_event() {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL is fresh (no prior records), starting from seq_no=1");
     }
 
-    // Recover the leadership generation before any election can run. Without
+    // Recover the leadership generation before any lease is asked for. Without
     // this the node starts at zero, and a pair restarted together would agree a
     // generation the venue has already spent -- see EpochStore.
     epoch_ = epoch_store_.load();
@@ -165,12 +169,18 @@ void SequencerThread::on_initial_event() {
         adopt_role(pubsub_itc_fw_app::Role::leader);
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=false -- starting as leader immediately");
     } else {
-        // HA mode: arm startup election window. If no peer contact within this
-        // window, self-promote. Shorter than heartbeat_timeout_seconds so that
-        // single-node HA deployments (peer down) also recover quickly.
-        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.startup_election_timeout_seconds));
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=true -- startup election timeout armed ({}s)",
-                   config_.startup_election_timeout_seconds);
+        // Instance ids are 1 for the primary and 2 for the secondary, so the peer is the other one.
+        const int64_t self_id = static_cast<int64_t>(config_.instance_id);
+        const int64_t peer_id = self_id == 1 ? 2 : 1;
+        lease_agent_.emplace("SequencerThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::sequencer, self_id, peer_id,
+                             arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_);
+        lease_agent_->keep_promises_in(lease_promise_store_, lease_promise_store_.load(), std::chrono::steady_clock::now());
+        lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for "
+                   "during the first period",
+                   config_.lease.period.count());
     }
 
     // Registered here rather than at ready, matching the gateways. The handle is a no-op when
@@ -332,21 +342,11 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ME-secondary standby connection {} established (pre-warmed for failover)",
                    id.get_value());
     } else if (svc == "arbiter_primary") {
-        const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter-primary connection {} established", id.get_value());
-        if (first_arbiter) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
-        }
     } else if (svc == "arbiter_secondary") {
-        const bool first_arbiter = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: arbiter-secondary connection {} established", id.get_value());
-        if (first_arbiter) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
-        }
     } else if (svc == "peer") {
         peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery",
@@ -397,15 +397,9 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
-        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-        }
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
-        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-        }
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: outbound peer connection {} lost: {}", id.get_value(), reason);
@@ -439,9 +433,15 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
-    // Arbiter PDUs: only ArbitrationDecision (pdu_id=201) is expected from either arbiter.
+    // Arbiter PDUs: the active arbiter's answers to this sequencer's lease requests.
     if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
-        handle_arbitration_decision(message);
+        if (message.pdu_id() == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+            handle_lease_grant(message);
+        } else if (message.pdu_id() == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+            handle_lease_refusal(message);
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unexpected PDU {} from an arbiter -- dropping", message.pdu_id());
+        }
         release_pdu_payload(message);
         return;
     }
@@ -575,8 +575,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
         // WAL commit: only the leader appends from the direct gateway PDU. Followers
         // write their WAL exclusively via WalRecord from the leader, keeping WALs
-        // byte-identical. Unknown role (election startup) appends locally because it
-        // may become the leader.
+        // byte-identical. An instance that has not yet learnt its role appends locally
+        // because it may become the leader.
         if (role_ != pubsub_itc_fw_app::Role::follower) {
             append_envelope_to_wal(envelope);
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
@@ -984,56 +984,8 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
-    if (id == peer_heartbeat_timer_id_) {
-        send_peer_heartbeat();
-        return;
-    }
-
-    if (id == arbiter_heartbeat_timer_id_) {
-        send_arbiter_heartbeat();
-        return;
-    }
-
-    if (id == peer_heartbeat_timeout_timer_id_) {
-        if (role_ == pubsub_itc_fw_app::Role::leader) {
-            return; // already leader, nothing to do
-        }
-
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: peer heartbeat timeout (role={})", pubsub_itc_fw_app::to_string(role_));
-
-        arbitration_attempts_ = 0;
-        arbitration_outstanding_ = false;
-        if (!request_arbitration()) {
-            // No arbiter connected. The peer stopped sending heartbeats, so
-            // there is no second claimant to tie-break against: take leadership
-            // in a new generation.
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                           "SequencerThread: no arbiter connected -- assuming leadership, peer is not responding (degraded)");
-            set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
-            adopt_role(pubsub_itc_fw_app::Role::leader);
-        }
-        return;
-    }
-
-    if (id == arbitration_timeout_timer_id_) {
-        if (role_ == pubsub_itc_fw_app::Role::leader) {
-            return;
-        }
-        // An arbiter that started moments ago declines to arbitrate until it has
-        // had a chance to learn who leads what, and says so, asking the component
-        // to come back. Do that before concluding no arbiter is coming.
-        if (arbitration_attempts_ < max_arbitration_attempts && request_arbitration()) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: no arbitration decision yet -- retrying (attempt {} of {})",
-                       arbitration_attempts_, max_arbitration_attempts);
-            return;
-        }
-        // Nothing arbitrated and the peer is not answering either, so there is no
-        // second claimant to weigh against. Take leadership in a new generation.
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: no arbitration decision and peer is not responding -- assuming leadership (degraded)");
-        arbitration_outstanding_ = false;
-        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
-        adopt_role(pubsub_itc_fw_app::Role::leader);
+    if (id == lease_tick_timer_id_) {
+        act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
         return;
     }
 }
@@ -1050,26 +1002,7 @@ pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const {
 }
 
 void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
-    // A role settled by any route ends any arbitration round in progress. Rounds are started by
-    // a timeout, but roles are also settled between visible peers and by degraded promotion. A
-    // round left running after the role is settled goes on retrying, and when it finds no
-    // arbiter connected it takes the degraded path: a follower beside a healthy leader promotes
-    // itself. See docs/availability/tla/findings.md, finding 3.
-    cancel_timer(arbitration_timeout_timer_id_);
-    arbitration_timeout_timer_id_ = pubsub_itc_fw::TimerID{};
-    arbitration_outstanding_ = false;
-    arbitration_attempts_ = 0;
-
     if (new_role == role_) {
-        // A follower told again that it follows has usually just had an arbitration decision
-        // confirm its peer, and the heartbeat timeout that sent it to the arbiter has already
-        // fired. Arm it again, or the only thing that would re-arm it is a heartbeat from the
-        // leader, and if the leader dies none comes: this instance would never take over. See
-        // docs/availability/tla/findings.md, finding 5.
-        if (new_role == pubsub_itc_fw_app::Role::follower) {
-            cancel_timer(peer_heartbeat_timeout_timer_id_);
-            peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-        }
         return;
     }
 
@@ -1081,29 +1014,13 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     role_ = new_role;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
-        cancel_timer(peer_heartbeat_timeout_timer_id_);
-        cancel_timer(peer_heartbeat_timer_id_);
-        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: now LEADER -- heartbeat timer started ({}s interval)",
-                   config_.heartbeat_interval_seconds);
-        // Immediately, not at the next heartbeat: the gap between taking
-        // leadership and the arbiter hearing about it is exactly the window in
-        // which the arbiter could issue a competing generation.
-        send_leadership_lease();
-        // And tell the gateways where this venue now stands on accepting orders. They may be
-        // holding what the previous leader last said, which was true of a process that is no
-        // longer running. This instance has deferred nothing, so it accepts -- but that has to
-        // be said rather than assumed, because silence here leaves a refusal in place that
-        // nothing will ever lift.
+        // Tell the gateways where this venue now stands on accepting orders. They may be holding
+        // what the previous leader last said, which was true of a process that is no longer
+        // running. This instance has deferred nothing, so it accepts -- but that has to be said
+        // rather than assumed, because silence here leaves a refusal in place that nothing will
+        // ever lift.
         broadcast_order_acceptance();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
-        cancel_timer(peer_heartbeat_timer_id_);
-        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
-        // Arm (or re-arm) the heartbeat timeout.
-        cancel_timer(peer_heartbeat_timeout_timer_id_);
-        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: now FOLLOWER -- heartbeat timer started, timeout armed ({}s)",
-                   config_.heartbeat_timeout_seconds);
         // A follower forwards nothing to a matching engine, so it defers nothing. Clearing the
         // bookkeeping matters for what happens if this instance leads AGAIN: a deferral begun in
         // a previous leadership would otherwise still be open, because the recovery that would
@@ -1117,73 +1034,97 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     }
 }
 
-void SequencerThread::elect_role(int64_t peer_instance_id, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role) {
-    if (role_ == pubsub_itc_fw_app::Role::leader || role_ == pubsub_itc_fw_app::Role::follower) {
-        // Already elected: just update epoch knowledge if the peer is ahead.
-        if (peer_epoch > epoch_) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: peer epoch {} > my epoch {} -- unexpected (already elected as {})",
-                       peer_epoch, epoch_, pubsub_itc_fw_app::to_string(role_));
-        }
-        return;
-    }
-
-    // If the peer already holds leadership, adopt follower. Deferring is always
-    // safe: it can only avoid creating a second leader, and it needs no new
-    // generation because the peer's is adopted rather than one invented.
-    //
-    // Only a peer that says it is leading gets deferred to. A peer that holds no
-    // role does not become entitled to lead by having the higher epoch: the
-    // epoch counts generations seen, and a node that has seen more of them is
-    // not thereby in charge. Reading it as authority makes both nodes defer --
-    // the one with the lower epoch by this branch, the other by the instance-id
-    // rule below -- and the pair comes up with two followers and no leader.
-    if (peer_current_role == pubsub_itc_fw_app::Role::leader) {
-        if (peer_epoch > epoch_) {
-            // The peer led in a generation this node has not seen, so this node
-            // is the stale one. Take its generation along with its leadership.
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: peer (instance_id={}) leads at epoch {} > my epoch {} -- adopting follower in its generation", peer_instance_id,
-                       peer_epoch, epoch_);
-            set_epoch(peer_epoch);
+void SequencerThread::act_on(fix_common::PairLeaseAgent::Change change) {
+    // Whatever happened, the highest epoch this instance knows may have risen, and it is kept on disk.
+    set_epoch(lease_agent_->highest_epoch());
+    switch (change) {
+        case fix_common::PairLeaseAgent::Change::BecameLeader:
+            adopt_role(pubsub_itc_fw_app::Role::leader);
+            break;
+        case fix_common::PairLeaseAgent::Change::StoppedLeading:
+        case fix_common::PairLeaseAgent::Change::AgreedPeerLeads:
             adopt_role(pubsub_itc_fw_app::Role::follower);
-            return;
+            break;
+        case fix_common::PairLeaseAgent::Change::Nothing:
+            break;
+    }
+}
+
+void SequencerThread::SequencerLeaseLinks::send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) {
+    const pubsub_itc_fw::ConnectionID peer = owner_.peer_active_conn();
+    if (peer.is_valid()) {
+        owner_.send_pdu(peer, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+    }
+}
+
+void SequencerThread::SequencerLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) {
+    // Both arbiters: only the active one answers, and which one that is may have changed.
+    for (const pubsub_itc_fw::ConnectionID& conn : {owner_.arbiter_primary_conn_id_, owner_.arbiter_secondary_conn_id_}) {
+        if (conn.is_valid()) {
+            owner_.send_pdu(conn, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
         }
-        if (peer_epoch < epoch_) {
-            // A leader from an older generation than the one this node has
-            // already seen. It was leader once and has not learned that it
-            // stopped being one. Following it would put the venue back in a
-            // generation it has left, so let the arbiter say who leads now.
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: peer (instance_id={}) claims leader at epoch {} but this node has seen epoch {} -- not following a stale leader",
-                       peer_instance_id, peer_epoch, epoch_);
-            resolve_with_visible_peer(peer_instance_id, peer_epoch);
-            return;
-        }
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: peer (instance_id={}) is already leader -- adopting follower",
-                   peer_instance_id);
-        adopt_role(pubsub_itc_fw_app::Role::follower);
+    }
+}
+
+void SequencerThread::SequencerLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+}
+
+void SequencerThread::SequencerLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseRefusal::message_pdu_id, 0, refusal);
+}
+
+void SequencerThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::LeaseRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseRequest -- dropping");
         return;
     }
+    if (request.group != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: LeaseRequest for group={} on the peer link -- dropping",
+                   pubsub_itc_fw_app::to_string(request.group));
+        return;
+    }
+    act_on(lease_agent_->on_request(conn_id, request.candidate_instance_id, request.epoch, request.request_id, std::chrono::steady_clock::now()));
+}
 
-    // Neither side holds a role. Settle it here rather than at the arbiter.
-    //
-    // This looks like the arbiter's job and is not, because of who knows what.
-    // Both nodes can see each other, so between them they hold every fact the
-    // decision needs: both instance ids, both epochs, and the knowledge that
-    // neither is leading. The arbiter holds none of that first-hand, and a
-    // recently started one says so and refuses. Referring the question from the
-    // side that has the facts to the side that has not is the wrong direction.
-    //
-    // Two leaders cannot come of it. Both sides run this with the same pair of
-    // ids and the same pair of epochs and so reach the same answer without
-    // needing to agree on anything further.
-    //
-    // Where the arbiter does earn its place is the opposite case, when the peer
-    // cannot be seen at all: that is the one this node cannot settle alone, and
-    // on_timer_event refers it.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: neither this node nor peer (instance_id={}) holds a role -- resolving between peers", peer_instance_id);
-    resolve_with_visible_peer(peer_instance_id, peer_epoch);
+void SequencerThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::LeaseGrantView grant{};
+    if (!pubsub_itc_fw_app::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseGrant -- dropping");
+        return;
+    }
+    if (grant.group != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
+        return;
+    }
+    act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, std::chrono::steady_clock::now()));
+}
+
+void SequencerThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::LeaseRefusalView refusal{};
+    if (!pubsub_itc_fw_app::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseRefusal -- dropping");
+        return;
+    }
+    if (refusal.group != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
+        return;
+    }
+    act_on(lease_agent_->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, std::chrono::steady_clock::now()));
 }
 
 void SequencerThread::set_epoch(int32_t new_epoch) {
@@ -1217,43 +1158,6 @@ void SequencerThread::set_epoch(int32_t new_epoch) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: epoch advanced {} -> {} (recorded)", previous, epoch_);
 }
 
-bool SequencerThread::request_arbitration() {
-    if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-        return false;
-    }
-    arbitration_outstanding_ = true;
-    ++arbitration_attempts_;
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: requesting arbitration from arbiter pool");
-    send_arbitration_report();
-    arbitration_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.arbitration_timeout_seconds));
-    return true;
-}
-
-void SequencerThread::resolve_with_visible_peer(int64_t peer_instance_id, int32_t peer_epoch) {
-    // Both sides run this with the same two instance ids and the same two
-    // epochs, so both reach the same answer independently and no exchange of
-    // agreement is needed.
-    //
-    // The new generation is the next epoch above the higher of the two in which
-    // the lower instance id leads, which puts it ahead of anything either node has
-    // led in before, and records who leads it. Taking the higher of the two
-    // matters when one node has lost its stored epoch: max is symmetric, so the
-    // node that still remembers carries the other one forward, and both still
-    // compute the same number.
-    const int64_t leader_instance_id = std::min(static_cast<int64_t>(config_.instance_id), peer_instance_id);
-    set_epoch(fix_common::LeaderEpoch::next_for(std::max(epoch_, peer_epoch), leader_instance_id));
-
-    if (static_cast<int64_t>(config_.instance_id) < peer_instance_id) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: my instance_id={} < peer instance_id={} -- adopting leader (epoch={})",
-                   config_.instance_id, peer_instance_id, epoch_);
-        adopt_role(pubsub_itc_fw_app::Role::leader);
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: my instance_id={} >= peer instance_id={} -- adopting follower (epoch={})",
-                   config_.instance_id, peer_instance_id, epoch_);
-        adopt_role(pubsub_itc_fw_app::Role::follower);
-    }
-}
-
 void SequencerThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_id) {
     pubsub_itc_fw_app::StatusQuery sq{};
     sq.instance_id = static_cast<int64_t>(config_.instance_id);
@@ -1275,134 +1179,6 @@ void SequencerThread::send_status_response(const pubsub_itc_fw::ConnectionID& co
                conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), epoch_, next_sequence_number_);
 }
 
-void SequencerThread::send_peer_heartbeat() {
-    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
-    if (!target.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: heartbeat timer fired but no peer connection -- skipping");
-        return;
-    }
-    pubsub_itc_fw_app::Heartbeat hb{};
-    hb.instance_id = static_cast<int64_t>(config_.instance_id);
-    hb.epoch = epoch_;
-    hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
-    hb.current_role = role_;
-    send_pdu(target, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: Heartbeat sent to peer (epoch={})", epoch_);
-}
-
-void SequencerThread::send_arbiter_heartbeat() {
-    pubsub_itc_fw_app::Heartbeat hb{};
-    hb.instance_id = static_cast<int64_t>(config_.instance_id);
-    hb.epoch = epoch_;
-    hb.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
-    hb.current_role = role_;
-    if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
-    }
-    if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
-    }
-
-    send_leadership_lease();
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: arbiter heartbeat sent (instance_id={} epoch={})", hb.instance_id, hb.epoch);
-}
-
-void SequencerThread::send_leadership_lease() {
-    if (role_ != pubsub_itc_fw_app::Role::leader) {
-        // Leadership is a separate assertion from being alive, and only whoever
-        // holds it may make it. Keeping the two apart is what lets a follower
-        // send a heartbeat without appearing to claim anything.
-        return;
-    }
-
-    // Telling the arbiter who leads is what keeps a leadership settled between
-    // the two peers from being overturned later by an arbiter that never saw it
-    // happen. Holding a confirmed incumbent, the arbiter answers a subsequent
-    // report by confirming that incumbent rather than issuing a fresh epoch, so
-    // the two never issue generations for the same group at once.
-    pubsub_itc_fw_app::LeadershipLease lease{};
-    lease.instance_id = static_cast<int64_t>(config_.instance_id);
-    lease.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
-    lease.epoch = epoch_;
-    for (const pubsub_itc_fw::ConnectionID& conn : {arbiter_primary_conn_id_, arbiter_secondary_conn_id_}) {
-        if (conn.is_valid()) {
-            send_pdu(conn, pubsub_itc_fw_app::LeadershipLease::message_pdu_id, 0, lease);
-        }
-    }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: LeadershipLease sent (instance_id={} epoch={})", lease.instance_id,
-               lease.epoch);
-}
-
-void SequencerThread::send_arbitration_report() {
-    pubsub_itc_fw_app::ArbitrationReport report{};
-    report.self_instance_id = static_cast<int64_t>(config_.instance_id);
-    report.peer_instance_id = peer_instance_id_;
-    report.epoch = epoch_;
-    report.proposed_role = pubsub_itc_fw_app::Role::leader;
-    report.group = pubsub_itc_fw_app::ComponentGroup::sequencer;
-    if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
-    }
-    if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
-    }
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: ArbitrationReport sent to arbiter pool (self_instance_id={} peer_instance_id={} epoch={})", report.self_instance_id,
-               report.peer_instance_id, report.epoch);
-}
-
-void SequencerThread::handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::ArbitrationDecisionView decision{};
-
-    if (!pubsub_itc_fw_app::decode(decision, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ArbitrationDecision -- dropping");
-        return;
-    }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ArbitrationDecision received (group={} leader={} follower={} epoch={})",
-               pubsub_itc_fw_app::to_string(decision.group), decision.leader_instance_id, decision.follower_instance_id, decision.epoch);
-
-    // Defence in depth: the arbiter keys decisions by (group, instance_id), but
-    // reject any decision not addressed to the sequencer group so a routing
-    // mistake can never drive a spurious sequencer promotion or cancel our own
-    // arbitration timeout. Validate before touching any state.
-    if (decision.group != pubsub_itc_fw_app::ComponentGroup::sequencer) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ArbitrationDecision addressed to group={} (not sequencer) -- ignoring",
-                   pubsub_itc_fw_app::to_string(decision.group));
-        return;
-    }
-
-    cancel_timer(arbitration_timeout_timer_id_);
-    arbitration_attempts_ = 0;
-    arbitration_outstanding_ = false;
-
-    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id) && decision.epoch < epoch_) {
-        // Made leader in a generation below one this instance has already seen, which the arbiter
-        // did not know of. Leading at this instance's own epoch would put it in a generation that
-        // records its peer as leader, so it takes the next epoch in which it leads itself. Its
-        // lease then carries that epoch to the arbiter.
-        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
-    } else {
-        set_epoch(decision.epoch);
-    }
-
-    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        adopt_role(pubsub_itc_fw_app::Role::leader);
-    } else if (decision.follower_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        adopt_role(pubsub_itc_fw_app::Role::follower);
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: ArbitrationDecision does not mention this instance (instance_id={}) -- ignoring", config_.instance_id);
-    }
-}
-
 void SequencerThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
@@ -1421,20 +1197,9 @@ void SequencerThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID
 
     peer_instance_id_ = sq.instance_id;
 
-    // Reply immediately so the peer can run election logic on our response.
+    // The exchange tells a restarting peer how far the sequence has reached. Which of the two leads
+    // is not settled here: that is decided by leases, which this exchange plays no part in.
     send_status_response(conn_id);
-
-    // Deliberately no election here. A StatusQuery carries an instance id and an
-    // epoch but not the sender's role, so a query from a node that is already
-    // leading looks exactly like one from a node that holds nothing. Electing on
-    // it means guessing Role::unknown for the peer, and a node restarting beside
-    // a healthy leader then makes itself a second leader before the reply that
-    // would have said so arrives.
-    //
-    // This node sends its own StatusQuery on every peer connection, so it always
-    // has a StatusResponse coming, and that one does carry the peer's role. The
-    // election runs there, on both sides, from complete information. If no reply
-    // ever comes, the startup election timer covers it.
 }
 
 void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMessage& message) {
@@ -1455,8 +1220,6 @@ void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMess
 
     peer_instance_id_ = sr.self_instance_id;
 
-    elect_role(sr.self_instance_id, sr.epoch, sr.current_role);
-
     // Sync next_sequence_number_ if the peer is ahead. This covers WAL recovery:
     // a restarting node reads its WAL and gets next_sequence_number_=N, but the
     // peer (leader) may have advanced to M > N while this node was down. Without
@@ -1469,63 +1232,6 @@ void SequencerThread::handle_peer_status_response(const pubsub_itc_fw::EventMess
     }
 }
 
-void SequencerThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::HeartbeatView hb{};
-
-    if (!pubsub_itc_fw_app::decode(hb, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode Heartbeat -- dropping");
-        return;
-    }
-
-    if (hb.epoch < epoch_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: Heartbeat from stale peer (peer epoch={} < my epoch={}) -- ignoring",
-                   hb.epoch, epoch_);
-        return;
-    }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: Heartbeat received from peer (instance_id={} epoch={})", hb.instance_id,
-               hb.epoch);
-
-    // Two leaders, left over from a partition in which each led on its own side. Without this,
-    // they never resolve after the partition heals: a leader has no timeout and never asks the
-    // arbiter anything, so nothing else would ever demote either. The one in the newer generation
-    // keeps leading, and a tie, which only epochs issued before generations recorded their leader
-    // can produce, goes to the lower instance id. What this instance sequenced while it wrongly led
-    // stays in its log; see docs/bug_list.md, BUG-0097. See also docs/availability/tla/findings.md,
-    // finding 2.
-    const bool peer_leads_newer_generation = hb.epoch > epoch_ || (hb.epoch == epoch_ && hb.instance_id < static_cast<int64_t>(config_.instance_id));
-    if (role_ == pubsub_itc_fw_app::Role::leader && hb.current_role == pubsub_itc_fw_app::Role::leader && peer_leads_newer_generation) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: peer (instance_id={}) leads at epoch {} while this instance leads at epoch {} -- standing down to follow it",
-                   hb.instance_id, hb.epoch, epoch_);
-        set_epoch(hb.epoch);
-        adopt_role(pubsub_itc_fw_app::Role::follower);
-        return;
-    }
-
-    // Follow the leader's generation. Without this a follower keeps whatever
-    // epoch it had when it was elected while the leader moves on, the two drift
-    // apart, and the gap does damage twice over: promoting the follower produces
-    // a generation the venue has already used, and a node comparing epochs on
-    // restart is comparing against a number that was never current.
-    if (hb.epoch > epoch_ && role_ == pubsub_itc_fw_app::Role::follower) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: leader has moved to epoch {} (this node was at {}) -- following it",
-                   hb.epoch, epoch_);
-        set_epoch(hb.epoch);
-    }
-
-    // Reset the heartbeat timeout whenever we receive a valid heartbeat.
-    if (role_ == pubsub_itc_fw_app::Role::follower) {
-        cancel_timer(peer_heartbeat_timeout_timer_id_);
-        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-    }
-}
-
 void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
 
@@ -1533,16 +1239,16 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
         handle_peer_status_query(conn_id, message);
     } else if (pdu_id == pubsub_itc_fw_app::StatusResponse::message_pdu_id) {
         handle_peer_status_response(message);
-    } else if (pdu_id == pubsub_itc_fw_app::Heartbeat::message_pdu_id) {
-        handle_peer_heartbeat(message);
+    } else if (pdu_id == pubsub_itc_fw_app::LeaseRequest::message_pdu_id) {
+        handle_lease_request(conn_id, message);
+    } else if (pdu_id == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+        handle_lease_grant(message);
+    } else if (pdu_id == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+        handle_lease_refusal(message);
     } else if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         handle_wal_record(conn_id, message);
     } else if (pdu_id == pubsub_itc_fw_app::WalAck::message_pdu_id) {
         handle_wal_ack(message);
-    } else if (pdu_id == pubsub_itc_fw_app::ArbitrationDecision::message_pdu_id) {
-        // Should not arrive on the peer channel -- decisions come from the arbiter.
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: ArbitrationDecision received on peer channel (unexpected) -- dropping");
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown peer PDU id {} -- dropping", pdu_id);
     }

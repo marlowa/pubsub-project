@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
@@ -149,13 +150,11 @@ struct MatchingEngineConfiguration {
     std::string replication_listen_host{"127.0.0.1"};
     uint16_t replication_listen_port{7026};
 
-    // HA -- arbiter-mediated promotion and cancel-on-failover (Slice C+D)
+    // HA -- which instance leads, and cancel-on-failover
     //
-    // The secondary opens connections to the arbiter pool at startup and, on
-    // loss of the primary replication channel, arms a promotion timer.  When it
-    // fires it sends an ArbitrationReport to the arbiter and adopts leader or
-    // follower based on the ArbitrationDecision.  The primary heartbeats the
-    // arbiter to hold its lease.
+    // An instance leads only while a majority of three voters -- itself, its peer and the arbiter
+    // pool -- has granted it a lease that has not run out. Both instances connect to both arbiters,
+    // and ask their peer over the replication connections. See docs/availability/majority_leases.md.
 
     /** @brief Unique instance identity within the ME pair (1 = primary, 2 = secondary). */
     int32_t instance_id{1};
@@ -175,13 +174,19 @@ struct MatchingEngineConfiguration {
     /** @brief TCP port of the secondary arbiter's component listener. */
     uint16_t arbiter_secondary_port{7200};
 
-    /** @brief Promotion timeout: how long the secondary waits after losing the primary
-     *  replication channel before requesting arbitration. Also the ceiling for
-     *  arbiter reachability during promotion. */
-    int32_t heartbeat_timeout_seconds{15};
+    /**
+     * @brief The timings of the leases that decide which matching engine leads.
+     *
+     * Expanded from the environment's [shared] section, because every voter and every instance
+     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
+     */
+    fix_common::LeaseTiming lease{};
 
-    /** @brief Interval at which the primary heartbeats the arbiter pool to renew its lease. */
-    int32_t heartbeat_interval_seconds{30};
+    /**
+     * @brief How long an instance catching up on the sequencer's record waits, with nothing arriving,
+     *        before asking again. A sequencer that is not leading drops the request without answering.
+     */
+    int32_t catch_up_retry_seconds{15};
 
     // Order book
 

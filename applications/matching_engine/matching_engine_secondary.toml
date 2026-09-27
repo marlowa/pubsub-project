@@ -39,12 +39,17 @@ host = "${matching_engine_secondary_arbiter_secondary_host}"
 port = ${matching_engine_secondary_arbiter_secondary_port}
 
 [ha_timing]
-heartbeat_timeout_seconds  = 15
-# How often the leader renews its leadership lease with the arbiter, and how often
-# either instance reports liveness. Short because the arbiter stops believing a lease
-# that goes unrenewed for 10s: at 30s a healthy leader expired between renewals. Two
-# small PDUs every 3s against a venue doing thousands of orders a second is nothing.
-heartbeat_interval_seconds = 3
+# How long an instance catching up on the sequencer's record waits, with nothing arriving,
+# before asking again. A sequencer that is not leading drops the request without answering.
+catch_up_retry_seconds = 15
+
+# How long a lease lasts, how much shorter an instance takes a lease it holds to be, and how
+# often a leader renews. Shared across the venue, because every voter must agree; see
+# environments/*.toml.
+[lease]
+period_milliseconds = ${shared_lease_period_milliseconds}
+drift_allowance_milliseconds = ${shared_lease_drift_allowance_milliseconds}
+renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 
 [logging]
 applog_level = "info"

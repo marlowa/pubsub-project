@@ -25,6 +25,9 @@ namespace matching_engine_publisher {
 
 namespace {
 
+// The arbiter pool's identity as a voter in deciding which publisher leads. The publishers are 1 and 2.
+constexpr int64_t arbiter_pool_voter_id = 3;
+
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration cfg{};
     cfg.low_watermark = 1;
@@ -92,9 +95,15 @@ void MatchingEnginePublisherThread::on_initial_event() {
         adopt_role(pubsub_itc_fw_app::Role::leader);
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: ha_enabled=false -- starting as leader");
     } else {
-        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.startup_election_timeout_seconds));
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: ha_enabled=true -- startup election timeout armed ({}s)",
-                   config_.startup_election_timeout_seconds);
+        // Instance ids are 1 for the primary and 2 for the secondary, so the peer is the other one.
+        // The publisher keeps no epoch on disk, so it starts knowing none.
+        const int64_t self_id = static_cast<int64_t>(config_.instance_id);
+        const int64_t peer_id = self_id == 1 ? 2 : 1;
+        lease_agent_.emplace("MepThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher, self_id, peer_id,
+                             arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), 0);
+        lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MepThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms)", config_.lease.period.count());
     }
 }
 
@@ -128,29 +137,17 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
         req.from_seq_no = sequencer_cursor_;
         send_pdu(id, pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id, 0, req);
     } else if (svc == "arbiter_primary") {
-        const bool first = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: arbiter-primary connection {} established", id.get_value());
-        if (first) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
-        }
     } else if (svc == "arbiter_secondary") {
-        const bool first = !arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid();
         arbiter_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: arbiter-secondary connection {} established", id.get_value());
-        if (first) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-            arbiter_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds{30});
-        }
     } else if (svc == "peer") {
         peer_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: outbound peer connection {} established -- sending StatusQuery", id.get_value());
-        send_status_query(id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: outbound peer connection {} established", id.get_value());
     } else if (svc == peer_inbound_svc_) {
         peer_inbound_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: inbound peer connection {} established -- sending StatusQuery", id.get_value());
-        send_status_query(id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: inbound peer connection {} established", id.get_value());
     } else if (svc == orders_inbound_svc_ || svc == er_inbound_svc_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MepThread: topic subscriber connection {} established on {} -- awaiting TopicSubscribeRequest", id.get_value(), svc);
@@ -173,15 +170,9 @@ void MatchingEnginePublisherThread::on_connection_lost(const pubsub_itc_fw::Conn
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
-        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-        }
     } else if (id == arbiter_secondary_conn_id_) {
         arbiter_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbiter-secondary connection {} lost: {}", id.get_value(), reason);
-        if (!arbiter_primary_conn_id_.is_valid() && !arbiter_secondary_conn_id_.is_valid()) {
-            cancel_timer(arbiter_heartbeat_timer_id_);
-        }
     } else {
         // Topic subscriber connection (or already gone): the owning publisher tears down
         // its data+control pair; the other no-ops on a connection it does not own.
@@ -208,9 +199,15 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
         return;
     }
 
-    // Arbiter PDUs.
+    // Arbiter PDUs: the active arbiter's answers to this publisher's lease requests.
     if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
-        handle_arbitration_decision(message);
+        if (message.pdu_id() == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+            handle_lease_grant(message);
+        } else if (message.pdu_id() == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+            handle_lease_refusal(message);
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unexpected PDU {} from an arbiter -- dropping", message.pdu_id());
+        }
         release_pdu_payload(message);
         return;
     }
@@ -259,45 +256,13 @@ void MatchingEnginePublisherThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         return;
     }
 
-    if (id == peer_heartbeat_timer_id_) {
-        send_peer_heartbeat();
-        return;
-    }
-
-    if (id == arbiter_heartbeat_timer_id_) {
-        send_arbiter_heartbeat();
-        return;
-    }
-
-    if (id == peer_heartbeat_timeout_timer_id_) {
-        if (role_ == pubsub_itc_fw_app::Role::leader) {
-            return;
-        }
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: peer heartbeat timeout (role={})", pubsub_itc_fw_app::to_string(role_));
-        if (arbiter_primary_conn_id_.is_valid() || arbiter_secondary_conn_id_.is_valid()) {
-            send_arbitration_report();
-            arbitration_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.arbitration_timeout_seconds));
-        } else {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: no arbiter connected -- self-promoting (degraded)");
-            ++epoch_;
-            adopt_role(pubsub_itc_fw_app::Role::leader);
-        }
-        return;
-    }
-
-    if (id == arbitration_timeout_timer_id_) {
-        if (role_ != pubsub_itc_fw_app::Role::leader) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: arbitration timeout -- self-promoting (degraded)");
-            ++epoch_;
-            adopt_role(pubsub_itc_fw_app::Role::leader);
-        }
+    if (id == lease_tick_timer_id_) {
+        act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
         return;
     }
 }
 
 void MatchingEnginePublisherThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
-
-// HA state machine (same pattern as SequencerThread)
 
 pubsub_itc_fw::ConnectionID MatchingEnginePublisherThread::peer_active_conn() const {
     return peer_conn_id_.is_valid() ? peer_conn_id_ : peer_inbound_conn_id_;
@@ -311,197 +276,117 @@ void MatchingEnginePublisherThread::adopt_role(pubsub_itc_fw_app::Role new_role)
     PUBSUB_LOG(get_logger(), transition_level, "MepThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch_);
     role_ = new_role;
-
-    if (new_role == pubsub_itc_fw_app::Role::leader) {
-        cancel_timer(peer_heartbeat_timeout_timer_id_);
-        cancel_timer(peer_heartbeat_timer_id_);
-        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
-        set_publisher_role(new_role);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: now LEADER -- heartbeat timer started ({}s)", config_.heartbeat_interval_seconds);
-    } else if (new_role == pubsub_itc_fw_app::Role::follower) {
-        cancel_timer(peer_heartbeat_timer_id_);
-        peer_heartbeat_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.heartbeat_interval_seconds));
-        cancel_timer(peer_heartbeat_timeout_timer_id_);
-        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
+    set_publisher_role(new_role);
+    if (new_role == pubsub_itc_fw_app::Role::follower) {
         // Stop publishing and drop all topic subscribers so they rediscover the new leader.
-        set_publisher_role(new_role);
         orders_publisher_.drop_all_subscribers();
         er_publisher_.drop_all_subscribers();
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: now FOLLOWER -- heartbeat timer started, timeout armed ({}s)",
-                   config_.heartbeat_timeout_seconds);
     }
 }
 
-void MatchingEnginePublisherThread::elect_role(int64_t peer_iid, int32_t peer_epoch, pubsub_itc_fw_app::Role peer_current_role) {
-    if (role_ == pubsub_itc_fw_app::Role::leader || role_ == pubsub_itc_fw_app::Role::follower) {
-        return;
-    }
-    if (peer_epoch > epoch_) {
-        epoch_ = peer_epoch;
-        adopt_role(pubsub_itc_fw_app::Role::follower);
-        return;
-    }
-    if (peer_current_role == pubsub_itc_fw_app::Role::leader) {
-        adopt_role(pubsub_itc_fw_app::Role::follower);
-        return;
-    }
-    if (static_cast<int64_t>(config_.instance_id) < peer_iid) {
-        adopt_role(pubsub_itc_fw_app::Role::leader);
-    } else {
-        adopt_role(pubsub_itc_fw_app::Role::follower);
+void MatchingEnginePublisherThread::act_on(fix_common::PairLeaseAgent::Change change) {
+    epoch_ = lease_agent_->highest_epoch();
+    switch (change) {
+        case fix_common::PairLeaseAgent::Change::BecameLeader:
+            adopt_role(pubsub_itc_fw_app::Role::leader);
+            break;
+        case fix_common::PairLeaseAgent::Change::StoppedLeading:
+        case fix_common::PairLeaseAgent::Change::AgreedPeerLeads:
+            adopt_role(pubsub_itc_fw_app::Role::follower);
+            break;
+        case fix_common::PairLeaseAgent::Change::Nothing:
+            break;
     }
 }
 
-void MatchingEnginePublisherThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_id) {
-    pubsub_itc_fw_app::StatusQuery sq{};
-    sq.instance_id = static_cast<int64_t>(config_.instance_id);
-    sq.epoch = epoch_;
-    send_pdu(conn_id, pubsub_itc_fw_app::StatusQuery::message_pdu_id, 0, sq);
-}
-
-void MatchingEnginePublisherThread::send_status_response(const pubsub_itc_fw::ConnectionID& conn_id) {
-    pubsub_itc_fw_app::StatusResponse sr{};
-    sr.self_instance_id = static_cast<int64_t>(config_.instance_id);
-    sr.peer_instance_id = 0;
-    sr.epoch = epoch_;
-    sr.current_role = role_;
-    sr.next_sequence_number = 0;
-    send_pdu(conn_id, pubsub_itc_fw_app::StatusResponse::message_pdu_id, 0, sr);
-}
-
-void MatchingEnginePublisherThread::send_peer_heartbeat() {
-    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
-    if (!target.is_valid()) {
-        return;
-    }
-    pubsub_itc_fw_app::Heartbeat hb{};
-    hb.instance_id = static_cast<int64_t>(config_.instance_id);
-    hb.epoch = epoch_;
-    hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
-    send_pdu(target, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
-}
-
-void MatchingEnginePublisherThread::send_arbiter_heartbeat() {
-    pubsub_itc_fw_app::Heartbeat hb{};
-    hb.instance_id = static_cast<int64_t>(config_.instance_id);
-    hb.epoch = epoch_;
-    hb.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
-    if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
-    }
-    if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::Heartbeat::message_pdu_id, 0, hb);
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) {
+    const pubsub_itc_fw::ConnectionID peer = owner_.peer_active_conn();
+    if (peer.is_valid()) {
+        owner_.send_pdu(peer, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
     }
 }
 
-void MatchingEnginePublisherThread::send_arbitration_report() {
-    pubsub_itc_fw_app::ArbitrationReport report{};
-    report.self_instance_id = static_cast<int64_t>(config_.instance_id);
-    report.peer_instance_id = peer_instance_id_;
-    report.epoch = epoch_;
-    report.proposed_role = pubsub_itc_fw_app::Role::leader;
-    report.group = pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher;
-    if (arbiter_primary_conn_id_.is_valid()) {
-        send_pdu(arbiter_primary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
-    }
-    if (arbiter_secondary_conn_id_.is_valid()) {
-        send_pdu(arbiter_secondary_conn_id_, pubsub_itc_fw_app::ArbitrationReport::message_pdu_id, 0, report);
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) {
+    // Both arbiters: only the active one answers, and which one that is may have changed.
+    for (const pubsub_itc_fw::ConnectionID& conn : {owner_.arbiter_primary_conn_id_, owner_.arbiter_secondary_conn_id_}) {
+        if (conn.is_valid()) {
+            owner_.send_pdu(conn, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+        }
     }
 }
 
-void MatchingEnginePublisherThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+}
+
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id,
+                                                                      const pubsub_itc_fw_app::LeaseRefusal& refusal) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseRefusal::message_pdu_id, 0, refusal);
+}
+
+void MatchingEnginePublisherThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::StatusQueryView sq{};
-    if (!pubsub_itc_fw_app::decode(sq, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode StatusQuery -- dropping");
+    pubsub_itc_fw_app::LeaseRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode LeaseRequest -- dropping");
         return;
     }
-    peer_instance_id_ = sq.instance_id;
-    send_status_response(conn_id);
-    elect_role(sq.instance_id, sq.epoch, pubsub_itc_fw_app::Role::unknown);
+    if (request.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: LeaseRequest for group={} on the peer link -- dropping",
+                   pubsub_itc_fw_app::to_string(request.group));
+        return;
+    }
+    act_on(lease_agent_->on_request(conn_id, request.candidate_instance_id, request.epoch, request.request_id, std::chrono::steady_clock::now()));
 }
 
-void MatchingEnginePublisherThread::handle_peer_status_response(const pubsub_itc_fw::EventMessage& message) {
+void MatchingEnginePublisherThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::StatusResponseView sr{};
-    if (!pubsub_itc_fw_app::decode(sr, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode StatusResponse -- dropping");
+    pubsub_itc_fw_app::LeaseGrantView grant{};
+    if (!pubsub_itc_fw_app::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode LeaseGrant -- dropping");
         return;
     }
-    peer_instance_id_ = sr.self_instance_id;
-    elect_role(sr.self_instance_id, sr.epoch, sr.current_role);
+    if (grant.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
+        return;
+    }
+    act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, std::chrono::steady_clock::now()));
 }
 
-void MatchingEnginePublisherThread::handle_peer_heartbeat(const pubsub_itc_fw::EventMessage& message) {
+void MatchingEnginePublisherThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::HeartbeatView hb{};
-    if (!pubsub_itc_fw_app::decode(hb, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode Heartbeat -- dropping");
+    pubsub_itc_fw_app::LeaseRefusalView refusal{};
+    if (!pubsub_itc_fw_app::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode LeaseRefusal -- dropping");
         return;
     }
-    if (hb.epoch < epoch_) {
+    if (refusal.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
         return;
     }
-    if (role_ == pubsub_itc_fw_app::Role::follower) {
-        cancel_timer(peer_heartbeat_timeout_timer_id_);
-        peer_heartbeat_timeout_timer_id_ = start_one_off_timer(std::chrono::seconds(config_.heartbeat_timeout_seconds));
-    }
+    act_on(lease_agent_->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, std::chrono::steady_clock::now()));
 }
 
 void MatchingEnginePublisherThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
-    if (pdu_id == pubsub_itc_fw_app::StatusQuery::message_pdu_id) {
-        handle_peer_status_query(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw_app::StatusResponse::message_pdu_id) {
-        handle_peer_status_response(message);
-    } else if (pdu_id == pubsub_itc_fw_app::Heartbeat::message_pdu_id) {
-        handle_peer_heartbeat(message);
-    } else if (pdu_id == pubsub_itc_fw_app::ArbitrationDecision::message_pdu_id) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: ArbitrationDecision on peer channel (unexpected) -- dropping");
+    if (pdu_id == pubsub_itc_fw_app::LeaseRequest::message_pdu_id) {
+        handle_lease_request(conn_id, message);
+    } else if (pdu_id == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+        handle_lease_grant(message);
+    } else if (pdu_id == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+        handle_lease_refusal(message);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unknown peer PDU {} -- dropping", pdu_id);
-    }
-}
-
-void MatchingEnginePublisherThread::handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_needed = 0;
-    size_t consumed = 0;
-    pubsub_itc_fw_app::ArbitrationDecisionView decision{};
-    if (!pubsub_itc_fw_app::decode(decision, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode ArbitrationDecision -- dropping");
-        return;
-    }
-
-    // Defence in depth: reject any decision not addressed to the
-    // matching_engine_publisher group before touching state or our timer.
-    if (decision.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "MepThread: ArbitrationDecision addressed to group={} (not matching_engine_publisher) -- ignoring",
-                   pubsub_itc_fw_app::to_string(decision.group));
-        return;
-    }
-
-    cancel_timer(arbitration_timeout_timer_id_);
-    epoch_ = decision.epoch;
-    if (decision.leader_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        adopt_role(pubsub_itc_fw_app::Role::leader);
-    } else if (decision.follower_instance_id == static_cast<int64_t>(config_.instance_id)) {
-        adopt_role(pubsub_itc_fw_app::Role::follower);
     }
 }
 

@@ -5,9 +5,9 @@ Both instances are running, and neither can see the other. Both are healthy, and
 neither can establish whether the other has died or has merely become
 unreachable.
 
-This is the condition the arbiter exists for. It is the only condition in this
-chapter where both available actions, promoting and declining, produce a wrong
-outcome in one of the two cases.
+This is the condition the majority rule exists for. It is the only condition in
+this chapter where both available actions, promoting and declining, produce a
+wrong outcome in one of the two cases.
 
 \subsubsection{What is at risk}
 \label{sec:ha:enabled:partition:risk}
@@ -22,14 +22,15 @@ error, so somebody finds it by asking why trading has stopped.
 \subsubsection{What the venue must do}
 \label{sec:ha:enabled:partition:behaviour}
 
-\begin{requirement}{R-0086}{An instance that cannot see its peer refers the question rather than deciding it}
-  Where an instance cannot reach its peer, it shall ask the arbiter which
-  instance may act, and shall not decide for itself.
-  \rationale{This is the one case an instance cannot settle alone, because it is the only case
-  in which a second claimant may exist that the instance cannot see. Where an
-  instance can see its peer, the two settle the question between themselves under
-  \reqref{R-0072}. The two rules cannot both apply at once, so no group has two
-  parties entitled to decide.}
+\begin{requirement}{R-0086}{An instance that cannot see its peer does not decide the question alone}
+  Where an instance cannot reach its peer, it shall act only on a lease granted
+  by the arbiter pool, and shall not decide for itself.
+  \rationale{This is the one case an instance cannot settle alone, because it is the
+  only case in which a second claimant may exist that the instance cannot see.
+  The majority rule of \reqref{R-0146} settles it: the peer on the far side of
+  the partition needs the same arbiter pool's grant, and the pool grants one
+  instance at a time. Where an instance can see its peer, the peer's grant is
+  enough, and that too is a majority.}
   \uncovered{no scenario partitions a pair}
 \end{requirement}
 
@@ -47,35 +48,29 @@ error, so somebody finds it by asking why trading has stopped.
 \label{sec:ha:enabled:partition:asymmetric}
 
 A partition need not be symmetric. One instance may be able to reach its peer
-while the peer cannot reach it, and the two rules for settling an entitlement
-then both apply at once: the instance that can see its peer settles it locally
-under \reqref{R-0072}, while the instance that cannot refers it under
-\reqref{R-0086}.
-
-The two rules cannot both apply only while visibility is the same in both
-directions, and here it is not. What settles this case is that an instance taking
-an entitlement reports it immediately, rather than at its next scheduled report.
-The arbiter therefore already holds a record of a present holder, and confirms
-that holder rather than granting the entitlement again.
-
-The window is therefore as long as a new holder takes to report itself, rather
-than as long as the partition. The window is narrowed rather than removed, which
-is a weaker guarantee than the venue has where one party alone issues
-entitlements. A scenario should produce this case deliberately.
+while the peer cannot reach it. The majority rule needs nothing further here:
+each instance counts only the grants it actually receives, each voter grants one
+instance at a time, and a voter's promise lasts a lease period whether or not the
+holder can still reach it. Two instances acting at once would need a voter to
+have granted both within one lease period, whatever each can see of the other.
 
 \subsubsection{What this costs, stated plainly}
 \label{sec:ha:enabled:partition:cost}
 
-The venue does not stop an instance on the losing side of a partition. That
-instance keeps running, goes on treating itself as the leader, and is refused at
-every interaction it attempts, under \reqref{R-0065}. It corrupts nothing,
-because no receiver accepts what it sends. It also does not stop, and it may hold
-resources until somebody intervenes.
+An instance on the losing side of a partition stops acting when its lease runs
+out, because it can renew with neither its peer nor the arbiter pool. Until then it
+may go on acting for up to one lease period, and during that period no other
+instance has been granted a lease, so it is still the only leader. Its process
+keeps running, and anything it sends after its lease has run out, if it were ever
+to send anything, is refused under \reqref{R-0065}.
 
-The venue accepts that cost. Removing the instance instead would require
-authority over the machine it runs on: a separate management network, hardware
-power control, and credentials to use them. Those are properties of a deployment
-rather than of this software, and a developer's machine has none of them, so such
-a mechanism could only ever be exercised in one environment. Refusing everything
-a superseded instance sends requires none of them, and is exercised wherever the
-venue runs.
+The venue does not remove the instance by force. Doing so would require authority
+over the machine it runs on: a separate management network, hardware power
+control, and credentials to use them. Those are properties of a deployment rather
+than of this software, and a developer's machine has none of them, so such a
+mechanism could only ever be exercised in one environment. Stopping on an
+expired lease requires none of them, and is exercised wherever the venue runs.
+
+The cost of the majority rule falls elsewhere: when the arbiter pool and a
+group's leader are lost together, that group has no leader until one of them
+returns, which is \reqref{R-0147}.

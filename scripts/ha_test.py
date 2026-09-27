@@ -12,14 +12,14 @@ Run from the project root:
 Scenarios
 ---------
   1  Primary sequencer death
-       Kills sequencer_primary.  The secondary detects peer heartbeat
-       timeout (~15 s) and promotes itself to leader.  Recovery orders
-       must flow through the new leader.
+       Kills sequencer_primary.  The secondary's promise to it runs out
+       after about one lease period, it asks to lead, and the arbiter
+       grants it a lease.  Recovery orders must flow through the new leader.
        Expected: sequencer_secondary elected leader; recovery orders OK.
 
   2  Primary arbiter death
-       Kills arbiter_primary.  The arbiter secondary detects heartbeat
-       timeout (~15 s) and becomes active.  The sequencer_primary remains
+       Kills arbiter_primary.  The arbiter secondary's promise to it runs
+       out, and the witness grants it a lease, so it becomes active.  The sequencer_primary remains
        leader throughout; order flow is uninterrupted during arbiter
        failover.
        Expected: arbiter_secondary elected active; orders uninterrupted.
@@ -36,17 +36,15 @@ Scenarios
        Expected: arbiter_primary remains active; orders continue.
 
   5  Witness death
-       Kills the witness process.  Once arbiter election is complete the
-       arbiters communicate over their direct peer connection and no longer
-       rely on the witness for ongoing heartbeats.
+       Kills the witness process.  The active arbiter renews its lease with
+       the passive one, so it does not need the witness.
        Expected: arbiters retain established roles; orders continue.
 
   6  Both arbiters dead
-       Kills arbiter_primary then arbiter_secondary (no arbiter failover).
-       The sequencer_primary is already leader and continues sequencing
-       without arbiter connectivity.
-       WARNING: HA is degraded — a subsequent sequencer_primary death
-       would leave no path to elect a new sequencer leader.
+       Kills arbiter_primary then arbiter_secondary.  The sequencer_primary
+       is already leader and keeps leading, renewing its lease with its peer.
+       WARNING: a subsequent sequencer_primary death would leave the group
+       with no leader until an arbiter returns (scenario 9).
        Expected: sequencer_primary remains leader; orders continue.
 
   7  Sequential cascade: arbiter_primary then sequencer_primary death
@@ -59,20 +57,17 @@ Scenarios
 
   8  Witness-less arbiter election
        Kills the witness first (no disruption), then kills arbiter_primary.
-       arbiter_secondary detects the heartbeat timeout (~15 s) and has
-       nothing left to ask: its peer is silent and the witness is gone.  It
-       holds the higher instance id, so it declines and stays passive.
-       Expected: arbiter_secondary declines to promote; sequencer_primary
+       arbiter_secondary holds only its own vote, so it cannot become
+       active, and reports that the pool has no active arbiter.
+       Expected: arbiter_secondary does not become active; sequencer_primary
        stays leader; orders uninterrupted.
 
-  9  Degraded sequencer election (no arbiters)
-       Kills both arbiters first (no arbiter failover), then kills
-       sequencer_primary.  sequencer_secondary contacts the arbiters for a
-       role grant but none are reachable; it hits arbitration_timeout (3 s)
-       and self-promotes using the instance-id rule.  Tests the sequencer's
-       arbiter-unreachable fallback path.
-       Expected: sequencer_secondary self-promotes; recovery orders OK
-       (WARNING: HA severely degraded).
+  9  No arbiters, then the leader lost
+       Kills both arbiters, then kills sequencer_primary.  sequencer_secondary
+       hears from nobody and cannot tell a dead leader from being cut off, so
+       it must not take the lead (R-0147).
+       Expected: sequencer_secondary does not lead, and reports that the
+       group has no leader; no orders are sent.
 
  10  Matching engine death and restart (simple)
        Kills matching_engine and restarts it.  ME reconnects to both
@@ -102,25 +97,22 @@ Scenarios
        Expected: ME restart; recovery orders OK (WARNING: HA severely
        degraded — full restart of all HA components required to restore).
 
- 15  Arbiter-mediated election: explicit PDU exchange trace
-       Kills sequencer_primary (no failover flag — VerifySteps do the
-       checking).  Explicitly verifies each step of the arbitration
-       PDU exchange in the logs:
-         a. sequencer_secondary sends ArbitrationReport to the arbiter pool
-         b. arbiter_primary sends ArbitrationDecision back
-         c. sequencer_secondary receives the ArbitrationDecision
+ 15  Lease exchange: explicit trace
+       Kills sequencer_primary and verifies each step of the lease exchange
+       in the logs:
+         a. sequencer_secondary asks to lead
+         b. arbiter_primary grants it a lease
+         c. sequencer_secondary leads on that grant
          d. sequencer_secondary transitions to leader
-       Confirms that sequencer promotion goes through the full arbitration
-       protocol rather than the self-promotion fallback.
-       Expected: all four PDU-exchange markers seen; recovery orders flow.
+       Expected: all four markers seen; recovery orders flow.
 
  16  Primary matching-engine death (ME HA failover)
        Runs the full ME-HA topology (matching_engine_primary + _secondary,
        _primary/_secondary configs).  Baseline orders are confirmed on
        matching_engine_primary; then matching_engine_primary is SIGKILLed.
-       The secondary detects the lost replication connection, waits out the
-       ~15 s promotion timeout, requests arbitration, adopts LEADER, and
-       reconciles against the sequencer WAL.  The leader sequencer promotes its
+       The secondary's promise to it runs out, it asks to lead and is
+       granted a lease, reconciles against the sequencer WAL, and adopts
+       LEADER.  The leader sequencer promotes its
        standby connection so recovery orders route to the promoted secondary,
        which processes them.
        Expected: matching_engine_secondary adopts LEADER; recovery orders
@@ -437,6 +429,9 @@ _ME_READY_MARKERS = (
     "established",
 )
 _ME_READY_TIMEOUT = 15.0  # seconds
+# How long Phase 2 waits for one of a pair of matching engines to lead: comfortably more than the
+# lease period plus the secondary's head start, which is how long a pair started together takes.
+_ME_LEADER_TIMEOUT = 15.0  # seconds
 _ME_SETTLE        = 1.0   # seconds after ME readiness confirmed
 
 
@@ -511,18 +506,18 @@ class IsolateStep(NamedTuple):
     still reports it as healthy.
 
     Nothing else in this file produces a live instance holding a superseded
-    entitlement, which is what the generation check on every message exists to
-    refuse.
+    entitlement.
 
-    The assertion is NOT that the resumed instance learns it has been superseded.
-    It has no way to: freezing it tears down none of its connections, so no status
-    is exchanged and nothing tells it anything.  It wakes still believing it may
-    act and says so on the wire.  What must hold is that saying so achieves
-    nothing -- every message it sends is refused for quoting a generation that has
-    been superseded, and the instance that took over keeps the entitlement.
+    The resumed instance needs nobody to tell it that it has been superseded. It
+    counts its lease on its own clock, so the first time it checks after waking it
+    finds that its lease ran out while it was stopped, and it stops acting before
+    it sends anything as leader. The epoch every message carries stays in place as
+    a second defence, but this step asserts the first one: the instance stops by
+    itself, and the instance that took over keeps the entitlement.
 
-    refusal_markers:   markers on the SURVIVOR's log showing it refused what the
-                       resumed instance sent.  This is the assertion.
+    stopped_markers:   markers on the RESUMED instance's own log showing that it
+                       found its lease had run out and stopped acting.  This is the
+                       assertion.
     forbidden_markers: markers that must NOT appear on the survivor's log
                        afterwards -- it must not give the entitlement back.
     """
@@ -530,8 +525,8 @@ class IsolateStep(NamedTuple):
     takeover_log_name: str
     takeover_markers: tuple
     takeover_timeout: float
-    refusal_markers: tuple
-    refusal_timeout: float
+    stopped_markers: tuple
+    stopped_timeout: float
     forbidden_markers: tuple
     settle_secs: float
 
@@ -560,6 +555,10 @@ class RestartStep(NamedTuple):
                        that the successor finds a record of what it held that it cannot
                        read.  Resolved against the deployment's var directory, because the
                        scenario table is built before the install prefix is known.
+    forget_lease_promises: delete the matching engine's record of its lease promises while it
+                       is dead, so that it restarts as it would after a reboot: knowing
+                       nothing of what it promised, and so agreeing that nobody leads, and
+                       asking for nothing, for one lease period.
     down_secs:         how long to leave the process dead before restarting it.  Zero
                        for every scenario whose subject is a fast restart.  A scenario
                        testing what a LONG absence does needs the venue to be absent for
@@ -574,6 +573,7 @@ class RestartStep(NamedTuple):
     settle_secs: float
     down_secs: float = 0.0
     damage_region: str = ""
+    forget_lease_promises: bool = False
 
 
 class SupervisedKillStep(NamedTuple):
@@ -636,6 +636,22 @@ class InterimOrdersStep(NamedTuple):
     """
     count_batches: int
     confirm_on: str | None = None
+
+
+class OneLeaderStep(NamedTuple):
+    """
+    Wait until one of two instances of a pair leads, then require that the other did not.
+
+    For a pair started in either order with some time between the starts. Which instance leads
+    then depends on which started first, and is not what is asserted; what is asserted is that
+    they settle on exactly one. The second log is checked after settle_secs, which must be long
+    enough for a second leader to have appeared if one were going to.
+    """
+    log_names: tuple
+    markers: tuple
+    timeout: float
+    settle_secs: float
+    description: str
 
 
 class VerifyStep(NamedTuple):
@@ -794,6 +810,10 @@ class Scenario(NamedTuple):
     # defers, start one engine COLD, and assert the member is answered for it. See
     # run_scenario's "deferred orders" block, BUG-0064 and the surviving half of BUG-0009.
     assert_deferred_answered: bool = False
+    # When True, no instance is expected to take the lead during the scenario: it tests the halt
+    # when the leader and the arbiters are lost together (R-0147). The checks that follow a
+    # promotion, such as which book the promoted instance resumed with, are skipped.
+    expects_no_new_leader: bool = False
 
     # When True, run this scenario against a venue deployed with high availability OFF: every
     # installed config's [ha] switch is set false before launch, and the witness and both arbiters
@@ -831,6 +851,26 @@ def _me_restart_step() -> RestartStep:
         settle_secs=_ME_SETTLE,
     )
 
+
+def _me_primary_restart_step() -> RestartStep:
+    """Restart the primary of a pair of matching engines, as _me_restart_step does the single one."""
+    return RestartStep(
+        proc_name="matching_engine_primary",
+        ready_log_name="matching_engine_primary.log",
+        ready_markers=_ME_READY_MARKERS,
+        ready_timeout=_ME_READY_TIMEOUT,
+        resets_me_counter=True,
+        settle_secs=_ME_SETTLE,
+    )
+
+
+# A single matching engine with high availability on has no running peer, so its only voters are
+# itself and the arbiter pool. Losing the arbiter pool then leaves it holding only its own vote, and
+# it stops leading: the halt of R-0147, correctly. Losing only the active arbiter stops it too, for
+# a while: the arbiter that becomes active grants nothing for one lease period, because it does not
+# know what the other promised. So every scenario that takes away the active arbiter, or the whole
+# pool, runs the pair of matching engines, as a deployment does, and the primary is expected to keep
+# leading with its peer's vote.
 
 # ── scenario catalogue ────────────────────────────────────────────────────────
 #
@@ -977,6 +1017,8 @@ _SCENARIOS: list[Scenario] = [
     Scenario(
         number=2,
         short_name="primary_arbiter_death",
+        me_ha=True,
+        recovery_on_primary=True,
         description="Death of primary arbiter",
         expected_outcome=(
             "arbiter_secondary elected active in ≤15 s; "
@@ -1053,6 +1095,8 @@ _SCENARIOS: list[Scenario] = [
     Scenario(
         number=6,
         short_name="both_arbiters_dead",
+        me_ha=True,
+        recovery_on_primary=True,
         description="Death of both arbiters",
         expected_outcome=(
             "no sequencer failover; sequencer_primary remains leader; "
@@ -1078,6 +1122,8 @@ _SCENARIOS: list[Scenario] = [
     Scenario(
         number=7,
         short_name="cascade_arbiter_then_sequencer",
+        me_ha=True,
+        recovery_on_primary=True,
         description="Sequential cascade: arbiter_primary then sequencer_primary death",
         expected_outcome=(
             "arbiter_secondary elected active in ≤15 s; "
@@ -1100,16 +1146,27 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 8 — witness-less arbiter election: the survivor declines rather than promote unasked
+    # 8 — witness then arbiter_primary death: the surviving arbiter holds only its own vote.
+    #
+    # An arbiter is active only while a majority of the two arbiters and the witness grants it a
+    # lease. With the witness and the other arbiter gone, arbiter_secondary can gather no second
+    # vote, so it must not become active, and it says the pool has no active arbiter. The
+    # sequencer leader is unaffected: it renews its lease with its peer. The absence of a
+    # promotion is checked long after it would have happened: a lease period for the promise to
+    # the dead arbiter to run out, another for the request to go unanswered, and margin.
     Scenario(
         number=8,
         short_name="witnessless_arbiter_election",
+        me_ha=True,
+        recovery_on_primary=True,
         description="Witness-less arbiter election: witness then arbiter_primary death",
         expected_outcome=(
-            "arbiter_secondary declines to promote with no witness to ask; "
+            "arbiter_secondary cannot gather a majority and does not become active; "
             "sequencer_primary remains leader; orders uninterrupted"
         ),
-        steps=[
+        steps=[],
+        restart_steps=[],
+        extra_steps=[
             KillStep(
                 proc_name="witness",
                 secondary_log_name=None,
@@ -1118,26 +1175,44 @@ _SCENARIOS: list[Scenario] = [
             ),
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name="arbiter_secondary.log",
-                role_prefix=_ARB_ROLE,
-                leader_markers=("ArbiterThread:", "declining to promote unwitnessed"),
-                outcome_label="declined to promote unwitnessed",
-                settle_secs=SETTLE_AFTER_FAILOVER,
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=0.0,
+            ),
+            VerifyStep(
+                log_name="arbiter_secondary.log",
+                markers=("ArbiterThread:", "this group has no leader"),
+                timeout=25.0,
+                description="arbiter_secondary reported that the arbiter pool has no active arbiter",
+            ),
+            AssertAbsentStep(
+                log_name="arbiter_secondary.log",
+                markers=(_ARB_ROLE, _TO_LEADER),
+                after_secs=5.0,
+                description="arbiter_secondary did not become active with only its own vote",
             ),
         ],
     ),
 
-    # 9 — degraded sequencer election: sequencer self-promotes with no arbiters
+    # 9 — both arbiters then sequencer_primary death: the venue halts, and says why (R-0147).
+    #
+    # sequencer_secondary hears from nobody: its peer is dead and there is no arbiter. It cannot
+    # tell a dead leader from being cut off itself, so it must not take the lead, and it reports
+    # that the group has no leader. Nothing can be traded until an arbiter or the peer returns, so
+    # no orders are sent during or after the kill.
     Scenario(
         number=9,
-        short_name="degraded_sequencer_election",
-        description="Degraded sequencer election: both arbiters then sequencer_primary death",
+        short_name="no_arbiters_and_leader_lost",
+        description="Both arbiters then sequencer_primary death: the survivor does not take the lead",
         expected_outcome=(
-            "sequencer_secondary self-promotes via instance-id rule (no arbiters); "
-            "recovery orders flow through the new leader "
-            "(WARNING: HA severely degraded)"
+            "sequencer_secondary does not take the lead with no majority, and reports that the "
+            "group has no leader (R-0147)"
         ),
-        steps=[
+        steps=[],
+        restart_steps=[],
+        orders_during_override=0,
+        orders_after_override=0,
+        extra_steps=[
             KillStep(
                 proc_name="arbiter_primary",
                 secondary_log_name=None,
@@ -1152,9 +1227,21 @@ _SCENARIOS: list[Scenario] = [
             ),
             KillStep(
                 proc_name="sequencer_primary",
-                secondary_log_name="sequencer_secondary.log",
-                role_prefix=_SEQ_ROLE,
-                settle_secs=SETTLE_AFTER_FAILOVER,
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=0.0,
+            ),
+            VerifyStep(
+                log_name="sequencer_secondary.log",
+                markers=("SequencerThread:", "this group has no leader"),
+                timeout=25.0,
+                description="sequencer_secondary reported that the group has no leader",
+            ),
+            AssertAbsentStep(
+                log_name="sequencer_secondary.log",
+                markers=(_SEQ_ROLE, _TO_LEADER),
+                after_secs=5.0,
+                description="sequencer_secondary did not take the lead without a majority",
             ),
         ],
     ),
@@ -1192,20 +1279,22 @@ _SCENARIOS: list[Scenario] = [
         restart_steps=[_me_restart_step()],
     ),
 
-    # 12 — ME death with both arbiters dead (no arbiter failover, HA degraded)
+    # 12 — the primary matching engine restarted while both arbiters are dead.
+    #
+    # With the arbiter pool gone, the leading engine keeps leading with its peer's vote. When it
+    # is restarted it reads its record of leading, asks again at once, and its peer grants it,
+    # because the peer's vote is promised to it. So it keeps the lead with no arbiter at all.
     Scenario(
         number=12,
         short_name="me_death_both_arbiters_dead",
+        me_ha=True,
+        recovery_on_primary=True,
         description="ME death with both arbiters dead",
         expected_outcome=(
-            "no arbiter failover; ME restarts and reconnects; "
-            "recovery orders flow (WARNING: HA degraded — sequencer "
-            "re-election impossible)"
+            "no arbiter failover; the restarted primary matching engine keeps the lead with its "
+            "peer's vote, and recovery orders flow"
         ),
         steps=[
-            # Kill both arbiters quickly (1 s settle each) so neither can
-            # self-promote before being killed — the 15 s peer_heartbeat_timeout
-            # has not yet fired when the second arbiter is killed.
             KillStep(
                 proc_name="arbiter_primary",
                 secondary_log_name=None,
@@ -1219,18 +1308,19 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
-        restart_steps=[_me_restart_step()],
+        restart_steps=[_me_primary_restart_step()],
     ),
 
-    # 13 — ME death with both arbiters and witness dead (severely degraded)
+    # 13 — as scenario 12, with the witness dead as well.
     Scenario(
         number=13,
         short_name="me_death_all_ha_dead",
+        me_ha=True,
+        recovery_on_primary=True,
         description="ME death with both arbiters and witness dead",
         expected_outcome=(
-            "no arbiter failover; ME restarts and reconnects; "
-            "recovery orders flow (WARNING: HA severely degraded — full "
-            "restart of witness + both arbiters required to restore HA)"
+            "no arbiter failover; the restarted primary matching engine keeps the lead with its "
+            "peer's vote, and recovery orders flow"
         ),
         steps=[
             KillStep(
@@ -1252,7 +1342,7 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
-        restart_steps=[_me_restart_step()],
+        restart_steps=[_me_primary_restart_step()],
     ),
 
     # 14 — WAL recovery: primary sequencer restarts as follower then re-elected
@@ -1317,28 +1407,23 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 15 — Arbiter-mediated election: explicit ArbitrationReport/Decision trace
+    # 15 — Lease exchange: explicit trace of a follower being granted the lead by the arbiter.
     #
-    # Scenario 1 verifies that sequencer_secondary becomes leader after primary
-    # dies, but only checks the final role-transition log line.  This scenario
-    # additionally verifies each step of the arbitration PDU exchange:
-    #   a. sequencer_secondary arms peer_heartbeat_timeout (~15 s after kill).
-    #   b. On timeout it sends ArbitrationReport to both arbiters.
-    #   c. The active arbiter (arbiter_primary) processes the report and sends
-    #      ArbitrationDecision back.
-    #   d. sequencer_secondary receives the decision and transitions to leader.
-    # Each step is watched in the appropriate log with a generous timeout.
-    # The peer_heartbeat_timeout fires within 15 s; the full exchange adds only
-    # a few milliseconds on top.  A 25 s timeout per VerifyStep gives headroom.
+    # Scenario 1 verifies that sequencer_secondary becomes leader after primary dies, but only
+    # checks the final role-transition log line. This scenario verifies each step of the lease
+    # exchange that gets it there:
+    #   a. sequencer_secondary's promise to the dead leader runs out, and it asks to lead.
+    #   b. The active arbiter (arbiter_primary) grants it a lease.
+    #   c. sequencer_secondary receives the grant, which with its own vote is a majority.
+    #   d. sequencer_secondary transitions to leader.
+    # The request goes out about one lease period after the kill.
     Scenario(
         number=15,
-        short_name="arbiter_mediated_election",
-        description="Arbiter-mediated election: explicit ArbitrationReport/Decision PDU trace",
+        short_name="lease_exchange",
+        description="Lease exchange: explicit trace of the arbiter granting the follower the lead",
         expected_outcome=(
-            "sequencer_secondary sends ArbitrationReport; "
-            "arbiter_primary sends ArbitrationDecision; "
-            "sequencer_secondary receives decision and transitions to leader; "
-            "recovery orders flow"
+            "sequencer_secondary asks to lead; arbiter_primary grants it a lease; "
+            "sequencer_secondary leads on that grant; recovery orders flow"
         ),
         steps=[],
         restart_steps=[],
@@ -1351,21 +1436,21 @@ _SCENARIOS: list[Scenario] = [
             ),
             VerifyStep(
                 log_name="sequencer_secondary.log",
-                markers=("ArbitrationReport sent to arbiter pool",),
+                markers=("SequencerThread:", "asking the peer and the arbiter to let this instance lead"),
                 timeout=25.0,
-                description="sequencer_secondary sent ArbitrationReport to arbiter pool",
+                description="sequencer_secondary asked to lead",
             ),
             VerifyStep(
                 log_name="arbiter_primary.log",
-                markers=("ArbitrationDecision sent to connection",),
+                markers=("group=sequencer lease granted to instance 2",),
                 timeout=5.0,
-                description="arbiter_primary sent ArbitrationDecision",
+                description="arbiter_primary granted sequencer_secondary a lease",
             ),
             VerifyStep(
                 log_name="sequencer_secondary.log",
-                markers=("ArbitrationDecision received",),
+                markers=("SequencerThread: leading at epoch", "granted a lease by the arbiter"),
                 timeout=5.0,
-                description="sequencer_secondary received ArbitrationDecision",
+                description="sequencer_secondary received the grant",
             ),
             VerifyStep(
                 log_name="sequencer_secondary.log",
@@ -1768,7 +1853,7 @@ _SCENARIOS: list[Scenario] = [
             # 3. The assertion the fix exists for, stated both ways round.
             VerifyStep(
                 log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "arbiter assigned follower role"),
+                markers=("MatchingEngineThread:", "role now FOLLOWER"),
                 timeout=30.0,
                 description="restarted primary is assigned the follower role",
                 absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
@@ -1784,32 +1869,37 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 25 — an arbiter that has restarted must not hand leadership back to the wrong instance.
+    # 25 — arbiters that restart knowing nothing do not move the lead.
     #
-    # The arbiter's leadership map lives only in memory and nothing reads it back at startup.
-    # It is what stops a restarted primary taking leadership from a working secondary, so an
-    # arbiter that has forgotten it would apply the cold-start tie-break, prefer the lower
-    # instance id, and reproduce the split-brain that rule exists to prevent. See
-    # docs/bug_list.md, BUG-0033.
+    # An arbiter keeps its votes for the components only in memory. When both arbiters restart,
+    # nothing they hold says which matching engine leads. That must not matter: the leader
+    # renews its lease with its peer, whose vote with its own is a majority, so it keeps
+    # leading while the arbiters are away and after they return. And an arbiter that has just
+    # become active grants nothing for a lease period, so it cannot give the lead to the other
+    # instance while it does not know what was promised.
     #
-    # BOTH arbiters are restarted deliberately. Restarting one leaves the other holding the
-    # state and answering from it, which proves nothing about recovery; with neither holding
-    # anything, the only source left is the leases the sitting leader keeps sending. That is
-    # the mechanism under test.
+    # The primary is failed first, so that the instance leading is the secondary -- the one a
+    # rule preferring the lower instance id would wrongly hand the lead away from. The primary
+    # is back and following BEFORE the arbiters go down. With the primary still dead, losing
+    # the arbiters would leave the secondary with only its own vote, and it would rightly stop:
+    # that is the halt of R-0147, which scenario 35 tests.
+    #
+    # BOTH arbiters are down at the same time. Restarting one leaves the other holding what
+    # was promised, which proves nothing.
     Scenario(
         number=25,
         short_name="arbiters_restart_then_me_rejoins",
-        description="Arbiters restart with no state, then the primary ME rejoins",
+        description="Both arbiters restart with no state while the secondary ME leads",
         expected_outcome=(
-            "both arbiters relearn who leads from the promoted secondary's leases; the "
-            "restarted matching_engine_primary is told to follow and never adopts LEADER"
+            "the secondary matching engine keeps leading with its peer's vote while both arbiters "
+            "are down and after they return; the primary stays a follower throughout"
         ),
         me_ha=True,
         orders_during_override=0,
         steps=[],
         restart_steps=[],
         extra_steps=[
-            # 1. Fail the primary ME so the secondary is genuinely leading.
+            # 1. Fail the primary so the secondary leads.
             KillStep(
                 proc_name="matching_engine_primary",
                 secondary_log_name="matching_engine_secondary.log",
@@ -1818,13 +1908,23 @@ _SCENARIOS: list[Scenario] = [
                 failover_to="matching_engine_secondary",
                 leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
-            # 2. Wipe the arbiters' knowledge. BOTH must be down at the same time, which is
-            #    why they are killed before either is restarted: RestartStep kills and
-            #    restarts one component before moving to the next, so restarting them in
-            #    turn leaves the second one alive and holding the state while the first comes
-            #    back, and the first simply learns it from the peer. That passes without
-            #    exercising anything -- it is what this scenario did on its first run, and the
-            #    logs showed the state surviving hop by hop through the peer replay.
+            # 2. Bring the primary back. It follows, and grants its peer its vote.
+            RestartStep(
+                proc_name="matching_engine_primary",
+                ready_log_name="matching_engine_primary.log",
+                ready_markers=_ME_READY_MARKERS,
+                ready_timeout=_ME_READY_TIMEOUT,
+                resets_me_counter=False,
+                settle_secs=_ME_SETTLE,
+            ),
+            VerifyStep(
+                log_name="matching_engine_primary.log",
+                markers=("MatchingEngineThread:", "role now FOLLOWER"),
+                timeout=30.0,
+                description="the restarted primary follows the secondary",
+            ),
+            # 3. Take both arbiters down at the same time, then bring them back. RestartStep kills
+            #    and restarts one component before moving to the next, so both are killed first.
             KillStep(
                 proc_name="arbiter_primary",
                 secondary_log_name=None,
@@ -1835,10 +1935,8 @@ _SCENARIOS: list[Scenario] = [
                 proc_name="arbiter_secondary",
                 secondary_log_name=None,
                 role_prefix=None,
-                settle_secs=2.0,
+                settle_secs=5.0,
             ),
-            # Now both are dead and nothing anywhere remembers who leads except the matching
-            # engine that is doing the leading. Bring them back.
             RestartStep(
                 proc_name="arbiter_primary",
                 ready_log_name="arbiter_primary.log",
@@ -1855,31 +1953,18 @@ _SCENARIOS: list[Scenario] = [
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
-            # 3. Bring the primary ME back. It asks whichever arbiter is active, and the
-            #    answer depends entirely on whether that arbiter has relearned.
-            RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
-                ready_timeout=_ME_READY_TIMEOUT,
-                resets_me_counter=False,
-                settle_secs=_ME_SETTLE,
-            ),
-            # 4. The assertion. Before the relearning work an arbiter with an empty map
-            #    answered leader=1, and the restarted primary took leadership back from a
-            #    secondary holding the book.
-            VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "arbiter assigned follower role"),
-                timeout=90.0,
-                description="restarted ME follows, even though the arbiters lost their state",
-                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
-            ),
-            VerifyStep(
+            # 4. The assertions. The secondary never lost its lease, and the primary never led.
+            AssertAbsentStep(
                 log_name="matching_engine_secondary.log",
+                markers=("MatchingEngineThread:", "lease ran out"),
+                after_secs=10.0,
+                description="the secondary kept its lease while the arbiters were away and after they returned",
+            ),
+            AssertAbsentStep(
+                log_name="matching_engine_primary.log",
                 markers=("MatchingEngineThread:", "adopting LEADER role"),
-                timeout=5.0,
-                description="the secondary kept leadership throughout",
+                after_secs=0.0,
+                description="the restarted primary never led",
             ),
         ],
     ),
@@ -2164,17 +2249,17 @@ _SCENARIOS: list[Scenario] = [
             ),
             VerifyStep(
                 log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "arbiter assigned follower role"),
+                markers=("MatchingEngineThread:", "role now FOLLOWER"),
                 timeout=60.0,
                 description="the rejoined primary is a follower before the second failure",
             ),
             # Wait for the leader's replication connection to reach the rejoined instance
-            # before failing the leader. This is not test tidiness: a follower learns the
-            # leader has died by losing the connection it RECEIVES replication on, so until
-            # that connection exists there is nothing whose loss would arm a promotion. The
-            # pair is genuinely unprotected for as long as the reconnect takes, and a version
-            # of this scenario without the wait raced that window -- passing alone and failing
-            # inside the suite, which is worse than failing outright.
+            # before failing the leader. The rejoined instance is sent the book over that
+            # connection, and it is also the one the leader's lease requests reach it on, so
+            # until it exists the rejoined instance holds no promise to the leader and no
+            # replica worth promoting. A version of this scenario without the wait raced that
+            # window -- passing alone and failing inside the suite, which is worse than failing
+            # outright.
             VerifyStep(
                 log_name="matching_engine_primary.log",
                 markers=("ME-primary replication connection", "established"),
@@ -2202,6 +2287,8 @@ _SCENARIOS: list[Scenario] = [
     Scenario(
         number=33,
         short_name="arbiter_pair_survives_a_second_failure",
+        me_ha=True,
+        recovery_on_primary=True,
         description="After an arbiter failover and rejoin, the pair survives a failure the other way",
         expected_outcome=(
             "arbiter_secondary becomes active, arbiter_primary rejoins passive, and when the "
@@ -2236,26 +2323,25 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 34 — R5: the cold-start tie-break must give the same answer whichever instance is up.
+    # 34 — a pair of matching engines started one after the other settles on exactly one leader.
     #
-    # Lowest instance id wins, and the primary always holds the lower one. That rule is doing
-    # more work than it was: several fixes this session lean on it being the answer when no
-    # incumbent is known. Nothing has ever checked that it actually produces a deterministic
-    # outcome.
-    #
-    # Both engines are taken down and brought back with the SECONDARY first, so the order they
-    # appear in is the opposite of the order the rule should prefer. If the tie-break is doing
-    # its job the primary leads regardless.
+    # Both engines are taken down and brought back with the SECONDARY first, and some seconds
+    # between the two starts. The secondary waits a lease period plus one renewal interval
+    # before asking to lead, so that the primary leads when both start together. Started this
+    # far apart, the secondary may ask first and lead, and that is correct: what must hold is
+    # that exactly one of them leads.
     Scenario(
         number=34,
         short_name="cold_start_tiebreak_is_deterministic",
-        description="Restarting both engines secondary-first still leaves the primary leading",
+        description="Restarting both engines secondary-first leaves exactly one leading",
         expected_outcome=(
-            "with both engines restarted and the secondary up first, the primary is still the "
-            "one that ends up leading"
+            "with both engines restarted, the secondary first, exactly one of them leads"
         ),
         me_ha=True,
         recovery_on_primary=True,
+        # Which engine leads depends on the gap between the starts, so recovery orders could
+        # be confirmed on either. The assertion is about leadership alone.
+        orders_after_override=0,
         orders_during_override=0,
         steps=[],
         restart_steps=[],
@@ -2291,33 +2377,36 @@ _SCENARIOS: list[Scenario] = [
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
-            VerifyStep(
-                log_name="matching_engine_primary.log",
+            OneLeaderStep(
+                log_names=("matching_engine_primary.log", "matching_engine_secondary.log"),
                 markers=("MatchingEngineThread:", "adopting LEADER role"),
                 timeout=90.0,
-                description="the primary leads despite the secondary having started first",
+                settle_secs=10.0,
+                description="exactly one of the two engines leads",
             ),
         ],
     ),
 
-    # 35 — R6: with no arbiter reachable, the degraded rule must still pick ONE leader.
+    # 35 — the matching engine's version of scenario 9: no arbiters, then the leader lost.
     #
-    # docs/availability/design_notes.md is explicit that a two-node system with no fencing and no arbiter
-    # is unsafe, and the fallback is "lowest instance id wins". The point of this scenario is
-    # that the fallback must actually apply that rule rather than simply promoting whoever
-    # notices: if both instances self-promote when the arbiter pool is gone, the degraded mode
-    # produces the split brain the whole design exists to avoid.
+    # With both arbiters dead the matching engine leader keeps leading, renewing its lease with its
+    # peer. When the leader then dies, the secondary hears from nobody and cannot tell a dead leader
+    # from being cut off itself, so it must not take the lead, and it reports that the group has no
+    # leader (R-0147). The secondary's promise to the leader runs out a lease period after the kill,
+    # and its request goes unanswered for another, so the absence of a promotion is checked well
+    # after both.
     Scenario(
         number=35,
-        short_name="degraded_promotion_picks_one_leader",
-        description="With no arbiter, only the lower instance id may self-promote",
+        short_name="no_arbiters_and_engine_leader_lost",
+        expects_no_new_leader=True,
+        description="Both arbiters then the leading matching engine lost: the survivor does not take the lead",
         expected_outcome=(
-            "with both arbiters dead, the restarted primary self-promotes via the instance-id "
-            "rule and says so; the secondary does not promote"
+            "with both arbiters dead and matching_engine_primary killed, matching_engine_secondary "
+            "does not take the lead, and reports that the group has no leader (R-0147)"
         ),
         me_ha=True,
-        recovery_on_primary=True,
         orders_during_override=0,
+        orders_after_override=0,
         steps=[],
         restart_steps=[],
         extra_steps=[
@@ -2333,55 +2422,36 @@ _SCENARIOS: list[Scenario] = [
                 role_prefix=None,
                 settle_secs=2.0,
             ),
-            # The primary was leading; take it away and bring it back with nothing to ask.
-            RestartStep(
+            KillStep(
                 proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
-                ready_timeout=_ME_READY_TIMEOUT,
-                resets_me_counter=False,
-                settle_secs=_ME_SETTLE,
+                secondary_log_name=None,
+                role_prefix=None,
+                settle_secs=0.0,
             ),
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "self-promoting", "degraded"),
-                timeout=90.0,
-                description="the primary self-promotes and records that it is degraded",
+                log_name="matching_engine_secondary.log",
+                markers=("MatchingEngineThread:", "this group has no leader"),
+                timeout=25.0,
+                description="the secondary reported that the group has no leader",
             ),
-            # And it must actually have promoted. Saying "self-promoting" is the line before the
-            # act, not the act: from 3 September to 8 September the degraded path raised the
-            # epoch, caught up, and stopped at "current, and waiting to be told what it may do",
-            # because it reconciled without reconciling_to_lead_ set. This scenario passed
-            # throughout on the strength of the announcement alone -- the shape docs/bug_list.md
-            # calls a claim asserted and never checked. BUG-0082.
-            VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
-                timeout=90.0,
-                description="the degraded self-promotion reaches the role, not just the log line",
-            ),
-            # And the other one must not have done the same. Two instances that both
-            # self-promote when the arbiter pool is gone is the split brain the arbiter exists
-            # to prevent, arrived at by the path that has no arbiter.
             AssertAbsentStep(
                 log_name="matching_engine_secondary.log",
                 markers=("MatchingEngineThread:", "adopting LEADER role"),
-                after_secs=25.0,
-                description="the secondary did not also promote itself",
+                after_secs=5.0,
+                description="the secondary did not take the lead without a majority",
             ),
         ],
     ),
 
-    # 36 — R5 for the sequencer pair: the cold-start tie-break must be deterministic.
+    # 36 — a pair of sequencers started one after the other settles on exactly one leader.
     #
     # As scenario 34 for the matching engine. Both sequencers are taken down and brought back
-    # with the SECONDARY first, so the order they appear in is the opposite of the order the
-    # rule should prefer.
+    # with the SECONDARY first. Either may lead; exactly one must.
     Scenario(
         number=36,
         short_name="sequencer_cold_start_tiebreak",
-        description="Restarting both sequencers secondary-first still leaves the primary leading",
-        expected_outcome="the primary sequencer leads despite the secondary having started first",
+        description="Restarting both sequencers secondary-first leaves exactly one leading",
+        expected_outcome="with both sequencers restarted, the secondary first, exactly one of them leads",
         # In-flight orders during phase 4 advance the matching engine's counter past the
         # recovery target, so the count phase then waits for a number that has already gone by.
         # Suppressed for a deterministic count, as the ME-HA scenarios do.
@@ -2422,38 +2492,44 @@ _SCENARIOS: list[Scenario] = [
                 # it has is measuring reconnection rather than the property under test.
                 settle_secs=10.0,
             ),
-            VerifyStep(
-                log_name="sequencer_primary.log",
+            OneLeaderStep(
+                log_names=("sequencer_primary.log", "sequencer_secondary.log"),
                 markers=(_SEQ_ROLE, _TO_LEADER),
                 timeout=90.0,
-                description="the primary sequencer leads despite the secondary starting first",
+                settle_secs=10.0,
+                description="exactly one of the two sequencers leads",
             ),
             # Both sequencers restarted, so the connection each opens to the matching engine
             # had to be re-established before anything can be sequenced. Waiting for it is the
             # honest precondition of the order phase rather than test tidiness -- without it
-            # the scenario measures reconnection time and calls it a failure.
+            # the scenario measures reconnection time and calls it a failure. Both are checked,
+            # because either may be the one that leads.
             VerifyStep(
                 log_name="sequencer_primary.log",
                 markers=("matching engine order connection", "established"),
                 timeout=60.0,
-                description="the restarted leader has reached the matching engine again",
+                description="the restarted primary has reached the matching engine again",
+            ),
+            VerifyStep(
+                log_name="sequencer_secondary.log",
+                markers=("matching engine order connection", "established"),
+                timeout=60.0,
+                description="the restarted secondary has reached the matching engine again",
             ),
         ],
     ),
 
-    # 37 — R6 for the sequencer: with no arbiter, exactly one instance may self-promote.
+    # 37 — with no arbiter, the sequencer pair settles leadership between themselves.
     #
-    # The matching engine's equivalent of this path existed, was documented, and had never
-    # once executed -- it was only reachable when an arbiter connection came up, which with no
-    # arbiter never happens. The sequencer arms its startup election timer unconditionally, so
-    # it should not have that fault; this scenario is what says so rather than assuming it.
+    # Both arbiters are killed and the leading sequencer is restarted. The two sequencers hold
+    # two of the three votes, so they need no arbiter to agree which of them leads.
     Scenario(
         number=37,
         short_name="sequencer_degraded_promotion",
         description="With no arbiter, the sequencer pair settles leadership between themselves",
         expected_outcome=(
             "with both arbiters dead, sequencer_primary and its peer settle leadership between "
-            "themselves by the instance-id rule; the secondary does not also elect itself"
+            "themselves: the restarted primary leads with its peer's vote"
         ),
         # In-flight orders during phase 4 advance the matching engine's counter past the
         # recovery target, so the count phase then waits for a number that has already gone by.
@@ -2495,14 +2571,12 @@ _SCENARIOS: list[Scenario] = [
                 # it has is measuring reconnection rather than the property under test.
                 settle_secs=10.0,
             ),
-            # Asserts the RULE, not the outcome. The sequencer does not need an arbiter for
-            # this: it resolves leadership peer-to-peer through StatusQuery/StatusResponse and
-            # applies the lowest-instance-id rule with its peer's agreement, so it is not
-            # degraded at all -- it has a deterministic answer. That is a capability the
-            # matching engine lacks, which must ask an arbiter or fall back.
+            # With both arbiters dead, the restarted primary can lead only with its peer's vote:
+            # its own vote and the peer's make a majority of three. It gets it because it kept a
+            # record of leading, and the peer promised its vote to it.
             VerifyStep(
                 log_name="sequencer_primary.log",
-                markers=("SequencerThread:", "my instance_id=1 < peer instance_id=2", "adopting leader"),
+                markers=("SequencerThread:", "leading at epoch", "granted a lease by the peer"),
                 timeout=90.0,
                 description="the sequencer resolves leadership with its peer, needing no arbiter",
             ),
@@ -2527,16 +2601,17 @@ _SCENARIOS: list[Scenario] = [
         ],
     ),
 
-    # 38 — R5 for the arbiter pair.
+    # 38 — a pair of arbiters started one after the other settles on exactly one active arbiter.
     #
-    # The arbiter prefers the lower instance id and yields to a peer that is already active,
-    # which is the same shape as the rule the matching engine now follows. Nothing has checked
-    # that the preference actually decides a genuine cold start.
+    # As scenario 34, for the arbiters. Both are taken down and brought back with the SECONDARY
+    # first. Either may become active; exactly one must.
     Scenario(
         number=38,
         short_name="arbiter_cold_start_tiebreak",
-        description="Restarting both arbiters secondary-first still leaves the primary active",
-        expected_outcome="arbiter_primary becomes active despite arbiter_secondary starting first",
+        me_ha=True,
+        recovery_on_primary=True,
+        description="Restarting both arbiters secondary-first leaves exactly one active",
+        expected_outcome="with both arbiters restarted, the secondary first, exactly one of them is active",
         # In-flight orders during phase 4 advance the matching engine's counter past the
         # recovery target, so the count phase then waits for a number that has already gone by.
         # Suppressed for a deterministic count, as the ME-HA scenarios do.
@@ -2572,27 +2647,31 @@ _SCENARIOS: list[Scenario] = [
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
             ),
-            VerifyStep(
-                log_name="arbiter_primary.log",
+            OneLeaderStep(
+                log_names=("arbiter_primary.log", "arbiter_secondary.log"),
                 markers=(_ARB_ROLE, _TO_LEADER),
                 timeout=90.0,
-                description="the primary arbiter becomes active despite the secondary starting first",
+                settle_secs=10.0,
+                description="exactly one of the two arbiters is active",
             ),
         ],
     ),
 
-    # 39 — R6 for the arbiter: alone, with no peer and no witness, it must still decide.
+    # 39 — an arbiter alone, with no peer and no witness, does not become active.
     #
-    # The arbiter's analogue of "no arbiter reachable" is having neither of the two parties it
-    # would otherwise consult. An arbiter that will not act alone leaves every component unable
-    # to arbitrate, which is the failure the whole design is arranged to avoid.
+    # An arbiter is active only while a majority of the two arbiters and the witness grants it a
+    # lease. Restarted with its peer and the witness both dead, it holds only its own vote, so it
+    # must not become active, and it reports that the pool has no active arbiter. The sequencer
+    # leader is unaffected: it renews its lease with its peer, and orders keep flowing.
     Scenario(
         number=39,
-        short_name="arbiter_alone_still_decides",
-        description="An arbiter restarted with no peer and no witness still becomes active",
+        short_name="arbiter_alone_does_not_become_active",
+        me_ha=True,
+        recovery_on_primary=True,
+        description="An arbiter restarted with no peer and no witness does not become active",
         expected_outcome=(
-            "with the witness and its peer dead, a restarted arbiter_primary becomes active "
-            "rather than waiting for parties that are not coming"
+            "with the witness and its peer dead, a restarted arbiter_primary cannot gather a "
+            "majority and does not become active; sequencer_primary keeps leading"
         ),
         # In-flight orders during phase 4 advance the matching engine's counter past the
         # recovery target, so the count phase then waits for a number that has already gone by.
@@ -2623,9 +2702,15 @@ _SCENARIOS: list[Scenario] = [
             ),
             VerifyStep(
                 log_name="arbiter_primary.log",
+                markers=("ArbiterThread:", "this group has no leader"),
+                timeout=30.0,
+                description="the lone arbiter reported that the pool has no active arbiter",
+            ),
+            AssertAbsentStep(
+                log_name="arbiter_primary.log",
                 markers=(_ARB_ROLE, _TO_LEADER),
-                timeout=90.0,
-                description="the lone arbiter becomes active without a peer or a witness",
+                after_secs=5.0,
+                description="the lone arbiter did not become active with only its own vote",
             ),
         ],
     ),
@@ -2770,29 +2855,29 @@ _SCENARIOS: list[Scenario] = [
     # 54 -- the window BUG-0077 describes, opened deliberately.
     #
     # A restarting engine asks the sequencer for a catch-up as soon as it has somewhere to ask,
-    # before it knows whether its peer is leading, and it learns that from the peer's
-    # RoleAnnouncement on a different channel. Scenario 24 never reaches the window: the arbiter
-    # answers in about a tenth of a second, the instance is a follower before the sequencer's
-    # order connection arrives, and the catch-up is skipped. So both arbiters are stopped for the
-    # restart. Nothing can then tell the instance what it is except its peer, which is exactly the
-    # race, and the venue is otherwise untouched -- the secondary goes on leading, as scenario 25
-    # establishes it does with no arbiter anywhere.
+    # which can be before it knows whether its peer is leading. Scenario 24 usually misses the
+    # window: the restarted instance hears its leading peer's lease renewal and grants it within
+    # about a second, so it is a follower before the sequencer's order connection arrives, and the
+    # catch-up is skipped.
     #
-    # What this measures, and what it asserts, are different things. The assertions are that the
-    # restarting instance becomes current without taking the role, and that the venue still trades
-    # afterwards -- recovery orders are confirmed on the leading secondary, which they cannot be if
-    # the order routing ends up pointing at an instance that will not act on them. What it measures
-    # is in the sequencer log: whether serving that catch-up moves the order routing at all, and
-    # for how long. See BUG-0077.
+    # So the restarted instance is made to forget its lease promises, as it would after a reboot.
+    # An instance that has forgotten what it promised grants nothing and asks for nothing for one
+    # lease period, so for that long it cannot agree that its peer leads. The catch-up completes
+    # inside that period, and the instance is current before anything can tell it its role.
+    #
+    # The assertions are that the restarting instance becomes current without taking the role,
+    # that the reports its catch-up produced are discarded once it learns it follows, rather than
+    # sent to members it will never serve, and that the venue still trades afterwards: recovery
+    # orders are confirmed on the leading secondary, which they cannot be if the order routing
+    # ends up pointing at an instance that will not act on them. See BUG-0077.
     Scenario(
         number=54,
         short_name="startup_catchup_while_peer_leads",
-        description="A restarted engine catches up while its peer leads, with no arbiter to tell it otherwise",
+        description="A restarted engine catches up while its peer leads, before it can agree that the peer leads",
         expected_outcome=(
-            "the restarted instance asks for a catch-up, becomes current, and waits to be told "
-            "what it may do without adopting leadership; the venue goes on trading through the "
-            "leader it already had; and the reports the catch-up produced are discarded rather "
-            "than sent to members this instance will never serve"
+            "the restarted instance asks for a catch-up, becomes current, and waits without adopting "
+            "leadership; once it agrees that its peer leads it discards the reports the catch-up "
+            "produced; and the venue goes on trading through the leader it already had"
         ),
         me_ha=True,
         # As scenarios 16 and 24: in-flight orders would advance the promoted secondary's counter
@@ -2800,11 +2885,6 @@ _SCENARIOS: list[Scenario] = [
         # scenario needs are sent deliberately, between the promotion and the restart, by the
         # InterimOrdersStep below.
         orders_during_override=0,
-        # Marked expected_failure when written on 2026-09-07, because it failed at Phase 5: serving
-        # the catch-up moved the order routing to the restarting instance and it never came back,
-        # so a thousand recovery orders were matched by nothing. The marking came off the same
-        # night, when the request began to say whether it was a promotion or a start and the
-        # sequencer stopped re-pointing for a start. A regression now fails the suite here.
         steps=[],
         restart_steps=[],
         extra_steps=[
@@ -2817,37 +2897,22 @@ _SCENARIOS: list[Scenario] = [
                 failover_to="matching_engine_secondary",
                 leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
-            # 2. Both arbiters down, and down together, so that nothing can assign a role to the
-            #    instance that is about to start. Killed in turn rather than restarted in turn,
-            #    for the reason scenario 25 records: a survivor answers from its own state and
-            #    the window never opens.
-            KillStep(
-                proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=1.0,
-            ),
-            KillStep(
-                proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=2.0,
-            ),
-            # 3. Orders the promoted secondary takes while the primary is down. Without these the
+            # 2. Orders the promoted secondary takes while the primary is down. Without these the
             #    primary's catch-up has nothing to stream -- its region is already at the head --
             #    and the reports half of this scenario tests nothing. Confirmed in the secondary's
             #    log, because the primary is dead and it is the secondary doing the matching.
             InterimOrdersStep(count_batches=1, confirm_on="matching_engine_secondary.log"),
-            # 4. Bring the primary back into a venue where only its peer can tell it anything.
+            # 3. Bring the primary back, knowing nothing of what it promised.
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
                 ready_markers=_ME_READY_MARKERS,
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
-                settle_secs=_ME_SETTLE,
+                settle_secs=0.0,
+                forget_lease_promises=True,
             ),
-            # 5. It asked. The restart deletes the log first, so this line is from this start and
+            # 4. It asked. The restart deletes the log first, so this line is from this start and
             #    not from the one before it.
             VerifyStep(
                 log_name="matching_engine_primary.log",
@@ -2855,7 +2920,7 @@ _SCENARIOS: list[Scenario] = [
                 timeout=30.0,
                 description="the restarted instance asks for a catch-up though it does not lead",
             ),
-            # 6. And it stopped there. Current, and waiting -- never adopting the role on the
+            # 5. And it stopped there. Current, and waiting -- never adopting the role on the
             #    strength of having caught up, which is what trap 5 of BUG-0064 was about.
             VerifyStep(
                 log_name="matching_engine_primary.log",
@@ -2864,37 +2929,17 @@ _SCENARIOS: list[Scenario] = [
                 description="it becomes current without taking the role",
                 absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
-            # 8. Put the arbiters back, so the recovery orders that follow are sent into a whole
-            #    venue and a failure among them means what it says.
-            RestartStep(
-                proc_name="arbiter_primary",
-                ready_log_name="arbiter_primary.log",
-                ready_markers=(_ARB_ROLE,),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=1.0,
-            ),
-            RestartStep(
-                proc_name="arbiter_secondary",
-                ready_log_name="arbiter_secondary.log",
-                ready_markers=("ArbiterThread:",),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=SETTLE_AFTER_FAILOVER,
-            ),
-            # 9. And the reports it produced while catching up went nowhere. It applied those
-            #    records and reported none of them to the members who placed them, because it
-            #    serves nobody: the leader answered them from its own catch-up. Being current and
-            #    being entitled to act are separate things, and reporting is an act -- BUG-0077.
-            #
-            #    Checked after the arbiters return, and not before: with none of them running
-            #    nothing tells this instance what it is, so it sits current and waiting, holding
-            #    the reports. That wait is the behaviour, not a delay to be tuned around.
+            # 6. Once its lease period has passed it grants its peer a renewal and follows, and the
+            #    reports it produced while catching up go nowhere. It applied those records and
+            #    reports none of them, because it serves nobody: the leader answered those members.
+            #    Being current and being entitled to act are separate things, and reporting is an
+            #    act -- BUG-0077.
             VerifyStep(
                 log_name="matching_engine_primary.log",
                 markers=("MatchingEngineThread:", "discarding", "held report(s)"),
-                timeout=60.0,
+                timeout=30.0,
                 description="the reports from its catch-up are discarded rather than sent",
+                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
         ],
     ),
@@ -2903,26 +2948,21 @@ _SCENARIOS: list[Scenario] = [
     # orders the moment this instance does become the one serving them.
     #
     # 54 shows them discarded, which is the common ending: an instance that catches up and then
-    # follows serves nobody, and the leader answered those members out of its own catch-up.
-    # Nothing showed them released. Scenario 53 looks as though it would -- an engine starts,
-    # catches up, and leads -- but its reconciliation ends "resuming as leader", so it was told it
-    # would lead before it asked and its reports were never held. The path only exists for an
-    # instance that becomes current first and is told afterwards.
+    # follows serves nobody, and the leader answered those members. Here the leader is taken away
+    # as well, so that the instance that comes back is the one that must serve.
     #
-    # Rewritten on 2026-09-08 to arrange that without relying on a message going astray. It used
-    # to leave the leading peer alive and depend on its role announcement being missed, which is
-    # what BUG-0082's guard now stops happening: the instance hears the announcement, defers, and
-    # correctly discards -- 54's ending, not this one. So the peer is taken away instead, as in
-    # scenario 56. The two share an arrangement and assert different things about it: 56 that the
-    # venue matches again at all, this one that the members are told.
+    # It comes back knowing nothing of what it promised, as after a reboot, so for one lease
+    # period it grants nothing and asks for nothing. It catches up in that time, and holds the
+    # reports. Then it asks to lead, the arbiter grants it -- the arbiter's promise to the dead
+    # secondary has long run out -- and on leading it releases the held reports.
     Scenario(
         number=55,
         short_name="held_reports_released_when_it_leads",
         description="Reports held while an engine was merely current are sent once it is the one serving",
         expected_outcome=(
-            "the restarted instance catches up and holds its reports while nothing has told it "
-            "what it may do; when it becomes the one serving, the reports are released and the "
-            "members who placed those orders are told, rather than discarded"
+            "the restarted instance catches up and holds its reports while it cannot yet lead; when "
+            "it becomes the one serving, the reports are released and the members who placed those "
+            "orders are told, rather than discarded"
         ),
         me_ha=True,
         orders_during_override=0,
@@ -2940,40 +2980,27 @@ _SCENARIOS: list[Scenario] = [
                 failover_to="matching_engine_secondary",
                 leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
-            # 2. Both arbiters down, so nothing outside the pair can assign a role.
-            KillStep(
-                proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=1.0,
-            ),
-            KillStep(
-                proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=2.0,
-            ),
-            # 3. Orders the leader takes while the primary is down. Without these the catch-up
+            # 2. Orders the leader takes while the primary is down. Without these the catch-up
             #    that follows has nothing to stream and no reports to hold, and this scenario
-            #    tests nothing -- two attempts at scenario 54 were wasted before that was noticed.
+            #    tests nothing.
             InterimOrdersStep(count_batches=1, confirm_on="matching_engine_secondary.log"),
-            # 4. And now the leader as well. With no peer there is no role announcement to hear,
-            #    so the instance that comes back reaches "current, and waiting" by the only route
-            #    left rather than by an announcement going astray.
+            # 3. And now the leader as well, so the instance that comes back must serve.
             KillStep(
                 proc_name="matching_engine_secondary",
                 secondary_log_name=None,
                 role_prefix=None,
                 settle_secs=2.0,
             ),
-            # 5. The primary comes back, catches up, and waits -- holding the reports.
+            # 4. The primary comes back knowing nothing of what it promised, catches up, and
+            #    waits -- holding the reports.
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
                 ready_markers=_ME_READY_MARKERS,
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=True,
-                settle_secs=_ME_SETTLE,
+                settle_secs=0.0,
+                forget_lease_promises=True,
             ),
             VerifyStep(
                 log_name="matching_engine_primary.log",
@@ -2981,295 +3008,22 @@ _SCENARIOS: list[Scenario] = [
                 timeout=30.0,
                 description="the restarted instance is current and holding its reports",
             ),
-            # 6. It becomes the one serving. With no arbiter to ask and no peer to defer to, that
-            #    is the instance-id rule -- the route scenario 56 asserts in its own right. What
-            #    matters here is not which mechanism promoted it but that it is now serving the
-            #    members whose orders it caught up on.
+            # 5. It becomes the one serving, with the arbiter's grant.
             VerifyStep(
                 log_name="matching_engine_primary.log",
                 markers=("MatchingEngineThread:", "adopting LEADER role"),
-                timeout=90.0,
+                timeout=30.0,
                 description="the instance that was holding becomes the one serving",
             ),
-            # 7. The assertion this scenario exists for.
+            # 6. The assertion this scenario exists for.
             VerifyStep(
                 log_name="matching_engine_primary.log",
                 # TEST CONTRACT -- the engine's wording. "held report(s)" is the discarding line's
-                # phrasing, not this one's, and looking for it here failed against a release that
-                # had happened perfectly well.
+                # phrasing, not this one's.
                 markers=("MatchingEngineThread:", "releasing", "report(s) held while this instance was becoming current"),
                 timeout=30.0,
                 description="the held reports are released to the members who placed those orders",
                 absent_markers=("MatchingEngineThread:", "discarding", "held report(s)"),
-            ),
-            # 8. Put the arbiters back before the recovery orders, so a failure among them means
-            #    what it says rather than reporting the absence this scenario arranged.
-            RestartStep(
-                proc_name="arbiter_primary",
-                ready_log_name="arbiter_primary.log",
-                ready_markers=(_ARB_ROLE,),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=1.0,
-            ),
-            RestartStep(
-                proc_name="arbiter_secondary",
-                ready_log_name="arbiter_secondary.log",
-                ready_markers=("ArbiterThread:",),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=SETTLE_AFTER_FAILOVER,
-            ),
-        ],
-    ),
-
-    # 56 -- BUG-0082. One engine, current with the sequencer, holding every open order, and
-    # nothing in the venue able to tell it that it may serve.
-    #
-    # Both engines are taken down and only one is brought back, with both arbiters already dead.
-    # That is deliberate: with no peer there is no role announcement to hear and no arbiter to
-    # ask, so the instance reaches "current, and waiting to be told what it may do" by the only
-    # route left rather than by winning or losing a race. What must happen then is the degraded
-    # rule -- the one scenario 35 establishes, which admits only the lower instance id, and the
-    # primary is instance 1.
-    #
-    # Observed on 2026-09-07 not to happen at all: no promotion, no attempt at one, and nothing
-    # logged about why. The venue held two thousand orders and matched none of them.
-    #
-    # The exit turned out to exist and to have been lost in two ways, both since 3 September. The
-    # startup arbitration deadline was dropped rather than rearmed when it fired during a
-    # catch-up, and the degraded promotion reconciled without asking to lead, so it returned to
-    # the state it was leaving. Neither had a test: scenario 35 checked that the engine said
-    # "self-promoting", which is the line before the act.
-    Scenario(
-        number=56,
-        short_name="current_and_alone_still_leads",
-        description="An engine that caught up at startup promotes itself when it is the only one left",
-        expected_outcome=(
-            "with no peer and no arbiter, the restarted instance catches up, finds nothing that "
-            "can tell it what it may do, applies the instance-id rule and adopts the role, so "
-            "the venue matches again rather than holding the book and refusing to trade"
-        ),
-        me_ha=True,
-        orders_during_override=0,
-        recovery_on_primary=True,
-        steps=[],
-        restart_steps=[],
-        extra_steps=[
-            # 1. Fail the primary so the secondary is genuinely leading, and the orders that
-            #    follow are taken by a real leader rather than by nobody.
-            KillStep(
-                proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
-                settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
-            ),
-            # 2. Both arbiters down, and down together, so nothing outside the pair can assign a
-            #    role for the rest of this scenario. Killed in turn rather than restarted in
-            #    turn, for the reason scenario 25 records.
-            KillStep(
-                proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=1.0,
-            ),
-            KillStep(
-                proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=2.0,
-            ),
-            # 3. Orders the leader takes while the primary is down, so the catch-up that follows
-            #    has something to stream. A catch-up with nothing in it proves nothing, and two
-            #    attempts at scenario 54 were wasted before that was noticed.
-            InterimOrdersStep(count_batches=1, confirm_on="matching_engine_secondary.log"),
-            # 4. And now the leader as well, so the venue has no matching engine at all and the
-            #    orders from step 3 live only in the sequencer's record.
-            KillStep(
-                proc_name="matching_engine_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=2.0,
-            ),
-            # 5. Bring one engine back into a venue where nothing can tell it what it is.
-            RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
-                ready_timeout=_ME_READY_TIMEOUT,
-                resets_me_counter=True,
-                settle_secs=_ME_SETTLE,
-            ),
-            VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "waiting to be told what it may do"),
-                timeout=30.0,
-                description="the restarted instance becomes current without taking the role",
-            ),
-            # 6. The assertion this scenario exists for. The timeout is generous on purpose: the
-            #    exit is the startup arbitration deadline, which is heartbeat_timeout_seconds
-            #    long and may have been rearmed once during the catch-up, so the wait is a small
-            #    multiple of that rather than a round number chosen to be comfortable.
-            VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "self-promoting", "degraded"),
-                timeout=90.0,
-                description="the surviving instance applies the instance-id rule with no arbiter to ask",
-            ),
-            VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
-                timeout=90.0,
-                description="and reaches the role, so the venue has a matching engine again",
-            ),
-            # 7. Put the arbiters back before the recovery orders, so that a failure among them
-            #    means what it says rather than reporting the absence this scenario arranged.
-            RestartStep(
-                proc_name="arbiter_primary",
-                ready_log_name="arbiter_primary.log",
-                ready_markers=(_ARB_ROLE,),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=1.0,
-            ),
-            RestartStep(
-                proc_name="arbiter_secondary",
-                ready_log_name="arbiter_secondary.log",
-                ready_markers=("ArbiterThread:",),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=SETTLE_AFTER_FAILOVER,
-            ),
-        ],
-    ),
-
-    # 57 -- the other face of scenario 56's rule: the same degraded promotion, applied by an
-    # instance whose peer is alive and leading. It must not happen.
-    #
-    # The guard is handle_peer_role_announcement. A leader announces on every new replication
-    # link, and an instance that hears it defers, taking the leader's generation and cancelling
-    # the startup arbitration deadline. Where in the restart that announcement lands decides
-    # which of two correct endings this instance reaches: heard while it is still UNKNOWN it
-    # follows at once, heard while it is RECONCILING it is remembered and followed when the
-    # catch-up ends. This scenario asserts neither, because both are right and which one happens
-    # is a race between the sequencer's connection and the peer's -- it asserts the thing that is
-    # wrong under either, which is a second leader.
-    #
-    # Which path a given run takes is therefore not deterministic, and this scenario does not
-    # pretend otherwise: when the peer's link wins the race the remembering code is not reached at
-    # all. Covering the remembered path deterministically needs a unit test around the role state
-    # machine, and there is none -- the matching engine's tests cover the order book only.
-    # Recorded against BUG-0030.
-    #
-    # Written on 2026-09-08 and failing when written: the announcement heard while reconciling
-    # was discarded, nothing else told the instance a leader existed, and the deadline degraded
-    # it into a leader at epoch 218 beside a peer leading at epoch 210. That is the split brain
-    # the arbiter exists to prevent, reached by the path that has no arbiter.
-    #
-    # It is marked expected_failure for a second reason, found by this scenario the same day and
-    # still open. With the generations in their proper relation it passes, and it did on a venue
-    # whose epoch files had just been cleared. Let the suite run for twenty minutes and it fails
-    # again: every degraded promotion advances a generation no arbiter learns (BUG-0085), the
-    # restarting instance ends up ahead of the leader, and it refuses the announcement as stale --
-    # correctly, on the information it has -- and then promotes. The remembering works and is
-    # visible in the log; the epoch it is judged against is wrong. Take the marking off when
-    # BUG-0085 is fixed, not before.
-    #
-    # The arbiters are held down past heartbeat_timeout_seconds, which is the one thing scenario
-    # 54 does not do -- it brings them back at about twenty seconds, inside the window, which is
-    # why it passes and says nothing about this.
-    Scenario(
-        number=57,
-        short_name="current_instance_does_not_outrank_a_live_leader",
-        description="An engine that caught up at startup does not promote itself while its peer still leads",
-        expected_outcome=(
-            "with both arbiters down for longer than the startup arbitration deadline, the "
-            "restarted instance defers to the peer that is already leading and does not apply "
-            "the instance-id rule against it"
-        ),
-        expected_failure=(
-            "BUG-0085: a degraded promotion advances a generation no arbiter learns, so the "
-            "restarting instance holds a higher epoch than the leader and refuses its "
-            "announcement as stale. The deferral itself works -- the announcement is remembered "
-            "and acted on -- but it is judged against a generation that has drifted."
-        ),
-        me_ha=True,
-        orders_during_override=0,
-        steps=[],
-        restart_steps=[],
-        extra_steps=[
-            KillStep(
-                proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
-                settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
-            ),
-            KillStep(
-                proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=1.0,
-            ),
-            KillStep(
-                proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
-                settle_secs=2.0,
-            ),
-            # Orders taken while the primary is down, so its catch-up has records to stream. A
-            # catch-up with nothing in it closes the window this scenario is about.
-            #
-            # One batch, as everywhere else. Five were tried on 2026-09-08 to widen the window and
-            # the step timed out waiting for them: no scenario has ever sent more than one, and
-            # whether that is the client, the step's 30s budget or the venue is unexamined. Not
-            # worth finding out for a tilt that was speculative anyway.
-            InterimOrdersStep(count_batches=1, confirm_on="matching_engine_secondary.log"),
-            RestartStep(
-                proc_name="matching_engine_primary",
-                ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
-                ready_timeout=_ME_READY_TIMEOUT,
-                resets_me_counter=False,
-                settle_secs=_ME_SETTLE,
-            ),
-            # The assertion. Held past heartbeat_timeout_seconds, which is 15, because the
-            # deadline this waits out is that long and a shorter wait would pass while proving
-            # nothing.
-            AssertAbsentStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
-                after_secs=35.0,
-                description="it does not promote itself while its peer is alive and leading",
-            ),
-            # And it must have deferred rather than merely hesitated. Without this the scenario
-            # would pass against an instance that sat in UNKNOWN doing nothing, which is the
-            # state BUG-0082 was opened for.
-            VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "role now FOLLOWER"),
-                timeout=30.0,
-                description="it adopted follower on the strength of the peer saying it leads",
-            ),
-            # Put the arbiters back, so the phases that follow run against a whole venue.
-            RestartStep(
-                proc_name="arbiter_primary",
-                ready_log_name="arbiter_primary.log",
-                ready_markers=(_ARB_ROLE,),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=1.0,
-            ),
-            RestartStep(
-                proc_name="arbiter_secondary",
-                ready_log_name="arbiter_secondary.log",
-                ready_markers=("ArbiterThread:",),
-                ready_timeout=30.0,
-                resets_me_counter=False,
-                settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
     ),
@@ -3415,17 +3169,19 @@ _SCENARIOS: list[Scenario] = [
     # lease expiring says otherwise.
     #
     # It is then let run again, holding an entitlement that has passed to the
-    # other instance.  Nothing else in this file produces that, and it is what
-    # the generation carried on every message exists to refuse -- the mechanism
-    # this venue uses in place of removing the node by force.
+    # other instance.  It counts its lease on its own clock, so on waking it
+    # finds the lease has run out and stops acting without being told.  That,
+    # and not removing the node by force, is how this venue keeps a returning
+    # instance from acting; the generation carried on every message remains as
+    # a second defence.
     Scenario(
         number=49,
         short_name="superseded_instance_returns",
         description="A frozen leader is resumed after its peer has taken over",
         expected_outcome=(
-            "the peer takes over while the leader is stopped, and everything the "
-            "leader sends on waking is refused for quoting a generation that has "
-            "been superseded -- the peer keeping the entitlement throughout"
+            "the peer takes over while the leader is stopped; the leader finds on waking "
+            "that its lease ran out and stops acting by itself, and the peer keeps the "
+            "entitlement throughout"
         ),
         orders_during_override=0,
         steps=[],
@@ -3435,8 +3191,8 @@ _SCENARIOS: list[Scenario] = [
                 takeover_log_name="sequencer_secondary.log",
                 takeover_markers=(_SEQ_ROLE, _TO_LEADER),
                 takeover_timeout=45.0,
-                refusal_markers=("SequencerThread:", "stale peer", "ignoring"),
-                refusal_timeout=30.0,
+                stopped_markers=("SequencerThread:", "lease ran out", "stops leading"),
+                stopped_timeout=10.0,
                 forbidden_markers=(_SEQ_ROLE, "-> follower"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
@@ -4709,6 +4465,39 @@ def clear_open_order_regions(prefix: Path) -> None:
             die(f"could not clear the open-order region at {path}: {error}")
 
 
+def clear_lease_promise_records(prefix: Path) -> None:
+    """Delete the records of lease promises kept by the sequencers, matching engines and arbiters before a run.
+
+    Each of those instances writes to disk the promise of its vote it has made to its peer, or that
+    its vote is its own while it leads, so that a process restarted by its supervisor carries on
+    from the record instead of waiting out a lease period. A record stays current for about ten
+    seconds after the process that wrote it stops, and scenarios start closer together than that.
+    Left in place, an instance that led at the end of one scenario would ask to lead at once at the
+    start of the next, and the secondary could lead where the scenario expects the primary to.
+
+    A scenario's premise is a venue started from cold, in which the primary is preferred. Without a
+    record an instance waits one lease period before voting, as it does after a reboot.
+    """
+    candidates = []
+    var_dir = prefix / "var"
+    if var_dir.is_dir():
+        candidates += list(var_dir.glob("*lease_promise*"))
+    # A sequencer keeps its record in its write-ahead log directory, which is not under var when
+    # PUBSUB_WAL_ROOT puts the logs on a disk of their own, so the directory is read from the
+    # deployed configuration.
+    for name in ("sequencer_primary.toml", "sequencer_secondary.toml"):
+        config = prefix / "etc" / "sequencer" / name
+        if config.is_file():
+            match = re.search(r'^\[wal\][^\[]*?^directory\s*=\s*"([^"]+)"', config.read_text(), re.MULTILINE | re.DOTALL)
+            if match:
+                candidates.append(Path(match.group(1)) / "lease_promise.state")
+    for path in sorted(candidates):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as error:
+            die(f"could not clear the lease promise record at {path}: {error}")
+
+
 def write_no_reset_fix8_config() -> None:
     """The resend scenario's client: instance a, not asking the venue to forget the session,
     prepared to ask for a gap it first sees on the Logon rather than logging off over it, and
@@ -4946,7 +4735,6 @@ def do_isolate_step(
         die(f"isolate: '{step.proc_name}' is not running")
 
     own_log = log_dir / f"{step.proc_name}.log"
-    resume_from = 0
     takeover_from = file_end(log_dir / step.takeover_log_name)
 
     log(f"  SIGSTOP -> {step.proc_name} (PID {proc.pid}): alive, holding its sockets, renewing nothing")
@@ -4964,25 +4752,25 @@ def do_isolate_step(
     log(f"  the peer took over ({elapsed:.1f}s) while {step.proc_name} still believed it was entitled to act")
 
     survivor_log = log_dir / step.takeover_log_name
-    refusal_from = file_end(survivor_log)
-    log(f"  SIGCONT -> {step.proc_name}: it wakes still believing it may act, and says so on the wire")
+    survivor_from = file_end(survivor_log)
+    own_from = file_end(own_log)
+    log(f"  SIGCONT -> {step.proc_name}: its lease ran out while it was stopped, which it finds on waking")
     os.kill(proc.pid, signal.SIGCONT)
 
-    markers = " + ".join(repr(m) for m in step.refusal_markers)
-    log(f"  Waiting for the survivor to refuse it: {markers} (timeout {step.refusal_timeout:.0f}s) ...")
-    found, refuse_elapsed, _ = poll_log_for(
-        survivor_log, *step.refusal_markers,
-        timeout=step.refusal_timeout, from_byte=refusal_from,
+    markers = " + ".join(repr(m) for m in step.stopped_markers)
+    log(f"  Waiting for {step.proc_name} to stop acting by itself: {markers} (timeout {step.stopped_timeout:.0f}s) ...")
+    found, stopped_elapsed, _ = poll_log_for(
+        own_log, *step.stopped_markers,
+        timeout=step.stopped_timeout, from_byte=own_from,
     )
     if not found:
-        die("isolate: the survivor never refused the superseded instance -- either it accepted what "
-            f"it sent, or the instance sent nothing, within {step.refusal_timeout:.0f}s")
-    log(f"  the survivor refused it on its superseded generation ({refuse_elapsed:.1f}s)")
+        die(f"isolate: {step.proc_name} did not report that its lease had run out within {step.stopped_timeout:.0f}s of waking")
+    log(f"  {step.proc_name} stopped acting by itself ({stopped_elapsed:.1f}s)")
 
     time.sleep(step.settle_secs)
 
     # And the entitlement must not have gone back.
-    tail = survivor_log.read_text(errors="replace")[refusal_from:]
+    tail = survivor_log.read_text(errors="replace")[survivor_from:]
     for line in tail.splitlines():
         if all(m in line for m in step.forbidden_markers):
             die(f"isolate: the survivor gave the entitlement back to a superseded instance: {line.strip()}")
@@ -5025,6 +4813,18 @@ def do_restart_step(
         with open(region, "r+b") as handle:
             handle.write(b"\xDE\xAD\xBE\xEF" * 8)
         log(f"  Damaged the open-order region at {region.name}, so the engine cannot read it")
+
+    if step.forget_lease_promises:
+        config = var_dir.parent / "etc" / "matching_engine" / f"{step.proc_name}.toml"
+        match = re.search(r'^epoch_state_file\s*=\s*"([^"]+)"', config.read_text(), re.MULTILINE) if config.is_file() else None
+        if match is None:
+            die(f"forget_lease_promises: no epoch_state_file in {config}, so the record cannot be found")
+        record = Path(match.group(1) + ".lease_promise")
+        if not record.is_file():
+            die(f"forget_lease_promises: {record} does not exist, so there is nothing to forget and the "
+                "scenario would pass without testing anything")
+        record.unlink()
+        log(f"  Deleted {record.name}, so {step.proc_name} restarts knowing nothing of what it promised")
 
     if step.down_secs > 0:
         log(f"  Leaving {step.proc_name} down for {step.down_secs:.0f}s, so that the absence is real")
@@ -5140,7 +4940,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             return "MACHINE:" + "+".join(s.proc_names)
         if isinstance(s, InterimOrdersStep):
             return f"({s.count_batches * 1000} interim orders)"
-        if isinstance(s, VerifyStep):
+        if isinstance(s, (VerifyStep, OneLeaderStep)):
             return f"VERIFY:{s.description}"
         return str(s)
 
@@ -5332,6 +5132,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # that began with the previous one's open orders would be testing something nobody
         # wrote. See clear_open_order_regions.
         clear_open_order_regions(prefix)
+        clear_lease_promise_records(prefix)
 
         if scenario.assert_resend_recovery:
             write_no_reset_fix8_config()
@@ -5452,6 +5253,38 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"within {args.ready_timeout:.0f}s — cannot test ME failover"
                 )
             log(f"  ME replication connection established ({elapsed:.1f}s)")
+
+            # Neither engine asks to lead during its first lease period, so for some seconds after
+            # starting the pair has no leader at all. A scenario that killed the primary in that
+            # time would be testing a pair in which nothing had yet been decided, and a restarted
+            # primary would have no lead to keep. So wait until one of the two engines leads.
+            log("  Polling both matching engine logs until one of them leads ...")
+            deadline = time.monotonic() + _ME_LEADER_TIMEOUT
+            t0 = time.monotonic()
+            leader_name = None
+            while leader_name is None and time.monotonic() < deadline:
+                for name, path in (("matching_engine_primary", me_log), ("matching_engine_secondary", me_secondary_log)):
+                    found, _, _ = poll_log_for(path, "MatchingEngineThread:", "adopting LEADER role", timeout=0.0, from_byte=0)
+                    if found:
+                        leader_name = name
+                        break
+                else:
+                    time.sleep(LOG_POLL_INTERVAL)
+            if leader_name is not None:
+                log(f"  {leader_name} leads ({time.monotonic() - t0:.1f}s)")
+            else:
+                log(f"  neither matching engine leads within {_ME_LEADER_TIMEOUT:.0f}s -- continuing, as the scenario may expect that")
+            log("")
+        elif not scenario.ha_disabled:
+            # The same for a single matching engine with high availability on: it asks to lead
+            # only after its first lease period, and until it leads it discards orders, which it
+            # then applies from the sequencer's log without writing the acceptance lines this
+            # script counts. Orders are meant to meet an engine that is already leading.
+            log("  Polling matching_engine.log until the matching engine leads ...")
+            found, elapsed, _ = poll_log_for(me_log, "MatchingEngineThread:", "adopting LEADER role", timeout=_ME_LEADER_TIMEOUT, from_byte=0)
+            if not found:
+                die(f"the matching engine did not lead within {_ME_LEADER_TIMEOUT:.0f}s")
+            log(f"  matching engine leads ({elapsed:.1f}s)")
             log("")
 
         # ── Phase 3: baseline orders + in-flight orders ───────────────────────
@@ -5648,6 +5481,26 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  {step.proc_name} restarted by its launcher as PID {after} ({elapsed:.1f}s)")
                 phase4_results.append(("supervised restart", step.proc_name, elapsed))
                 time.sleep(step.settle_secs)
+            elif isinstance(step, OneLeaderStep):
+                log(f"  VERIFY: {step.description}")
+                deadline = time.monotonic() + step.timeout
+                t0 = time.monotonic()
+                leaders = []
+                while not leaders and time.monotonic() < deadline:
+                    leaders = [name for name in step.log_names
+                               if poll_log_for(log_dir / name, *step.markers, timeout=0.0, from_byte=0)[0]]
+                    if not leaders:
+                        time.sleep(LOG_POLL_INTERVAL)
+                if not leaders:
+                    die(f"Verification failed: {step.description} -- neither of {step.log_names} shows a leader within {step.timeout:.0f}s")
+                log(f"    {leaders[0]} leads ({time.monotonic() - t0:.1f}s); waiting {step.settle_secs:.0f}s for any second leader ...")
+                time.sleep(step.settle_secs)
+                leaders = [name for name in step.log_names
+                           if poll_log_for(log_dir / name, *step.markers, timeout=0.0, from_byte=0)[0]]
+                if len(leaders) != 1:
+                    die(f"Verification failed: {step.description} -- both {step.log_names} show a leader")
+                log("    confirmed: exactly one leads")
+                phase4_results.append(("verify", step.description, step.settle_secs))
             elif isinstance(step, AssertAbsentStep):
                 markers_repr = " + ".join(repr(m) for m in step.markers)
                 log(f"  VERIFY: {step.description}")
@@ -5923,10 +5776,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
         #
         # Skipped when leadership never moved: there is no promotion and no book to decide
         # about.
-        # Not for a scenario that takes every engine away and starts one cold: there is no
-        # promotion there, so there is no book a promotion resumed with to ask about.
+        # Not for a scenario that takes every engine away and starts one cold, nor for one in
+        # which nobody is expected to take the lead: there is no promotion in either, so there
+        # is no book a promotion resumed with to ask about.
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
-                and not scenario.assert_deferred_answered):
+                and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader):
             cancels_expected = scenario.open_orders_on_promotion == "cancel"
             # A short timeout under "keep": the promotion has already been observed by the
             # time this runs, so it is confirming an absence rather than waiting for a line.

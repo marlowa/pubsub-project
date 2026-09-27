@@ -2,84 +2,61 @@
 #  Leader-Follower Protocol — PDU Definitions
 # ============================================================
 #
-#  DESIGN RATIONALE
-#  ----------------
-#  This is an intentionally simple, bespoke protocol. There is
-#  no need for a full consensus algorithm such as Raft or Paxos.
-#  Leader election is deterministic — the node with the lowest
-#  instance_id wins. The arbiter pool provides authoritative
-#  lease-grant decisions; the witness breaks ties within the
-#  arbiter pool itself.
+#  WHICH INSTANCE LEADS
+#  ---------------------
+#  An instance of a pair leads only while a majority of three voters
+#  has granted it a lease that has not run out. For a component pair
+#  (the sequencers, the matching engines, the matching engine
+#  publishers) the voters are the two instances and the arbiter pool,
+#  which votes through whichever arbiter is active. For the arbiters
+#  themselves the voters are the two arbiters and the witness. An
+#  instance's own vote is one of the three, so one grant from either
+#  other voter is enough. LeaseRequest, LeaseGrant and LeaseRefusal
+#  (130-132) carry the protocol. The rules, and the model checking
+#  that shows each is needed, are in docs/availability/majority_leases.md;
+#  the code that applies them is fix_common/PairLeaseAgent.hpp.
 #
 #  EPOCH SEMANTICS
 #  ---------------
-#  The epoch is a generation counter. It exists to detect stale
-#  nodes from a previous leadership cycle.
+#  The epoch is a generation counter. Every receiver checks it on
+#  every PDU and discards anything from an older generation.
 #
 #  Rules:
-#    1. A node that has never participated in an election starts
-#       with epoch 0.
-#    2. The value of every new epoch records which instance leads
-#       in it: its remainder on division by 4 is that instance's
-#       id. Whoever starts a generation -- the arbiter, the two
-#       peers resolving between themselves, or an instance
-#       promoting itself -- takes the next such epoch above every
-#       epoch it knows, for the instance it is making leader. Two
-#       different instances therefore never lead at the same
-#       epoch. See fix_common/LeaderEpoch.hpp.
-#    3. When arbiter arbitration is used, the arbiter assigns the
-#       epoch in ArbitrationDecision and both nodes adopt it. A node
-#       that is made leader by a decision whose epoch is below its
-#       own takes the next epoch above its own in which it leads.
-#    4. When a follower detects leader death and promotes itself
-#       to leader without arbiter contact, it takes the next epoch
-#       above its own in which it leads.
-#    5. When a restarting node connects and receives a
-#       StatusResponse, it compares epochs. If the peer's epoch
-#       is higher, the restarting node is stale: it adopts the
-#       follower role immediately without contacting the arbiter.
-#    6. A heartbeat carrying an epoch lower than the receiver's
-#       own epoch indicates a stale sender; the receiver logs a
-#       warning and ignores the heartbeat.
-#    7. A leader whose peer's heartbeat says it leads, at a higher
-#       epoch or at the same epoch from a lower instance id, stands
-#       down and follows the peer in the peer's epoch.
+#    1. A node that has never taken part starts with epoch 0.
+#    2. The value of every epoch records which instance leads in it:
+#       its remainder on division by 4 is that instance's id. An
+#       instance asking to lead asks for the next such epoch above the
+#       highest it knows (fix_common/LeaderEpoch.hpp), so two
+#       instances never lead at the same epoch.
+#    3. A voter never grants an epoch below the highest it has
+#       granted, and says what that is when it refuses. An instance
+#       that learns of a higher epoch than its own stops leading, or
+#       asking, and asks again above it.
 #
 #  TOPOLOGY
 #  --------
 #  Three machines in the arbiter pool: arbiter-primary,
-#  arbiter-secondary, witness. The witness breaks the tie when the
-#  two arbiters cannot see each other. It keeps no record of the
-#  votes it has granted, and an arbiter does not check that it
-#  still has a majority behind it, so this is not a majority
-#  system: see docs/availability/tla/findings.md, findings 7 and 8.
+#  arbiter-secondary, witness. The arbiter pool needs two of the three
+#  to have an active arbiter.
 #
-#  Components (sequencer pair, ME pair) each open connections to
-#  BOTH arbiter machines. Heartbeats and lease-renewal requests
-#  flow from the component to the active arbiter; lease grants
-#  and ArbitrationDecision PDUs flow back.  The passive arbiter
-#  accepts the connection but drops component requests with a log
-#  warning (redirect support is a future enhancement).
+#  Components open connections to BOTH arbiters and send each lease
+#  request to both. The active arbiter answers; the passive one stays
+#  silent, because a refusal from it would cancel the request the
+#  active arbiter is answering under the same id. An arbiter that
+#  becomes active grants nothing to any component for one lease
+#  period, because it does not know what the previously active
+#  arbiter promised. The active arbiter tells the passive one the
+#  highest epoch granted in each group with ArbiterStateRecord.
 #
-#  The two arbiter instances each hold a copy of the
-#  leadership-state map. They elect one active and one passive
-#  using StatusQuery/StatusResponse/Heartbeat among themselves,
-#  consulting the witness via ArbiterVoteRequest when both are
-#  undecided. The active arbiter replicates decisions to the
-#  passive via ArbiterStateRecord/ArbiterStateAck.
-#
-#  The witness holds NO state. It accepts connections from both
-#  arbiters and responds to ArbiterVoteRequest PDUs with an
-#  ArbiterVoteResponse. The witness never becomes leader,
-#  follower, active, or passive in any component sense.
+#  The witness keeps nothing. It answers the arbiters' lease requests
+#  and never becomes leader, follower, active or passive.
 #
 #  See pubsub_itc_fw_topology.puml and docs/framework/topology.md
 #  for the authoritative deployment diagram.
 #
 #  Role enum
-#  Lowest instance_id wins → leader
-#  Other becomes follower
-#  arbiter role value reserved; not used at runtime
+#  Whether an instance leads. Between the arbiters, leader means
+#  active. The arbiter value is reserved and not used at runtime.
 # ------------------------------------------------------------
 enum Role : i32 {
     unknown  = 0
@@ -106,15 +83,32 @@ enum ComponentGroup : i32 {
     sequencer                 = 1
     matching_engine           = 2
     matching_engine_publisher = 3
+    arbiter                   = 4    # the two arbiters, deciding which of them is active
+}
+
+# ------------------------------------------------------------
+#  LeaseRefusalReason
+#  Why a voter refused a LeaseRequest. It changes nothing about
+#  what the asker does -- a refusal is a refusal -- but a log that
+#  says why is what lets someone reading it tell a voter that has
+#  just restarted from one whose vote is taken.
+# ------------------------------------------------------------
+enum LeaseRefusalReason : i32 {
+    unknown            = 0
+    restarting         = 1    # the voter started less than one lease period ago
+    promised_elsewhere = 2    # its vote is promised to another instance, or to its own
+    epoch_behind       = 3    # it has already granted a higher epoch
 }
 
 # ------------------------------------------------------------
 #  100 — StatusQuery
-#  Sent A ↔ B immediately after TCP connect.
+#  Sent sequencer to sequencer immediately after TCP connect.
 #  Purpose:
 #    - Announce identity
 #    - Announce current epoch
 #    - Trigger peer to reply with StatusResponse
+#  It plays no part in deciding which instance leads, which is
+#  settled by leases.
 # ------------------------------------------------------------
 message StatusQuery (id=100, version=1)
     i64 instance_id        # unique per node, configured
@@ -126,16 +120,11 @@ end
 #  Reply to StatusQuery.
 #  Purpose:
 #    - Confirm identity of responder
-#    - Echo back what responder believes about the peer
-#    - Communicate responder's epoch
-#    - Communicate responder's current role so that a restarting node
-#      can immediately adopt follower role if the peer is already leader,
-#      bypassing arbitration entirely
+#    - Communicate responder's epoch and current role, for the log
+#    - Tell a restarting sequencer how far the sequence has reached,
+#      so that it does not stamp numbers already used
 #  Notes:
 #    - No sequence number needed because request/response is synchronous
-#    - If current_role is Role::leader, the querying node becomes follower
-#      without contacting the arbiter
-#    - If current_role is Role::unknown, both sides proceed to arbitration
 # ------------------------------------------------------------
 message StatusResponse (id=101, version=1)
     i64 self_instance_id       # identity of responder
@@ -143,37 +132,6 @@ message StatusResponse (id=101, version=1)
     i32 epoch                  # responder's current epoch
     Role current_role          # responder's current role; unknown if not yet elected
     i64 next_sequence_number   # responder's current next_sequence_number_; restarting follower uses this to sync its counter after WAL recovery
-end
-
-# ------------------------------------------------------------
-#  102 — Heartbeat
-#  Sent peer ↔ peer (sequencer-to-sequencer or arbiter-to-arbiter).
-#  Purpose:
-#    - Liveness detection
-#    - Epoch propagation (detect stale nodes)
-#  Notes:
-#    - No heartbeat counter needed because TCP is ordered and reliable
-#    - A heartbeat with epoch lower than the receiver's epoch indicates
-#      a stale sender; receiver logs a warning and ignores it
-#    - Leadership towards the arbiter is asserted by LeadershipLease (118),
-#      not by this message, which is why BOTH instances of a pair send it:
-#      an arbiter needs to know that a follower is there, not only that a
-#      leader is.
-#    - current_role tells the PEER whether the sender leads. A leader that
-#      hears its peer leading at a higher epoch, or at the same epoch from a
-#      lower instance id, stands down and follows it. Without this, two
-#      leaders left over from a partition never resolve after it heals,
-#      because a leader otherwise ignores its peer's heartbeats. See
-#      docs/availability/tla/findings.md, finding 2. Between the two
-#      arbiters, leader means active.
-#    - Heartbeat loss triggers leader/follower death detection; see
-#      epoch rule 3 in the file header for follower-promotion behaviour
-# ------------------------------------------------------------
-message Heartbeat (id=102, version=1)
-    i64 instance_id        # sender identity
-    i32 epoch              # sender's current epoch
-    ComponentGroup group   # HA pair this sender belongs to (arbiter registration)
-    Role current_role      # whether the sender leads (or, between arbiters, is active)
 end
 
 # ------------------------------------------------------------
@@ -368,38 +326,6 @@ message MePositionAck (id=116, version=1)
 end
 
 # ------------------------------------------------------------
-#  118 -- LeadershipLease
-#  Sent by the leader of an HA pair to the arbiter, repeatedly, for
-#  as long as it leads.
-#
-#  This was carried by Heartbeat until 2026-08-22, which was a poor
-#  name for it: a heartbeat says a sender is alive, and this says
-#  something much stronger -- that the sender holds leadership of a
-#  group, at a stated epoch, and is renewing it. The code had always
-#  described it as a lease in its comments while calling it a
-#  heartbeat on the wire.
-#
-#  Separating them matters for more than naming. Only a leader has
-#  reason to renew a lease, so while the two were one message only
-#  leaders ever reached the arbiter -- and the arbiter registers a
-#  component when it hears from it, so it never knew a follower was
-#  connected at all. Its own cold-start rule asks whether the peer is
-#  connected, and it was asking about a map that could not contain
-#  followers.
-#
-#  It is also how an arbiter that has restarted learns who leads. It
-#  holds that knowledge only in memory and reads nothing back at
-#  startup, so rather than persisting it, it is told: a lease renewal
-#  is an assertion of leadership by the only party entitled to make
-#  one, and the epoch settles any disagreement between two of them.
-# ------------------------------------------------------------
-message LeadershipLease (id=118, version=1)
-    i64 instance_id        # the instance asserting leadership
-    ComponentGroup group   # the HA pair it leads
-    i32 epoch              # the epoch it holds leadership under
-end
-
-# ------------------------------------------------------------
 #  117 -- RoleAnnouncement
 #  Sent by a matching engine to the sequencer to say which role it
 #  currently holds, and under which epoch it holds it.
@@ -416,9 +342,9 @@ end
 #  accepts an announcement only when its epoch is at least as new as
 #  the last it accepted for that group, so an instance whose leadership
 #  has since been superseded cannot reclaim routing -- its epoch is
-#  behind and the claim is refused. The authority still rests with the
-#  arbiter, because the epoch being quoted is one the arbiter issued;
-#  the sequencer never has to ask it anything.
+#  behind and the claim is refused. The authority rests with the lease
+#  rules, because an instance leads in an epoch only once a majority
+#  has granted it; the sequencer never has to ask anyone anything.
 #
 #  Sent on connecting to the sequencer, and again on every role change,
 #  so a sequencer that restarts learns the current arrangement from the
@@ -750,101 +676,80 @@ message OrderAcceptance (id=127, version=1)
 end
 
 # ------------------------------------------------------------
-#  200 — ArbitrationReport
-#  Sent by a component (sequencer or ME) to the active arbiter
-#  when arbitration is required (startup or after peer heartbeat
-#  timeout).
-#  Purpose:
-#    - Tell the active arbiter what this node believes the world
-#      looks like
-#    - The arbiter uses this to make a deterministic decision
+#  130 -- LeaseRequest
+#  Sent by an instance to each of the other two voters, to ask to
+#  lead or to renew the lease it leads under.
+#
+#  An instance leads only while a majority of three voters has
+#  granted it a lease that has not run out. For a component pair
+#  the voters are the two instances and the active arbiter; for the
+#  arbiters they are the two arbiters and the witness. Its own vote
+#  is one of the three, so one grant from either other voter is
+#  enough. See docs/availability/majority_leases.md.
+#
+#  Asking to lead and renewing are the same request: the voter
+#  applies the same rules to both. A leader sends it repeatedly,
+#  well within the lease period, which is also how its follower
+#  knows it is alive.
+#
+#  request_id is chosen by the asker and echoed on the reply. The
+#  asker counts a lease from when it SENT the request, not from when
+#  the grant arrived, and the id is how it finds that moment again.
+#  Ids need only be unique within one process's lifetime: a reply
+#  travels on the connection its request came in on, and a process
+#  that restarts has new connections.
 # ------------------------------------------------------------
-message ArbitrationReport (id=200, version=1)
-    i64 self_instance_id   # identity of sender
-    i64 peer_instance_id   # identity of the other node
-    i32 epoch              # sender's current epoch
-    Role proposed_role     # leader or follower based on lowest-id rule
-    ComponentGroup group   # HA pair this report belongs to
+message LeaseRequest (id=130, version=1)
+    i64 candidate_instance_id   # the instance asking
+    ComponentGroup group        # the pair it belongs to
+    i32 epoch                   # the epoch it asks to lead in, or leads in
+    i64 request_id              # echoed on the reply
 end
 
 # ------------------------------------------------------------
-#  201 — ArbitrationDecision
-#  Sent by the active arbiter back to the requesting component,
-#  and forwarded to both connected components.
-#  Purpose:
-#    - Final authoritative assignment of leader and follower
-#    - Assigns the epoch for this leadership generation (see
-#      epoch rule 2 in the file header)
-#  Notes:
-#    - No ack required; fire-and-forget
-#    - Component connections are kept open between elections for
-#      ongoing heartbeats and liveness detection
+#  131 -- LeaseGrant
+#  A voter's grant of a LeaseRequest. The voter has promised not to
+#  grant a lease to anyone else for one lease period, counted from
+#  the moment it granted this one.
 # ------------------------------------------------------------
-message ArbitrationDecision (id=201, version=1)
-    i64 leader_instance_id     # node chosen as leader
-    i64 follower_instance_id   # node chosen as follower
-    i32 epoch                  # arbiter-assigned epoch for this generation
-    ComponentGroup group       # HA pair this decision is addressed to
+message LeaseGrant (id=131, version=1)
+    i64 voter_instance_id       # the voter granting: 1 or 2 for an instance, 3 for the third voter
+    ComponentGroup group
+    i32 epoch                   # the epoch granted, as asked
+    i64 request_id              # echoed from the request
 end
 
 # ------------------------------------------------------------
-#  300 — ArbiterHeartbeat
-#  Sent by an arbiter to the witness at a regular interval for
-#  liveness detection.  The witness registers the arbiter on
-#  first heartbeat and tracks whether it is reachable.
+#  132 -- LeaseRefusal
+#  A voter's refusal of a LeaseRequest. It carries the highest epoch
+#  the voter has granted: an asker below it has been overtaken by a
+#  newer generation, stops leading or asking, and asks again above
+#  it.
 # ------------------------------------------------------------
-message ArbiterHeartbeat (id=300, version=1)
-    i64 instance_id        # arbiter identity (configured)
-    i32 epoch              # arbiter's current epoch
-end
-
-# ------------------------------------------------------------
-#  301 — ArbiterVoteRequest
-#  Sent by an arbiter to the witness when it is contemplating
-#  promotion to active arbiter (i.e. it has lost contact with
-#  its peer and needs an independent tie-break vote).
-#  Purpose:
-#    - Ask the witness: "should I become the active arbiter?"
-#    - The witness replies with ArbiterVoteResponse
-# ------------------------------------------------------------
-message ArbiterVoteRequest (id=301, version=1)
-    i64 self_instance_id   # identity of requesting arbiter
-    i64 peer_instance_id   # identity of the other arbiter
-    i32 epoch              # requester's current epoch
-end
-
-# ------------------------------------------------------------
-#  302 — ArbiterVoteResponse
-#  Sent by the witness to an arbiter in reply to ArbiterVoteRequest.
-#  The witness applies the same deterministic rule as component
-#  arbitration: lower instance_id wins; if the peer is not
-#  connected to the witness, the requester wins unconditionally.
-# ------------------------------------------------------------
-message ArbiterVoteResponse (id=302, version=1)
-    i64 granted_to_instance_id   # which arbiter gets the active role
-    i32 epoch                    # epoch for this arbiter generation
+message LeaseRefusal (id=132, version=1)
+    i64 voter_instance_id
+    ComponentGroup group
+    i32 highest_epoch           # the highest epoch this voter has granted
+    i64 request_id              # echoed from the request
+    LeaseRefusalReason reason
 end
 
 # ------------------------------------------------------------
 #  400 — ArbiterStateRecord
-#  Sent by the active arbiter to the passive arbiter to replicate
-#  one entry of the leadership-state map.  The passive arbiter
-#  stores this record and sends ArbiterStateAck.
+#  Sent by an arbiter to its peer to say the highest epoch granted in
+#  one component group: whenever the active arbiter grants a higher
+#  one, and for every group when the peer link comes up.
+#
+#  An arbiter that becomes active knows nothing of what the previous
+#  one promised, and waits out one lease period for that reason. It
+#  would also not know the highest epoch granted, and could grant a
+#  lower one, which receivers then ignore. This record is what it
+#  knows instead.
 # ------------------------------------------------------------
 message ArbiterStateRecord (id=400, version=1)
-    i64 component_instance_id    # which component's leader was assigned
-    i64 leader_instance_id       # assigned leader for that component pair
-    i32 epoch                    # leadership epoch for this component
-    ComponentGroup group         # HA pair this record belongs to
+    i64 component_instance_id    # the instance that leads in the epoch: its remainder on division by 4
+    i64 leader_instance_id       # the same
+    i32 epoch                    # the highest epoch granted in the group
+    ComponentGroup group         # the component pair
 end
 
-# ------------------------------------------------------------
-#  401 — ArbiterStateAck
-#  Sent by the passive arbiter to the active arbiter to confirm
-#  receipt of an ArbiterStateRecord.
-# ------------------------------------------------------------
-message ArbiterStateAck (id=401, version=1)
-    i64 component_instance_id    # echoed from the record being acknowledged
-    i32 epoch                    # echoed epoch
-    ComponentGroup group         # echoed HA pair
-end

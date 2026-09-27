@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 
+#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 
@@ -15,16 +16,14 @@ namespace arbiter {
 /**
  * @brief Configuration for the arbiter process.
  *
- * The arbiter manages the leadership-state map for component pairs
- * (sequencer pair, ME pair). It runs as a primary/secondary HA pair:
- * one instance is active (makes decisions), the other is passive
- * (replicates state). The witness resolves ties in the arbiter's own
- * election.
+ * The arbiter pool is the third voter in deciding which instance of each
+ * component pair leads. It runs as a primary/secondary pair of arbiters, and
+ * votes through whichever of them is active. An arbiter is active only while
+ * a majority of the two arbiters and the witness has granted it a lease.
  *
- * Components (sequencer, ME) connect to both arbiter instances and
- * send heartbeats and lease-renewal requests. The active arbiter
- * sends back ArbitrationDecision PDUs. The passive arbiter drops
- * component requests with a log warning.
+ * Components connect to both arbiters and send each lease request to both.
+ * The active arbiter answers with a grant or a refusal; the passive one stays
+ * silent. See docs/availability/majority_leases.md.
  *
  * See pubsub_itc_fw_topology.puml for the authoritative topology.
  */
@@ -39,7 +38,7 @@ struct ArbiterConfiguration {
 
     // HA -- arbiter identity and peer arbiter connection
 
-    /** @brief Unique integer identifier for this arbiter instance. Lowest wins active role. */
+    /** @brief This arbiter's identity: 1 for the primary, 2 for the secondary. The primary is preferred when both start together. */
     int32_t instance_id{1};
 
     /**
@@ -56,11 +55,8 @@ struct ArbiterConfiguration {
     /**
      * @brief The peer arbiter's instance id.
      *
-     * Configured rather than only learned, because the moment it is needed is the moment the peer
-     * cannot be reached. An arbiter that has never exchanged a StatusQuery with its peer would
-     * otherwise have no identity to compare its own against, and comparing is what keeps two
-     * arbiters from both making themselves active when neither can reach the witness. See
-     * docs/bug_list.md, BUG-0075.
+     * Configured rather than only learned, because it identifies the peer's vote before the two
+     * have ever exchanged a message.
      */
     int32_t peer_instance_id{2};
 
@@ -76,7 +72,7 @@ struct ArbiterConfiguration {
     /** @brief TCP port of the peer arbiter's peer listener (7204 primary, 7203 secondary). */
     uint16_t peer_port{7204};
 
-    // Witness -- for arbiter-vs-arbiter tie-breaking
+    // Witness -- the third voter in deciding which arbiter is active
 
     /** @brief Host address of the witness process. */
     std::string witness_host{"127.0.0.1"};
@@ -84,31 +80,24 @@ struct ArbiterConfiguration {
     /** @brief TCP port of the witness process. */
     uint16_t witness_port{7100};
 
-    // Timing
-
-    /** @brief How often this arbiter sends Heartbeat PDUs to the peer, in seconds. */
-    int32_t heartbeat_interval_seconds{5};
-
     /**
-     * @brief How long to wait at startup for a peer to appear before self-promoting to active.
+     * @brief The timings of the leases that decide which arbiter is active, and that the active
+     *        arbiter grants to component instances.
      *
-     * Should be long enough that both arbiters can connect and exchange StatusQuery
-     * before either self-promotes, but short enough that the system becomes operational
-     * quickly when the peer is genuinely absent.
+     * Expanded from the environment's [shared] section, because every voter and every instance
+     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
      */
-    int32_t startup_election_timeout_seconds{20};
-
-    /** @brief How long without a peer Heartbeat before the passive arbiter promotes itself. */
-    int32_t heartbeat_timeout_seconds{15};
+    fix_common::LeaseTiming lease{};
 
     /**
-     * @brief How long to wait for an ArbiterVoteResponse from the witness before
-     * self-promoting using the local instance-id rule (degraded mode).
+     * @brief File in which this arbiter records the promise of its vote in deciding which arbiter is
+     * active, or that it is the active arbiter.
+     *
+     * Read at startup. A record written during the same boot of the machine lets an arbiter
+     * restarted by its supervisor carry on from it, rather than wait out a lease period while the
+     * other arbiter becomes active. See fix_common/LeasePromiseStore.hpp. Its directory must exist.
      */
-    int32_t vote_timeout_seconds{3};
-
-    /** @brief How often this arbiter sends ArbiterHeartbeat PDUs to the witness, in seconds. */
-    int32_t witness_heartbeat_interval_seconds{30};
+    std::string lease_promise_file;
 
     // Logging
 

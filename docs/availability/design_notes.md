@@ -302,10 +302,13 @@ behind, and the claim is refused without anyone having to ask the arbiter anythi
 This is the same mechanism the venue already uses everywhere else -- epochs travel on every PDU
 precisely so a stale sender is detectable by the receiver -- and the same shape as
 `StatusResponse`, which already carries `current_role` and `epoch` so that a restarting
-sequencer can adopt follower without arbitration. The authority still rests with the arbiter,
-because the epoch a claim carries is one the arbiter issued.
+sequencer can adopt follower without arbitration. The authority rests with the lease rules of
+[section 11f](#ha_majority_leases): an instance leads in an epoch only once a majority has granted
+it.
 
 ## 11c. An arbiter that restarts is told who leads; it does not remember {#ha_arbiter_relearns}
+
+**This section describes a mechanism the venue no longer uses. Which instance leads is now decided by leases, as [section 11f](#ha_majority_leases) states.**
 
 Decided 2026-08-22, after the restart coverage matrix asked what the arbiter's leadership state
 depends on.
@@ -357,6 +360,8 @@ Two consequences follow and are part of the decision.
   seconds is longer than it wants to be, and is worth revisiting on its own.
 
 ## 11d. A lease that never expires is not a lease {#ha_lease_expiry}
+
+**This section describes an arbiter record the venue no longer uses. Which instance leads is now decided by leases, as [section 11f](#ha_majority_leases) states.**
 
 Found 2026-08-22 by the scenario written to check the cold-start tie-break, and worth recording
 because two changes made the same day combined to produce it.
@@ -413,6 +418,8 @@ new deployment and safe for a damaged one: zero loses to every real epoch, so th
 defers instead of claiming a generation it cannot substantiate.
 
 ### Who is allowed to issue a generation
+
+**This section describes issuers of generations the venue no longer uses. Which instance leads is now decided by leases, as [section 11f](#ha_majority_leases) states.**
 
 The first answer was that the arbiter should be the only one, on the argument that fencing
 with two issuers is not fencing. Two issuers can fail two ways:
@@ -479,6 +486,8 @@ sequenced while it wrongly led stays in its log; that is `docs/bug_list.md`, BUG
 
 ### The sequencer and the matching engine are deliberately different
 
+**This subsection describes a difference the venue no longer has: both decide leadership by the same lease rules, as [section 11f](#ha_majority_leases) states.**
+
 The sequencer resolves in **both** directions between peers: it may take leadership as well
 as give it up. It can, because both sides exchange status and hold both epochs at the same
 moment, so both can compute the same answer.
@@ -515,6 +524,33 @@ automatically to being a credible claimant.
 * **Silent drift.** A follower never adopted the leader's epoch -- the heartbeat handler
   rejected stale heartbeats but never followed a newer one -- so promoting a lagging follower
   produced a generation the venue had already used.
+
+## 11f. Leadership is decided by majority, with leases {#ha_majority_leases}
+
+An instance of a pair leads only while a majority of three voters has granted it a lease that
+has not run out. For a component pair the voters are the two instances and the arbiter pool; for
+the arbiters they are the two arbiters and the witness. Its own vote is one of the three, so one
+grant from either other voter is enough. No instance promotes itself on silence.
+
+Why: a follower that hears nothing cannot tell a dead leader from being cut off itself, so no rule
+it applies alone can be right in both cases. A majority of three can, because two instances would
+each need two votes at once, and every voter grants one instance at a time. Model checking a
+follower that promotes itself when no arbiter answers finds two leaders during a partition, and
+two active arbiters; see `docs/availability/tla/findings.md`.
+
+A supervised restart of a leader does not move the lead. A voter that restarts having forgotten
+its promises must grant nothing for one lease period, and a leader made to wait that long would
+be overtaken by its peer. So each sequencer and matching engine instance writes its promises to
+disk, with the machine's boot id, and a restarted process that finds a record from the same boot
+carries on from it: it asks to lead again at once, and its peer and the arbiter grant it, because
+both promised their votes to it.
+
+What it costs: when the arbiter pool and a group's leader are lost together, that group has no
+leader until one of them returns (R-0147). Losing the arbiter pool alone never stops trading,
+because each leader renews with its peer.
+
+The rules, each failure in turn, the timings and where each rule is implemented are in
+[majority_leases.md](majority_leases.md).
 
 ## 12. A supervisor starts processes; it does not decide leadership {#ha_supervisor_role}
 

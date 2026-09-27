@@ -883,7 +883,7 @@ def main() -> None:
     # at startup, and its absence means no orders were open, which is likewise right for a
     # new deployment.
     for key in ("matching_engine_epoch_state_file", "matching_engine_secondary_epoch_state_file", "matching_engine_order_book_region_path",
-                "matching_engine_secondary_order_book_region_path"):
+                "matching_engine_secondary_order_book_region_path", "arbiter_primary_lease_promise_file", "arbiter_secondary_lease_promise_file"):
         if key in namespace:
             state_path = Path(namespace[key])
             if not state_path.is_absolute():

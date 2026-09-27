@@ -30,11 +30,14 @@
 #include "EpochStore.hpp"
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
+#include "LeaseLinksInterface.hpp"
+#include "LeasePromiseStore.hpp"
 #include "MatchingEngineConfiguration.hpp"
 #include "OrderBook.hpp"
 #include "OrderBookMetricsReporter.hpp"
 #include "OrderEntry.hpp"
 #include "OrderKey.hpp"
+#include "PairLeaseAgent.hpp"
 
 namespace matching_engine {
 
@@ -273,13 +276,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // primary before it adopts leadership; Follower for the passive secondary.
     MeRole ha_role_state_{MeRole::Unknown};
 
-    // Secondary: true while the promotion-timeout timer is armed (primary
-    // replication connection has been lost and we are waiting to see if it
-    // reconnects before requesting arbitration).
-    bool promotion_pending_{false};
-
-    // Leadership generation. Adopted from ArbitrationDecision, or self-incremented
-    // on degraded self-promotion.
     // The leadership generation. Never assign to this directly: go through
     // set_epoch(), which also writes it to disk. A restart that forgets the
     // epoch lets this node claim a generation the venue has already spent.
@@ -289,19 +285,35 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // whenever the epoch moves.
     fix_common::EpochStore epoch_store_;
 
-    // Timer ids (default-constructed = not scheduled); on_timer_event compares
-    // a fired timer's id against these to identify it.
-    pubsub_itc_fw::TimerID promotion_timeout_timer_id_{};
-    pubsub_itc_fw::TimerID arbiter_heartbeat_timer_id_{};
+    // Where this instance's promises in deciding which instance leads outlive the process, until
+    // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
+    fix_common::LeasePromiseStore lease_promise_store_;
 
-    // Armed when a primary asks the arbiter who leads at startup, and cancelled by the
-    // answer. If it fires, no arbiter replied and the venue would otherwise have no matching
-    // engine leader at all, so the instance-id rule is applied locally and logged as degraded
-    // -- the same fallback the sequencer has, and for the same reason.
-    pubsub_itc_fw::TimerID startup_arbitration_timer_id_{};
+    // Drives the lease rules that decide whether this instance leads. Recurring.
+    pubsub_itc_fw::TimerID lease_tick_timer_id_{};
+
+    // How the lease rules reach the other two voters: the peer instance over whichever replication
+    // connection is up, and the arbiter pool on both arbiter connections.
+    class EngineLeaseLinks : public fix_common::LeaseLinksInterface {
+      public:
+        explicit EngineLeaseLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) override;
+        void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) override;
+        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) override;
+        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    EngineLeaseLinks lease_links_{*this};
+
+    // Decides whether this instance leads: it does only while a majority of three voters -- itself,
+    // its peer and the arbiter pool -- has granted it a lease that has not run out. Constructed when
+    // the application is ready, if high availability is on. See fix_common/PairLeaseAgent.hpp.
+    std::optional<fix_common::PairLeaseAgent> lease_agent_;
 
     // Armed while this instance is reconciling, and cancelled by the ack. Only a sequencer
-    // that leads serves a catch-up; one that is still electing drops the request without
+    // that leads serves a catch-up; one that is not leading drops the request without
     // answering. So the request is re-sent while the answer is outstanding, rather than
     // assumed to have been received -- an instance that asked once at the wrong moment would
     // wait for an answer nobody is going to send.
@@ -369,7 +381,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool reconciling_from_follower_{false};
 
     // Whether the catch-up has been done. A venue with high availability off has no
-    // arbitration to trigger one, so it reconciles when the sequencer first connects -- once,
+    // lease to trigger one, so it reconciles when the sequencer first connects -- once,
     // not on every reconnect: this instance's position advances as it works and is not tracked
     // between catch-ups, so asking again later would replay what it has already applied.
     bool has_reconciled_{false};
@@ -382,17 +394,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     bool has_position_{false};
 
     // Whether this catch-up is part of taking the role, or only part of becoming current.
-    // Being current and being entitled to act are separate things, and only the arbiter says
+    // Being current and being entitled to act are separate things, and only the lease rules say
     // who acts. A catch-up done at startup ends with the instance current and still waiting to
     // be told; one begun because this instance is to lead ends with it leading.
     bool reconciling_to_lead_{false};
 
-    // A peer's claim to lead, heard while this instance was still reconciling and therefore not
-    // yet in a state to act on it. Kept rather than discarded: the leader announces when a
-    // replication link comes up, which is the one announcement a restarting instance is offered,
-    // and a healthy leader has no reason to send another. Dropping it left this instance with
-    // nothing telling it a leader existed, so the startup arbitration deadline degraded it into a
-    // second one -- BUG-0082's second half, measured by ha_test.py scenario 57.
+    // That this instance granted its peer a lease while it was still catching up at startup, and
+    // so agreed that the peer leads. It cannot follow until the catch-up ends, so this is acted on
+    // then.
     //
     // The epoch is re-checked when it is acted on rather than when it is stored, because
     // reconciliation can advance this instance's own epoch in between.
@@ -401,12 +410,6 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     int32_t peer_leader_epoch_{0};
 
     pubsub_itc_fw::TimerID book_metrics_timer_id_{};
-
-    /// How many times a starting instance asks the arbiter before giving up and degrading.
-    /// More than one because an arbiter that has itself restarted declines to answer until it
-    /// knows who leads, and that silence is a reason to wait rather than to promote.
-    static constexpr int max_startup_arbitration_attempts = 3;
-    int startup_arbitration_attempts_{0};
 
     // Secondary: instance_id of the primary (peer). Fixed at 1 by convention.
     // The pair's fixed identities. Primary is always the lower id -- the arbiter's cold-start
@@ -438,21 +441,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Arbiter-mediated promotion helpers.
     void enter_follower_state();
     void adopt_leader_role();
-    void send_arbitration_report();
-    void handle_arbitration_decision(const pubsub_itc_fw::EventMessage& message);
-    void send_arbiter_heartbeat();
+    /// Changes what this instance does to follow what the lease rules have just decided.
+    void act_on(fix_common::PairLeaseAgent::Change change);
+    void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
+    void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);
 
     // WAL reconciliation (RECONCILING state).
-
-    /**
-     * @brief Asks the arbiter which instance leads, rather than assuming it is this one.
-     *
-     * A primary used to adopt LEADER the moment its first arbiter connection came up. That is
-     * harmless on a cold start, where the arbiter would name it anyway, and wrong on a restart:
-     * the peer may already have been promoted and be serving, and the venue ends up with two
-     * leaders. See docs/bug_list.md, BUG-0042.
-     */
-    void request_startup_arbitration();
 
     /**
      * @brief Tells the sequencers which role this instance now holds, and under which epoch.
@@ -463,20 +458,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
      */
     void announce_role();
 
-    /**
-     * @brief Starts the recurring message to the arbiters, in whatever role this instance holds.
-     *
-     * Previously started only on becoming leader, which meant a follower never reached the
-     * arbiter at all -- and the arbiter registers a component when it hears from it, so it had
-     * no way of knowing a follower was connected. Its cold-start rule asks exactly that.
-     */
-    void start_arbiter_heartbeats();
-
     /// The role as a word, for log lines that a person will read after an incident.
     [[nodiscard]] static const char* me_role_name(MeRole role);
     void set_epoch(int32_t new_epoch);
     void publish_book_metrics();
-    void handle_peer_role_announcement(const pubsub_itc_fw::EventMessage& message);
 
     /// Defer to a peer that says it leads, taking its generation rather than inventing one.
     /// Returns false where the claim is refused, which is only ever because it is stale.

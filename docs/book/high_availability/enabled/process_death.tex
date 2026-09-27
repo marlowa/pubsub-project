@@ -40,7 +40,12 @@ that was available. The venue must therefore treat the two failures differently.
   longer wait tolerates a genuinely dead machine for longer than it should. The
   period is therefore the time a restart takes plus a margin. That time is not
   known until restarts have been timed, so the period is measured rather than
-  chosen, and it must be measured again whenever the components change.}
+  chosen, and it must be measured again whenever the components change.
+  The peer cannot take over until its own promise to the acting instance and the
+  arbiter's have both run out, which is at least one lease period after the last
+  renewal. A restarted instance that kept its promises on disk asks again as soon
+  as it starts, so a restart that completes within the lease period keeps the
+  lead.}
   \covers{ha_test:26, ha_test:27, ha_test:28}
 \end{requirement}
 

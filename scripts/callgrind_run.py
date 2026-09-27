@@ -189,18 +189,22 @@ def set_fix_capture_enabled(config_path: Path, enabled: bool) -> None:
 
 # HA/session timeout fields to relax for a profiling run.  Under callgrind the
 # profiled components run ~20-50x slower, so wall-clock timeouts that are fine at
-# native speed will trip -- e.g. the arbiter/secondary declaring the slowed ME
-# "dead" and failing over, or the profiled gateway aborting its own FIX logon
-# before the (also slowed) SCRAM round-trip completes.  We scale only the TIMEOUT
-# fields, not the heartbeat *interval* fields: frequent heartbeats plus patient
-# timeouts is the most tolerant of the slowdown.  Values appear either as bare
-# ints ("heartbeat_timeout_seconds = 6") or quoted durations ("logon_timeout =
-# \"30s\""); both are handled, preserving any unit suffix.
+# native speed will trip -- e.g. a slowed leader failing to renew its lease in time
+# and losing it, or the profiled gateway aborting its own FIX logon before the (also
+# slowed) SCRAM round-trip completes.  Values appear either as bare ints
+# ("catch_up_retry_seconds = 15") or quoted durations ("logon_timeout = \"30s\"");
+# both are handled, preserving any unit suffix.
+#
+# The three lease values are scaled together, and in every configuration that has
+# them, including components that are not being profiled. Every voter must use the
+# same lease period -- a voter that took the lease to be shorter than the instance
+# holding it would promise its vote elsewhere while the holder still relied on it --
+# and scaling all three by one factor keeps the ratios the configuration check requires.
 _TIMEOUT_KEYS = (
-    "heartbeat_timeout_seconds",
-    "startup_election_timeout_seconds",
-    "arbitration_timeout_seconds",
-    "vote_timeout_seconds",
+    "period_milliseconds",
+    "drift_allowance_milliseconds",
+    "renewal_interval_milliseconds",
+    "catch_up_retry_seconds",
     "logon_timeout",
     "scram_auth_timeout",
 )
@@ -740,10 +744,13 @@ def main() -> None:
     # Launched components whose HA/session timeouts must be relaxed so callgrind's
     # slowdown does not trip failover or the gateway's own FIX logon timeout.
     timeout_configs = [
+        etc_dir / "witness" / "witness.toml",
         etc_dir / "arbiter" / "arbiter_primary.toml",
         etc_dir / "arbiter" / "arbiter_secondary.toml",
         etc_dir / "matching_engine" / "matching_engine_primary.toml",
         etc_dir / "matching_engine" / "matching_engine_secondary.toml",
+        etc_dir / "matching_engine_publisher" / "matching_engine_publisher_primary.toml",
+        etc_dir / "matching_engine_publisher" / "matching_engine_publisher_secondary.toml",
         etc_dir / "sequencer" / "sequencer_primary.toml",
         etc_dir / "sequencer" / "sequencer_secondary.toml",
         gw_config,  # logon_timeout / scram_auth_timeout

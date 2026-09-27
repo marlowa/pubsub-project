@@ -42,16 +42,17 @@ arbiter_primary_host        = "127.0.0.1"
 arbiter_primary_port        = 11200
 arbiter_secondary_host      = "127.0.0.1"
 arbiter_secondary_port      = 11201
-arbitration_timeout_seconds = 3
 
 [peer]
 listen_host                      = "127.0.0.1"
 listen_port                      = 11003
 host                             = "127.0.0.1"
 port                             = 11004
-heartbeat_interval_seconds       = 2
-heartbeat_timeout_seconds        = 6
-startup_election_timeout_seconds = 20
+
+[lease]
+period_milliseconds = 3000
+drift_allowance_milliseconds = 250
+renewal_interval_milliseconds = 1000
 
 [wal_subscriber]
 listen_host = "127.0.0.1"

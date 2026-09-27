@@ -61,7 +61,7 @@ R-0055     active    2026-08-30  A member that does not return has its orders ca
 R-0056     active    2026-08-30  An order meant to outlive the session is not cancelled by a disconnection
 R-0057     active    2026-08-30  A member that has lost its own numbering can start afresh without losing its orders
 R-0058     active    2026-08-30  Two instances of a group are never both entitled to act
-R-0059     active    2026-08-30  An arbiter that does not know which instance is acting says so, rather than choosing one
+R-0059     active    2026-08-30  An arbiter that does not know what was promised grants nothing until every promise has run out
 R-0060     active    2026-08-30  Silence from an arbiter is not read as the absence of one
 R-0061     active    2026-08-30  Entitlement is held under a lease and lapses unless renewed
 R-0062     active    2026-08-30  An instance already acting keeps its entitlement when another returns
@@ -97,7 +97,7 @@ R-0091     active    2026-08-30  A returning instance that finds the position va
 R-0092     active    2026-08-30  Simultaneous claims are resolved by one party, not by the claimants
 R-0093     active    2026-08-30  The venue trades while a group is reduced to one instance
 R-0094     active    2026-08-30  A group running without its second instance is knowable
-R-0095     active    2026-08-30  An instance may act with no arbiter reachable, and says that it did
+R-0095     retired   2026-08-30  An instance may act with no arbiter reachable, and says that it did
 R-0096     active    2026-08-30  A credential change is recorded before it is distributed
 R-0097     active    2026-08-30  The record of which instances are behind outlives the service that made it
 R-0098     active    2026-08-30  Members trade and log on while no administration service is running
@@ -126,7 +126,7 @@ R-0120     active    2026-08-30  A cancel for an order the venue no longer holds
 R-0121     active    2026-08-30  A component takes the cost of first touching its memory before it reports itself ready
 R-0122     active    2026-08-30  A report a member receives twice is marked as a repeat
 R-0123     active    2026-08-30  A member is told what it had, even when the venue's own record of it is unusable
-R-0124     active    2026-09-06  An arbiter with nobody to ask declines rather than assume it is alone
+R-0124     retired   2026-09-06  An arbiter with nobody to ask declines rather than assume it is alone
 R-0125     active    2026-09-06  An instance that interrupts the venue twice is not restarted again
 R-0126     active    2026-09-06  The venue does not run with no instance of a component without saying so
 R-0127     active    2026-09-10  Each topic is published by exactly one publisher
@@ -148,3 +148,5 @@ R-0142     active    2026-09-18  A request to cancel an order names the order it
 R-0143     active    2026-09-18  A message missing a field the venue requires is answered
 R-0144     active    2026-09-18  Both gateways accept the same request to cancel
 R-0145     active    2026-09-27  The build reproduces every recorded counterexample
+R-0146     active    2026-09-27  An instance acts only while a majority of its three voters grants it a lease
+R-0147     active    2026-09-27  The venue halts, and says why, when the arbiter pool and the leader are lost together

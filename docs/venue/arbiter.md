@@ -2,106 +2,104 @@
 
 ## Role
 
-The arbiter manages the leadership-state map for component pairs (sequencer pair, ME pair).
-It is the external authority that grants and fences leadership: no component promotes itself
-without an `ArbitrationDecision` from the active arbiter.
+The arbiter pool is the third voter in deciding which instance of each component pair leads: the
+two sequencers, the two matching engines, and the two matching engine publishers. An instance leads
+only while a majority of three voters -- itself, its peer and the arbiter pool -- has granted it a
+lease that has not run out. Its own vote is one of the three, so one grant from either its peer or
+the arbiter pool is enough. The rules, why each is needed, and what happens in each failure are in
+[Deciding leadership by majority, with leases](../availability/majority_leases.md).
 
-Two arbiter instances form a primary/secondary HA pair using the same
-StatusQuery/StatusResponse/Heartbeat election protocol as the sequencer. One is **active**
-(makes decisions, replicates state to passive); the other is **passive** (replicates state,
-ready to take over). A separate **witness** process breaks ties in the arbiters' own
-election — see [Witness](witness.md).
+Two arbiters form the pool, and it votes through whichever of them is **active**. The other is
+**passive** and votes on nothing. An arbiter is active only while a majority of three voters -- the
+two arbiters and the [witness](witness.md) -- has granted it a lease in turn, by the same rules. An
+active arbiter that can reach neither its peer nor the witness stops being active when its lease
+runs out, so at most one arbiter is ever active.
 
-The arbiter is **off the critical data path**. It never participates in order processing;
-it only responds to `ArbitrationReport` requests from components during failover or cold
-start.
+The arbiter is **off the order path**. It never takes part in order processing. It answers lease
+requests from component instances, which a leader sends about once a second.
+
+---
+
+## What the arbiter holds
+
+On disk, one small file: the promise of its vote in deciding which arbiter is active, or that it
+is the active arbiter (`[lease] promise_file`). An arbiter restarted by its supervisor
+reads it back and carries on, so a quick restart of the active arbiter does not make the other one
+active. The file is written with the machine's boot id and ignored after a reboot. See
+[Deciding leadership by majority, with leases](../availability/majority_leases.md), rule 6.
+
+In memory it holds:
+
+- its own lease, and whether it is active;
+- while active, one voter per component group: the promise it has made in that group, if any, and
+  the highest epoch it has granted. See `applications/arbiter/ComponentLeaseVoters.hpp`;
+- the highest epoch granted in each group, whether by this arbiter or, as its peer reports, by the
+  other one.
+
+An arbiter that becomes active does not know what the previously active arbiter promised, so it
+grants no component a lease for one lease period. During that period each component leader renews
+with its peer alone, so a change of active arbiter costs nothing while every pair has both instances
+running.
 
 ---
 
 ## PDU Protocol
 
-### Component ↔ Arbiter PDUs
+### Component to arbiter
 
-Components (sequencer, ME) connect to **both** arbiter instances and send heartbeats and
-arbitration requests. The active arbiter processes them; the passive arbiter drops
-`ArbitrationReport` with a log warning.
-
-| PDU | ID | Direction | Purpose |
-|-----|----|-----------|---------|
-| `StatusQuery` | 100 | Arbiter → Arbiter peer | Identity + epoch announced on peer connect |
-| `StatusResponse` | 101 | Arbiter → Arbiter peer | Identity confirmation + current role |
-| `Heartbeat` | 102 | Bidirectional | Liveness + epoch propagation between arbiter peers |
-| `ArbitrationReport` | 200 | Component → Active arbiter | Component requests a leadership decision |
-| `ArbitrationDecision` | 201 | Active arbiter → Component | Authoritative leader/follower assignment + epoch |
-
-### Arbiter Internal (Active ↔ Passive Replication)
+Components connect to **both** arbiters and send each lease request to both, because which arbiter
+is active can change. The active arbiter answers; the passive one stays silent. A refusal from the
+passive one would cancel the request the active one is answering, because both carry the same id.
 
 | PDU | ID | Direction | Purpose |
 |-----|----|-----------|---------|
-| `ArbiterStateRecord` | 400 | Active → Passive | Replicate a leadership-state entry after each decision |
-| `ArbiterStateAck` | 401 | Passive → Active | Acknowledge receipt of a state record |
+| `LeaseRequest` | 130 | Component → both arbiters | Ask to lead, or renew a lease already held |
+| `LeaseGrant` | 131 | Active arbiter → component | Grant it; the arbiter promises its vote to no other instance of the pair for one lease period |
+| `LeaseRefusal` | 132 | Active arbiter → component | Refuse it, with the highest epoch granted in the group and the reason |
 
-### Arbiter ↔ Witness
+The arbiter answers as voter 3. The instances of a pair are 1 and 2.
+
+### Between the arbiters
 
 | PDU | ID | Direction | Purpose |
 |-----|----|-----------|---------|
-| `ArbiterHeartbeat` | 300 | Active arbiter → Witness | Liveness; allows witness to track which arbiter is connected |
-| `ArbiterVoteRequest` | 301 | Passive arbiter → Witness | Request a vote before self-promoting to active |
-| `ArbiterVoteResponse` | 302 | Witness → Passive arbiter | Grant vote (to lower `instance_id`) or deny |
+| `LeaseRequest` / `LeaseGrant` / `LeaseRefusal` | 130-132 | Arbiter ↔ arbiter | Deciding which arbiter is active, in group `arbiter` |
+| `ArbiterStateRecord` | 400 | Arbiter → peer arbiter | The highest epoch granted in one component group, sent when it rises and for every group when the link comes up |
+
+### Arbiter and witness
+
+| PDU | ID | Direction | Purpose |
+|-----|----|-----------|---------|
+| `LeaseRequest` | 130 | Arbiter → witness | Ask to be active, or renew |
+| `LeaseGrant` / `LeaseRefusal` | 131, 132 | Witness → arbiter | The witness's vote, as voter 3 |
 
 ---
 
-## Election Protocol
+## Deciding which arbiter is active
 
-The arbiter pair uses the same peer protocol as the sequencer (StatusQuery/StatusResponse/
-Heartbeat). On startup:
+1. For one lease period after starting, an arbiter neither asks nor grants, because it has forgotten
+   anything it promised before it stopped.
+2. Then the primary asks its peer and the witness to let it be active. The secondary waits one
+   renewal interval longer, so that when both start together the primary asks first and is preferred.
+3. The first grant it receives, with its own vote, is a majority: it becomes active. The other
+   arbiter, having granted the request, is passive.
+4. While active, it asks both again every renewal interval. Either granting is enough.
+5. If the active arbiter dies, the passive one's promise to it runs out, and so does the witness's.
+   The passive arbiter then asks, the witness grants, and it becomes active.
+6. If only one arbiter and no witness remain, that arbiter holds only its own vote. It stops being
+   active when its lease runs out, and the pool has no active arbiter until another voter returns.
 
-1. Both arbiters connect to each other and exchange `StatusQuery`.
-2. If one is already active (higher epoch), the other adopts passive immediately.
-3. If both are undecided, each contacts the witness with `ArbiterVoteRequest`. The witness
-   grants the vote to the arbiter with the lower `instance_id` (deterministic tiebreak), or
-   to the requester if its peer is not connected to the witness.
-4. The winner adopts active role; the loser adopts passive.
-5. If the witness is unreachable, an arbiter promotes itself only when nothing else can be
-   active: it must hold the lower of the two configured `instance_id` values, and it must
-   never have seen its peer acting. At most one arbiter can satisfy both, whatever either
-   can see of the other, so a partition cannot produce two active arbiters. An arbiter that
-   fails the test stays passive and re-arms its peer timeout, so the question is asked again
-   when the peer or the witness returns.
-
-The venue can therefore be left with no active arbiter, and that is the intended outcome
-rather than a failure to handle one. An arbiter cannot tell a dead peer from an unreachable
-one; with no witness to ask, promoting on silence is what produces two arbiters granting
-entitlements independently. No arbiter means no entitlement can move until one returns,
-which is a defined degraded state — components already fall back to their own rule, and it
-can only ever promote the lower instance id. See `docs/bug_list.md`, BUG-0075.
-
-On active arbiter failure, the passive arbiter detects heartbeat loss, requests a vote from
-the witness, and promotes itself if the vote is granted.
-
----
-
-## State Replication
-
-After each `ArbitrationDecision`, the active arbiter sends an `ArbiterStateRecord` (400)
-to the passive, which replies with `ArbiterStateAck` (401). The leadership-state map
-(`component_instance_id → ComponentState`) is thereby kept in sync across both arbiter
-instances. On active failure, the passive promotes with a current copy of the map and
-can immediately serve the next `ArbitrationReport` without data loss.
-
-`ComponentState` per component pair:
-- `leader_instance_id` — which instance is currently leader
-- `follower_instance_id` — which instance is follower
-- `epoch` — generation counter for this component pair's leadership
+Component leaders are unaffected by the pool having no active arbiter while their peers are
+running, because each renews with its peer.
 
 ---
 
 ## Fencing
 
-The arbiter fences a deposed leader via monotonic epoch generation (a higher epoch out-votes
-the old one). This system fences cooperatively and does **not** do power fencing (STONITH); it
-writes no fence file. See the **Fencing** section of
-[WAL and High Availability](../availability/wal_and_ha.md) for the full picture.
+Every epoch records which instance leads in it: its remainder on division by 4 is that instance's
+id. Voters never grant an epoch below the highest they have granted, and receivers discard anything
+from an older generation. Leases keep two instances from acting as leader at once; epochs are the
+second defence. This system does **not** do power fencing (STONITH).
 
 ---
 
@@ -109,35 +107,37 @@ writes no fence file. See the **Fencing** section of
 
 | Port | Usage |
 |------|-------|
-| 7200 | Inbound component connections (sequencer, ME heartbeats and arbitration requests) |
+| 7200 | Inbound component connections (lease requests) |
 | 7203 | Arbiter primary peer listener (arbiter-to-arbiter PDUs) |
 | 7204 | Arbiter secondary peer listener |
-| 7100 | Witness inbound (arbiter → witness heartbeats and vote requests) |
+| 7100 | Witness inbound (arbiter → witness lease requests) |
 
 ---
 
 ## Configuration
 
-Key `arbiter.toml` sections:
+Key `arbiter_primary.toml` / `arbiter_secondary.toml` sections:
 
 | Key | Purpose |
 |-----|---------|
 | `[network] listen_port` | Component connection listener (default 7200) |
-| `[ha] instance_id` | Unique integer; 1 = primary, 2 = secondary; lower wins active role |
-| `[peer] instance_id` | The peer arbiter's `instance_id`; known from configuration so the ordering can be applied before the two have ever spoken |
+| `[ha] instance_id` | 1 for the primary, 2 for the secondary; the primary is preferred when both start together |
+| `[peer] instance_id` | The peer arbiter's `instance_id`, which identifies its vote |
 | `[peer] listen_port` | Arbiter-to-arbiter listener port |
 | `[peer] host / port` | Peer arbiter's peer listener endpoint |
-| `[peer] heartbeat_interval_seconds` | How often to send `Heartbeat` to peer (default 2 s) |
-| `[peer] heartbeat_timeout_seconds` | Peer silence before promotion attempt (default 6 s) |
-| `[peer] startup_election_timeout_seconds` | How long to wait for a peer at startup before deciding without one (default 20 s) |
 | `[witness] host / port` | Witness endpoint |
-| `[witness] vote_timeout_seconds` | How long to wait for a witness vote before deciding without one (default 3 s) |
-| `[witness] heartbeat_interval_seconds` | How often to send `ArbiterHeartbeat` to witness (default 30 s) |
+| `[lease] period_milliseconds` | How long a grant lasts, and how long a voter that has just started grants nothing |
+| `[lease] drift_allowance_milliseconds` | How much shorter than the period an instance takes a lease it holds to be |
+| `[lease] renewal_interval_milliseconds` | How often a leader renews |
+| `[lease] promise_file` | Where this arbiter records its promise in deciding which arbiter is active; see above |
+
+The three `[lease]` values are expanded from the environment's `[shared]` section, because every
+voter and every instance holding a lease must use the same values.
 
 ---
 
 ## See Also
 
-- [Witness](witness.md) — the tiebreaker process
-- [WAL and High Availability](../availability/wal_and_ha.md) — arbiter PSA topology, split-brain protection, lease+epoch rationale
-- [Sequencer Application](sequencer_app.md) — how the sequencer contacts the arbiter for leader election
+- [Witness](witness.md) — the third voter in deciding which arbiter is active
+- [Deciding leadership by majority, with leases](../availability/majority_leases.md) — the rules and what happens in each failure
+- [Sequencer Application](sequencer_app.md) — the sequencer pair, which asks the arbiter pool for leases

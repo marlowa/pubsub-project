@@ -13,15 +13,20 @@ listen_host                      = "${arbiter_primary_peer_listen_host}"
 listen_port                      = ${arbiter_primary_peer_listen_port}
 host                             = "${arbiter_primary_peer_host}"
 port                             = ${arbiter_primary_peer_port}
-heartbeat_interval_seconds       = 2
-heartbeat_timeout_seconds        = 6
-startup_election_timeout_seconds = 20
 
 [witness]
 host                       = "${arbiter_primary_witness_host}"
 port                       = ${arbiter_primary_witness_port}
-vote_timeout_seconds       = 3
-heartbeat_interval_seconds = 30
+
+# How long a lease lasts, how much shorter an arbiter takes a lease it holds to be, and how often
+# it renews. Shared across the venue, because every voter must agree; see environments/*.toml.
+[lease]
+period_milliseconds = ${shared_lease_period_milliseconds}
+drift_allowance_milliseconds = ${shared_lease_drift_allowance_milliseconds}
+renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
+# Where this arbiter records the promise of its vote, so that a restart by its supervisor does not
+# forget it. Kept under the installation; see fix_common/LeasePromiseStore.hpp.
+promise_file = "${arbiter_primary_lease_promise_file}"
 
 [logging]
 applog_level = "info"
