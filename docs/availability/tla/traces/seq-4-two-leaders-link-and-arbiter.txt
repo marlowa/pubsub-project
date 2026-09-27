@@ -1,0 +1,10 @@
+Error: Invariant AtMostOneLeader is violated.
+  1 Initial                  up=TRUE, TRUE   role=unknown, unknown   epoch=0, 0   timer=TRUE, TRUE   pending=FALSE, FALSE links={a1, a2, ss}   record: 0@0 unconfirmed; arbiter up=TRUE learning=TRUE
+  2 Next                     up=TRUE, TRUE   role=leader, unknown    epoch=1, 0   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 0@0 unconfirmed; arbiter up=TRUE learning=TRUE
+  3 ArbiterStopsLearning     up=TRUE, TRUE   role=leader, unknown    epoch=1, 0   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 0@0 unconfirmed; arbiter up=TRUE learning=FALSE
+  4 Next                     up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 0@0 unconfirmed; arbiter up=TRUE learning=FALSE
+  5 LeaseArrives(1)          up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 1@1 confirmed; arbiter up=TRUE learning=FALSE
+  6 PairSettles              up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 1@1 confirmed; arbiter up=TRUE learning=FALSE
+  7 LinkFails("ss")          up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2}       record: 1@1 confirmed; arbiter up=TRUE learning=FALSE
+  8 ArbiterCrash             up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2}       record: 0@0 unconfirmed; arbiter up=FALSE learning=FALSE
+  9 HeartbeatTimeout(2)      up=TRUE, TRUE   role=leader, leader     epoch=1, 2   timer=FALSE, FALSE pending=FALSE, FALSE links={a1, a2}       record: 0@0 unconfirmed; arbiter up=FALSE learning=FALSE

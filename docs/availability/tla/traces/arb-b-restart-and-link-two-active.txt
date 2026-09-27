@@ -1,0 +1,17 @@
+Error: Invariant AtMostOneActive is violated.
+Error: The behavior up to this point is:
+771 states generated, 490 distinct states found, 0 states left on queue.
+  1 Initial                up=TRUE, TRUE   role=unknown, unknown   epoch=0, 0   seenActive=FALSE, FALSE timer=TRUE, TRUE   voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  2 Next                   up=TRUE, TRUE   role=active, unknown    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, TRUE  voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  3 Next                   up=TRUE, TRUE   role=active, passive    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, TRUE  voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  4 Next                   up=TRUE, TRUE   role=active, passive    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, TRUE  voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  5 Next                   up=TRUE, TRUE   role=active, passive    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, TRUE  voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  6 ArbiterCrash(1)        up=FALSE, TRUE  role=unknown, passive   epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, TRUE  voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  7 HeartbeatTimeout(2)    up=FALSE, TRUE  role=unknown, passive   epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, TRUE  witness up=TRUE max=0 links={w1, w2, aa}
+  8 Next                   up=FALSE, TRUE  role=unknown, passive   epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, TRUE  witness up=TRUE max=0 links={w1, w2, aa}
+  9 Next                   up=FALSE, TRUE  role=unknown, active    epoch=0, 1   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+ 10 LinkFails("aa")        up=FALSE, TRUE  role=unknown, active    epoch=0, 1   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2}
+ 11 ArbiterRestart(1)      up=TRUE, TRUE   role=unknown, active    epoch=0, 1   seenActive=FALSE, FALSE timer=TRUE, FALSE  voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2}
+ 12 HeartbeatTimeout(1)    up=TRUE, TRUE   role=unknown, active    epoch=0, 1   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=TRUE, FALSE  witness up=TRUE max=0 links={w1, w2}
+ 13 Next                   up=TRUE, TRUE   role=unknown, active    epoch=0, 1   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=TRUE, FALSE  witness up=TRUE max=1 links={w1, w2}
+ 14 Next                   up=TRUE, TRUE   role=active, active     epoch=2, 1   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, FALSE witness up=TRUE max=1 links={w1, w2}

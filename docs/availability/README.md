@@ -11,6 +11,7 @@ different time budgets, and conflating them is the subject of a bug entry.
 - [order_acceptance.md](order_acceptance.md) — refusing orders the venue cannot process, and telling the member so
 - [matching_engine_presence.md](matching_engine_presence.md) — asking the arbiter whether any matching engine exists, rather than waiting on a timer to guess
 - [process_death.md](process_death.md) — the inner loop: what is settled, what `launch.py` already does, and the measurement that ruled out a shared-memory journal
+- [tla/findings.md](tla/findings.md) — the HA design specified in TLA+ and model checked: what held, eight findings with counterexamples, and directions for fixing
 
 ---
 

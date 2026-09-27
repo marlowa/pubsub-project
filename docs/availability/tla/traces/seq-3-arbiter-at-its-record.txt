@@ -1,0 +1,15 @@
+Error: Invariant ArbiterNeverIssuesBelowItsRecord is violated.
+  1 Initial                  up=TRUE, TRUE   role=unknown, unknown   epoch=0, 0   timer=TRUE, TRUE   pending=FALSE, FALSE links={a1, a2, ss}   record: 0@0 unconfirmed; arbiter up=TRUE learning=TRUE
+  2 Next                     up=TRUE, TRUE   role=leader, unknown    epoch=1, 0   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 0@0 unconfirmed; arbiter up=TRUE learning=TRUE
+  3 Next                     up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 0@0 unconfirmed; arbiter up=TRUE learning=TRUE
+  4 LeaseArrives(1)          up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 1@1 confirmed; arbiter up=TRUE learning=TRUE
+  5 ArbiterStopsLearning     up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 1@1 confirmed; arbiter up=TRUE learning=FALSE
+  6 PairSettles              up=TRUE, TRUE   role=leader, follower   epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 1@1 confirmed; arbiter up=TRUE learning=FALSE
+  7 InstanceCrash(1)         up=FALSE, TRUE  role=unknown, follower  epoch=1, 1   timer=FALSE, TRUE  pending=FALSE, FALSE links={a1, a2, ss}   record: 1@1 unconfirmed; arbiter up=TRUE learning=FALSE
+  8 HeartbeatTimeout(2)      up=FALSE, TRUE  role=unknown, follower  epoch=1, 1   timer=FALSE, FALSE pending=FALSE, TRUE  links={a1, a2, ss}   record: 1@1 unconfirmed; arbiter up=TRUE learning=FALSE
+  9 Next                     up=FALSE, TRUE  role=unknown, follower  epoch=1, 1   timer=FALSE, FALSE pending=FALSE, TRUE  links={a1, a2, ss}   record: 2@2 confirmed; arbiter up=TRUE learning=FALSE
+ 10 Next                     up=FALSE, TRUE  role=unknown, leader    epoch=1, 2   timer=FALSE, FALSE pending=FALSE, FALSE links={a1, a2, ss}   record: 2@2 confirmed; arbiter up=TRUE learning=FALSE
+ 11 InstanceCrash(2)         up=FALSE, FALSE role=unknown, unknown   epoch=1, 2   timer=FALSE, FALSE pending=FALSE, FALSE links={a1, a2, ss}   record: 2@2 unconfirmed; arbiter up=TRUE learning=FALSE
+ 12 InstanceRestart(1)       up=TRUE, FALSE  role=unknown, unknown   epoch=1, 2   timer=TRUE, FALSE  pending=FALSE, FALSE links={a1, a2, ss}   record: 2@2 unconfirmed; arbiter up=TRUE learning=FALSE
+ 13 HeartbeatTimeout(1)      up=TRUE, FALSE  role=unknown, unknown   epoch=1, 2   timer=FALSE, FALSE pending=TRUE, FALSE  links={a1, a2, ss}   record: 2@2 unconfirmed; arbiter up=TRUE learning=FALSE
+ 14 Next                     up=TRUE, FALSE  role=unknown, unknown   epoch=1, 2   timer=FALSE, FALSE pending=TRUE, FALSE  links={a1, a2, ss}   record: 1@2 confirmed; arbiter up=TRUE learning=FALSE

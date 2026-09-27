@@ -1,0 +1,9 @@
+Error: Invariant AtMostOneActive is violated.
+Error: The behavior up to this point is:
+3282 states generated, 1389 distinct states found, 666 states left on queue.
+  1 Initial                up=TRUE, TRUE   role=unknown, unknown   epoch=0, 0   seenActive=FALSE, FALSE timer=TRUE, TRUE   voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  2 Next                   up=TRUE, TRUE   role=active, unknown    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, TRUE  voteWait=FALSE, FALSE witness up=TRUE max=0 links={w1, w2, aa}
+  3 HeartbeatTimeout(2)    up=TRUE, TRUE   role=active, unknown    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, TRUE  witness up=TRUE max=0 links={w1, w2, aa}
+  4 LinkFails("w1")        up=TRUE, TRUE   role=active, unknown    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, TRUE  witness up=TRUE max=0 links={w2, aa}
+  5 Next                   up=TRUE, TRUE   role=active, unknown    epoch=0, 0   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, TRUE  witness up=TRUE max=0 links={w2, aa}
+  6 Next                   up=TRUE, TRUE   role=active, active     epoch=0, 1   seenActive=FALSE, FALSE timer=FALSE, FALSE voteWait=FALSE, FALSE witness up=TRUE max=0 links={w2, aa}

@@ -1,0 +1,4 @@
+# Trace dumps TLC writes beside a specification whenever it finds a counterexample.
+*_TTrace_*.bin
+*_TTrace_*.tla
+states/
