@@ -92,6 +92,11 @@ cp "${RELEASE_DIR}/share/VERSION.txt" "${COPY_DIR}/VERSION.txt"
 # project's fmt library and passes it on. Stopped rather than skipped if the line is not there
 # exactly once, because a later Avro release that changed it would otherwise be built unchanged
 # without anyone noticing.
+#
+# The missing dependency is reported to Avro as AVRO-4353,
+# https://issues.apache.org/jira/browse/AVRO-4353. Once a release fixes it, this change is no
+# longer needed for that release: check what the fix links before removing it, because linking
+# fmt::fmt-header-only would still give Avro its own copy of the fmt code.
 FMT_LINE='$<BUILD_INTERFACE:fmt::fmt-header-only>'
 if [ "$(grep -c -F "${FMT_LINE}" "${COPY_DIR}/CMakeLists.txt")" -ne 1 ]; then
     echo "ERROR: expected exactly one '${FMT_LINE}' in Avro's CMakeLists.txt; this release links fmt differently" >&2
