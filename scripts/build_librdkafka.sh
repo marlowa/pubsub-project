@@ -76,7 +76,11 @@ rm -rf "${BUILD_DIR}"
 # - zlib on (compression), from the system package zlib-devel.
 # - TLS on, from the system package openssl-devel: a production cluster will need it, and it is
 #   cheaper to find out now whether it builds on RHEL8 than later.
-# - SASL off. It brings in Cyrus SASL and, through it, Kerberos, and nothing here needs it.
+# - SASL on, for signing in with a user name and password (SCRAM-SHA-512), which the OAR design
+#   offers alongside TLS certificates. librdkafka implements SCRAM itself, on top of OpenSSL.
+#   What must stay out is Cyrus SASL, which brings Kerberos with it and which nothing here needs.
+#   librdkafka links Cyrus whenever it finds its development files, and has no switch to refuse
+#   it, so the check after configuring below stops the build if it was found.
 # - curl off. It serves only OAuth sign-in to the cluster.
 # - zstd off, and lz4 from the copy bundled with librdkafka rather than a system one, so that
 #   neither depends on what a machine has installed.
@@ -94,11 +98,22 @@ cmake -S "${SOURCE_DIR}" -B "${BUILD_DIR}" \
     -DRDKAFKA_BUILD_EXAMPLES=ON \
     -DWITH_ZLIB=ON \
     -DWITH_SSL=ON \
-    -DWITH_SASL=OFF \
+    -DWITH_SASL=ON \
     -DWITH_CURL=OFF \
     -DWITH_ZSTD=OFF \
     -DENABLE_LZ4_EXT=OFF \
     -DWITH_PLUGINS=OFF
+
+CONFIG_H="${BUILD_DIR}/generated/config.h"
+if ! grep -q '^#define WITH_SASL_SCRAM 1' "${CONFIG_H}"; then
+    echo "ERROR: librdkafka was configured without SCRAM, so a user name and password cannot be used to sign in" >&2
+    exit 1
+fi
+if ! grep -q '^#define WITH_SASL_CYRUS 0' "${CONFIG_H}"; then
+    echo "ERROR: librdkafka found Cyrus SASL and would link it, bringing Kerberos with it." >&2
+    echo "       Build on a machine without the Cyrus SASL development package (cyrus-sasl-devel, libsasl2-dev)." >&2
+    exit 1
+fi
 
 cmake --build "${BUILD_DIR}" --parallel "$(nproc)"
 cmake --install "${BUILD_DIR}"
