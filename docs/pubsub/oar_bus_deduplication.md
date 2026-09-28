@@ -160,10 +160,11 @@ leader has dedup state without a snapshot or replay step.
   Closed via PR #5491, targeted at 2.5.0. Any Pulsar older than that must not combine batching
   with application sequence IDs.
 - **Producer names must be globally unique, and the broker fences on them.** "Only one producer
-  with that name can publish on a topic at a time." This composes well with arbiter-mediated
-  leadership — it is a second, independent fence — but it introduces a **promotion
-  interaction that must be tested**: a promoted OAR secondary claiming the same producer name
-  may be refused while the broker still believes the dead primary holds it.
+  with that name can publish on a topic at a time." This composes well with only OAR's leader
+  publishing, the leader being decided by majority leases — it is a second, independent fence — but it introduces
+  an **interaction that must be tested**: a new leader, claiming the same producer name, may be
+  refused while the broker still believes the previous leader holds it. See
+  [oar_external_stream.md](oar_external_stream.md) section 12.
 - **Dedup state is per-topic and in-memory before snapshot**, so it scales with producer count.
   OAR is a single producer, so this is not a concern here, but it is the reason the 10,000
   default exists.

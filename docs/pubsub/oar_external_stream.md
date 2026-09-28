@@ -1,7 +1,7 @@
 # The order activity recorder's external stream {#oar_external_stream}
 
 **Status: design, not implemented.** Several decisions are still open. They are listed together in
-[section 12](#oar_external_stream_open), and the sections that depend on them say so.
+[section 14](#oar_external_stream_open), and the sections that depend on them say so.
 
 ---
 
@@ -22,7 +22,9 @@ This document describes how OAR publishes to that system. It covers:
 - how schemas are registered, and what OAR checks when it starts;
 - how the published events are kept in order;
 - how programs that use the external messaging system are configured, and how the system itself
-  is set up.
+  is set up;
+- that only the leader of OAR's two instances publishes, and what a new leader does when it takes over;
+- what happens when publishing stops, and what operators can see.
 
 Related documents:
 
@@ -113,11 +115,15 @@ The **producer identity** is not carried with each publish. It is given to the i
 from configuration, when it is created. It must be the same on OAR's primary and secondary
 instances, and must not be derived from a host name, a process identifier or an instance's role. A
 consumer uses the pair of producer identity and sequence number to recognise a duplicate, and a
-promoted secondary must present the same identity the primary did.
+promoted secondary must present the same identity the primary did. The identity comes from one value
+in the environment file, `oar_producer_identity`, which the deploy step writes into both instances'
+configurations, so the two can differ only if a deployed configuration is edited by hand.
 
 If a single record from the matching engine publisher ever produces events on more than one topic,
 that record counts as confirmed only when all of its events are confirmed, and OAR's saved position
-must not pass it before then.
+must not pass it before then. OAR's own tracking of confirmations enforces this: it counts the events
+each record produced, and moves its saved position past a record only when all of them are
+confirmed.
 
 Inside the Pulsar implementation there is one Pulsar producer for each topic, because a Pulsar
 producer is bound to a single topic. A Kafka producer can send to any number of topics.
@@ -290,7 +296,7 @@ null or a value, with a default of null:
 | `text` | `string` | Free text the execution report carries. |
 
 How the member is identified is still to be confirmed
-against what consumers of such a stream need (section 12, question 2); until then the design follows the
+against what consumers of such a stream need (section 14, question 2); until then the design follows the
 execution report, which identifies the member through `account` and `parties`.
 
 ### 4.6 Prices and quantities
@@ -320,6 +326,11 @@ no exponent and no limit on the number of digits. The FIX order gateway checks e
 against this format, although the check itself has a defect ([BUG-0095](../bug_list.md#bug_0095)).
 The binary order gateway does not check it at all ([BUG-0096](../bug_list.md#bug_0096)). Until both
 are fixed, a malformed value can reach the published events.
+
+**OAR does not go into service until both are fixed.** OAR itself cannot keep a malformed value out
+of the stream: it may not drop an event (R-0049), and refusing to publish one would stop publishing
+and, after the backlog bound, trading (section 13). The only place a malformed value can be refused
+is where it enters the venue, in the gateways.
 
 **What this asks of consumers.** A consumer that needs to calculate or compare with a price parses
 the text into an exact decimal type of its own, such as Java's `BigDecimal` or Python's
@@ -384,6 +395,27 @@ simple and fully specified: variable-length integers, length-prefixed strings an
 index for each union or enum value. Writing it directly avoids adding the Avro C++ library and its
 build requirements to the venue.
 
+**The encoder does not need to keep up with changes to Avro, because the encoding does not change.**
+Avro's binary encoding has been the same since Avro 1.0. What later versions added, such as logical
+types for dates, timestamps and decimals, are annotations on the existing types: a timestamp is still
+written as a `long`. A generated encoder written today writes what every Avro library, old or new,
+reads. That the generator might one day have to follow a change to the encoding is a concern in
+theory only; it would take a new major version of the Avro specification, which every Avro library
+would have to follow too.
+
+Those build requirements are about to grow. The Avro C++ library's next major version replaces the
+fmt library with the standard library's `std::format` and requires C++20
+([AVRO-4260](https://issues.apache.org/jira/browse/AVRO-4260)). gcc 8.5 on RHEL8 cannot compile
+that: the standard library first has `std::format` in GCC 13. A venue that depended on the Avro C++
+library would be held to Avro 1.12 on RHEL8.
+
+**The encoder is checked against Avro's own library.** A test encodes events with the generated
+encoder, decodes them with the Avro C++ library using the generated `.avsc` file, and checks that
+every field comes back as written, for every kind of event and with every optional field both
+present and absent. This is the direct way to catch a mistake in the generator. It makes the Avro C++
+library a dependency of that test only, never of the venue; `scripts/build_avro_cpp.sh` builds it
+into the third-party directory.
+
 DSL types map to Avro types as follows:
 
 | DSL | Avro |
@@ -417,6 +449,15 @@ text. `OrderEvent` carries them as text too (section 4.6).
 A program that resolves schemas matches fields by name, so for such a program the position of a
 field does not matter. Adding fields only at the end still costs nothing, and it protects programs
 that decode without resolving.
+
+**Nothing is reserved in advance for a future use.** Fills are the obvious example: the venue
+produces none yet, and when it does, events will need fields to describe them. Those fields are
+added then, as optional fields with defaults. Under these rules that is a compatible change in both
+directions, so it needs no preparation now and cannot be rushed later: a new release adds the
+fields, older consumers ignore them, and newer consumers reading older events get the defaults.
+Reserving the fields now would do harm. Their names and types would be fixed before fills are
+designed, and because a field is never removed, a reservation that turned out wrong would stay in
+the schema for good.
 
 ### 6.2 The compatibility rule: full transitive
 
@@ -536,7 +577,7 @@ error.
 **The registry is a separate process.** Apache Kafka has no schema registry. The registries in use
 implement an HTTP interface with JSON bodies that Confluent defined for its own registry. Two
 registries under the Apache 2.0 licence implement it: Apicurio Registry and Karapace. Which one is
-open (section 12, question 1).
+open (section 14, question 1).
 
 **The registry's numbers.** The registry groups the versions of one schema under a name it calls a
 subject. Because each topic carries one message type (section 5.1), each topic has one subject,
@@ -595,12 +636,43 @@ stop OAR publishing. This matters because trading halts when OAR cannot publish 
 Without it, a send that fails and is retried can land after later sends, and events are then out of
 order. The Kafka implementation sets it to true.
 
+Idempotence here keeps events in order and stops a retried send being stored twice **while one
+producer is running**. It does not prevent duplicates across a restart of OAR or a change of leader:
+the new producer is a different producer to Kafka, and it publishes again from its resume position.
+Those duplicates are expected, and consumers discard them (section 11).
+
+**Kafka transactions are not used.** Transactions are the Kafka feature for writing to several
+places atomically, and are often suggested for removing duplicates. They are not used, for three
+reasons:
+
+- **They would not remove OAR's duplicates by themselves.** A transaction removes duplicates only
+  when the producer's read position is stored in Kafka, inside the same transaction as the events
+  it produced. OAR reads from the matching engine publisher, not from Kafka, and its position is
+  kept there (section 2). Moving it into Kafka would make the design work differently on Kafka and
+  on Pulsar, which the interface in section 3 exists to prevent.
+- **They would make every consumer depend on a setting.** Only a consumer reading with
+  `isolation.level=read_committed` is protected. A consumer left at the default sees every event,
+  including those of transactions that were abandoned. Consumers must discard duplicates anyway
+  (R-0050), so transactions would add a second rule for them to get right, not replace the first.
+- **They would lengthen the time to confirmation.** Each transaction ends with a commit, an extra
+  exchange with the brokers, before its events are visible to those consumers. The time from
+  publish to confirmation is what OAR's backlog depends on (section 13).
+
+So the design accepts duplicates and makes them cheap to discard (section 11), on Kafka and Pulsar
+alike, as [oar_bus_deduplication.md](oar_bus_deduplication.md) concludes.
+
 ---
 
 ## 9. Keeping events in order
 
 Both Pulsar and Kafka keep events in order only within one partition. OAR publishes to a topic with
 **one partition**: a non-partitioned topic in Pulsar, a topic created with one partition in Kafka.
+
+**Why one partition, stated plainly.** Consumers need the events of the whole venue in one order, not
+only the events of each instrument in order, and only one partition gives them that. Several
+partitions keyed by instrument would keep each instrument's events in order, but the order between
+instruments would be lost, and consumers could not rebuild it, because the sequence numbers on the
+topic have gaps. The rest of this section explains each part of that.
 
 Consumers of order events need three kinds of order:
 
@@ -621,10 +693,19 @@ topic across several processes. The capacity of one partition is commonly quoted
 megabytes a second, which at a few hundred bytes an event is far above the venue's order rate. This
 has not been measured here.
 
-The key is still the instrument. Changing the number of partitions of an existing topic moves keys
-between partitions, and order is lost at the moment of the change, so the number of partitions is
-fixed when the topic is created. If a topic with several partitions is ever needed, keying by
-instrument means order within each instrument is what it keeps.
+**If one partition is ever not enough.** Should the venue's event rate ever outgrow one partition,
+which is not expected (see above), the choice would be between two losses, and it would be made
+deliberately, not by adding partitions to the existing topic:
+
+- **Several partitions, keyed by instrument.** Each instrument's events stay in order; the order
+  across the venue is lost, and consumers that need it can no longer have it.
+- **Several topics**, for example one for each group of instruments, each with one partition. The
+  same loss, made visible in the topic layout.
+
+The key is already the instrument, so that the first option keeps order within each instrument if it
+is ever taken. But the number of partitions of a topic is fixed when the topic is created, and the
+deploy step refuses a topic whose number of partitions differs (section 10.5): adding partitions to
+a live topic moves keys between partitions, and order is lost at the moment of the change.
 
 A Pulsar consumer that needs the events in order must use an Exclusive or Failover subscription.
 A Shared subscription does not keep order.
@@ -665,6 +746,12 @@ appear as a client library error minutes later. Section 10.7 describes how unkno
 **Secrets are never in the file.** Passwords and tokens come from an environment variable, or from
 a file whose name the configuration gives. Certificates and keys are given as file paths. This is
 how the venue already handles its database password and the FIX gateways' certificates.
+
+**A replaced certificate, key or password takes effect when the program restarts.** The client
+libraries read them when the connection is made, so replacing one means restarting OAR. That is a
+routine event: R-0052 requires that it does not stop trading, provided the restart fits within the
+backlog bound (section 13). With two instances, the follower is restarted first, then the leader;
+the leader's restart moves the lead to the follower.
 
 **Each environment's values live in one place:** that environment's file under `environments/`,
 through the `${...}` substitution every other component's configuration already uses.
@@ -917,28 +1004,6 @@ purpose, for example "external_messaging.pulsar: system is kafka".
 `deploy.py` already covers the neighbouring case: it refuses to write a configuration that still
 contains a `${...}` placeholder with no value.
 
-## 11. What consumers are expected to do
-
-Consumers are not part of this project, but the design makes promises to them and asks certain
-things of them.
-
-- **Recognise duplicates** by the pair of producer identity and sequence number (R-0050). Every
-  restart and every promotion of OAR publishes some events again.
-- **Decode with the writer's schema**, found from the event itself as described in section 8, and
-  resolve it against the schema the consumer was built with. A consumer that decodes every event
-  with its own built-in schema fails when the schema changes.
-- **Never stop at an event that cannot be processed.** A consumer that retries such an event forever
-  stops reading the partition behind it. The usual answer is to copy the event, unchanged, to a
-  separate topic kept for events that could not be processed, wait until that copy is confirmed,
-  and only then move past the event. Only permanent failures, such as an event that cannot be
-  decoded, belong there. A temporary failure, such as a database that is briefly unavailable, is
-  retried instead, or one outage fills that topic with good events. A consumer that sets an order's
-  event aside must also set aside the later events for that order, or stop.
-
-This project includes a test consumer that checks OAR's output and does each of these things.
-
----
-
 ### 10.8 The first implementation, and the sizes of the deployments
 
 **Kafka is implemented first.** Its storage is simpler to reason about than Pulsar's, which adds a
@@ -952,6 +1017,10 @@ The considerations that were weighed:
   build: everything it depends on is packaged for RHEL8. RHEL8's own packaged librdkafka is version
   0.11.4, which is too old to use. The Pulsar C++ client also needs protobuf 3.20 or later, where
   RHEL8 packages 3.5.
+- librdkafka 2.15.1 builds from its release tarball with gcc 8.5 in the Rocky 8 container, with no
+  network access, using `scripts/build_librdkafka.sh`. It needs only zlib and OpenSSL 1.1 from the
+  system. It is built with TLS and SCRAM, which librdkafka implements itself, and without Cyrus SASL,
+  so Kerberos is not part of it.
 - librdkafka does not run cleanly under ThreadSanitizer, so the Kafka implementation is not built in
   the ThreadSanitizer configuration. Section 3.3 explains how the hand-over of confirmations to OAR's
   thread is still checked there.
@@ -976,9 +1045,146 @@ is stored on all three machines, and confirmed once two have it. When one machin
 two still form a majority of controllers, and still satisfy `min.insync.replicas`, so publishing
 continues. When two die, publishing stops rather than confirm an event that only one machine holds.
 
-Whether three machines is the right minimum for production is still to be settled (section 12, question 4).
+Whether three machines is the right minimum for production is still to be settled (section 14, question 4).
 
-## 12. Open decisions {#oar_external_stream_open}
+---
+
+## 11. What consumers are expected to do
+
+Consumers are not part of this project, but the design makes promises to them and asks certain
+things of them.
+
+- **Recognise duplicates** by the pair of producer identity and sequence number (R-0050). Every
+  restart of OAR, and every change of OAR's leader, publishes some events again.
+
+  **A consumer needs to remember only one number for each producer identity:** the highest sequence
+  number it has processed. Any event whose sequence number is at or below it is a repeat, and is
+  discarded. This holds because a topic has one partition (section 9), OAR publishes in the order
+  it reads, and when it publishes again it starts from a position no later than its last confirmed
+  event (R-0051), so every repeat comes after the event it repeats. It also relies on OAR publishing
+  at most one event on a topic for each record it reads, which is true of every event kind in section
+  4.4: each comes from one execution report. The sequence numbers on a topic have gaps (section 9),
+  so a consumer must not expect each event's number to be one more than the last.
+- **Decode with the writer's schema**, found from the event itself as described in section 8, and
+  resolve it against the schema the consumer was built with. A consumer that decodes every event
+  with its own built-in schema fails when the schema changes.
+- **Never stop at an event that cannot be processed.** A consumer that retries such an event forever
+  stops reading the partition behind it. The usual answer is to copy the event, unchanged, to a
+  separate topic kept for events that could not be processed, wait until that copy is confirmed,
+  and only then move past the event. Only permanent failures, such as an event that cannot be
+  decoded, belong there. A temporary failure, such as a database that is briefly unavailable, is
+  retried instead, or one outage fills that topic with good events. A consumer that sets an order's
+  event aside must also set aside the later events for that order, or stop.
+
+This project includes a test consumer that checks OAR's output and does each of these things. It is
+part of the first implementation, not a later addition: it is how OAR's promises in this section are
+checked.
+
+---
+
+## 12. Only the leader publishes {#oar_external_stream_which_publishes}
+
+OAR runs as two instances, a primary and a secondary, like the venue's other components. **Only the
+leader publishes.** Which instance leads is decided the way every other pair in the venue decides
+it: by a majority of three voters granting leases, as
+[majority_leases.md](../availability/majority_leases.md) describes. The voters are OAR's two
+instances and the arbiter pool, and OAR uses the same `fix_common::PairLeaseAgent` as the other
+components. So which instance publishes needs no mechanism of its own, and no configuration.
+
+The rest of this design depends on there being one publisher at a time: the events on a topic
+appear in the order OAR read them, and a consumer recognises a repeat with the one number described
+in section 11. Leases give exactly that, because two instances never lead at once. A Pulsar broker
+adds a second, independent check: it refuses a second producer with the same producer name while
+the first is connected.
+
+**When the leader stops leading**, because its lease ran out or its process died, it stops handing
+events to the client library, discards what it has handed over but not had confirmed, and closes
+its producer. Events already on their way to the external messaging system may still arrive after
+that. They are duplicates, and consumers discard them.
+
+**When an instance becomes leader**, it opens its producer and publishes from its resume position.
+Two things about this remain to be designed (section 14, question 5):
+
+- **Waiting for the Pulsar producer name.** The new leader's producer has the same name as the old
+  one's, and the broker refuses it while it still believes the old producer is connected, as
+  [oar_bus_deduplication.md](oar_bus_deduplication.md) records. The new leader keeps trying. How long
+  the broker takes to release the name counts towards the backlog bound in section 13, and must be
+  tested before it is relied on.
+- **Where the new leader resumes.** Its resume position must never be later than the last event the
+  external messaging system confirmed (R-0051). Two sources are possible. The external messaging
+  system knows the highest sequence number it holds from this producer identity: a Pulsar producer
+  reports it when it is created, and with one partition the last event on a Kafka topic carries it
+  in its headers. Alternatively, the matching engine publisher knows how far OAR has acknowledged,
+  which is never beyond a confirmed event (section 2); but it keeps a position for each subscriber
+  name, so both instances would have to share one subscriber name.
+
+A configured switch, saying in each instance's configuration whether it may publish, is not needed
+to decide which instance publishes. It could still be useful to keep an instance from ever leading,
+for example while it is being repaired, but it would apply to leading as a whole, like the venue's
+other components, not to publishing alone.
+
+---
+
+## 13. When publishing stops {#oar_external_stream_when_publishing_stops}
+
+OAR's availability decides whether the venue trades. Two requirements say how:
+
+- **A restart of OAR does not stop trading (R-0052).** The venue goes on accepting orders while
+  OAR restarts and catches up.
+- **Where external publishing cannot resume, trading is halted (R-0053).** When no instance of OAR
+  is publishing and the backlog of records not yet published passes a stated bound, the venue
+  halts trading and says that it has.
+
+### 13.1 The backlog bound
+
+**The bound is measured, not chosen.** It must be longer than every interruption the venue is meant
+to ride through, or it contradicts R-0052. So it is set above the longest of these, with a margin:
+
+- a supervised restart of the leader;
+- the catch-up after that restart, publishing the records that built up while it was down, at the
+  venue's highest order rate;
+- the other instance becoming leader (section 12), including, with Pulsar, the time the broker takes to
+  release the producer name.
+
+Each is measured on the production hardware, and measured again whenever OAR, the client library or
+the external messaging system changes, as the restart period of the venue's other components is
+(R-0081). The bound can be stated as a number of records or as the age of the oldest record not yet
+published; which is to be decided with the measurements. The confirmation timeout in section 10.2
+must be well inside the bound, so that a publish that is never confirmed is retried before the
+bound is reached.
+
+**What it means for the size of the external messaging system.** With three Kafka machines,
+publishing continues when one dies and stops when two die (section 10.8). If the two are not back
+before the bound passes, trading halts. That is the consequence open decision 4 must weigh.
+
+### 13.2 Which component halts trading
+
+The matching engine publisher is the component that can measure both parts of R-0053's condition:
+whether OAR is connected to it, and how far behind OAR's acknowledgements are. So it decides when
+the bound has passed. The halt itself is a venue-wide trading halt, which the venue cannot yet
+declare ([BUG-0065](../bug_list.md#bug_0065)). R-0053 therefore cannot be met until that is built.
+
+The decision is made inside the venue from its own measurements. It must not depend on the metrics
+described below, because collecting metrics is optional.
+
+### 13.3 What operators can see
+
+OAR and the matching engine publisher report, as metrics:
+
+- the backlog: how many records OAR has not had confirmed, and the age of the oldest of them,
+  alongside the bound;
+- how long each publish takes to be confirmed, as a histogram;
+- how many publishes have failed or timed out.
+
+They also log, at the time it happens:
+
+- each confirmation failure or timeout, with the reason the client library gave;
+- which instance leads, and so publishes, and each change of leader;
+- the result of the startup checks against the registry (section 8).
+
+---
+
+## 14. Open decisions {#oar_external_stream_open}
 
 1. **Which registry to use with Kafka.** Apicurio Registry (Java) or Karapace (Python). Whether
    either installs from a release tarball without network access, and runs on RHEL8, has not been
@@ -990,8 +1196,18 @@ Whether three machines is the right minimum for production is still to be settle
 
 3. **The tuning values for the Kafka implementation** (section 10.6), chosen from measurement: how
    long librdkafka waits to fill a batch, how many unconfirmed events it may hold, and whether events
-   are compressed.
+   are compressed. Before measuring, the decision must state what it is aiming for: the longest time
+   from publish to confirmation that is acceptable, and the highest rate of events that must be
+   sustained, with the venue's peak order rate as the starting point. It must also state how they are
+   measured, on which machines and against which deployment of Kafka, so that a later measurement
+   can be compared with it.
 
 4. **The minimum size of a production deployment.** Three machines for now (section 10.8). Whether
    that is enough, how split-brain is prevented at each layer, and what Pulsar would need, given
-   its separate storage and metadata layers, is still to be settled.
+   its separate storage and metadata layers, is still to be settled. It must be weighed against
+   section 13: whatever stops the external messaging system confirming events for longer than the
+   backlog bound halts trading.
+
+5. **What the new leader does when it takes over** (section 12): how it waits for a Pulsar broker to
+   release the producer name, and whether it takes its resume position from the external messaging
+   system or from the matching engine publisher.
