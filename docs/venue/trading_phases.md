@@ -139,6 +139,23 @@ business on the order path.
 
 So both paths earn their place for different components rather than as a hedge.
 
+**Technical events are sequenced by the sequencer, in the same sequence as orders and execution
+reports.** The pub/sub path must carry a technical event as a sequenced record, never sent to
+subscribers directly by the publisher or any other component. The order activity recorder depends on
+this twice. It finishes the trading day when every event up to the `eod` event is confirmed, which
+means something only if the `eod` event has a definite place among the execution reports. And it
+keeps one number as its position in everything it reads, which works only if everything it reads is
+numbered from one sequence ([oar_external_stream.md](../pubsub/oar_external_stream.md) sections 12.1
+and 13.6).
+
+**End of day is not complete until the recorder reports that every event of the day is confirmed**
+by the external messaging system. The start of `eod` is declared by the venue's schedule; the end of
+it waits for the recorder, because trading that is not fully recorded cannot be reconstructed
+afterwards. How the recorder's report combines with the phase's other work, such as receiving the
+next day's instrument prices, is still to be designed. For the recorder's report to mean the day is
+fully recorded, no order record may follow the `eod` event, so the open question below of whether a
+member may cancel an order during `eod` must be settled with that in mind.
+
 ### The control-plane path already exists in the right shape
 
 `OrderAcceptance` (127) carries `accepting`, `deferred_order_count` and `degraded_for_seconds` from

@@ -106,6 +106,12 @@ cursor *periodically* (every N records, or on disconnect), and the publisher tru
 only up to the slowest subscriber's acknowledged position. Retention is bounded additionally by a
 per-topic window so one wedged subscriber cannot pin the log forever (see D4).
 
+**The order activity recorder is exempt from the retention window.** Its acknowledged position always
+holds back the log, however far behind it falls. For the recorder, a gap would be a permanent loss of
+events that R-0049 forbids, not something a consumer can recover from, and how far behind it can fall
+is limited instead by the backlog bound after which trading halts (R-0053). See
+[oar_external_stream.md](oar_external_stream.md) section 13.4.
+
 ### D7 — Only the leader publishes; on demotion, subscribers are dropped to rediscover.
 
 A publisher runs inside an HA component and publishes only while it holds leadership. A non-leader

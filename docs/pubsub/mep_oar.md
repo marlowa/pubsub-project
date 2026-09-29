@@ -21,10 +21,9 @@ current system does not serve:
 
 - **Market data** — needs both the order stream (NOS + OCR) and the execution report stream
   (ER) at low latency relative to other non-core consumers.
-- **OAR (Order Activity Recorder)** — needs the order stream for publication to an enterprise
-  bus (Kafka, Pulsar, or equivalent, not yet decided). It also needs ERs internally to manage
-  its L3 order book and to know when orders are matched (filled), so it knows when to retire
-  them from the book after the enterprise bus acknowledges receipt.
+- **OAR (Order Activity Recorder)** — needs the execution report stream, from which it makes an
+  event for each outcome of an order and publishes it to the external messaging system, Apache
+  Kafka or Apache Pulsar (section 7).
 
 Neither consumer has the low-latency requirements of the core order flow.
 
@@ -398,8 +397,8 @@ Key properties:
 
 | Topic name | PDU IDs included | Consumers |
 |---|---|---|
-| `orders` | 1000 (NOS), 1001 (OCR) | OAR, market data |
-| `execution_reports` | 1002 (ER) | OAR (for L3 book), market data |
+| `orders` | 1000 (NOS), 1001 (OCR) | market data |
+| `execution_reports` | 1002 (ER) | OAR, market data |
 
 MEP listens on separate ports per topic (see port table). A subscriber subscribes to exactly
 one topic per connection. OAR connects twice (once per topic); market data connects twice.
@@ -482,7 +481,7 @@ applications/matching_engine_publisher/
 All direct topic subscribers will be low-latency C++ applications. There is therefore no
 need for a standalone client library, a C API shim, or any other-language mechanism.
 Applications that need further downstream consumption at lower-latency requirements (Java
-services, analytics, settlement) subscribe to the enterprise bus via OAR, not to MEP
+services, analytics, settlement) subscribe to the external messaging system via OAR, not to MEP
 directly.
 
 `TopicSubscriberChannel`, `TopicSubscriberChannelConfig`, and `TopicSubscriberThread` all
@@ -597,9 +596,9 @@ framework components (OAR, market data) that are already `ApplicationThread` sub
 applications that do not want to write their own.
 
 All direct MEP topic subscribers are C++ applications — low-latency is the reason they
-connect directly rather than via the enterprise bus. There is therefore no standalone client
+connect directly rather than via the external messaging system. There is therefore no standalone client
 library, no C API, and no other-language mechanism. Applications needing downstream
-consumption at lower-latency requirements subscribe to the enterprise bus via OAR.
+consumption at lower-latency requirements subscribe to the external messaging system via OAR.
 
 **`TopicSubscriberChannel` API (sketch):**
 
@@ -753,146 +752,25 @@ and `topics.orders.listen_port = 7042`, `topics.execution_reports.listen_port = 
 
 ## 7. OAR (Order Activity Recorder)
 
-### 7.1 Role
+OAR subscribes to the matching engine publisher and publishes an event for each outcome of an order
+to the external messaging system, Apache Kafka or Apache Pulsar. Its design is in
+[oar_external_stream.md](oar_external_stream.md): what it reads and what it publishes, how it finds
+where to resume, how its two instances decide which one publishes, back-pressure, how a failure to
+publish is handled, and how the trading day ends.
 
-OAR is a framework subscriber to MEP's two topics. It maintains an L3 order book (all live
-orders tracked individually) and publishes order events to an enterprise bus. The enterprise
-bus implementation (Kafka, Pulsar, or other) is a compile-time choice behind a `BusPublisher`
-abstract interface. For framework validation purposes, a `StubBusPublisher` logs and counts
-records without connecting to any external system.
+This section says only where OAR sits beside the matching engine publisher:
 
-OAR is HA (primary/secondary pair). Cursor persistence across restarts and failovers is
-achieved by the subscriber maintaining its last acked cursor in a small local state file (one
-file per topic subscription), combined with the MEP WAL that holds records for replay.
-
-### 7.2 L3 book and enterprise bus interaction
-
-OAR subscribes to both MEP topics:
-
-**Orders topic (NOS + OCR):**
-- On NOS: add the order to the L3 book; publish the order event to the enterprise bus.
-- On OCR: update the L3 book to record a pending cancel; publish the cancel event.
-- OAR does not remove an order from the L3 book until it receives confirmation from both:
-  (a) the enterprise bus that it has acknowledged the published event; and
-  (b) the ER confirming the order is fully terminal (filled or cancelled).
-- This mirrors the behaviour of the equivalent component in the reference system.
-
-**Execution reports topic (ER):**
-- On ER with a terminal status (Filled, Canceled, Rejected): mark the corresponding order
-  in the L3 book as terminal. If the enterprise bus has already acked the order event, remove
-  it from the book immediately. Otherwise, retain it and remove it on the subsequent bus ack.
-- ERs are **not** published to the enterprise bus by OAR.
-
-### 7.3 `BusPublisher` abstraction
-
-```cpp
-class BusPublisher {
-  public:
-    virtual ~BusPublisher() = default;
-    virtual void publish_order_event(const pubsub_itc_fw_app::NewOrderSingleView& view,
-                                     int64_t seq_no) = 0;
-    virtual void publish_cancel_event(const pubsub_itc_fw_app::OrderCancelRequestView& view,
-                                      int64_t seq_no) = 0;
-};
-```
-
-Concrete implementations:
-- `StubBusPublisher` — logs the event at Info level and counts it. Immediately calls back
-  "ack" so the L3 book can clean up synchronously in test scenarios.
-- `KafkaBusPublisher` — compiled when `USE_KAFKA=ON` in CMake. Uses the librdkafka C++ API.
-  Async publish; ack delivered via librdkafka delivery callback.
-- `PulsarBusPublisher` — compiled when `USE_PULSAR=ON`. Uses the Pulsar C++ client.
-  Async publish; ack via producer callback.
-
-Only one implementation is compiled into any given binary. The framework validation build
-uses `StubBusPublisher`. Kafka and Pulsar implementations are future work; the interface is
-defined now so they can be added without changing `TapThread`.
-
-### 7.4 Cursor persistence
-
-OAR maintains two cursor files (one per topic subscription):
-- `tap_cursor_orders.bin` — last `TopicAck.last_seq_no` sent for the orders topic.
-- `tap_cursor_execution_reports.bin` — last `TopicAck.last_seq_no` for the ER topic.
-
-On restart, OAR reads these files and presents the cursors in `TopicSubscribeRequest`. If no
-cursor file exists (cold start), OAR uses `from_seq_no = 0` (full replay from MEP's oldest
-WAL record), so no order events are lost from the enterprise bus.
-
-### 7.5 High availability
-
-OAR primary/secondary pair, arbiter-mediated election. Only the OAR leader subscribes to MEP
-and publishes to the enterprise bus. The secondary connects to MEP's topic listeners but
-sends `TopicSubscribeRequest` with the cold-start cursor and immediately closes the connection
-(it does not consume while passive). On failover, the new leader reconnects with its persisted
-cursor and resumes.
-
-### 7.6 Component structure
-
-```
-applications/tap/
-├── CMakeLists.txt
-├── tap.toml
-├── tap_secondary.toml
-├── Tap.hpp
-├── Tap.cpp
-├── TapThread.hpp
-├── TapThread.cpp
-├── TapConfiguration.hpp
-├── TapConfigurationLoader.hpp
-├── TapConfigurationLoader.cpp
-├── BusPublisher.hpp                (abstract interface)
-├── StubBusPublisher.hpp
-├── StubBusPublisher.cpp
-├── KafkaBusPublisher.hpp           (compiled with USE_KAFKA=ON)
-├── KafkaBusPublisher.cpp
-├── PulsarBusPublisher.hpp          (compiled with USE_PULSAR=ON)
-└── PulsarBusPublisher.cpp
-```
-
-### 7.7 Configuration (`TapConfiguration`)
-
-```toml
-[mep_orders]
-host = "${tap_mep_orders_host}"
-port = 7040
-
-[mep_execution_reports]
-host = "${tap_mep_execution_reports_host}"
-port = 7041
-
-[bus]
-# "stub", "kafka", or "pulsar" — must match the compiled BusPublisher.
-type = "stub"
-
-[cursors]
-directory = "${tap_cursors_directory}"
-
-[ha]
-ha_enabled           = ${tap_ha_enabled}
-instance_id          = ${tap_instance_id}
-peer_host            = "${tap_peer_host}"
-peer_port            = 7046
-arbiter_primary_host = "${tap_arbiter_primary_host}"
-arbiter_port         = 7100
-
-[logging]
-applog_level = "info"
-syslog_level = "critical"
-
-[reactor]
-cpu_pinning_enabled        = true
-cpu_pinning_reserve_cpu0   = ${shared_reactor_cpu_pinning_reserve_cpu0}
-cpu_registry_lock_file     = "${shared_reactor_cpu_registry_lock_file}"
-connect_retry_warning_interval = "15m"
-
-[event_queue_pool]
-objects_per_slab = 256
-initial_slabs    = 1
-
-[command_queue_pool]
-objects_per_slab = 256
-initial_slabs    = 1
-```
+- **OAR reads two topics:** the execution reports, from which its events are made, and the technical
+  events, which tell it when the trading day ends. It does not read the orders topic: its events
+  record outcomes, not members' requests.
+- **OAR keeps no order book.** Each event is made from one execution report, and needs nothing
+  remembered from earlier ones.
+- **OAR acknowledges a record only once its event is confirmed** by the external messaging system,
+  not when it has received the record.
+- **The publisher keeps every record OAR has not acknowledged**, with no retention limit, unlike other
+  subscribers. Otherwise a long outage of the external messaging system would lose events.
+- **Only the leader of OAR's two instances reads and publishes.** Which instance leads is decided by
+  majority leases, as for every other pair in the venue.
 
 ---
 

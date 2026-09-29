@@ -23,8 +23,9 @@ This document describes how OAR publishes to that system. It covers:
 - how the published events are kept in order;
 - how programs that use the external messaging system are configured, and how the system itself
   is set up;
-- that only the leader of OAR's two instances publishes, and what a new leader does when it takes over;
-- what happens when publishing stops, and what operators can see.
+- that only the leader of OAR's two instances publishes, and where OAR resumes whenever it starts;
+- what happens when publishing stops or falls behind, how a failure to publish is handled, how the
+  trading day ends, and what operators can see.
 
 Related documents:
 
@@ -33,23 +34,57 @@ Related documents:
 - [oar_bus_deduplication.md](oar_bus_deduplication.md) records the evidence on whether the outside
   system can be relied on to discard duplicate messages. It concludes that it cannot, and this
   document follows that conclusion.
-- Section 7 of [mep_oar.md](mep_oar.md) describes OAR's place alongside the matching engine
-  publisher. Where the two documents differ on how OAR publishes externally, this document is the
-  current design.
+- Section 7 of [mep_oar.md](mep_oar.md) says briefly where OAR sits beside the matching engine
+  publisher, and points here for everything else.
+
+### 1.1 What OAR guarantees, and what it does not
+
+**OAR guarantees:**
+
+- **No event is lost.** Every execution report that produces an event is published and confirmed at
+  least once (R-0049). If OAR cannot publish, the backlog grows until trading halts (R-0053), so the
+  venue never runs on without its record (sections 2 and 13).
+- **Events keep the venue's order.** On a topic, each event's first appearance comes in the order
+  the venue sequenced the records (section 9).
+- **Every event carries an identity.** The pair of producer identity and sequence number identifies
+  each event (R-0050). A repeated event carries the same pair, and is identical to the original byte
+  for byte (section 11).
+- **Repeats are cheap to recognise.** A consumer needs to remember only the highest sequence number
+  it has processed for each producer identity (section 11).
+- **Every event can be decoded.** Its writer's schema can always be found from the event itself
+  (section 8). Every version of the schema is compatible with every earlier one in both directions
+  (section 6).
+- **The trading day is fully recorded before it ends.** The end of day is not complete until OAR
+  reports that every event up to the `eod` technical event is confirmed (section 13.6).
+
+**OAR does not guarantee:**
+
+- **That an event appears only once.** A restart of OAR, a change of leader or a failed publish all
+  publish some events again. Consumers discard the repeats (section 11).
+- **Consecutive sequence numbers.** The venue numbers other records from the same sequence, and
+  rejected orders publish no event, so there are gaps (sections 4.4 and 9).
+- **How quickly an event is published.** OAR publishes as soon as it can. How far behind it may fall
+  is limited only by the backlog bound, after which trading halts (section 13).
+- **An event for every execution report.** Rejected orders are not published. Fills are not
+  published yet, because the venue produces none (section 4.4).
+- **How long events are kept.** That is set by whoever runs the external messaging system (section
+  10.5).
 
 ---
 
 ## 2. The rule every part of this design keeps
 
-OAR saves its position, the sequence number of the last record it has finished with, **only after
-the external messaging system has confirmed that it has stored the event, and never before.**
+OAR moves its position, the sequence number of the last record it has finished with, past a record
+**only after the external messaging system has confirmed that it has stored the record's event,
+and never before.** Where that position is kept, and how OAR finds it whenever it starts, is
+described in section 12.1.
 
 The reason is the difference between the two ways a crash can go wrong:
 
-- If OAR crashes after publishing an event but before saving its position, it publishes that event
-  again when it restarts. The event appears twice downstream. A consumer can recognise the second
+- If OAR crashes after publishing an event but before its position has moved past it, it publishes
+  that event again when it restarts. The event appears twice downstream. A consumer can recognise the second
   copy and discard it, because every event carries an identity (R-0050).
-- If OAR saved its position first and then crashed before the event was stored, the event would
+- If OAR moved its position first and then crashed before the event was stored, the event would
   never be published. Nothing downstream could detect the omission, because nothing downstream
   knows the event existed. R-0049 forbids this.
 
@@ -70,7 +105,8 @@ Three consequences follow, and each shapes something later in this document.
 3. **A failed publish is never skipped.** If the external messaging system reports that an event could not be
    stored, OAR stops publishing, discards anything it has handed over but not had confirmed, and
    resumes from the last confirmed sequence number. Everything after that point is published again.
-   The duplicates this causes are expected and are handled downstream.
+   The duplicates this causes are expected and are handled downstream. Section 13.5 describes each
+   kind of failure and what OAR does with it.
 
 ---
 
@@ -120,9 +156,9 @@ in the environment file, `oar_producer_identity`, which the deploy step writes i
 configurations, so the two can differ only if a deployed configuration is edited by hand.
 
 If a single record from the matching engine publisher ever produces events on more than one topic,
-that record counts as confirmed only when all of its events are confirmed, and OAR's saved position
+that record counts as confirmed only when all of its events are confirmed, and OAR's position
 must not pass it before then. OAR's own tracking of confirmations enforces this: it counts the events
-each record produced, and moves its saved position past a record only when all of them are
+each record produced, and moves its position past a record only when all of them are
 confirmed.
 
 Inside the Pulsar implementation there is one Pulsar producer for each topic, because a Pulsar
@@ -130,14 +166,36 @@ producer is bound to a single topic. A Kafka producer can send to any number of 
 
 ### 3.3 Confirmations and threads
 
-Both the Pulsar and Kafka client libraries run threads of their own and report confirmations by
-calling a function on one of those threads. OAR's state belongs to OAR's own thread and must not be
-touched from any other thread.
-
-So an implementation never passes a confirmation to OAR directly. It places the confirmation on
-OAR's inter-thread queue, and OAR handles it on its own thread, like any other message. OAR sees
+OAR's state belongs to OAR's own thread and must not be touched from any other thread. So an
+implementation never passes a confirmation to OAR directly. It places the confirmation on OAR's
+inter-thread queue, and OAR handles it on its own thread, like any other message. OAR sees
 confirmations and failures as ordinary events on its own thread and never learns that another thread
 was involved.
+
+The two client libraries report confirmations differently, and each implementation does whatever
+its library requires to reach that queue:
+
+- **The Pulsar C++ client** runs threads of its own and reports each confirmation by calling a
+  function on one of them. That function places the confirmation on OAR's queue.
+- **librdkafka** reports a confirmation, which it calls a delivery report, only from
+  `rd_kafka_poll()`, on whichever thread calls it. The Kafka implementation therefore has a helper
+  `ApplicationThread` of its own, which calls `rd_kafka_poll()` and places each confirmation on
+  OAR's queue. Polling could instead be done on OAR's own thread, which the project prefers to
+  adding a thread. The helper thread is used so that confirmations reach OAR by the same path with
+  either system, and OAR's own code does not depend on which is in use.
+
+**How the helper thread knows there is something to collect.** librdkafka can write to a file
+descriptor whenever a confirmation arrives in an empty queue (`rd_kafka_queue_io_event_enable`). A
+small `EventHandler`, registered with the reactor through `Reactor::register_handler`, watches that
+descriptor. When it fires, the handler only sends the helper thread a message; librdkafka's
+functions never run on the reactor's own thread. The helper thread then calls `rd_kafka_poll()` with
+a timeout of zero, repeatedly, until it reports that there was nothing to collect, and returns. So a
+confirmation is collected as soon as it arrives, with no polling interval, and no call ever waits
+inside librdkafka, where the thread could not handle its own queue or the framework's termination
+event. A slow recurring timer, about every 100 milliseconds, runs the same loop as a safety net, in
+case a wake-up is ever missed; when there is nothing waiting, its first poll returns at once.
+Whether `register_handler` is safe to call from application code at the point the Kafka
+implementation calls it is to be checked when it is built.
 
 The test implementation reports its confirmations the same way, from a thread of its own created
 with `ThreadWithJoinTimeout`. This is deliberate. It means the ThreadSanitizer build exercises the
@@ -222,7 +280,8 @@ OAR exists so that systems outside the venue can maintain order books and show l
 event therefore records an **outcome** that changes the set of live orders: something that happened
 to an order at the venue. It does not record a request a member made. The venue tells the member of every outcome with an execution
 report, so OAR's events are derived from execution reports, and OAR takes its input from the
-matching engine publisher's `execution_reports` topic.
+matching engine publisher's `execution_reports` topic. OAR also follows the technical events, which
+tell it when the trading day ends (section 13.6); they produce no events of their own.
 
 Recording outcomes rather than requests matters in two cases:
 
@@ -275,7 +334,12 @@ added as optional fields with defaults, which is a compatible change (section 6)
 | `cum_qty` | `string` | The quantity executed so far. Always 0 while the venue produces no fills. |
 | `transact_time_ns` | `long` | The venue's time for the event, in nanoseconds since the Unix epoch (FIX `TransactTime`). |
 | `venue_time_ns` | `long` | When the venue recorded the execution report, in nanoseconds since the Unix epoch. |
-| `published_time_ns` | `long` | When OAR published the event, in nanoseconds since the Unix epoch. |
+
+An event records no time of its own publication. Every field of an event comes from the execution
+report, so an event made again from the same report, as happens whenever OAR publishes again, is
+identical to the first one byte for byte (section 11). The time an event reached the external
+messaging system is recorded by the system itself, as a timestamp on every message; a consumer that
+wants to know how long publishing took compares that timestamp with `venue_time_ns`.
 
 **Fields that are present when the execution report carries them.** Each is declared as either
 null or a value, with a default of null:
@@ -796,6 +860,20 @@ producer_topics = ["order_events"]
 # shorter than the backlog bound after which trading halts (R-0053).
 confirmation_timeout = "30s"
 
+# How long OAR waits after a failed publish before it publishes again from the last confirmed
+# sequence number (section 13.5). A tuning setting; it must be much shorter than the backlog bound, so
+# that OAR has many attempts before trading halts.
+retry_delay = "500ms"
+
+# Back-pressure (section 13.4). The number of events OAR has handed to the client library and not yet
+# had confirmed. Above the high watermark OAR stops reading from the matching engine publisher; below
+# the low watermark it reads again. The high watermark must be below the client library's own limit
+# on unconfirmed events, so that the library never has to refuse one. The values shown are
+# placeholders; the real ones are chosen by measurement with the other tuning values (section 14,
+# question 3).
+unconfirmed_high_watermark = 50000
+unconfirmed_low_watermark = 25000
+
 [external_messaging.pulsar]
 # One or more brokers, as a Pulsar service address.
 service_url = "${oar_pulsar_service_url}"
@@ -885,7 +963,8 @@ example, would break ordering. The deploy step fixes these, and none of them is 
 
 **Permissions.** From each program's `producer_topics` and `consumer_topics`, the deploy step grants
 that program's identity permission to write exactly its producer topics and read exactly its
-consumer topics, and nothing else.
+consumer topics, and nothing else. A producer is also granted permission to read its own producer
+topics, because OAR finds where to resume by reading the last event it stored (section 12.1).
 
 **What whoever runs the external messaging system decides.** How the system stores events is
 decided and configured by whoever runs it, not by this project, because it depends on things
@@ -965,7 +1044,7 @@ Tuning:
 | Property | librdkafka default | Source | Value |
 |----------|--------------------|--------|-------|
 | `linger.ms` | 5 | Tuning | How long librdkafka waits to fill a batch. It adds directly to the time before a confirmation, so it is chosen deliberately. |
-| `queue.buffering.max.messages` | 100000 | Tuning | How many unconfirmed events librdkafka holds. When it is full a publish is refused, and OAR stops reading from the matching engine publisher until confirmations catch up. |
+| `queue.buffering.max.messages` | 100000 | Tuning | How many unconfirmed events librdkafka holds. OAR's `unconfirmed_high_watermark` is set below it, so OAR stops reading before the queue fills (section 13.4); if it fills all the same, a publish is refused and handled as section 13.5 describes. |
 | `queue.buffering.max.kbytes` | 1048576 | Tuning | The same limit, by size |
 | `batch.num.messages` | 10000 | Tuning | The default until a measurement says otherwise |
 | `compression.codec` | none | Tuning | A deliberate choice, because every consumer must support whatever is chosen |
@@ -1102,26 +1181,68 @@ events to the client library, discards what it has handed over but not had confi
 its producer. Events already on their way to the external messaging system may still arrive after
 that. They are duplicates, and consumers discard them.
 
-**When an instance becomes leader**, it opens its producer and publishes from its resume position.
-Two things about this remain to be designed (section 14, question 5):
-
-- **Waiting for the Pulsar producer name.** The new leader's producer has the same name as the old
-  one's, and the broker refuses it while it still believes the old producer is connected, as
-  [oar_bus_deduplication.md](oar_bus_deduplication.md) records. The new leader keeps trying. How long
-  the broker takes to release the name counts towards the backlog bound in section 13, and must be
-  tested before it is relied on.
-- **Where the new leader resumes.** Its resume position must never be later than the last event the
-  external messaging system confirmed (R-0051). Two sources are possible. The external messaging
-  system knows the highest sequence number it holds from this producer identity: a Pulsar producer
-  reports it when it is created, and with one partition the last event on a Kafka topic carries it
-  in its headers. Alternatively, the matching engine publisher knows how far OAR has acknowledged,
-  which is never beyond a confirmed event (section 2); but it keeps a position for each subscriber
-  name, so both instances would have to share one subscriber name.
+**When an instance becomes leader**, it opens its producer and publishes from its resume position,
+found as section 12.1 describes. With Pulsar there is one more thing to design (section 14, question
+5): **waiting for the producer name.** The new leader's producer has the same name as the old one's,
+and the broker refuses it while it still believes the old producer is connected, as
+[oar_bus_deduplication.md](oar_bus_deduplication.md) records. The new leader keeps trying. How long
+the broker takes to release the name counts towards the backlog bound in section 13, and must be
+tested before it is relied on.
 
 A configured switch, saying in each instance's configuration whether it may publish, is not needed
 to decide which instance publishes. It could still be useful to keep an instance from ever leading,
 for example while it is being repaired, but it would apply to leading as a whole, like the venue's
 other components, not to publishing alone.
+
+### 12.1 Where OAR resumes, whenever it starts
+
+When OAR subscribes to the matching engine publisher, it names the sequence number to start from.
+The publisher does not remember it for OAR. So OAR must find its position every time it starts
+publishing: after a crash, after a supervised restart, when it becomes leader, and after a failed
+publish (section 13.5). It finds it the same way every time.
+
+**The external messaging system is the record of what was stored, so OAR asks it.** OAR resumes at
+the record after the highest sequence number the external messaging system holds from OAR's producer
+identity:
+
+- **With Kafka,** a topic has one partition (section 9) and OAR is its only producer (section 7), so
+  the last event on the topic is the last event OAR stored. OAR reads that one event when it starts,
+  and takes the sequence number from its headers (section 8.2). This is why OAR is granted
+  permission to read its own topic (section 10.5).
+- **With Pulsar,** the broker reports the last sequence number stored under the producer name when
+  OAR creates its producer.
+
+This is exact: it includes events whose confirmation OAR never received before it stopped. Both of
+OAR's instances find the same answer, so a restart and a change of leader are handled alike, and
+nothing about the position is kept on OAR's machine. It needs the external messaging system to be
+reachable, which costs nothing, because OAR cannot publish without it anyway; until it can reach it,
+OAR waits.
+
+**When the external messaging system holds no event from OAR**, on the very first start or if every
+event has passed its retention period, OAR starts from the oldest record the matching engine
+publisher still holds. That is always safe. R-0051 forbids resuming later than the last confirmed
+event, never earlier, and the publisher never discards a record OAR has not acknowledged (section
+13.4). Starting earlier only publishes events again, and consumers discard the repeats.
+
+**One number is OAR's whole position**, although OAR reads two topics, the execution reports and
+the technical events (section 4.4). Both are numbered from the sequencer's single sequence: a
+technical event is sequenced by the sequencer like every other record
+([trading_phases.md](../venue/trading_phases.md)). So a single sequence number says how far OAR has
+got in both.
+
+**This relies on the external messaging system storing OAR's events with no gaps.** Reading the last
+stored event tells OAR where to resume only if everything before it was stored too. If events 101 to
+105 were sent, 103 failed and 104 and 105 were stored, OAR would read 105, resume at 106, and 103
+would be lost. With Kafka, `enable.gapless.guarantee` (section 10.6) makes the producer stop with a
+fatal error in exactly that case, rather than carry on. Three checks must pass before this design is
+relied on, and they are listed with open question 5 (section 14):
+
+- that Kafka, with `enable.gapless.guarantee`, never stores a later event after an earlier one failed;
+- that reading the last event of a one-partition Kafka topic works as described, with librdkafka;
+- that a Pulsar broker reports the last sequence number for a producer name when its own removal of
+  duplicates is switched off, which this design does not depend on
+  ([oar_bus_deduplication.md](oar_bus_deduplication.md)), and that a Pulsar producer gives the same
+  guarantee against gaps.
 
 ---
 
@@ -1182,6 +1303,94 @@ They also log, at the time it happens:
 - which instance leads, and so publishes, and each change of leader;
 - the result of the startup checks against the registry (section 8).
 
+
+### 13.4 Back-pressure: when OAR stops reading
+
+OAR counts the events it has handed to the client library and not yet had confirmed. When the count
+rises above `unconfirmed_high_watermark` (section 10.2), OAR stops reading from the matching engine
+publisher; when it falls below `unconfirmed_low_watermark`, OAR reads again. The high watermark is
+below the client library's own limit on unconfirmed events, so the library does not have to refuse
+an event because it is full.
+
+Stopping reading is the whole of the mechanism. OAR sends nothing to the publisher and does not
+unsubscribe. The venue's pub/sub already handles a subscriber that stops reading
+([pubsub.md](pubsub.md)): the subscriber's socket fills, a send returns `EAGAIN`, and the publisher
+stops sending to that subscriber until the socket can be written again. Nothing builds up inside OAR
+while it is not reading; the records wait in the publisher's log.
+
+**OAR's acknowledged position always holds back the publisher's log.** The pub/sub design limits
+how far behind a subscriber may fall: past a retention window, the publisher discards old records
+anyway, disconnects the subscriber, and on reconnection tells it where its stream now begins. For
+other subscribers that gap is explicit and recoverable. For OAR it would be a permanent loss of
+events, which R-0049 forbids, and a long outage of the external messaging system, with OAR not
+reading, is exactly what would cause it. So the retention window does not apply to OAR: the
+publisher keeps every record OAR has not acknowledged, however long that is. How far behind OAR can
+fall is limited instead by the backlog bound, after which trading halts (section 13.1).
+
+### 13.5 When a publish fails
+
+**A failure reported after the event was handed over.** The client library retries by itself: during
+a short outage, librdkafka keeps the event and keeps sending it, for up to `message.timeout.ms`, which
+is derived from `confirmation_timeout` (section 10.6). An outage shorter than that is absorbed
+there, and OAR sees only confirmations arriving late. When the time runs out, the library reports
+the event as failed, and section 2's rule applies. OAR forgets every event it has handed over and not
+had confirmed, waits `retry_delay`, subscribes to the publisher again at the record after the last
+confirmed one (section 12.1), and publishes those records again.
+
+What OAR forgets is only its own copy of each event. The records they came from are still in the
+publisher's log, because OAR acknowledges a record only once its event is confirmed (section 2) and
+the publisher keeps every record OAR has not acknowledged (section 13.4). **The publisher's log is
+OAR's retry queue.** Unlike a queue in OAR's memory, it survives a crash of OAR, a restart and a change
+of leader, and reading it again keeps the events in order. Some of the events reported as failed may
+in fact have been stored; publishing them again makes duplicates, which consumers discard.
+
+**A failure of the call that hands an event over.** Here the event has been read from the publisher
+and the call to hand it to librdkafka fails at once. Receiving a record does not use it up; only
+OAR's acknowledgement does. So the record is still both in OAR's hand and in the publisher's log, and
+OAR never lets go of an event until it is confirmed: it either holds it and tries again, or drops its
+own copy and reads it again from the publisher. librdkafka's produce call fails for these reasons:
+
+| Failure | What it means | What OAR does |
+|---------|---------------|---------------|
+| `QUEUE_FULL` (`ENOBUFS`) | librdkafka already holds its limit of unconfirmed events | Keeps the event in hand, stops reading, lets the helper thread collect confirmations, and hands the same event over again. Only this one event ever waits, because OAR reads nothing more until it is handed over. With the high watermark below the limit (section 13.4) this should not happen. |
+| `MSG_SIZE_TOO_LARGE` (`EMSGSIZE`) | The event is larger than the configured maximum | Stops publishing, keeping the event, and reports an error naming it. Trying again cannot help, and skipping it is forbidden (R-0049), so unless someone intervenes the backlog passes the bound and trading halts (section 13.1). This is prevented before OAR goes into service: the largest possible event is limited by the schema's fields, and is checked against the size limit. |
+| `UNKNOWN_TOPIC` (`ENOENT`), `UNKNOWN_PARTITION` (`ESRCH`) | The cluster says the topic or partition does not exist | Stops publishing, keeping the event, reports an error, and tries again every `retry_delay`, in case the topic is restored. The deploy step creates topics and OAR checks them when it starts (section 10.4), so this means something outside OAR is wrong. |
+| `FATAL` (`ECANCELED`) | The producer is permanently broken, for example because `enable.gapless.guarantee` detected a gap | Discards the broken producer and creates a new one, forgets every unconfirmed event, including the one in hand, and publishes again from the record after the last confirmed one (section 12.1). |
+| `STATE` (`ENOEXEC`) | A Kafka transaction forbids producing | Cannot happen, because OAR uses no transactions (section 8.2). If it does, it is a defect, handled as `FATAL`. |
+
+**Repeated failures need no special handling.** OAR keeps trying, `retry_delay` apart. If it cannot
+succeed, the backlog passes the bound and trading halts (section 13.1); that is the escalation.
+
+### 13.6 The end of the trading day
+
+OAR is not stopped during a trading day. The venue's software starts afresh each day, and stops when
+end-of-day processing is complete; maintenance and upgrades are done when the venue is not trading.
+During the day, then, OAR stops only by accident, and sections 2 and 12.1 cover that.
+
+**The end of day is not complete until OAR reports that every event of the day is confirmed.** OAR
+learns that the day is ending from the `eod` technical event, which it follows (section 4.4). The
+`eod` event is sequenced by the sequencer, so it has a definite place among the execution reports.
+When every event up to it has been confirmed, OAR reports that it has finished the day. Only then is
+end-of-day processing complete, and only then is OAR stopped. OAR may be the component that declares
+the end of day finished; how its report combines with the other work of the `eod` phase, such as
+receiving instrument prices for the next day, belongs to the venue's end-of-day design
+([trading_phases.md](../venue/trading_phases.md)).
+
+This relies on no order record ever following the `eod` event, which must be settled with the trading
+phases: whether a member may cancel an order during `eod` is still open there.
+
+**OAR waits as long as it takes, and never finishes quietly with events unconfirmed.** No trading is
+waiting on it, so there is no time limit. If the external messaging system cannot confirm, OAR reports
+the problem and keeps trying until the events are confirmed or someone intervenes. The waiting is part
+of OAR's normal work, done before the process is told to stop, so the framework's limit on how long a
+thread may take to stop does not come into it. OAR does not call `rd_kafka_flush()` to wait, because
+librdkafka delivers the confirmations it collects to whichever thread calls it; OAR waits until its
+count of unconfirmed events reaches zero, while the helper thread goes on collecting them (section
+3.3).
+
+If OAR is told to stop at any other time, it stops reading, closes its producer and finishes. Nothing
+is lost: whatever was unconfirmed is published again when it next starts (section 12.1).
+
 ---
 
 ## 14. Open decisions {#oar_external_stream_open}
@@ -1208,6 +1417,9 @@ They also log, at the time it happens:
    section 13: whatever stops the external messaging system confirming events for longer than the
    backlog bound halts trading.
 
-5. **What the new leader does when it takes over** (section 12): how it waits for a Pulsar broker to
-   release the producer name, and whether it takes its resume position from the external messaging
-   system or from the matching engine publisher.
+5. **Before section 12.1 is relied on.** Three checks, by experiment: that Kafka with
+   `enable.gapless.guarantee` never stores a later event after an earlier one failed; that reading the
+   last event of a one-partition Kafka topic works as described; and that a Pulsar broker reports the
+   last sequence number for a producer name with its removal of duplicates switched off, and stores a
+   producer's events with no gaps. With Pulsar, also how a new leader waits for the broker to release
+   the producer name (section 12), and how long that takes.
