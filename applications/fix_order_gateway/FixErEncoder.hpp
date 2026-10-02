@@ -66,4 +66,34 @@ static constexpr size_t max_execution_report_buffer_size = 64 * 1024;
                                                        char* output_buffer, size_t output_buffer_size, bool poss_dup = false, int64_t orig_sending_time_ns = 0,
                                                        bool poss_resend = false);
 
+/**
+ * @brief Whether a matching engine report is the engine refusing a request to cancel.
+ *
+ * The engine answers a request to cancel an order it does not hold with a rejected
+ * ExecutionReport carrying the OrigClOrdID of the order the request named. A rejected new order
+ * never carries an OrigClOrdID, so the two cannot be confused. A member must be sent such a
+ * report as an OrderCancelReject, not as a rejected ExecutionReport, which in FIX says that an
+ * order was rejected (R-0151, docs/bug_list.md BUG-0099).
+ */
+[[nodiscard]] bool is_cancel_rejection(const pubsub_itc_fw_app::ExecutionReportView& view);
+
+/**
+ * @brief Encodes a matching engine report that refuses a request to cancel as a FIX OrderCancelReject (35=9).
+ *
+ * For a report for which is_cancel_rejection() is true. Written with the same framing, header
+ * fields and resend flags as encode_execution_report, and with no heap allocation, so a refused
+ * cancel that is resent to a member goes out exactly as it did the first time.
+ *
+ * The fields: ClOrdID and OrigClOrdID from the report; OrderID and OrdStatus as the engine gave
+ * them; CxlRejResponseTo 1 (a request to cancel); CxlRejReason 1 (unknown order) when the engine
+ * refused because it holds no such order, and 99 (other) for any other reason; and Text when the
+ * engine gave one.
+ *
+ * Parameters, return value and buffer handling are as for encode_execution_report.
+ */
+[[nodiscard]] std::string_view encode_order_cancel_reject(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
+                                                          std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock,
+                                                          char* output_buffer, size_t output_buffer_size, bool poss_dup = false,
+                                                          int64_t orig_sending_time_ns = 0, bool poss_resend = false);
+
 } // namespaces

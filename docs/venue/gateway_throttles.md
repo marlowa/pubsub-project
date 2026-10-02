@@ -65,9 +65,9 @@ or forwarded later, and the session is not disconnected. Nothing about it reache
   *"Throttled: at most 50 new orders per second for this session"*.
 - **FIX, a cancel or an amend:** the gateway sends an `OrderCancelReject` (35=9), with
   `CxlRejResponseTo` 1 for a cancel or 2 for an amend, `CxlRejReason` 99 (Other), the limit in
-  `Text`, and `OrdStatus` from the gateway's record of the session's open orders. The order is still
-  on the book, and the reply must say so: a rejected `ExecutionReport` would tell the member its order
-  had been rejected. The gateway refuses every cancel this way, whatever the reason
+  `Text`, and `OrdStatus` New: the order is open. The throttle has not touched the order, and the
+  reply must say so: a rejected `ExecutionReport` would tell the member its order had been
+  rejected. The gateway refuses every cancel this way, whatever the reason
   ([BUG-0099](../bug_list.md#bug_0099), R-0151).
 - **Binary:** the gateway sends the binary protocol's equivalent replies, a rejected
   `ExecutionReport` for a new order and, for a cancel, a reply that says the request was refused and

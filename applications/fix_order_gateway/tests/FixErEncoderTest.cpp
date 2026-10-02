@@ -20,6 +20,8 @@
 // caller must use view.data()/view.size(), not the buffer base.
 
 using fix_order_gateway::encode_execution_report;
+using fix_order_gateway::encode_order_cancel_reject;
+using fix_order_gateway::is_cancel_rejection;
 namespace tag = fix_codec::tag;
 
 namespace {
@@ -183,6 +185,102 @@ TEST(FixErEncoderTest, AnOrderWithNoExpiryEmitsNoExpiryField) {
     ASSERT_TRUE(reader.is_valid()) << wire;
     EXPECT_TRUE(reader.find(tag::ExpireTime).empty());
     EXPECT_TRUE(reader.find(tag::TimeInForce).empty());
+}
+
+// A refused request to cancel must reach a FIX member as an OrderCancelReject, never as a
+// rejected ExecutionReport, which in FIX says the order itself was rejected (R-0151, BUG-0099).
+// The matching engine refuses a cancel for an order it does not hold with a rejected report that
+// carries the OrigClOrdID of the order named; these build that report exactly as the engine does.
+
+pubsub_itc_fw_app::ExecutionReportView engine_refusal_of_a_cancel() {
+    pubsub_itc_fw_app::ExecutionReportView view{};
+    view.order_id = "NONE";
+    view.exec_id = "ME-EXEC-7";
+    view.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    view.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    view.symbol = "AAPL";
+    view.side = static_cast<pubsub_itc_fw_app::Side>('1');
+    view.leaves_qty = "0";
+    view.cum_qty = "0";
+    view.has_cl_ord_id = true;
+    view.cl_ord_id = "CANCEL-1";
+    view.has_orig_cl_ord_id = true;
+    view.orig_cl_ord_id = "ORDER-1";
+    view.has_ord_rej_reason = true;
+    view.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::UnknownOrder;
+    return view;
+}
+
+TEST(FixErEncoderTest, TheEnginesRefusalOfACancelIsRecognised) {
+    EXPECT_TRUE(is_cancel_rejection(engine_refusal_of_a_cancel()));
+}
+
+TEST(FixErEncoderTest, ARejectedNewOrderIsNotTakenForARefusedCancel) {
+    pubsub_itc_fw_app::ExecutionReportView view = engine_refusal_of_a_cancel();
+    view.has_orig_cl_ord_id = false;
+    view.orig_cl_ord_id = {};
+    EXPECT_FALSE(is_cancel_rejection(view));
+}
+
+TEST(FixErEncoderTest, ACancelledOrderIsNotTakenForARefusedCancel) {
+    // A successful cancel also carries OrigClOrdID; it is the Rejected ExecType that marks a refusal.
+    pubsub_itc_fw_app::ExecutionReportView view = engine_refusal_of_a_cancel();
+    view.exec_type = pubsub_itc_fw_app::ExecType::Canceled;
+    view.ord_status = pubsub_itc_fw_app::OrdStatus::Canceled;
+    view.has_ord_rej_reason = false;
+    EXPECT_FALSE(is_cancel_rejection(view));
+}
+
+TEST(FixErEncoderTest, TheEnginesRefusalOfACancelIsEncodedAsAnOrderCancelReject) {
+    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    char buffer[fix_order_gateway::execution_report_initial_buffer_size];
+    const std::string_view wire = encode_order_cancel_reject(engine_refusal_of_a_cancel(), "GATEWAY", "CLIENT", 9, clock, buffer, sizeof(buffer));
+
+    ASSERT_FALSE(wire.empty());
+    fix_codec::FixMessageReader reader(wire);
+    ASSERT_TRUE(reader.is_valid()) << wire;
+    EXPECT_EQ(reader.msg_type(), "9");
+    EXPECT_EQ(reader.find(tag::OrderID).as_string_view(), "NONE");
+    EXPECT_EQ(reader.find(tag::ClOrdID).as_string_view(), "CANCEL-1");
+    EXPECT_EQ(reader.find(tag::OrigClOrdID).as_string_view(), "ORDER-1");
+    EXPECT_EQ(reader.find(tag::OrdStatus).as_char(), '8');
+    EXPECT_EQ(reader.find(tag::CxlRejResponseTo).as_char(), '1');    // a request to cancel
+    EXPECT_EQ(reader.find(tag::CxlRejReason).as_string_view(), "1"); // unknown order
+    // Nothing that belongs only to an ExecutionReport.
+    EXPECT_TRUE(reader.find(tag::ExecType).empty());
+    EXPECT_TRUE(reader.find(tag::ExecID).empty());
+    EXPECT_TRUE(reader.find(tag::OrdRejReason).empty());
+}
+
+TEST(FixErEncoderTest, ARefusalForAnyOtherReasonIsReportedAsOtherWithTheEnginesText) {
+    pubsub_itc_fw_app::ExecutionReportView view = engine_refusal_of_a_cancel();
+    view.ord_rej_reason = static_cast<pubsub_itc_fw_app::OrdRejReason>(99); // Other
+    view.has_text = true;
+    view.text = "a reason of the engine's";
+
+    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    char buffer[fix_order_gateway::execution_report_initial_buffer_size];
+    const std::string_view wire = encode_order_cancel_reject(view, "GATEWAY", "CLIENT", 9, clock, buffer, sizeof(buffer));
+
+    ASSERT_FALSE(wire.empty());
+    fix_codec::FixMessageReader reader(wire);
+    ASSERT_TRUE(reader.is_valid()) << wire;
+    EXPECT_EQ(reader.find(tag::CxlRejReason).as_string_view(), "99");
+    EXPECT_EQ(reader.find(tag::Text).as_string_view(), "a reason of the engine's");
+}
+
+TEST(FixErEncoderTest, ARefusedCancelThatIsResentCarriesTheResendFlags) {
+    pubsub_itc_fw::ReplayClock clock(1700000000000000000LL);
+    char buffer[fix_order_gateway::execution_report_initial_buffer_size];
+    const std::string_view wire = encode_order_cancel_reject(engine_refusal_of_a_cancel(), "GATEWAY", "CLIENT", 9, clock, buffer, sizeof(buffer),
+                                                             /*poss_dup=*/true, utc_nanos(2026, 8, 10, 9, 30, 0), /*poss_resend=*/true);
+
+    ASSERT_FALSE(wire.empty());
+    fix_codec::FixMessageReader reader(wire);
+    ASSERT_TRUE(reader.is_valid()) << wire;
+    EXPECT_EQ(reader.find(tag::PossDupFlag).as_char(), 'Y');
+    EXPECT_EQ(reader.find(tag::OrigSendingTime).as_string_view(), "20260810-09:30:00");
+    EXPECT_EQ(reader.find(tag::PossResend).as_char(), 'Y');
 }
 
 } // namespaces

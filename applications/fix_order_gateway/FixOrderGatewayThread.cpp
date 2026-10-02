@@ -788,6 +788,8 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
             // Absent means the client sent no tag 59, which implies Day and claims no
             // exemption -- so zero rather than a defaulted enum value.
             entry->time_in_force = view.has_time_in_force ? static_cast<char>(view.time_in_force) : char{0};
+            // Kept so a refused request to cancel can name the order on its OrderCancelReject.
+            open_orders::set_order_id(*entry, view.order_id);
             // Key is string_view into pool storage -- stable for entry lifetime.
             session.open_orders.insert_or_assign(std::string_view(entry->cl_ord_id, entry->cl_ord_id_len), entry);
         }
@@ -847,12 +849,24 @@ bool FixOrderGatewayThread::send_execution_report_to_session(FixSession& session
     // differs from a live one only in PossDupFlag and OrigSendingTime, and everything else
     // about it -- encoding, buffer growth, capture, sequence numbering -- must be identical
     // or the member is being told something subtly different about the same event.
-    std::string_view wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
-                                                    er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns, poss_resend);
+    //
+    // A report in which the matching engine refuses a request to cancel goes to the member as an
+    // OrderCancelReject, not as the rejected ExecutionReport the engine sends. In FIX a rejected
+    // ExecutionReport says an order was rejected, and a member must never read that about an order
+    // whose cancel was refused (R-0151, BUG-0099). The choice is made here, where live and resent
+    // reports meet, so a refused cancel is resent exactly as it was first sent.
+    const bool cancel_rejection = is_cancel_rejection(view);
+    const auto encode = [&]() {
+        return cancel_rejection
+                   ? encode_order_cancel_reject(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
+                                                er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns, poss_resend)
+                   : encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
+                                             er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns, poss_resend);
+    };
+    std::string_view wire = encode();
     while (wire.empty() && er_wire_buffer_.size() < max_execution_report_buffer_size) {
         er_wire_buffer_.resize(er_wire_buffer_.size() * 2);
-        wire = encode_execution_report(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
-                                       er_wire_buffer_.data(), er_wire_buffer_.size(), poss_dup, orig_sending_time_ns, poss_resend);
+        wire = encode();
     }
     if (wire.empty()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
@@ -1723,7 +1737,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} missing required field(s): {} -- rejecting", session.conn_id.get_value(),
                    cl_ord_id, missing);
-        send_reject_execution_report(session, msg, "missing required field(s): " + missing, /*is_cancel=*/false);
+        send_reject_execution_report(session, msg, "missing required field(s): " + missing);
         return;
     }
 
@@ -1735,8 +1749,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     if (cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} NOS ClOrdID length {} exceeds limit {} -- rejecting",
                    session.conn_id.get_value(), cl_ord_id.size(), fix_order_limits::max_cl_ord_id_length);
-        send_reject_execution_report(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length),
-                                     /*is_cancel=*/false);
+        send_reject_execution_report(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length));
         return;
     }
     if (symbol.size() > static_cast<size_t>(config_.max_symbol_length)) {
@@ -1764,7 +1777,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
                    "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} rejected "
                    "locally -- no sequencer connected",
                    session.conn_id.get_value(), cl_ord_id);
-        send_reject_execution_report(session, msg, "Sequencer unavailable", /*is_cancel=*/false);
+        send_reject_execution_report(session, msg, "Sequencer unavailable");
         return;
     }
 
@@ -1785,7 +1798,7 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "FixOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused -- the venue is not accepting orders ({} refused so far)",
                    session.conn_id.get_value(), cl_ord_id, orders_refused_);
-        send_reject_execution_report(session, msg, "Venue is not accepting orders: no matching engine available", /*is_cancel=*/false);
+        send_reject_execution_report(session, msg, "Venue is not accepting orders: no matching engine available");
         return;
     }
 
@@ -1938,18 +1951,17 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} missing required field(s): {} -- rejecting", session.conn_id.get_value(),
                    cl_ord_id, missing);
-        send_reject_execution_report(session, msg, "missing required field(s): " + missing, /*is_cancel=*/true);
+        send_order_cancel_reject(session, msg, "missing required field(s): " + missing);
         return;
     }
 
-    // Both ClOrdID and OrigClOrdID come from outside; reject an over-length one with an ER
-    // (the same shared bound the matching-engine book key uses -- see fix_order_limits).
+    // Both ClOrdID and OrigClOrdID come from outside; refuse an over-length one (the same
+    // shared bound the matching-engine book key uses -- see fix_order_limits).
     if (cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length || orig_cl_ord_id.size() > fix_order_limits::max_cl_ord_id_length) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID/OrigClOrdID exceeds limit {} -- rejecting", session.conn_id.get_value(),
                    fix_order_limits::max_cl_ord_id_length);
-        send_reject_execution_report(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length),
-                                     /*is_cancel=*/true);
+        send_order_cancel_reject(session, msg, "ClOrdID exceeds maximum length of " + std::to_string(fix_order_limits::max_cl_ord_id_length));
         return;
     }
 
@@ -1960,7 +1972,7 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} "
                    "OrigClOrdID={} rejected locally -- no sequencer connected",
                    session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id);
-        send_reject_execution_report(session, msg, "Sequencer unavailable", /*is_cancel=*/true);
+        send_order_cancel_reject(session, msg, "Sequencer unavailable");
         return;
     }
 
@@ -1978,8 +1990,7 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
                    "FixOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused -- the venue is not accepting orders "
                    "({} cancels refused so far)",
                    session.conn_id.get_value(), cl_ord_id, orig_cl_ord_id, cancels_refused_);
-        send_reject_execution_report(session, msg, "Venue cannot process cancels: no matching engine available. The order is unchanged",
-                                     /*is_cancel=*/true);
+        send_order_cancel_reject(session, msg, "Venue cannot process cancels: no matching engine available. The order is unchanged");
         return;
     }
 
@@ -2025,7 +2036,7 @@ void FixOrderGatewayThread::send_fix_to_session(FixSession& session, const FixMe
     send_raw(session.conn_id, wire.data(), static_cast<uint32_t>(wire.size()));
 }
 
-void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason, bool is_cancel) {
+void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason) {
     // The matching engine never sees this order, so we synthesise the
     // gateway-side identifiers from per-session counters. Format mirrors the
     // ME-generated IDs (ME-ORD-N / ME-EXEC-N) but with a GW- prefix so the
@@ -2063,21 +2074,43 @@ void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, co
     er.set(103, 99); // 103 = OrdRejReason, 99 = Other
     er.set(Tag::Text, reason);
 
-    if (is_cancel) {
-        // Cancel-reject convention: echo OrigClOrdID so the client can
-        // correlate the reject with the original order it tried to cancel.
-        const std::string_view orig_cl_ord_id = inbound.get(Tag::OrigClOrdID);
-        if (!orig_cl_ord_id.empty()) {
-            er.set(Tag::OrigClOrdID, orig_cl_ord_id);
-        }
-    }
-
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} sending reject ExecutionReport "
                "OrderID={} ExecID={} ClOrdID={} reason='{}'",
                session.conn_id.get_value(), order_id, exec_id, cl_ord_id, reason);
 
     send_fix_to_session(session, er);
+}
+
+void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason) {
+    const std::string_view cl_ord_id = inbound.get(Tag::ClOrdID);
+    const std::string_view orig_cl_ord_id = inbound.get(Tag::OrigClOrdID);
+
+    // FIX requires the order's OrderID. The session's record holds it for an order the matching
+    // engine acknowledged; otherwise FIX's convention for an identifier not known is "NONE".
+    std::string_view order_id = "NONE";
+    const auto tracked = session.open_orders.find(orig_cl_ord_id);
+    if (tracked != session.open_orders.end() && tracked->second->order_id_len > 0) {
+        order_id = std::string_view(tracked->second->order_id, tracked->second->order_id_len);
+    }
+
+    FixMessage reject;
+    reject.set(Tag::MsgType, MsgType::OrderCancelReject);
+    reject.set(Tag::OrderID, order_id);
+    reject.set(Tag::ClOrdID, cl_ord_id);
+    if (!orig_cl_ord_id.empty()) {
+        reject.set(Tag::OrigClOrdID, orig_cl_ord_id);
+    }
+    reject.set(Tag::OrdStatus, std::string(1, '0'));        // 39 = 0 New: the order is open
+    reject.set(Tag::CxlRejResponseTo, std::string(1, '1')); // 434 = 1 Order cancel request
+    reject.set(Tag::CxlRejReason, 99);                      // 102 = 99 Other
+    reject.set(Tag::Text, reason);
+
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: connection {} sending OrderCancelReject OrderID={} ClOrdID={} OrigClOrdID={} reason='{}'", session.conn_id.get_value(),
+               order_id, cl_ord_id, orig_cl_ord_id, reason);
+
+    send_fix_to_session(session, reject);
 }
 
 void FixOrderGatewayThread::send_business_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason) {

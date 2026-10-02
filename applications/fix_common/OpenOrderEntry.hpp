@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint> // IWYU pragma: keep
+#include <cstring>
 #include <string_view>
 
 #include <tsl/robin_map.h>
@@ -30,6 +31,9 @@ namespace open_orders {
 //   manageable implementation cost.
 inline constexpr size_t max_supported_symbol_length = 64;
 inline constexpr size_t max_supported_order_qty_length = 32;
+// The matching engine's identifiers are "ME-ORD-" followed by a 64-bit counter, at most 26
+// characters, so 32 holds every one with room to spare.
+inline constexpr size_t max_supported_order_id_length = 32;
 
 /**
  * @brief Pool-allocated storage for a single open order's string fields.
@@ -62,7 +66,31 @@ struct OpenOrderEntry {
     //
     // It is here for cancel-on-disconnect: see is_persistent_time_in_force().
     char time_in_force{0};
+    // The OrderID the matching engine assigned, from the ExecutionReport that put this order on
+    // the book. A gateway that refuses a request to cancel the order puts it on its
+    // OrderCancelReject, which FIX requires to carry the order's OrderID. Empty when the engine's
+    // identifier did not fit, in which case the reply says "NONE".
+    char order_id[max_supported_order_id_length + 1]{};
+    uint8_t order_id_len{0};
 };
+
+/**
+ * @brief Records @p order_id in @p entry, or records none if it is too long to hold.
+ *
+ * Too long cannot happen with the matching engine's identifiers (see
+ * max_supported_order_id_length); refusing it rather than truncating it means a reply never
+ * names an order by a shortened identifier that might be another order's.
+ */
+inline void set_order_id(OpenOrderEntry& entry, std::string_view order_id) {
+    if (order_id.size() > max_supported_order_id_length) {
+        entry.order_id_len = 0;
+        entry.order_id[0] = '\0';
+        return;
+    }
+    std::memcpy(entry.order_id, order_id.data(), order_id.size());
+    entry.order_id[order_id.size()] = '\0';
+    entry.order_id_len = static_cast<uint8_t>(order_id.size());
+}
 
 // TimeInForce values that make an order outlive the session that placed it: GoodTillCancel
 // ('1') and GoodTillDate ('6'). Cancel-on-disconnect must leave these resting -- a member

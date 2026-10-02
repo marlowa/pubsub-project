@@ -155,6 +155,7 @@ went looking.
 | Severity | high |
 | Found | 2026-10-02 |
 | Recorded | 2026-10-02 |
+| Status | Fixed in the FIX gateway on 2026-10-02. Open for the binary gateway, which refuses no cancel yet; it must meet the same rule when it first does, with the throttles |
 | How | Designing the gateway throttles (`docs/venue/gateway_throttles.md`), which have to refuse a request to cancel and so had to say how |
 | Impact | A member's software written to the FIX standard can take the reply to mean its order is no longer on the book, when the order is still resting. The member then believes it has no order in the market, and the venue can trade an order nobody is watching |
 
@@ -175,16 +176,30 @@ order's current status in `OrdStatus`, which is what tells the member the order 
 - The FIX gateway answers every refused request to cancel with `OrderCancelReject`, whatever the
   reason, and does the same for a refused amend once amending exists. A refused new order keeps its
   rejected `ExecutionReport`.
-- `OrdStatus` comes from the gateway's own record of the session's open orders, which it already keeps
-  for cancel-on-disconnect. An order in that record is reported as open. An order not in it is
-  reported with `CxlRejReason` 1, Unknown order.
-- `CxlRejReason` is 99, Other, for a reason FIX has no code for, such as a throttle (R-0150), with the
-  reason in `Text`.
+- When the gateway itself refuses the request, `OrdStatus` is New: the order is open. The gateway has
+  not touched the order. Its record of the session's open orders is not the book, so an order missing
+  from it may still rest in the matching engine (after a gateway restart, for example), and reporting
+  it as anything but open could tell the member it had gone. `CxlRejReason` is 99, Other, because the
+  reason is the gateway's (a missing field, the venue not accepting orders, a throttle), with the
+  reason in `Text`. `OrderID` comes from the session's record when the order is in it, and is "NONE"
+  otherwise.
+- When the matching engine refuses the request because it holds no such order, the gateway turns the
+  engine's rejected report into an `OrderCancelReject` with `CxlRejReason` 1, Unknown order. The
+  engine holds the book, so it is the one party that can say the order is not there.
 - The binary gateway refuses nothing today. When it does, starting with the throttles, its reply to a
   refused cancel must likewise say that the request was refused and the order is still open, not that
   the order was rejected; which message its protocol uses for that is to be decided.
 
 Required by R-0151 in the functional specification.
+
+**What was done for the FIX gateway.** `send_order_cancel_reject` answers the gateway's own refusals
+(missing field, over-long identifier, no sequencer, venue not accepting orders). The engine's refusal
+is recognised by `is_cancel_rejection` (a rejected report carrying an OrigClOrdID, which a rejected
+new order never carries) and written by `encode_order_cancel_reject`, chosen in
+`send_execution_report_to_session`, so a resent refusal goes out as the first one did. Both gateways
+now record each open order's OrderID (`open_orders::set_order_id`). Six encoder tests cover the
+recognition and the encoding, and `ha_test.py` scenario 42 requires an `OrderCancelReject` for both
+the gateway's refusal and the engine's; each check was made to fail by breaking the code.
 
 ---
 

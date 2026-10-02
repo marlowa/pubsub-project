@@ -901,6 +901,8 @@ void BinaryOrderGatewayThread::track_open_order(BinarySession& session, const pu
     // Kept so the cancel-on-disconnect drain can leave persistent orders resting; absent
     // means the client sent none, which implies Day and claims no exemption.
     entry->time_in_force = report.has_time_in_force ? static_cast<char>(report.time_in_force) : char{0};
+    // Kept so a refused request to cancel can name the order in the reply.
+    open_orders::set_order_id(*entry, report.order_id);
 
     if (!already_tracked) {
         // The key views the pool storage, which is stable for the entry's lifetime.

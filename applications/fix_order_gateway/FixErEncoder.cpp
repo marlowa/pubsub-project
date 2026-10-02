@@ -200,4 +200,55 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
     return writer.finish(); // empty view if the buffer overflowed
 }
 
+bool is_cancel_rejection(const pubsub_itc_fw_app::ExecutionReportView& view) {
+    return view.exec_type == pubsub_itc_fw_app::ExecType::Rejected && view.has_orig_cl_ord_id && !view.orig_cl_ord_id.empty();
+}
+
+std::string_view encode_order_cancel_reject(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
+                                            std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer,
+                                            size_t output_buffer_size, bool poss_dup, int64_t orig_sending_time_ns, bool poss_resend) {
+    char timestamp_buffer[timestamp_length + 1];
+    fill_utc_timestamp(timestamp_buffer, wall_clock);
+    const std::string_view timestamp{timestamp_buffer, timestamp_length};
+
+    fix_codec::FixMessageWriter writer(output_buffer, output_buffer_size);
+
+    writer.push_back_field(Tag::MsgType, fix_codec::msg_type::OrderCancelReject);
+    writer.push_back_field(Tag::SenderCompID, sender_comp_id);
+    writer.push_back_field(Tag::TargetCompID, target_comp_id);
+    writer.push_back_field(Tag::MsgSeqNum, seq_num);
+    writer.push_back_field(Tag::SendingTime, timestamp);
+
+    // The same header flags, for the same reasons, as encode_execution_report: a refused cancel
+    // can be resent to a member or replayed by a matching engine catching up, like any report.
+    if (poss_dup) {
+        writer.push_back_field(Tag::PossDupFlag, 'Y');
+        char orig_timestamp_buffer[timestamp_length + 1];
+        fill_utc_timestamp_from(orig_timestamp_buffer, orig_sending_time_ns);
+        writer.push_back_field(Tag::OrigSendingTime, std::string_view{orig_timestamp_buffer, timestamp_length});
+    }
+    if (poss_resend) {
+        writer.push_back_field(Tag::PossResend, 'Y');
+    }
+
+    writer.push_back_field(Tag::OrderID, view.order_id);
+    if (view.has_cl_ord_id) {
+        writer.push_back_field(Tag::ClOrdID, view.cl_ord_id);
+    }
+    writer.push_back_field(Tag::OrigClOrdID, view.orig_cl_ord_id);
+    writer.push_back_field(Tag::OrdStatus, static_cast<char>(view.ord_status));
+    // 1 = Order cancel request. The venue cannot yet amend an order, so the engine refuses only
+    // cancels; an engine that refused an amend would report 2.
+    writer.push_back_field(Tag::CxlRejResponseTo, '1');
+    // The engine refuses a cancel only when it holds no such order, which FIX calls Unknown order.
+    // Any other reason it might give is reported as Other, with the engine's text below.
+    const bool unknown_order = view.has_ord_rej_reason && view.ord_rej_reason == pubsub_itc_fw_app::OrdRejReason::UnknownOrder;
+    writer.push_back_field(Tag::CxlRejReason, unknown_order ? 1 : 99);
+    if (view.has_text && !view.text.empty()) {
+        writer.push_back_field(Tag::Text, view.text);
+    }
+
+    return writer.finish(); // empty view if the buffer overflowed
+}
+
 } // namespaces

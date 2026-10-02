@@ -6582,12 +6582,21 @@ def run_scenario(scenario: Scenario, args) -> bool:
             reply = member.receive_until("8", "9", timeout=_RAW_REPLY_TIMEOUT)
             if reply is None:
                 die("order refusal: the cancel got no answer at all.")
-            if reply.get(39) != "8" and reply.get(35) != "9":
-                die(f"order refusal: the cancel came back OrdStatus={reply.get(39)} on MsgType="
-                    f"{reply.get(35)}, which reads as accepted. A cancel needs the matching engine "
-                    "exactly as an order does, and a member wrongly told its cancel succeeded "
-                    "STOPS WATCHING the order -- worse off than one told it was refused.")
-            log(f"  order refusal: cancels are refused too, Text='{reply.get(58, '')}' -- OK")
+            # The refusal must be an OrderCancelReject, which refuses the request, and not a rejected
+            # ExecutionReport, which in FIX says the order itself was rejected (R-0151, BUG-0099).
+            # A member told its order was rejected believes it has no order in the market while
+            # the order still rests. The reply must not report the order as rejected either.
+            if reply.get(35) != "9":
+                die(f"order refusal: the cancel was refused with MsgType={reply.get(35)}, not an "
+                    "OrderCancelReject (35=9). A rejected ExecutionReport tells a FIX member its order "
+                    "was rejected, when what was refused is the request and the order is untouched.")
+            if reply.get(39) == "8":
+                die("order refusal: the OrderCancelReject reports the order as rejected (39=8). The "
+                    "gateway did not touch the order, so it must report it as open.")
+            if reply.get(434) != "1":
+                die(f"order refusal: CxlRejResponseTo={reply.get(434)}, expected 1 (a request to cancel)")
+            log(f"  order refusal: cancels are refused too, with an OrderCancelReject, OrdStatus={reply.get(39)}, "
+                f"Text='{reply.get(58, '')}' -- OK")
 
             # 4. The health line keeps reporting while nothing progresses.
             #
@@ -6638,6 +6647,32 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 time.sleep(_REFUSAL_PROBE_INTERVAL)
             log(f"  order refusal: acceptance resumed on its own after {attempt} probe(s), with no "
                 "operator action -- OK")
+
+            # 6. The matching engine's own refusal of a cancel is an OrderCancelReject too.
+            #
+            # With an engine running again, a cancel naming an order the venue never held is
+            # refused by the engine, not the gateway. The engine says so with a rejected report,
+            # which the gateway must turn into an OrderCancelReject with CxlRejReason 1, Unknown
+            # order (R-0151, BUG-0099).
+            member.order_cancel_request("unknown-cancel", "never-placed")
+            # Reports for the orders deferred earlier arrive now that an engine is running again,
+            # so the reply is recognised by the ClOrdID it answers, not by being the first to come.
+            reply = None
+            reply_deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+            while reply is None and time.monotonic() < reply_deadline:
+                candidate = member.receive_until("8", "9", timeout=max(0.1, reply_deadline - time.monotonic()))
+                if candidate is not None and candidate.get(11) == "unknown-cancel":
+                    reply = candidate
+            if reply is None:
+                member.close()
+                die("order refusal: a cancel for an order the venue never held got no answer at all.")
+            if reply.get(35) != "9" or reply.get(434) != "1" or reply.get(102) != "1":
+                member.close()
+                die(f"order refusal: the engine's refusal of a cancel for an unknown order came back as "
+                    f"MsgType={reply.get(35)} CxlRejResponseTo={reply.get(434)} CxlRejReason={reply.get(102)}; "
+                    "expected an OrderCancelReject (35=9) with 434=1 and 102=1, Unknown order.")
+            log("  order refusal: the engine's refusal of a cancel for an unknown order is an "
+                "OrderCancelReject with CxlRejReason 1 -- OK")
             member.close()
 
         # ── A bounded resend, out of the middle of the member's history ───────

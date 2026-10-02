@@ -207,14 +207,16 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     /**
      * @brief Sends an ExecutionReport-Rejected back to the originating client
-     *        when an inbound order/cancel cannot be forwarded (e.g. primary
+     *        when an inbound new order cannot be forwarded (e.g. primary
      *        sequencer not connected).
+     *
+     * For a NewOrderSingle only. A refused request to cancel is answered with
+     * send_order_cancel_reject instead, because a rejected ExecutionReport says the
+     * order was rejected, and the order a refused cancel names is still open.
      *
      * The reject is built locally by the gateway -- the matching engine never
      * sees the order -- so OrderID and ExecID are synthesised from
-     * session.order_id_counter and session.exec_id_counter. The client gets a
-     * structurally identical ExecutionReport (MsgType=8) so existing FIX
-     * parsing handles it without special casing.
+     * session.order_id_counter and session.exec_id_counter.
      *
      * Tag values follow FIX 5.0SP2:
      *   - 35 = 8           (ExecutionReport)
@@ -226,14 +228,41 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] session   The originating FIX client session. Its outbound
      *                      seq num, OrderID counter, and ExecID counter are
      *                      advanced as a side effect.
-     * @param[in] inbound   The inbound NewOrderSingle or OrderCancelRequest
-     *                      whose ClOrdID, Symbol, Side etc. are echoed back.
-     *                      String_views in inbound are valid for this call only.
+     * @param[in] inbound   The inbound NewOrderSingle whose ClOrdID, Symbol, Side
+     *                      etc. are echoed back. String_views in inbound are valid
+     *                      for this call only.
      * @param[in] reason    Text for tag 58.
-     * @param[in] is_cancel True if rejecting an OrderCancelRequest (in which
-     *                      case OrigClOrdID is echoed too); false for NOS.
      */
-    void send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason, bool is_cancel);
+    void send_reject_execution_report(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason);
+
+    /**
+     * @brief Sends an OrderCancelReject (35=9) when the gateway refuses a request to cancel.
+     *
+     * The order the request names is still open: the gateway has not passed the request on,
+     * and the order is as it was. So the reply refuses the request and does not reject the
+     * order (R-0151, docs/bug_list.md BUG-0099).
+     *
+     * Tag values follow FIX 5.0SP2:
+     *   - 35  = 9          (OrderCancelReject)
+     *   - 37  = OrderID    (from the session's record of its open orders, or "NONE")
+     *   - 11, 41           (ClOrdID and OrigClOrdID, echoed from the request)
+     *   - 39  = 0          (OrdStatus = New: the order is open)
+     *   - 434 = 1          (CxlRejResponseTo = Order cancel request)
+     *   - 102 = 99         (CxlRejReason = Other; the reason is the gateway's, not the order's)
+     *   - 58  = reason
+     *
+     * OrdStatus is New even when the order is not in the session's record. The record is not
+     * the book: after the gateway restarts, for example, a member's orders still rest in the
+     * matching engine and the record no longer holds them. Reporting such an order as anything
+     * but open could tell a member its order had gone while it still rests, which is the
+     * danger this reply exists to avoid. Erring the other way, a member told that an order the
+     * venue never accepted is open, costs it nothing but a second cancel.
+     *
+     * @param[in] session  The originating FIX client session. Its outbound seq num is advanced.
+     * @param[in] inbound  The OrderCancelRequest. String_views in it are valid for this call only.
+     * @param[in] reason   Text for tag 58.
+     */
+    void send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason);
 
     void send_business_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason);
 
