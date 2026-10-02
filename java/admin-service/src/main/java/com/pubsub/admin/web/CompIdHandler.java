@@ -5,6 +5,7 @@ import com.pubsub.admin.db.FirmDao;
 import com.pubsub.admin.exception.ConflictException;
 import com.pubsub.admin.exception.NotFoundException;
 import com.pubsub.admin.model.CompIdRow;
+import com.pubsub.admin.model.ThrottleLimits;
 import com.pubsub.admin.service.AuthServiceClient;
 import com.pubsub.admin.service.ScramCredential;
 import com.pubsub.admin.service.ScramDerivation;
@@ -57,12 +58,13 @@ public class CompIdHandler {
         String compId = requireParam(ctx, "compId");
         String password = requireParam(ctx, "password");
         boolean forcePasswordChange = "on".equals(ctx.formParam("forcePasswordChange"));
-        log.info("create: firmId={} compId={} forcePasswordChange={}", firmId, compId, forcePasswordChange);
+        ThrottleLimits throttleLimits = parseThrottleLimits(ctx);
+        log.info("create: firmId={} compId={} forcePasswordChange={} throttleLimits={}", firmId, compId, forcePasswordChange, throttleLimits);
         if (compIdDao.findById(compId).isPresent()) {
             throw new ConflictException("CompID '" + compId + "' already exists");
         }
         ScramCredential cred = ScramDerivation.derive(password, SCRAM_ITERATIONS);
-        compIdDao.insert(compId, firmId, cred, forcePasswordChange);
+        compIdDao.insert(compId, firmId, cred, forcePasswordChange, throttleLimits);
         log.debug("create: DB insert done for compId={}", compId);
         if (authServiceClient != null) {
             authServiceClient.setCredential(compId, password, SCRAM_ITERATIONS);
@@ -126,6 +128,7 @@ public class CompIdHandler {
                     + primaryGatewayInstance + ".");
         }
         compIdDao.updateGatewayPinning(compId, primaryGatewayInstance, backupGatewayInstance);
+        compIdDao.updateThrottleLimits(compId, parseThrottleLimits(ctx));
         if ((!enabled || locked) && authServiceClient != null) {
             authServiceClient.removeCredential(compId);
         } else if ((!existing.enabled() || existing.locked()) && enabled && !locked && authServiceClient != null) {
@@ -191,6 +194,38 @@ public class CompIdHandler {
                     + " instances are numbered from 1. Got: " + instance);
         }
         return instance;
+    }
+
+    /**
+     * Reads the three throttle limits from the form, used both when a comp id is created and
+     * when it is edited.
+     *
+     * <p>Blank means 0, no limit, which is also what a comp id created without them gets.
+     * Anything else must be a whole number from 0 to {@link ThrottleLimits#MAX_PERMITTED_PER_SECOND},
+     * and is refused here rather than by the database constraint, so the operator is told which
+     * field was wrong.
+     */
+    private static ThrottleLimits parseThrottleLimits(Context ctx) {
+        int place = parseThrottleLimit(ctx.formParam("maxPlacePerSecond"), "new orders");
+        int amend = parseThrottleLimit(ctx.formParam("maxAmendPerSecond"), "amends");
+        int cancel = parseThrottleLimit(ctx.formParam("maxCancelPerSecond"), "cancels");
+        try {
+            return new ThrottleLimits(place, amend, cancel);
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestResponse(e.getMessage());
+        }
+    }
+
+    private static int parseThrottleLimit(String param, String kind) {
+        if (param == null || param.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(param.trim());
+        } catch (NumberFormatException e) {
+            throw new BadRequestResponse("The limit on " + kind + " per second must be a whole number from 0 to "
+                    + ThrottleLimits.MAX_PERMITTED_PER_SECOND + " (0 means no limit). Got: " + param);
+        }
     }
 
     private static String requireParam(Context ctx, String name) {

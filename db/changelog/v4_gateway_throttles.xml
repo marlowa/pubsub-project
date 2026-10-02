@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <!-- ================================================================
+         v4-001  gateway throttles, per comp id
+
+         The largest number of commands of each kind that a session of this
+         comp id may send in any one second: new orders, amends and cancels,
+         each limited separately.  Every session of the comp id gets the same
+         three limits, and each session counts its own commands.  Zero means
+         no limit.  See docs/venue/gateway_throttles.md.
+
+         The values reach the gateway on AuthenticationResult when a session
+         logs on, as the cancel-on-disconnect columns added in v2 do.  The
+         amend limit is held now, although the venue cannot yet amend an
+         order, so that amending is throttled from the day it exists.
+         ================================================================ -->
+    <changeSet id="v4-001-comp-id-gateway-throttles" author="pubsub">
+
+        <!-- NOT NULL with a default of 0, meaning no limit.  Unlike the
+             cancel-on-disconnect grace period, there is no default in the
+             gateways' configuration for an empty column to fall back to: the
+             database always says what the limit is, so an operator has one
+             place to look.  A comp id provisioned before these columns
+             existed is not limited. -->
+        <addColumn tableName="${tablePrefix}comp_id">
+            <column name="max_place_per_second" type="integer" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="max_amend_per_second" type="integer" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="max_cancel_per_second" type="integer" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+        </addColumn>
+
+        <!-- 100,000 a second is the largest permitted limit.  The venue takes
+             tens of microseconds to process an order from start to end, so one
+             command every 10 microseconds is the fastest any member could
+             usefully send.  A gateway holds eight bytes for each command a
+             limit allows, so the bound also bounds a session's memory.  The
+             admin service and the gateways check the same range. -->
+        <sql>
+            ALTER TABLE ${tablePrefix}comp_id
+            ADD CONSTRAINT ${tablePrefix}comp_id_throttle_limits_in_range
+            CHECK (max_place_per_second BETWEEN 0 AND 100000
+               AND max_amend_per_second BETWEEN 0 AND 100000
+               AND max_cancel_per_second BETWEEN 0 AND 100000)
+        </sql>
+
+        <rollback>
+            <sql>
+                ALTER TABLE ${tablePrefix}comp_id
+                DROP CONSTRAINT ${tablePrefix}comp_id_throttle_limits_in_range
+            </sql>
+            <dropColumn tableName="${tablePrefix}comp_id" columnName="max_cancel_per_second"/>
+            <dropColumn tableName="${tablePrefix}comp_id" columnName="max_amend_per_second"/>
+            <dropColumn tableName="${tablePrefix}comp_id" columnName="max_place_per_second"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

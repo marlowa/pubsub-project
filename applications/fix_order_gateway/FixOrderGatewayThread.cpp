@@ -2,12 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "FixOrderGatewayThread.hpp"
+#include "CancelRejection.hpp"
 #include "FixErEncoder.hpp"
 #include "FixGroupExtractor.hpp"
 #include "GatewayMetrics.hpp"
 #include "OpenOrderRemoval.hpp"
 #include "OpenOrderTracking.hpp"
 #include "OrderPathMetrics.hpp"
+#include "SessionThrottles.hpp"
+#include "ThrottleLimits.hpp"
+#include "ThrottleOutcome.hpp"
+#include "ThrottledCommand.hpp"
 
 #include <openssl/rand.h>
 
@@ -216,6 +221,11 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
                                                        order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
     }
 
+    // Registered unconditionally, as the matching engine registers its counter: this process has
+    // one gateway thread, so the names cannot collide, and the handles record nowhere when
+    // metrics are disabled.
+    throttle_refusal_metrics_.register_metrics(get_reactor().metrics(), "gateway_thread");
+
     // Start the reusable ER wire buffer at the common-case size; the ER send path grows
     // it if a large ExecutionReport (many echoed group instances) needs more.
     er_wire_buffer_.resize(execution_report_initial_buffer_size);
@@ -289,6 +299,7 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
         cancel_timer(session.logon_timeout_timer_id);
         cancel_timer(session.scram_auth_timeout_timer_id);
         cancel_timer(session.resend_request_timer_id);
+        log_throttling_ended_by_disconnection(session);
         // Told before the session object goes: the sequencer addresses reports at this
         // connection, and once it is gone there is nothing here to receive them. Announced
         // rather than inferred because the sequencer cannot see a client socket close.
@@ -819,7 +830,7 @@ bool FixOrderGatewayThread::send_execution_report_to_session(FixSession& session
     // ExecutionReport says an order was rejected, and a member must never read that about an order
     // whose cancel was refused (R-0151, BUG-0099). The choice is made here, where live and resent
     // reports meet, so a refused cancel is resent exactly as it was first sent.
-    const bool cancel_rejection = is_cancel_rejection(view);
+    const bool cancel_rejection = fix_common::is_cancel_rejection(view);
     const auto encode = [&]() {
         return cancel_rejection
                    ? encode_order_cancel_reject(view, config_.sender_comp_id, session.client_comp_id, session.outbound_seq_num, *config_.wall_clock,
@@ -1142,6 +1153,36 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
     if (view.has_cancel_on_disconnect_grace_period_seconds) {
         session.cancel_on_disconnect_grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
     }
+
+    // The comp id's limits on new orders, amends and cancels per second, applied to this session
+    // for as long as it is open. The authentication service checks the range when it loads them,
+    // so a value out of range here is a defect in the venue's own software, and the logon is
+    // refused rather than the session being let in with limits nobody chose.
+    fix_common::ThrottleLimits throttle_limits;
+    throttle_limits.max_place_per_second = view.max_place_per_second;
+    throttle_limits.max_amend_per_second = view.max_amend_per_second;
+    throttle_limits.max_cancel_per_second = view.max_cancel_per_second;
+    if (!throttle_limits.all_in_permitted_range()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixOrderGatewayThread: connection {} comp_id='{}' logon refused -- throttle limits out of range: new orders={} amends={} cancels={} "
+                   "(each must be from 0 to {})",
+                   session.conn_id.get_value(), session.client_comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second,
+                   throttle_limits.max_cancel_per_second, fix_common::ThrottleLimits::max_permitted_per_second);
+        FixMessage logout;
+        logout.set(Tag::MsgType, MsgType::Logout);
+        logout.set(Tag::Text, std::string("Session limits could not be applied"));
+        send_fix_to_session(session, logout);
+        disconnect_session(session, "throttle limits out of range");
+        return;
+    }
+    session.throttles = fix_common::SessionThrottles(throttle_limits);
+    // Logged for every logon, naming the numbers, because a hop that drops them leaves the
+    // session unlimited, which looks the same as a member provisioned with no limits unless the
+    // values themselves are visible.
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: comp_id='{}' throttle limits per second for this session: new orders={} amends={} cancels={} (0 means no limit)",
+               session.client_comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second, throttle_limits.max_cancel_per_second);
 
     // Authenticated and provisioned. Bind the session BEFORE replying, and wait for the
     // venue to say where its numbering stands.
@@ -1766,6 +1807,13 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
         return;
     }
 
+    // Checked last, immediately before the order is passed on, so that only an order the venue
+    // would otherwise accept counts towards the session's limit.
+    if (!admit_throttled_command(session, fix_common::ThrottledCommand::Place)) {
+        send_reject_execution_report(session, msg, session.throttles.refusal_text(fix_common::ThrottledCommand::Place));
+        return;
+    }
+
     // Build the DSL struct. All string fields use string_view pointing into
     // the FIX message -- safe because the struct is only live for this call.
     pubsub_itc_fw_app::NewOrderSingle nos{};
@@ -1958,6 +2006,11 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
         return;
     }
 
+    if (!admit_throttled_command(session, fix_common::ThrottledCommand::Cancel)) {
+        send_order_cancel_reject(session, msg, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
+        return;
+    }
+
     pubsub_itc_fw_app::OrderCancelRequest ocr{};
     ocr.orig_cl_ord_id = orig_cl_ord_id;
     ocr.cl_ord_id = cl_ord_id;
@@ -2038,7 +2091,10 @@ void FixOrderGatewayThread::send_reject_execution_report(FixSession& session, co
     er.set(103, 99); // 103 = OrdRejReason, 99 = Other
     er.set(Tag::Text, reason);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+    // Debug, because every caller has already logged why, at the level its reason deserves. A
+    // line here at Info would log every order refused to a member over its limit, which is the
+    // flood the throttle's own logging is designed to avoid.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "FixOrderGatewayThread: connection {} sending reject ExecutionReport "
                "OrderID={} ExecID={} ClOrdID={} reason='{}'",
                session.conn_id.get_value(), order_id, exec_id, cl_ord_id, reason);
@@ -2070,11 +2126,58 @@ void FixOrderGatewayThread::send_order_cancel_reject(FixSession& session, const 
     reject.set(Tag::CxlRejReason, 99);                      // 102 = 99 Other
     reject.set(Tag::Text, reason);
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+    // Debug, for the reason given in send_reject_execution_report.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "FixOrderGatewayThread: connection {} sending OrderCancelReject OrderID={} ClOrdID={} OrigClOrdID={} reason='{}'", session.conn_id.get_value(),
                order_id, cl_ord_id, orig_cl_ord_id, reason);
 
     send_fix_to_session(session, reject);
+}
+
+void FixOrderGatewayThread::log_throttling_ended_by_disconnection(const FixSession& session) {
+    using fix_common::ThrottledCommand;
+    for (const ThrottledCommand command : {ThrottledCommand::Place, ThrottledCommand::Amend, ThrottledCommand::Cancel}) {
+        const int64_t refused = session.throttles.refusals_in_current_run(command);
+        if (refused > 0) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "FixOrderGatewayThread: connection {} comp_id='{}' stopped being throttled for kind '{}': the session ended after {} refused",
+                       session.conn_id.get_value(), session.client_comp_id, fix_common::throttled_command_name(command), refused);
+        }
+    }
+}
+
+bool FixOrderGatewayThread::admit_throttled_command(FixSession& session, fix_common::ThrottledCommand command) {
+    // A kind with no limit is accepted without reading the clock.
+    if (session.throttles.max_per_second(command) == 0) {
+        return true;
+    }
+    const fix_common::ThrottleOutcome outcome = session.throttles.try_accept(command, std::chrono::steady_clock::now());
+    // Info, not Warning: a member sending faster than it is provisioned for is handled exactly as
+    // designed, and nothing in the venue needs fixing.
+    switch (outcome) {
+        case fix_common::ThrottleOutcome::Accepted:
+            return true;
+        case fix_common::ThrottleOutcome::AcceptedAfterRefusals:
+            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "FixOrderGatewayThread: connection {} comp_id='{}' stopped being throttled for kind '{}': accepted again after {} refused",
+                       session.conn_id.get_value(), session.client_comp_id, fix_common::throttled_command_name(command),
+                       session.throttles.refusals_in_last_run(command));
+            return true;
+        case fix_common::ThrottleOutcome::FirstRefusal:
+            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "FixOrderGatewayThread: connection {} comp_id='{}' started being throttled for kind '{}': the limit of {} per second for this session "
+                       "was reached, and further refusals are not logged until one is accepted",
+                       session.conn_id.get_value(), session.client_comp_id, fix_common::throttled_command_name(command),
+                       session.throttles.max_per_second(command));
+            throttle_refusal_metrics_.count_refusal(command);
+            return false;
+        case fix_common::ThrottleOutcome::FurtherRefusal:
+            throttle_refusal_metrics_.count_refusal(command);
+            return false;
+    }
+    return false;
 }
 
 void FixOrderGatewayThread::send_business_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason) {

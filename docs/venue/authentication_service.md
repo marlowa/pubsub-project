@@ -26,7 +26,7 @@ Defined in `applications/authentication.dsl`, namespace `pubsub_itc_fw_app`. Two
 | 500 | `AuthenticationRequest` | `request_id` (i64), `comp_id` (string), `client_nonce` (bytes) |
 | 501 | `AuthenticationChallenge` | `request_id`, `server_nonce`, `salt`, `iterations` (i32) |
 | 502 | `AuthenticationProof` | `request_id`, `client_proof` (32 bytes) |
-| 503 | `AuthenticationResult` | `request_id`, `outcome` (enum), `server_signature` (32 bytes), `force_password_change` (bool) |
+| 503 | `AuthenticationResult` | `request_id`, `outcome` (enum), `server_signature` (32 bytes), `force_password_change` (bool); on a grant, the comp id's provisioning: cancel-on-disconnect, gateway instances, and the three throttle limits `max_place_per_second`, `max_amend_per_second`, `max_cancel_per_second` |
 
 `request_id` carries the gateway's `ConnectionID` for the FIX session unchanged through all
 four messages, so the gateway correlates the result with the correct pending session.
@@ -73,6 +73,13 @@ so neither drifts stale (see [admin service](admin_service.md) and
 On startup, each instance loads the full credential set from `credentials.toml` (a database
 export produced by `db/export_credentials.py`), so a restarted instance is current as of that
 export.
+
+The export also carries each comp id's provisioning: cancel-on-disconnect, gateway instances and
+throttle limits. The service loads them with the credential, sends them on `AuthenticationResult`
+when a logon is granted, and writes them back out whenever it rewrites `credentials.toml` after a
+credential change; a field it did not write back would be lost at the next restart. A throttle
+limit absent from the file is read as 0, no limit, and one outside 0 to 100,000 stops the service
+from starting, naming the credential.
 
 ## HA and Failover
 

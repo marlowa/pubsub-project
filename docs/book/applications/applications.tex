@@ -133,7 +133,7 @@ session separately. The design is in \texttt{docs/venue/gateway\_throttles.md}.
   commands per second, one every 10 microseconds, is the fastest rate any member could
   use. Amending is limited although the venue cannot yet amend an order, so that amending
   is limited from the day it exists.}
-  \uncovered{no scenario provisions a limit}
+  \covers{ha_test:56}
 \end{requirement}
 
 \begin{requirement}{R-0149}{A limit holds over every one-second period}
@@ -147,7 +147,7 @@ session separately. The design is in \texttt{docs/venue/gateway\_throttles.md}.
   A member that keeps sending while it is being refused would never be accepted again if
   its refused commands counted. Only accepted commands use the capacity the limit
   protects.}
-  \uncovered{no scenario sends commands faster than a limit}
+  \covers{ha_test:56}
 \end{requirement}
 
 \begin{requirement}{R-0150}{A command over the limit is refused, and the member is told why}
@@ -159,7 +159,7 @@ session separately. The design is in \texttt{docs/venue/gateway\_throttles.md}.
   time the member did not choose, against a market that may have moved. Closing the session
   would cancel the member's resting orders under cancel-on-disconnect, which is a far
   heavier consequence than sending too fast.}
-  \uncovered{no scenario sends commands faster than a limit}
+  \covers{ha_test:56}
 \end{requirement}
 
 \section{The matching engine publisher}

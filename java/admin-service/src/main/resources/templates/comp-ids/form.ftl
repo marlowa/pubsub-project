@@ -4,6 +4,29 @@
 <#else>
     <#assign pageTitle = "New CompID">
 </#if>
+<#macro throttleFields place amend cancel>
+    <fieldset>
+        <legend>Throttles</legend>
+        <small>
+            The most commands of each kind that one session of this comp ID may send in any one
+            second. Each session counts its own commands, so two sessions open at once may each
+            send up to the limit. A command over the limit is refused with a message stating the
+            limit. 0 means no limit; the largest permitted value is 100000. A change takes effect
+            from the comp ID's first logon after the credentials are next exported, in practice
+            the next trading day.
+        </small>
+        <label for="maxPlacePerSecond">New Orders per Second
+            <input type="number" id="maxPlacePerSecond" name="maxPlacePerSecond" min="0" max="100000" step="1" value="${place?c}">
+        </label>
+        <label for="maxAmendPerSecond">Amends per Second
+            <input type="number" id="maxAmendPerSecond" name="maxAmendPerSecond" min="0" max="100000" step="1" value="${amend?c}">
+        </label>
+        <small>The venue cannot yet amend an order; this limit applies from the day it can.</small>
+        <label for="maxCancelPerSecond">Cancels per Second
+            <input type="number" id="maxCancelPerSecond" name="maxCancelPerSecond" min="0" max="100000" step="1" value="${cancel?c}">
+        </label>
+    </fieldset>
+</#macro>
 <@layout.page title=pageTitle>
 <h1>${pageTitle}</h1>
 <#if row??>
@@ -81,6 +104,8 @@
             A backup must differ from the primary, and needs a primary to be the backup of.
         </small>
     </fieldset>
+    <@throttleFields place=row.throttleLimits().maxPlacePerSecond() amend=row.throttleLimits().maxAmendPerSecond()
+                     cancel=row.throttleLimits().maxCancelPerSecond()/>
     <button type="submit">Update</button>
     <a href="/comp-ids/${row.compId()}/password" role="button">Set Password</a>
     <a href="/comp-ids/${row.compId()}/gateways">Gateways</a>
@@ -99,6 +124,7 @@
         <input type="checkbox" name="forcePasswordChange" checked>
         Force password change on first login
     </label>
+    <@throttleFields place=0 amend=0 cancel=0/>
     <button type="submit">Create</button>
     <a href="/comp-ids?firmId=${firmId}">Cancel</a>
 </form>

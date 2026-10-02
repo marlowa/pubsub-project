@@ -208,4 +208,33 @@
         </insert>
     </changeSet>
 
+    <!-- ================================================================
+         test-009  THROTTLED comp_id
+         Used only by the ha_test scenario for gateway throttles, which
+         provisions its limits before each run. A comp id of its own, so
+         that the limits it is given never throttle the comp ids other
+         tests and the fix-test-client use. SCRAM values as for CLIENT
+         (password "stubpassword"); the harness rewrites them for its own
+         password before the authentication service starts.
+         ================================================================ -->
+    <changeSet id="v1-test-009-throttled-comp-id" author="pubsub" context="test">
+        <preConditions onFail="MARK_RAN">
+            <sqlCheck expectedResult="0">
+                SELECT COUNT(*) FROM ${tablePrefix}comp_id WHERE comp_id = 'THROTTLED'
+            </sqlCheck>
+        </preConditions>
+        <insert tableName="${tablePrefix}comp_id">
+            <column name="comp_id"               value="THROTTLED"/>
+            <column name="firm_id"               value="TEST"/>
+            <column name="stored_key"            value="51ea66c1a17638cdc7559f4cda85218e82aa9bb5379f72907836bd1877896aca"/>
+            <column name="server_key"            value="79c79d0aec244f14d135f9b9907d2f85ec2c414f36f9d8a5459da2e8a187d833"/>
+            <column name="salt"                  value="25df8d5e141f62c447da65e44ee4a6aa"/>
+            <column name="iterations"            valueNumeric="4096"/>
+            <column name="enabled"               valueBoolean="true"/>
+            <column name="force_password_change" valueBoolean="false"/>
+            <column name="locked"                valueBoolean="false"/>
+            <column name="consecutive_failed_logins" valueNumeric="0"/>
+        </insert>
+    </changeSet>
+
 </databaseChangeLog>

@@ -38,6 +38,8 @@
 #include "CancelClOrdId.hpp"
 #include "GatewayIds.hpp"
 #include "PoolMetricsReporter.hpp"
+#include "ThrottleRefusalMetrics.hpp"
+#include "ThrottledCommand.hpp"
 
 namespace binary_order_gateway {
 
@@ -93,6 +95,56 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void handle_new_order_single(BinarySession& session, const pubsub_itc_fw::EventMessage& message);
     void handle_order_cancel_request(BinarySession& session, const pubsub_itc_fw::EventMessage& message);
     void handle_execution_report(const pubsub_itc_fw::EventMessage& message);
+
+    /**
+     * @brief Asks the session's throttle whether a member command of kind @p command may go on.
+     *
+     * Logs when the session starts being throttled for that kind and when it stops, not each
+     * refusal, and counts each refusal in the gateway's metrics.
+     *
+     * @param[in,out] session The session the command arrived on.
+     * @param[in]     command The kind of command.
+     * @return True if the command is within the session's limit, or the kind has no limit.
+     */
+    [[nodiscard]] bool admit_throttled_command(BinarySession& session, fix_common::ThrottledCommand command);
+
+    /**
+     * @brief Logs the end of any run of throttle refusals still open when a session ends.
+     * @param[in] session The session that is ending.
+     */
+    void log_throttling_ended_by_disconnection(const BinarySession& session);
+
+    /**
+     * @brief Refuses a new order with a rejected ExecutionReport carrying @p reason.
+     *
+     * This gateway passes orders on without decoding them; a refused one is decoded here, and
+     * only here, because the reply must name it.
+     *
+     * @param[in,out] session The session the order arrived on.
+     * @param[in]     message The NewOrderSingle PDU, still undecoded.
+     * @param[in]     reason  The text to send. Must stay valid for the call.
+     */
+    void refuse_new_order(BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason);
+
+    /**
+     * @brief Refuses a request to cancel with an OrderCancelReject carrying @p reason.
+     *
+     * The reply says the order is still open (OrdStatus New), because a refusal by the gateway has
+     * not touched it. Decoded here for the same reason as refuse_new_order.
+     *
+     * @param[in] session The session the request arrived on.
+     * @param[in] message The OrderCancelRequest PDU, still undecoded.
+     * @param[in] reason  The text to send. Must stay valid for the call.
+     */
+    void refuse_cancel(const BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason);
+
+    /**
+     * @brief Sends the matching engine's refusal of a cancel to the member as an OrderCancelReject.
+     * @param[in] session The session to send it to.
+     * @param[in] report  The engine's report, for which fix_common::is_cancel_rejection is true.
+     * @param[in] seq_no  The report's sequence number, carried on the reply as on any relayed report.
+     */
+    void send_engine_cancel_rejection(const BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report, int64_t seq_no);
 
     /** @brief Sends a LogonAck; on anything but Accepted the connection is then closed. */
     void send_logon_ack(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::LogonOutcome outcome, std::string_view text);
@@ -270,6 +322,9 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // costs, which is the half of the protocol comparison that was never measured. Placed
     // identically to the FIX gateway's. See OrderPathMetrics.hpp.
     pubsub_itc_fw::HistogramHandle er_in_elapsed_histogram_;
+
+    /// How many member commands of each kind the sessions' throttles have refused.
+    fix_common::ThrottleRefusalMetrics throttle_refusal_metrics_;
 
     // Publishes the open-order pool's statistics. The pool records nothing itself -- it
     // computes the numbers and offers them -- so something has to sample it, and this

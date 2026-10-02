@@ -38,7 +38,7 @@ spec**:
 ```
 generate_dd_to_dsl.py --dd <dd.xml> [--dd <more.xml>] \
           --message NewOrderSingle:1000 --message OrderCancelRequest:1001 \
-          --message ExecutionReport:1002 \
+          --message ExecutionReport:1002 --message OrderCancelReject:1003 \
           --output <build>/fix_orders.dsl
 ```
 

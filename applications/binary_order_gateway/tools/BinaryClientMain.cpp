@@ -270,6 +270,22 @@ int main(int argc, char** argv) {
         pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
         size_t bytes_consumed = 0;
         size_t arena_bytes_needed = 0;
+        // A refused cancel comes back as an OrderCancelReject. That is a failed run, for the same
+        // reason as below: the venue did not cancel the order.
+        if (pdu_id == pubsub_itc_fw_app::OrderCancelReject::message_pdu_id) {
+            pubsub_itc_fw_app::OrderCancelRejectView reject{};
+            if (!pubsub_itc_fw_app::decode(reject, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
+                fmt::print("failed to decode OrderCancelReject\n");
+                ::close(socket_fd);
+                return 1;
+            }
+            fmt::print("OrderCancelReject seq={} ClOrdID={} OrigClOrdID={} OrdStatus={} CxlRejReason={} Text={}\n", seq_no, reject.cl_ord_id,
+                       reject.orig_cl_ord_id, pubsub_itc_fw_app::to_string(reject.ord_status),
+                       reject.has_cxl_rej_reason ? static_cast<int>(reject.cxl_rej_reason) : -1, reject.has_text ? reject.text : std::string_view());
+            ::close(socket_fd);
+            fmt::print("done\n");
+            return 1;
+        }
         pubsub_itc_fw_app::ExecutionReportView report{};
         if (pdu_id != pubsub_itc_fw_app::ExecutionReport::message_pdu_id ||
             !pubsub_itc_fw_app::decode(report, payload.data(), payload.size(), bytes_consumed, arena, arena_bytes_needed)) {
@@ -327,9 +343,10 @@ int main(int argc, char** argv) {
             fmt::print("failed to decode ExecutionReport\n");
             continue;
         }
-        fmt::print("ExecutionReport seq={} ClOrdID={} OrdStatus={} ExecType={} Symbol={}\n", seq_no,
-                   std::string_view(report.cl_ord_id.data(), report.cl_ord_id.size()), pubsub_itc_fw_app::to_string(report.ord_status),
-                   pubsub_itc_fw_app::to_string(report.exec_type), std::string_view(report.symbol.data(), report.symbol.size()));
+        fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} Text={}\n", seq_no,
+                   std::string_view(report.cl_ord_id.data(), report.cl_ord_id.size()), report.order_id, pubsub_itc_fw_app::to_string(report.ord_status),
+                   pubsub_itc_fw_app::to_string(report.exec_type), std::string_view(report.symbol.data(), report.symbol.size()),
+                   report.has_text ? report.text : std::string_view());
     }
 
     ::close(socket_fd);

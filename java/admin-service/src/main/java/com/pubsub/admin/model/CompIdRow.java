@@ -48,5 +48,10 @@ public record CompIdRow(
          * it speaks.
          */
         Integer primaryGatewayInstance,
-        Integer backupGatewayInstance
+        Integer backupGatewayInstance,
+        /**
+         * The most new orders, amends and cancels one session of this comp id may send in any
+         * one second. Never null: the columns default to 0, which means no limit.
+         */
+        ThrottleLimits throttleLimits
 ) {}

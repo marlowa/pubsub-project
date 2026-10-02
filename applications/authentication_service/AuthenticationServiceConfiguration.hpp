@@ -136,12 +136,20 @@ struct AuthenticationServiceConfiguration {
      *
      * The instances name an instance of whichever order-entry protocol the member speaks,
      * not a protocol: this service is protocol-agnostic and must stay so.
+     *
+     * The three throttle limits are the exception to "optional means said nothing": each is
+     * the most commands of its kind one session may send in a second, zero means no limit,
+     * and the gateway has no default of its own, so there is no silence to preserve. A comp
+     * id with no entry in session_policies has all three at zero.
      */
     struct SessionPolicy {
         std::optional<bool> cancel_on_disconnect_enabled;
         std::optional<int32_t> cancel_on_disconnect_grace_period_seconds;
         std::optional<int16_t> primary_gateway_instance;
         std::optional<int16_t> backup_gateway_instance;
+        int32_t max_place_per_second{0};
+        int32_t max_amend_per_second{0};
+        int32_t max_cancel_per_second{0};
     };
 
     /** @brief Per-comp_id session policy; absent entry means the gateway's defaults apply. */

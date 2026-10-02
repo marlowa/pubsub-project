@@ -22,6 +22,8 @@
 
 #include <scram_crypto/ScramCrypto.hpp>
 
+#include <ThrottleLimits.hpp>
+
 #include "AuthenticationServiceConfigurationLoader.hpp"
 
 namespace authentication_service {
@@ -72,6 +74,27 @@ std::optional<int16_t> load_gateway_instance(const pubsub_itc_fw::TomlConfigurat
             fmt::format("credentials: credential[{}].{} must be between 1 and {}, got {}", index, key, INT16_MAX, instance));
     }
     return static_cast<int16_t>(instance);
+}
+
+/**
+ * @brief Reads one of a credential's throttle limits.
+ *
+ * The export always writes all three. A credentials file written by hand may leave one out, and
+ * an absent limit is read as zero, no limit, which is also the database column's default. A
+ * present value outside 0 to ThrottleLimits::max_permitted_per_second is refused here, rather
+ * than travelling to a gateway that would refuse the logon it arrived with.
+ */
+int32_t load_throttle_limit(const pubsub_itc_fw::TomlConfiguration& cred_toml, size_t index, const char* key) {
+    int32_t limit = 0;
+    const auto [present, error] = cred_toml.get_required(fmt::format("credential[{}].{}", index, key), limit);
+    if (!present) {
+        return 0;
+    }
+    if (limit < 0 || limit > fix_common::ThrottleLimits::max_permitted_per_second) {
+        throw pubsub_itc_fw::ConfigurationException(fmt::format("credentials: credential[{}].{} must be between 0 and {}, got {}", index, key,
+                                                                fix_common::ThrottleLimits::max_permitted_per_second, limit));
+    }
+    return limit;
 }
 
 void load_credentials(const std::string& credentials_file, std::unordered_map<std::string, scram_crypto::ScramCredential>& credentials,
@@ -164,8 +187,13 @@ void load_credentials(const std::string& credentials_file, std::unordered_map<st
                             *policy.primary_gateway_instance));
         }
 
+        policy.max_place_per_second = load_throttle_limit(cred_toml, i, "max_place_per_second");
+        policy.max_amend_per_second = load_throttle_limit(cred_toml, i, "max_amend_per_second");
+        policy.max_cancel_per_second = load_throttle_limit(cred_toml, i, "max_cancel_per_second");
+
         if (policy.cancel_on_disconnect_enabled.has_value() || policy.cancel_on_disconnect_grace_period_seconds.has_value() ||
-            policy.primary_gateway_instance.has_value()) {
+            policy.primary_gateway_instance.has_value() || policy.max_place_per_second != 0 || policy.max_amend_per_second != 0 ||
+            policy.max_cancel_per_second != 0) {
             session_policies[comp_id] = policy;
         }
     }

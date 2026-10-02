@@ -20,6 +20,7 @@
 #include "FixParser.hpp"
 #include "OpenOrderEntry.hpp"
 #include "SeqNumRanges.hpp"
+#include "SessionThrottles.hpp"
 
 namespace fix_order_gateway {
 
@@ -124,6 +125,15 @@ struct FixSession {
      */
     std::optional<bool> cancel_on_disconnect_enabled;
     std::optional<int32_t> cancel_on_disconnect_grace_period_seconds;
+
+    /**
+     * @brief This session's limits on new orders, amends and cancels per second.
+     *
+     * Created from the comp id's limits on AuthenticationResult when the logon is granted, and
+     * fixed for as long as the session is open. Until then it has no limits, which does not
+     * matter because no order is accepted before the logon. See docs/venue/gateway_throttles.md.
+     */
+    fix_common::SessionThrottles throttles;
 
     /**
      * @brief True while a SCRAM-SHA-256 authentication exchange is in progress

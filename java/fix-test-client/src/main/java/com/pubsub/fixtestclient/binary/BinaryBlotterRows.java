@@ -15,7 +15,7 @@ import java.util.List;
  * The blotter is protocol-agnostic by design -- a row is a set of order fields, not a FIX
  * message -- so the same table shows traffic from either gateway. What differs is only where
  * the fields are read from: QuickFIX tag lookups for the FIX session, generated struct fields
- * here. The MsgType column keeps the FIX letters ("D", "F", "8") because they name the
+ * here. The MsgType column keeps the FIX letters ("D", "F", "8", "9") because they name the
  * message types the venue deals in regardless of how they were carried.
  */
 public final class BinaryBlotterRows {
@@ -72,6 +72,23 @@ public final class BinaryBlotterRows {
                 summariseUnderlyings(report.no_underlyings),
                 report.has_time_in_force ? asFixChar(report.time_in_force.value) : "",
                 report.has_expire_time ? formatExpireTime(report.expire_time) : "");
+    }
+
+    /**
+     * A refused request to cancel. The order it names is left as OrdStatus says: a refusal by
+     * the gateway reports the order still open.
+     */
+    public static BlotterRow fromCancelReject(long id, FixOrders.OrderCancelReject reject) {
+        return new BlotterRow(
+                id, Instant.now(), "IN", "9", 0,
+                reject.cl_ord_id,
+                reject.has_orig_cl_ord_id ? reject.orig_cl_ord_id : "",
+                reject.order_id,
+                "", "",
+                asFixChar(reject.ord_status.value),
+                "",
+                reject.has_cxl_rej_reason ? String.valueOf(reject.cxl_rej_reason.value) : "",
+                "", "", "", "", "", "", "", "", "", "", "", "");
     }
 
     // Repeating groups render as a compact one-line summary, matching what the FIX blotter

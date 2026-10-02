@@ -36,7 +36,13 @@ See the README for the list.
 - **Firms** — list, create, edit (name, enabled flag). Disabling a firm revokes all its
   comp_id credentials via PDU 512.
 - **Comp IDs** — list per firm, create, edit (enabled, locked, force-password-change). Edit
-  form shows a warning when re-enabling/unlocking requires a manual password reset.
+  form shows a warning when re-enabling/unlocking requires a manual password reset. The limits on
+  new orders, amends and cancels per second for each session ([gateway_throttles.md](gateway_throttles.md))
+  can be given when a comp ID is created and changed when it is edited. Each must be a whole number
+  from 0 to 100,000, where 0 means no limit, and a blank field is taken as 0. A value outside that
+  range is refused with a message naming the field. A change reaches the gateways at the comp ID's
+  first logon after the credentials are next exported, in practice the next trading day: no admin
+  message carries it to a running authentication service.
 - **Gateway Permissions** — list, inline add form.
 - **Set Password** — per-comp-id page; derives SCRAM → writes DB → sends PDU 510 to the
   authentication service.

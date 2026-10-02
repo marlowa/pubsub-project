@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/TimerID.hpp>
 
 #include "OpenOrderEntry.hpp"
+#include "SessionThrottles.hpp"
 
 namespace binary_order_gateway {
 
@@ -49,6 +50,23 @@ struct BinarySession {
      */
     std::optional<bool> cancel_on_disconnect_enabled;
     std::optional<int32_t> cancel_on_disconnect_grace_period_seconds;
+
+    /**
+     * @brief This session's limits on new orders, amends and cancels per second.
+     *
+     * Created from the comp id's limits on AuthenticationResult when the logon is granted, and
+     * fixed for as long as the session is open. See docs/venue/gateway_throttles.md.
+     */
+    fix_common::SessionThrottles throttles;
+
+    /**
+     * @brief Counters for the identifiers on a rejected ExecutionReport this gateway makes itself.
+     *
+     * An order the gateway refuses never reaches the matching engine, so the gateway names it,
+     * GW-ORD-n and GW-EXEC-n, as the FIX gateway does.
+     */
+    int64_t order_id_counter{1};
+    int64_t exec_id_counter{1};
 
     /** @brief True between sending the AuthenticationRequest and the result arriving. */
     bool auth_pending{false};

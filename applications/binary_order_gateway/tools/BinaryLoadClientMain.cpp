@@ -246,6 +246,10 @@ class LoadSession {
         return cancels_sent_;
     }
 
+    [[nodiscard]] int64_t cancel_rejects() const {
+        return cancel_rejects_.load(std::memory_order_relaxed);
+    }
+
     [[nodiscard]] size_t resting_order_count() {
         const std::lock_guard<std::mutex> guard(resting_mutex_);
         return resting_cl_ord_ids_.size();
@@ -340,7 +344,8 @@ class LoadSession {
     double cancel_ratio_{0.0};
     double cancel_credit_{0.0};
     int64_t cancels_sent_{0};
-    int64_t cancel_rejects_{0};
+    // Written by the receiver thread, read by the main thread for the summary.
+    std::atomic<int64_t> cancel_rejects_{0};
     std::vector<int64_t> latencies_;
 
     std::vector<uint8_t> send_buffer_;
@@ -606,6 +611,14 @@ void LoadSession::receive_loop() {
         }
 
         const int16_t pdu_id = static_cast<int16_t>(ntohs(static_cast<uint16_t>(header.pdu_id)));
+        // A refused cancel is answered with an OrderCancelReject rather than an ExecutionReport.
+        // It is still the one reply that cancel earns, so it is counted as received, or a run
+        // that had a cancel refused would wait for a report that is never coming.
+        if (pdu_id == pubsub_itc_fw_app::OrderCancelReject::message_pdu_id) {
+            cancel_rejects_.fetch_add(1, std::memory_order_relaxed);
+            reports_received_.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
         if (pdu_id != pubsub_itc_fw_app::ExecutionReport::message_pdu_id) {
             continue;
         }
@@ -818,10 +831,15 @@ int main(int argc, char** argv) {
         // Resting is what the venue's book still holds from this run. Without cancels it
         // equals the order count and grows without bound, which is how a matching engine
         // that does no matching came to be OOM-killed at 9.9 GB.
+        int64_t total_cancel_rejects = 0;
+        for (const auto& session : sessions) {
+            total_cancel_rejects += session->cancel_rejects();
+        }
         fmt::print("  cancels sent   {}\n", total_cancels);
+        fmt::print("  cancels refused {}\n", total_cancel_rejects);
         fmt::print("  still resting  {}\n", total_resting);
     }
-    fmt::print("  messages sent  {}  (orders + cancels; each earns one report)\n", total_sent);
+    fmt::print("  messages sent  {}  (orders + cancels; each earns one reply)\n", total_sent);
     fmt::print("  reports recvd  {}\n", total_received);
     if (total_seconds > 0.0) {
         fmt::print("  throughput     {:.0f} orders/s round trip over {:.3f}s\n", static_cast<double>(total_received) / total_seconds, total_seconds);

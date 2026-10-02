@@ -5,6 +5,7 @@ import com.pubsub.admin.model.AdminUser;
 import com.pubsub.admin.model.CompIdRow;
 import com.pubsub.admin.model.FirmRow;
 import com.pubsub.admin.model.GatewayPermissionRow;
+import com.pubsub.admin.model.ThrottleLimits;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -61,7 +62,8 @@ class FreemarkerTemplateRenderingTest {
             true, null,
             // Not pinned to any gateway instance either -- the same null-renders-empty case
             // for the two provisioning fields, which is what an unprovisioned member has.
-            null, null);
+            null, null,
+            ThrottleLimits.NONE);
 
     /** A locked row: exercises the nullable lockedReason and lockedAt being populated. */
     private static final CompIdRow LOCKED_COMP_ID = new CompIdRow(
@@ -74,7 +76,10 @@ class FreemarkerTemplateRenderingTest {
             true, 60,
             // Pinned to instance 1 with 2 as its backup, covering the populated path for
             // both provisioning fields.
-            1, 2);
+            1, 2,
+            // Limits on every kind, one of them above 999, so a number rendered with a
+            // thousands separator would reach the form and be refused when submitted.
+            new ThrottleLimits(50, 10, 100_000));
 
     private static final GatewayPermissionRow PERMISSION =
             new GatewayPermissionRow("ACME_TRADER1", "order", true, TIMESTAMP);
@@ -181,6 +186,23 @@ class FreemarkerTemplateRenderingTest {
                 () -> testCase.name() + " produced no complete document:\n" + html);
         assertTrue(html.contains("PubSub Admin"),
                 () -> testCase.name() + " did not apply the brand name");
+    }
+
+    /**
+     * The comp id form shows the limits the row holds when editing, and 0, no limit, when
+     * creating. A number rendered with a thousands separator, such as "100,000", would reach the
+     * browser and then be refused as not a whole number when the form was submitted.
+     */
+    @Test
+    void compIdFormShowsTheThrottleLimits() {
+        String edit = renderer().renderTemplate("/templates/comp-ids/form.ftl", Map.of("row", LOCKED_COMP_ID));
+        assertTrue(edit.contains("name=\"maxPlacePerSecond\" min=\"0\" max=\"100000\" step=\"1\" value=\"50\""), edit);
+        assertTrue(edit.contains("name=\"maxAmendPerSecond\" min=\"0\" max=\"100000\" step=\"1\" value=\"10\""), edit);
+        assertTrue(edit.contains("name=\"maxCancelPerSecond\" min=\"0\" max=\"100000\" step=\"1\" value=\"100000\""), edit);
+
+        String create = renderer().renderTemplate("/templates/comp-ids/form.ftl", Map.of("firmId", "ACME"));
+        assertTrue(create.contains("name=\"maxPlacePerSecond\" min=\"0\" max=\"100000\" step=\"1\" value=\"0\""), create);
+        assertTrue(create.contains("name=\"maxCancelPerSecond\" min=\"0\" max=\"100000\" step=\"1\" value=\"0\""), create);
     }
 
     /**

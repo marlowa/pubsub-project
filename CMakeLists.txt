@@ -448,6 +448,7 @@ add_custom_command(
             --message NewOrderSingle:1000
             --message OrderCancelRequest:1001
             --message ExecutionReport:1002
+            --message OrderCancelReject:1003
             --output "${FIX_DSL_GENERATED}"
     DEPENDS "${FIX_DD_SOURCE}" "${FIX_DD_GENERATOR}" ${FIX_DD_GENERATOR_MODULES}
     COMMENT "Generating fix_orders.dsl from the FIX data dictionary"

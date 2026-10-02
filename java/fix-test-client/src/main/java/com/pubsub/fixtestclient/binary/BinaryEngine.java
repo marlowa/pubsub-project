@@ -253,6 +253,15 @@ public final class BinaryEngine {
                 if (frame == null) {
                     return;
                 }
+                if (frame.pduId == FixOrders.OrderCancelReject.PDU_ID) {
+                    FixOrders.OrderCancelReject reject = FixOrders.OrderCancelReject.decode(ByteBuffer.wrap(frame.payload));
+                    if (reject == null) {
+                        log.warn("OrderCancelReject from the binary gateway could not be decoded");
+                        continue;
+                    }
+                    blotterStore.add(BinaryBlotterRows.fromCancelReject(blotterStore.nextRowId(), reject));
+                    continue;
+                }
                 if (frame.pduId != FixOrders.ExecutionReport.PDU_ID) {
                     log.debug("Ignoring PDU id {} from the binary gateway", frame.pduId);
                     continue;

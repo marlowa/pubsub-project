@@ -115,6 +115,8 @@
                                 <argument>OrderCancelRequest:1001</argument>
                                 <argument>--message</argument>
                                 <argument>ExecutionReport:1002</argument>
+                                <argument>--message</argument>
+                                <argument>OrderCancelReject:1003</argument>
                                 <argument>--output</argument>
                                 <argument>${project.build.directory}/generated-sources/dsl-schema/fix_orders.dsl</argument>
                             </arguments>

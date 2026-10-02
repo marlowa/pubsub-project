@@ -272,6 +272,10 @@
     <field number="151" name="LeavesQty" type="QTY"/>
     <field number="309" name="UnderlyingSecurityID" type="STRING"/>
     <field number="311" name="UnderlyingSymbol" type="STRING"/>
+    <field number="434" name="CxlRejResponseTo" type="CHAR">
+      <value enum="1" description="ORDER_CANCEL_REQUEST"/>
+      <value enum="2" description="ORDER_CANCEL_REPLACE_REQUEST"/>
+    </field>
     <field number="447" name="PartyIDSource" type="CHAR">
       <value enum="6" description="UK_NATIONAL_INSURANCE_OR_PENSION_NUMBER"/>
       <value enum="7" description="US_SOCIAL_SECURITY_NUMBER"/>
@@ -619,6 +623,16 @@
         <field name="UnderlyingSecurityID" required="N"/>
         <field name="UnderlyingQty" required="N"/>
       </group>
+    </message>
+    <message name="OrderCancelReject" msgtype="9" msgcat="app">
+      <field name="OrderID" required="Y"/>
+      <field name="ClOrdID" required="Y"/>
+      <field name="OrigClOrdID" required="N"/>
+      <field name="OrdStatus" required="Y"/>
+      <field name="TransactTime" required="N"/>
+      <field name="CxlRejResponseTo" required="Y"/>
+      <field name="CxlRejReason" required="N"/>
+      <field name="Text" required="N"/>
     </message>
   </messages>
 </fix>

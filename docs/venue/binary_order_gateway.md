@@ -41,7 +41,10 @@ Two message types are specific to this gateway, defined in `applications/binary_
 | `LogonAck` | gateway → client | `LogonOutcome`, plus optional text for logs |
 
 Everything else is the DD-derived order messages from `fix_orders.dsl` (ids 1000+):
-`NewOrderSingle` and `OrderCancelRequest` inbound, `ExecutionReport` outbound.
+`NewOrderSingle` (1000) and `OrderCancelRequest` (1001) inbound, `ExecutionReport` (1002) and
+`OrderCancelReject` (1003) outbound. `OrderCancelReject` answers a refused request to cancel, with
+the same fields as FIX's 35=9, and says the order's status rather than reporting the order
+rejected (R-0151).
 
 A session is: connect, `Logon`, SCRAM exchange with the authentication service, `LogonAck`,
 then orders. Any other PDU before the session is authenticated is refused and the connection
@@ -81,6 +84,18 @@ decoded -- only the envelope around them is read.
 This is not just an efficiency point. A relay that does not parse what it carries does not
 need rebuilding when a message it merely passes through gains a field, which is exactly what
 the DD-driven generator makes likely.
+
+**Refusals.** The gateway refuses a member's command only when the session has reached its limit
+on new orders or cancels per second ([gateway_throttles.md](gateway_throttles.md)). The command is
+then decoded, because the reply must name it: a new order is answered with a rejected
+`ExecutionReport` whose OrderID the gateway assigns (`GW-ORD-n`), and a cancel with an
+`OrderCancelReject` reporting the order still open. An accepted command is still passed on
+undecoded.
+
+**The matching engine's refusal of a cancel** arrives as a rejected `ExecutionReport` carrying the
+OrigClOrdID of the order named. The gateway decodes every report it relays, to keep the session's
+record of open orders, and sends this one to the member as an `OrderCancelReject` instead, with
+CxlRejReason 1, Unknown order. Every other report is relayed as the bytes that arrived.
 
 ## Routing: why gateways have ids
 

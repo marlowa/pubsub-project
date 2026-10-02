@@ -327,6 +327,24 @@ _DEFERRED_ANSWER_TIMEOUT      = 45.0
 # reporting" is a claim about a sequence rather than about one line that happened to be there.
 _REFUSAL_QUIET_WATCH          = 12.0
 
+# Scenario 56. The comp id given limits, and the limits it is given. Small enough that a burst of
+# orders sent as fast as the raw client can write them crosses the limit within the same second,
+# and different from each other, so a limit applied to the wrong kind of command is caught. The
+# amend limit is not exercised -- the venue cannot amend -- but it is checked to have reached the
+# gateway, since it travels the same route.
+_THROTTLED_COMP_ID = "THROTTLED"
+_THROTTLE_PLACE_LIMIT = 5
+_THROTTLE_AMEND_LIMIT = 2
+_THROTTLE_CANCEL_LIMIT = 3
+_THROTTLE_BURST = 12
+# Orders sent part way through the same second, after the limit is reached: refused, and must not
+# count towards the limit. More of them than the limit, so that a gateway which recorded a refused
+# order in place of the oldest accepted one would hold nothing but retries by the time the next
+# order is sent, and refuse it; with fewer, some accepted times would expire first and hide that.
+_THROTTLE_RETRIES = _THROTTLE_PLACE_LIMIT + 1
+# How long a gateway log line may take to reach the file after the event it records.
+_THROTTLE_LOG_TIMEOUT = 5.0
+
 # Scenarios 43-47. With high availability off a sequencer leads the moment it starts -- there is no
 # election to wait for -- so this only has to cover process start and the log reaching disk.
 _HA_OFF_LEAD_TIMEOUT          = 20.0
@@ -806,6 +824,11 @@ class Scenario(NamedTuple):
     # accepting orders it cannot process rather than acknowledging them forever. See
     # run_scenario's "order refusal" block and docs/availability/order_acceptance.md.
     assert_order_refusal: bool = False
+    # When True, provision a comp id with small limits on new orders and cancels per second, send
+    # bursts over them through the FIX gateway, and assert exactly the commands over the limit are
+    # refused, with the limit in the text. See run_scenario's "throttles" block and
+    # docs/venue/gateway_throttles.md.
+    assert_gateway_throttles: bool = False
     # When True, take every matching engine away, place an order that the sequencer therefore
     # defers, start one engine COLD, and assert the member is answered for it. See
     # run_scenario's "deferred orders" block, BUG-0064 and the surviving half of BUG-0009.
@@ -3267,6 +3290,34 @@ _SCENARIOS: list[Scenario] = [
             ),
         ],
     ),
+
+    # 56 -- a session may send only so many new orders and cancels a second.
+    #
+    # The limits travel the real route -- the comp_id row, the export, credentials.toml, the
+    # authentication service, AuthenticationResult -- so the scenario first checks the gateway
+    # names the numbers it applied, not merely that something was refused. A hop that dropped a
+    # value would leave the session unlimited, and a test that only looked for refusals would
+    # pass a venue that refused for some other reason.
+    #
+    # Then a burst of new orders, sent faster than the limit, must be split exactly: the first
+    # orders up to the limit accepted and every one after refused with the limit in its text. A
+    # second later one more is accepted. A burst of cancels is split the same way, the refused
+    # ones answered with an OrderCancelReject that says the order is still open. Finally a comp
+    # id with no limit sends the same burst and nothing is refused.
+    Scenario(
+        number=56,
+        short_name="gateway_throttles",
+        description="Each session is limited in how many new orders and cancels it may send a second",
+        expected_outcome=(
+            "the gateway applies the provisioned limits; a burst of new orders and a burst of cancels are each "
+            "accepted up to the limit and refused beyond it with the limit in the text; a command a second later "
+            "is accepted; and a comp id with no limit is never refused"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_gateway_throttles=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -3608,6 +3659,30 @@ def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> N
     log(f"  {comp_id}: cancel-on-disconnect grace period set to {grace_period_seconds}s")
 
 
+def provision_throttle_limits(comp_id: str, place: int, amend: int, cancel: int) -> None:
+    """Set a comp id's limits on new orders, amends and cancels per second in the database.
+
+    Same psql route, and the same reason, as provision_cancel_on_disconnect: the values must
+    travel the real path to the gateway, so that a hop which drops them fails the scenario.
+    """
+    statement = (
+        f"UPDATE pubsub_comp_id "
+        f"SET max_place_per_second = {place}, max_amend_per_second = {amend}, max_cancel_per_second = {cancel} "
+        f"WHERE comp_id = '{comp_id}'"
+    )
+    result = subprocess.run(
+        ["psql", "--host", DB_HOST, "--port", DB_PORT,
+         "--username", "pubsub_app", "--dbname", "pubsub",
+         "--quiet", "--command", statement],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PGPASSWORD": os.environ.get("PUBSUB_APP_DB_PASSWORD", "pubsub_dev")},
+    )
+    if result.returncode != 0:
+        die(f"could not provision throttle limits for '{comp_id}' "
+            f"(is the database running and migrated to v4?):\n{result.stderr.strip()}")
+    log(f"  {comp_id}: throttle limits set to new orders={place} amends={amend} cancels={cancel} per second")
+
+
 def export_credentials(project_root: Path, creds_file: Path) -> None:
     """Regenerate credentials.toml from the database, then re-apply the fix8 credential.
 
@@ -3631,6 +3706,9 @@ def export_credentials(project_root: Path, creds_file: Path) -> None:
     # once, and a scenario that needs it and finds it missing fails as an unexplained logon
     # timeout rather than as a missing credential.
     ensure_fix8_credentials(creds_file, FIX8_RECOVERY_COMP_ID, FIX8_PASSWORD)
+    # The comp id the throttle scenario limits. It IS in the database, so its limits arrive with
+    # the export and are kept when its SCRAM material is rewritten here.
+    ensure_fix8_credentials(creds_file, _THROTTLED_COMP_ID, FIX8_PASSWORD)
 
 
 def provision_gateway_pinning(comp_id: str, primary_instance: int,
@@ -5102,6 +5180,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # baseline comp id could only send duplicates of them. Generating one small file is
         # cheaper than working out in advance which scenarios will want it.
         write_recovery_fix8_config()
+
+        # Throttle limits are provisioned for every scenario, not only the one that tests them:
+        # the baseline comp id must never be limited, or a scenario's baseline burst would be
+        # refused for a reason it is not about, and a value another run left behind would decide
+        # which.
+        log("=== Provisioning throttle limits ===")
+        provision_throttle_limits(FIX8_COMP_ID, 0, 0, 0)
+        provision_throttle_limits(_THROTTLED_COMP_ID, _THROTTLE_PLACE_LIMIT, _THROTTLE_AMEND_LIMIT, _THROTTLE_CANCEL_LIMIT)
 
         if scenario.assert_session_provisioning:
             log("=== Provisioning gateway instances for the test comp id ===")
@@ -6674,6 +6760,196 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  order refusal: the engine's refusal of a cancel for an unknown order is an "
                 "OrderCancelReject with CxlRejReason 1 -- OK")
             member.close()
+
+        # ── Throttles ─────────────────────────────────────────────────────────
+        # Nothing is killed. A comp id with small limits sends bursts over them, and the replies
+        # are matched to the commands by ClOrdID, so a report for some other order cannot be
+        # mistaken for the answer to this one.
+        if scenario.assert_gateway_throttles:
+            log("=== Throttles ===")
+            stop_f8test(f8proc)
+            f8proc = None
+            time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            gateway_port = gateway_listen_port(prefix, "a")
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            def replies_by_cl_ord_id(member: FixRawClient, wanted: set[str], timeout: float) -> dict[str, dict[int, str]]:
+                """Collect the first ExecutionReport or OrderCancelReject answering each ClOrdID."""
+                replies: dict[str, dict[int, str]] = {}
+                deadline = time.monotonic() + timeout
+                while len(replies) < len(wanted) and time.monotonic() < deadline:
+                    reply = member.receive_until("8", "9", timeout=max(0.1, deadline - time.monotonic()))
+                    if reply is not None and reply.get(11) in wanted and reply.get(11) not in replies:
+                        replies[reply[11]] = reply
+                return replies
+
+            def logged_on(comp_id: str) -> FixRawClient:
+                member = FixRawClient("127.0.0.1", gateway_port, comp_id, "GATEWAY", FIX8_PASSWORD)
+                member.connect()
+                member.logon(reset_seq_num=True)
+                if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                    member.close()
+                    die(f"throttles: '{comp_id}' could not log on. A test that cannot log on looks identical "
+                        "to a venue that refuses everything, so this is checked first.")
+                return member
+
+            # 1. The limits the gateway applied, by number. Nothing else shows that each value
+            #    survived the database, the export, the authentication service and
+            #    AuthenticationResult: a session that arrived unlimited would refuse nothing, and
+            #    a refusal for another reason would look like a throttle to a test that did not
+            #    check.
+            limits_pos = file_end(gw_log)
+            member = logged_on(_THROTTLED_COMP_ID)
+            applied_marker = (f"comp_id='{_THROTTLED_COMP_ID}' throttle limits per second for this session: "
+                              f"new orders={_THROTTLE_PLACE_LIMIT} amends={_THROTTLE_AMEND_LIMIT} cancels={_THROTTLE_CANCEL_LIMIT}")
+            # Polled rather than read once: the gateway's logger writes on a thread of its own, so
+            # the line can reach the file a little after the logon reply reaches the client.
+            if not poll_log_for(gw_log, applied_marker, timeout=_THROTTLE_LOG_TIMEOUT, from_byte=limits_pos)[0]:
+                member.close()
+                die(f"throttles: the gateway never logged '{applied_marker}'. The limits did not reach it -- check, in "
+                    "order: the comp_id row, credentials.toml after export, the authentication service, and "
+                    "AuthenticationResult.")
+            log(f"  throttles: the gateway applied new orders={_THROTTLE_PLACE_LIMIT} amends={_THROTTLE_AMEND_LIMIT} "
+                f"cancels={_THROTTLE_CANCEL_LIMIT} per second -- OK")
+
+            # 2. A burst of new orders, faster than the limit. Exactly the first orders up to the
+            #    limit are accepted, and every one after is refused with the limit in the text.
+            place_text = f"Throttled: at most {_THROTTLE_PLACE_LIMIT} new orders per second for this session"
+            orders = [f"throttle-{run_tag}-{index}" for index in range(_THROTTLE_BURST)]
+            burst_started = time.monotonic()
+            for cl_ord_id in orders:
+                member.new_order_single(cl_ord_id)
+            burst_seconds = time.monotonic() - burst_started
+            if burst_seconds >= 0.5:
+                member.close()
+                die(f"throttles: sending {_THROTTLE_BURST} orders took {burst_seconds:.2f}s. The burst has to arrive "
+                    "well inside one second, or the window can legitimately accept more than the limit and this "
+                    "check would be measuring the harness.")
+            replies = replies_by_cl_ord_id(member, set(orders), _RAW_REPLY_TIMEOUT)
+            if len(replies) != len(orders):
+                member.close()
+                die(f"throttles: {len(orders) - len(replies)} of {len(orders)} orders got no answer at all. A "
+                    "refused order must be answered, or the member cannot tell refusal from loss.")
+            refused = [cl_ord_id for cl_ord_id in orders if replies[cl_ord_id].get(39) == "8"]
+            accepted = [cl_ord_id for cl_ord_id in orders if replies[cl_ord_id].get(39) != "8"]
+            if accepted != orders[:_THROTTLE_PLACE_LIMIT]:
+                member.close()
+                die(f"throttles: the orders accepted were {accepted}; expected exactly the first "
+                    f"{_THROTTLE_PLACE_LIMIT}, {orders[:_THROTTLE_PLACE_LIMIT]}. A limit that let more through, or "
+                    "refused an order within it, is not the limit provisioned.")
+            for cl_ord_id in refused:
+                if replies[cl_ord_id].get(58) != place_text:
+                    member.close()
+                    die(f"throttles: order {cl_ord_id} was refused with Text='{replies[cl_ord_id].get(58)}'; expected "
+                        f"'{place_text}'. A member must be told the limit, or it cannot tell how far to slow down.")
+                # The gateway names an order it refuses itself GW-ORD-n. An engine's OrderID here
+                # would mean the order reached the sequencer, which a refused order must not.
+                if not replies[cl_ord_id].get(37, "").startswith("GW-ORD-"):
+                    member.close()
+                    die(f"throttles: order {cl_ord_id} was refused with OrderID={replies[cl_ord_id].get(37)}, which the "
+                        "gateway did not assign, so the order went on to the venue (R-0150).")
+            log(f"  throttles: of {_THROTTLE_BURST} new orders sent in {burst_seconds * 1000:.0f}ms, the first "
+                f"{len(accepted)} were accepted and {len(refused)} refused with Text='{place_text}' -- OK")
+
+            # 3. Refused commands do not count. Retries sent part way through the second are
+            #    refused, and an order sent just over a second after the burst is accepted. A
+            #    gateway that counted the retries would still be full then, and refuse it.
+            time.sleep(max(0.0, burst_started + 0.6 - time.monotonic()))
+            retries = [f"throttle-{run_tag}-retry-{index}" for index in range(_THROTTLE_RETRIES)]
+            for cl_ord_id in retries:
+                member.new_order_single(cl_ord_id)
+            retry_replies = replies_by_cl_ord_id(member, set(retries), _RAW_REPLY_TIMEOUT)
+            if time.monotonic() - burst_started >= 1.0:
+                member.close()
+                die("throttles: the retries were not answered within the second they were sent in, so they cannot "
+                    "show whether refused commands count.")
+            if len(retry_replies) != len(retries) or any(r.get(58) != place_text for r in retry_replies.values()):
+                member.close()
+                die(f"throttles: the {_THROTTLE_RETRIES} retries sent within the same second were not all refused "
+                    f"with Text='{place_text}': {[(c, r.get(39), r.get(58)) for c, r in retry_replies.items()]}.")
+
+            # And one second after the first accepted order, one more is accepted, and the gateway
+            # says the run of refusals has ended, with how many there were.
+            time.sleep(max(0.0, burst_started + 1.1 - time.monotonic()))
+            later = f"throttle-{run_tag}-later"
+            member.new_order_single(later)
+            later_reply = replies_by_cl_ord_id(member, {later}, _RAW_REPLY_TIMEOUT).get(later)
+            if later_reply is None or later_reply.get(39) == "8":
+                member.close()
+                die(f"throttles: an order sent a second after the burst was "
+                    f"{'not answered' if later_reply is None else 'refused: ' + later_reply.get(58, '')}. "
+                    "Every order accepted in the burst was more than a second old, so either the refused retries "
+                    "were counted towards the limit (R-0149), or the limit is not measured over the last second.")
+            started_marker = (f"comp_id='{_THROTTLED_COMP_ID}' started being throttled for kind 'new order': the limit of "
+                              f"{_THROTTLE_PLACE_LIMIT} per second for this session was reached")
+            stopped_marker = (f"comp_id='{_THROTTLED_COMP_ID}' stopped being throttled for kind 'new order': accepted again "
+                              f"after {_THROTTLE_BURST - _THROTTLE_PLACE_LIMIT + _THROTTLE_RETRIES} refused")
+            # Wait for the later of the two lines to be written, then count both.
+            poll_log_for(gw_log, stopped_marker, timeout=_THROTTLE_LOG_TIMEOUT, from_byte=limits_pos)
+            for marker in (started_marker, stopped_marker):
+                if count_log_marker(gw_log, marker, limits_pos) != 1:
+                    member.close()
+                    die(f"throttles: the gateway should have logged '{marker}' exactly once. The log says when a "
+                        "member starts and stops being throttled, not each refusal, or a member sending far too "
+                        "fast fills it.")
+            log(f"  throttles: {_THROTTLE_RETRIES} retries within the second were refused, an order a second after the "
+                "burst was accepted, so refused orders did not count; and the gateway logged once when the session "
+                "started being throttled and once when it stopped -- OK")
+
+            # 4. A burst of cancels for the orders now open. The first up to the cancel limit are
+            #    accepted, and the rest are refused with an OrderCancelReject that says the order
+            #    is still open.
+            cancel_text = f"Throttled: at most {_THROTTLE_CANCEL_LIMIT} cancels per second for this session"
+            open_orders = accepted + [later]
+            cancels = {f"{cl_ord_id}-cancel": cl_ord_id for cl_ord_id in open_orders}
+            for cancel_cl_ord_id, orig_cl_ord_id in cancels.items():
+                member.order_cancel_request(cancel_cl_ord_id, orig_cl_ord_id)
+            cancel_replies = replies_by_cl_ord_id(member, set(cancels), _RAW_REPLY_TIMEOUT)
+            if len(cancel_replies) != len(cancels):
+                member.close()
+                die(f"throttles: {len(cancels) - len(cancel_replies)} of {len(cancels)} cancels got no answer.")
+            cancel_order = list(cancels)
+            refused_cancels = [c for c in cancel_order if cancel_replies[c].get(35) == "9"]
+            accepted_cancels = [c for c in cancel_order if cancel_replies[c].get(35) != "9"]
+            if accepted_cancels != cancel_order[:_THROTTLE_CANCEL_LIMIT]:
+                member.close()
+                die(f"throttles: the cancels accepted were {accepted_cancels}; expected exactly the first "
+                    f"{_THROTTLE_CANCEL_LIMIT}, {cancel_order[:_THROTTLE_CANCEL_LIMIT]}.")
+            for cancel_cl_ord_id in refused_cancels:
+                reply = cancel_replies[cancel_cl_ord_id]
+                if reply.get(39) != "0" or reply.get(434) != "1" or reply.get(102) != "99" or reply.get(58) != cancel_text:
+                    member.close()
+                    die(f"throttles: cancel {cancel_cl_ord_id} was refused with OrdStatus={reply.get(39)} "
+                        f"CxlRejResponseTo={reply.get(434)} CxlRejReason={reply.get(102)} Text='{reply.get(58)}'; expected "
+                        f"OrdStatus 0 (the order is open), 434=1, 102=99 and Text='{cancel_text}' (R-0150, R-0151).")
+            log(f"  throttles: of {len(cancels)} cancels, the first {len(accepted_cancels)} were accepted and "
+                f"{len(refused_cancels)} refused with an OrderCancelReject, OrdStatus 0, Text='{cancel_text}' -- OK")
+            member.close()
+
+            # 5. A comp id with no limit sends the same burst and nothing is refused, so the
+            #    refusals above came from the limit and not from the venue refusing a burst.
+            unlimited_pos = file_end(gw_log)
+            member = logged_on(FIX8_COMP_ID)
+            unlimited_marker = (f"comp_id='{FIX8_COMP_ID}' throttle limits per second for this session: "
+                                "new orders=0 amends=0 cancels=0")
+            if not poll_log_for(gw_log, unlimited_marker, timeout=_THROTTLE_LOG_TIMEOUT, from_byte=unlimited_pos)[0]:
+                member.close()
+                die(f"throttles: the gateway never logged '{unlimited_marker}' for the comp id provisioned with no limit.")
+            unlimited_orders = [f"unthrottled-{run_tag}-{index}" for index in range(_THROTTLE_BURST)]
+            for cl_ord_id in unlimited_orders:
+                member.new_order_single(cl_ord_id)
+            unlimited_replies = replies_by_cl_ord_id(member, set(unlimited_orders), _RAW_REPLY_TIMEOUT)
+            member.close()
+            throttled = [c for c, r in unlimited_replies.items() if r.get(58, "").startswith("Throttled")]
+            if len(unlimited_replies) != len(unlimited_orders) or throttled:
+                die(f"throttles: the comp id with no limit had {len(throttled)} order(s) throttled and "
+                    f"{len(unlimited_orders) - len(unlimited_replies)} unanswered, out of {len(unlimited_orders)}.")
+            log(f"  throttles: a comp id with no limit sent the same burst of {_THROTTLE_BURST} and none was "
+                "throttled -- OK")
 
         # ── A bounded resend, out of the middle of the member's history ───────
         # Nothing is killed. The member asks for a range it is entitled to ask for, and what

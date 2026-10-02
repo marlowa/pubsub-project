@@ -228,6 +228,11 @@ void AuthenticationThread::handle_authentication_proof(const pubsub_itc_fw::Conn
                     result.has_backup_gateway_instance = true;
                     result.backup_gateway_instance = *policy.backup_gateway_instance;
                 }
+                // The throttle limits are always sent with a grant; a comp id with no entry
+                // here sends zeros, no limit, from the value-initialised result.
+                result.max_place_per_second = policy.max_place_per_second;
+                result.max_amend_per_second = policy.max_amend_per_second;
+                result.max_cancel_per_second = policy.max_cancel_per_second;
             }
         }
 
@@ -636,11 +641,18 @@ void AuthenticationThread::persist_credentials() {
             // to. This file is rewritten in full every time an admin sets, removes or
             // restores a credential, and the SCRAM material is the only thing this service
             // manages -- so without this the next password change would silently strip
-            // every member's cancel-on-disconnect settings and gateway pinning, leaving
-            // them on gateway defaults with nothing to say it had happened. Only keys that
-            // were actually provisioned are written, so silence stays silence rather than
-            // being frozen into today's default.
+            // every member's cancel-on-disconnect settings, gateway pinning and throttle
+            // limits, leaving them on gateway defaults or unlimited with nothing to say it
+            // had happened. Only cancel-on-disconnect and pinning keys that were actually
+            // provisioned are written, so silence stays silence rather than being frozen
+            // into today's default. The throttle limits are always written, as the export
+            // writes them, zero included.
             const auto policy_it = config_.session_policies.find(comp_id);
+            const AuthenticationServiceConfiguration::SessionPolicy no_policy;
+            const auto& throttle_policy = policy_it != config_.session_policies.end() ? policy_it->second : no_policy;
+            out << "max_place_per_second = " << throttle_policy.max_place_per_second << "\n"
+                << "max_amend_per_second = " << throttle_policy.max_amend_per_second << "\n"
+                << "max_cancel_per_second = " << throttle_policy.max_cancel_per_second << "\n";
             if (policy_it != config_.session_policies.end()) {
                 const auto& policy = policy_it->second;
                 if (policy.cancel_on_disconnect_enabled.has_value()) {

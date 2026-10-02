@@ -173,6 +173,14 @@ message AuthenticationResult (id=503, version=1)
     # backup with a primary present pins the member to that one instance.
     optional i16          primary_gateway_instance
     optional i16          backup_gateway_instance
+    # Gateway throttles for this comp id: the most commands of each kind that one session
+    # may send in any one second. Each session of the comp id counts its own commands.
+    # Zero means no limit, and the largest permitted value is 100000. Not optional: the
+    # database column is never empty and the gateway has no default of its own, so the
+    # value sent is always the value applied. See docs/venue/gateway_throttles.md.
+    i32                   max_place_per_second
+    i32                   max_amend_per_second
+    i32                   max_cancel_per_second
 end
 
 # ---------------------------------------------------------------------------

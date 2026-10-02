@@ -14,14 +14,16 @@
 #include <fix_orders.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
 
+#include <CancelRejection.hpp>
+
 // Guards the ExecutionReport encoder after its move onto fix_codec::FixMessageWriter.
 // The returned view does not start at buffer[0] (the header is framed backward into
 // a reserved prefix), so parsing the view proves both the framing and that the
 // caller must use view.data()/view.size(), not the buffer base.
 
+using fix_common::is_cancel_rejection;
 using fix_order_gateway::encode_execution_report;
 using fix_order_gateway::encode_order_cancel_reject;
-using fix_order_gateway::is_cancel_rejection;
 namespace tag = fix_codec::tag;
 
 namespace {

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,10 +22,15 @@
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
+#include "CancelRejection.hpp"
 #include "GatewayMetrics.hpp"
 #include "OpenOrderRemoval.hpp"
 #include "OpenOrderTracking.hpp"
 #include "OrderPathMetrics.hpp"
+#include "SessionThrottles.hpp"
+#include "ThrottleLimits.hpp"
+#include "ThrottleOutcome.hpp"
+#include "ThrottledCommand.hpp"
 
 namespace binary_order_gateway {
 
@@ -98,6 +104,9 @@ BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThr
             get_reactor().metrics().register_histogram(order_path_metrics::er_in_scope, order_path_metrics::order_path_elapsed_metric_name,
                                                        order_path_metrics::order_path_elapsed_help, config_.order_path_elapsed_buckets);
     }
+    // Registered unconditionally, as in the FIX gateway: one gateway thread per process, and the
+    // handles record nowhere when metrics are disabled.
+    throttle_refusal_metrics_.register_metrics(get_reactor().metrics(), "gateway_thread");
 }
 
 void BinaryOrderGatewayThread::on_app_ready_event() {
@@ -235,6 +244,7 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
     if (it != sessions_.end()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: client connection {} (comp id '{}') lost: {}", id.get_value(),
                    it->second.comp_id, reason);
+        log_throttling_ended_by_disconnection(it->second);
         // Told before the session object goes: the sequencer addresses reports at this
         // connection, and once it is gone there is nothing here to receive them.
         announce_session_unbound(it->second);
@@ -614,6 +624,30 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
         session.cancel_on_disconnect_grace_period_seconds = view.cancel_on_disconnect_grace_period_seconds;
     }
 
+    // The comp id's limits on new orders, amends and cancels per second, applied to this session
+    // for as long as it is open. The authentication service checks the range when it loads them,
+    // so a value out of range here is a defect in the venue's own software, and the logon is
+    // refused rather than the session being let in with limits nobody chose.
+    fix_common::ThrottleLimits throttle_limits;
+    throttle_limits.max_place_per_second = view.max_place_per_second;
+    throttle_limits.max_amend_per_second = view.max_amend_per_second;
+    throttle_limits.max_cancel_per_second = view.max_cancel_per_second;
+    if (!throttle_limits.all_in_permitted_range()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' logon refused -- throttle limits out of range: new orders={} amends={} cancels={} "
+                   "(each must be from 0 to {})",
+                   session.conn_id.get_value(), session.comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second,
+                   throttle_limits.max_cancel_per_second, fix_common::ThrottleLimits::max_permitted_per_second);
+        refuse_logon(session, pubsub_itc_fw_app::LogonOutcome::AuthenticationFailed, "session limits could not be applied");
+        return;
+    }
+    session.throttles = fix_common::SessionThrottles(throttle_limits);
+    // Logged for every logon, naming the numbers, for the reason given in the FIX gateway.
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "BinaryOrderGatewayThread: comp_id='{}' throttle limits per second for this session: new orders={} amends={} cancels={} (0 means no limit)",
+               session.comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second, throttle_limits.max_cancel_per_second);
+
     session.logged_on = true;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} authenticated and logged on as '{}'",
                session.conn_id.get_value(), session.comp_id);
@@ -646,12 +680,22 @@ void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, c
     // this gateway cheap.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-NOS-RECV connection={} bytes={} comp_id={}", session.conn_id.get_value(),
                message.payload_size(), session.comp_id);
+    if (!admit_throttled_command(session, fix_common::ThrottledCommand::Place)) {
+        refuse_new_order(session, message, session.throttles.refusal_text(fix_common::ThrottledCommand::Place));
+        release_pdu_payload(message);
+        return;
+    }
     forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), message.payload(),
                               static_cast<size_t>(message.payload_size()), session);
     release_pdu_payload(message);
 }
 
 void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
+    if (!admit_throttled_command(session, fix_common::ThrottledCommand::Cancel)) {
+        refuse_cancel(session, message, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
+        release_pdu_payload(message);
+        return;
+    }
     forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), message.payload(),
                               static_cast<size_t>(message.payload_size()), session);
     release_pdu_payload(message);
@@ -835,12 +879,166 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         }
     }
 
-    send_pdu_payload(it->second.conn_id, envelope.pdu_id, envelope.seq_no, envelope.payload.data, envelope.payload.size);
+    // The engine's refusal of a cancel is the one report not relayed as it arrived: as an
+    // ExecutionReport with ExecType Rejected it would tell the member an order had been rejected,
+    // when the order named is either still open or was never there (R-0151).
+    if (report_decoded && fix_common::is_cancel_rejection(report)) {
+        send_engine_cancel_rejection(it->second, report, envelope.seq_no);
+    } else {
+        send_pdu_payload(it->second.conn_id, envelope.pdu_id, envelope.seq_no, envelope.payload.data, envelope.payload.size);
+    }
     ++execution_reports_sent_;
     report_order_progress();
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-ER-SENT connection={} seq={} comp_id={}", envelope.gateway_session_conn_id, envelope.seq_no,
                it->second.comp_id);
     release_pdu_payload(message);
+}
+
+bool BinaryOrderGatewayThread::admit_throttled_command(BinarySession& session, fix_common::ThrottledCommand command) {
+    // A kind with no limit is accepted without reading the clock.
+    if (session.throttles.max_per_second(command) == 0) {
+        return true;
+    }
+    const fix_common::ThrottleOutcome outcome = session.throttles.try_accept(command, std::chrono::steady_clock::now());
+    // Info, not Warning: a member sending faster than it is provisioned for is handled exactly as
+    // designed, and nothing in the venue needs fixing.
+    switch (outcome) {
+        case fix_common::ThrottleOutcome::Accepted:
+            return true;
+        case fix_common::ThrottleOutcome::AcceptedAfterRefusals:
+            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "BinaryOrderGatewayThread: connection {} comp_id='{}' stopped being throttled for kind '{}': accepted again after {} refused",
+                       session.conn_id.get_value(), session.comp_id, fix_common::throttled_command_name(command),
+                       session.throttles.refusals_in_last_run(command));
+            return true;
+        case fix_common::ThrottleOutcome::FirstRefusal:
+            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+            PUBSUB_LOG(
+                get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                "BinaryOrderGatewayThread: connection {} comp_id='{}' started being throttled for kind '{}': the limit of {} per second for this session "
+                "was reached, and further refusals are not logged until one is accepted",
+                session.conn_id.get_value(), session.comp_id, fix_common::throttled_command_name(command), session.throttles.max_per_second(command));
+            throttle_refusal_metrics_.count_refusal(command);
+            return false;
+        case fix_common::ThrottleOutcome::FurtherRefusal:
+            throttle_refusal_metrics_.count_refusal(command);
+            return false;
+    }
+    return false;
+}
+
+void BinaryOrderGatewayThread::log_throttling_ended_by_disconnection(const BinarySession& session) {
+    using fix_common::ThrottledCommand;
+    for (const ThrottledCommand command : {ThrottledCommand::Place, ThrottledCommand::Amend, ThrottledCommand::Cancel}) {
+        const int64_t refused = session.throttles.refusals_in_current_run(command);
+        if (refused > 0) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "BinaryOrderGatewayThread: connection {} comp_id='{}' stopped being throttled for kind '{}': the session ended after {} refused",
+                       session.conn_id.get_value(), session.comp_id, fix_common::throttled_command_name(command), refused);
+        }
+    }
+}
+
+void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::NewOrderSingleView order{};
+    if (!pubsub_itc_fw_app::decode(order, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        // A refusal has to name the order, and this one cannot be read, so it cannot be answered.
+        // Warning, as the FIX gateway logs an order it cannot answer.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle refused ({}) but could not be decoded to name it -- dropping",
+                   session.conn_id.get_value(), session.comp_id, reason);
+        return;
+    }
+
+    // Twenty digits is enough for any int64_t, so these never truncate.
+    char order_id_buffer[32];
+    char exec_id_buffer[32];
+    const auto order_id_written = fmt::format_to_n(order_id_buffer, sizeof(order_id_buffer), "GW-ORD-{}", session.order_id_counter++);
+    const auto exec_id_written = fmt::format_to_n(exec_id_buffer, sizeof(exec_id_buffer), "GW-EXEC-{}", session.exec_id_counter++);
+
+    pubsub_itc_fw_app::ExecutionReport report{};
+    report.order_id = std::string_view(order_id_buffer, static_cast<size_t>(order_id_written.size));
+    report.exec_id = std::string_view(exec_id_buffer, static_cast<size_t>(exec_id_written.size));
+    report.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    report.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    report.symbol = order.symbol;
+    report.side = order.side;
+    report.leaves_qty = "0";
+    report.cum_qty = "0";
+    report.avg_px = "0";
+    report.transact_time = config_.wall_clock->now_ns();
+    report.has_cl_ord_id = true;
+    report.cl_ord_id = order.cl_ord_id;
+    report.has_order_qty = true;
+    report.order_qty = order.order_qty;
+    report.has_ord_rej_reason = true;
+    report.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+    report.has_text = true;
+    report.text = reason;
+    send_pdu(session.conn_id, pubsub_itc_fw_app::ExecutionReport::message_pdu_id, 0, report);
+}
+
+void BinaryOrderGatewayThread::refuse_cancel(const BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::OrderCancelRequestView request{};
+    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest refused ({}) but could not be decoded to name it -- dropping",
+                   session.conn_id.get_value(), session.comp_id, reason);
+        return;
+    }
+
+    pubsub_itc_fw_app::OrderCancelReject reject{};
+    // FIX requires the order's OrderID. The session's record holds it for an order the matching
+    // engine acknowledged; otherwise FIX's convention for an identifier not known is "NONE".
+    reject.order_id = "NONE";
+    const auto tracked = session.open_orders.find(request.orig_cl_ord_id);
+    if (tracked != session.open_orders.end() && tracked->second->order_id_len > 0) {
+        reject.order_id = std::string_view(tracked->second->order_id, tracked->second->order_id_len);
+    }
+    reject.cl_ord_id = request.cl_ord_id;
+    reject.has_orig_cl_ord_id = true;
+    reject.orig_cl_ord_id = request.orig_cl_ord_id;
+    // New: the gateway's refusal has not touched the order. The gateway's record is not the book,
+    // so it never claims the order has gone.
+    reject.ord_status = pubsub_itc_fw_app::OrdStatus::New;
+    reject.has_transact_time = true;
+    reject.transact_time = config_.wall_clock->now_ns();
+    reject.cxl_rej_response_to = pubsub_itc_fw_app::CxlRejResponseTo::OrderCancelRequest;
+    reject.has_cxl_rej_reason = true;
+    reject.cxl_rej_reason = pubsub_itc_fw_app::CxlRejReason::Other;
+    reject.has_text = true;
+    reject.text = reason;
+    send_pdu(session.conn_id, pubsub_itc_fw_app::OrderCancelReject::message_pdu_id, 0, reject);
+}
+
+void BinaryOrderGatewayThread::send_engine_cancel_rejection(const BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report,
+                                                            int64_t seq_no) {
+    pubsub_itc_fw_app::OrderCancelReject reject{};
+    reject.order_id = report.order_id;
+    reject.cl_ord_id = report.cl_ord_id;
+    reject.has_orig_cl_ord_id = true;
+    reject.orig_cl_ord_id = report.orig_cl_ord_id;
+    reject.ord_status = report.ord_status;
+    reject.has_transact_time = true;
+    reject.transact_time = report.transact_time;
+    // 1 = a request to cancel. The venue cannot yet amend an order, so the engine refuses only cancels.
+    reject.cxl_rej_response_to = pubsub_itc_fw_app::CxlRejResponseTo::OrderCancelRequest;
+    reject.has_cxl_rej_reason = true;
+    reject.cxl_rej_reason = fix_common::cancel_reject_reason_for(report);
+    if (report.has_text && !report.text.empty()) {
+        reject.has_text = true;
+        reject.text = report.text;
+    }
+    send_pdu(session.conn_id, pubsub_itc_fw_app::OrderCancelReject::message_pdu_id, seq_no, reject);
 }
 
 void BinaryOrderGatewayThread::track_open_order(BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report) {

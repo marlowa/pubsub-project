@@ -10,6 +10,7 @@
 #include <fix_codec/FixMessageWriter.hpp>
 #include <fix_codec/fix_dictionary.hpp>
 
+#include <CancelRejection.hpp>
 #include <FixMessage.hpp>
 
 namespace fix_order_gateway {
@@ -200,10 +201,6 @@ std::string_view encode_execution_report(const pubsub_itc_fw_app::ExecutionRepor
     return writer.finish(); // empty view if the buffer overflowed
 }
 
-bool is_cancel_rejection(const pubsub_itc_fw_app::ExecutionReportView& view) {
-    return view.exec_type == pubsub_itc_fw_app::ExecType::Rejected && view.has_orig_cl_ord_id && !view.orig_cl_ord_id.empty();
-}
-
 std::string_view encode_order_cancel_reject(const pubsub_itc_fw_app::ExecutionReportView& view, std::string_view sender_comp_id,
                                             std::string_view target_comp_id, int seq_num, const pubsub_itc_fw::WallClock& wall_clock, char* output_buffer,
                                             size_t output_buffer_size, bool poss_dup, int64_t orig_sending_time_ns, bool poss_resend) {
@@ -240,10 +237,7 @@ std::string_view encode_order_cancel_reject(const pubsub_itc_fw_app::ExecutionRe
     // 1 = Order cancel request. The venue cannot yet amend an order, so the engine refuses only
     // cancels; an engine that refused an amend would report 2.
     writer.push_back_field(Tag::CxlRejResponseTo, '1');
-    // The engine refuses a cancel only when it holds no such order, which FIX calls Unknown order.
-    // Any other reason it might give is reported as Other, with the engine's text below.
-    const bool unknown_order = view.has_ord_rej_reason && view.ord_rej_reason == pubsub_itc_fw_app::OrdRejReason::UnknownOrder;
-    writer.push_back_field(Tag::CxlRejReason, unknown_order ? 1 : 99);
+    writer.push_back_field(Tag::CxlRejReason, static_cast<int>(fix_common::cancel_reject_reason_for(view)));
     if (view.has_text && !view.text.empty()) {
         writer.push_back_field(Tag::Text, view.text);
     }

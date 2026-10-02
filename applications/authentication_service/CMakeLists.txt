@@ -4,8 +4,11 @@ add_executable(authentication_service
         AuthenticationService.cpp
 )
 
+# fix_common for ThrottleLimits.hpp alone: the range of a throttle limit is checked here, in the
+# admin service, in the database and in the gateways, and this header is where the number is kept.
 target_include_directories(authentication_service PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
         ${FIX_DSL_INCLUDE_DIR}
 )
 

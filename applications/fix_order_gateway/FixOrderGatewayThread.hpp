@@ -28,6 +28,8 @@
 #include "FixSession.hpp"
 #include "GatewayIds.hpp"
 #include "PoolMetricsReporter.hpp"
+#include "ThrottleRefusalMetrics.hpp"
+#include "ThrottledCommand.hpp"
 
 // authentication.hpp must be included before fix_orders.hpp because only
 // authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
@@ -263,6 +265,29 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] reason   Text for tag 58.
      */
     void send_order_cancel_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason);
+
+    /**
+     * @brief Asks the session's throttle whether a member command of kind @p command may go on.
+     *
+     * Logs when the session starts being throttled for that kind and when it stops, not each
+     * refusal, and counts each refusal in the gateway's metrics. The caller refuses a command
+     * this returns false for, with the session's refusal text for the kind.
+     *
+     * @param[in,out] session The session the command arrived on.
+     * @param[in]     command The kind of command.
+     * @return True if the command is within the session's limit, or the kind has no limit.
+     */
+    [[nodiscard]] bool admit_throttled_command(FixSession& session, fix_common::ThrottledCommand command);
+
+    /**
+     * @brief Logs the end of any run of throttle refusals still open when a session ends.
+     *
+     * A run otherwise ends with the next accepted command, and a session that ends while throttled
+     * sends none, so without this the log would say it started being throttled and never stopped.
+     *
+     * @param[in] session The session that is ending.
+     */
+    void log_throttling_ended_by_disconnection(const FixSession& session);
 
     void send_business_reject(FixSession& session, const ParsedFixMessage& inbound, const std::string& reason);
 
@@ -607,6 +632,9 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // the report costs -- the outbound half, which no metric could express before, because
     // the report path carries no time origin of its own. See OrderPathMetrics.hpp.
     pubsub_itc_fw::HistogramHandle er_in_elapsed_histogram_;
+
+    /// How many member commands of each kind the sessions' throttles have refused.
+    fix_common::ThrottleRefusalMetrics throttle_refusal_metrics_;
 
     // Publishes the open-order pool's statistics. Deliberately identical to the binary
     // gateway's -- same metric family, same scope, same sample interval -- since a

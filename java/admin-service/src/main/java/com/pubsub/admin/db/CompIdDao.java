@@ -1,6 +1,7 @@
 package com.pubsub.admin.db;
 
 import com.pubsub.admin.model.CompIdRow;
+import com.pubsub.admin.model.ThrottleLimits;
 import com.pubsub.admin.service.ScramCredential;
 
 import javax.sql.DataSource;
@@ -20,7 +21,8 @@ public class CompIdDao {
             + " locked, locked_reason, locked_at, last_login_at,"
             + " password_changed_at, created_at, updated_at,"
             + " cancel_on_disconnect_enabled, cancel_on_disconnect_grace_period_seconds,"
-            + " primary_gateway_instance, backup_gateway_instance";
+            + " primary_gateway_instance, backup_gateway_instance,"
+            + " max_place_per_second, max_amend_per_second, max_cancel_per_second";
 
     private final DataSource dataSource;
     private final String table;
@@ -71,11 +73,11 @@ public class CompIdDao {
     }
 
     public void insert(String compId, String firmId, ScramCredential cred,
-                       boolean forcePasswordChange) throws SQLException {
+                       boolean forcePasswordChange, ThrottleLimits throttleLimits) throws SQLException {
         String sql = "INSERT INTO " + table
                 + " (comp_id, firm_id, stored_key, server_key, salt, iterations,"
-                + " force_password_change)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?)";
+                + " force_password_change, max_place_per_second, max_amend_per_second, max_cancel_per_second)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, compId);
@@ -85,6 +87,9 @@ public class CompIdDao {
             ps.setString(5, cred.salt());
             ps.setInt(6, cred.iterations());
             ps.setBoolean(7, forcePasswordChange);
+            ps.setInt(8, throttleLimits.maxPlacePerSecond());
+            ps.setInt(9, throttleLimits.maxAmendPerSecond());
+            ps.setInt(10, throttleLimits.maxCancelPerSecond());
             ps.executeUpdate();
         }
     }
@@ -175,6 +180,25 @@ public class CompIdDao {
         }
     }
 
+    /**
+     * Sets the most new orders, amends and cancels one session of this comp id may send in any
+     * one second. Takes effect at the comp id's next logon after the credentials are next
+     * exported, in practice the next trading day.
+     */
+    public void updateThrottleLimits(String compId, ThrottleLimits throttleLimits) throws SQLException {
+        String sql = "UPDATE " + table
+                + " SET max_place_per_second = ?, max_amend_per_second = ?, max_cancel_per_second = ?,"
+                + " updated_at = NOW() WHERE comp_id = ?";
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, throttleLimits.maxPlacePerSecond());
+            ps.setInt(2, throttleLimits.maxAmendPerSecond());
+            ps.setInt(3, throttleLimits.maxCancelPerSecond());
+            ps.setString(4, compId);
+            ps.executeUpdate();
+        }
+    }
+
     private static void setNullableInt(PreparedStatement ps, int index, Integer value) throws SQLException {
         if (value == null) {
             ps.setNull(index, java.sql.Types.SMALLINT);
@@ -234,6 +258,8 @@ public class CompIdDao {
                 // Boxed for the same reason: null is "not pinned", and getInt would render
                 // that as instance 0, which is not a gateway instance at all.
                 rs.getObject("primary_gateway_instance", Integer.class),
-                rs.getObject("backup_gateway_instance", Integer.class));
+                rs.getObject("backup_gateway_instance", Integer.class),
+                new ThrottleLimits(rs.getInt("max_place_per_second"), rs.getInt("max_amend_per_second"),
+                        rs.getInt("max_cancel_per_second")));
     }
 }

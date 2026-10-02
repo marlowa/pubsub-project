@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 99 |
-| Open | 38 (24 defects, 14 tasks) |
-| Closed | 61 |
+| Open | 37 (23 defects, 14 tasks) |
+| Closed | 62 |
 | Next id | BUG-0100 |
 
 ## Open bugs by severity
 
-13 high, 22 medium, 3 low.
+12 high, 22 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,7 +25,6 @@
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
-| [BUG-0099](#bug_0099) | high | defect | A refused request to cancel is answered as though the order itself had been rejected |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -147,61 +146,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0099: A refused request to cancel is answered as though the order itself had been rejected {#bug_0099}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-02 |
-| Recorded | 2026-10-02 |
-| Status | Fixed in the FIX gateway on 2026-10-02. Open for the binary gateway, which refuses no cancel yet; it must meet the same rule when it first does, with the throttles |
-| How | Designing the gateway throttles (`docs/venue/gateway_throttles.md`), which have to refuse a request to cancel and so had to say how |
-| Impact | A member's software written to the FIX standard can take the reply to mean its order is no longer on the book, when the order is still resting. The member then believes it has no order in the market, and the venue can trade an order nobody is watching |
-
-**What happens.** When the FIX gateway refuses an `OrderCancelRequest`, for example because a field
-the venue requires is missing or because the venue is not accepting orders, it answers with an
-`ExecutionReport` whose `ExecType` and `OrdStatus` are both Rejected
-(`FixOrderGatewayThread::send_reject_execution_report`, called with `is_cancel` true). In FIX, an
-execution report with `OrdStatus` Rejected says that an order was rejected. That is the right reply to
-a refused new order, and the wrong one to a refused cancel: what was refused is the request, and the
-order it named is still open.
-
-**What FIX defines instead.** `OrderCancelReject` (35=9) is the reply to a refused cancel or amend. It
-carries `CxlRejResponseTo` (1 for a cancel, 2 for an amend), `CxlRejReason`, `OrigClOrdID`, and the
-order's current status in `OrdStatus`, which is what tells the member the order is still live.
-
-**What to do.**
-
-- The FIX gateway answers every refused request to cancel with `OrderCancelReject`, whatever the
-  reason, and does the same for a refused amend once amending exists. A refused new order keeps its
-  rejected `ExecutionReport`.
-- When the gateway itself refuses the request, `OrdStatus` is New: the order is open. The gateway has
-  not touched the order. Its record of the session's open orders is not the book, so an order missing
-  from it may still rest in the matching engine (after a gateway restart, for example), and reporting
-  it as anything but open could tell the member it had gone. `CxlRejReason` is 99, Other, because the
-  reason is the gateway's (a missing field, the venue not accepting orders, a throttle), with the
-  reason in `Text`. `OrderID` comes from the session's record when the order is in it, and is "NONE"
-  otherwise.
-- When the matching engine refuses the request because it holds no such order, the gateway turns the
-  engine's rejected report into an `OrderCancelReject` with `CxlRejReason` 1, Unknown order. The
-  engine holds the book, so it is the one party that can say the order is not there.
-- The binary gateway refuses nothing today. When it does, starting with the throttles, its reply to a
-  refused cancel must likewise say that the request was refused and the order is still open, not that
-  the order was rejected; which message its protocol uses for that is to be decided.
-
-Required by R-0151 in the functional specification.
-
-**What was done for the FIX gateway.** `send_order_cancel_reject` answers the gateway's own refusals
-(missing field, over-long identifier, no sequencer, venue not accepting orders). The engine's refusal
-is recognised by `is_cancel_rejection` (a rejected report carrying an OrigClOrdID, which a rejected
-new order never carries) and written by `encode_order_cancel_reject`, chosen in
-`send_execution_report_to_session`, so a resent refusal goes out as the first one did. Both gateways
-now record each open order's OrderID (`open_orders::set_order_id`). Six encoder tests cover the
-recognition and the encoding, and `ha_test.py` scenario 42 requires an `OrderCancelReject` for both
-the gateway's refusal and the engine's; each check was made to fail by breaking the code.
-
----
 
 ### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
 
@@ -2430,6 +2374,70 @@ content, and refuse to append it silently.
 Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
 ## Closed
+
+### BUG-0099: A refused request to cancel is answered as though the order itself had been rejected {#bug_0099}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-02 |
+| Recorded | 2026-10-02 |
+| Fixed | 2026-10-02 -- in the FIX gateway first, then in the binary gateway, whose protocol gained `OrderCancelReject` (PDU 1003) for the purpose |
+| How | Designing the gateway throttles (`docs/venue/gateway_throttles.md`), which have to refuse a request to cancel and so had to say how |
+| Impact | A member's software written to the FIX standard can take the reply to mean its order is no longer on the book, when the order is still resting. The member then believes it has no order in the market, and the venue can trade an order nobody is watching |
+
+**What happens.** When the FIX gateway refuses an `OrderCancelRequest`, for example because a field
+the venue requires is missing or because the venue is not accepting orders, it answers with an
+`ExecutionReport` whose `ExecType` and `OrdStatus` are both Rejected
+(`FixOrderGatewayThread::send_reject_execution_report`, called with `is_cancel` true). In FIX, an
+execution report with `OrdStatus` Rejected says that an order was rejected. That is the right reply to
+a refused new order, and the wrong one to a refused cancel: what was refused is the request, and the
+order it named is still open.
+
+**What FIX defines instead.** `OrderCancelReject` (35=9) is the reply to a refused cancel or amend. It
+carries `CxlRejResponseTo` (1 for a cancel, 2 for an amend), `CxlRejReason`, `OrigClOrdID`, and the
+order's current status in `OrdStatus`, which is what tells the member the order is still live.
+
+**What to do.**
+
+- The FIX gateway answers every refused request to cancel with `OrderCancelReject`, whatever the
+  reason, and does the same for a refused amend once amending exists. A refused new order keeps its
+  rejected `ExecutionReport`.
+- When the gateway itself refuses the request, `OrdStatus` is New: the order is open. The gateway has
+  not touched the order. Its record of the session's open orders is not the book, so an order missing
+  from it may still rest in the matching engine (after a gateway restart, for example), and reporting
+  it as anything but open could tell the member it had gone. `CxlRejReason` is 99, Other, because the
+  reason is the gateway's (a missing field, the venue not accepting orders, a throttle), with the
+  reason in `Text`. `OrderID` comes from the session's record when the order is in it, and is "NONE"
+  otherwise.
+- When the matching engine refuses the request because it holds no such order, the gateway turns the
+  engine's rejected report into an `OrderCancelReject` with `CxlRejReason` 1, Unknown order. The
+  engine holds the book, so it is the one party that can say the order is not there.
+- The binary gateway must likewise say that the request was refused and the order is still open,
+  not that the order was rejected.
+
+Required by R-0151 in the functional specification.
+
+**What was done for the FIX gateway.** `send_order_cancel_reject` answers the gateway's own refusals
+(missing field, over-long identifier, no sequencer, venue not accepting orders). The engine's refusal
+is recognised by `is_cancel_rejection` (a rejected report carrying an OrigClOrdID, which a rejected
+new order never carries) and written by `encode_order_cancel_reject`, chosen in
+`send_execution_report_to_session`, so a resent refusal goes out as the first one did. Both gateways
+now record each open order's OrderID (`open_orders::set_order_id`). Six encoder tests cover the
+recognition and the encoding, and `ha_test.py` scenario 42 requires an `OrderCancelReject` for both
+the gateway's refusal and the engine's; each check was made to fail by breaking the code.
+
+**What was done for the binary gateway.** Its protocol is generated from
+`applications/fix_orders.dd.xml`, which now defines `OrderCancelReject` with the fields of FIX's 35=9,
+generated as PDU 1003. The gateway answers a cancel it refuses itself, which so far only the
+throttle does, with an `OrderCancelReject` reporting OrdStatus New. It turns the engine's refusal
+into one with CxlRejReason 1, using the same rule as the FIX gateway (`fix_common/CancelRejection.hpp`).
+`binary_client`, `binary_load_client` and the Java test client read the new PDU. Checked by hand
+against the sandbox, since `ha_test.py` does not start the binary gateway: a cancel for an order never
+placed came back as an `OrderCancelReject` with CxlRejReason 1, and of 39 cancels sent faster than a
+limit of 3 per second, 36 came back as `OrderCancelReject` and every one was counted by the load client.
+
+---
 
 ### BUG-0085: A degraded promotion advances a generation the arbiter never learns {#bug_0085}
 

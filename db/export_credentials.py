@@ -58,7 +58,8 @@ def _query_credentials(host: str, port: int, username: str, password: str,
     inner_sql = (
         f"SELECT ci.comp_id, ci.stored_key, ci.server_key, ci.salt, ci.iterations, "
         f"       ci.cancel_on_disconnect_enabled, ci.cancel_on_disconnect_grace_period_seconds, "
-        f"       ci.primary_gateway_instance, ci.backup_gateway_instance "
+        f"       ci.primary_gateway_instance, ci.backup_gateway_instance, "
+        f"       ci.max_place_per_second, ci.max_amend_per_second, ci.max_cancel_per_second "
         f"FROM {comp_id_table} ci "
         f"JOIN {firm_table} f ON ci.firm_id = f.firm_id "
         f"WHERE ci.enabled = true "
@@ -81,7 +82,8 @@ def _query_credentials(host: str, port: int, username: str, password: str,
         io.StringIO(result.stdout),
         fieldnames=["comp_id", "stored_key", "server_key", "salt", "iterations",
                     "cancel_on_disconnect_enabled", "cancel_on_disconnect_grace_period_seconds",
-                    "primary_gateway_instance", "backup_gateway_instance"],
+                    "primary_gateway_instance", "backup_gateway_instance",
+                    "max_place_per_second", "max_amend_per_second", "max_cancel_per_second"],
     )
     return list(reader)
 
@@ -113,6 +115,14 @@ def _write_credentials_toml(path: Path, rows: list[dict]) -> None:
         "#   primary_gateway_instance -- the instance this member is expected to use\n",
         "#   backup_gateway_instance  -- the one it may fall back to; omitted pins it to\n",
         "#                               the primary alone\n",
+        "#\n",
+        "# Gateway throttles, per comp id: the most commands of each kind that one session\n",
+        "# may send in any one second. Always written; 0 means no limit, and the largest\n",
+        "# permitted value is 100000.\n",
+        "#\n",
+        "#   max_place_per_second  -- new orders\n",
+        "#   max_amend_per_second  -- amends to open orders\n",
+        "#   max_cancel_per_second -- cancels of open orders\n",
         "\n",
     ]
     for row in rows:
@@ -141,6 +151,11 @@ def _write_credentials_toml(path: Path, rows: list[dict]) -> None:
         backup_instance = row.get("backup_gateway_instance", "")
         if backup_instance != "":
             lines.append(f"backup_gateway_instance = {int(backup_instance)}\n")
+        # The throttle columns are NOT NULL with a default of 0, so every row has all three, and
+        # they are written even when 0: the authentication service then never has to guess.
+        lines.append(f"max_place_per_second = {int(row['max_place_per_second'])}\n")
+        lines.append(f"max_amend_per_second = {int(row['max_amend_per_second'])}\n")
+        lines.append(f"max_cancel_per_second = {int(row['max_cancel_per_second'])}\n")
         lines.append("\n")
 
     # Atomic write: temp file then rename so the auth service never sees

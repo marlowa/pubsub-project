@@ -67,20 +67,9 @@ static constexpr size_t max_execution_report_buffer_size = 64 * 1024;
                                                        bool poss_resend = false);
 
 /**
- * @brief Whether a matching engine report is the engine refusing a request to cancel.
- *
- * The engine answers a request to cancel an order it does not hold with a rejected
- * ExecutionReport carrying the OrigClOrdID of the order the request named. A rejected new order
- * never carries an OrigClOrdID, so the two cannot be confused. A member must be sent such a
- * report as an OrderCancelReject, not as a rejected ExecutionReport, which in FIX says that an
- * order was rejected (R-0151, docs/bug_list.md BUG-0099).
- */
-[[nodiscard]] bool is_cancel_rejection(const pubsub_itc_fw_app::ExecutionReportView& view);
-
-/**
  * @brief Encodes a matching engine report that refuses a request to cancel as a FIX OrderCancelReject (35=9).
  *
- * For a report for which is_cancel_rejection() is true. Written with the same framing, header
+ * For a report for which fix_common::is_cancel_rejection() is true. Written with the same framing, header
  * fields and resend flags as encode_execution_report, and with no heap allocation, so a refused
  * cancel that is resent to a member goes out exactly as it did the first time.
  *

@@ -1,8 +1,9 @@
 # Gateway throttles {#gateway_throttles}
 
-**Status: design, not implemented.** The requirements it meets are R-0148, R-0149, R-0150 and R-0151
-in the functional specification (`docs/book`, the order gateways section of the applications
-chapter). It has no open questions ([section 9](#gateway_throttles_open)).
+**Status: implemented in both gateways.** The requirements it meets are R-0148, R-0149, R-0150 and
+R-0151 in the functional specification (`docs/book`, the order gateways section of the applications
+chapter); `ha_test.py` scenario 56 verifies the first three. It has no open questions
+([section 9](#gateway_throttles_open)).
 
 ---
 
@@ -69,10 +70,11 @@ or forwarded later, and the session is not disconnected. Nothing about it reache
   reply must say so: a rejected `ExecutionReport` would tell the member its order had been
   rejected. The gateway refuses every cancel this way, whatever the reason
   ([BUG-0099](../bug_list.md#bug_0099), R-0151).
-- **Binary:** the gateway sends the binary protocol's equivalent replies, a rejected
-  `ExecutionReport` for a new order and, for a cancel, a reply that says the request was refused and
-  the order is still open (BUG-0099 leaves which message that is to be decided). The binary
-  gateway passes orders and cancels on without decoding them, which is part of what makes it cheap,
+- **Binary:** the gateway sends the binary protocol's equivalent replies: a rejected
+  `ExecutionReport` for a new order, and an `OrderCancelReject` (PDU 1003) for a cancel, with the
+  same fields and values as the FIX message. The binary protocol is generated from
+  `applications/fix_orders.dd.xml`, and `OrderCancelReject` is one of the messages generated from it.
+  The binary gateway passes orders and cancels on without decoding them, which is part of what makes it cheap,
   and it does not need to decode a command to count it, because the PDU says which kind it is. To
   reject one, it must name it, so it decodes the command's `ClOrdID` (and `OrigClOrdID` for a cancel)
   only when it rejects it. An accepted command is still passed on undecoded.
@@ -166,8 +168,9 @@ It follows the conventions of the framework's other containers, such as `Increme
 - **A misuse is refused with `PreconditionAssertion`**: a capacity of zero, and asking for or removing
   the front element of an empty buffer. Refusing to add to a full buffer is not a misuse, and is
   reported by the result of the call, which is marked `[[nodiscard]]`.
-- **It is neither copied nor moved.** Each owner holds its buffer for as long as it exists. Copying
-  would allocate, which the buffer otherwise does only when created, and nothing needs it.
+- **It cannot be copied, but it can be moved.** Copying would allocate, which the buffer otherwise
+  does only when created, and nothing needs it. Moving passes the storage to the new owner without
+  allocating, and leaves the buffer moved from with no storage and a capacity of zero.
 
 **`RollingWindowThrottle`** enforces one limit. It holds a ring buffer of the times of the commands it
 has accepted, with room for exactly N times. Asked whether a command arriving at time T may be
@@ -210,18 +213,30 @@ microseconds rather than 8-byte times, which halves it. A more typical session, 
 ## 7. What operators can see
 
 - **A metric for each gateway and kind of command:** how many commands have been rejected by a
-  throttle.
+  throttle: `throttled_new_orders_total`, `throttled_amends_total` and `throttled_cancels_total`,
+  told apart by the component label (`fix_common/ThrottleRefusalMetrics.hpp`).
 - **A log line when a session starts being throttled, and when it stops**, not one for each rejected
   command. A member sending far too fast would otherwise fill the log, and what an operator needs is
   that it happened and for how long. A session counts as throttled from its first rejected command
-  until a command of that kind is next accepted. The lines name the comp id, the session, the kind of
-  command and the limit.
+  until a command of that kind is next accepted, or until the session ends. The lines name the comp
+  id, the session, the kind of command and the limit, and the second line says how many commands were
+  refused.
+- **A log line at every logon naming the limits applied**, including zeros, so an operator can see
+  what a session was given and a value lost on the way shows up as a number.
+
+The functions that send a refusal log each reply at Debug. Each caller logs its reason at the level
+the reason deserves, so a line per reply at Info would only repeat it, once for every command a
+throttled member sends.
 
 ---
 
 ## 8. Testing
 
-**Unit tests**, with the time given by each test, so nothing waits:
+**Unit tests**, with the time given by each test, so nothing waits. The ring buffer's are in
+`libraries/pubsub_itc_fw/tests/FixedCapacityRingBufferTest.cpp`; the throttle's are in
+`applications/fix_common/tests`, built as the program `fix_common_tests`. That is a program of its
+own because the check that deciding about a command never uses the heap replaces the global
+`operator new`, which would apply to every test linked with it.
 
 - the ring buffer, in the framework's own tests (`FixedCapacityRingBufferTest.cpp`), thoroughly,
   because it is a general-purpose container that other code will rely on:
@@ -245,7 +260,9 @@ microseconds rather than 8-byte times, which halves it. A more typical session, 
 - the three kinds of command are throttled independently, and so are two sessions;
 - checking a command does not use the heap.
 
-**An end-to-end test in `ha_test.py`:** a comp id provisioned with a small limit sends more commands
+**An end-to-end test in `ha_test.py`, scenario 56,** run against the FIX gateway (the harness does not
+start the binary gateway). It uses the comp id `THROTTLED`, a test fixture of its own, so its limits
+never throttle the comp ids other tests use: a comp id provisioned with a small limit sends more commands
 than the limit within a second, and the test requires the commands beyond the limit to be rejected
 with the throttle's text, and the others accepted. It checks the limit the gateway actually applied,
 not merely that something was rejected: with cancel-on-disconnect, a step that dropped the value left
@@ -256,7 +273,7 @@ id with a limit of zero sends the same burst, and nothing is rejected.
 
 ## 9. Open questions {#gateway_throttles_open}
 
-None. Which message the binary protocol uses to refuse a cancel is decided with BUG-0099.
+None.
 
 ---
 
