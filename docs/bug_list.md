@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 99 |
-| Open | 37 (23 defects, 14 tasks) |
+| Bugs recorded | 100 |
+| Open | 38 (24 defects, 14 tasks) |
 | Closed | 62 |
-| Next id | BUG-0100 |
+| Next id | BUG-0101 |
 
 ## Open bugs by severity
 
-12 high, 22 medium, 3 low.
+13 high, 22 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
+| [BUG-0100](#bug_0100) | high | defect | The binary gateway checks almost nothing before passing an order or a cancel on |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -146,6 +147,71 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0100: The binary gateway checks almost nothing before passing an order or a cancel on {#bug_0100}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-02 |
+| Recorded | 2026-10-02 |
+| How | Comparing how the two gateways refuse a cancel, after [BUG-0099](#bug_0099) was fixed |
+| Impact | A binary member is not told when the venue cannot process its order or cancel. An order with an over-long ClOrdID is accepted with the identifier cut short, so it can collide with another order. An order the matching engine cannot read is dropped without any reply |
+
+**What the FIX gateway checks.** Every inbound message is first checked against the FIX dictionary by
+`fix_codec::FixMessageValidator`: every tag is one the dictionary defines and permits in that message
+type, no tag appears twice, every required tag is present, every value has the format of its FIX type
+(an integer, a price, a timestamp), every enumerated value (Side, OrdType, TimeInForce) is one the
+dictionary defines, and every repeating group's count matches its instances. A message that fails is
+answered with a FIX Reject (35=3). Then, for a NewOrderSingle and an OrderCancelRequest,
+`FixOrderGatewayThread` checks that the fields the venue needs are present and not empty, that ClOrdID
+and OrigClOrdID are no longer than `fix_order_limits::max_cl_ord_id_length` (32), and that Symbol and
+OrderQty are within the configured lengths. It refuses the command when no sequencer is connected, when
+the venue is not accepting orders (BUG-0009), and when the session is over its throttle limit. Every
+refusal is answered: a rejected ExecutionReport for an order, an OrderCancelReject for a cancel.
+
+**What the binary gateway checks.** Only that the session has logged on, and the throttle limits. It
+passes every other NewOrderSingle and OrderCancelRequest to the sequencer without decoding it. The
+generated decoder, which the matching engine then runs, checks only that the bytes are long enough for
+each field: it accepts any byte as a Side or an OrdType, an empty string in a required field, an
+identifier of any length, and any text as a quantity or a price.
+
+**What follows from that, as read in the code.**
+
+- **The venue not accepting orders, or no sequencer connected:** the binary member is told nothing,
+  where the FIX member is refused at once. This is BUG-0009's defect, still present for binary members.
+- **A ClOrdID longer than 32 characters:** the matching engine's book key keeps only the first 32
+  (`OrderKey` and `OrderEntry` copy `std::min(size, max_cl_ord_id_length)`). Two orders whose
+  identifiers differ only after the 32nd character are then the same order to the book, so the second
+  is refused as a duplicate, or a cancel for one finds the other.
+- **An order the matching engine cannot decode:** the sequencer, which reads only the envelope, has
+  already written it to the write-ahead log. The engine then logs "failed to decode NewOrderSingle --
+  dropping" at Warning and sends nothing back, so the member waits for an answer that never comes. The
+  Warning is also the wrong level by the project's rule, since the fault is the member's.
+- **Values the dictionary does not define**, such as a Side that is neither buy nor sell, reach the
+  matching engine. What it does with each has not been checked.
+
+**What to do.** The binary gateway checks a command as thoroughly as the FIX gateway does, and answers
+every refusal in the same way. A binary order has to be decoded to be checked, so the gateway can no
+longer pass accepted commands on undecoded. That should still cost less than the FIX gateway's checks:
+the decoder reads fields at known positions, where the FIX parser scans text for delimiters and the
+validator then checks the format of each value. Decoding is the gap measured on 2026-09-21, where the
+binary gateway's whole path was 1.8 microseconds faster at the median. Two parts of the work:
+
+- **The decoder, or a check run straight after it,** refuses enumerated values the dictionary does not
+  define and empty required strings, generated from `applications/fix_orders.dd.xml` as the decoder
+  is, so the two cannot drift apart.
+- **The gateway's own checks** (identifier and field lengths, sequencer connected, venue accepting
+  orders) are shared with the FIX gateway in `fix_common`, as the throttle and the cancel refusal
+  already are, so that the rules cannot drift apart either.
+
+Separately, the matching engine should refuse, not cut short, a ClOrdID longer than its key holds: no
+gateway should be the only thing between a member and a silent collision. And an order it cannot decode
+should be answered, if it can be named, and logged at Info.
+
+Verifying it needs the binary gateway in a test that runs it. `ha_test.py` does not start it today.
+
+---
 
 ### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
 
