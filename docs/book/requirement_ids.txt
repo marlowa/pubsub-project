@@ -150,3 +150,7 @@ R-0144     active    2026-09-18  Both gateways accept the same request to cancel
 R-0145     active    2026-09-27  The build reproduces every recorded counterexample
 R-0146     active    2026-09-27  An instance acts only while a majority of its three voters grants it a lease
 R-0147     active    2026-09-27  The venue halts, and says why, when the arbiter pool and the leader are lost together
+R-0148     active    2026-10-02  Each session is limited in how fast it may place, amend and cancel
+R-0149     active    2026-10-02  A limit holds over every one-second period
+R-0150     active    2026-10-02  A command over the limit is refused, and the member is told why
+R-0151     active    2026-10-02  A refused request to cancel is not answered as a rejected order

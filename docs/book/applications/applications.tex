@@ -13,7 +13,7 @@ deliberate, and this chapter records which they are, so that a reader can tell
 them from defects.
 
 The rest of this chapter is not yet written, except for the order gateways' cancel
-requirements and the placeholders below.
+requirements, their limits on how fast a member may send, and the placeholders below.
 
 \section{The order gateways}
 \label{sec:order_gateways}
@@ -67,9 +67,10 @@ a field the venue reads and discards.
 \subsection{What a member is told about a message the venue will not process}
 \label{subsec:refused_message_reply}
 
-A member that sends a message the venue refuses is told so. The gateways answer a request
-to cancel that omits a required field with a rejecting execution report naming the fields
-that were missing.
+A member that sends a message the venue refuses is told so. The gateways answer a refused
+new order with an execution report that rejects the order, and a refused request to cancel
+with a reply that refuses the request and reports the order as still open. Each answer
+names the reason, such as the fields that were missing.
 
 \begin{requirement}{R-0143}{A message missing a field the venue requires is answered}
   Where the venue refuses a member's order or request to cancel because a field the venue
@@ -88,6 +89,77 @@ that were missing.
   The exception is narrow. An answer is addressed by the identifier the member put on the
   message, so a message without one cannot be answered at all.}
   \uncovered{no scenario sends a message with a required field absent}
+\end{requirement}
+
+\begin{requirement}{R-0151}{A refused request to cancel is not answered as a rejected order}
+  Where a gateway refuses a member's request to cancel or amend an order, it shall answer
+  with a reply that refuses the request, and shall not answer with a reply that rejects the
+  order. The reply shall report the order's current status. In FIX, the reply shall be an
+  OrderCancelReject.
+  \rationale{The order a refused request names is still on the book. FIX gives an execution
+  report rejecting an order one meaning: that the order is not on the book. A member that
+  receives one in answer to a cancel believes it has no order in the market, while the
+  venue can still trade the order it holds. A member exposed to a market it believes it has
+  left is the most dangerous outcome a reply can produce.
+
+  The rule holds whatever the reason for refusing the request: a missing field, the venue
+  not accepting orders, or a limit on how fast the member may send (\reqref{R-0150}).}
+  \uncovered{no scenario sends a request to cancel that the venue refuses}
+\end{requirement}
+
+\subsection{How fast a member may send}
+\label{subsec:gateway_throttles}
+
+The venue limits how fast each session may send three kinds of command: placing an order,
+amending an order and cancelling an order. Each limit is a number of commands per second.
+The venue provisions the limits for each comp id, and the gateways apply them to each
+session separately. The design is in \texttt{docs/venue/gateway\_throttles.md}.
+
+\begin{requirement}{R-0148}{Each session is limited in how fast it may place, amend and cancel}
+  The venue shall hold, for each comp id, a limit on the number of commands per second for
+  each of placing, amending and cancelling an order. Each limit shall be a whole number from
+  0 to 100,000, where 0 means the commands of that kind are not limited, and 0 shall be the
+  value of a limit nobody has set. The gateways shall apply a comp id's limits to each of its
+  sessions separately, with the values that held when the session logged on.
+  \rationale{A member sending faster than the venue can serve takes capacity from every
+  other member. A limit for each comp id lets the venue give each member the rate it has
+  agreed to, and nothing beyond it.
+
+  The limits apply to each session separately because the gateways count commands where
+  they arrive. Counting across all the sessions of a comp id would need the gateways to
+  share their counts with each other, on every command.
+
+  The venue processes an order from start to end in tens of microseconds, so 100,000
+  commands per second, one every 10 microseconds, is the fastest rate any member could
+  use. Amending is limited although the venue cannot yet amend an order, so that amending
+  is limited from the day it exists.}
+  \uncovered{no scenario provisions a limit}
+\end{requirement}
+
+\begin{requirement}{R-0149}{A limit holds over every one-second period}
+  A gateway shall accept a command only if fewer commands of the same kind than the limit
+  were accepted on the session during the second before it arrived. A command the gateway
+  refuses shall not count towards the limit.
+  \rationale{Measuring over the second before each command means no one-second period,
+  wherever it starts, contains more commands than the limit. A count that started again at
+  each whole second would allow twice the limit across the boundary between two seconds.
+
+  A member that keeps sending while it is being refused would never be accepted again if
+  its refused commands counted. Only accepted commands use the capacity the limit
+  protects.}
+  \uncovered{no scenario sends commands faster than a limit}
+\end{requirement}
+
+\begin{requirement}{R-0150}{A command over the limit is refused, and the member is told why}
+  A gateway shall refuse a command that would exceed its session's limit, and shall answer
+  the member with the reason, naming the limit. The gateway shall not pass the command to
+  the sequencer, shall not hold it to send later, and shall keep the session open.
+  \rationale{A member must be able to tell a refused command from a lost one, for the reason
+  \reqref{R-0143} gives. A command held and sent later would reach the matching engine at a
+  time the member did not choose, against a market that may have moved. Closing the session
+  would cancel the member's resting orders under cancel-on-disconnect, which is a far
+  heavier consequence than sending too fast.}
+  \uncovered{no scenario sends commands faster than a limit}
 \end{requirement}
 
 \section{The matching engine publisher}

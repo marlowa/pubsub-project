@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 98 |
-| Open | 37 (23 defects, 14 tasks) |
+| Bugs recorded | 99 |
+| Open | 38 (24 defects, 14 tasks) |
 | Closed | 61 |
-| Next id | BUG-0099 |
+| Next id | BUG-0100 |
 
 ## Open bugs by severity
 
-12 high, 22 medium, 3 low.
+13 high, 22 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
+| [BUG-0099](#bug_0099) | high | defect | A refused request to cancel is answered as though the order itself had been rejected |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -146,6 +147,46 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0099: A refused request to cancel is answered as though the order itself had been rejected {#bug_0099}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-02 |
+| Recorded | 2026-10-02 |
+| How | Designing the gateway throttles (`docs/venue/gateway_throttles.md`), which have to refuse a request to cancel and so had to say how |
+| Impact | A member's software written to the FIX standard can take the reply to mean its order is no longer on the book, when the order is still resting. The member then believes it has no order in the market, and the venue can trade an order nobody is watching |
+
+**What happens.** When the FIX gateway refuses an `OrderCancelRequest`, for example because a field
+the venue requires is missing or because the venue is not accepting orders, it answers with an
+`ExecutionReport` whose `ExecType` and `OrdStatus` are both Rejected
+(`FixOrderGatewayThread::send_reject_execution_report`, called with `is_cancel` true). In FIX, an
+execution report with `OrdStatus` Rejected says that an order was rejected. That is the right reply to
+a refused new order, and the wrong one to a refused cancel: what was refused is the request, and the
+order it named is still open.
+
+**What FIX defines instead.** `OrderCancelReject` (35=9) is the reply to a refused cancel or amend. It
+carries `CxlRejResponseTo` (1 for a cancel, 2 for an amend), `CxlRejReason`, `OrigClOrdID`, and the
+order's current status in `OrdStatus`, which is what tells the member the order is still live.
+
+**What to do.**
+
+- The FIX gateway answers every refused request to cancel with `OrderCancelReject`, whatever the
+  reason, and does the same for a refused amend once amending exists. A refused new order keeps its
+  rejected `ExecutionReport`.
+- `OrdStatus` comes from the gateway's own record of the session's open orders, which it already keeps
+  for cancel-on-disconnect. An order in that record is reported as open. An order not in it is
+  reported with `CxlRejReason` 1, Unknown order.
+- `CxlRejReason` is 99, Other, for a reason FIX has no code for, such as a throttle (R-0150), with the
+  reason in `Text`.
+- The binary gateway refuses nothing today. When it does, starting with the throttles, its reply to a
+  refused cancel must likewise say that the request was refused and the order is still open, not that
+  the order was rejected; which message its protocol uses for that is to be decided.
+
+Required by R-0151 in the functional specification.
+
+---
 
 ### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
 
