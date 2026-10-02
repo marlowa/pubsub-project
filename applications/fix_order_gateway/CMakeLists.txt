@@ -24,7 +24,8 @@ target_link_libraries(fix_order_gateway PRIVATE
 # fix_codec is header-only; its generated dictionary header must exist before the
 # gateway compiles. The migration onto fix_codec (inbound parse + validate) is
 # documented in docs/venue/fix_order_gateway.md.
-add_dependencies(fix_order_gateway fix_orders_generated authentication_generated fix_dictionary_generated)
+# leader_follower_generated: FixOrderGatewayThread.hpp includes leader_follower.hpp, which is generated.
+add_dependencies(fix_order_gateway fix_orders_generated authentication_generated fix_dictionary_generated leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(fix_order_gateway PRIVATE
@@ -52,6 +53,7 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/fix_order_gateway_a.toml
 # ── Unit tests ────────────────────────────────────────────────────────────────
 add_executable(fix_order_gateway_tests
         tests/OpenOrderRemovalTest.cpp
+        tests/OpenOrderTrackingTest.cpp
         tests/SeqNumRangesTest.cpp
         tests/FixCaptureTest.cpp
         tests/FixParserTest.cpp
@@ -76,6 +78,7 @@ target_link_libraries(fix_order_gateway_tests PRIVATE
         pubsub_itc_fw
         pubsub_itc_fw_test_helpers
         fix_codec
+        tsl::robin_map
         GTest::gtest_main
 )
 

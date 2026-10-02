@@ -23,6 +23,7 @@
 
 #include "GatewayMetrics.hpp"
 #include "OpenOrderRemoval.hpp"
+#include "OpenOrderTracking.hpp"
 #include "OrderPathMetrics.hpp"
 
 namespace binary_order_gateway {
@@ -843,70 +844,11 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
 }
 
 void BinaryOrderGatewayThread::track_open_order(BinarySession& session, const pubsub_itc_fw_app::ExecutionReportView& report) {
-    if (!report.has_cl_ord_id) {
-        return;
-    }
-
-    if (open_orders::is_terminal_ord_status(report.ord_status)) {
-        // Which order this retires is not simply its ClOrdID: a cancel names the request in
-        // ClOrdID and the resting order in OrigClOrdID. See open_orders::OpenOrderRemoval.
-        const open_orders::OpenOrderRemoval removal =
-            open_orders::decide_open_order_removal(report.ord_status, report.has_cl_ord_id, report.cl_ord_id, report.has_orig_cl_ord_id, report.orig_cl_ord_id);
-        if (!removal.remove) {
-            return;
-        }
-        // Looking up by string_view compares contents, so this finds the entry keyed by
-        // the pool storage without building a std::string.
-        auto existing = session.open_orders.find(removal.key);
-        if (existing != session.open_orders.end()) {
-            open_order_pool_->deallocate(existing->second);
-            session.open_orders.erase(existing);
-        }
-        return;
-    }
-
-    // Over-long values would overrun the entry's fixed arrays. The gateway validates
-    // ClOrdID at ingress, and symbol and quantity come from the matching engine rather
-    // than the client, so this is a guard against a pipeline defect, not client input.
-    const size_t cl_ord_id_length = report.cl_ord_id.size();
-    const size_t symbol_length = report.symbol.size();
-    const size_t order_qty_length = report.has_order_qty ? report.order_qty.size() : 0;
-    if (cl_ord_id_length > fix_order_limits::max_cl_ord_id_length || symbol_length > open_orders::max_supported_symbol_length ||
-        order_qty_length > open_orders::max_supported_order_qty_length) {
+    // The rule is shared with the FIX gateway: see open_orders::track_open_order.
+    if (open_orders::track_open_order(session.open_orders, *open_order_pool_, report) == open_orders::TrackOutcome::FieldTooLong) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "BinaryOrderGatewayThread: ExecutionReport field too long to track (ClOrdID {} bytes, symbol {}, qty {}) -- order not tracked for cancel",
-                   cl_ord_id_length, symbol_length, order_qty_length);
-        return;
-    }
-
-    // A repeated non-terminal report for an order already tracked -- a partial fill, say --
-    // updates the entry in place. Allocating a second one would strand the first in the
-    // pool, since the map can only hold one entry per ClOrdID.
-    auto tracked = session.open_orders.find(std::string_view(report.cl_ord_id));
-    const bool already_tracked = tracked != session.open_orders.end();
-    open_orders::OpenOrderEntry* entry = already_tracked ? tracked->second : open_order_pool_->allocate();
-
-    std::memcpy(entry->cl_ord_id, report.cl_ord_id.data(), cl_ord_id_length);
-    entry->cl_ord_id[cl_ord_id_length] = '\0';
-    entry->cl_ord_id_len = static_cast<uint8_t>(cl_ord_id_length);
-    std::memcpy(entry->symbol, report.symbol.data(), symbol_length);
-    entry->symbol[symbol_length] = '\0';
-    entry->symbol_len = static_cast<uint8_t>(symbol_length);
-    if (order_qty_length > 0) {
-        std::memcpy(entry->order_qty, report.order_qty.data(), order_qty_length);
-    }
-    entry->order_qty[order_qty_length] = '\0';
-    entry->order_qty_len = static_cast<uint8_t>(order_qty_length);
-    entry->side = static_cast<char>(report.side);
-    // Kept so the cancel-on-disconnect drain can leave persistent orders resting; absent
-    // means the client sent none, which implies Day and claims no exemption.
-    entry->time_in_force = report.has_time_in_force ? static_cast<char>(report.time_in_force) : char{0};
-    // Kept so a refused request to cancel can name the order in the reply.
-    open_orders::set_order_id(*entry, report.order_id);
-
-    if (!already_tracked) {
-        // The key views the pool storage, which is stable for the entry's lifetime.
-        session.open_orders.emplace(std::string_view(entry->cl_ord_id, entry->cl_ord_id_len), entry);
+                   report.cl_ord_id.size(), report.symbol.size(), report.has_order_qty ? report.order_qty.size() : 0);
     }
 }
 

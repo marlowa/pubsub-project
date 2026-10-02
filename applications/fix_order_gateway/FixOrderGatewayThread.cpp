@@ -6,6 +6,7 @@
 #include "FixGroupExtractor.hpp"
 #include "GatewayMetrics.hpp"
 #include "OpenOrderRemoval.hpp"
+#include "OpenOrderTracking.hpp"
 #include "OrderPathMetrics.hpp"
 
 #include <openssl/rand.h>
@@ -749,50 +750,13 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     // Maintain the open-orders set from ME acknowledgements (not from NOS
     // forward time) so only orders genuinely on the book are tracked.
     // The view's string_views are backed by the PDU payload, which is valid
-    // until release_pdu_payload() below, so copies are safe here.
-    if (view.has_cl_ord_id) {
-        if (open_orders::is_terminal_ord_status(view.ord_status)) {
-            // Which order this retires is not simply its ClOrdID: a cancel names the
-            // request in ClOrdID and the resting order in OrigClOrdID. See
-            // open_orders::OpenOrderRemoval.
-            const open_orders::OpenOrderRemoval removal =
-                open_orders::decide_open_order_removal(view.ord_status, view.has_cl_ord_id, view.cl_ord_id, view.has_orig_cl_ord_id, view.orig_cl_ord_id);
-            if (removal.remove) {
-                // Erase without constructing a std::string -- string_view lookup
-                // compares contents so this finds the entry keyed by pool storage.
-                auto it = session.open_orders.find(removal.key);
-                if (it != session.open_orders.end()) {
-                    open_order_pool_->deallocate(it->second);
-                    session.open_orders.erase(it);
-                }
-            }
-        } else {
-            // Allocate a pool entry and copy all string fields inline.
-            OpenOrderEntry* entry = open_order_pool_->allocate();
-            const size_t clen = view.cl_ord_id.size();
-            const size_t slen = view.symbol.size();
-            const size_t qlen = view.has_order_qty ? view.order_qty.size() : 0;
-            std::memcpy(entry->cl_ord_id, view.cl_ord_id.data(), clen);
-            entry->cl_ord_id[clen] = '\0';
-            entry->cl_ord_id_len = static_cast<uint8_t>(clen);
-            std::memcpy(entry->symbol, view.symbol.data(), slen);
-            entry->symbol[slen] = '\0';
-            entry->symbol_len = static_cast<uint8_t>(slen);
-            if (qlen > 0) {
-                std::memcpy(entry->order_qty, view.order_qty.data(), qlen);
-            }
-            entry->order_qty[qlen] = '\0';
-            entry->order_qty_len = static_cast<uint8_t>(qlen);
-            entry->side = static_cast<char>(view.side);
-            // Kept so the cancel-on-disconnect drain can leave persistent orders resting.
-            // Absent means the client sent no tag 59, which implies Day and claims no
-            // exemption -- so zero rather than a defaulted enum value.
-            entry->time_in_force = view.has_time_in_force ? static_cast<char>(view.time_in_force) : char{0};
-            // Kept so a refused request to cancel can name the order on its OrderCancelReject.
-            open_orders::set_order_id(*entry, view.order_id);
-            // Key is string_view into pool storage -- stable for entry lifetime.
-            session.open_orders.insert_or_assign(std::string_view(entry->cl_ord_id, entry->cl_ord_id_len), entry);
-        }
+    // until release_pdu_payload() below. The rule is shared with the binary
+    // gateway: see open_orders::track_open_order.
+    if (open_orders::track_open_order(session.open_orders, *open_order_pool_, view) == open_orders::TrackOutcome::FieldTooLong) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixOrderGatewayThread: connection {} ExecutionReport field too long to track (ClOrdID {} bytes, symbol {}, qty {}) -- order not "
+                   "tracked for cancel",
+                   session.conn_id.get_value(), view.cl_ord_id.size(), view.symbol.size(), view.has_order_qty ? view.order_qty.size() : 0);
     }
 
     ++execution_reports_sent_;

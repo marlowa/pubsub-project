@@ -18,7 +18,8 @@ target_link_libraries(binary_order_gateway PRIVATE
 
 # No fix_codec or fix_dictionary dependency, unlike the FIX order gateway: clients speak the
 # generated PDUs directly, so there is no FIX text to parse or validate here.
-add_dependencies(binary_order_gateway fix_orders_generated binary_session_generated authentication_generated)
+# leader_follower_generated: BinaryOrderGatewayThread.hpp includes leader_follower.hpp, which is generated.
+add_dependencies(binary_order_gateway fix_orders_generated binary_session_generated authentication_generated leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(binary_order_gateway PRIVATE
@@ -103,7 +104,7 @@ target_link_libraries(binary_order_gateway_tests PRIVATE
         GTest::gtest_main
 )
 
-add_dependencies(binary_order_gateway_tests fix_orders_generated binary_session_generated)
+add_dependencies(binary_order_gateway_tests fix_orders_generated binary_session_generated leader_follower_generated)
 
 include(GoogleTest)
 if(ENABLE_TSAN)
