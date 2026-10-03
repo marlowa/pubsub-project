@@ -200,6 +200,7 @@ import re
 import secrets
 import signal
 import struct
+import urllib.request
 import subprocess
 import sys
 import time
@@ -818,6 +819,10 @@ class Scenario(NamedTuple):
     # higher sequence number than the one before it (BUG-0105). For a scenario in which the
     # secondary takes the lead and numbers new records.
     assert_new_leader_numbers_forward: bool = False
+    # When True, stop the follower sequencer and assert that the leader runs as if alone and keeps
+    # trading, and returns to waiting for the follower when it runs again. See run_scenario's
+    # "stalled follower" block.
+    assert_stalled_follower_runs_alone: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3421,32 +3426,51 @@ _SCENARIOS: list[Scenario] = [
     # report waits for the follower's acknowledgement, yet the order rests on the book and could
     # trade.
     #
-    # Killing the leader in that window cannot be done on purpose, so the window is made as long
-    # as the test needs. The primary sequencer is started with libblock_sends_to_ports.so
-    # preloaded, and once the flag file is created nothing more it sends to its follower arrives.
-    # Three orders are then handed to both sequencers, as a gateway hands them; the follower
-    # discards its copies, as a follower does. The engine accepts all three, the leader is killed,
-    # and the follower takes the lead.
-    #
-    # The requirement asserted is that the engine holds no order the new leader's log does not
-    # hold. Today it does, which is BUG-0103.
+    # The leader therefore holds each order until the follower acknowledges its record, and only
+    # then sends it to the engine (option A of part 4.2 of the design). To show it, the primary
+    # sequencer is started with libblock_sends_to_ports.so preloaded, and once the flag file is
+    # created nothing more it sends to its follower arrives, so no acknowledgement can come back.
+    # Three orders are sent to the leader and the leader is stopped at once, before its 100 ms wait
+    # for an acknowledgement runs out; the engine must have accepted none of them. The leader is
+    # then killed and the follower takes the lead, and the engine must hold no order the new
+    # leader's log lacks.
     Scenario(
         number=59,
         short_name="unreplicated_orders_at_leader_death",
         description="The leading sequencer dies holding orders its follower never received",
         expected_outcome=(
-            "every order the matching engine accepted is held in the log of the sequencer that leads after the old "
-            "leader's death, so the engine holds nothing that no log holds"
+            "orders the follower never acknowledged are held by the leader and never reach the matching engine, so when "
+            "the leader dies the engine holds nothing the new leader's log lacks"
         ),
         orders_during_override=0,
         orders_after_override=0,
         block_leader_peer_sends=True,
         assert_engine_holds_only_logged_orders=True,
         assert_new_leader_numbers_forward=True,
-        expected_failure=(
-            "BUG-0103 -- the matching engine accepts orders from the leading sequencer before the follower holds "
-            "them, so orders the leader took just before it died are on the book and in no surviving log"
+        steps=[],
+    ),
+
+    # 60 -- a follower that stalls does not stop trading.
+    #
+    # A fault in the follower is a loss of resilience, not of service. The follower sequencer is
+    # stopped with SIGSTOP, so its connection stays open but it acknowledges nothing. An order sent
+    # to the leader is held for the follower's acknowledgement; within the 100 ms wait the leader
+    # must treat the follower as too far behind, run as if alone and send the order to the engine,
+    # saying so in its log and in its sequencer_running_alone gauge. A second order must go straight
+    # through. When the follower is let run again and catches up, the leader must go back to waiting
+    # for its acknowledgements, and the gauge must return to 0.
+    Scenario(
+        number=60,
+        short_name="stalled_follower_runs_alone",
+        description="A stalled follower sequencer does not stop trading; the leader runs as if alone until it catches up",
+        expected_outcome=(
+            "with the follower stopped, orders are accepted by the matching engine after the leader's 100 ms wait, the "
+            "leader reports running as if alone and its gauge reads 1; when the follower runs again, the leader reports "
+            "that it is keeping up and the gauge reads 0"
         ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_stalled_follower_runs_alone=True,
         steps=[],
     ),
 ]
@@ -7191,7 +7215,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 return count_lines_with_all(me_log, "accepted NOS", f"ClOrdID={cl_ord_id} ", from_byte=from_byte) > 0
 
             run_tag = datetime.now().strftime("%H%M%S")
-            unreplicated = [f"unrep-{run_tag}-{number}" for number in (1, 2, 3)]
+            unreplicated = [f"unrep-{run_tag}-{number}" for number in (1, 2, 3)]  # as inject_order --count names them
 
             # 1. Stop everything the leader sends to its follower from arriving, and confirm the
             #    library says so, rather than assuming the flag file had its effect.
@@ -7202,22 +7226,38 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "follower may still be receiving the leader's records and nothing below would mean anything.")
             log("  the leader's sends to its follower are now discarded, and the library has said so -- OK")
 
-            # 2. Three orders, to both sequencers, as a gateway sends them.
+            # 2. Three orders to the leader in one go, and the leader stopped the moment they are
+            #    sent. With nothing reaching the follower, the leader holds them waiting for an
+            #    acknowledgement that cannot come; after 100 ms it would treat the follower as behind
+            #    and run as if alone, sending them to the engine, which is the accepted exposure of a
+            #    leader running alone. Stopping it first keeps the orders held, which is the case
+            #    option A exists for. A stopped process cannot fire its timer.
+            primary = proc_by_name["sequencer_primary"]
             accepted_from = file_end(me_log)
+            run_tag_base = f"unrep-{run_tag}"
+            injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", run_tag_base,
+                                         "--count", str(len(unreplicated))], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            sent_line = injector.stdout.readline() if injector.stdout is not None else ""
+            os.kill(primary.pid, signal.SIGSTOP)
+            injector.wait(timeout=30)
+            if not sent_line.startswith("sent "):
+                die(f"unreplicated orders: inject_order did not report sending the orders: {sent_line!r}")
+            with open(f"/proc/{primary.pid}/stat", encoding="ascii") as stat:
+                state = stat.read().rsplit(")", 1)[1].split()[0]
+            if state != "T":
+                die(f"unreplicated orders: sequencer_primary is in state {state!r} after SIGSTOP, not stopped.")
+            log(f"  {len(unreplicated)} orders sent to the leader, and the leader stopped straight after: {sent_line.strip()}")
+            # The gateway's other copy, which the follower discards as a follower does.
             for cl_ord_id in unreplicated:
-                for which in ("primary", "secondary"):
-                    inject_to(order_ports[which], cl_ord_id)
-            deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
-            while time.monotonic() < deadline and not all(engine_accepted(c, accepted_from) for c in unreplicated):
-                time.sleep(0.1)
-            not_accepted = [c for c in unreplicated if not engine_accepted(c, accepted_from)]
-            if not_accepted:
-                die(f"unreplicated orders: the matching engine did not accept {not_accepted}, so the test cannot show "
-                    "what happens to orders the engine holds and the follower does not.")
-            log(f"  the matching engine accepted all {len(unreplicated)} orders from the leader -- OK")
+                inject_to(order_ports["secondary"], cl_ord_id)
+            time.sleep(1.0)
+            accepted_early = [c for c in unreplicated if engine_accepted(c, accepted_from)]
+            if accepted_early:
+                die(f"unreplicated orders: the matching engine accepted {accepted_early} although the follower never acknowledged "
+                    "them. The leader must hold an order until the follower holds it (option A, BUG-0103).")
+            log("  the matching engine has accepted none of them: the leader holds them until the follower acknowledges -- OK")
 
             # 3. The leader dies, and the follower takes the lead.
-            primary = proc_by_name["sequencer_primary"]
             takeover_from = file_end(secondary_log)
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
@@ -7251,13 +7291,78 @@ def run_scenario(scenario: Scenario, args) -> bool:
             check_new_leader_numbers_forward(secondary_wal_dir, secondary_wal_start)
 
             # 6. The requirement: the engine holds no order the new leader's log does not hold.
-            orphaned = [c for c in unreplicated if times_in_log(wal_dirs["secondary"], c) == 0]
+            orphaned = [c for c in unreplicated if engine_accepted(c, accepted_from) and times_in_log(wal_dirs["secondary"], c) == 0]
             if orphaned:
                 die(f"unreplicated orders: the matching engine accepted {orphaned} from the old leader, and the new leader's "
                     f"log in {wal_dirs['secondary']} does not hold them. They rest on the book with no record in any "
                     "surviving log, no member has been told of them, and the new leader has numbered later orders "
                     "without them (BUG-0103).")
-            log("  every order the engine accepted is held in the new leader's log -- OK")
+            log("  the engine holds no order the new leader's log lacks. The three orders are in neither; a gateway sending again the "
+                "commands it holds unanswered is what recovers them (part 4.3 of the design) -- OK")
+
+        # ── Stalled follower ──────────────────────────────────────────────────
+        if scenario.assert_stalled_follower_runs_alone:
+            log("=== A stalled follower sequencer does not stop trading ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("stalled follower: sequencer_primary is not leading, so stopping sequencer_secondary would not stop a follower.")
+            sequencer_etc = prefix / "etc" / "sequencer"
+            primary_config = sequencer_etc / "sequencer_primary.toml"
+            order_port = installed_toml_section_value(primary_config, "network", "listen_port")
+            metrics_port = installed_toml_section_value(primary_config, "metrics", "listen_port")
+
+            def running_alone_gauge() -> str:
+                with urllib.request.urlopen(f"http://127.0.0.1:{metrics_port}/metrics", timeout=5) as response:
+                    for line in response.read().decode().splitlines():
+                        if line.startswith("sequencer_running_alone{") or line.startswith("sequencer_running_alone "):
+                            return line.rsplit(" ", 1)[1]
+                return "absent"
+
+            def send_order(cl_ord_id: str) -> None:
+                result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_port, "--cl-ord-id", cl_ord_id],
+                                        capture_output=True, text=True, check=False, timeout=30)
+                if result.returncode != 0:
+                    die(f"stalled follower: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+
+            if running_alone_gauge() not in ("0", "0.0"):
+                die(f"stalled follower: the leader's sequencer_running_alone gauge reads {running_alone_gauge()} before anything is "
+                    "stopped; it must read 0 while the follower keeps up.")
+            follower = proc_by_name["sequencer_secondary"]
+            run_tag = datetime.now().strftime("%H%M%S")
+            alone_from = file_end(primary_log)
+            accepted_from = file_end(me_log)
+            os.kill(follower.pid, signal.SIGSTOP)
+            log(f"  SIGSTOP -> sequencer_secondary (PID {follower.pid}): alive, its connection open, acknowledging nothing")
+            try:
+                first = f"stall-{run_tag}-1"
+                send_order(first)
+                if not poll_log_for(primary_log, "the follower is too far behind", "no acknowledgement from it", timeout=_RAW_REPLY_TIMEOUT,
+                                    from_byte=alone_from)[0]:
+                    die("stalled follower: the leader never reported running as if alone with its follower stopped, so the order "
+                        "it holds waits for an acknowledgement that cannot come and trading has stopped.")
+                if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={first} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=accepted_from)[0]:
+                    die("stalled follower: the matching engine did not accept the order sent while the follower was stopped.")
+                if running_alone_gauge() not in ("1", "1.0"):
+                    die(f"stalled follower: the leader reports running as if alone but its sequencer_running_alone gauge reads "
+                        f"{running_alone_gauge()}, so an operator alerting on it would not know.")
+                log("  the leader ran as if alone, the engine accepted the order, and the gauge reads 1 -- OK")
+                second = f"stall-{run_tag}-2"
+                send_order(second)
+                if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={second} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=accepted_from)[0]:
+                    die("stalled follower: a second order, sent while the leader was running as if alone, was not accepted.")
+                log("  a second order went straight through while the leader ran as if alone -- OK")
+            finally:
+                os.kill(follower.pid, signal.SIGCONT)
+            log(f"  SIGCONT -> sequencer_secondary (PID {follower.pid})")
+            # The follower reads what the leader sent while it was stopped and acknowledges it; a
+            # further order makes sure there is a new record for it to acknowledge.
+            send_order(f"stall-{run_tag}-3")
+            if not poll_log_for(primary_log, "the follower is keeping up again", timeout=_RAW_REPLY_TIMEOUT, from_byte=alone_from)[0]:
+                die("stalled follower: the follower ran again but the leader never went back to waiting for its acknowledgements, "
+                    "so it would go on running as if alone with a follower that is keeping up.")
+            if running_alone_gauge() not in ("0", "0.0"):
+                die(f"stalled follower: the leader went back to waiting for its follower but its gauge reads {running_alone_gauge()}.")
+            log("  the follower caught up, the leader waits for its acknowledgements again, and the gauge reads 0 -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

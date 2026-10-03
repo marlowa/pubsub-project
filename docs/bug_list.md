@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 109 |
-| Open | 43 (29 defects, 14 tasks) |
-| Closed | 66 |
-| Next id | BUG-0110 |
+| Bugs recorded | 111 |
+| Open | 44 (30 defects, 14 tasks) |
+| Closed | 67 |
+| Next id | BUG-0112 |
 
 ## Open bugs by severity
 
-16 high, 22 medium, 5 low.
+16 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -51,6 +51,7 @@
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
+| [BUG-0111](#bug_0111) | medium | defect | Acknowledgements of execution report records collect in the leader and are never removed |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -152,6 +153,28 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0111: Acknowledgements of execution report records collect in the leader and are never removed {#bug_0111}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Reading `SequencerThread::handle_wal_ack` while building part 4.2 of the change-of-leader design |
+| Impact | The leading sequencer's `wal_acked_seq_nos_` gains one entry for every execution report it logs and replicates, and loses it only when the follower disconnects or the leader starts running as if alone. At 50 million orders a day that is tens of millions of entries in an `std::unordered_set`, allocated on the order path |
+
+**What happens.** The leader logs each execution report under a sequence number of its own and
+replicates it, and the follower acknowledges it like any record. `handle_wal_ack` looks the number up
+in `pending_er_`, which is keyed by the sequence number a report waits on: the order's, for an
+ordinary report. A report record's own number is not a key there, so the acknowledgement is inserted
+into `wal_acked_seq_nos_`, which is cleared only by `forward_all_pending_er`. Nothing else removes it.
+
+**What closing it needs.** Record an acknowledgement only for a number a report may still wait on:
+an order whose report has not yet arrived, or a report that waits on its own record. A test must run
+a sustained load with a follower connected and require the set to stay small.
+
+---
 
 ### BUG-0107: The arbiters stall for seconds at a time, and every pair loses its leader {#bug_0107}
 
@@ -366,8 +389,14 @@ leader was killed and confirmed dead, and the follower took the lead 4.2 seconds
 leader's log files held all three ClOrdIDs and the new leader's held none, and the engine went on to
 accept an order from the new leader. In a control run with the library blocking an unused port, the
 new leader's log held all three and the scenario passed, so the failure comes from the records not
-arriving and not from the way the test looks for them. The scenario is marked as expected to fail
-until this is fixed.
+arriving and not from the way the test looks for them.
+
+**This fault is fixed (2026-10-03).** The leading sequencer now holds each order until the follower
+acknowledges its record, and only then sends it to the matching engine (part 4.2 of the design, option
+A). Scenario 59 now stops the leader straight after sending it three orders it cannot replicate, and
+requires the engine to have accepted none of them and to hold nothing the new leader's log lacks; it
+passes. The other two faults, orders and reports lost during the change of leader, remain open, for
+parts 4.3 and 4.4.
 
 **What is not decided.** Which of the remedies fits: the gateway holding each order until the
 sequencer's report for it arrives and sending it again to the new leader, which needs the sequencer
@@ -2617,6 +2646,29 @@ content, and refuse to append it silently.
 Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
 ## Closed
+
+### BUG-0110: An order deferred while no matching engine was connected was not replicated to the follower {#bug_0110}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-03 -- with part 4.2 of the change-of-leader design, a deferred order is replicated like any other |
+| How | Restructuring the leading sequencer's order path for part 4.2 of [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md) |
+| Impact | Every order the leader deferred because no matching engine was connected was in the leader's log only. Had the leader then died, the follower would have taken the lead without those orders, and the engine that came back would have caught up from a log that lacked them: orders taken from members, never applied and never answered |
+
+**What happened.** In `SequencerThread::on_framework_pdu_message`, the leader appended an order to
+its log and then, if no matching engine was connected, recorded the deferral and returned. The
+replication to the follower came later in the same function, after the order had been sent to the
+engine, so a deferred order never reached it.
+
+**What was fixed.** With a follower keeping up, the order is now replicated and held, and when the
+follower acknowledges it the order is sent to the engine, or deferred if none is connected. When the
+leader runs as if alone, or with no follower, a deferred order is replicated before the function
+returns.
+
+---
 
 ### BUG-0105: A sequencer that takes the lead numbers new records with numbers its log already holds {#bug_0105}
 

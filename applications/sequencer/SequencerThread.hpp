@@ -15,6 +15,7 @@
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
+#include <pubsub_itc_fw/FixedCapacityRingBuffer.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -236,6 +237,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // a fired timer's id against these to identify it.
     pubsub_itc_fw::TimerID wal_snapshot_timer_id_{};
     pubsub_itc_fw::TimerID lease_tick_timer_id_{};
+    pubsub_itc_fw::TimerID acknowledgement_watch_timer_id_{};
 
     // WAL replication state (Slice 7).
     //
@@ -339,6 +341,62 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
     void install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id);
+
+    // ---- Sending an order to the matching engine only once the follower holds it -------------
+    //
+    // While a follower is connected and keeping up, the leader appends each order to its log,
+    // sends the record to the follower, and holds the order until the follower acknowledges it;
+    // only then is the order sent to the matching engine. So the engine never acts on an order the
+    // follower does not hold, and a leader that dies leaves nothing on the book that the surviving
+    // log lacks. See docs/availability/change_of_sequencer_leader.md, part 4.2.
+    //
+    // A held order keeps the inbound message's own buffer, which the decoded envelope points into,
+    // and releases it once the order has been sent to the engine, so holding an order copies nothing
+    // and allocates nothing.
+    struct HeldOrder {
+        pubsub_itc_fw_app::WalRecord envelope;
+        pubsub_itc_fw::SlabHandle slab_id;
+        const uint8_t* buffer{nullptr};
+        std::chrono::steady_clock::time_point held_at;
+    };
+
+    // How many orders the leader holds at most while waiting for the follower. When it is full the
+    // follower is treated as too far behind and the leader runs as if alone. At the highest rate
+    // measured on this venue, about 34,000 orders a second, this is about half a second of orders,
+    // well beyond the acknowledgement timeout below, so in practice the timeout is what notices a
+    // follower that has stopped, and this only bounds the storage. Each slot holds the envelope and a
+    // pointer, so the storage is a few megabytes, allocated once when the sequencer starts.
+    static constexpr size_t held_order_capacity = 16384;
+
+    // How long the leader waits, while it holds orders, for any acknowledgement from the follower
+    // before it treats the follower as too far behind. A follower on the same network acknowledges
+    // in tens of microseconds, so a tenth of a second without one means it has stalled, and members
+    // are not kept waiting longer than that for a fault in the backup.
+    static constexpr std::chrono::milliseconds follower_acknowledgement_timeout{100};
+
+    // How often the timeout above is checked. A tenth of the timeout, so a stalled follower is
+    // noticed between 100 and 110 milliseconds after its last acknowledgement.
+    static constexpr std::chrono::milliseconds acknowledgement_watch_interval{10};
+
+    pubsub_itc_fw::FixedCapacityRingBuffer<HeldOrder> held_orders_{held_order_capacity};
+
+    // True while a follower is connected but has fallen too far behind, and the leader is sending
+    // orders to the engine at once and forwarding reports without waiting, as it does with no
+    // follower connected. A loss of resilience, not of service.
+    bool running_alone_{false};
+    std::chrono::steady_clock::time_point running_alone_since_{};
+    std::chrono::steady_clock::time_point last_acknowledgement_at_{};
+    pubsub_itc_fw::GaugeHandle running_alone_gauge_;
+
+    void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);
+    void send_held_order_to_matching_engine(const HeldOrder& held);
+    void release_held_orders_through(int64_t acknowledged_seq_no);
+    void release_all_held_orders();
+    void discard_held_orders();
+    void start_running_alone(const char* reason);
+    void stop_running_alone(const char* reason);
+    void check_follower_acknowledgements();
+    void forward_all_pending_er();
 
     // Raise highest_replicated_seq_no_ to seq_no if it is lower. Called from both threads that
     // write replicated records, so it never lowers the value whichever runs last.

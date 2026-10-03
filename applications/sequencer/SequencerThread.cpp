@@ -176,6 +176,7 @@ void SequencerThread::on_initial_event() {
                              arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_);
         lease_agent_->keep_promises_in(lease_promise_store_, lease_promise_store_.load(), std::chrono::steady_clock::now());
         lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
+        acknowledgement_watch_timer_id_ = start_recurring_timer(acknowledgement_watch_interval);
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for "
@@ -248,6 +249,10 @@ void SequencerThread::on_initial_event() {
         "Log segments the writer created itself instead of adopting one prepared ahead of it. Expected to be 1, for the first segment");
     wal_segments_waited_for_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "wal_segments_waited_for", "Segment rolls that had to wait for a preparation still in progress. Expected to be 0");
+    running_alone_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_running_alone",
+        "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
+        "resilience. Expected to be 0");
 }
 
 void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns) {
@@ -600,33 +605,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        if (!me_outbound_order_conn_id_.is_valid()) {
-            // The order is already durably WAL-committed above; we simply cannot forward it right
-            // now because no matching engine is connected. The forward is deferred rather than the
-            // order lost: whichever engine acts next reports the position it has reached and is
-            // sent everything after it, which includes this order.
-            //
-            // That holds however the next engine arrives. A promoting follower knows its position
-            // from the replica it was maintaining and a starting one from the region it recovered,
-            // and both catch up before they act. A start used to skip the catch-up, so an order
-            // deferred while every engine was down was applied by nobody and answered to nobody --
-            // BUG-0064, and the reason this comment once carried a warning instead of a
-            // reassurance.
-            //
-            // It costs the venue nothing to defer -- the payload is released here and the WAL is
-            // the whole mechanism. It costs the MEMBER a great deal: it has been acknowledged, so
-            // it believes the order is live, and it cannot cancel it because a cancel needs the
-            // same matching engine. That is the asymmetry BUG-0009 is about, and why this is
-            // reported by how long it has gone on rather than once per order.
-            note_order_deferred(seq);
-            release_pdu_payload(message);
-            return;
-        }
-
-        // Reachable again. Anything deferred is recovered by the catch-up the arriving engine
-        // performs before it acts, and an operator wants one line saying what the outage cost.
-        note_matching_engine_reachable();
-
         // Record seq_no -> the session that placed this order, so its execution reports can
         // be routed back to it. seq_no is globally unique, unlike a ClOrdID.
         //
@@ -656,32 +634,64 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                        seq);
         }
 
-        // Forward the stamped envelope to the ME. The ME unwraps it, reads
-        // wall_time_ns as the sequencing time (transact_time during replay), and
-        // decodes the inner FIX PDU. The FIX payload is passed through opaque -- no
-        // field hand-copy.
-        // A member is waiting for this: it is the order on its way to be matched. The
-        // replication and subscriber sends further down this file are deliberately not
-        // marked -- nobody is waiting on a client connection for any of them.
-        send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope,
-                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
-
-        // Immediately after the send rather than before it, so that order_in to order_out
-        // covers everything this component did with the order, the write-ahead log commit
-        // included. The clock is read again here because real time has passed since the
-        // sequencing stamp -- the commit is the slowest thing on this path and is exactly
-        // what the difference is meant to expose.
-        //
-        // Replication and the external subscriber stream come after this point and are
-        // deliberately outside the measurement: the order is already on its way to the
-        // matching engine, so that work is not in front of the member's report.
-        if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
-            order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns,
-                                                   config_.wall_clock->now_ns());
+        // With a follower connected and keeping up, the order goes to the matching engine only once
+        // the follower has acknowledged its record, so the engine never acts on an order the follower
+        // does not hold (docs/availability/change_of_sequencer_leader.md, part 4.2). It is replicated
+        // and published at once and held until the acknowledgement arrives, which sends it on. If the
+        // storage for held orders is full the follower is too far behind, and the leader runs as if
+        // alone: the order is sent at once, below.
+        if (needs_wal_ack()) {
+            if (!held_orders_.full()) {
+                send_wal_record(envelope);
+                stream_wal_record_to_external_subscribers(envelope);
+                hold_until_acknowledged(envelope, message);
+                return; // The payload is released when the held order is sent on.
+            }
+            start_running_alone("its storage for orders waiting on the follower is full");
         }
 
-        // Replicate to the peer follower before releasing the slab so the inner
-        // payload pointer stays valid.
+        // Sent at once: no follower is connected, or the leader is running as if alone.
+        if (me_outbound_order_conn_id_.is_valid()) {
+            // Reachable again. Anything deferred is recovered by the catch-up the arriving engine
+            // performs before it acts, and an operator wants one line saying what the outage cost.
+            note_matching_engine_reachable();
+
+            // A member is waiting for this: it is the order on its way to be matched. The
+            // replication and subscriber sends below are deliberately not marked -- nobody is
+            // waiting on a client connection for any of them.
+            send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope,
+                     pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+
+            // Immediately after the send rather than before it, so that order_in to order_out
+            // covers everything this component did with the order, the write-ahead log commit
+            // included.
+            if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
+                order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns,
+                                                       config_.wall_clock->now_ns());
+            }
+        } else {
+            // The order is already durably WAL-committed above; we simply cannot forward it right
+            // now because no matching engine is connected. The forward is deferred rather than the
+            // order lost: whichever engine acts next reports the position it has reached and is
+            // sent everything after it, which includes this order.
+            //
+            // That holds however the next engine arrives. A promoting follower knows its position
+            // from the replica it was maintaining and a starting one from the region it recovered,
+            // and both catch up before they act. A start used to skip the catch-up, so an order
+            // deferred while every engine was down was applied by nobody and answered to nobody --
+            // BUG-0064, and the reason this comment once carried a warning instead of a
+            // reassurance.
+            //
+            // It costs the venue nothing to defer -- the payload is released here and the WAL is
+            // the whole mechanism. It costs the MEMBER a great deal: it has been acknowledged, so
+            // it believes the order is live, and it cannot cancel it because a cancel needs the
+            // same matching engine. That is the asymmetry BUG-0009 is about, and why this is
+            // reported by how long it has gone on rather than once per order.
+            note_order_deferred(seq);
+        }
+
+        // Replicated whether or not an engine took it: a deferred order must reach the follower's log
+        // as much as any other.
         if (config_.ha_enabled) {
             send_wal_record(envelope);
         }
@@ -994,6 +1004,11 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         act_on(lease_agent_->on_tick(std::chrono::steady_clock::now()));
         return;
     }
+
+    if (id == acknowledgement_watch_timer_id_) {
+        check_follower_acknowledgements();
+        return;
+    }
 }
 
 void SequencerThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
@@ -1039,6 +1054,11 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         // ever lift.
         broadcast_order_acceptance();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
+        discard_held_orders();
+        if (running_alone_) {
+            running_alone_ = false;
+            running_alone_gauge_.set(0.0);
+        }
         // A follower forwards nothing to a matching engine, so it defers nothing. Clearing the
         // bookkeeping matters for what happens if this instance leads AGAIN: a deferral begun in
         // a previous leadership would otherwise still be open, because the recovery that would
@@ -1367,7 +1387,7 @@ void SequencerThread::dispatch_replay_records() {
 // WAL replication helpers (Slice 7)
 
 bool SequencerThread::needs_wal_ack() const {
-    return config_.ha_enabled && peer_active_conn().is_valid();
+    return config_.ha_enabled && peer_active_conn().is_valid() && !running_alone_;
 }
 
 void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope) {
@@ -1456,6 +1476,15 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
     // were streamed, so the highest is also the highest contiguous; std::max is belt and
     // braces against a reordering that would otherwise let the floor run ahead of the facts.
     peer_acked_through_ = std::max(peer_acked_through_, view.seq_no);
+    last_acknowledgement_at_ = std::chrono::steady_clock::now();
+
+    // The orders this acknowledgement covers are now on both machines, so they may be acted on.
+    release_held_orders_through(view.seq_no);
+
+    // A follower that has acknowledged every record this leader has written has caught up.
+    if (running_alone_ && peer_acked_through_ >= next_sequence_number_ - 1) {
+        stop_running_alone("it has acknowledged every record this leader has written");
+    }
 
     auto it = pending_er_.find(view.seq_no);
     if (it != pending_er_.end()) {
@@ -1517,7 +1546,118 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
                conn_id.get_value());
 }
 
+void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message) {
+    // The caller has checked there is room, so this cannot fail; the result is checked anyway, and a
+    // failure sends the order at once rather than losing it.
+    if (!held_orders_.push_back(HeldOrder{envelope, message.slab_id(), message.payload(), std::chrono::steady_clock::now()})) {
+        start_running_alone("its storage for orders waiting on the follower is full");
+        send_held_order_to_matching_engine(HeldOrder{envelope, message.slab_id(), message.payload(), std::chrono::steady_clock::now()});
+        release_pdu_payload(message);
+    }
+}
+
+void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) {
+    if (!me_outbound_order_conn_id_.is_valid()) {
+        // Recovered by the catch-up whichever engine acts next performs before it acts, exactly as
+        // an order deferred on arrival is.
+        note_order_deferred(held.envelope.seq_no);
+        return;
+    }
+    note_matching_engine_reachable();
+    send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.envelope.seq_no, held.envelope,
+             pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
+    if (held.envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
+        order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, held.envelope.has_gateway_ingress_ns, held.envelope.gateway_ingress_ns,
+                                               config_.wall_clock->now_ns());
+    }
+}
+
+void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
+    while (!held_orders_.empty() && held_orders_.front().envelope.seq_no <= acknowledged_seq_no) {
+        const HeldOrder& held = held_orders_.front();
+        send_held_order_to_matching_engine(held);
+        release_pdu_payload(held.slab_id, held.buffer);
+        held_orders_.pop_front();
+    }
+}
+
+void SequencerThread::release_all_held_orders() {
+    while (!held_orders_.empty()) {
+        const HeldOrder& held = held_orders_.front();
+        send_held_order_to_matching_engine(held);
+        release_pdu_payload(held.slab_id, held.buffer);
+        held_orders_.pop_front();
+    }
+}
+
+void SequencerThread::discard_held_orders() {
+    // An instance that has stopped leading must not act on what it holds: whichever instance leads
+    // now decides what the matching engine sees. The orders are in this instance's log and were
+    // never acted on or answered.
+    if (!held_orders_.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: stopped leading while holding {} order(s) the follower had not acknowledged -- they were not sent to the matching "
+                   "engine and are discarded",
+                   held_orders_.size());
+    }
+    while (!held_orders_.empty()) {
+        release_pdu_payload(held_orders_.front().slab_id, held_orders_.front().buffer);
+        held_orders_.pop_front();
+    }
+}
+
+void SequencerThread::start_running_alone(const char* reason) {
+    if (running_alone_) {
+        return;
+    }
+    running_alone_ = true;
+    running_alone_since_ = std::chrono::steady_clock::now();
+    running_alone_gauge_.set(1.0);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "SequencerThread: the follower is too far behind -- {}. Running as if alone: orders go to the matching engine at once and reports are "
+               "forwarded without waiting, so resilience is reduced until the follower catches up. {} order(s) held; the follower has acknowledged "
+               "through {} of {}",
+               reason, held_orders_.size(), peer_acked_through_, next_sequence_number_ - 1);
+    release_all_held_orders();
+    forward_all_pending_er();
+}
+
+void SequencerThread::stop_running_alone(const char* reason) {
+    if (!running_alone_) {
+        return;
+    }
+    running_alone_ = false;
+    running_alone_gauge_.set(0.0);
+    const auto alone_for = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - running_alone_since_);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: the follower is keeping up again -- {}. Waiting for its acknowledgements again after {} ms running as if alone", reason,
+               alone_for.count());
+}
+
+void SequencerThread::check_follower_acknowledgements() {
+    if (held_orders_.empty() || !needs_wal_ack()) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto waiting_since = std::max(last_acknowledgement_at_, held_orders_.front().held_at);
+    if (now - waiting_since >= follower_acknowledgement_timeout) {
+        start_running_alone("no acknowledgement from it for at least 100 ms while orders were waiting");
+    }
+}
+
+void SequencerThread::forward_all_pending_er() {
+    for (auto& [seq_no, pending] : pending_er_) {
+        forward_pending_er(pending);
+    }
+    pending_er_.clear();
+    wal_acked_seq_nos_.clear();
+}
+
 void SequencerThread::flush_pending_er() {
+    release_all_held_orders();
+    if (running_alone_) {
+        stop_running_alone("it has disconnected, and the leader runs alone as it does with no follower");
+    }
     if (!pending_er_.empty()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: peer lost -- flushing {} buffered ERs to gateway (degraded mode)",
                    pending_er_.size());

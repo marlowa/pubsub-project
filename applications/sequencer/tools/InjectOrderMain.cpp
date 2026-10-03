@@ -15,7 +15,13 @@
 // gateways make.
 //
 //   inject_order --port 11001 --cl-ord-id ORDER-1
+//   inject_order --port 11001 --cl-ord-id ORDER --count 3      (ORDER-1, ORDER-2 and ORDER-3)
 //   inject_order --port 11001 --cl-ord-id CANCEL-1 --cancel ORDER-1
+//
+// The line saying what was sent is printed, and flushed, as soon as the commands are written, before
+// the tool waits for the sequencer to read them. A test that must act within milliseconds of the
+// commands arriving, such as stopping the sequencer, reads that line rather than waiting for the
+// tool to exit.
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -32,6 +38,7 @@
 #include <vector>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <pubsub_itc_fw/PduHeader.hpp>
 
@@ -51,6 +58,7 @@ struct Options {
     std::string cl_ord_id;
     std::string cancel_orig_cl_ord_id;
     std::string symbol{"AAPL"};
+    int count{1};
 };
 
 bool parse_options(int argc, char** argv, Options& options) {
@@ -69,8 +77,10 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.cancel_orig_cl_ord_id = argv[++index];
         } else if (argument == "--symbol" && has_value) {
             options.symbol = argv[++index];
+        } else if (argument == "--count" && has_value) {
+            options.count = std::stoi(argv[++index]);
         } else {
-            fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] --cl-ord-id ID [--cancel ORIG-CL-ORD-ID] [--symbol SYM]\n", argv[0]);
+            fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] --cl-ord-id ID [--cancel ORIG-CL-ORD-ID] [--symbol SYM] [--count N]\n", argv[0]);
             fmt::print("\n  Sends one NewOrderSingle, or with --cancel one OrderCancelRequest, straight to the sequencer's\n");
             fmt::print("  order listener, bypassing every gateway check. For testing the matching engine only.\n");
             return false;
@@ -78,6 +88,10 @@ bool parse_options(int argc, char** argv, Options& options) {
     }
     if (options.cl_ord_id.empty()) {
         fmt::print("--cl-ord-id is required\n");
+        return false;
+    }
+    if (options.count < 1 || (options.count > 1 && !options.cancel_orig_cl_ord_id.empty())) {
+        fmt::print("--count must be at least 1, and more than 1 only for new orders\n");
         return false;
     }
     return true;
@@ -148,19 +162,13 @@ int connect_to(const Options& options) {
     return socket_fd;
 }
 
-} // namespaces
-
-int main(int argc, char** argv) {
-    Options options;
-    if (!parse_options(argc, argv, options)) {
-        return 2;
-    }
-
+/** @brief The framed envelope for one order or cancel, as a gateway sends it; empty if it cannot be encoded. */
+std::vector<uint8_t> encode_command(const Options& options, const std::string& cl_ord_id) {
     std::vector<uint8_t> payload;
     int16_t inner_pdu_id = 0;
     if (options.cancel_orig_cl_ord_id.empty()) {
         pubsub_itc_fw_app::NewOrderSingle order{};
-        order.cl_ord_id = options.cl_ord_id;
+        order.cl_ord_id = cl_ord_id;
         order.side = pubsub_itc_fw_app::Side::Buy;
         order.symbol = options.symbol;
         order.ord_type = pubsub_itc_fw_app::OrdType::Limit;
@@ -172,7 +180,7 @@ int main(int argc, char** argv) {
         inner_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle);
     } else {
         pubsub_itc_fw_app::OrderCancelRequest cancel{};
-        cancel.cl_ord_id = options.cl_ord_id;
+        cancel.cl_ord_id = cl_ord_id;
         cancel.orig_cl_ord_id = options.cancel_orig_cl_ord_id;
         cancel.side = pubsub_itc_fw_app::Side::Buy;
         cancel.symbol = options.symbol;
@@ -181,8 +189,7 @@ int main(int argc, char** argv) {
         inner_pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest);
     }
     if (payload.empty()) {
-        fmt::print("could not encode the command\n");
-        return 1;
+        return payload;
     }
 
     // The envelope a gateway would send. The session belongs to no gateway, so the engine's report
@@ -197,25 +204,49 @@ int main(int argc, char** argv) {
     envelope.origin_gateway_id = gateway_ids::binary_order_gateway;
     envelope.has_sender_comp_id = true;
     envelope.sender_comp_id = options.comp_id;
-    const std::vector<uint8_t> frame_payload = encode_message(envelope);
-    if (frame_payload.empty()) {
-        fmt::print("could not encode the envelope\n");
-        return 1;
+    return encode_message(envelope);
+}
+
+} // namespaces
+
+int main(int argc, char** argv) {
+    Options options;
+    if (!parse_options(argc, argv, options)) {
+        return 2;
+    }
+
+    std::vector<std::string> cl_ord_ids;
+    for (int index = 1; index <= options.count; ++index) {
+        cl_ord_ids.push_back(options.count == 1 ? options.cl_ord_id : fmt::format("{}-{}", options.cl_ord_id, index));
+    }
+    std::vector<std::vector<uint8_t>> frames;
+    for (const std::string& cl_ord_id : cl_ord_ids) {
+        frames.push_back(encode_command(options, cl_ord_id));
+        if (frames.back().empty()) {
+            fmt::print("could not encode the command for ClOrdID={}\n", cl_ord_id);
+            return 1;
+        }
     }
 
     const int socket_fd = connect_to(options);
     if (socket_fd < 0) {
         return 1;
     }
-    const bool sent = send_frame(socket_fd, pubsub_itc_fw_app::WalRecord::message_pdu_id, frame_payload);
-    // A moment for the sequencer to read the frame before the connection closes under it.
+    bool sent = true;
+    for (const std::vector<uint8_t>& frame_payload : frames) {
+        sent = sent && send_frame(socket_fd, pubsub_itc_fw_app::WalRecord::message_pdu_id, frame_payload);
+    }
+    if (sent) {
+        fmt::print("sent {} {} ClOrdID={}{}\n", cl_ord_ids.size(), options.cancel_orig_cl_ord_id.empty() ? "NewOrderSingle" : "OrderCancelRequest",
+                   fmt::join(cl_ord_ids, ","), options.cancel_orig_cl_ord_id.empty() ? std::string() : " OrigClOrdID=" + options.cancel_orig_cl_ord_id);
+        std::fflush(stdout);
+    }
+    // A moment for the sequencer to read the frames before the connection closes under them.
     ::usleep(200000);
     ::close(socket_fd);
     if (!sent) {
         fmt::print("could not send the command\n");
         return 1;
     }
-    fmt::print("sent {} ClOrdID={} ({} characters){}\n", options.cancel_orig_cl_ord_id.empty() ? "NewOrderSingle" : "OrderCancelRequest", options.cl_ord_id,
-               options.cl_ord_id.size(), options.cancel_orig_cl_ord_id.empty() ? std::string() : " OrigClOrdID=" + options.cancel_orig_cl_ord_id);
     return 0;
 }

@@ -615,6 +615,19 @@ class ApplicationThread {
      */
     void release_pdu_payload(const EventMessage& message) const;
 
+    /**
+     * @brief Releases an inbound PDU payload by its slab handle and pointer, after its message has gone.
+     *
+     * For a thread that keeps an inbound payload beyond the call that delivered it, so that it can act
+     * on it later without copying it: it records message.slab_id() and message.payload() and releases
+     * them with this once it has finished. Each payload must be released exactly once, by one of the
+     * two overloads.
+     *
+     * @param[in] slab_id The slab the payload was allocated from, as EventMessage::slab_id() gave it.
+     * @param[in] payload The payload pointer, as EventMessage::payload() gave it.
+     */
+    void release_pdu_payload(SlabHandle slab_id, const uint8_t* payload) const;
+
     ExpandableSlabAllocator& outbound_slab_allocator() {
         return outbound_allocator_;
     }

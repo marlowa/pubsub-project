@@ -371,11 +371,12 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
 ## 9. The order of the work
 
 1. **4.1, numbering,** with the numbering check in scenarios 1 and 59. Small and independent, and it
-   corrects a defect present at every change of leader.
+   corrects a defect present at every change of leader. **Done:** [BUG-0105](../bug_list.md#bug_0105).
 2. **Measure 4.2 option A** in a build that changes only that, before deciding between options A
-   and B. The change is kept only if option A is chosen.
+   and B. The change is kept only if option A is chosen. **Done:** see section 7.
 3. **4.2,** the chosen option, with the matching engine's guard described under 4.1. Scenario 59 then
-   passes and its expected failure is removed.
+   passes and its expected failure is removed. **Done:** option A, running as if alone when the follower
+   falls behind (scenario 60), and the guard.
 4. **Open question 2,** so that a follower that has fallen behind cannot take the lead. A change to the
    lease rules, designed and agreed first.
 5. **4.4,** the follower keeping reports, with the new reports scenario.

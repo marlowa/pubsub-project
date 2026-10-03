@@ -660,6 +660,10 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
+    if (sequence_goes_backwards(sequence_number)) {
+        refuse_out_of_sequence_order(view, sequence_number, now_ns);
+        return;
+    }
     if (!OrderKey::fits(view.cl_ord_id)) {
         refuse_over_long_order(view, sequence_number, now_ns, session, ReportIsRepeat::no);
         return;
@@ -950,6 +954,10 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     }
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
+    if (sequence_goes_backwards(sequence_number)) {
+        refuse_out_of_sequence_cancel(view, sequence_number, now_ns);
+        return;
+    }
     if (!OrderKey::fits(view.cl_ord_id) || !OrderKey::fits(view.orig_cl_ord_id)) {
         refuse_over_long_cancel(view, sequence_number, now_ns, session, ReportIsRepeat::no);
         return;
@@ -1130,6 +1138,74 @@ void MatchingEngineThread::refuse_over_long_cancel(const pubsub_itc_fw_app::Orde
     // The session goes on the envelope only for a catch-up's report, as the other catch-up reports
     // do; otherwise the sequencer routes the report by its sequence number, as every live report.
     send_er_to_sequencer(er, sequence_number, repeat == ReportIsRepeat::yes ? session : fix_common::SessionIdentity{}, repeat);
+}
+
+bool MatchingEngineThread::sequence_goes_backwards(int64_t sequence_number) {
+    if (sequence_number <= highest_live_seq_no_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "MatchingEngineThread: a command arrived with sequence number {}, not above {}, the highest this engine has already acted on -- "
+                   "refusing it, because acting on it would leave the book disagreeing with the leading sequencer's log",
+                   sequence_number, highest_live_seq_no_);
+        return true;
+    }
+    highest_live_seq_no_ = sequence_number;
+    return false;
+}
+
+void MatchingEngineThread::refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time) {
+    std::array<char, 32> exec_id_buf{};
+    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id = "NONE";
+    er.exec_id = exec_id;
+    er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    er.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    er.symbol = view.symbol;
+    er.side = view.side;
+    er.leaves_qty = "0";
+    er.cum_qty = "0";
+    er.avg_px = "0.00";
+    er.transact_time = transact_time;
+    er.has_cl_ord_id = true;
+    er.cl_ord_id = view.cl_ord_id;
+    er.has_order_qty = true;
+    er.order_qty = view.order_qty;
+    er.has_ord_rej_reason = true;
+    er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+    er.has_text = true;
+    er.text = "Venue could not process the order: it arrived out of sequence";
+    send_er_to_sequencer(er, sequence_number);
+}
+
+void MatchingEngineThread::refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number,
+                                                         int64_t transact_time) {
+    std::array<char, 32> exec_id_buf{};
+    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id = "NONE";
+    er.exec_id = exec_id;
+    er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    er.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    er.symbol = view.symbol;
+    er.side = view.side;
+    er.leaves_qty = "0";
+    er.cum_qty = "0";
+    er.avg_px = "0.00";
+    er.transact_time = transact_time;
+    er.has_cl_ord_id = true;
+    er.cl_ord_id = view.cl_ord_id;
+    // Carried so the gateways send the report to the member as an OrderCancelReject.
+    er.has_orig_cl_ord_id = true;
+    er.orig_cl_ord_id = view.orig_cl_ord_id;
+    er.has_order_qty = view.has_order_qty;
+    er.order_qty = view.order_qty;
+    er.has_ord_rej_reason = true;
+    er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+    er.has_text = true;
+    er.text = "Venue could not process the cancel: it arrived out of sequence. The order is unchanged";
+    send_er_to_sequencer(er, sequence_number);
 }
 
 bool MatchingEngineThread::holding_reports_until_entitled() const {
@@ -1924,6 +2000,7 @@ void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMess
 
     cancel_timer(reconciliation_timer_id_);
     last_replicated_seq_no_ = ack.last_seq_no;
+    highest_live_seq_no_ = std::max(highest_live_seq_no_, ack.last_seq_no);
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
     // and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

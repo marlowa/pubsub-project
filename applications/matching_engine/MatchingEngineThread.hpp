@@ -165,6 +165,34 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void refuse_over_long_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
                                  const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
 
+    /**
+     * @brief Whether a live order or cancel carries a sequence number at or below one already acted on.
+     *
+     * The sequence numbers the leading sequencer sends only go forward, so one that does not means
+     * the record the engine has acted on and the log of the sequencer now leading disagree. The engine
+     * refuses such a command, answering the member, rather than acting on it and holding a book that
+     * silently disagrees with the record. Never true during a catch-up, whose records are below the
+     * position by construction. See docs/availability/change_of_sequencer_leader.md, part 4.2.
+     *
+     * Raises highest_live_seq_no_ to sequence_number when it returns false.
+     */
+    [[nodiscard]] bool sequence_goes_backwards(int64_t sequence_number);
+
+    /**
+     * @brief Refuses a new order whose sequence number is not above the last the engine acted on.
+     *
+     * Parameters as for refuse_over_long_order, without the session and the repeat marking: this is
+     * only ever a live refusal, routed by its sequence number.
+     */
+    void refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time);
+
+    /**
+     * @brief Refuses a request to cancel whose sequence number is not above the last the engine acted on.
+     *
+     * The report carries the OrigClOrdID, so each gateway sends it as an OrderCancelReject.
+     */
+    void refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time);
+
     const MatchingEngineConfiguration& config_;
 
     /**
@@ -201,6 +229,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Secondary: seq_no of the most recently applied BookUpdate.
     // Carried forward to WAL reconciliation at promotion time (Slice C).
     int64_t last_replicated_seq_no_{0};
+
+    // The highest sequence number of any live order or cancel this engine has acted on, or the
+    // position a completed catch-up brought it to, whichever is higher. See sequence_goes_backwards().
+    int64_t highest_live_seq_no_{0};
 
     // ConnectionIDs of the outbound connections to the sequencer ER inbound listeners.
     // ERs are sent to all valid connections. The leader routes them to the gateway;

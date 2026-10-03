@@ -738,4 +738,8 @@ void ApplicationThread::release_pdu_payload(const EventMessage& message) const {
     reactor_.inbound_slab_allocator().deallocate(message.slab_id(), const_cast<uint8_t*>(message.payload()));
 }
 
+void ApplicationThread::release_pdu_payload(SlabHandle slab_id, const uint8_t* payload) const {
+    reactor_.inbound_slab_allocator().deallocate(slab_id, const_cast<uint8_t*>(payload));
+}
+
 } // namespaces
