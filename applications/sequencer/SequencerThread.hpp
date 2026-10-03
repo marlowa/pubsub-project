@@ -28,6 +28,7 @@
 #include <pubsub_itc_fw/Wal.hpp>
 
 #include "BackgroundPromiseRecorder.hpp"
+#include "EngineOrderRouting.hpp"
 #include "EpochStore.hpp"
 #include "GatewayIds.hpp"
 #include "LeaseLinksInterface.hpp"
@@ -135,20 +136,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         return &it->second;
     }
 
-    // ConnectionID of the outbound matching-engine order connection.
-    // The sequencer connects outbound to the ME's order listener on
-    // matching_engine_port and forwards sequenced order PDUs over this
-    // connection. Set when the outbound connection is established.
-    // Starts as the ME-primary connection; on ME failover it is swapped to
-    // point at ME-secondary once that instance has caught up (see
-    // handle_me_position_request).
-    pubsub_itc_fw::ConnectionID me_outbound_order_conn_id_;
-
-    // Pre-warmed standby connection to ME-secondary (ha_enabled only). Kept open
-    // but not used for order forwarding until ME-secondary promotes itself and
-    // sends a MePositionRequest, at which point it is promoted to
-    // me_outbound_order_conn_id_.
-    pubsub_itc_fw::ConnectionID me_secondary_standby_conn_id_;
+    // Which of this sequencer's order connections to the matching engines carries orders: the one to
+    // the instance that leads, as the engines' announcements and requests to catch up establish. It
+    // keeps the order connection to each instance while that connection is open, so a request to
+    // catch up from either engine is always recognised (BUG-0108). See EngineOrderRouting.hpp.
+    EngineOrderRouting engine_routing_;
 
     // ConnectionIDs of the outbound peer and arbiter connections.
     pubsub_itc_fw::ConnectionID peer_conn_id_;
@@ -432,32 +424,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // When a promoted ME-secondary sends MePositionRequest on its order connection,
     // the sequencer walks the WAL from the ME's last-applied seq_no to the WAL head,
     // streaming each NOS/OCR to that connection, then sends MePositionAck. After the
-    // ack the ME is live and new orders flow to it via me_outbound_order_conn_id_.
+    // ack the ME is live and new orders flow to it via engine_routing_.active().
     //
     // me_catchup_conn_id_ tracks the connection currently in catch-up so the handler
     // can stream to a specific ConnectionID rather than the buffered replay path.
     pubsub_itc_fw::ConnectionID me_catchup_conn_id_;
-
-    // The epoch of the most recent matching-engine RoleAnnouncement believed. An announcement
-    // quoting an older epoch is from an instance whose leadership has since been superseded
-    // and is refused, so a rejoining engine cannot take routing back from the one that
-    // replaced it. Starts at -1 so that a first announcement at epoch 0 is accepted.
-    // See docs/availability/design_notes.md#ha_arbiter_only_arbitrates.
-    int32_t me_announced_epoch_{-1};
-
-    // Which instance last announced leadership. Kept because the announcement can arrive
-    // before this sequencer's order connection to that instance exists: a restarted engine
-    // announces on its ER connection, which it opens, while the order connection is one this
-    // sequencer opens to it and may not have re-established yet. Without remembering, routing
-    // is left pointing at the connection to the process that just died.
-    int64_t me_announced_leader_instance_{0};
-
-    // The sequencer's own ORDER connection to each matching engine instance, so that a
-    // RoleAnnouncement -- which names an instance and arrives on that instance's ER
-    // connection, a different socket entirely -- can be mapped to the socket orders actually
-    // travel on. Routing orders down the connection an announcement arrived on sends them the
-    // wrong way, which is what the first version of this did.
-    std::unordered_map<int64_t, pubsub_itc_fw::ConnectionID> me_order_conn_by_instance_;
 
     // Primary is always instance 1 and secondary always 2; the ids are fixed for the life of
     // a deployment and the arbiter's cold-start preference relies on it. Which of them LEADS

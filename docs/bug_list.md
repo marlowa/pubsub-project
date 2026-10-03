@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 111 |
-| Open | 43 (29 defects, 14 tasks) |
-| Closed | 68 |
+| Open | 42 (28 defects, 14 tasks) |
+| Closed | 69 |
 | Next id | BUG-0112 |
 
 ## Open bugs by severity
 
-15 high, 23 medium, 5 low.
+14 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -27,7 +27,6 @@
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
-| [BUG-0108](#bug_0108) | high | defect | A following sequencer forgets the leading matching engine, and when it leads the venue has no engine |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -176,38 +175,6 @@ a sustained load with a follower connected and require the set to stay small.
 ---
 
 
-### BUG-0108: A following sequencer forgets the leading matching engine, and when it leads the venue has no engine {#bug_0108}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | The same unstable start as [BUG-0107](#bug_0107), followed in the sequencer's log |
-| Impact | The leading sequencer defers every order, then refuses all orders and cancels, while a matching engine is leading and asking to catch up. Nothing recovers it until the venue is restarted |
-
-**What happened**, from the secondary sequencer's log, while it was a follower:
-
-1. Its connection 5 went to the primary matching engine, recorded as the engine order connection, and
-   connection 6 to the secondary engine, recorded as the standby.
-2. While the matching engines' leases churned, the secondary engine asked to catch up on connection 6.
-   A follower does not serve a catch-up, but it makes that connection its engine order connection and
-   clears the standby (`handle_me_position_request`, *"re-pointed ME order connection"*). From then on
-   nothing refers to connection 5.
-3. The secondary engine announced that it was a follower, so connection 6 was withdrawn from order
-   routing: *"this sequencer knows of no leader to hand it"*.
-4. The secondary sequencer then took the lead, and the primary engine led and asked to catch up on
-   connection 5, twenty-seven times. A request on a connection that is neither the engine order
-   connection nor the standby is dropped without a word, so it was never answered. The sequencer
-   logged *"no matching engine reachable"*, deferred 4,478 orders for 45 seconds and then refused
-   every order and cancel.
-
-**What closing it needs.** The sequencer must keep every connection it holds to a matching engine,
-whatever role it holds and whatever the engines announce, and route to whichever engine leads. A
-request to catch up from a connected engine must never be dropped silently. A scenario must churn the
-engines' leadership while a sequencer follows, then promote it, and require the venue to trade.
-
----
 
 ### BUG-0109: The FIX gateway's health line counts cancel reports as answered orders {#bug_0109}
 
@@ -2612,6 +2579,49 @@ Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085
 
 ## Closed
 
+### BUG-0108: A following sequencer forgets the leading matching engine, and when it leads the venue has no engine {#bug_0108}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-03 -- the sequencer keeps its order connection to each engine while it is open, and accepts a request to catch up on either |
+| How | The same unstable start as [BUG-0107](#bug_0107), followed in the sequencer's log |
+| Impact | The leading sequencer defers every order, then refuses all orders and cancels, while a matching engine is leading and asking to catch up. Nothing recovers it until the venue is restarted |
+
+**What happened**, from the secondary sequencer's log, while it was a follower:
+
+1. Its connection 5 went to the primary matching engine, recorded as the engine order connection, and
+   connection 6 to the secondary engine, recorded as the standby.
+2. While the matching engines' leases churned, the secondary engine asked to catch up on connection 6.
+   A follower does not serve a catch-up, but it makes that connection its engine order connection and
+   clears the standby (`handle_me_position_request`, *"re-pointed ME order connection"*). From then on
+   nothing refers to connection 5.
+3. The secondary engine announced that it was a follower, so connection 6 was withdrawn from order
+   routing: *"this sequencer knows of no leader to hand it"*.
+4. The secondary sequencer then took the lead, and the primary engine led and asked to catch up on
+   connection 5, twenty-seven times. A request on a connection that is neither the engine order
+   connection nor the standby is dropped without a word, so it was never answered. The sequencer
+   logged *"no matching engine reachable"*, deferred 4,478 orders for 45 seconds and then refused
+   every order and cancel.
+
+**What was fixed.** The routing decisions moved into `EngineOrderRouting`
+(`applications/sequencer/EngineOrderRouting.hpp`), which keeps the sequencer's order connection to each
+engine instance for as long as that connection is open and works the standby out from them instead of
+storing it in a slot that could be overwritten. A request to catch up is accepted on the order
+connection to either engine, whichever carries orders at the moment.
+
+**How it is checked.** `EngineOrderRoutingTest` replays the sequence from the incident log step by step
+and requires the engine on connection 5 still to be recognised when it asks to catch up, and then to
+carry orders; four more tests cover a follower handing orders to the known leader (BUG-0077), an engine
+that announced leadership before its connection opened, an announcement behind the accepted epoch, and
+a lost connection. The class is new, so there is no earlier version of it to show the incident test
+failing against. A scenario reproducing the incident was not written: it needs the engines' leases to
+churn in a particular order while a sequencer follows, which a scenario cannot arrange reliably.
+Scenarios 1, 12, 13, 16, 21, 54, 59 and 60 pass.
+
+---
 ### BUG-0107: The arbiters stall for seconds at a time, and every pair loses its leader {#bug_0107}
 
 | | |

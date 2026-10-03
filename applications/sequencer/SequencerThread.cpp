@@ -77,7 +77,6 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , order_inbound_svc_("inbound:" + std::to_string(config.listen_port))
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , wal_subscriber_inbound_svc_("inbound:" + std::to_string(config.wal_subscriber_listen_port))
-    , me_outbound_order_conn_id_{}
     , peer_conn_id_{}
     , peer_inbound_conn_id_{}
     , arbiter_primary_conn_id_{}
@@ -316,20 +315,15 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         // one that leads: after a failover the promoted secondary holds leadership, and a
         // restarting primary that took this slot would be sent orders it discards as a
         // follower. Its RoleAnnouncement decides, not the fact that it dialled in.
-        me_order_conn_by_instance_[me_primary_instance_id] = id;
-        if (me_announced_leader_instance_ == me_primary_instance_id) {
-            // This instance told us it leads, before we had a way of reaching it. Now we do.
-            me_outbound_order_conn_id_ = id;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: order connection {} to matching engine instance {}, which had already announced leadership -- routing there",
-                       id.get_value(), me_primary_instance_id);
-        } else if (!me_outbound_order_conn_id_.is_valid()) {
-            me_outbound_order_conn_id_ = id;
+        engine_routing_.connected(me_primary_instance_id, id, ClaimIfNothingRoutedFlag{ClaimIfNothingRoutedFlag::ClaimIfNothingRouted});
+        if (engine_routing_.active() == id) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: order connection {} to matching engine instance {} carries orders{}",
+                       id.get_value(), me_primary_instance_id,
+                       engine_routing_.announced_leader() == me_primary_instance_id ? ", because it had already announced that it leads" : "");
         } else {
-            me_secondary_standby_conn_id_ = id;
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: matching engine connection {} established while connection {} is already active -- held as standby pending its role",
-                       id.get_value(), me_outbound_order_conn_id_.get_value());
+                       id.get_value(), engine_routing_.active().get_value());
         }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: matching engine order connection {} established", id.get_value());
         if (config_.replay_mode) {
@@ -337,10 +331,8 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
             try_dispatch_replay();
         }
     } else if (svc == "matching_engine_secondary") {
-        me_secondary_standby_conn_id_ = id;
-        me_order_conn_by_instance_[me_secondary_instance_id] = id;
-        if (me_announced_leader_instance_ == me_secondary_instance_id) {
-            me_outbound_order_conn_id_ = id;
+        engine_routing_.connected(me_secondary_instance_id, id, ClaimIfNothingRoutedFlag{ClaimIfNothingRoutedFlag::DoNotClaimIfNothingRouted});
+        if (engine_routing_.active() == id) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: order connection {} to matching engine instance {}, which had already announced leadership -- routing there",
                        id.get_value(), me_secondary_instance_id);
@@ -382,7 +374,7 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
     // arrive. The first version noticed recovery only on the forward path, so a venue that
     // recovered while nothing was trading never said so -- the operator was left with the last
     // warning and silence, which is the shape of the defect this is fixing.
-    if (me_outbound_order_conn_id_.is_valid()) {
+    if (engine_routing_.active().is_valid()) {
         note_matching_engine_reachable();
     }
 }
@@ -393,13 +385,16 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", lost_gateway->first,
                    id.get_value(), reason);
         gateway_conn_ids_.erase(lost_gateway);
-    } else if (id == me_outbound_order_conn_id_) {
-        me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: matching engine order connection {} lost: {} -- ME-secondary may promote and reconnect", id.get_value(), reason);
-    } else if (id == me_secondary_standby_conn_id_) {
-        me_secondary_standby_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ME-secondary standby connection {} lost: {}", id.get_value(), reason);
+    } else if (engine_routing_.is_engine_connection(id)) {
+        const bool carried_orders = engine_routing_.active() == id;
+        engine_routing_.lost(id);
+        if (carried_orders) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: matching engine order connection {} lost: {} -- the other engine may promote and reconnect", id.get_value(), reason);
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: standby matching engine connection {} lost: {}", id.get_value(),
+                       reason);
+        }
     } else if (id == arbiter_primary_conn_id_) {
         arbiter_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: arbiter-primary connection {} lost: {}", id.get_value(), reason);
@@ -452,13 +447,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
-    // ME failover reconciliation (Slice D): a promoted ME-secondary sends
-    // MePositionRequest over the sequencer's connection to trigger WAL catch-up.
-    // In normal operation the request arrives on the pre-warmed standby
-    // connection (me_secondary_standby_conn_id_); accept it on either the active
-    // or standby ME connection for robustness.
-    if (message.pdu_id() == pubsub_itc_fw_app::MePositionRequest::message_pdu_id &&
-        (conn_id == me_outbound_order_conn_id_ || conn_id == me_secondary_standby_conn_id_)) {
+    // A matching engine asking to be brought up to date before it acts. Accepted on this
+    // sequencer's order connection to either engine, whichever carries orders at the moment: an
+    // engine that is about to lead may be on either, and a request dropped because routing pointed
+    // elsewhere left the venue with no engine while one was leading and asking (BUG-0108).
+    if (message.pdu_id() == pubsub_itc_fw_app::MePositionRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
         handle_me_position_request(conn_id, message);
         release_pdu_payload(message);
         return;
@@ -652,7 +645,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         }
 
         // Sent at once: no follower is connected, or the leader is running as if alone.
-        if (me_outbound_order_conn_id_.is_valid()) {
+        if (engine_routing_.active().is_valid()) {
             // Reachable again. Anything deferred is recovered by the catch-up the arriving engine
             // performs before it acts, and an operator wants one line saying what the outage cost.
             note_matching_engine_reachable();
@@ -660,7 +653,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             // A member is waiting for this: it is the order on its way to be matched. The
             // replication and subscriber sends below are deliberately not marked -- nobody is
             // waiting on a client connection for any of them.
-            send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope,
+            send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope,
                      pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
 
             // Immediately after the send rather than before it, so that order_in to order_out
@@ -1374,7 +1367,7 @@ void SequencerThread::dispatch_replay_records() {
             seq_no_to_session_[view.seq_no] = origin;
         }
 
-        send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, record.seq_no, envelope);
+        send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, record.seq_no, envelope);
         ++dispatched;
     }
 
@@ -1558,14 +1551,14 @@ void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord
 }
 
 void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) {
-    if (!me_outbound_order_conn_id_.is_valid()) {
+    if (!engine_routing_.active().is_valid()) {
         // Recovered by the catch-up whichever engine acts next performs before it acts, exactly as
         // an order deferred on arrival is.
         note_order_deferred(held.envelope.seq_no);
         return;
     }
     note_matching_engine_reachable();
-    send_pdu(me_outbound_order_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.envelope.seq_no, held.envelope,
+    send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, held.envelope.seq_no, held.envelope,
              pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
     if (held.envelope.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
         order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, held.envelope.has_gateway_ingress_ns, held.envelope.gateway_ingress_ns,
@@ -2450,82 +2443,46 @@ void SequencerThread::handle_role_announcement(const pubsub_itc_fw::ConnectionID
         return;
     }
 
-    // The epoch is what makes a claim safe to believe. An instance whose leadership has been
-    // superseded still believes it leads until something tells it otherwise, and it may well
-    // announce that on reconnecting; its epoch is behind the one the arbiter has since issued,
-    // so the claim is refused without the sequencer having to ask the arbiter anything.
-    if (announcement.epoch < me_announced_epoch_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: RoleAnnouncement from instance {} on connection {} quotes epoch {}, behind the {} already accepted -- refusing",
-                   announcement.instance_id, conn_id.get_value(), announcement.epoch, me_announced_epoch_);
-        return;
-    }
-    me_announced_epoch_ = announcement.epoch;
-
-    // The announcement arrives on the announcing instance's ER connection, which is not the
-    // socket orders travel on. Look up this sequencer's own order connection to that instance:
-    // routing orders down the connection an announcement arrived on sends them the wrong way.
-    if (announcement.current_role == pubsub_itc_fw_app::Role::leader) {
-        me_announced_leader_instance_ = announcement.instance_id;
-    }
-
-    const auto order_conn = me_order_conn_by_instance_.find(announcement.instance_id);
-    if (order_conn == me_order_conn_by_instance_.end()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: matching engine instance {} announced role at epoch {} but this sequencer holds no order connection to it",
-                   announcement.instance_id, announcement.epoch);
-        return;
-    }
-
-    if (announcement.current_role == pubsub_itc_fw_app::Role::leader) {
-        me_announced_leader_instance_ = announcement.instance_id;
-        if (order_conn->second != me_outbound_order_conn_id_) {
-            // Whatever was in the order slot is not the leader, so it becomes the standby.
-            me_secondary_standby_conn_id_ = me_outbound_order_conn_id_;
-            me_outbound_order_conn_id_ = order_conn->second;
+    // The epoch is what makes a claim safe to believe: an instance whose leadership has been
+    // superseded may still announce that it leads, and its epoch is behind the one already accepted.
+    // The announcement arrives on the announcing instance's ER connection, which is not the socket
+    // orders travel on; EngineOrderRouting maps the instance to this sequencer's own order connection.
+    const int32_t accepted_epoch = engine_routing_.announced_epoch();
+    switch (engine_routing_.announced(announcement.instance_id, announcement.current_role, announcement.epoch)) {
+        case EngineOrderRouting::AnnouncementOutcome::RefusedAsBehind:
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: RoleAnnouncement from instance {} on connection {} quotes epoch {}, behind the {} already accepted -- refusing",
+                       announcement.instance_id, conn_id.get_value(), announcement.epoch, accepted_epoch);
+            break;
+        case EngineOrderRouting::AnnouncementOutcome::NoOrderConnection:
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: matching engine instance {} announced role at epoch {} but this sequencer holds no order connection to it",
+                       announcement.instance_id, announcement.epoch);
+            break;
+        case EngineOrderRouting::AnnouncementOutcome::RoutedToLeader:
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: matching engine instance {} leads at epoch {} -- orders now route to connection {}", announcement.instance_id,
-                       announcement.epoch, order_conn->second.get_value());
-        }
-        return;
-    }
-
-    // An instance that says it follows is no longer the leader this sequencer knows of, whatever
-    // it announced before. Left standing, that record would route orders to an instance that has
-    // just disclaimed the role.
-    if (me_announced_leader_instance_ == announcement.instance_id) {
-        me_announced_leader_instance_ = 0;
-    }
-
-    // A follower must not be sent orders: it drops them. If it is holding the order slot --
-    // which is what happens when a restarted primary reconnects on the service it is
-    // configured for -- it must come out of that slot.
-    if (order_conn->second == me_outbound_order_conn_id_) {
-        me_secondary_standby_conn_id_ = order_conn->second;
-
-        // Hand the slot to the instance last known to lead, where that is somebody else and this
-        // sequencer holds an order connection to it. Emptying the slot instead leaves orders with
-        // nowhere to go until an announcement arrives, and a leader announces only on a role
-        // change or on a new connection -- neither of which a follower's announcement causes. In
-        // ha_test.py scenario 54 the slot stayed empty for the rest of the run while a perfectly
-        // healthy leader sat beside it. See BUG-0077.
-        const auto leader_conn =
-            me_announced_leader_instance_ != 0 ? me_order_conn_by_instance_.find(me_announced_leader_instance_) : me_order_conn_by_instance_.end();
-        if (leader_conn != me_order_conn_by_instance_.end() && leader_conn->second.is_valid()) {
-            me_outbound_order_conn_id_ = leader_conn->second;
+                       announcement.epoch, engine_routing_.active().get_value());
+            break;
+        case EngineOrderRouting::AnnouncementOutcome::AlreadyRoutedToLeader:
+        case EngineOrderRouting::AnnouncementOutcome::FollowerNotCarryingOrders:
+            break;
+        case EngineOrderRouting::AnnouncementOutcome::FollowerHandedToLeader:
+            // Handed to the instance last known to lead rather than left empty: a leader announces
+            // only on a change of role or a new connection, and neither follows a follower's
+            // announcement, so an emptied slot would stay empty beside a healthy leader (BUG-0077).
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- order routing handed to instance {} on "
                        "connection {}, which is the leader this sequencer knows of",
-                       announcement.instance_id, order_conn->second.get_value(), announcement.epoch, me_announced_leader_instance_,
-                       leader_conn->second.get_value());
-            return;
-        }
-
-        me_outbound_order_conn_id_ = pubsub_itc_fw::ConnectionID{};
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- withdrawn from order routing, and this "
-                   "sequencer knows of no leader to hand it to. Orders are refused until one announces",
-                   announcement.instance_id, order_conn->second.get_value(), announcement.epoch);
+                       announcement.instance_id, conn_id.get_value(), announcement.epoch, engine_routing_.announced_leader(),
+                       engine_routing_.active().get_value());
+            break;
+        case EngineOrderRouting::AnnouncementOutcome::FollowerWithdrawnNoLeader:
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: matching engine instance {} on connection {} is a follower at epoch {} -- withdrawn from order routing, and this "
+                       "sequencer knows of no leader to hand it to. Orders are deferred until an engine leads or asks to catch up",
+                       announcement.instance_id, conn_id.get_value(), announcement.epoch);
+            break;
     }
 }
 
@@ -2553,10 +2510,7 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // wins a sequencer election it forwards to the promoted ME -- and drops the
     // request without streaming or acking.
     if (role_ != pubsub_itc_fw_app::Role::leader) {
-        if (conn_id == me_secondary_standby_conn_id_) {
-            me_secondary_standby_conn_id_ = pubsub_itc_fw::ConnectionID{};
-            me_outbound_order_conn_id_ = conn_id;
-        }
+        engine_routing_.asked_to_catch_up_while_following(conn_id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: MePositionRequest on connection {} but I am follower -- re-pointed ME order connection, not serving catch-up",
                    conn_id.get_value());
@@ -2658,10 +2612,7 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
         return;
     }
 
-    if (conn_id == me_secondary_standby_conn_id_) {
-        me_secondary_standby_conn_id_ = pubsub_itc_fw::ConnectionID{};
-    }
-    me_outbound_order_conn_id_ = conn_id;
+    engine_routing_.caught_up_to_lead(conn_id);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: ME order connection promoted to {} -- sequenced orders now route to the caught-up ME", conn_id.get_value());
 
