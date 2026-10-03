@@ -79,6 +79,15 @@ vote of just one other voter: either its peer or the third voter.
    expiry only makes the restarted instance stricter. If a promise cannot be written, it is not made: the instance
    refuses the request.
 
+   The file is written and synced on a thread of its own (`BackgroundPromiseRecorder`), not on the thread that
+   handles leases. When fewer than five seconds remain between the promise's expiry and the record's, a fresh record
+   is written in the background, so in normal operation it is on disk seconds before it is needed and the lease
+   thread never waits for the disk. The lease thread writes a record itself, and waits for it, only when the record
+   it holds does not cover the promise it is about to make: when it first promises its vote to an instance, or when
+   a background write has not finished in those five seconds. A sync that takes seconds therefore no longer stops an
+   instance answering lease requests ([BUG-0107](../bug_list.md#bug_0107)). Any write that takes 50 milliseconds or
+   more is logged with how long it took.
+
    Each arbiter keeps such a record for its own lease, the one deciding which arbiter is active, so a supervised
    restart of the active arbiter does not make the other one active. An arbiter keeps no record of its votes for the
    components, so an arbiter that becomes active still waits before granting any component a lease. The witness and

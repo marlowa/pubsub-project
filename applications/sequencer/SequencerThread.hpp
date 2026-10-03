@@ -27,6 +27,7 @@
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
+#include "BackgroundPromiseRecorder.hpp"
 #include "EpochStore.hpp"
 #include "GatewayIds.hpp"
 #include "LeaseLinksInterface.hpp"
@@ -212,6 +213,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // Where this instance's promises in deciding which instance leads outlive the process, until
     // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
     fix_common::LeasePromiseStore lease_promise_store_;
+    // Writes promise records on a thread of its own, so that refreshing one does not stop this
+    // instance answering lease requests while the disk is written (BUG-0107). Declared after the
+    // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
+    std::optional<fix_common::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // How the lease rules reach the other two voters in deciding which sequencer leads: the peer
     // sequencer, and the arbiter pool on both arbiter connections.

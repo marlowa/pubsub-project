@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 
 namespace fix_common {
 
@@ -28,6 +29,30 @@ class LeasePromiseRecorderInterface {
      * @return true when the record reached the disk. When it did not, the caller must not grant the lease.
      */
     [[nodiscard]] virtual bool record(int64_t promised_to, std::chrono::steady_clock::time_point until) = 0;
+
+    /**
+     * @brief Start writing a record without waiting for it, if this recorder can.
+     *
+     * Lets the thread that handles leases refresh a record well before it is needed, so that it does
+     * not stop answering lease requests while the disk is written (BUG-0107). The record must not be
+     * relied on until background_result() has reported it written. A recorder that cannot write in
+     * the background returns false and the caller writes with record() when it must.
+     *
+     * @return true when the write was started; false when it was not, and nothing was asked for.
+     */
+    [[nodiscard]] virtual bool record_in_background(int64_t /*promised_to*/, std::chrono::steady_clock::time_point /*until*/) {
+        return false;
+    }
+
+    /**
+     * @brief The outcome of the write record_in_background() started, once it has finished.
+     *
+     * @return std::nullopt while no write has finished since the last call; otherwise true when the
+     *         record reached the disk and false when it did not. Each outcome is reported once.
+     */
+    [[nodiscard]] virtual std::optional<bool> background_result() {
+        return std::nullopt;
+    }
 };
 
 } // namespaces

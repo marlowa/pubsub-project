@@ -136,6 +136,7 @@ class PairLeaseAgent {
 
     /// Apply the lease rules. Called every LeaseTiming::tick_interval.
     [[nodiscard]] Change on_tick(Clock::time_point now) {
+        adopt_background_record();
         Change change = Change::Nothing;
         if (participant_.stop_if_lease_ran_out(now)) {
             // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
@@ -306,16 +307,69 @@ class PairLeaseAgent {
         // The record covers the promise only if it names the same instance. A record naming this
         // instance itself, left from when it led, must be replaced: read back after a restart, it would
         // let the instance ask to lead while its vote was in fact promised to the peer.
-        if (recorder_ == nullptr || (recorded_to_ == candidate_id && participant_.promise_expires_at() <= recorded_until_)) {
+        if (recorder_ == nullptr) {
+            return true;
+        }
+        adopt_background_record();
+        if (recorded_to_ == candidate_id && participant_.promise_expires_at() <= recorded_until_) {
+            refresh_in_background(candidate_id, participant_.promise_expires_at());
             return true;
         }
         const Clock::time_point until = participant_.promise_expires_at() + promise_record_margin;
+        // record() waits for any background write and discards its outcome, so it is forgotten here.
+        background_in_flight_ = false;
         if (!write_promise_record(candidate_id, until)) {
             return false;
         }
         recorded_to_ = candidate_id;
         recorded_until_ = until;
         return true;
+    }
+
+    /**
+     * @brief Take the outcome of a background write, if one has finished, as what the record now says.
+     *
+     * Called at every tick and before the record is consulted, so a finished write is adopted within
+     * one tick. A write that failed leaves the record as it was; the promise is then written on the
+     * lease thread when it is needed, as without a background writer.
+     */
+    void adopt_background_record() {
+        if (!background_in_flight_ || recorder_ == nullptr) {
+            return;
+        }
+        const std::optional<bool> outcome = recorder_->background_result();
+        if (!outcome.has_value()) {
+            return;
+        }
+        background_in_flight_ = false;
+        if (*outcome) {
+            recorded_to_ = background_promised_to_;
+            recorded_until_ = background_until_;
+        } else {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                       "{}: could not refresh the lease promise record in the background -- it will be written when it is needed", owner_name_);
+        }
+    }
+
+    /**
+     * @brief Start writing a fresh record in the background when the one held is close to no longer covering the promise.
+     *
+     * The record held still covers the promise, so nothing waits for this write. It is started when
+     * fewer than refresh_ahead remain between the promise's expiry and the record's, which is half the
+     * margin, so that in normal operation the fresh record is on disk seconds before it is needed and
+     * the lease thread never writes it itself. A recorder that cannot write in the background declines,
+     * and the record is then written on the lease thread when it is needed.
+     */
+    void refresh_in_background(int64_t promised_to, Clock::time_point expires_at) {
+        if (background_in_flight_ || recorded_until_ - expires_at > refresh_ahead) {
+            return;
+        }
+        const Clock::time_point until = expires_at + promise_record_margin;
+        if (recorder_->record_in_background(promised_to, until)) {
+            background_in_flight_ = true;
+            background_promised_to_ = promised_to;
+            background_until_ = until;
+        }
     }
 
     /**
@@ -356,10 +410,14 @@ class PairLeaseAgent {
         if (recorder_ == nullptr || participant_.state() != LeaseHolder::State::Leading) {
             return;
         }
+        adopt_background_record();
         if (recorded_to_ == self_id_ && participant_.lease_expires_at() <= recorded_until_) {
+            refresh_in_background(self_id_, participant_.lease_expires_at());
             return;
         }
         const Clock::time_point until = participant_.lease_expires_at() + promise_record_margin;
+        // record() waits for any background write and discards its outcome, so it is forgotten here.
+        background_in_flight_ = false;
         if (write_promise_record(self_id_, until)) {
             recorded_to_ = self_id_;
             recorded_until_ = until;
@@ -422,6 +480,11 @@ class PairLeaseAgent {
     // How far beyond the true expiry a recorded promise is written. See promise_recorded().
     static constexpr std::chrono::seconds promise_record_margin{10};
 
+    // How close the promise's expiry may come to the record's before a fresh record is written in
+    // the background: half the margin, five seconds, which leaves a write that long to finish before
+    // the lease thread would have to write it itself.
+    static constexpr std::chrono::seconds refresh_ahead{promise_record_margin / 2};
+
     // A promise record write slower than this is logged. A write normally takes well under a
     // millisecond; fifty is long enough that nothing ordinary reaches it and short enough to show
     // the writes that hold up leases.
@@ -434,6 +497,11 @@ class PairLeaseAgent {
     // instance that runs out before the expiry.
     int64_t recorded_to_{0};
     Clock::time_point recorded_until_{};
+
+    // A record being written in the background, and what it will say once written. See refresh_in_background().
+    bool background_in_flight_{false};
+    int64_t background_promised_to_{0};
+    Clock::time_point background_until_{};
 
     // Until when this instance, restarted while it led, is resuming that lead; see on_refusal().
     Clock::time_point resuming_lead_until_{};

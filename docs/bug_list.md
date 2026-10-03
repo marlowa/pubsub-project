@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 111 |
-| Open | 44 (30 defects, 14 tasks) |
-| Closed | 67 |
+| Open | 43 (29 defects, 14 tasks) |
+| Closed | 68 |
 | Next id | BUG-0112 |
 
 ## Open bugs by severity
 
-16 high, 23 medium, 5 low.
+15 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -27,7 +27,6 @@
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
-| [BUG-0107](#bug_0107) | high | defect | The arbiters stall for seconds at a time, and every pair loses its leader |
 | [BUG-0108](#bug_0108) | high | defect | A following sequencer forgets the leading matching engine, and when it leads the venue has no engine |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -176,40 +175,6 @@ a sustained load with a follower connected and require the set to stay small.
 
 ---
 
-### BUG-0107: The arbiters stall for seconds at a time, and every pair loses its leader {#bug_0107}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Starting the venue with `scripts/devenv.py start` to measure latency, and finding no stable leader |
-| Impact | Each stall lets the active arbiter's lease run out. The arbiter that takes over grants no component a lease for 3 seconds, so the sequencer and matching engine pairs lose their leaders too and the venue stops trading until the leases settle. After one such period the venue was left with no matching engine at all ([BUG-0108](#bug_0108)) |
-
-**What was seen.** For 90 seconds after the venue was started, the primary arbiter's lease ran out
-seven times, at intervals of 9 to 37 seconds: *"lease ran out -- neither the peer nor the witness
-renewed it in time"*. Each time, the arbiter that became active logged *"granting no component a lease
-for 3000 ms"*, and the primary sequencer's lease ran out with it, five times in that period. Then it
-stopped, and a second start of the venue minutes later was stable from the first second.
-
-**The stall.** Before the first lapse, both arbiters' reactors logged *"callback not finished yet"*
-every half second for five seconds, from 13:37:15 to 13:37:20, and the witness's for 175 ms, in three
-separate processes at the same moment. The lease ran out as the stall ended. A stall shared by three
-processes points to a shared resource rather than to anything in one of them.
-
-**A suspected cause, not established.** The arbiters write their lease promises with `fsync`
-(`LeasePromiseStore`, and `EpochStore` likewise) from inside the lease agent's handling on the
-reactor's thread. Their files are under `installed/var` on `/mnt/sda1`, which is mounted without
-`lazytime`. Without it, writing back the venue's memory-mapped files makes the filesystem journal
-commit timestamp changes, and an `fsync` waits behind that commit; that is what
-`docs/operations/filesystem_requirements.md` and BUG-0070 describe for the sequencer's log. Showing it
-needs an arbiter thread caught waiting on the journal during a stall, for example from its kernel
-stack, and the same start repeated with `/mnt/sda1` mounted `lazytime`.
-
-**Whatever the cause,** a lease agent that can block for seconds inside the code that renews leases
-is fragile: writing a promise record should not be able to stop an arbiter answering.
-
----
 
 ### BUG-0108: A following sequencer forgets the leading matching engine, and when it leads the venue has no engine {#bug_0108}
 
@@ -2647,6 +2612,65 @@ Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085
 
 ## Closed
 
+### BUG-0107: The arbiters stall for seconds at a time, and every pair loses its leader {#bug_0107}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-03 -- the files the arbiters sync are on the lazytime device, and promise records are written on a thread of their own |
+| How | Starting the venue with `scripts/devenv.py start` to measure latency, and finding no stable leader |
+| Impact | Each stall lets the active arbiter's lease run out. The arbiter that takes over grants no component a lease for 3 seconds, so the sequencer and matching engine pairs lose their leaders too and the venue stops trading until the leases settle. After one such period the venue was left with no matching engine at all ([BUG-0108](#bug_0108)) |
+
+**What was seen.** For 90 seconds after the venue was started, the primary arbiter's lease ran out
+seven times, at intervals of 9 to 37 seconds: *"lease ran out -- neither the peer nor the witness
+renewed it in time"*. Each time, the arbiter that became active logged *"granting no component a lease
+for 3000 ms"*, and the primary sequencer's lease ran out with it, five times in that period. Then it
+stopped, and a second start of the venue minutes later was stable from the first second.
+
+**The stall.** Before the first lapse, both arbiters' reactors logged *"callback not finished yet"*
+every half second for five seconds, from 13:37:15 to 13:37:20, and the witness's for 175 ms, in three
+separate processes at the same moment. The lease ran out as the stall ended. A stall shared by three
+processes points to a shared resource rather than to anything in one of them.
+
+**A suspected cause, not established.** The arbiters write their lease promises with `fsync`
+(`LeasePromiseStore`, and `EpochStore` likewise) from inside the lease agent's handling on the
+reactor's thread. Their files are under `installed/var` on `/mnt/sda1`, which is mounted without
+`lazytime`. Without it, writing back the venue's memory-mapped files makes the filesystem journal
+commit timestamp changes, and an `fsync` waits behind that commit; that is what
+`docs/operations/filesystem_requirements.md` and BUG-0070 describe for the sequencer's log. Showing it
+needs an arbiter thread caught waiting on the journal during a stall, for example from its kernel
+stack, and the same start repeated with `/mnt/sda1` mounted `lazytime`.
+
+**Whatever the cause,** a lease agent that can block for seconds inside the code that renews leases
+is fragile: writing a promise record should not be able to stop an arbiter answering.
+
+**What was done.** Two changes, either of which addresses the suspected cause, because the stall could
+not be reproduced on demand to show which mattered:
+
+- `deploy.py` now puts all of the venue's durable state under `PUBSUB_WAL_ROOT`, the `lazytime`
+  device on the development machine: the open-order regions, the epoch files and the promise records
+  as well as every write-ahead log (commit b78c6a6). The publishers' write-ahead logs had been landing
+  under `etc/` and are now there too.
+- Promise records are written by a `BackgroundPromiseRecorder` on a thread of its own, refreshed when
+  fewer than five seconds remain before the record held stops covering the promise, so the lease
+  thread waits for the disk only when it first promises its vote to an instance or when a background
+  write has taken more than five seconds. Unit tests write each record with a 200 ms delay and require
+  no step of the lease thread to take 100 ms, with a second test showing the same delay does hold up
+  a lease thread that writes for itself.
+
+**How it would show if it came back.** Any promise record write of 50 ms or more is logged with how
+long it took. Three were seen, of 90 to 134 ms, before these changes; none in the runs since.
+
+
+**What it costs at startup (measured 2026-10-03).** A sequencer reads its whole write-ahead log when it
+opens it. With 5.5 million records in 1.4 GB, opening took 2.6 seconds with the files already in memory
+and noticeably longer straight after a build, when they were not; a sequencer then waits one lease
+period, three seconds, before asking to lead. Twice that pushed the primary past `ha_test.py`'s ten
+seconds to lead. The time grows with the log, so it will pass the few seconds a startup may take.
+
+---
 ### BUG-0110: An order deferred while no matching engine was connected was not replicated to the follower {#bug_0110}
 
 | | |

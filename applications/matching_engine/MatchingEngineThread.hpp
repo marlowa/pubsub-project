@@ -27,6 +27,7 @@
 #include <leader_follower.hpp>
 #include <matching_engine_replication.hpp>
 
+#include "BackgroundPromiseRecorder.hpp"
 #include "EpochStore.hpp"
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
@@ -347,6 +348,10 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // Where this instance's promises in deciding which instance leads outlive the process, until
     // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
     fix_common::LeasePromiseStore lease_promise_store_;
+    // Writes promise records on a thread of its own, so that refreshing one does not stop this
+    // instance answering lease requests while the disk is written (BUG-0107). Declared after the
+    // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
+    std::optional<fix_common::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // Drives the lease rules that decide whether this instance leads. Recurring.
     pubsub_itc_fw::TimerID lease_tick_timer_id_{};

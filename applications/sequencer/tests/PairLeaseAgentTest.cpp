@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <BackgroundPromiseRecorder.hpp>
 #include <LeaseLinksInterface.hpp>
 #include <LeasePromiseRecorderInterface.hpp>
 #include <LeasePromiseStore.hpp>
@@ -56,17 +59,24 @@ struct Outbox : public fix_common::LeaseLinksInterface {
     }
 };
 
-// Keeps promises in memory, as a disk would across a process restart.
+// Keeps promises in memory, as a disk would across a process restart. With a delay, each record takes
+// that long to write, as on a disk whose sync is slow.
 struct KeptPromises : public fix_common::LeasePromiseRecorderInterface {
     int64_t promised_to{0};
     Clock::time_point until{};
     bool recorded_anything{false};
     bool fail{false};
+    std::chrono::milliseconds delay{0};
+    std::atomic<int> records_written{0};
 
     bool record(int64_t to, Clock::time_point when) override {
+        if (delay.count() > 0) {
+            std::this_thread::sleep_for(delay);
+        }
         if (fail) {
             return false;
         }
+        ++records_written;
         promised_to = to;
         until = when;
         recorded_anything = true;
@@ -492,4 +502,91 @@ TEST_F(PairLeaseAgentTest, AFormerLeaderRestartedWithItsRecordDoesNotDisturbAPee
         ASSERT_TRUE(agents_[1]->acting(now_)) << "the peer lost its lead at step " << i;
     }
     EXPECT_FALSE(agents_[0]->acting(now_));
+}
+
+// A record that takes 200 ms to write, as on a disk whose sync has slowed. Written in the background,
+// it never holds up the thread handling leases, and the leader keeps its lease throughout (BUG-0107).
+// Each step is paced in real time, so that background writes have real time in which to finish.
+TEST_F(PairLeaseAgentTest, ASlowRecordWrittenInTheBackgroundDoesNotHoldUpTheLeaseThread) {
+    kept_[0].delay = std::chrono::milliseconds{200};
+    kept_[1].delay = std::chrono::milliseconds{200};
+    int records_before_measuring = 0;
+    std::chrono::steady_clock::duration longest_step{};
+    {
+        fix_common::BackgroundPromiseRecorder background_0(kept_[0]);
+        fix_common::BackgroundPromiseRecorder background_1(kept_[1]);
+        agents_[0]->keep_promises_in(background_0, std::nullopt, now_);
+        agents_[1]->keep_promises_in(background_1, std::nullopt, now_);
+        // The first records are written on the lease thread, because nothing is on disk yet.
+        for (int i = 0; i < 60; ++i) {
+            step();
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        ASSERT_TRUE(agents_[0]->acting(now_));
+        records_before_measuring = kept_[0].records_written + kept_[1].records_written;
+        for (int i = 0; i < 300; ++i) {
+            const auto started = std::chrono::steady_clock::now();
+            step();
+            longest_step = std::max(longest_step, std::chrono::steady_clock::now() - started);
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+        EXPECT_TRUE(agents_[0]->acting(now_));
+    }
+    EXPECT_LT(longest_step, std::chrono::milliseconds{100}) << "a step of the lease thread waited for a record to be written";
+    EXPECT_GE(kept_[0].records_written + kept_[1].records_written - records_before_measuring, 4)
+        << "the records were not refreshed in the background while the leader renewed";
+    EXPECT_EQ(std::count(changes_[0].begin(), changes_[0].end(), fix_common::PairLeaseAgent::Change::BecameLeader), 1);
+}
+
+// The same slow record written on the lease thread does hold it up. This is what makes the test above
+// mean something: its measure of the longest step does see a write that blocks.
+TEST_F(PairLeaseAgentTest, WithoutABackgroundWriterASlowRecordHoldsUpTheLeaseThread) {
+    kept_[0].delay = std::chrono::milliseconds{200};
+    kept_[1].delay = std::chrono::milliseconds{200};
+    keep_promises();
+    for (int i = 0; i < 60; ++i) {
+        step();
+    }
+    std::chrono::steady_clock::duration longest_step{};
+    for (int i = 0; i < 300; ++i) {
+        const auto started = std::chrono::steady_clock::now();
+        step();
+        longest_step = std::max(longest_step, std::chrono::steady_clock::now() - started);
+    }
+    EXPECT_GE(longest_step, std::chrono::milliseconds{150});
+}
+
+// A record written on the lease thread while a background write is in progress waits for it, and the
+// record it writes is the one left on disk; the background write's outcome is not reported afterwards.
+TEST(BackgroundPromiseRecorderTest, ARecordWrittenAtOnceWaitsForTheBackgroundWriteAndReplacesIt) {
+    KeptPromises store;
+    store.delay = std::chrono::milliseconds{300};
+    {
+        fix_common::BackgroundPromiseRecorder recorder(store);
+        ASSERT_TRUE(recorder.record_in_background(2, Clock::time_point{std::chrono::seconds{10}}));
+        EXPECT_FALSE(recorder.record_in_background(2, Clock::time_point{std::chrono::seconds{11}})) << "a second background write was started";
+        const auto started = std::chrono::steady_clock::now();
+        ASSERT_TRUE(recorder.record(1, Clock::time_point{std::chrono::seconds{20}}));
+        EXPECT_GE(std::chrono::steady_clock::now() - started, std::chrono::milliseconds{500}) << "the write at once did not wait for the background one";
+        EXPECT_FALSE(recorder.background_result().has_value());
+    }
+    EXPECT_EQ(store.promised_to, 1);
+    EXPECT_EQ(store.until, Clock::time_point{std::chrono::seconds{20}});
+    EXPECT_EQ(store.records_written, 2);
+}
+
+// A background write that fails is reported as failed, once.
+TEST(BackgroundPromiseRecorderTest, AFailedBackgroundWriteIsReportedOnce) {
+    KeptPromises store;
+    store.fail = true;
+    fix_common::BackgroundPromiseRecorder recorder(store);
+    ASSERT_TRUE(recorder.record_in_background(1, Clock::time_point{std::chrono::seconds{10}}));
+    std::optional<bool> outcome;
+    for (int i = 0; i < 200 && !outcome.has_value(); ++i) {
+        outcome = recorder.background_result();
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    ASSERT_TRUE(outcome.has_value());
+    EXPECT_FALSE(*outcome);
+    EXPECT_FALSE(recorder.background_result().has_value());
 }

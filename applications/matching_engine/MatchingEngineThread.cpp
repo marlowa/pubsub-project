@@ -278,7 +278,8 @@ void MatchingEngineThread::on_app_ready_event() {
         const int64_t self_id = static_cast<int64_t>(config_.instance_id);
         lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::matching_engine, self_id,
                              peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_);
-        lease_agent_->keep_promises_in(lease_promise_store_, lease_promise_store_.load(), std::chrono::steady_clock::now());
+        background_promise_recorder_.emplace(lease_promise_store_);
+        lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), std::chrono::steady_clock::now());
         lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,

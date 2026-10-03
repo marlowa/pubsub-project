@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
+#include <BackgroundPromiseRecorder.hpp>
 #include <LeaseLinksInterface.hpp>
 #include <LeasePromiseStore.hpp>
 #include <PairLeaseAgent.hpp>
@@ -105,6 +106,10 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // Where this arbiter's promise in deciding which arbiter is active outlives the process, until the
     // machine reboots.
     fix_common::LeasePromiseStore lease_promise_store_;
+    // Writes promise records on a thread of its own, so that refreshing one does not stop this
+    // instance answering lease requests while the disk is written (BUG-0107). Declared after the
+    // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
+    std::optional<fix_common::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // The instance last granted a lease in each group, so that a change of leader is logged and a
     // renewal is not.
