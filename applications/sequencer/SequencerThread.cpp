@@ -537,6 +537,19 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
+        // A follower writes its log only from its leader's records, so that the two logs stay
+        // identical, and numbers nothing itself. It discards the gateway's copy here, before a
+        // number is taken: counting these copies in next_sequence_number_ is what left a newly
+        // promoted follower numbering below records its log already held (BUG-0105).
+        if (role_ == pubsub_itc_fw_app::Role::follower) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "SequencerThread: order envelope on connection {} inner_pdu_id={} -- follower, discarding the gateway's copy; the log is "
+                       "written from the leader's records",
+                       message.connection_id().get_value(), inner_pdu_id);
+            release_pdu_payload(message);
+            return;
+        }
+
         const int64_t seq = next_sequence_number_++;
         const int64_t wall_time_ns = config_.wall_clock->now_ns();
 
@@ -573,20 +586,13 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.has_gateway_ingress_ns = inbound.has_gateway_ingress_ns;
         envelope.gateway_ingress_ns = inbound.gateway_ingress_ns;
 
-        // WAL commit: only the leader appends from the direct gateway PDU. Followers
-        // write their WAL exclusively via WalRecord from the leader, keeping WALs
-        // byte-identical. An instance that has not yet learnt its role appends locally
-        // because it may become the leader.
-        if (role_ != pubsub_itc_fw_app::Role::follower) {
-            append_envelope_to_wal(envelope);
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                       "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
-                       message.connection_id().get_value(), inner_pdu_id, seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
-        } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                       "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- follower, WAL written via WalRecord",
-                       message.connection_id().get_value(), inner_pdu_id, seq);
-        }
+        // WAL commit: the leader appends from the direct gateway PDU. A follower has already
+        // returned above. An instance that has not yet learnt its role appends locally because
+        // it may become the leader.
+        append_envelope_to_wal(envelope);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
+                   message.connection_id().get_value(), inner_pdu_id, seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
 
         if (role_ != pubsub_itc_fw_app::Role::leader) {
             // Follower/unknown: do not forward to ME.
@@ -1014,6 +1020,18 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     role_ = new_role;
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
+        // Number new records above every record the log holds. Records replicated while this
+        // instance followed were written under its leader's numbers and did not move
+        // next_sequence_number_, so without this the new leader would give new records numbers
+        // its log already holds (BUG-0105).
+        const int64_t highest_replicated = highest_replicated_seq_no_.load(std::memory_order_acquire);
+        if (highest_replicated >= next_sequence_number_) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: taking the lead -- numbering new records from {}, above the highest replicated record {} (was {})",
+                       highest_replicated + 1, highest_replicated, next_sequence_number_);
+            next_sequence_number_ = highest_replicated + 1;
+        }
+
         // Tell the gateways where this venue now stands on accepting orders. They may be holding
         // what the previous leader last said, which was true of a process that is no longer
         // running. This instance has deferred nothing, so it accepts -- but that has to be said
@@ -1402,6 +1420,7 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
     // so the follower WAL is byte-identical to the leader's. (view is decoded only to
     // read seq_no + wall_time_ns for the append header and the WalAck.)
     append_to_wal(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, message.payload(), message.payload_size(), view.wall_time_ns);
+    note_replicated_record(view.seq_no);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: WalRecord seq={} inner_pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
                wal_.record_count());
@@ -1409,6 +1428,13 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
     pubsub_itc_fw_app::WalAck wal_ack{};
     wal_ack.seq_no = view.seq_no;
     send_pdu(conn_id, pubsub_itc_fw_app::WalAck::message_pdu_id, 0, wal_ack);
+}
+
+void SequencerThread::note_replicated_record(int64_t seq_no) {
+    int64_t highest = highest_replicated_seq_no_.load(std::memory_order_relaxed);
+    while (seq_no > highest && !highest_replicated_seq_no_.compare_exchange_weak(highest, seq_no, std::memory_order_release, std::memory_order_relaxed)) {
+        // compare_exchange_weak has reloaded highest; try again while seq_no is still the larger.
+    }
 }
 
 void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message) {
@@ -1469,6 +1495,7 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
             // Option B: persist the received WalRecord bytes verbatim (record pdu_id =
             // WalRecord) so leader and follower WALs stay byte-identical.
             append_to_wal(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, static_cast<int>(size), view.wall_time_ns);
+            note_replicated_record(view.seq_no);
 
             pubsub_itc_fw_app::WalAck wal_ack{};
             wal_ack.seq_no = view.seq_no;

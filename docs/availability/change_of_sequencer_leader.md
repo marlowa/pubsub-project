@@ -110,13 +110,18 @@ A follower moves its counter past every record it writes, whether that record ca
 in the ordinary stream or arrived any other way. A sequencer that takes the lead numbers from the
 highest record it holds plus one.
 
-As a second line of defence, the matching engine refuses to act on a command whose sequence number is
-not greater than the last it applied, logs the refusal as an error naming both numbers, and asks the
-leading sequencer for its position as it does after a promotion. A numbering fault then shows as a
-refusal in a log rather than as a book that silently disagrees with the record.
-
 There is no real alternative to weigh here; this part is a correction. It is independent of the rest
 and is the first thing to implement.
+
+**A guard in the matching engine belongs with 4.2, not here.** As a second line of defence, the
+matching engine could refuse a live command whose sequence number is not greater than the last it
+applied, and log the refusal as an error naming both numbers, so that a numbering fault showed as a
+refusal rather than as a book that silently disagrees with the record. But until 4.2 is built, the
+race it describes can leave the engine holding commands numbered above the new leader's last record,
+and the new leader's next commands would then be numbered at or below what the engine applied. The
+guard would refuse those: genuine orders, dropped with nothing sent to the member, which is worse than
+the fault it guards against. Under 4.2 option A the engine never applies a command the follower does
+not hold, so the case cannot arise, and the guard is added then.
 
 ### 4.2 The matching engine acts only on what the logs hold (G2)
 
@@ -336,7 +341,8 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    corrects a defect present at every change of leader.
 2. **Measure 4.2 option A** in a build that changes only that, before deciding between options A
    and B. The change is kept only if option A is chosen.
-3. **4.2,** the chosen option. Scenario 59 then passes and its expected failure is removed.
+3. **4.2,** the chosen option, with the matching engine's guard described under 4.1. Scenario 59 then
+   passes and its expected failure is removed.
 4. **4.4,** the follower keeping reports, with the new reports scenario.
 5. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
    scenario 1 strengthened. This is the largest part, and it closes the gap the specification records

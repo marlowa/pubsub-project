@@ -199,6 +199,7 @@ import os
 import re
 import secrets
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -812,6 +813,11 @@ class Scenario(NamedTuple):
     # assert that the matching engine does not hold an order the new leader's log does not hold.
     # See run_scenario's "unreplicated orders" block.
     assert_engine_holds_only_logged_orders: bool = False
+    # When True, note where the secondary sequencer's write-ahead log ends before Phase 4, and
+    # after the scenario require every record written since, read from the log files, to carry a
+    # higher sequence number than the one before it (BUG-0105). For a scenario in which the
+    # secondary takes the lead and numbers new records.
+    assert_new_leader_numbers_forward: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -1011,8 +1017,9 @@ _SCENARIOS: list[Scenario] = [
         description="Death of primary sequencer",
         expected_outcome=(
             "sequencer_secondary elected leader in ≤15 s; "
-            "recovery orders flow through the new leader"
+            "recovery orders flow through the new leader, numbered above every record its log holds"
         ),
+        assert_new_leader_numbers_forward=True,
         steps=[
             KillStep(
                 proc_name="sequencer_primary",
@@ -3435,6 +3442,7 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         block_leader_peer_sends=True,
         assert_engine_holds_only_logged_orders=True,
+        assert_new_leader_numbers_forward=True,
         expected_failure=(
             "BUG-0103 -- the matching engine accepts orders from the leading sequencer before the follower holds "
             "them, so orders the leader took just before it died are on the book and in no surviving log"
@@ -4522,6 +4530,64 @@ def count_lines_with_all(log_path: Path, *markers: str, from_byte: int = 0) -> i
     with open(log_path, "r", errors="replace") as handle:
         handle.seek(from_byte)
         return sum(1 for line in handle if all(marker in line for marker in markers))
+
+
+# The write-ahead log's entry layout, as WalWriter writes it: a 24-byte header of magic (u32),
+# payload_size (u32), record_id (i64) and eight reserved bytes, then the payload and a CRC32.
+_WAL_ENTRY_MAGIC = 0xFEEDFACE
+_WAL_ENTRY_HEADER = struct.Struct("<IIqQ")
+
+
+def wal_record_ids(wal_dir: Path, after: tuple[int, int] = (-1, -1)) -> list[tuple[tuple[int, int], int]]:
+    """The sequence numbers in a sequencer's write-ahead log, in the order the entries are written.
+
+    Returns ((segment, offset), record_id) for each entry at or after the position `after`,
+    reading each segment from its start and stopping at the first entry whose magic number is
+    wrong, which is where a segment's written part ends. The checksum is not checked: this reads
+    the numbering, and WalReader decides what is valid.
+    """
+    entries: list[tuple[tuple[int, int], int]] = []
+    for segment_path in sorted(wal_dir.glob("wal_*.log")):
+        segment = int(segment_path.stem.split("_")[1])
+        if segment < after[0]:
+            continue
+        data = segment_path.read_bytes()
+        offset = 0
+        while offset + _WAL_ENTRY_HEADER.size <= len(data):
+            magic, size, record_id, _ = _WAL_ENTRY_HEADER.unpack_from(data, offset)
+            if magic != _WAL_ENTRY_MAGIC:
+                break
+            if (segment, offset) >= after:
+                entries.append(((segment, offset), record_id))
+            offset += _WAL_ENTRY_HEADER.size + size + 4
+    return entries
+
+
+def check_new_leader_numbers_forward(wal_dir: Path, from_position: tuple[int, int]) -> None:
+    """Fail unless every record the secondary wrote after from_position is numbered above the one before it."""
+    written = wal_record_ids(wal_dir, from_position)
+    if len(written) < 2:
+        die(f"numbering: the secondary's log in {wal_dir} holds {len(written)} record(s) from the point it had reached "
+            "before the kill, so nothing numbered after the change of leader can be checked.")
+    backwards = numbering_goes_backwards(wal_dir, from_position)
+    if backwards:
+        die(f"numbering: after taking the lead, the secondary numbered records with numbers its log already held: "
+            f"{len(backwards)} place(s) where the number goes backwards, the first from {backwards[0][0]} to {backwards[0][1]}. "
+            "Anything that reads the log by number misreads it from there (BUG-0105).")
+    log(f"  numbering: the {len(written)} records the secondary's log holds from before the kill onwards are numbered "
+        f"in ascending order, {written[0][1]} to {written[-1][1]} -- OK")
+
+
+def wal_end_position(wal_dir: Path) -> tuple[int, int]:
+    """The position of the last entry in a sequencer's write-ahead log, or (-1, -1) if it has none."""
+    entries = wal_record_ids(wal_dir)
+    return entries[-1][0] if entries else (-1, -1)
+
+
+def numbering_goes_backwards(wal_dir: Path, from_position: tuple[int, int]) -> list[tuple[int, int]]:
+    """Each place, from the entry at from_position onwards, where a record's number is not above the one before."""
+    ids = [record_id for _, record_id in wal_record_ids(wal_dir, from_position)]
+    return [(earlier, later) for earlier, later in zip(ids, ids[1:]) if later <= earlier]
 
 
 def installed_toml_section_value(config: Path, section: str, key: str) -> str:
@@ -5707,6 +5773,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # seq_primary_pos_pre_kill is used after Phase 4 to wait for
         # sequencer_primary to re-establish its ME connection (see below).
         seq_primary_pos_pre_kill = file_end(seq_primary_log)
+
+        # Where the secondary sequencer's log ends before anything is killed, so that the records
+        # it numbers after taking the lead can be told from those an earlier run left behind.
+        secondary_wal_dir = None
+        secondary_wal_start = (-1, -1)
+        if scenario.assert_new_leader_numbers_forward:
+            secondary_config = prefix / "etc" / "sequencer" / "sequencer_secondary.toml"
+            secondary_wal_dir = secondary_config.parent / installed_toml_section_value(secondary_config, "wal", "directory")
+            secondary_wal_start = wal_end_position(secondary_wal_dir)
 
         # For the ME-HA cancel-on-failover assertion after Phase 5: remember where
         # the secondary ME log and the gateway log end before the kill, so we scan
@@ -7173,6 +7248,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                                 from_byte=after_from)[0]:
                 die("unreplicated orders: the matching engine did not accept an order from the new leader.")
             log("  the matching engine accepted an order from the new leader")
+            check_new_leader_numbers_forward(secondary_wal_dir, secondary_wal_start)
 
             # 6. The requirement: the engine holds no order the new leader's log does not hold.
             orphaned = [c for c in unreplicated if times_in_log(wal_dirs["secondary"], c) == 0]
@@ -8068,6 +8144,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("in-flight: the member's client exited after the resend. Its session log "
                     "records why; a sequence-number disagreement is the likely cause.")
             log("  in-flight: the session survived the resend and the heartbeat that followed -- OK")
+
+        if scenario.assert_new_leader_numbers_forward and not scenario.assert_engine_holds_only_logged_orders:
+            check_new_leader_numbers_forward(secondary_wal_dir, secondary_wal_start)
 
         result_pass = True
         log("")

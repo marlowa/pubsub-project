@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 106 |
-| Open | 41 (27 defects, 14 tasks) |
-| Closed | 65 |
+| Open | 40 (26 defects, 14 tasks) |
+| Closed | 66 |
 | Next id | BUG-0107 |
 
 ## Open bugs by severity
 
-15 high, 22 medium, 4 low.
+14 high, 22 medium, 4 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,7 +26,6 @@
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
-| [BUG-0105](#bug_0105) | high | defect | A sequencer that takes the lead numbers new records with numbers its log already holds |
 | [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -185,39 +184,6 @@ replay to refuse, and must still accept a log whose only damage is an unfinished
 
 ---
 
-### BUG-0105: A sequencer that takes the lead numbers new records with numbers its log already holds {#bug_0105}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Writing the design for [BUG-0103](#bug_0103), and then reading the follower's log after `ha_test.py` scenario 59 |
-| Impact | After every change of sequencer leader, the new leader's log holds two records under each of about as many sequence numbers as there were execution reports since the pair last connected. Anything that relies on the numbers only going forward misreads the log: a matching engine's catch-up skips every record at or below the position it gives, and the publishers and the order activity recorder identify records by their number |
-
-**What happens.** The leading sequencer gives each order, and each execution report it logs, the next
-number from one counter (`next_sequence_number_`, `SequencerThread.cpp` lines 540 and 837). The
-follower writes the records its leader replicates under the leader's numbers (`handle_wal_record`,
-`install_peer_wal_inline_handler`) but does not move its own counter forward from them. Its counter
-moves only when it discards a gateway's copy of an order, at line 540, before the role check, so it
-counts orders and never reports. The two counters are made equal only when the peer connection is
-established (`handle_peer_status_response`). So the follower's counter falls behind its own log by one
-for every report, and when it takes the lead it numbers new records from there.
-
-**What was measured.** In the control run of scenario 59 on 2026-10-03, with replication working, the
-secondary's log ends at record 5211872, the old leader's last report. The first order the new leader
-numbered after taking over is 5210870, which is 1,002 below, about the number of reports produced by
-the 1,000 baseline orders. The log goes backwards at that point and four numbers in its last two
-segments are held twice. An earlier run of the same scenario left a second backwards step in the same
-log, from 5209860 to 5208864. The primary's log has neither. The record numbers were read by parsing
-the log files' entry headers directly.
-
-**What closing it needs.** A follower moves its counter past every record it writes, and a sequencer
-taking the lead numbers from the highest record it holds. The design for [BUG-0103](#bug_0103) covers
-this together with what the new leader learns from the matching engine. A test must read the new
-leader's log after a change of leader and require the numbers to go forward.
-
----
 
 ### BUG-0104: A connection whose reads were paused can stay stalled for seconds after they resume {#bug_0104}
 
@@ -2560,6 +2526,50 @@ Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085
 
 ## Closed
 
+### BUG-0105: A sequencer that takes the lead numbers new records with numbers its log already holds {#bug_0105}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-03 -- a follower records the highest record it writes, and a sequencer taking the lead numbers from above it |
+| How | Writing the design for [BUG-0103](#bug_0103), and then reading the follower's log after `ha_test.py` scenario 59 |
+| Impact | After every change of sequencer leader, the new leader's log holds two records under each of about as many sequence numbers as there were execution reports since the pair last connected. Anything that relies on the numbers only going forward misreads the log: a matching engine's catch-up skips every record at or below the position it gives, and the publishers and the order activity recorder identify records by their number |
+
+**What happens.** The leading sequencer gives each order, and each execution report it logs, the next
+number from one counter (`next_sequence_number_`, `SequencerThread.cpp` lines 540 and 837). The
+follower writes the records its leader replicates under the leader's numbers (`handle_wal_record`,
+`install_peer_wal_inline_handler`) but does not move its own counter forward from them. Its counter
+moves only when it discards a gateway's copy of an order, at line 540, before the role check, so it
+counts orders and never reports. The two counters are made equal only when the peer connection is
+established (`handle_peer_status_response`). So the follower's counter falls behind its own log by one
+for every report, and when it takes the lead it numbers new records from there.
+
+**What was measured.** In the control run of scenario 59 on 2026-10-03, with replication working, the
+secondary's log ends at record 5211872, the old leader's last report. The first order the new leader
+numbered after taking over is 5210870, which is 1,002 below, about the number of reports produced by
+the 1,000 baseline orders. The log goes backwards at that point and four numbers in its last two
+segments are held twice. An earlier run of the same scenario left a second backwards step in the same
+log, from 5209860 to 5208864. The primary's log has neither. The record numbers were read by parsing
+the log files' entry headers directly.
+
+**What was fixed.** A follower no longer advances its counter for the gateway copies it discards. It
+records the highest sequence number of every record it writes from its leader's stream, in an atomic,
+because the inline handler on the reactor's thread writes records as well as the sequencer's own
+thread. A sequencer taking the lead numbers new records from above that, and logs that it has done so.
+
+**How it is checked.** `ha_test.py` scenarios 1 and 59 note where the secondary's log ends before the
+kill, and afterwards read the log files and require every record from there on to be numbered above
+the one before it. Against the code before the fix, scenario 1 failed: the new leader stepped back from
+5253872 to 5232873. With the fix, scenario 1 passes with 14,196 records in ascending order, and in
+scenario 59 the new leader logged that it was numbering from 5299873, above its highest replicated
+record 5299872, where its counter had stood lower.
+
+**Not done here.** A guard in the matching engine against a number that goes backwards is deferred to
+part 4.2 of the [BUG-0103](#bug_0103) design; the design says why.
+
+---
 ### BUG-0102: The reactor fairness test failed about one run in four {#bug_0102}
 
 | | |

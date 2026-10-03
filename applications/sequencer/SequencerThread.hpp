@@ -3,6 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <atomic>
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <optional>
@@ -88,9 +89,19 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     const std::string er_inbound_svc_;
     const std::string wal_subscriber_inbound_svc_;
 
-    // Monotonically increasing sequence number. Incremented for every PDU
-    // forwarded to the matching engine. Never resets within a process lifetime.
+    // The number the next record this instance writes as leader will carry. Orders and the
+    // execution reports the leader logs are numbered from it alike. Set from the log's last
+    // record at startup, and moved past every record replicated to this instance when it takes
+    // the lead (adopt_role), because a follower writes its leader's records under the leader's
+    // numbers and does not use this counter for them. BUG-0105.
     int64_t next_sequence_number_{1};
+
+    // The highest sequence number of any record this instance has written as a follower, from its
+    // leader's replication stream. Atomic because two threads write it: the inline handler on the
+    // reactor's thread (install_peer_wal_inline_handler) and handle_wal_record on this thread, which
+    // takes the records the inline handler passes on. Read on this thread when the instance takes
+    // the lead, so that it numbers new records above every record its log holds.
+    std::atomic<int64_t> highest_replicated_seq_no_{0};
 
     // Outbound gateway connections for ER forwarding, keyed by (protocol, instance).
     //
@@ -328,6 +339,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
     void install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id);
+
+    // Raise highest_replicated_seq_no_ to seq_no if it is lower. Called from both threads that
+    // write replicated records, so it never lowers the value whichever runs last.
+    void note_replicated_record(int64_t seq_no);
     void flush_pending_er();
     void forward_pending_er(const PendingEr& pending);
 
