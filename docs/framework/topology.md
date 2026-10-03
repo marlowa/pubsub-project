@@ -58,23 +58,23 @@ The fix8 clients are part of the system's environment, not part of the
 framework's deployment. They are drawn so that the entry-point of the FIX wire
 is visible.
 
-### FIX gateway pool
+### Gateway instances
 
-`gateway-1` and `gateway-2` are two representative gateway machines. A
-production deployment can have more. Gateways are not in primary/secondary HA
-pairs; they are an N-way pool. Each gateway:
+`gateway-1` and `gateway-2` are the two instances of a gateway protocol, `a` and `b`. Nothing elects
+a gateway: each member is provisioned to a primary and a backup instance and may log on to either,
+but no other. Each gateway:
 
-- Terminates FIX sessions for some subset of clients.
-- Encodes received FIX orders into PDUs and sends them to the current
-  sequencer leader.
-- Receives ER PDUs from the sequencer leader and translates them back into
-  FIX execution reports for the originating session.
-- Holds open TCP connections to both sequencers (so it can reach whichever is
-  currently leader without waiting for new connection setup on failover).
+- Terminates the sessions of the members connected to it.
+- Checks each order and cancel, wraps it in a `WalRecord` envelope that names the member's session,
+  and sends it to both sequencers. Only the leading sequencer acts on it.
+- Receives execution reports from the leading sequencer and sends each to the member's session.
+- Holds open connections to both sequencers, so that whichever leads can be reached without setting
+  up a connection on failover.
 
-Gateway machine failure causes the FIX clients on that gateway to reconnect
-to a different gateway. This is not the same kind of HA as the
-sequencer/ME/arbiter pairs; see the project summary's "Gateway pool" section.
+When a gateway machine fails, its members reconnect to their backup instance, and find their orders
+and reports there, because a session is identified by its comp id and protocol rather than by its
+connection. This is not the same kind of high availability as the sequencer, matching engine and
+arbiter pairs; see [Gateway High Availability](../availability/gateway_ha.md).
 
 ### Sequencer pair
 

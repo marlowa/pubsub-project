@@ -267,4 +267,5 @@ Key `fix_order_gateway.toml` sections:
 - [FIX Test Client](fix_test_client.md) — the NOS entry form / blotter driven against this gateway
 - [Secure Communications](../operations/secure_comms.md) — SCRAM-SHA-256 protocol detail
 - [Socket Communications](../framework/socket_comms.md) — `RawBytesProtocolHandler`, `PduFramer`/`PduParser`
-- [WAL and High Availability](../availability/wal_and_ha.md) — gateway pool design and sequencer reconnection
+- [Gateway High Availability](../availability/gateway_ha.md) — two instances, provisioning, reconnecting to a backup, resend, and cancel-on-disconnect
+- [WAL and High Availability](../availability/wal_and_ha.md) — how the sequencers and matching engines are led and replicated

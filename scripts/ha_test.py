@@ -1558,9 +1558,12 @@ _SCENARIOS: list[Scenario] = [
     # That defect is fixed -- they now gate on their own WAL record -- which is what
     # makes the drop assertion below reachable at all.
     #
-    # WHEN THE HANDOVER WORK LANDS (steps 3b-6), THIS TEST SHOULD FAIL, and the fix is
-    # to invert the assertions rather than delete them: dropped_ers becomes 0, and
-    # gateway b should show the recovered session's traffic instead of nothing.
+    # No member reconnects in this scenario, so the sessions gateway a held are bound nowhere
+    # when the cancellation reports are produced, and the sequencer drops every one. That is
+    # what the venue does today, and it is BUG-0088: a report produced while its session is
+    # bound nowhere is not delivered when the session returns. When BUG-0088 is fixed the
+    # reports will be kept for the session rather than dropped, and the assertion on
+    # dropped_ers must change with it rather than be deleted.
     Scenario(
         number=18,
         short_name="fix_gateway_a_death",

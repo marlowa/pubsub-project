@@ -18,7 +18,7 @@ Each slice leaves the system in a working state. Slices 1–8 and 10 are complet
 | 9 | Dual snapshots, snapshot validation, operational polish | Not started |
 | 10 | WAL multi-subscriber generalisation + MEP (MatchingEnginePublisher); topic pub/sub over the WAL | ✓ Done |
 | 11 | OAR (Order Activity Recorder) — topic subscriber to MEP; Kafka/Pulsar publisher | Not started |
-| 12+ | Gateway pool; market data; seamless ME failover; DR site; multi-instrument scaling | Forward-looking, not yet planned |
+| 12+ | Market data; seamless ME failover; DR site; multi-instrument scaling | Forward-looking, not yet planned |
 
 The ME primary-secondary pair was listed under slice 12+ as forward-looking; it landed on
 2026-07-05 (role config, book replication via `BookUpdate`, arbiter-mediated promotion, WAL
@@ -193,28 +193,13 @@ when.
   exactly.  
   Hot-path instrumentation: `std::atomic` increments only — no locks, no allocation. Dedicated metrics-serving thread on a non-hot CPU, excluded from the hot-path CPU registry.
 
-- **Gateway availability, fairness and identity** — **design agreed 2026-07-30, targeted at
-  0.3.0.** Written up in [Gateway High Availability](availability/gateway_ha.md); nothing is built yet,
-  and the gateway remains a single point of failure until it is.
-  Two decisions were taken. Sessions are **pinned to a primary and a backup gateway**, not pooled
-  any-of-N — that is how venues actually provision order entry, and it turns a distributed-state
-  problem into a replication problem between two known endpoints. The claim of "N-way pooled
-  redundancy" in `wal_and_ha.md` is withdrawn: it was never implemented, and it stopped matching
-  the code when ER routing moved to the gateway-local `gateway_session_conn_id`. And **in-flight
-  execution reports must survive the reconnect**, which is the expensive half.
-  Verifying the code turned up more than the summary had assumed. `origin_gateway_id` names a
-  *protocol*, not an instance, so two FIX gateways would be indistinguishable to the sequencer;
-  the sequencer's gateway endpoints are scalars with no way to express a second instance; an ER
-  for a disconnected gateway is dropped outright; and there is no outbound message store at all —
-  `handle_resend_request` answers every ResendRequest with a blanket `SequenceReset-GapFill`, so
-  in-flight reports do not survive a reconnect today even to the *same* gateway.
-  Cancel-on-disconnect, by contrast, is already implemented.
-  Implementation order is in the design doc; steps 1-3 (instance identity, endpoint collection,
-  two instances actually running) are the SPOF work and are worth landing on their own. Open:
-  whether cancel-on-disconnect stays, becomes configurable, or goes.
-  Still decided but not built: one comp id may hold a session only once venue-wide, which needs
-  the sequencer as the shared authority and so is a cross-component protocol change. Pinning makes
-  it smaller — two instances to check rather than N — but does not solve it.
+- **Gateway availability, fairness and identity** — what remains of it. The gateways' high
+  availability is built and described in [Gateway High Availability](availability/gateway_ha.md).
+  Decided and not built: a comp id may hold a session only once venue-wide. Enforcing it needs the
+  sequencer as the one authority every gateway asks, so it is a change to the protocol between the
+  gateways and the sequencers. Pinning each member to a primary and a backup instance makes it
+  smaller, with two instances to check rather than every one, but does not solve it. The sequencer
+  already logs when a session identity binds while it is bound elsewhere.
 
 - **Framework-level replay** — raised 2026-08-06 as a conversation, not a task. Notes toward a
   design in [Replay](durability/replay.md), written up 2026-08-08 so the conclusions are not
@@ -265,6 +250,12 @@ when.
 
 Kept as a record of what the "Active / Next" and "Deferred" lists used to hold. The full
 account of each is in [framework_notebook.md](history/framework_notebook.md) under the same item number.
+
+- **Gateway high availability** (gateways) -- built 2026-08-05 and 2026-08-06. Two instances of each
+  gateway protocol, members pinned to a primary and a backup, sessions identified by comp id and
+  protocol so that a member's orders and reports follow it to a new connection, FIX numbering kept
+  across a reconnect, missed execution reports sent again on request, and cancel-on-disconnect per
+  comp id with a grace period. Described in [Gateway High Availability](availability/gateway_ha.md).
 
 - **Find out why a first-time reader concludes the arbiter is unfinished** (documentation) -- done
   2026-10-03. `docs/framework/summary.md` mixed the description of the framework with plans,

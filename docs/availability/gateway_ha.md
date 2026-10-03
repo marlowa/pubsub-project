@@ -1,916 +1,382 @@
 # Gateway High Availability {#gateway_ha}
 
-How a member keeps trading when a gateway dies.
+How a member keeps trading when a gateway dies, and what it does and does not get back.
 
-> **Status: all six steps built. Targeted at 0.3.0.**
->
-> The direction was settled on 2026-07-30 and written down before implementation started, so that
-> the decisions — and the reasoning behind them — were recorded rather than reconstructed
-> afterwards. Since then, instance identity, the sequencer endpoint collection, two instances of
-> each protocol running, cancel-on-disconnect with a grace period, and session provisioning have
-> all landed, and so have steps 5 and 6: routing is keyed on session identity, so a member
-> that reconnects -- to its own instance or to its backup -- inherits reports for orders it
-> placed earlier and can cancel what it left resting; and a member that asks for what it
-> missed is sent the real execution reports rather than having them gap-filled away. Each
-> step's entry under **Implementation order** says what was actually built and how it was
-> proven.
->
-> **What a member does not get** is set out at the end of step 6 and is worth reading before
-> treating this as finished: there is no outbound message store, so only execution reports are
-> replayable and only for as long as the WAL retains them; the remembered sequence numbers do
-> not survive a venue restart; and the binary gateway has no resend at all.
->
-> The "What exists today" section is the 2026-07-30 baseline this design was written against, kept
-> because later sections argue against it. Where a step has superseded part of it, that is marked
-> in place.
+This document covers the order-entry gateways only. Sequencer and matching engine high
+availability are in [WAL and High Availability](wal_and_ha.md).
 
-This document covers the order-entry gateways only. Sequencer and matching engine HA are in
-[WAL and High Availability](wal_and_ha.md); this one deliberately supersedes that document's
-"Gateway Pool" section, for reasons set out below.
+The arrangement in one paragraph: each gateway protocol, FIX and binary, runs as two instances,
+`a` and `b`. Each member is provisioned to a primary and a backup instance and may log on to
+either, but no other. A member's session is identified by its comp id and protocol, not by the
+connection it happens to be using, so a member that reconnects, to the same instance or to its
+backup, finds its orders still its own, can cancel them, and receives their reports there. A FIX
+member continues its message numbering across the reconnect and can ask for the execution reports
+it missed. When a member's connection drops, its orders are held for a grace period before they
+are cancelled, so that a reconnect cancels nothing.
 
 ---
 
 ## What a member experiences when things fail
 
-*Written for a reader who does not know FIX. Everything below is behaviour this venue has
-been observed to produce, not intention. Most of it is pinned by a scenario in `ha_test.py`;
-where it is not, the table says so, because "we have seen it work" and "it cannot regress
-without someone noticing" are different claims.*
+*Written for a reader who does not know FIX. Everything in the tables is behaviour the venue has
+been observed to produce, and the last column says which `ha_test.py` scenario checks it.*
 
 ### Two facts about FIX that govern everything else
 
-**1. Every message to a member is numbered, and the two directions are not symmetrical.**
+**1. Every message to a member is numbered, and the two directions of error are not alike.**
 
 A FIX session numbers each message it sends: 1, 2, 3, and so on. The member tracks what it
-expects next. Two things can go wrong, and their consequences are wildly different:
+expects next. Two things can go wrong, and their consequences are very different:
 
 | | What the member does |
 |---|---|
 | The venue's number is **higher** than expected | Assumes it missed messages. Asks for them with a **ResendRequest**. Recoverable. |
 | The venue's number is **lower** than expected | Treats it as a broken session. **Disconnects.** Not recoverable. |
 
-This asymmetry is the single most important thing to know here. When the venue is unsure
-where a session had reached, it must guess **high**. Guessing high costs a round trip;
-guessing low kills the session. Much of the design below is that one sentence, applied.
+This is the most important thing to know here. When the venue is unsure where a session had
+reached, it must guess **high**. Guessing high costs the member a round trip; guessing low ends
+the session. Much of the design below is that rule, applied.
 
 **2. FIX has no "disconnect" message.**
 
-The session-layer messages are Logon, Logout, Heartbeat, TestRequest, ResendRequest, Reject
-and SequenceReset — and that is all. A polite shutdown is a *Logout*; a process being killed
-is just a TCP connection closing, carrying nothing.
+The session-layer messages are Logon, Logout, Heartbeat, TestRequest, ResendRequest, Reject and
+SequenceReset, and that is all. A polite shutdown is a *Logout*; a process being killed is just a
+TCP connection closing, carrying nothing.
 
-So when a gateway is killed, **no message is produced and nothing appears in a message
-blotter**. That is not a fault: there is genuinely nothing to show. It is also why the venue
-cannot rely on a dying process to tell anyone anything — a rule that caught this project out
-once already, and is the reason gateways now report their state continuously rather than at
-shutdown.
+So when a gateway is killed, no message is produced and nothing appears in a message blotter. That
+is not a fault: there is nothing to show. It is also why nothing in the venue relies on a dying
+process to tell anyone anything. A gateway reports the state the venue needs from it continuously,
+not only when it shuts down.
 
 ### What each failure looks like from the member's seat
 
-| What fails | What the member sees | What its orders do | Pinned by |
+| What fails | What the member sees | What its orders do | Checked by |
 |---|---|---|---|
-| **Its own connection drops**, gateway survives | Nothing until it reconnects | Held, not cancelled, for a grace period (default 30s, per-member configurable). Reconnect inside the window and **nothing is cancelled at all** | scenario 19 |
-| **The gateway process is killed** | Connection closes. No message — see fact 2 | **Stay live on the book.** The process that would have cancelled them is the one that died | scenario 23 |
-| It **reconnects to its backup instance** | A normal Logon, numbered where the session had reached — *not* restarted at 1 | Still live | scenario 23 |
-| It **cancels an order it left resting** | A cancel report, from the new connection | Retired | `binary_client` by hand; `OrderKeyTest` for the key |
-| It **asks for what it missed** | Its execution reports, resent with `PossDupFlag=Y`, and a gap-fill for the rest | Unchanged | **nothing — see below** |
-| It logs on to an instance it is **not provisioned for** | Refused, with text naming the instance it should use | Untouched | scenario 20 |
-| **The matching engine** fails over | Cancel reports for its resting orders | Cancelled by the promoted engine, and it is **told** | scenarios 16, 21 |
-
-The resend row is real and was demonstrated working, but has **no passing regression test**,
-and the reason is worth knowing. The venue numbers its Logon at the session's resumed
-position, which is correct — so for a member that has lost its own state, the gap it must
-recover from appears on the Logon itself. The harness client, `f8test`, terminates the
-session in that case instead of asking, which the standard says it should not. That is a
-limitation of the test client, not of the venue, and replacing it is deferred work.
-
-The third row is the one that took three steps of work. A member returning after its gateway
-died is the same member: its identity survives, so its orders are still its own, and the
-venue continues its numbering rather than greeting it as a stranger.
+| **Its own connection drops**, the gateway survives | Nothing until it reconnects | Held, not cancelled, for a grace period (30 seconds by default, set per member). If it reconnects inside the period, **nothing is cancelled** | Scenario 19 |
+| **The gateway process is killed** | The connection closes, with no message (fact 2) | **Stay live on the book.** The process that would have cancelled them is the one that died | Scenarios 18 and 23 |
+| It **reconnects to its backup instance** | A normal Logon, numbered where the session had reached, not restarted at 1 | Still live, and still its own | Scenario 23 |
+| It **cancels an order it left resting**, from the new connection | A cancel report, on the new connection | Cancelled | Scenario 21, and `OrderKeyTest` for the key |
+| It **asks for what it missed** | Its execution reports, sent again with `PossDupFlag=Y`, and a gap fill for the administrative messages | Unchanged | Scenario 22 |
+| It logs on to an instance it is **not provisioned for** | Refused, with text naming the instance it should use | Untouched | Scenario 20 |
+| **The matching engine** fails over | Cancel reports for its resting orders, on whichever connection it now has | Cancelled by the promoted engine, and the member is **told** | Scenarios 16 and 21 |
 
 ### Orders that were in flight when the gateway died
 
-"In flight" is five different situations, and they do not share a fate:
+"In flight" covers five different situations, and they do not share a fate:
 
-| Where the order was | What became of it |
+| Where the order was | What becomes of it |
 |---|---|
-| 1. Still in the member's socket, unread | **Gone.** Never reached the venue |
-| 2. Read by the gateway, not yet forwarded | **Gone.** Died with the process |
-| 3. Forwarded, in flight to the sequencer | Usually arrives and is sequenced |
-| 4. Sequenced, no report emitted yet | **A live order** |
-| 5. Report emitted, addressed at the dead gateway | **A live order**, and a report that could not be delivered |
+| 1. Still in the member's socket, unread | **Gone.** It never reached the venue |
+| 2. Read by the gateway, not yet forwarded | **Gone.** It died with the process |
+| 3. Forwarded, on its way to the sequencers | Usually arrives and is sequenced |
+| 4. Sequenced, no report produced yet | **A live order** |
+| 5. Report produced, addressed to the dead gateway | **A live order**, and a report that could not be delivered |
 
-Cases 4 and 5 are the ones that matter: the order is real, resting on the book, and the
-member has not heard of it. Both are recoverable — the reports are in the sequencer's log and
-can be replayed to the member wherever it reconnects.
+Cases 4 and 5 are the ones that matter: the order is real, resting on the book, and the member has
+not heard of it. Its reports are in the sequencer's log, tagged with the member's session. A
+report the sequencer forwards while the member is connected somewhere is recoverable with a
+ResendRequest, because it was given a number in the member's sequence. A report produced while
+the member was connected nowhere is not given a number, so the member sees no gap and has nothing
+to ask for, and nothing sends it the report when it returns. That is
+[BUG-0088](../bug_list.md#bug_0088), and requirement R-0005 in the functional specification says
+what must happen instead.
 
-**Cases 1 and 2 are not recoverable, and cannot be made so.** Nothing distinguishes an order
-that died in a socket from one that was never sent. This is not a gap in the implementation;
-it is what "in flight" means. The FIX answer is for the member to *ask* — an **Order Mass
-Status Request**, "tell me the state of every order I have" — which this venue does not yet
-implement. Until it does, a member cannot fully reconcile its book after a gateway death.
+**Cases 1 and 2 are not recoverable, and cannot be made so.** Nothing distinguishes an order that
+died in a socket from one that was never sent; that is what "in flight" means. The FIX answer is
+for the member to ask the venue what it holds, with an Order Status Request or an Order Mass Status
+Request, and this venue answers neither ([BUG-0089](../bug_list.md#bug_0089)). Until it does, a
+member cannot fully reconcile its orders after a gateway death.
+
+A change of *sequencer* leader is a different failure, with its own losses; see
+[change_of_sequencer_leader.md](change_of_sequencer_leader.md).
 
 ### What this venue does not do
 
-Stated plainly, because each is a real limit rather than an oversight:
+Each of these is a real limit, and each is recorded:
 
-- **No Order Mass Status Request.** As above: a member cannot ask what the venue thinks it
-  holds. The single biggest remaining gap in recovery.
-- **Replay is bounded by log retention.** Reports are replayed from the sequencer's
-  write-ahead log, which is truncated by snapshots. Older than that cannot be replayed. A
-  production venue would keep a separate store for the trading day.
-- **Only execution reports are replayable.** Administrative messages are gap-filled, which
-  FIX permits.
-- **The remembered sequence position does not survive a venue restart.** It lives in the
-  sequencer's memory.
-- **The binary gateway has no resend.** It has no session layer to hang one on, so "in-flight
-  reports survive" means something different there and needs its own mechanism.
-
----
-
-## Decisions
-
-Both taken on 2026-07-30. Both changed what was previously written down. Both are now in the
-code: pinning landed as step 4, and the routing half of the second as step 5 -- with the
-qualification recorded under that step, that a member inherits reports from the moment it returns
-and not for the period it was away, which is step 6.
-
-**Sessions are pinned to a primary and a backup gateway.** Not any-of-N pooling. A member's
-session is provisioned against two named gateway instances and may log on to either; it may not
-land on a third. This follows how venues actually provision order entry — Eurex ETI partitions,
-CME iLink market-segment gateways and LSE-lineage native connectivity all assign sessions to
-gateways at provisioning time rather than letting them float.
-
-`wal_and_ha.md` currently claims "N-way pooled redundancy" with clients free to reconnect to any
-member. **That claim is withdrawn.** It was never implemented, and it is not what the industry
-does. The reason it matters is not fashion: any-of-N requires every gateway to be able to serve
-any session's recovery state, which is a distributed-state problem. Primary/backup requires only
-that *one nominated peer* can, which is a replication problem between two known endpoints. The
-second is tractable; the first is a different project.
-
-**In-flight execution reports survive the reconnect.** A member that reconnects — to its primary
-or to its backup — is brought fully up to date: reports it missed while disconnected, and reports
-that were sent to the old connection but may not have arrived. This is the expensive decision, and
-the rest of this document is mostly about paying for it.
+- **No order status enquiry.** A member cannot ask what the venue holds for it
+  ([BUG-0089](../bug_list.md#bug_0089)).
+- **A report produced while a member is connected nowhere is not delivered when it returns**
+  ([BUG-0088](../bug_list.md#bug_0088)).
+- **Only execution reports can be sent again.** They are the only messages to a member that are in
+  the sequencer's log; administrative messages are gap-filled, which FIX permits. There is no
+  separate store of what was sent to each member.
+- **How far back a member can recover depends on the sequencer's log.** Nothing deletes the log
+  today ([BUG-0048](../bug_list.md#bug_0048)), so the limit is disk space rather than a retention
+  policy. A production venue would keep a store of each trading day's outbound messages.
+- **The remembered sequence positions do not survive a restart of the sequencer pair.** They are
+  held in the sequencers' memory.
+- **The binary gateway cannot send reports again.** Its protocol has no session layer to build a
+  resend on ([BUG-0046](../bug_list.md#bug_0046)).
+- **A restarted gateway stops honouring cancel-on-disconnect** for the sessions it held before it
+  died ([BUG-0090](../bug_list.md#bug_0090)), and more generally a member's standing instructions
+  die with the gateway that received them ([BUG-0091](../bug_list.md#bug_0091)).
+- **No defined way for a member to discover that its primary is down**
+  ([BUG-0045](../bug_list.md#bug_0045)).
+- **A comp id may hold a session only once venue-wide, and that is not enforced.** The sequencer
+  logs when an identity binds while it is already bound elsewhere; refusing the second session is
+  recorded in the [roadmap](../roadmap.md), under gateway availability, fairness and identity.
+- **Disaster recovery is not modelled** ([BUG-0047](../bug_list.md#bug_0047)).
 
 ---
 
-## What exists today
+## The two decisions this rests on
 
-Verified in the code on 2026-07-30, not inferred from documentation.
+**Sessions are pinned to a primary and a backup gateway instance.** A member's session is
+provisioned against two named instances and may log on to either; it may not land on a third. This
+follows how venues provision order entry: Eurex ETI partitions, CME iLink market-segment gateways
+and LSE-lineage native connectivity all assign sessions to gateways when the member is provisioned,
+rather than letting them float.
 
-**Gateway identity is per protocol, not per instance.** `GatewayIds.hpp` defines
-`fix_order_gateway = 1` and `binary_order_gateway = 2`. That value rides on the `WalRecord` envelope as
-`origin_gateway_id` and is how the sequencer decides where to send an execution report.
+*Considered and rejected: any-of-N pooling,* in which a member may reconnect to any gateway. It
+requires every gateway to be able to serve any session's recovery state, which is a distributed
+state problem. A primary and a backup requires only that one nominated peer can, which is a
+replication problem between two known endpoints. The second is tractable; the first is a different
+project.
 
-Its own comment used to call these values a binding constraint — on-disk WAL format, never to be
-reused. That was overstated and has been corrected: the project is pre-1.0 and makes no
-compatibility promise across releases, so a WAL from an older build is discarded rather than
-replayed. Reusing a value is worth avoiding, not forbidden.
-
-**Both gateways stamp `origin_gateway_id` on every order.** The FIX gateway does it in
-`forward_order_in_envelope`, a template in `FixOrderGatewayThread.hpp`; the binary order gateway does it
-at two sites in `BinaryOrderGatewayThread.cpp`.
-
-An earlier version of this document claimed the FIX gateway never constructs a `WalRecord` and
-that `gateway_ids::default_when_absent` therefore covered a structural gap. **That was wrong** —
-it came from grepping the `.cpp` and missing the template in the header. The default covers
-records that have no gateway origin at all, which is a real category: `has_origin_gateway_id` is
-set conditionally on there being a session connection, so execution reports and replayed records
-can legitimately carry none.
-
-That correction matters because it makes the fields **optional by design, not by legacy**. An
-earlier draft proposed making both required; that would force a meaningless protocol and instance
-onto every record that never came from a gateway.
-
-
-**The sequencer dialled a fixed pair of endpoints.** `SequencerConfiguration` held scalars —
-`gateway_host`/`gateway_port` for the FIX gateway, `binary_gateway_host`/`binary_gateway_port` and
-a `binary_gateway_enabled` flag for the binary one. There was no collection, so there was nowhere
-to express a second instance of either. *Superseded by step 2a: it is now a `[[gateway]]`
-collection keyed on `(protocol, instance)`, and dev configures four entries. Kept here because the
-rest of this section is the 2026-07-30 baseline the design was written against.*
-
-**An execution report for a disconnected gateway is dropped.**
-`SequencerThread::send_er_to_origin_gateway` logs `gateway id {} not connected -- dropping ER
-seq={}` and returns. Nothing retries and nothing queues.
-
-**There is no outbound message store.** `FixSession` holds `outbound_seq_num` as a plain `int` and
-no record of what was sent. `FixOrderGatewayThread::handle_resend_request` answers *every*
-ResendRequest with a `SequenceReset-GapFill` spanning the whole gap — it does not resend, it
-declares the missing range administrative and skips it. The comment explains why it was written
-that way (one-at-a-time filling caused a feedback loop that froze the session), and as a way to
-keep a session alive it works. As report delivery it means **in-flight reports do not survive a
-reconnect today even to the same gateway.** This is a present single-gateway gap, not something
-introduced by going multi-gateway.
-
-**Cancel-on-disconnect is implemented.** `queue_session_for_cleanup` and
-`drain_pending_cancels` send an `OrderCancelRequest` for every entry in the session's
-`open_orders` when the connection drops, so nothing stays live on the book behind a dead session.
-
-The last two facts together describe the current behaviour honestly: when a member's connection
-drops, its orders are cancelled, and when it reconnects it is *not* told what happened — the
-reports are gap-filled away.
+**Execution reports in flight survive the reconnect.** A member that reconnects, to its primary or
+to its backup, is brought up to date: reports for orders it placed earlier reach it on the new
+connection, and reports it missed can be asked for. This is the expensive decision, and most of
+what follows is about paying for it.
 
 ---
 
-## What running two instances gives you today — and what it does not
+## How it works
 
-Steps 1-3 are done, so dev runs `fix_order_gateway_a`/`_b` and `binary_order_gateway_a`/`_b`. It
-is easy to read that as "the gateway is now HA". It is not, and the difference is worth stating
-plainly because the half that is missing is the half a member would notice.
+### Instance identity on every order
 
-### What works, and is proven
+Every order envelope (`WalRecord`) carries two fields that together say which gateway it came
+from:
 
-**Per-instance execution-report routing.** The sequencer holds every instance as a separate
-endpoint keyed on `(protocol, instance)` — services `gateway_1_1`, `gateway_1_2`, `gateway_2_1`,
-`gateway_2_2` — and sends each report back to the instance its order arrived on. Verified
-empirically on 2026-08-01, in both directions for both protocols: driving instance `b` produced
-`GW-PROGRESS` lines on `b` only, with `a` running and idle, and vice versa. This is the "complex
-routing" the multi-instance work existed to build, and it is correct.
+- `origin_gateway_id` — which *protocol*: `fix_order_gateway = 1` or `binary_order_gateway = 2`
+  (`GatewayIds.hpp`).
+- `gateway_instance_id` — which *instance* of that protocol, numbered from 1.
 
-**Reduced single point of failure, for new sessions.** If instance `a` is down, a member
-configured for instance `b` logs on and trades normally. Nothing about `a`'s absence stops `b`.
+Each gateway process carries its `gateway.instance_id` in its configuration and stamps both
+fields on every order it sends. Both fields are optional in the message definition, because not
+every `WalRecord` came from a gateway: replication records and some execution reports have no
+gateway origin, and an absent field says so.
 
-### What does not work
+Two fields rather than one number, because protocol and instance are separate axes, and because a
+record then describes itself: the sequencer can choose a report's encoding, and a person reading
+the log can see which gateway an order came from, without consulting configuration.
 
-**There is no load sharing.** Nothing distributes sessions between instances. There is no shared
-session registry, no least-loaded selection, no proxy in front. A member connects to the endpoint
-it was configured with, and that is the instance it uses. Two instances are redundancy plus
-capacity you divide by hand, not a balanced pool. Session provisioning (step 4) has since made
-that division deliberate rather than incidental — a member now belongs to named instances and is
-refused elsewhere — but it is still a division an operator makes, not one the venue balances.
+*Considered and rejected: attributing an order from the connection it arrived on,* with an
+announcement message sent when a gateway connects. The sequencer accepts every gateway on one port
+and cannot otherwise tell instances apart. Since every order already carries its origin, the
+announcement would only stop a gateway misreporting its own identity, a weak argument between the
+venue's own components, at the cost of a protocol addition and state per connection. The one
+benefit worth keeping, a point at which a misconfiguration is noticed, is kept without it: the
+sequencer logs an error once for each `(protocol, instance)` pair it receives orders from and has
+no configured endpoint for, naming the pair and the likely cause.
 
-**Instance `b` does not inherit anything from instance `a`.** There is no handover of any kind:
+### The sequencer's gateway endpoints
 
-- On losing a gateway connection, `SequencerThread::on_connection_lost` simply erases the entry
-  from `gateway_conn_ids_`. It does not reroute to another instance of the same protocol.
-- Every subsequent report for that instance hits the `connection == nullptr` branch of
-  `send_er_to_origin_gateway` and is logged and dropped: `gateway protocol=1 instance=1 not
-  connected -- dropping ER seq=N`. There is no outbound message store, so it is gone, not queued.
-- Instance `b` has no knowledge of `a`'s sessions, their open orders, or their sequence numbers.
+Each sequencer's configuration has a `[[gateway]]` entry for every gateway instance, each with
+`protocol`, `instance`, `host`, `port` and `enabled`. A duplicate pair is refused when the
+configuration is loaded. The sequencer opens a connection to every enabled entry and sends each
+execution report to the instance where the member's session is now bound.
 
-**And cancel-on-disconnect makes the two failure modes worse in opposite directions.**
-`queue_session_for_cleanup` fires the moment a client session drops and `drain_pending_cancels`
-sends an `OrderCancelRequest` for every resting order, immediately, unconditionally — no grace
-period, no per-comp-id switch. So:
+The development environment runs all four: `fix_order_gateway_a` and `_b`, and
+`binary_order_gateway_a` and `_b`. The other environment files enable only the `a` instance of
+each protocol and carry the `b` entries with `enabled = false`, so a second instance is a
+configuration change rather than a template edit.
 
-| What fails | What happened before steps 3b-5 |
-|---|---|
-| The client's connection to `a` drops, `a` survives | `a` cancelled that session's entire book at once. The member reconnected — to `a` or to `b` — and found itself flat. Its positions were closed by a network blip. *Closed by 3b: the orders are held for a grace period and a reconnect inside it cancels nothing.* |
-| The `a` process dies | No cancels are sent, because the process that would send them is dead. The orders stay resting in the matching engine — but the member reconnecting to `b` could neither see nor cancel them, because both the book key and the report address named the connection that placed them. *Closed by step 5: the book is keyed on the session's identity and reports are addressed to wherever it is now, so the member cancels them from `b` and is told what happened.* |
-
-The first is the cancel storm step 3b's grace period exists to prevent. The second is arguably
-worse — orphaned live orders are a real risk position that the member cannot manage — and it is
-what steps 4-6 (session provisioning, re-keyed routing, session-slice replay) exist to close.
-
-**Neither case is a regression.** Both follow from running more than one instance at all, which is
-exactly why the design sequences 3b immediately after step 3 rather than with the later work: step
-3 makes the failure demonstrable, and 3b is what makes the demonstration worth having.
-
-### Two defects found while testing this — both now fixed
-
-`ha_test.py` scenario 18 (`fix_gateway_a_death`) was written to pin the no-handover behaviour
-above. Writing it turned up two separate defects, neither caused by the multi-instance work.
-
-**Cancel-on-failover execution reports were never delivered when the sequencer had a follower.**
-The promoted matching engine sends each cancel ER with `seq_no = 0`, because the cancel is
-generated on promotion rather than driven by a sequenced order. But `SequencerThread::on_pdu`
-forwarded an ER only once `wal_acked_seq_nos_` contained its seq_no, and no WalAck for seq_no 0
-can ever arrive. So under `needs_wal_ack()` — `ha_enabled` with a follower connected, which is
-the normal configuration — every cancel ER was parked in `pending_er_` forever: not delivered,
-not dropped, traced only by a `Debug` line that `applog_level = "info"` suppresses. And because
-`pending_er_` is keyed on the gate sequence, all of them collided on key 0 and only the first was
-even retained. **The whole book was cancelled and no client was ever told.**
-
-Fixed by gating an ER that has no originating order sequence on **its own** WAL record instead.
-The follower acks every `WalRecord` it receives, so `er_wal_seq` is acked exactly as an order's
-seq_no is, and it is unique per ER so the keys no longer collide. That is strictly the stronger
-guarantee — the client learns of the cancel only once the backup holds the cancel record — and it
-is the "full two-tier commit of ERs" the code already noted as a follow-up, applied to the one
-case that had no working gate at all.
-
-**The matching engine did not store the gateway instance.** `OrderEntry` carried
-`gateway_session_conn_id` and `origin_gateway_id` but no instance. Its own comment said the
-connection id "alone is only unique within one gateway, so both are needed" — true before
-instances existed, one axis short afterwards. A cancel-on-failover ER for an order placed through
-instance `b` would have been addressed to instance 1, which is `a`, and delivered to whatever
-session happened to hold that connection id there: one client's report handed to another. Latent
-only because the first defect stopped these reports reaching the routing decision, so fixing that
-alone would have turned silence into misdelivery.
-
-Fixed by carrying the instance alongside the gateway id everywhere the id already travelled:
-`OrderEntry`, the `BookUpdate` replication message (a trailing optional field, as
-`origin_gateway_id` is), and the envelope `send_er_to_sequencer` stamps.
-
-Scenario 16 caught neither, and read as though it did: it counted the *gateway's*
-`has no gateway_session_conn_id -- dropping` lines and required 0, which passes vacuously when
-the reports never reach the gateway at all. It now asserts delivery positively — the gateway must
-have sent at least one report per order **plus** one per cancel — and would have failed before the
-fix.
-
-**A third defect in the same family, also now fixed: `OrderKey` was one axis short.** It keyed the
-book on `(session_id, gateway_id, cl_ord_id)`, and its own documentation made exactly the argument
-that extends to instances: a connection id "is only unique within one gateway, because each
-gateway numbers its own client connections from its own counter". With two instances of one
-protocol, instance `a`'s connection 5 and instance `b`'s connection 5 were unrelated sessions
-sharing a book key — so a second order with the same ClOrdID from the other instance was rejected
-as a duplicate, or a cancel from one session retired the other's order. Unlike the two above this
-one is about order *identity* rather than report *delivery*, and it became reachable the moment a
-second instance of any protocol started taking orders.
-
-`OrderKey` now carries `gateway_instance`, in the key, the equality and the hash.
-`OrderKey::make` takes it as a required parameter rather than a defaulted one: this axis was
-forgotten once already, and a default would let the next call site forget it silently instead of
-failing to compile. Four new tests cover it, mirroring the cross-gateway ones — two instances
-coexisting and cancelling independently, protocol and instance not being interchangeable, and
-absent meaning instance 1.
-
-### The short version
-
-*Written when steps 1-3 were all that existed, and kept because the distinction it draws is the
-right one.* Two instances then meant *a venue that keeps trading when one gateway dies*, but not
-*a session that survives its gateway dying*: instance `b` was a place for new sessions to go, not
-a place old ones could be recovered.
-
-Steps 3b, 4 and 5 have since closed that. A member whose gateway dies reconnects to its backup,
-finds its orders still resting, can cancel them, and receives reports for them there. What is
-still missing is the period in between: reports generated while it was disconnected are not
-replayed to it, which is step 6.
-
----
-
-## Gaps to close
-
-**Status: closed, except where noted.** This table is kept as the record of what the work was
-for. Gaps 1, 2, 5 and 6 are closed, gap 3 is narrowed and gap 4 is answered rather than closed;
-the paragraph below the table says how.
-
-| # | Gap | Consequence today |
-|---|-----|-------------------|
-| 1 | `origin_gateway_id` names a protocol, not an instance | Two FIX gateways would both stamp `1`; the sequencer could not tell them apart |
-| 2 | Sequencer gateway endpoints are scalars | Nowhere to configure a second instance |
-| 3 | Reports are dropped when the target gateway is down | A member loses reports for the entire outage, permanently |
-| 4 | No outbound message store; ResendRequest is gap-filled | A member cannot recover reports even on the same gateway |
-| 5 | No session→gateway provisioning | Nothing says which two gateways a session may use |
-| 6 | Routing entry is keyed on a gateway-local connection id | A reconnect cannot inherit the previous connection's reports |
-
-Gaps 1, 2 and 5 are the SPOF work. Gaps 3, 4 and 6 are the in-flight-report decision. They are
-separable, and the SPOF half is worth having on its own.
-
-**Gaps 1, 2, 5 and 6 are closed** (steps 1, 2, 4 and 5). Gap 3 is narrowed: a report for a
-session that has reconnected follows it, and only a session connected nowhere at all has its
-reports dropped -- and those are recoverable afterwards, which is what made the drop tolerable.
-**Gap 4 is answered rather than closed**: there is still no outbound message store, but the
-WAL serves as one for execution reports, which are the messages a member actually needs back.
-Its limits -- retention, and administrative messages -- are stated under step 6.
-
----
-
-## Design
-
-### Instance identity
-
-Add a **`gateway_instance_id`** to the envelope alongside `origin_gateway_id`, rather than
-repurposing the existing field.
-
-**The reason is not backwards compatibility.** An earlier draft argued the existing values could
-never be reassigned because they are on disk in every WAL record. That does not hold: the project
-is pre-1.0, so an old WAL is discarded rather than replayed. Nothing forces two fields on those
-grounds.
-
-The reasons that do hold are quieter but real. Protocol and instance are orthogonal, so separate
-fields model them honestly rather than encoding two things in one number. And a record stays
-self-describing: the sequencer can pick the execution report's wire encoding, and a person reading
-a WAL can see which gateway an order came from, without consulting configuration. The cost is one
-`i16`.
-
-- `origin_gateway_id` keeps its present meaning — which *protocol* the order arrived on.
-- `gateway_instance_id` says *which instance of that protocol*, numbered from 1.
-
-The session is then identified venue-wide by the triple
-`(origin_gateway_id, gateway_instance_id, gateway_session_conn_id)`. That preserves the ClOrdID
-collision fix that motivated connection-id routing in the first place — a connection identifies
-exactly one session and cannot collide — while making the identity unambiguous across instances.
-
-Both fields stay **optional**, because not every `WalRecord` has a gateway origin. What is
-guaranteed is that a gateway always sets both: each gateway process carries its own
-`gateway.instance_id` in configuration and stamps it beside the protocol on every order envelope.
-
-Attribution from the arrival connection was considered and rejected as unnecessary. It would have
-needed an announce PDU on connect, because the sequencer listens on one port and accepts, so it
-cannot otherwise tell instances apart. Since both gateways already stamp per message, the
-announce would buy only that a gateway could not misreport its own identity — a weak argument
-between venue components — at the cost of a protocol addition and per-connection state.
-
-What that would also have bought, a validation point, is kept without it: the sequencer warns
-once per unrecognised `(protocol, instance)` pair when it has orders to answer but no configured
-endpoint, naming the pair and the likely cause. Once per pair rather than once per report, so a
-busy gateway cannot flood the log with the same misconfiguration.
-
-
-### Sequencer endpoint collection
-
-Replace the scalar endpoint fields with a list, each entry carrying protocol, instance id, host and
-port. `binary_order_gateway_enabled` disappears: an absent entry is a gateway that is not deployed.
-
-The sequencer dials every configured entry and keeps the connections open, exactly as it does for
-the two today. `send_er_to_origin_gateway` becomes a lookup on the `(protocol, instance)` pair.
-
-This is a configuration schema change across the environment TOMLs, so it needs the
-`${admin_service_...}`-style flattened placeholder convention already used elsewhere.
+Instances are named `a` and `b`, not primary and secondary, because nothing elects a gateway: a
+member chooses which instance to connect to. The suffix is on the component name and its
+configuration file; there is one program and one `etc/` directory per protocol.
 
 ### Session provisioning
 
-A session's primary and backup are **configuration, not discovery**. The member is told both
-endpoints out of band, as venues do. The venue side needs the same knowledge so it can reject a
-logon that arrives at the wrong instance — otherwise "pinned" is a convention rather than a rule,
-and the recovery guarantees below do not hold.
+Each comp id in the database has a `primary_gateway_instance` and a `backup_gateway_instance`.
+They reach the gateway by the same path as the member's credentials: database,
+`db/export_credentials.py`, `credentials.toml`, the authentication service, and the
+`AuthenticationResult` message at logon. The administration service edits them on the comp-id
+form. Both gateways check them once, when authentication succeeds, and refuse a logon at an
+instance the session is not provisioned for.
 
-The natural home is the admin service, which already owns comp-id provisioning and already writes
-the database that is the source of truth for credentials. A comp id gains a primary and a backup
-gateway instance, and the gateways learn their own assignments the same way they learn credentials.
+Four decisions, each with a plausible alternative:
 
-This interacts with the already-decided **one comp id may hold a session only once venue-wide**
-(recorded in the [roadmap](../roadmap.md), under gateway availability, fairness and identity). Pinning narrows that problem usefully: with only two
-instances able to host a given session, the duplicate check has two places to look rather than N.
-It still needs the sequencer as the shared authority, and it is still a cross-component protocol
-change; it is not solved by pinning, only made smaller.
+- **They name an instance, not a protocol.** Instance 1 of the FIX gateway and instance 1 of the
+  binary gateway hold the same position in their own protocols, so a member's pinning applies to
+  whichever protocol it speaks. Pinning `(protocol, instance)` pairs would be truer to how a venue
+  partitions, but it would put protocol knowledge into the authentication service, which must have
+  none, and it buys a restriction nothing has asked for.
+- **Not pinned means any instance, and is the default.** Both columns may be empty, and empty
+  means the member expressed no preference. A venue that wants pinning to be mandatory provisions
+  its members; an unset column does not mean "refused".
+- **One backup, not a list.** This matches what venues publish, but the reason is structural: the
+  point of pinning is that only one nominated peer must be able to serve a session's recovery
+  state, and a third would make the session's sequence position and recovery consistent in three
+  places instead of two. Disaster recovery is not that third backup; at a real venue it is a
+  separate site with its own sequence regime.
+- **The refusal is its own outcome.** The binary protocol answers `LogonOutcome::NotProvisionedForInstance`
+  rather than `AuthenticationFailed`, and the FIX gateway's Logout says, for example,
+  `Session not provisioned for gateway instance 1 -- use instance 2`. The credential was good, and
+  saying otherwise would send the member off changing a password that was never the problem. The
+  check runs after the authentication service has proved itself with its `ServerSignature`,
+  because only then is the provisioning trustworthy.
 
-**Implemented 2026-08-05, in both gateways.** `pubsub_comp_id` gained
-`primary_gateway_instance` and `backup_gateway_instance`, and the values travel the path 3b
-already built: database → `export_credentials.py` → `credentials.toml` → authentication service →
-`AuthenticationResult` → gateway. They arrive *with* the session, on a path where the gateway has
-no database access, and the admin service edits them on the comp-id form.
+A credential that names a backup and no primary makes the authentication service refuse to start,
+naming the entry.
 
-Four decisions are worth recording, because each had a plausible alternative:
+### Session identity, and where a report goes
 
-**They name an instance, not a protocol.** Instance 1 of the FIX gateway and instance 1 of the
-binary gateway are separate processes holding the same position in their own protocol, so a
-member's pinning applies to whichever order-entry protocol it speaks. The alternative — pinning
-`(protocol, instance)` pairs, so a comp id could be provisioned for FIX and not binary — is truer
-to how a venue partitions, but it would put protocol knowledge into the authentication service,
-which its own DSL header says must have none, and it would need the gateway to declare its
-protocol in `AuthenticationRequest`. It buys a restriction nothing has asked for yet.
+**A session is identified by `(comp id, protocol)`.** The instance is not part of it, because a
+failover moves a session between instances of one protocol. The protocol is, because a FIX and a
+binary session under one comp id are two sessions and must not share a book or each other's
+reports.
 
-**Not pinned means any instance, and is the default.** Both columns are nullable and null means
-this member expressed no preference. That is the same "silence is not a value" rule the v2 grace
-period follows, and it is what stops the change locking out every comp id provisioned before it
-existed. The design says the venue must "reject a logon that arrives at the wrong instance" — it
-does, for every session that *has* a wrong instance. A venue that wants pinning to be mandatory
-provisions its members; it does not get there by having an unset column mean "denied".
+The sequencer keeps two maps rather than one:
 
-**One backup, not a list.** This matches what venues publish — Eurex T7, CME iLink and
-LSEG-lineage native all hand a session a primary and a backup — but the reason to keep it is
-structural rather than imitative: the argument for pinning at all is that only *one nominated
-peer* must be able to serve a session's recovery state. A third live peer reopens the
-distributed-state problem the pinning exists to avoid, and makes the outbound sequence number and
-replay cursor of steps 5 and 6 consistent in three places instead of two. Generalising later means
-a child table keyed on `(comp_id, rank)`, which is a contained change if it is ever wanted.
-Disaster recovery is *not* that third backup: at a real venue it is a separate site with its own
-sequence regime, and it is not modelled here at all.
+- sequence number of an order → the session that placed it;
+- session → where that session can be reached now (instance and connection).
 
-**The refusal is its own outcome.** The binary protocol gained
-`LogonOutcome::NotProvisionedForInstance` rather than reusing `AuthenticationFailed`, and the FIX
-gateway's Logout carries `Session not provisioned for gateway instance 1 -- use instance 2`. The
-credential was good; telling the member otherwise would send it off rotating a password that was
-never the problem. Naming its own provisioning gives nothing away — it is authenticated by the
-time the check runs, which is also why the check runs *after* the ServerSignature is verified
-rather than before: the provisioning is only trustworthy once the service has proved itself.
+The destination is looked up when a report is sent, not remembered when the order arrived, so a
+member that has reconnected while a report was on its way still receives it.
 
-The check itself is one decision taken once, at the moment authentication succeeds, in both
-gateways. Nothing is stored on the session: re-deciding it later would need state that can drift
-from the thing it was derived from.
+The gateways tell the sequencer where each session is with `SessionBound`, sent when a session is
+established, and `SessionUnbound`, sent when it goes away. The sequencer cannot work this out for
+itself: a member that reconnects and sends no order would never announce itself. `SessionUnbound`
+carries the connection id and is ignored if it does not name the current binding, so an unbind
+that arrives after the reconnect it raced with cannot undo it.
 
-**A defect found and fixed while building this.** `AuthenticationThread::persist_credentials`
-rewrites `credentials.toml` in full from its in-memory SCRAM map every time an admin sets, removes
-or restores a credential — so it had been silently stripping every member's cancel-on-disconnect
-provisioning since 3b, leaving them on gateway defaults with nothing in any log to say so. The
-same rewriter would have eaten the pinning. It now writes the session policy back out beside the
-credential it belongs to. This is the third instance of the same shape: a component that owns one
-part of a record regenerating the whole record and discarding the rest.
+Three consequences:
 
-### Recovering in-flight reports
+- **The matching engine's book is keyed on the session identity** and the `ClOrdID`
+  (`OrderKey`), which is what lets a member cancel, from a new connection, an order it left resting.
+- **`BookUpdate` replication carries the identity,** not a connection. On promotion, any connection
+  in the replica would name the process whose death caused the promotion.
+- **The matching engine stamps whose report it is, never where it goes.** The sequencer resolves
+  the destination. The engine has no way to know where a member is, and on the cancel-on-failover
+  path any address it remembered would be out of date by construction.
 
-This is gaps 3, 4 and 6, and it is the substantial part.
+### Keeping a FIX member's message numbering across a reconnect
 
-The requirement, stated precisely: on logon, a session must be able to receive every execution
-report generated for it since a sequence position it nominates, whether those reports were
-generated while it was connected, while it was disconnected, or in the moment its connection died.
+A reconnecting FIX member continues its numbering rather than starting again at 1. The sequencer
+hands the session's outbound sequence number back to the gateway in `SessionBoundAck`. It cannot
+count that number itself, because it covers every message sent to the member, including heartbeats
+and rejects that never reach the sequencer, so the gateway reports it.
 
-**The reports already exist and are already durable.** The sequencer's WAL holds every one, with a
-sequence number, tagged with the session that originated the order. Nothing needs to be invented to
-store them; what is missing is the ability to *replay a single session's slice* of that stream. The
-project already has the primitive for this — the topic pub/sub layer from slice 10 provides replay
-from a cursor, and the ER topic already streams execution reports.
+Because a gateway can die without warning, three things work together, each covering another's
+blind spot:
 
-So the shape is:
+- The gateway reports its outbound sequence number **periodically**, in `SessionSequenceUpdate`, as
+  well as in `SessionUnbound`, so an abrupt death leaves a recent figure rather than nothing. The
+  sequencer keeps the highest figure it has been sent and never lowers it.
+- The sequencer **counts the execution reports it forwards** to each session after that figure. It
+  resolves a destination for every report already, so the count is exact, and reports are most of
+  what a member is sent.
+- On an **unclean** rebind, recognised because the identity is still bound when the new
+  `SessionBound` arrives, it resumes at the highest figure, plus the reports it has forwarded since,
+  plus a small allowance for administrative messages it cannot see.
 
-1. **Stop dropping.** When the target gateway is not connected, the report is not discarded; it
-   stays in the WAL, which it is in anyway. The drop path becomes a no-op rather than a loss,
-   because delivery is driven by the reconnecting session asking for its slice, not by the
-   sequencer pushing at a connection that may not exist. *Built differently, and the
-   difference is worth being clear about. A report for a session bound nowhere is still
-   dropped at the moment it is generated -- but it is in the WAL, and the reconnecting session
-   asks for its slice, which is what this point was really describing. The drop is no longer a
-   loss.*
-2. **Key the routing entry on the session, not the connection.** The connection triple stays as the
-   *current destination*. The *key* becomes the provisioned session identity, so that a logon can
-   re-bind the destination to a new connection on a different instance. This is the direct answer
-   to gap 6: the identity that must survive is the session's, and the connection is a mutable
-   attribute of it. **Done, as step 5.** The identity turned out to be `(comp id, protocol)`
-   rather than the provisioned pinning itself, which names instances and so cannot survive an
-   instance change.
-3. **Replay on logon.** The gateway, having authenticated a session, asks the sequencer for that
-   session's reports from the member's nominated position and encodes them to the wire in its own
-   protocol, with FIX `PossDupFlag=Y` where the report was previously sent. **Done, as step 6** --
-   though driven by the member's ResendRequest rather than by the logon itself, which is what FIX
-   prescribes: the venue restores the session's numbering, and the member decides whether it is
-   missing anything.
-4. **Retire the blanket gap-fill.** `handle_resend_request` stops answering everything with
-   `SequenceReset-GapFill`. The FIX convention is that administrative messages are gap-filled and
-   application messages are resent; execution reports are application messages. The feedback-loop
-   hazard the current comment describes is real and must be avoided by resending the range in one
-   pass, not by reverting to one-at-a-time filling. **Done, as step 6.** The range is answered in
-   one pass, and a second ResendRequest arriving while one is running is ignored rather than
-   restarting it -- which is the same feedback loop reached from the other direction.
+Every unknown is resolved **upward on purpose**: overstating leaves a gap the member closes with a
+ResendRequest, which is answered with the real reports and a gap fill for the rest; understating
+ends the session (fact 1).
 
-The FIX outbound sequence number needs care. It is per session, not per connection, and it must
-survive the instance change — otherwise the backup starts at 1 and the member sees a sequence
-break it cannot reconcile. It belongs with the session's provisioned state, alongside the primary
-and backup assignment.
+A member that logs on with `ResetSeqNumFlag=Y` is asking to start again at 1, and by its own account
+has nothing missing, so the venue does as it asks. Ignoring the flag would lock the two sides into a
+resend loop neither could end.
 
-### Cancel-on-disconnect: configurable per comp id, with a grace period
+### Sending a FIX member the reports it missed
 
-**Decided 2026-07-31.** It stays, becomes configurable per comp id, and gains a configurable
-grace period.
+When a member sends a ResendRequest, the gateway asks the sequencer for the session's execution
+reports (`SessionReplayRequest`), sends them again with `PossDupFlag=Y` and `OrigSendingTime`, and
+gap-fills only the administrative messages in the range, which is the split FIX prescribes.
 
-Today it is unconditional and immediate. `queue_session_for_cleanup` cancels every open order the
-moment a connection drops; the 1ms drain timer paces the emission at 500 per batch and is not a
-delay before cancelling.
+- **The gateway asks for exactly as many reports as the gap the member described,** and the
+  sequencer returns the session's most recent reports up to that number. What a member has missed
+  is the end of its stream, not the beginning. A ResendRequest's `BeginSeqNo` is a number in the
+  member's sequence and the log is numbered by the venue's own sequence, so there is no mapping
+  between them; asking by width avoids needing one. It is exact when the gap is all execution
+  reports, and when it is not, the remainder is gap-filled.
+- **Only reports inside the gap are marked `PossDupFlag=Y`.** A resent report carries a lower
+  sequence number than the member expects, and FIX requires a member to treat that as fatal unless
+  the flag is set, so the flag is not decoration.
+- **The range is answered in one pass,** and a second ResendRequest arriving while one is being
+  answered is ignored rather than restarting it. Answering one message at a time, or restarting on
+  each request, sets off a loop of requests that freezes the session.
+- **The reports come from a scan of the sequencer's log.** Every report is already there, tagged
+  with its session, so nothing is stored twice. The sequencer reads its log from the oldest
+  retained segment and keeps the matching records. Measured: 18 ms to scan a 4 MB log and return
+  3,223 records for one session. The log has no index, deliberately: an index would put work on the
+  path every order takes so that a rare reconnect could be quicker.
 
-**The grace period is not a refinement, it is what makes gateway failover coherent.** As things
-stand, when a gateway process dies every session on it drops and every member's book is flattened
-immediately. Run two instances, kill one, and the high-availability mechanism produces exactly the
-outcome high availability exists to prevent. The reconnect window and the cancel delay are the
-same number: if cancellation waits long enough for a member to reach its backup, a gateway failure
-becomes a reconnect, some replayed reports, and a book still standing.
+### Cancel-on-disconnect, per comp id, with a grace period
 
-This is therefore not a separate question from steps 4-6. It is the same question.
+When a member's connection drops, its gateway can cancel its open orders, so that nothing stays live
+on the book behind a session nobody is managing. The grace period is what makes this compatible with
+gateway failover: if cancellation waits long enough for a member to reach its backup, a gateway
+failure becomes a reconnect and a book still standing, rather than every member on the failed
+instance having its book flattened.
 
-What venues do, and what this follows:
+- **On by default, with a 30-second grace period,** set in each gateway's
+  `[cancel_on_disconnect]` section (`enabled`, `grace_period`).
+- **Settable per comp id.** `cancel_on_disconnect_enabled` and
+  `cancel_on_disconnect_grace_period_seconds` travel the same path as the provisioning above and
+  arrive with the session. An empty grace period means the member expressed no preference and the
+  gateway's default applies; zero means cancel at once. The two are kept distinct at every step: an
+  empty database column, an omitted TOML key, an optional message field, and `std::optional` in the
+  session.
+- **A dropped session's orders are held, not cancelled.** If the same comp id logs on again inside
+  the grace period, nothing is cancelled at all.
+- **GoodTillCancel and GoodTillDate orders are never cancelled on disconnect,** because they are
+  meant to outlive the session. The matching engine echoes `TimeInForce` on every execution report so
+  the gateway can tell them apart.
+- **A clean FIX Logout cancels at once,** because the member has said what it wants. The binary
+  protocol has no logout message, so every disconnect there takes the full grace period.
+- **`enabled = false` leaves every order resting** and gives the member full responsibility for them.
 
-- **Configurable per session or comp id**, applied at provisioning rather than toggled by the
-  client. Here that means the admin service and the database, which already own comp-id
-  provisioning -- so a Liquibase changeset, a DAO field and an admin UI control.
-- **Default on.** An unmanaged book behind a dead session is the worse failure.
-- **A grace period before cancelling**, defaulting to comfortably longer than a FIX reconnect.
-- **Persistent order types excluded.** GTC and GTD are by definition meant to outlive the session;
-  killing them because a socket dropped defeats what the member asked for. TimeInForce is already
-  carried in the data dictionary, so the information is to hand.
-- **A clean Logout treated differently from an unexpected drop.** A member that logs out has said
-  what it wants; a socket that vanished has not.
-
-The last two were recommendations when this was written; both were confirmed on 2026-08-01
-and are implemented.
-
-**Implemented 2026-08-01, in both gateways.** `[cancel_on_disconnect] enabled` and
-`grace_period` in each gateway's configuration, defaulting to on and 30 seconds:
-
-- A dropped session's orders are parked, not cancelled. If the same comp id logs on again
-  inside the window they are released untouched and **nothing is cancelled at all**.
-- GoodTillCancel and GoodTillDate are never cancelled on disconnect. The matching engine
-  now echoes `TimeInForce` on every execution report so the gateway can tell them apart --
-  it previously did not, which is why this could not have been built without that change.
-- A clean FIX Logout cancels immediately, bypassing the window. The binary protocol has no
-  logout message, so every disconnect there takes the full grace period.
-- `enabled = false` leaves every order resting and hands the member full responsibility.
-
-`ha_test.py` scenario 19 covers it: drop the client with the gateway still running, prove
-the gateway holds rather than cancels, prove nothing is cancelled while the window is open,
-then reconnect the same comp id and prove no cancel is ever sent. It fails if `grace_period`
-is set to zero, so it discriminates rather than merely passing.
-
-**What this deliberately did not do, when it was built: the reconnecting session did not
-adopt the held orders.** They stayed resting on the book, but the new connection could not
-cancel them, because the matching engine keyed an order by the connection id it arrived on.
-Adopting the entries in the gateway would have made it claim a control it did not have, so
-the fix belonged one layer down. *Step 5 did that: the book is keyed on the session's identity,
-so a reconnected member cancels what it left resting without anything being adopted or
-transferred. "Your book survives" and "you can manage it from the new session" are now both
-true.*
-
-**Per comp id as well as venue-wide, as of 2026-08-01.** `pubsub_comp_id` gained
-`cancel_on_disconnect_enabled` and `cancel_on_disconnect_grace_period_seconds`; the values
-travel database -> `export_credentials.py` -> `credentials.toml` -> authentication service ->
-`AuthenticationResult` -> gateway, so they arrive *with* the session rather than needing a
-second lookup on a path where the gateway has no database access. The admin service edits
-them on the comp-id form.
-
-The grace period column is deliberately **nullable, and null is not zero**: null means the
-member expressed no preference and the gateway's configured default applies, whereas zero
-means cancel immediately. Keeping those distinguishable is what lets an operator raise the
-venue-wide window without revisiting every member, and the distinction is preserved at every
-hop -- a nullable column, an omitted TOML key, an optional DSL field, and `std::optional` in
-the session.
-
-Scenario 19 asserts the *number* the gateway holds for, not merely that it held, because
-every hop that drops the value leaves the gateway silently on its default. That assertion
-immediately earned its keep: the test harness's own credential rewriter was discarding the
-provisioning while refreshing SCRAM material, which looked exactly like the gateway ignoring
-the setting.
-
-
-## What this does not solve
-
-**Access latency is not equalised.** Pinning fixes ordering fairness — the sequencer stamps the
-monotonic number and that, not the arrival gateway, dictates processing order. It does not make the
-time to *reach* the sequencer equal across instances. Two members on different gateway instances,
-or different network paths, can still see different latencies to the sequencing point. That has to
-be argued on symmetric paths, identical hardware per instance and per-gateway capacity, which is
-how venues actually discharge the duty. It is not a sequencing problem and the sequencer cannot fix
-it.
-
-**A gateway instance is still a single point of failure for the sessions pinned to it**, until
-those sessions fail over to their backup. Pinning bounds the blast radius rather than removing it;
-the member-visible interruption remains a reconnect, measured in seconds.
-
-**Nothing here addresses the inbound ceiling.** One reactor per gateway still caps inbound TCP,
-frame decode and dispatch. More instances raise the aggregate ceiling, which is a real benefit, but
-each session's own throughput is still bounded by the one instance serving it.
+What venues do, and what this follows: cancel-on-disconnect is configured per session or comp id
+when the member is provisioned, on by default, with a grace period comfortably longer than a
+reconnect, persistent order types excluded, and a clean logout treated differently from a dropped
+connection.
 
 ---
 
-## How it was built
+## Tests
 
-**All six steps are done**, between 2026-08-05 and 2026-08-06. This section is the record of the
-order they were taken in and why, not a plan waiting to be executed. It is kept because the
-reasoning behind each step is what stops the next person undoing it.
+| Scenario | What it requires |
+|---|---|
+| 16, `primary_me_death` | After a matching engine failover, the gateway sends at least one report per order and one per cancel, so the cancel-on-failover reports reach the member |
+| 18, `fix_gateway_a_death` | FIX instance `a` is killed and the matching engine then cancels the orders `a`'s members placed. Nothing is elected, instance `b` keeps running, and, with no member reconnected, the sequencer drops every cancel report. That is today's behaviour for a session bound nowhere, [BUG-0088](../bug_list.md#bug_0088), and the assertion must change when that is fixed |
+| 19, `cancel_on_disconnect_grace` | With the gateway running, a dropped member's orders are held for the provisioned grace period, the number itself and not the gateway's default, and a reconnect inside it cancels nothing. It fails if the grace period is zero |
+| 20, `session_provisioning` | The gateway admits a comp id provisioned for its instance, naming both numbers, and refuses it once it is provisioned elsewhere, through the database and a real credentials export |
+| 21, `reconnect_inherits_reports` | 1,000 orders rest, the member reconnects on a new connection, the leading matching engine is killed, and all 1,000 cancel reports reach the new connection |
+| 22, `resend_recovery` | With a client that does not reset its numbering, the numbering resumes, the member asks for what it missed, real reports come back, and they carry `PossDupFlag=Y` as received by the client |
+| 23, `inflight_gateway_death` | A gateway killed with orders in flight; the member returns to its backup numbered where it had reached, with its orders still live |
 
-Each step leaves the system working.
+The binary gateway's provisioning refusal and its cancel from a new connection, across instances,
+have been checked by hand with `binary_client`; `ha_test.py` drives these scenarios through FIX.
 
-1. **Instance identity on the envelope.** `gateway_instance_id` plus the encode and decode paths
-   and their round-trip tests. No behaviour change. **Done** — committed as an *optional* field
-   with absent-means-1, which step 2 replaces with a required field once the sequencer can supply
-   it on every path. The optional form is a staging post, not the intended end state.
-2. **Sequencer endpoint collection, and gateways stamping their instance.** **Done.**
+---
 
-   2a: the sequencer's scalar gateway host/port pairs and the `binary_order_gateway.enabled` flag
-   become a `[[gateway]]` array of tables, each entry carrying protocol, instance, host, port and
-   its own `enabled` flag. `gateway_conn_ids_` is rekeyed on `(protocol, instance)` and
-   `send_er_to_origin_gateway` takes both axes. Duplicate pairs are rejected at load.
+## What this does not solve
 
-   2b: each gateway process carries `gateway.instance_id` in its configuration and stamps it onto
-   every order envelope beside the protocol id.
+**Access latency is not equalised.** Ordering is fair, because the sequencer's number, not the
+gateway an order arrived at, decides the order in which orders are processed. But the time to
+*reach* the sequencer is not equal across instances or network paths. That is answered with
+symmetric paths, identical hardware per instance and enough capacity per gateway, which is how
+venues meet the obligation. It is not a sequencing problem and the sequencer cannot fix it.
 
-   An earlier draft of this step proposed attributing origin from the arrival connection instead,
-   via an announce PDU sent on connect. That was dropped: it rested on the mistaken belief that
-   the FIX gateway sends bare orders and could not stamp an origin. Both gateways already stamp
-   per message, so the announce would have bought only that a gateway cannot misreport its own
-   identity — weak between venue components — at the cost of a protocol addition and
-   per-connection state.
+**A gateway instance is still a single point of failure for the sessions pinned to it,** until
+those sessions reconnect to their backup. Pinning bounds how many members one failure affects; it
+does not remove the interruption, which is a reconnect measured in seconds.
 
-   Its one genuine benefit, a validation point, is kept without it: the sequencer logs an error
-   once per unrecognised `(protocol, instance)` pair for which it has reports but no configured
-   endpoint, naming the pair and the likely cause. Once per pair rather than once per report.
-
-   Still missing: the loader has no unit test, there being no sequencer configuration loader test
-   to extend. Worth adding before step 3 runs two instances for real.
-
-3. **Run two gateway instances of each protocol in dev.** **Done.** The first point at which the
-   single point of failure is actually reduced rather than described, and the first honest test of
-   steps 1 and 2. Needed `gateway.instance_id` in the gateway app TOMLs, a second component per
-   protocol in the environment with its own ports, a second `[[gateway]]` entry per protocol in the
-   sequencer configuration, and devenv launching them.
-
-   FIX went first and was proven both ways: 1,000 orders driven at instance `a` and then at
-   instance `b`, with both processes running in both cases, each instance receiving only its own
-   orders and their execution reports. The binary gateway then took the same split, so dev now runs
-   four gateway processes and the sequencer carries four `[[gateway]]` entries.
-
-   Instances are named `_a`/`_b`, not `_primary`/`_secondary`: nothing elects a gateway, a member
-   chooses which to connect to, so this is caller-selected redundancy and follows the
-   authentication service's precedent. The suffix goes on the component name and its config file;
-   the binary and the working directory stay unsuffixed, because there is still one program and one
-   `etc/` directory per protocol.
-
-   Only the `_a` instance of each protocol is deployed outside dev. The `_b` entries exist in
-   preprod, prod and test-1 with `enabled = false`, so a second instance is a configuration change
-   rather than a template edit.
-
-3b. **Cancel-on-disconnect made configurable, with a grace period.** Decided 2026-07-31; see the
-   section above. Sequenced here rather than with steps 4-6 because without the grace period, a
-   gateway failover flattens every book on the failed instance -- so step 3 demonstrates the
-   failure mode, and this is what makes the demonstration worth having. Spans a Liquibase
-   changeset, a comp-id DAO field, an admin UI control, gateway configuration and the cancel path
-   itself.
-
-4. **Session provisioning.** **Done 2026-08-05.** Primary and backup per comp id in the admin
-   service and database; both gateways refuse a logon at an instance a session is not provisioned
-   for, and admit one that is not pinned at all. See the section above for the four decisions and
-   for the `persist_credentials` defect this turned up.
-
-   `ha_test.py` scenario 20 covers the FIX gateway: it pins the test comp id to the instance the
-   harness runs with another as its backup, requires the gateway to name *both numbers* on
-   admission, then re-provisions the comp id onto an instance the harness does not run — through
-   the database and a real credentials export — and requires the next logon to be refused with no
-   session established. Both halves were verified to fail when broken: pointing the second half at
-   the instance the gateway already is makes it fail to refuse, and dropping the values in
-   `export_credentials.py` makes the first half fail to see them. The scenario restores the comp
-   id to unpinned in teardown, because a comp id left pinned to an instance the harness does not
-   run refuses the baseline logon of every scenario after it.
-
-   The binary gateway was proven live against the dev sandbox rather than in `ha_test.py`, which
-   drives FIX only: with the comp id pinned to instance 2, `binary_client` was refused at instance
-   1 with `NotProvisionedForInstance` and the text naming instance 2, accepted and trading at
-   instance 2, and accepted at instance 1 again once unpinned.
-
-   Half-dropped provisioning is a startup failure, not a silent default: a credential carrying a
-   backup with no primary makes the authentication service refuse to start, naming the entry. That
-   was observed rather than designed — it fell out of the loader validation while the negative
-   controls above were being run — and it is the right behaviour, so it stays.
-5. **Re-key the routing entry** on session identity with the connection triple as destination.
-   **Done 2026-08-06.**
-
-   The sequencer's routing entry was `seq_no -> (connection, protocol, instance)`: an order
-   was filed under the *address* it arrived at. That address is a socket on a process, so it
-   died with the connection, was renumbered on reconnect, and did not exist at all at the
-   member's backup gateway. It is now split in two — `seq_no -> session identity`, and
-   `session identity -> current destination` — and the destination is resolved at the moment
-   a report is sent rather than remembered when the order was placed.
-
-   **The identity is `(comp id, protocol)`.** Not the comp id alone: an instance failover
-   moves a session between instances of one protocol, so the instance must not be part of
-   it, but a FIX and a binary session sharing one comp id are genuinely two sessions and
-   must not share a book or each other's reports. The venue rule that one comp id holds a
-   session only once still applies within a protocol, and is still unenforced; the sequencer
-   now logs when it sees a comp id bind while already bound, which is the first half of it.
-
-   **The bindings come from the gateways**, as `SessionBound` and `SessionUnbound` PDUs sent
-   when a session is established and when it goes away. The sequencer cannot infer them: it
-   listens on one port and accepts, so it cannot tell instances apart from a connection, and
-   a member that reconnects and sends no order would never announce itself. `SessionUnbound`
-   carries the connection id and is ignored when it does not name the current binding, so a
-   reconnect that overtakes the old connection's unbind — two gateways racing, which is what
-   a failover produces — cannot unbind the session it just bound.
-
-   Three consequences worth stating plainly:
-
-   - **The matching engine's book is keyed on the identity too** (`OrderKey`), which is what
-     lets a reconnected member cancel an order it left resting. Until now it could see the
-     order but not touch it, because the key held the connection that placed it. That was
-     called out as the gap at the end of the cancel-on-disconnect section, and it is closed.
-   - **`BookUpdate` replication carries the identity**, not the connection id. Replicating an
-     address was wrong in the one case the message exists for: on promotion, the addresses
-     in the replica named the process whose death caused the promotion.
-   - **The matching engine no longer stamps a destination on any report.** It stamps whose
-     report it is; the sequencer resolves where that member currently is. The ME has no way
-     to know, and on the cancel-on-failover path any address it remembered would be stale by
-     construction.
-
-   Proven live, in the way that matters most — from a client rather than from a log:
-   `binary_client` placed an order on instance 1, disconnected, and a *new* connection
-   cancelled it; then the same across instances, placed on instance 1 and cancelled from
-   instance 2, with the report coming back on instance 2. The sequencer's log shows the
-   session re-binding from instance 1 to instance 2 between the two.
-
-   `ha_test.py` scenario 21 covers the FIX path: 1,000 orders rest on the book, the client
-   drops and returns on a new connection, then the matching-engine primary is killed and the
-   promoted secondary cancels the whole book. All 1,000 cancel reports must reach the new
-   connection — reports for orders whose originating connection no longer exists.
-
-   **The first negative control for that scenario passed, which meant it proved nothing.**
-   Suppressing re-binds alone was not enough, because the client's disconnect unbinds the
-   session first, so a reconnect faces no existing binding to refuse. Freezing the
-   destination properly — suppressing the unbind as well — reproduces the pre-step-5
-   behaviour, and the scenario then fails with 1,000 reports instead of 2,000. Worth
-   recording because the weak control looked exactly like a passing test.
-
-   One harness change fell out of the re-keying. `perf_run.py --clients N` ran N FIX clients
-   under a single comp id, which only worked because the book key included the connection
-   id; f8test numbers its ClOrdIDs from one in every process, so under an identity-keyed
-   book all but the first client's orders would be duplicates. Each client now gets its own
-   comp id, its own credential and its own generated session config, exactly as the binary
-   load client already did.
-6. **Session-slice replay on logon**, and retire the blanket gap-fill. **Done 2026-08-06**,
-   to a deliberately bounded scope: the replay path in full, and enough FIX conformance to be
-   honest about what the member is handed. What was *not* built is listed at the end.
-
-   `handle_resend_request` no longer answers everything with a `SequenceReset-GapFill`. It
-   asks the sequencer for the session's execution reports, resends them with `PossDupFlag=Y`
-   and `OrigSendingTime`, and gap-fills only the administrative remainder -- which is the
-   split FIX actually prescribes.
-
-   **Sequence continuity comes first, because without it the member never asks.** A session's
-   outbound number is reported to the sequencer and handed back at `SessionBoundAck`, so a
-   reconnect continues the member's numbering instead of restarting at 1. The sequencer cannot
-   count that number itself -- the FIX outbound number covers every message sent to the member,
-   including the heartbeats and rejects that never reach the sequencer -- so it is reported
-   rather than derived.
-
-   > **Correction.** This section originally claimed that a killed gateway leaves the venue
-   > *behind* the member, "which its own ResendRequest then resolves". **Both halves were
-   > wrong**, and scenario 23 found it by killing a gateway with orders in flight.
-   >
-   > A ResendRequest resolves the venue being **ahead** -- a gap. The venue being **behind**
-   > sends the member a sequence number lower than it expects, which FIX treats as a fatal
-   > condition, not a recoverable one. And in practice the venue was not even behind: reporting
-   > the number only at `SessionUnbound` meant a killed gateway reported nothing at all, so the
-   > sequencer said *"sequence state is new"* and started the returning member at 1. With a
-   > client whose own store had also restarted, both sides sat at 1, no gap was visible, and
-   > the member was silently resynchronised while **5,000 of its orders were live on the book**.
-   > It was told nothing.
-
-   **The number is therefore reported continuously and resumed deliberately high.** Three
-   things together, each covering another's blind spot:
-
-   - The gateway reports its outbound sequence **periodically**, not only at unbind, so an
-     abrupt death leaves a recent high-water mark rather than nothing. The sequencer keeps the
-     maximum and never lowers it.
-   - The sequencer **counts the execution reports it forwards** to each session since that
-     report. It resolves a destination per report already, so this is exact, and reports are
-     the overwhelming bulk of what a member is sent.
-   - On an **unclean** rebind -- detectable because the identity is still bound when the new
-     `SessionBound` arrives -- it resumes at high-water plus those reports plus a small
-     allowance for the admin messages it cannot see.
-
-   Every unknown is biased **upward on purpose**: over-stating leaves a gap the member closes
-   with a ResendRequest, and step 6's replay then hands back the real reports with a gap-fill
-   for the remainder. Under-stating kills the session. The two errors are not symmetrical, and
-   the design must not treat them as though they were.
-
-   **`ResetSeqNumFlag=Y` is honoured, and had to be.** A member that asks to start again at 1
-   is declining continuity, and by its own account has nothing missing. Ignoring that would
-   deadlock the two sides into a resend loop neither could end.
-
-   **The replay is a filtered WAL scan.** Nothing is stored twice: every report is already in
-   the WAL with the session that originated it on its envelope, as of step 5. The sequencer
-   walks its WAL, keeps the records matching the identity, and streams them back. Measured
-   rather than assumed: **18 ms to scan a 4 MB retained WAL and return 3,223 records** for one
-   session. The cost is a scan from the oldest retained segment, because the WAL is an
-   append-only log with no index -- deliberately, since indexing it would put work on the
-   write path that every order pays for so that a rare reconnect can be quicker.
-
-   Two mistakes made while building it, both worth recording because both looked like
-   working code:
-
-   - **The replay first streamed matches as it found them, oldest first.** What a member has
-     missed is the *tail* of its stream, so filling the gap from the beginning hands it
-     ancient history and never reaches what it actually missed. It also made the answer
-     unbounded: a member asking for a thousand messages was sent the session's whole retained
-     history. The sequencer now collects the most recent `max_records` matches in a window and
-     sends those, and the gateway asks for exactly the gap width the member described.
-   - **`PossDupFlag` was applied to every replayed report**, including those past the
-     requested range -- reports the venue had never delivered, marked as possible duplicates.
-     It now marks only what falls inside the gap the member asked about.
-
-   `ha_test.py` scenario 22 covers it, driven by a client configured *not* to reset its
-   sequence numbers. It asserts the numbering resumed, that the member asked, that real
-   reports came back -- and then counts `PossDupFlag=Y` in the **client's own received
-   messages**, because whether a resent report is marked is a fact about what the member was
-   handed, and the gateway's record of it sits below the deployed log level.
-
-   The negative control for that last assertion is the most instructive result of the whole
-   step. Removing `PossDupFlag` does not merely mislabel the messages: the member **closed the
-   connection**. A resent report carries a sequence number lower than expected, and FIX
-   requires a member to treat that without `PossDupFlag` as fatal. The flag is not decoration.
-
-   **Deliberately not built**, and the honest limits of what a member gets back:
-
-   - **No outbound message store.** Only execution reports are replayable, because only they
-     are in the WAL. Administrative messages are gap-filled, as FIX permits.
-   - **Replay depth is bounded by WAL retention** -- by design. In practice nothing truncates
-     the WAL today (BUG-0048), so the bound is disk capacity rather than a retention policy.
-     A real venue would keep a separate outbound store for the trading day.
-   - **No durability across a venue restart.** The remembered sequence numbers live in the
-     sequencer's memory; restarting the pair loses them.
-   - **The binary gateway is unchanged.** It has no session layer to hang a resend on, so
-     "in-flight reports survive" means something different there -- see the open questions.
-
-Steps 1-3 are the SPOF work and are worth landing on their own. Steps 4-6 are the in-flight-report
-decision and are the larger half.
+**Nothing here raises the limit on one session's throughput.** One reactor per gateway carries all
+of its inbound TCP, decoding and dispatch. More instances raise the venue's total capacity, but a
+session is still served by one instance.
 
 ---
 
 ## Open questions
 
-- ~~What does a member nominate as its recovery position?~~ **Answered by step 6, and the
-  answer avoided the mapping rather than building it.** `BeginSeqNo` is a session-level number
-  and the WAL is numbered by the venue's own sequence, so no mapping between them exists. What
-  the gateway sends instead is the *width* of the gap the member described, and the sequencer
-  returns that many of the session's most recent reports. The member's numbering is then
-  applied on the way out. That is exact when the gap is all execution reports, and when it is
-  not, the administrative remainder is gap-filled -- which is the case the FIX split already
-  covers. A true mapping would need the outbound store this deliberately does not have.
-- **How does a member discover that its primary is down?** Tracked as BUG-0045.
-- **Does the binary order gateway get the same treatment?** Settled for step 4: both gateways
-  enforce pinning and both refuse the same way. The resend half, steps 5 and 6, is still open and
-  is tracked as BUG-0046.
-- **Should the WAL scan become an indexed lookup?** A replay is a scan from the oldest
-  retained segment: 18 ms for 4 MB today, and linear in what the WAL holds. That is
-  comfortable for a reconnect and would not be for anything frequent. The alternatives -- a
-  per-session cursor, or segment skipping -- trade write-path cost or memory for it, and none
-  is worth paying until a replay stops being rare. Making replay a first-class framework
-  capability has been raised separately, and that is where this belongs.
-- **Disaster recovery is not modelled at all**, and a second site is not a third backup. Tracked
-  as BUG-0047.
+- **How does a member discover that its primary is down?** [BUG-0045](../bug_list.md#bug_0045).
+- **What does the binary gateway do instead of a resend?** Its protocol has no session layer, so
+  surviving a reconnect needs its own mechanism. [BUG-0046](../bug_list.md#bug_0046).
+- **Should the log scan become an indexed lookup?** A replay is linear in what the log holds:
+  18 ms for 4 MB, which is comfortable for a reconnect and would not be for anything frequent. A
+  cursor per session, or skipping segments, would trade work on the order path or memory for it,
+  and neither is worth paying while a replay is rare.
+- **Disaster recovery.** A second site is not a third backup. [BUG-0047](../bug_list.md#bug_0047).
