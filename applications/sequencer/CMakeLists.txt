@@ -56,6 +56,21 @@ install(TARGETS inject_order
         RUNTIME DESTINATION bin
 )
 
+# Loaded with LD_PRELOAD into one sequencer by ha_test.py, to stop what it sends to its peer from
+# arriving once a flag file appears, so that a leader can be made to die holding records its
+# follower never received (BUG-0103). Not for a live venue.
+add_library(block_sends_to_ports SHARED
+        tools/BlockSendsToPorts.cpp
+)
+
+target_link_libraries(block_sends_to_ports PRIVATE
+        ${CMAKE_DL_LIBS}
+)
+
+install(TARGETS block_sends_to_ports
+        LIBRARY DESTINATION lib
+)
+
 # ── Unit tests ────────────────────────────────────────────────────────────────
 # The configuration loader is the part worth testing here: it grew an array-of-tables
 # parse with duplicate detection and an enabled filter, and a mistake in it produces a

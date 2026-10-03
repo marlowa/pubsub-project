@@ -803,6 +803,15 @@ class Scenario(NamedTuple):
     # must be removed. A gap recorded as a passing test is the failure this file exists to
     # avoid, so it is never recorded that way.
     expected_failure: str = ""
+    # When True, the primary sequencer is started with libblock_sends_to_ports.so preloaded, so
+    # that the test can stop everything it sends to its peer from arriving, by creating a flag
+    # file. Until the file exists the library passes every send through. Used by the
+    # "unreplicated orders" block, which creates the file.
+    block_leader_peer_sends: bool = False
+    # When True, make the leading sequencer die holding orders its follower never received, and
+    # assert that the matching engine does not hold an order the new leader's log does not hold.
+    # See run_scenario's "unreplicated orders" block.
+    assert_engine_holds_only_logged_orders: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3392,6 +3401,43 @@ _SCENARIOS: list[Scenario] = [
         assert_engine_identifier_refusal=True,
         steps=[],
     ),
+
+    # 59 -- the leading sequencer dies holding orders its follower never received.
+    #
+    # The leading sequencer sends each order to the matching engine before it sends the order's
+    # record to its follower. If it dies between the two, the engine holds an order that no
+    # surviving log holds: the follower takes the lead without the record, and gives its sequence
+    # number to the next order it receives. The member is never told of the order, because its
+    # report waits for the follower's acknowledgement, yet the order rests on the book and could
+    # trade.
+    #
+    # Killing the leader in that window cannot be done on purpose, so the window is made as long
+    # as the test needs. The primary sequencer is started with libblock_sends_to_ports.so
+    # preloaded, and once the flag file is created nothing more it sends to its follower arrives.
+    # Three orders are then handed to both sequencers, as a gateway hands them; the follower
+    # discards its copies, as a follower does. The engine accepts all three, the leader is killed,
+    # and the follower takes the lead.
+    #
+    # The requirement asserted is that the engine holds no order the new leader's log does not
+    # hold. Today it does, which is BUG-0103.
+    Scenario(
+        number=59,
+        short_name="unreplicated_orders_at_leader_death",
+        description="The leading sequencer dies holding orders its follower never received",
+        expected_outcome=(
+            "every order the matching engine accepted is held in the log of the sequencer that leads after the old "
+            "leader's death, so the engine holds nothing that no log holds"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        block_leader_peer_sends=True,
+        assert_engine_holds_only_logged_orders=True,
+        expected_failure=(
+            "BUG-0103 -- the matching engine accepts orders from the leading sequencer before the follower holds "
+            "them, so orders the leader took just before it died are on the book and in no surviving log"
+        ),
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4303,7 +4349,8 @@ def check_me_seq_monotonic(me_log: Path) -> tuple[bool, list[tuple[int, int, int
 
 
 def launch_app(name: str, bin_name: str, config: Path,
-               bin_dir: Path, log_dir: Path, run_dir: Path | None = None) -> subprocess.Popen:
+               bin_dir: Path, log_dir: Path, run_dir: Path | None = None,
+               extra_environment: dict[str, str] | None = None) -> subprocess.Popen:
     """Start one component, optionally under scripts/launch.py.
 
     With run_dir given the component is supervised: launch.py restarts it if it dies, and the
@@ -4314,6 +4361,9 @@ def launch_app(name: str, bin_name: str, config: Path,
     harness that killed and restarted the process itself would be simulating a supervisor
     rather than exercising one, and the thing under test is whether a real restart beats the
     peer's promotion timeout.
+
+    extra_environment is added to this process's environment only, for the test libraries that
+    are loaded into one process with LD_PRELOAD.
     """
     if not config.is_file():
         die(f"config not found: {config}")
@@ -4333,6 +4383,7 @@ def launch_app(name: str, bin_name: str, config: Path,
             cwd=str(config.parent),
             stdout=stdout_fh,
             stderr=subprocess.STDOUT,
+            env={**os.environ, **extra_environment} if extra_environment else None,
         )
     log(f"  {name} — PID {proc.pid}")
     return proc
@@ -4468,6 +4519,41 @@ def count_lines_with_all(log_path: Path, *markers: str, from_byte: int = 0) -> i
     with open(log_path, "r", errors="replace") as handle:
         handle.seek(from_byte)
         return sum(1 for line in handle if all(marker in line for marker in markers))
+
+
+def installed_toml_section_value(config: Path, section: str, key: str) -> str:
+    """Read one setting from a named section of a deployed configuration file, as text.
+
+    installed_toml_int matches a key wherever it first appears, which is wrong for a key such as
+    listen_port that several sections of one file have. Quotes around a string are removed.
+    """
+    in_section = False
+    for line in config.read_text().splitlines():
+        header = re.match(r"\s*\[+([^\]]+)\]+\s*$", line)
+        if header:
+            in_section = header.group(1).strip() == section
+            continue
+        if in_section:
+            match = re.match(rf"\s*{re.escape(key)}\s*=\s*(\"[^\"]*\"|\S+)", line)
+            if match:
+                return match.group(1).strip('"')
+    die(f"no {key} in section [{section}] of {config}")
+    return ""  # unreachable; die() exits
+
+
+def blocked_peer_environment(prefix: Path, flag: Path) -> dict[str, str]:
+    """The environment that makes libblock_sends_to_ports.so block a sequencer's sends to its peer.
+
+    Both sequencers' peer listening ports are blocked. Each sequencer listens on its own and
+    connects to the other's, so between them the two ports cover every connection between the
+    pair, whichever side opened it.
+    """
+    library = prefix / "lib" / "libblock_sends_to_ports.so"
+    if not library.is_file():
+        die(f"{library} is not installed; it is built with the sequencer and installed by devsetup.sh")
+    ports = [installed_toml_section_value(prefix / "etc" / "sequencer" / f"sequencer_{which}.toml", "peer", "listen_port")
+             for which in ("primary", "secondary")]
+    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag)}
 
 
 def installed_toml_int(config: Path, key: str) -> int:
@@ -5348,10 +5434,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 1: start all processes ──────────────────────────────────────
         log("=== Phase 1: starting all processes ===")
+        block_flag = prefix / "var" / "block_sends_to_ports.flag"
+        block_flag.unlink(missing_ok=True)
         for name, bin_name, config in launch_table:
             log(f"  Starting {name} ...")
+            extra_environment = None
+            if scenario.block_leader_peer_sends and name == "sequencer_primary":
+                extra_environment = blocked_peer_environment(prefix, block_flag)
+                log(f"  {name} has libblock_sends_to_ports.so preloaded, blocking ports "
+                    f"{extra_environment['PUBSUB_TEST_BLOCK_PORTS']} once {block_flag.name} exists")
             proc = launch_app(name, bin_name, config, bin_dir, log_dir,
-                              run_dir if name in scenario.supervised else None)
+                              run_dir if name in scenario.supervised else None, extra_environment)
             app_procs.append((name, proc))
             proc_by_name[name] = proc
             time.sleep(STARTUP_DELAY)
@@ -6988,6 +7081,104 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"and {replayed_cancels} of the 1 over-long cancel it replayed.")
             log("  engine refusal: after a restart the engine refused the same records again while catching up, and "
                 "the catch-up still accounted for every record -- OK")
+
+        # ── Unreplicated orders ───────────────────────────────────────────────
+        if scenario.assert_engine_holds_only_logged_orders:
+            log("=== The leading sequencer dies holding orders its follower never received (BUG-0103) ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("unreplicated orders: sequencer_primary is not leading, so stopping what it sends to its peer would "
+                    "not test the death of a leader.")
+            sequencer_etc = prefix / "etc" / "sequencer"
+            sequencer_configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
+            order_ports = {which: installed_toml_section_value(config, "network", "listen_port")
+                           for which, config in sequencer_configs.items()}
+            # Relative to the configuration's directory, which is where launch_app runs each process.
+            wal_dirs = {which: config.parent / installed_toml_section_value(config, "wal", "directory")
+                        for which, config in sequencer_configs.items()}
+
+            def inject_to(port: str, cl_ord_id: str) -> None:
+                result = subprocess.run([str(bin_dir / "inject_order"), "--port", port, "--cl-ord-id", cl_ord_id],
+                                        capture_output=True, text=True, check=False, timeout=30)
+                if result.returncode != 0:
+                    die(f"unreplicated orders: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+
+            def times_in_log(wal_dir: Path, cl_ord_id: str) -> int:
+                """How many times a ClOrdID appears in a sequencer's write-ahead log files, as raw bytes."""
+                needle = cl_ord_id.encode()
+                return sum(path.read_bytes().count(needle) for path in wal_dir.rglob("*") if path.is_file())
+
+            def engine_accepted(cl_ord_id: str, from_byte: int) -> bool:
+                return count_lines_with_all(me_log, "accepted NOS", f"ClOrdID={cl_ord_id} ", from_byte=from_byte) > 0
+
+            run_tag = datetime.now().strftime("%H%M%S")
+            unreplicated = [f"unrep-{run_tag}-{number}" for number in (1, 2, 3)]
+
+            # 1. Stop everything the leader sends to its follower from arriving, and confirm the
+            #    library says so, rather than assuming the flag file had its effect.
+            block_flag.touch()
+            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists",
+                                timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("unreplicated orders: libblock_sends_to_ports.so never reported that it had begun blocking, so the "
+                    "follower may still be receiving the leader's records and nothing below would mean anything.")
+            log("  the leader's sends to its follower are now discarded, and the library has said so -- OK")
+
+            # 2. Three orders, to both sequencers, as a gateway sends them.
+            accepted_from = file_end(me_log)
+            for cl_ord_id in unreplicated:
+                for which in ("primary", "secondary"):
+                    inject_to(order_ports[which], cl_ord_id)
+            deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+            while time.monotonic() < deadline and not all(engine_accepted(c, accepted_from) for c in unreplicated):
+                time.sleep(0.1)
+            not_accepted = [c for c in unreplicated if not engine_accepted(c, accepted_from)]
+            if not_accepted:
+                die(f"unreplicated orders: the matching engine did not accept {not_accepted}, so the test cannot show "
+                    "what happens to orders the engine holds and the follower does not.")
+            log(f"  the matching engine accepted all {len(unreplicated)} orders from the leader -- OK")
+
+            # 3. The leader dies, and the follower takes the lead.
+            primary = proc_by_name["sequencer_primary"]
+            takeover_from = file_end(secondary_log)
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if primary.poll() is None or Path(f"/proc/{primary.pid}").exists():
+                die(f"unreplicated orders: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            log("  sequencer_primary confirmed dead")
+            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout,
+                                             from_byte=takeover_from)
+            if not found:
+                die(f"unreplicated orders: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            log(f"  sequencer_secondary took the lead {elapsed:.1f}s after the kill")
+
+            # 4. The old leader's log holds the orders. This is what makes the next check mean
+            #    something: it shows that searching a log's files for a ClOrdID finds it when it is there.
+            missing_from_old = [c for c in unreplicated if times_in_log(wal_dirs["primary"], c) == 0]
+            if missing_from_old:
+                die(f"unreplicated orders: the old leader's log in {wal_dirs['primary']} does not hold {missing_from_old}, "
+                    "which it wrote before sending them to the engine. The search of the log files is not finding "
+                    "what is there, so its finding nothing in the new leader's log would prove nothing.")
+            log(f"  the old leader's log holds all {len(unreplicated)} orders, so the search of a log finds them -- OK")
+
+            # 5. The engine goes on taking orders from the new leader.
+            after_takeover = f"unrep-{run_tag}-after"
+            after_from = file_end(me_log)
+            inject_to(order_ports["secondary"], after_takeover)
+            if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={after_takeover} ", timeout=_RAW_REPLY_TIMEOUT,
+                                from_byte=after_from)[0]:
+                die("unreplicated orders: the matching engine did not accept an order from the new leader.")
+            log("  the matching engine accepted an order from the new leader")
+
+            # 6. The requirement: the engine holds no order the new leader's log does not hold.
+            orphaned = [c for c in unreplicated if times_in_log(wal_dirs["secondary"], c) == 0]
+            if orphaned:
+                die(f"unreplicated orders: the matching engine accepted {orphaned} from the old leader, and the new leader's "
+                    f"log in {wal_dirs['secondary']} does not hold them. They rest on the book with no record in any "
+                    "surviving log, no member has been told of them, and the new leader has numbered later orders "
+                    "without them (BUG-0103).")
+            log("  every order the engine accepted is held in the new leader's log -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

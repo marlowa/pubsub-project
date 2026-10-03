@@ -222,6 +222,25 @@ discards reports (`SequencerThread`, the report branch). A sequencer that takes 
 the engine for reports it may have missed (`SequencerThread::adopt_role`), so the member is not sent
 them. A test must count those too.
 
+**The matching engine holds orders that no surviving log holds (measured).** The leading sequencer
+sends each order to the matching engine before it sends the order's record to its follower, and the
+engine does not check that the sequence numbers it is sent only go forward. If the leader dies between
+the two, the engine has accepted an order the follower never received. The follower takes the lead
+without it and gives its sequence number to the next order it receives. The member is never told of
+the order, because its report waits for the follower's acknowledgement, yet it rests on the book and
+could trade.
+
+`ha_test.py` scenario 59 shows this on 2026-10-03. The primary sequencer is started with
+`libblock_sends_to_ports.so` preloaded, a test library that, once a flag file exists, stops anything
+the process sends to its peer from arriving. With the flag set, three orders were handed to both
+sequencers by `inject_order`, as a gateway hands them. The matching engine accepted all three, the
+leader was killed and confirmed dead, and the follower took the lead 4.2 seconds later. The old
+leader's log files held all three ClOrdIDs and the new leader's held none, and the engine went on to
+accept an order from the new leader. In a control run with the library blocking an unused port, the
+new leader's log held all three and the scenario passed, so the failure comes from the records not
+arriving and not from the way the test looks for them. The scenario is marked as expected to fail
+until this is fixed.
+
 **What is not decided.** Which of the remedies fits: the gateway holding each order until the
 sequencer's report for it arrives and sending it again to the new leader, which needs the sequencer
 to recognise a resent order; the follower keeping the orders it discards for one lease period and
@@ -229,7 +248,9 @@ appending those its new leader's log does not hold; or the gateway refusing, wit
 it sent while it knew no leading sequencer. Each has a cost, and the choice needs a design.
 
 **What a test must do.** Count the orders sent during the change, and require every one of them to be
-answered, accepted or refused.
+answered, accepted or refused. Scenario 59 covers the third fault, orders the engine holds that no
+surviving log holds; the first two still need a test that counts the orders and reports sent during
+the change.
 
 ---
 
