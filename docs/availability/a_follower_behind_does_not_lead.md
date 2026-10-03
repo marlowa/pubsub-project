@@ -121,8 +121,25 @@ synced write: normally a few milliseconds.
 While it waits for the confirmation, the leader goes on logging commands and holding them. If its
 storage for held commands fills before the confirmation arrives, it stops reading new commands from its
 gateway connections until the confirmation arrives. The commands wait in the connections, and nothing is
-lost or refused. Whether the reactor can stop reading from a connection and start again is to be
-checked before this is built.
+lost or refused. This is a rare fallback: the storage holds 16,384 commands, which lasts about a third of
+a second at 50,000 orders a second, and a confirmation normally takes a few milliseconds.
+
+Stopping and restarting reads needs two things the framework does not yet have:
+
+- **A way for an application thread to ask for it.** The reactor can already stop watching a socket for
+  incoming data and start again (`InboundConnectionManager`), but only a raw-bytes connection uses
+  this, when its own buffer fills. Two new reactor commands are needed, one to stop reading a connection
+  and one to start again, and the sequencer's gateway connections, which carry framework messages, must
+  honour them.
+- **Room for what is already on its way.** Stopping reads does not stop messages already read, which are
+  already queued for the sequencer's thread, and that thread cannot stop taking from its queue, because
+  lease messages arrive on the same queue. So the leader stops reading when its storage passes a high
+  mark, leaving room for those, and starts again when it falls below a lower mark.
+
+A long stop has a cost beyond the sequencer. A gateway whose sends to the sequencer cannot complete stops
+sending anything at all, to members as well as to both sequencers, once the kernel's buffers for that
+connection are full ([BUG-0112](../bug_list.md#bug_0112)). A stop of a few milliseconds is absorbed by
+those buffers; a long one freezes every gateway.
 
 **At start of day.** A leader that starts with no follower connected is in the same position, and it
 does the same thing: it acts on no command until a voter has recorded that its peer may not lead. A

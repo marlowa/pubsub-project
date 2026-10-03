@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 111 |
-| Open | 41 (27 defects, 14 tasks) |
+| Bugs recorded | 112 |
+| Open | 42 (28 defects, 14 tasks) |
 | Closed | 70 |
-| Next id | BUG-0112 |
+| Next id | BUG-0113 |
 
 ## Open bugs by severity
 
-14 high, 22 medium, 5 low.
+14 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -49,6 +49,7 @@
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
+| [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -153,6 +154,42 @@ went looking.
 
 
 
+
+### BUG-0112: One send that cannot complete stops a process sending anything on any connection {#bug_0112}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Reading the reactor while checking whether the sequencer could stop reading from its gateway connections, for [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md) |
+| Impact | A peer that stops reading, once the kernel's buffers for that connection are full, stops its sender from sending on every other connection too. In a gateway that means no reports to any member and no orders to either sequencer, until the slow peer reads again |
+
+**What happens.** When a send cannot be written to its socket in full, the reactor keeps it in a
+waiting slot until the socket can take more. Each connection manager has one such slot for all its
+connections, not one per connection. At the start of `Reactor::process_control_commands`, if either
+manager's slot is still full, the reactor returns without taking any command from its queue
+(`src/Reactor.cpp`, the calls to `drain_pending_send` and `is_send_blocked`). Every send the
+application threads ask for is a command on that queue, so every send to every connection waits behind
+the one blocked send.
+
+**Not established.** This is read in the code and has not been measured. How long a peer must stop
+reading before its sender freezes depends on how much the kernel buffers for the connection, which
+for small messages is many thousands of them.
+
+**Why it matters.** Any slow or stalled peer can trigger it: a member's client that stops reading, a
+sequencer stopped by a debugger or by a long pause, or a sequencer that deliberately stops reading
+from its gateways, which the design in
+[a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md) uses as a rare
+fallback. One slow member could stop a gateway serving every other member on it.
+[BUG-0104](#bug_0104) is about the same machinery from the reading side.
+
+**What closing it needs.** A blocked send holds up only its own connection: a waiting slot, or a
+queue of fixed size, for each connection, with the reactor going on to serve the others. What a
+connection does when its own waiting space is full, close it or refuse further sends to it, has to
+be decided, and a test must show a gateway still serving one member while another stops reading.
+
+---
 
 ### BUG-0109: The FIX gateway's health line counts cancel reports as answered orders {#bug_0109}
 
