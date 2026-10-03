@@ -5,9 +5,9 @@ the way it is, and what the diagram is and is not trying to convey. Read this
 alongside the diagram. The diagram is meant to be rendered with PlantUML
 (`plantuml pubsub_itc_fw_topology.puml`) to produce a PNG or SVG.
 
-For the architectural reasoning behind the design, see the WAL and HA Design
-section of `docs/framework/summary.md`. This file is descriptive; that file is
-prescriptive.
+For the architectural reasoning behind the design, see
+[WAL and High Availability](../availability/wal_and_ha.md). This file is descriptive; that file
+explains why.
 
 ## What the diagram represents
 

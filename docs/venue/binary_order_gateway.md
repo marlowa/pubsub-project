@@ -23,8 +23,8 @@ of that exercise. Until it was equalised, *logging* cost more than FIX parsing d
 FIX gateway's samples against 11% here), so both gateways now emit the same markers at the same
 cadence -- keep it that way or any comparison measures logging. And a throughput comparison is
 still not available, because the FIX harness infers completion from log polling rather than
-measuring it. The metrics that would settle it properly are specified under item 16 in
-`docs/framework/summary.md`; the comparison is deferred until then.
+measuring it. The metrics that would settle it properly are the roadmap's item 16, Prometheus metrics
+([roadmap](../roadmap.md)); the comparison is deferred until then.
 
 ## Wire protocol
 
@@ -268,8 +268,8 @@ gateway that cannot read a message still has no business withholding it.
   password crosses the wire in the clear on the client-to-gateway hop. SCRAM means it is
   never stored or forwarded, but it is not a substitute for transport encryption. Whether
   to add it -- and whether the argument extends to the internal PDU hops, since order flow
-  is itself sensitive -- is an open question; see the encryption TODO in
-  `docs/framework/summary.md`.
+  is itself sensitive -- is an open question; see the transport encryption item in the
+  [roadmap](../roadmap.md).
 - **No proprietary logon mode.** The FIX gateway has one; the binary order gateway offers SCRAM
   only. A proprietary mode was considered and rejected: its purpose would have been to test
   a different venue's binary protocol, which this client cannot speak in any case.

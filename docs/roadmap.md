@@ -235,22 +235,6 @@ when.
 
 ### Deferred
 
-- **Find out why a first-time reader concludes the arbiter is unfinished** (documentation).  
-  Raised 2026-08-23, from a note made some time earlier. `docs/framework/summary.md` was given to
-  a reader with no other knowledge of the project -- a large language model, which is a fair proxy
-  for someone who has cloned the repository and read only this -- and it reported "Next: Arbiter
-  full implementation (slice 8)" among the open items. The arbiter is implemented, deployed, and
-  exercised by the HA suite, so either something in the document still says otherwise or something
-  in it is easy to read that way.  
-  Worth chasing rather than dismissing, for two reasons. The reader had no stake and no context to
-  fill gaps with, which is exactly the position of anyone arriving at the project cold, and a
-  summary that leaves them thinking the central safety mechanism is unbuilt misrepresents the
-  system in the way most likely to matter. Slice numbering is the first suspect: a plan that lists
-  slice 8 as the arbiter reads as outstanding unless something nearby says it was completed.  
-  The task is to read the arbiter sections as a stranger would, find what supports that reading,
-  and fix it -- not to argue the reader was wrong. The same source made other assessments that
-  were harder to account for, so the exercise may turn up more than one.
-
 - **A two-tier order record, so fields stop going missing from `OrderEntry` one at a time** (matching engine).  
   Raised 2026-08-07 by commit `557b185`, which fixed a GoodTillDate order being acknowledged with no
   expiry on it and named this as the cause. Recorded here 2026-08-23 because until now it existed only
@@ -280,7 +264,14 @@ when.
 ### Completed since this list was last revised
 
 Kept as a record of what the "Active / Next" and "Deferred" lists used to hold. The full
-account of each is in `docs/framework/summary.md` under the same item number.
+account of each is in [framework_notebook.md](history/framework_notebook.md) under the same item number.
+
+- **Find out why a first-time reader concludes the arbiter is unfinished** (documentation) -- done
+  2026-10-03. `docs/framework/summary.md` mixed the description of the framework with plans,
+  numbered work items and session notes, among them "Arbiter full implementation (slice 8)" in a list
+  of work not yet done. The plans, work items and notes are now in
+  [framework_notebook.md](history/framework_notebook.md), which says it is not maintained, and the
+  summary describes the code as it is.
 
 - **Check the high availability design with TLA+** (high availability) -- done 2026-09-27.
   The design the code implements is specified in two TLA+ descriptions, one of the sequencer pair
@@ -360,9 +351,9 @@ Key architectural decisions and the reasoning behind them.
 
 - **Per-component HA, no central broker.** Each component pair (sequencer, ME, etc.) has its own primary-secondary instances, its own WAL replication, and its own arbitrated failover. Components share framework-level HA *primitives* (WAL data structure, replication-channel pattern, arbiter-client API, fencing discipline) but compose them independently.
 
-- **Lease + epoch arbitration.** The arbiter holds leadership state; leaders renew via heartbeat; failover requires arbiter consultation, not unilateral promotion.
+- **Leadership by majority lease.** An instance leads only while a majority of three voters grants it a lease: itself, its peer, and a third voter that never leads, which is the active arbiter for a component pair and the witness for the arbiters. A lease runs for a fixed period and is renewed; a leader whose lease runs out stops acting. Every leadership generation has an epoch. See [majority_leases.md](availability/majority_leases.md).
 
-- **Arbiter is itself HA — PSA+witness topology.** Two full arbiter instances plus one witness in a failure-independent location. Three votes; majority is two. Three machines is the structural minimum and stays at three.
+- **Arbiter is itself HA — PSA+witness topology.** Two full arbiter instances plus one witness in a failure-independent location. Three votes; majority is two. Three machines is the structural minimum and stays at three. The arbiters decide which of them is active by the same majority lease as every other pair, with the witness as the third voter, implemented by hand rather than with a consensus library.
 
 - **WAL format.** Segmented, mmap'd, single-writer. Entry: `magic | length | seqNo | payload | CRC32`. Replay scans from offset 0; stops at first failure. Tail corruption is equivalent to a clean crash before commit.
 
@@ -370,7 +361,7 @@ Key architectural decisions and the reasoning behind them.
 
 - **Two-tier commit.** Locally durable (CPU store-release on commit offset) gates send to ME. Replicated (follower has acked) gates ER emission to gateway.
 
-- **Epoch on every PDU.** Every cross-component PDU carries the sender's view of the current leader-epoch. Receivers check: same/expected = accept; lower = sender is stale (discard); higher = receiver may be stale (re-validate with arbiter). This detects split-brain at every cross-component interaction.
+- **Epochs travel on the lease messages and on the matching engine's announcement of its role.** A receiver refuses a lease request or an announcement at an epoch lower than one it has already seen. Order-path messages do not carry an epoch; an instance that is not leading forwards nothing and acts on nothing, which is what keeps a stale leader off the order path.
 
 - **Cancel-on-failover as ME HA baseline.** ME-secondary maintains a replicated book; on promotion it reconciles against the sequencer WAL before issuing cancel ERs for outstanding orders. Halt-on-failure is preserved as a fallback for unrecoverable failure modes. Seamless lockstep failover is a future aspiration only.
 
@@ -400,13 +391,24 @@ Key architectural decisions and the reasoning behind them.
 
 ### Open
 
-- **Arbiter internal HA mechanism.** Intent is hand-rolled lease+epoch with witness voting, not a consensus library. Not yet designed in detail.
-
 - **Sub-second sequencer failover target.** How aggressively to tune lease and heartbeat intervals. Should be configurable via `ReactorConfiguration`, not baked in.
 
 - **Sequencer-to-gateway connection direction.** Currently the sequencer initiates outbound connections to gateways (unusual direction). The reverse (gateway connects to sequencer) is more conventional and easier to scale horizontally. Open until a multi-gateway deployment scenario forces the choice.
 
 - **Market data integration mechanism.** Depends on requirements from the downstream market data consumer. Possibilities: another WAL follower, topic-based pubsub, or bespoke mechanism. Under investigation.
+
+- **Long-term retention and archival of audit records.** How long the write-ahead log, the matching
+  engine's records and the published activity must be kept, which depends on the regulation of the
+  place the venue runs, and therefore how segments are archived, copied off the machine, protected
+  against tampering and restored without the live system. Not core framework code, but the log's
+  segment format must allow it. It is linked to the retention period for execution reports, which
+  must be decided before any log space is reclaimed. Needed before any production deployment.
+
+- **Operational monitoring of PTP, leases and the arbiters.** Checks for an operations team's
+  monitoring system: whether the machines' clocks are synchronised within the drift allowance the
+  leases assume, whether each pair has a leader holding a current lease, and whether both arbiters
+  and the witness are reachable. The lease and epoch state now exists to monitor. Needed before any
+  deployment beyond the test setup.
 
 - **DR site topology.** Second site, cross-site replication, separate arbiter pair. Out of scope until main-site design is implemented.
 
