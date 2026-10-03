@@ -27,7 +27,7 @@ project stands and what is wrong with it.
 - **[High availability](availability/README.md)** — surviving a process death, and a machine death
 - **[FIX](fix/README.md)** — the protocol, the codec, and the session layer
 - **[Operations](operations/README.md)** — metrics, secure communications, load profiles, and the
-  [filesystem the log needs](operations/filesystem_requirements.md)
+  [filesystem the venue's durable state needs](operations/filesystem_requirements.md)
 - **[History](history/README.md)** — the session log and release notes
 - **[Superseded](superseded/README.md)** — working notes kept for provenance only
 

@@ -310,12 +310,32 @@ class PairLeaseAgent {
             return true;
         }
         const Clock::time_point until = participant_.promise_expires_at() + promise_record_margin;
-        if (!recorder_->record(candidate_id, until)) {
+        if (!write_promise_record(candidate_id, until)) {
             return false;
         }
         recorded_to_ = candidate_id;
         recorded_until_ = until;
         return true;
+    }
+
+    /**
+     * @brief Write a promise record, and say so when writing it took long enough to put leases at risk.
+     *
+     * The record is written to disk and synced before the vote it records is given, on the thread
+     * that handles leases, so for as long as the write takes, this instance answers no lease request
+     * and renews nothing. A write slower than slow_promise_record_write is logged with how long it
+     * took, because a write of seconds lets leases run out across the venue (BUG-0107).
+     */
+    [[nodiscard]] bool write_promise_record(int64_t promised_to, Clock::time_point until) {
+        const auto started = Clock::now();
+        const bool written = recorder_->record(promised_to, until);
+        const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started);
+        if (took >= slow_promise_record_write) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                       "{}: writing the lease promise record took {} ms, during which this instance answered no lease request and renewed nothing", owner_name_,
+                       took.count());
+        }
+        return written;
     }
 
     /**
@@ -340,7 +360,7 @@ class PairLeaseAgent {
             return;
         }
         const Clock::time_point until = participant_.lease_expires_at() + promise_record_margin;
-        if (recorder_->record(self_id_, until)) {
+        if (write_promise_record(self_id_, until)) {
             recorded_to_ = self_id_;
             recorded_until_ = until;
         } else {
@@ -401,6 +421,11 @@ class PairLeaseAgent {
 
     // How far beyond the true expiry a recorded promise is written. See promise_recorded().
     static constexpr std::chrono::seconds promise_record_margin{10};
+
+    // A promise record write slower than this is logged. A write normally takes well under a
+    // millisecond; fifty is long enough that nothing ordinary reaches it and short enough to show
+    // the writes that hold up leases.
+    static constexpr std::chrono::milliseconds slow_promise_record_write{50};
 
     // Where this instance's promises are kept, or nullptr if they are not kept.
     LeasePromiseRecorderInterface* recorder_{nullptr};

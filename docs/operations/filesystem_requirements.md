@@ -1,9 +1,12 @@
-# Filesystem requirements for the write-ahead log
+# Filesystem requirements for the venue's durable state
 
-> **The filesystem holding the sequencer's log must be mounted `lazytime`.**
+> **The filesystem holding the venue's durable state must be mounted `lazytime`.** That is every
+> write-ahead log (the sequencers' and the matching engine publishers'), the matching engines'
+> open-order regions and epoch files, and the arbiters' lease promise records.
 >
 > Without it the sequencer stalls for hundreds of milliseconds at a time, on the thread that
-> sequences every order the venue takes. With it, those stalls do not happen at all.
+> sequences every order the venue takes. With it, those stalls do not happen at all. The other
+> files are exposed in the same way; see [Applies to more than the log](#fs_beyond_the_log).
 >
 > This is a mount option. It is not in this repository, it is not in any configuration file the
 > venue reads, and nothing about the code suggests it matters.
@@ -164,13 +167,19 @@ override it for a one-off run:
 export PUBSUB_WAL_ROOT=/somewhere/else      # before scripts/devsetup.sh
 ```
 
-`deploy.py` then places every write-ahead log under it, and says so:
+`deploy.py` then places every write-ahead log and the venue's other durable state under it, and
+says so:
 
 ```
-PUBSUB_WAL_ROOT is set: write-ahead logs go under /mnt/sda2/mystuff2
+PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's other durable state go under /mnt/sda2/mystuff2
 ```
 
-Unset, the logs go under the install directory as before, which works anywhere. If it is set to
+The name says WAL because the write-ahead log came first; it is the root for all of the venue's
+durable state. A state file or publisher log that an earlier deployment left in the install
+directory is moved across, and `deploy.py` names each one it moves, so changing where they live
+loses no open orders and no epochs.
+
+Unset, everything goes under the install directory, which works anywhere. If it is set to
 something that is not a directory, the deploy stops rather than carrying on.
 
 **Why this is not simply written in `dev.toml`.** That file serves *both* development
@@ -228,13 +237,23 @@ findmnt -no SOURCE,FSTYPE,OPTIONS --target <the directory being written to>
 
 which gives the filesystem and whether `lazytime` is already set, together, in one line.
 
-## Applies to more than the log
+## Applies to more than the log {#fs_beyond_the_log}
 
-Any memory-mapped file the venue writes to has the same exposure, because the mechanism is
-about mapped writeback rather than about the log. The matching engine's open-order region at
-`installed/var/matching_engine_open_orders.region` is the other one, and it is not yet on a
-`lazytime` filesystem. See [BUG-0071](../bug_list.md#bug_0071), which records a related defect
-in how that region is warmed.
+Any memory-mapped file the venue writes to has the same exposure, because the mechanism is about
+mapped writeback rather than about the log. The matching engine's open-order region is the other
+one, written continuously while the venue trades. See [BUG-0071](../bug_list.md#bug_0071), which
+records a related defect in how that region is warmed.
+
+Files written with `fsync` are exposed in a different way. The matching engines' epoch files and
+every lease promise record are written and synced before the vote they record is given, on the
+thread that handles leases. An `fsync` waits for the filesystem's journal to commit, and on a
+filesystem without `lazytime` the journal is kept busy by the timestamp changes from mapped
+writeback, so the sync can take hundreds of milliseconds or more. An arbiter waiting on it renews
+no lease, and the leases of every pair it votes in can run out
+([BUG-0107](../bug_list.md#bug_0107)).
+
+So all of these go on the same `lazytime` device as the write-ahead logs, which is what
+`deploy.py` does when `PUBSUB_WAL_ROOT` is set.
 
 ## Related
 

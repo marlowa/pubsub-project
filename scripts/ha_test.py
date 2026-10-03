@@ -4808,7 +4808,7 @@ def clear_open_order_regions(prefix: Path) -> None:
 
     The engine creates the region again at startup when it finds none.
     """
-    var_dir = prefix / "var"
+    var_dir = venue_state_dir(prefix)
     if not var_dir.is_dir():
         return
     for path in sorted(var_dir.glob("*open_orders.region")):
@@ -4816,6 +4816,21 @@ def clear_open_order_regions(prefix: Path) -> None:
             path.unlink()
         except OSError as error:
             die(f"could not clear the open-order region at {path}: {error}")
+
+
+def venue_state_dir(prefix: Path) -> Path:
+    """The directory holding the matching engines' open-order regions and epoch files, and the arbiters' promise records.
+
+    deploy.py puts these on the same device as the write-ahead logs when PUBSUB_WAL_ROOT names one,
+    and in the install's var directory otherwise, so the directory is read from the deployed
+    matching engine configuration rather than assumed.
+    """
+    config = prefix / "etc" / "matching_engine" / "matching_engine_primary.toml"
+    if config.is_file():
+        match = re.search(r'^region_path\s*=\s*"([^"]+)"', config.read_text(), re.MULTILINE)
+        if match:
+            return Path(match.group(1)).parent
+    return prefix / "var"
 
 
 def clear_lease_promise_records(prefix: Path) -> None:
@@ -4832,7 +4847,7 @@ def clear_lease_promise_records(prefix: Path) -> None:
     record an instance waits one lease period before voting, as it does after a reboot.
     """
     candidates = []
-    var_dir = prefix / "var"
+    var_dir = venue_state_dir(prefix)
     if var_dir.is_dir():
         candidates += list(var_dir.glob("*lease_promise*"))
     # A sequencer keeps its record in its write-ahead log directory, which is not under var when
@@ -5168,7 +5183,7 @@ def do_restart_step(
         log(f"  Damaged the open-order region at {region.name}, so the engine cannot read it")
 
     if step.forget_lease_promises:
-        config = var_dir.parent / "etc" / "matching_engine" / f"{step.proc_name}.toml"
+        config = bin_dir.parent / "etc" / "matching_engine" / f"{step.proc_name}.toml"
         match = re.search(r'^epoch_state_file\s*=\s*"([^"]+)"', config.read_text(), re.MULTILINE) if config.is_file() else None
         if match is None:
             die(f"forget_lease_promises: no epoch_state_file in {config}, so the record cannot be found")
@@ -5831,7 +5846,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, RestartStep):
                 elapsed = do_restart_step(
-                    step, proc_by_name, app_procs, launch_table, bin_dir, log_dir, prefix / "var",
+                    step, proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix),
                 )
                 restart_results.append((step.proc_name, elapsed))
                 phase4_results.append(("restart", step.proc_name, elapsed))
@@ -6311,7 +6326,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             # The region is the only account of whatever went wrong with it. A venue that
             # overwrites it leaves nobody able to find out.
-            kept = prefix / "var" / "matching_engine_open_orders.region.unusable"
+            kept = venue_state_dir(prefix) / "matching_engine_open_orders.region.unusable"
             if not kept.is_file():
                 die(f"damaged region: {kept.name} was not kept. Whatever made the region "
                     "unreadable is the evidence, and starting a fresh region over the top of it "
@@ -6836,7 +6851,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     resets_me_counter=False,
                     settle_secs=_ME_SETTLE,
                 ),
-                proc_by_name, app_procs, launch_table, bin_dir, log_dir, prefix / "var",
+                proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix),
             )
 
             # Everything the member is handed for this order, not merely the first thing. The
@@ -7080,7 +7095,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # has already failed is not safer.
             log("  restarting the matching engine -- nothing else is done")
             do_restart_step(_me_restart_step(), proc_by_name, app_procs, launch_table,
-                            bin_dir, log_dir, prefix / "var")
+                            bin_dir, log_dir, venue_state_dir(prefix))
             resumed_by = time.monotonic() + _REFUSAL_DEADLINE
             attempt = 0
             while True:
@@ -7164,7 +7179,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # The same records again, while the restarted engine catches up. The refusals were not
             # published, so the engine is sent them again from the write-ahead log.
             log("  restarting the matching engine, which must replay and refuse the same records")
-            do_restart_step(_me_restart_step(), proc_by_name, app_procs, launch_table, bin_dir, log_dir, prefix / "var")
+            do_restart_step(_me_restart_step(), proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
             # do_restart_step deletes the engine's log before starting it again, so everything in the
             # log now was written by the restarted engine, and it is read from the start.
             restart_pos = 0
