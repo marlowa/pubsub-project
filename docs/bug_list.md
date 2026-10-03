@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 103 |
+| Bugs recorded | 104 |
 | Open | 39 (25 defects, 14 tasks) |
-| Closed | 64 |
-| Next id | BUG-0104 |
+| Closed | 65 |
+| Next id | BUG-0105 |
 
 ## Open bugs by severity
 
-13 high, 23 medium, 3 low.
+13 high, 22 medium, 4 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,10 +48,10 @@
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
-| [BUG-0102](#bug_0102) | medium | defect | The reactor fairness test fails about one run in five |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
+| [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
 
 ---
 
@@ -149,6 +149,46 @@ went looking.
 
 ## Open
 
+### BUG-0104: A connection whose reads were paused can stay stalled for seconds after they resume {#bug_0104}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Finding the cause of [BUG-0102](#bug_0102) |
+| Impact | A raw-bytes connection whose application thread fell behind by three quarters of its buffer can wait a further 0.2 to 1.5 seconds, or longer, after the thread has caught up. In the venue that means a FIX member session (16 MiB each) or the authentication service's admin connection; connections carrying framed messages between components never pause |
+
+**What happens.** `RawBytesProtocolHandler` stops reading a socket when the connection's buffer is
+three quarters full and starts again when the application thread has brought it down to half.
+While it is not reading, the kernel's receive buffer fills and the receiving side advertises a zero
+window, which is the intended way of slowing the sender. When reading resumes, the kernel should
+tell the sender that room has opened. Sometimes the sender is not told, and learns it only by
+probing on TCP's persist timer, which starts at 200ms and doubles each time it finds no room.
+
+**Evidence.** With five connections each stopped and restarted about 3,200 times, in about one run
+in four two senders sat in the persist state with the timer backed off twice, and were read almost
+not at all for 1.5 seconds. `ss -tnoi` showed `timer:(persist,...)` with `backoff:1` and then
+`backoff:2` on exactly those two sockets. See [BUG-0102](#bug_0102) for the full measurement.
+
+**What is not established.**
+
+- Which kernel rule suppresses the message saying room has opened. A plausible one is that the
+  reactor reads only as much as fits in its own buffer, often 16 to 32 KiB, and pauses again, and
+  Linux does not advertise a small amount of new room after a zero window, to avoid the sender
+  sending in tiny pieces. That has not been checked against the kernel source.
+- Why, in some runs, the connection that was stalled had not even been accepted: its handshake had
+  completed and 127,916 bytes were waiting in its receive queue, yet the reactor did not accept it
+  for 1.3 seconds, and the kernel counted no dropped or overflowed connection attempts. In other
+  runs every connection was accepted within a millisecond and the stall still happened.
+
+**What a fix could look like, not yet chosen.** Read until the socket is empty, or until the buffer
+is full, rather than once, after resuming; or resume at a lower fill so that more room opens at
+once; or keep reading into the kernel's buffer and apply backpressure only at a much higher level.
+Any of them needs the soak and fairness tests the reactor's other foundational changes were given.
+
+---
+
 ### BUG-0103: Orders sent while the sequencers change leader are lost without a reply {#bug_0103}
 
 | | |
@@ -193,39 +233,6 @@ answered, accepted or refused.
 
 ---
 
-### BUG-0102: The reactor fairness test fails about one run in five {#bug_0102}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Two failures of the full developer loop during the work on BUG-0100 and BUG-0101, neither of which touched the reactor |
-| Impact | A test that fails by chance cannot be trusted to catch real unfairness, and stops the developer loop for a reason unrelated to the change being tested |
-
-**What fails.** `FrameworkPduBurstIntegrationTest.PollingReactorServesSeveralClientsEvenly`, added on
-2026-09-21, sends 200 MB over each of five connections to one reactor from the same moment, and
-requires the first client to finish to take at least half as long as the last
-(`worst_acceptable_share_of_the_best = 0.5`).
-
-**What was measured.** It ran in eleven runs of `scripts/devsetup.sh` on 2–3 October and failed in two:
-
-| When | First to finish | Last to finish | Share | Machine |
-|---|---|---|---|---|
-| 2026-10-02 23:25 | 1226 ms | 2556 ms | 0.48 | a headless browser was rendering a page at the same time |
-| 2026-10-03 07:00 | 1049 ms | 2553 ms | 0.41 | nothing else running |
-
-In both, the clients fell into two groups rather than spreading evenly: on 3 October clients 1 and 3
-finished at about 1050 ms and clients 0, 2 and 4 between 2209 and 2553 ms. None of the commits
-between the two failures touches the framework.
-
-**What is not known.** Whether the reactor serves some connections ahead of others in a way that
-matters, or the test's own timing is at fault. The test's comment expects the five clients to finish
-"well under a second" when served evenly; both failures, and presumably the passes, took one to two
-and a half seconds, so the premise may not hold on this machine. Telling the two apart needs the
-per-connection service counts the test already collects, logged on a pass as well as a failure.
-
----
 
 
 
@@ -2456,6 +2463,56 @@ content, and refuse to append it silently.
 Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
 ## Closed
+
+### BUG-0102: The reactor fairness test failed about one run in four {#bug_0102}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-03 -- the test gives each connection a buffer the reactor never has to stop reading; the stall it was catching is [BUG-0104](#bug_0104) |
+| How | `FrameworkPduBurstIntegrationTest.PollingReactorServesSeveralClientsEvenly` failing a clean full build on 3 October |
+| Impact | The developer loop failed about one run in four. The reactor shares its time between connections evenly; the test was measuring something else |
+
+**What the test does.** Five clients connect to one reactor and each sends 200 MB, from the same
+moment. The test requires the first client to finish to take at least half as long as the last.
+
+**How it showed itself.** It ran in eleven runs of `scripts/devsetup.sh` on 2 and 3 October and
+failed in two, and it failed again on a clean full build later on 3 October:
+
+| When | First to finish | Last to finish | Share | Machine |
+|---|---|---|---|---|
+| 2026-10-02 23:25 | 1226 ms | 2556 ms | 0.48 | a headless browser was rendering a page at the same time |
+| 2026-10-03 07:00 | 1049 ms | 2553 ms | 0.41 | nothing else running |
+| 2026-10-03, clean build | | | 0.49 | nothing else running |
+
+**What was measured.**
+
+- The clients finished in two groups: typically three after about 1.5 seconds and two after about
+  2.5 seconds. Every client used the same processor time, 418 to 480 ms, however long it took, so
+  the slow ones were not slow to run; they spent the extra time blocked in `send`.
+- The test gave each connection a 64 KiB buffer. When a buffer is three quarters full, the reactor
+  stops reading that socket until the application thread has taken enough out. With 200 MB to
+  deliver, each connection was stopped and restarted about 3,200 times a run.
+- In the slow runs, the kernel's socket listing (`ss -tnoi`) showed two client sockets in TCP's
+  persist state: the server had advertised that it had no room (a zero window), and the client was
+  probing on a timer, backed off from 200ms to 400ms to 800ms. The other three sockets also
+  reached a zero window constantly but were told almost at once that room had opened.
+- For the first 1.5 seconds of a slow run those two connections were read almost not at all, and
+  they began as the other three finished.
+- With a 4 MiB buffer the reactor never stopped reading, all sixteen runs passed, the five clients
+  finished within about 20 ms of each other, and the whole test took about 0.6 seconds instead of
+  2.6. With the pass mark raised to an impossible 1.01, the test failed and reported the five
+  finishing times, which shows the assertion reads real values.
+- Two explanations were ruled out on the way: the processor's two kinds of core (the test fails
+  the same way confined to either kind), and the kernel growing receive buffers on its own (with
+  the buffer fixed at 256 KiB it failed six runs in sixteen).
+
+**What was fixed.** The fairness test now gives each connection 4 MiB, which is smaller than the
+16 MiB the FIX gateway gives each member session, so that it measures what it is named for.
+
+---
 
 ### BUG-0101: The matching engine cuts an over-long ClOrdID short instead of refusing it {#bug_0101}
 

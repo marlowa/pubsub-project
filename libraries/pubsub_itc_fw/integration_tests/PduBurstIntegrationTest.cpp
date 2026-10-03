@@ -1323,6 +1323,26 @@ constexpr auto client_fairness_deadline = std::chrono::milliseconds{20000};
 // what its neighbours get or is not served at all.
 constexpr double worst_acceptable_share_of_the_best = 0.5;
 
+// Each connection's receive buffer, which is large enough that the reactor never has to stop
+// reading a connection during the run. This test is about whether the reactor shares its time
+// fairly between connections, and with a small buffer it measures something else.
+//
+// When a connection's buffer is three quarters full, the reactor stops reading that socket until
+// the application thread has taken enough out (see RawBytesProtocolHandler). While it is not
+// reading, the kernel's receive buffer for the socket fills and the receiving side tells the
+// sender it has no room, which TCP calls advertising a zero window. The sender then waits for the
+// receiver to say there is room again. If that message is not sent, the sender finds out only by
+// probing on a timer that starts at 200ms and doubles each time it finds no room.
+//
+// With the 64 KiB buffer the other tests here use, each connection was stopped and restarted
+// about 3,200 times a run, and in about one run in four two of the five senders were left waiting
+// on that timer for 1.5 seconds while the other three finished. The kernel's own socket listing
+// showed those two senders in the probing state, with the timer backed off twice. With this
+// buffer the reactor never stops reading, all five finish together, and the whole test takes
+// about 0.6 seconds instead of 2.6. The stall itself is recorded as BUG-0104. The FIX gateway
+// gives each member session 16 MiB, so this size is the smaller of the two, not the larger.
+constexpr int64_t fairness_raw_buffer_capacity = 4 * 1024 * 1024;
+
 } // un-named namespace
 
 /** @brief Counts raw bytes per connection, so that one starved connection is visible. */
@@ -1385,7 +1405,7 @@ TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorServesSeveralClientsEvenl
     auto reactor = std::make_unique<Reactor>(make_reactor_config(keep_polling_throughout, no_housekeeping_during_the_test), registry, logger_->logger);
 
     reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", any_os_assigned_port}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
-                                       raw_buffer_capacity);
+                                       fairness_raw_buffer_capacity);
 
     auto counting_thread = ApplicationThread::create<PerClientCountingThread>(logger_->logger, *reactor);
     reactor->register_thread(counting_thread);
