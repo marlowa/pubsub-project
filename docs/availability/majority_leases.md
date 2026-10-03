@@ -45,6 +45,16 @@ vote of just one other voter: either its peer or the third voter.
 
 1. **A voter grants a lease to at most one instance at a time.** When it grants one, it promises not to grant a lease
    to anyone else until the lease period has passed, counted from the moment it granted.
+
+   This undertaking is what the rest of this document calls a **promise**. The word is the one used for the same idea
+   in Paxos, the best known consensus algorithm. Granting a lease and making a promise are two sides of one act: the
+   instance that receives the grant holds a lease, and the voter that gave it holds a promise. The lease tells the
+   instance that it may lead until a certain time. The promise tells the voter that it must not let anyone else lead
+   until that time. Two leaders could only exist if some voter broke a promise, so everything that makes the design
+   safe comes down to voters keeping them. The hard case is a voter whose process restarts, because a promise held
+   only in memory is lost with the process. Rule 6 says what each kind of voter does about that: an arbiter waits
+   until any promise it might have made has run out, and a sequencer or matching engine instance writes each promise
+   to disk before it grants, and reads it back when it restarts.
 2. **An instance leads only while it holds an unexpired lease from its peer or from the third voter.** With its own
    vote, that is a majority. The instance counts each lease's period from the moment it *sent* its request, which is
    earlier than the moment the voter granted it. So the instance always believes its lease ends no later than the voter

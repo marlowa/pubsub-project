@@ -351,7 +351,8 @@ field.
    its log alone holds them. If it then dies, the instance that takes over has an older
    log. A voter granting a lease does not compare the two instances' logs, so nothing stops the stale
    instance leading. Raft prevents this by refusing to vote for a candidate whose log is behind. That is
-   a change to the lease rules (`majority_leases.md`) and needs its own design.
+   a change to the lease rules (`majority_leases.md`). The design, for review, is
+   [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md).
 3. **A gateway that dies during the change of leader.** Its store dies with it. Its members recover by
    resubmitting (R-0003), which depends on the duplicate check, as now.
 
