@@ -7,24 +7,22 @@ book, a different client protocol. Where the FIX order gateway speaks ASCII FIX 
 speaks the internal PDU protocol directly -- clients send the very `NewOrderSingle` the
 pipeline already carries and receive the very `ExecutionReport`.
 
-Its point is that it has almost nothing in it. The FIX order gateway is largely a translator: a
-FIX parser, a dictionary-driven validator, a serialiser, an ER encoder. None of that exists
-here, because the client already speaks the pipeline's language. What is left is session
-identity and routing, which is the irreducible job of a gateway.
+Much of what the FIX order gateway does is translation: parsing FIX text, checking it against a
+dictionary, and writing FIX back. None of that is needed here, because the member already speaks
+the venue's own message format. What is left is what any gateway must do: authenticate the
+member, check each command against the venue's rules, keep the session's state, and route.
 
 That makes it a useful control. Any cost the FIX order gateway carries that this one does not is
 the cost of FIX specifically, not of being a gateway.
 
-**What that control has measured so far (2026-07-26).** Speaking ASCII FIX costs about **11% of
-the FIX gateway's samples** -- parse, validate, walk repeating groups, checksum -- against 0%
-here. Real, but far short of what intuition suggests: roughly 70% of both gateways' samples are
-in the kernel, so protocol choice can only ever move the remaining third. Two cautions came out
-of that exercise. Until it was equalised, *logging* cost more than FIX parsing did (32% of the
-FIX gateway's samples against 11% here), so both gateways now emit the same markers at the same
-cadence -- keep it that way or any comparison measures logging. And a throughput comparison is
-still not available, because the FIX harness infers completion from log polling rather than
-measuring it. The metrics that would settle it properly are the roadmap's item 16, Prometheus metrics
-([roadmap](../roadmap.md)); the comparison is deferred until then.
+**What the comparison shows.** Driven at identical rates, the binary gateway decodes an order in
+about 0.05 microseconds against the FIX gateway's 3.8, and is faster end to end on every measure,
+but only by 1.8 microseconds at the median (103.3 against 105.1), because the round trip is
+dominated by what the two share: the sequencer, the matching engine, the log and the report path.
+The clearer gain is at the tail, about 12 to 14 microseconds at the 90th and 99th percentiles. The
+measurement and its method are in [latency_findings.md](../operations/latency_findings.md). Both
+gateways log the same markers at the same rate, which must stay true, or a comparison measures
+logging rather than protocol.
 
 ## Wire protocol
 
@@ -58,10 +56,9 @@ password when the challenge returns, and verifies the ServerSignature that comes
 the service authenticates itself to the gateway in turn. The password never leaves the
 gateway process and is zeroed the moment the proof is derived.
 
-This was not the original design. The protocol first shipped with a comp id alone, on the
-reasoning that authenticating a second transport would re-tread ground the FIX gateway
-already covered. That reasoning was wrong: it left an order-entry port that anyone who could
-reach it could trade through, whatever the transport carrying the orders.
+*Considered and rejected: identifying the member by comp id alone,* on the reasoning that the FIX
+gateway already authenticates members. That would leave an order-entry port that anyone who could
+reach it could trade through, whatever protocol the orders arrived in.
 
 `target_comp_id` is checked rather than merely recorded. Empty means the client did not mind
 which venue it reached; a populated value that does not match the gateway's configured
@@ -113,42 +110,16 @@ OrigClOrdID of the order named. The gateway decodes every report it relays, to k
 record of open orders, and sends this one to the member as an `OrderCancelReject` instead, with
 CxlRejReason 1, Unknown order. Every other report is relayed as the bytes that arrived.
 
-## Routing: why gateways have ids
+## Routing
 
-An `ExecutionReport` must come back to the gateway its order arrived through. The envelope
-already carried `gateway_session_conn_id`, but that identifies a connection *within one
-gateway* -- each numbers its own client connections from its own counter, so the FIX gateway
-and this one will both hand out low integers for unrelated sessions.
-
-So the envelope also carries `origin_gateway_id` (see `applications/fix_common/GatewayIds.hpp`:
-1 = FIX order gateway, 2 = binary order gateway). The pair identifies a session across the venue. The
-sequencer keeps a connection per gateway id and routes each ER by the id recorded when the
-order was sequenced.
-
-The field is optional and trailing, so WAL records written before it existed still decode; a
-record without it is treated as having come from gateway 1, which is what was true then.
-
-**These ids are part of the on-disk WAL format once written.** Never reuse one for a
-different gateway; add new gateways by taking the next free number.
-
-### Routing has to survive failover too
-
-Getting an ER back to the right gateway in the steady state is the easy half. Three other
-paths carry the gateway id, and all three are needed for a binary session to behave correctly
-across a failover:
-
-- **WAL replay.** The sequencer rebuilds its `seq_no → session` map as it replays, taking the
-  gateway id from the stored envelope. Without this, every ER emitted after a promotion would
-  fall back to "gateway 1" and binary sessions would silently lose their reports.
-- **The matching engine's book.** Each resting order remembers the gateway id alongside the
-  connection id, because the ME generates cancel ERs on promotion (`seq_no = 0`) that no map
-  lookup can route -- their only routing information is what the book entry holds.
-- **Book replication.** `BookUpdate` carries the gateway id, so a promoted secondary can route
-  the cancels for orders it inherited rather than only for ones it accepted itself.
-
-The general point: a connection id was never meaningful on its own once a second gateway
-existed, so every place that stored or forwarded one had to start carrying its gateway id
-with it.
+Every order envelope carries `origin_gateway_id` (2 for this gateway, 1 for the FIX gateway; see
+`applications/fix_common/GatewayIds.hpp`) and `gateway_instance_id`, and the member's comp id. A
+session is identified by its comp id and protocol, so a binary session and a FIX session under the
+same comp id are separate sessions with separate books and reports. The sequencer sends each
+report to wherever the session is bound when the report is produced, and the matching engine's
+book and its replication to the follower engine are keyed on the session too, so a member that
+reconnects, to this instance or the other, can cancel what it left resting and receives its
+reports there. How this works is in [Gateway High Availability](../availability/gateway_ha.md).
 
 ## Instances
 
@@ -159,11 +130,12 @@ anything here: a member picks which instance to connect to, so this is caller-se
 redundancy, the same shape the authentication service already uses.
 
 Each instance stamps its own `[gateway] instance_id` onto every order envelope beside the
-protocol id, and the sequencer routes each execution report back to the instance the order
-arrived on. Instance 1 is `_a` and instance 2 is `_b`.
+protocol id. Instance 1 is `_a` and instance 2 is `_b`. Each member is provisioned to a primary and
+a backup instance, as for the FIX gateway, and is refused at an instance it is not provisioned for
+with `LogonOutcome::NotProvisionedForInstance`.
 
-Only `_a` is deployed outside dev; `_b` is configured in the sequencer but disabled, so a
-second instance can be brought up without editing the template.
+The binary gateway runs only in the development environment. The other environment files carry
+both instances with `enabled = false`, so it can be brought up without editing a template.
 
 ## Configuration
 
@@ -185,7 +157,7 @@ instances use it.
 The sequencer must be told about each instance: a `[[gateway]]` table with `protocol = 2`
 and the instance number, in `sequencer_primary.toml` and `sequencer_secondary.toml`.
 Setting `enabled = false` on all of them runs the venue with only the FIX gateway, which is
-what the non-dev environments ship with.
+what every environment except development does.
 
 **Startup order** is as for the FIX order gateway: it does not matter. The sequencer dials this
 gateway's ER listener and retries every two seconds until it answers.
@@ -237,30 +209,30 @@ The raw-FIX entry page stays FIX-only: there is no such thing as a hand-typed bi
 
 ## Cancel-on-disconnect
 
-A client that vanishes leaves orders resting on the book that nobody is managing, so the
-gateway cancels them on its behalf -- the same obligation the FIX order gateway has, and the same
-mechanism, shared via `applications/fix_common/OpenOrderEntry.hpp`.
+A member that vanishes leaves orders resting on the book that nobody is managing, so the gateway
+cancels them on its behalf: the same obligation the FIX order gateway has, and the same mechanism,
+shared through `applications/fix_common/OpenOrderEntry.hpp`. The settings are the same too:
+`[cancel_on_disconnect] enabled` and `grace_period` (on, 30 seconds), which each comp id may
+override, and GoodTillCancel and GoodTillDate orders are never cancelled on disconnect. The binary
+protocol has no logout message, so every disconnect waits out the full grace period; a member that
+logs on again inside it has nothing cancelled. See
+[Gateway High Availability](../availability/gateway_ha.md).
 
-Tracking is driven by the matching engine's acknowledgements, not by order-forward time: an
-order is only the session's to cancel once the engine has said it is on the book. A
-non-terminal `ExecutionReport` records the order, a terminal one (Filled, Canceled,
-DoneForDay, Rejected, Expired) retires it, and a repeated non-terminal report for an order
-already tracked updates the entry in place rather than allocating a second one.
+Tracking is driven by the matching engine's acknowledgements, not by when an order was forwarded:
+an order is the session's to cancel only once the engine has said it is on the book. A
+non-terminal `ExecutionReport` records the order, a terminal one (Filled, Canceled, DoneForDay,
+Rejected, Expired) retires it, and a repeated non-terminal report for an order already tracked
+updates the entry rather than adding a second.
 
-On disconnect the session's orders are moved to a queue and drained in batches of 500 on a
-1 ms timer, so a client holding thousands of resting orders cannot stall the reactor. Each
-generated cancel gets a `BGW-CXL-<conn>-<n>` ClOrdID and rides an envelope carrying the
-departed session's connection id and comp id, so it is attributed to the client whose order it
-retires. The acknowledgements come back for a session that no longer exists and are logged and
-dropped, which is the expected end of the sequence rather than an error.
+When the grace period ends, the session's orders are cancelled in batches of 500 on a 1 ms timer,
+so a member holding thousands of resting orders cannot hold up the reactor. Each generated cancel
+gets a `BGW-CXL-<conn>-<n>` ClOrdID and an envelope carrying the departed session's comp id, so it
+is attributed to the member whose order it retires. The acknowledgements come back for a session
+that no longer exists and are logged and dropped, which is the expected end of the sequence.
 
-Entries come from a pooled allocator (`[open_order_pool]`), so tracking an order costs no heap
-allocation.
-
-Note this is the one place the gateway decodes a message it relays. It reads the ER to
-maintain the open-order set, but the bytes sent to the client are still the ones that arrived;
-if a report cannot be decoded it is relayed anyway, because the client is its audience and a
-gateway that cannot read a message still has no business withholding it.
+Entries come from a pool (`[open_order_pool]`), so tracking an order allocates nothing. A report
+that cannot be decoded is still relayed: the member is its audience, and a gateway that cannot read
+a message has no business withholding it.
 
 ## Known differences from the FIX order gateway
 
@@ -270,6 +242,6 @@ gateway that cannot read a message still has no business withholding it.
   to add it -- and whether the argument extends to the internal PDU hops, since order flow
   is itself sensitive -- is an open question; see the transport encryption item in the
   [roadmap](../roadmap.md).
-- **No proprietary logon mode.** The FIX gateway has one; the binary order gateway offers SCRAM
-  only. A proprietary mode was considered and rejected: its purpose would have been to test
-  a different venue's binary protocol, which this client cannot speak in any case.
+- **No resend.** The binary protocol has no session layer and no message numbering, so a member
+  that reconnects is not sent the reports it missed ([BUG-0046](../bug_list.md#bug_0046)). It does
+  receive, on its new connection, the reports produced after it is bound again.

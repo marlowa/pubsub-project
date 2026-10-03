@@ -178,9 +178,9 @@ configuration is loaded. The sequencer opens a connection to every enabled entry
 execution report to the instance where the member's session is now bound.
 
 The development environment runs all four: `fix_order_gateway_a` and `_b`, and
-`binary_order_gateway_a` and `_b`. The other environment files enable only the `a` instance of
-each protocol and carry the `b` entries with `enabled = false`, so a second instance is a
-configuration change rather than a template edit.
+`binary_order_gateway_a` and `_b`. The other environment files enable only `fix_order_gateway_a`;
+the other three are present with `enabled = false`, so adding an instance is a configuration change
+rather than a template edit.
 
 Instances are named `a` and `b`, not primary and secondary, because nothing elects a gateway: a
 member chooses which instance to connect to. The suffix is on the component name and its

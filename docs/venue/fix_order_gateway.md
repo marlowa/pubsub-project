@@ -104,14 +104,18 @@ field reaches the matching engine is still decided in three places:
 
 ## Authentication
 
-SCRAM-SHA-256 authentication runs on each FIX Logon:
+The member sends its password in the Logon (tag 554), which is why the member listener should use
+TLS. The gateway then runs the SCRAM-SHA-256 exchange with the authentication service on the
+member's behalf, so the password goes no further than the gateway and the authentication service
+never holds it:
 
-1. The gateway receives the Logon and takes its `SenderCompID`.
-2. It sends `AuthenticationRequest` (PDU 500) to the authentication service, instance `a` on port
-   11070 or, failing that, instance `b` on 11071.
-3. It receives `AuthenticationChallenge` (PDU 501) and passes the server nonce, salt and iteration
-   count to the member.
-4. The member returns its proof, and the gateway sends `AuthenticationProof` (PDU 502).
+1. The gateway receives the Logon and takes its `SenderCompID` and password.
+2. It sends `AuthenticationRequest` (PDU 500), with a client nonce, to the authentication service,
+   instance `a` on port 11070 or, failing that, instance `b` on 11071.
+3. It receives `AuthenticationChallenge` (PDU 501): the server nonce, the salt and the iteration
+   count.
+4. It derives the proof from the password, zeroes and releases the password, and sends
+   `AuthenticationProof` (PDU 502).
 5. It receives `AuthenticationResult` (PDU 503) and verifies the `ServerSignature`, which proves the
    service is genuine.
 6. It checks that the member is provisioned for this gateway instance, and applies the member's
