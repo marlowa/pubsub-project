@@ -2637,7 +2637,7 @@ Scenarios 1, 12, 13, 16, 21, 54, 59 and 60 pass.
 | Severity | high |
 | Found | 2026-10-03 |
 | Recorded | 2026-10-03 |
-| Fixed | 2026-10-03 -- the files the arbiters sync are on the lazytime device, and promise records are written on a thread of their own |
+| Fixed | 2026-10-03 -- the small synced files are on the lazytime device, the open-order regions on another filesystem, and promise records are written on a thread of their own |
 | How | Starting the venue with `scripts/devenv.py start` to measure latency, and finding no stable leader |
 | Impact | Each stall lets the active arbiter's lease run out. The arbiter that takes over grants no component a lease for 3 seconds, so the sequencer and matching engine pairs lose their leaders too and the venue stops trading until the leases settle. After one such period the venue was left with no matching engine at all ([BUG-0108](#bug_0108)) |
 
@@ -2678,8 +2678,20 @@ not be reproduced on demand to show which mattered:
   no step of the lease thread to take 100 ms, with a second test showing the same delay does hold up
   a lease thread that writes for itself.
 
+**The cause, found after those two changes.** Moving every file to the `lazytime` device put the
+regions beside the sequencers' small synced files, and the stall moved to the sequencer: at 19:45:43
+the engine created its 496 MB region, the sequencer's first promise record took 2,316 ms to write,
+and its lease ran out. On ext4 a sync waits for the journal to commit, and the commit waits for the
+data of newly written blocks on the same filesystem, so a small file synced beside a region being
+created waits for the region. The arbiters' stall that afternoon was the same, with the region then
+beside their promise records. A third change keeps the regions on a different filesystem from the
+write-ahead logs and the small synced files. Five scenario runs since, the first straight after a
+build, recorded no promise write of 50 ms or more and no lease running out, while the engine created a
+fresh region at every start. The rule is written up in
+[filesystem_requirements.md](operations/filesystem_requirements.md#fs_keep_regions_apart).
+
 **How it would show if it came back.** Any promise record write of 50 ms or more is logged with how
-long it took. Three were seen, of 90 to 134 ms, before these changes; none in the runs since.
+long it took.
 
 
 **What it costs at startup (measured 2026-10-03).** A sequencer reads its whole write-ahead log when it

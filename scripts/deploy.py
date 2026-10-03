@@ -854,10 +854,10 @@ def main() -> None:
     # The sequencer binary requires an absolute path; the environment files store them as
     # relative paths so they stay portable across machines and containers.
     #
-    # PUBSUB_WAL_ROOT overrides that root for one machine only, for the write-ahead logs and for
-    # every other file the venue keeps across a restart (below). The name says WAL because the
-    # write-ahead log came first; it is the root for all of the venue's durable state. Those files
-    # are measurably better on a device of their own mounted lazytime -- see
+    # PUBSUB_WAL_ROOT overrides that root for one machine only, for the write-ahead logs and for the
+    # small state files the venue syncs (below), but not for the open-order regions, which must be on
+    # another filesystem. The name says WAL because the write-ahead log came first. Those files are
+    # measurably better on a device of their own mounted lazytime -- see
     # docs/operations/filesystem_requirements.md -- but which device that is cannot go in an
     # environment file, because dev.toml serves both the Linux Mint host
     # and the Rocky/RHEL8 container, and a path that exists on one would be silently created on
@@ -869,7 +869,7 @@ def main() -> None:
         if not wal_root_path.is_dir():
             print(f"error: PUBSUB_WAL_ROOT is set to {wal_root}, which is not a directory", file=sys.stderr)
             sys.exit(1)
-        print(f"PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's other durable state go under {wal_root_path}")
+        print(f"PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's small state files go under {wal_root_path}; open-order regions do not")
 
     # Every write-ahead log: the sequencers' and the matching engine publishers'. A relative path
     # left unresolved would be taken relative to the directory the component runs in, which is its
@@ -892,33 +892,43 @@ def main() -> None:
             wal_path.mkdir(parents=True, exist_ok=True)
             namespace[key] = str(wal_path)
 
-    # Same treatment for the venue's other durable state: the matching engine's epoch files and
-    # open-order regions, and the arbiters' lease promise records. They belong on the same lazytime
-    # device as the write-ahead logs. The region is memory-mapped and written continuously, and
-    # without lazytime its writeback fills the filesystem's journal with timestamp changes; the
-    # epoch and promise files are written with fsync, which then waits behind that journal traffic,
-    # and an arbiter waiting on it renews no lease (BUG-0107).
+    # The venue's small state files -- the matching engines' epoch files and the arbiters' lease
+    # promise records -- go with the write-ahead logs. Each is written and synced before the vote or
+    # change of leadership it records takes effect, on the thread that handles leases.
+    #
+    # The matching engines' open-order regions do NOT go with them, and must not. A region is a large
+    # file (about 500 MB as configured) that the engine creates from scratch when it finds none, and
+    # writes continuously while trading. On ext4, a sync of any file waits for the journal to commit,
+    # and the commit waits for the data of newly written blocks on the same filesystem to reach the
+    # disk. So a small file synced on the same filesystem as a region being created waits for the
+    # region's data: measured on 2026-10-03, the sequencer's first promise record took 2.3 seconds,
+    # starting 0.2 seconds after a region was created beside it, and its lease ran out (BUG-0107).
+    # The region therefore stays in the install directory, on a different filesystem from the one
+    # PUBSUB_WAL_ROOT names; see docs/operations/filesystem_requirements.md.
     #
     # All are files rather than directories, so it is the parent that gets created. The epoch file
     # is written when leadership first moves, and its absence reads as generation zero, which is
     # what a new deployment should start from; the region is created by the engine at startup, and
-    # its absence means no orders were open, which is likewise right for a new deployment. A file
-    # left in the install directory by an earlier deployment that put it there is moved across, so
-    # that changing where these files live does not lose the open orders or the epochs.
-    for key in ("matching_engine_epoch_state_file", "matching_engine_secondary_epoch_state_file", "matching_engine_order_book_region_path",
-                "matching_engine_secondary_order_book_region_path", "arbiter_primary_lease_promise_file", "arbiter_secondary_lease_promise_file"):
+    # its absence means no orders were open, which is likewise right for a new deployment. A file an
+    # earlier deployment put in the other place is moved to where it now belongs, and each move is
+    # printed, so that changing where these files live loses no open orders and no epochs.
+    region_keys = ("matching_engine_order_book_region_path", "matching_engine_secondary_order_book_region_path")
+    for key in ("matching_engine_epoch_state_file", "matching_engine_secondary_epoch_state_file", "arbiter_primary_lease_promise_file",
+                "arbiter_secondary_lease_promise_file") + region_keys:
         if key in namespace:
             configured = Path(namespace[key])
             state_path = configured
             if not configured.is_absolute():
-                state_path = (Path(wal_root) / configured) if wal_root else (install_dir / configured)
+                goes_with_logs = bool(wal_root) and key not in region_keys
+                state_path = (Path(wal_root) / configured) if goes_with_logs else (install_dir / configured)
+                other_place = (install_dir / configured) if goes_with_logs else ((Path(wal_root) / configured) if wal_root else None)
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                if other_place is not None and other_place != state_path:
+                    for earlier, later in ((other_place, state_path), (Path(str(other_place) + ".lease_promise"), Path(str(state_path) + ".lease_promise"))):
+                        if earlier.exists() and not later.exists():
+                            shutil.move(str(earlier), str(later))
+                            print(f"moved {earlier} to {later}")
             state_path.parent.mkdir(parents=True, exist_ok=True)
-            if not configured.is_absolute() and wal_root:
-                for earlier in (install_dir / configured, Path(str(install_dir / configured) + ".lease_promise")):
-                    later = state_path if earlier.name == configured.name else Path(str(state_path) + ".lease_promise")
-                    if earlier.exists() and not later.exists():
-                        shutil.move(str(earlier), str(later))
-                        print(f"moved {earlier} to {later}")
             namespace[key] = str(state_path)
 
     expand_templates(install_dir, namespace, map_config_files_to_components(env, install_dir))

@@ -1,12 +1,17 @@
 # Filesystem requirements for the venue's durable state
 
-> **The filesystem holding the venue's durable state must be mounted `lazytime`.** That is every
-> write-ahead log (the sequencers' and the matching engine publishers'), the matching engines'
-> open-order regions and epoch files, and the arbiters' lease promise records.
+> **Two rules.**
 >
-> Without it the sequencer stalls for hundreds of milliseconds at a time, on the thread that
-> sequences every order the venue takes. With it, those stalls do not happen at all. The other
-> files are exposed in the same way; see [Applies to more than the log](#fs_beyond_the_log).
+> 1. **The filesystem holding the write-ahead logs and the venue's small state files must be
+>    mounted `lazytime`.** That is every write-ahead log (the sequencers' and the matching engine
+>    publishers'), the matching engines' epoch files, and every lease promise record. Without it
+>    the sequencer stalls for hundreds of milliseconds at a time, on the thread that sequences every
+>    order the venue takes. With it, those stalls do not happen at all.
+> 2. **The matching engines' open-order regions must not be on that filesystem.** A region is a
+>    large file, and while one is being created or filled, every small file synced on the same
+>    filesystem waits for it: measured, for more than two seconds, long enough for leases to run
+>    out and the venue to lose its leaders. See
+>    [Keep the large file away from the small synced files](#fs_keep_regions_apart).
 >
 > This is a mount option. It is not in this repository, it is not in any configuration file the
 > venue reads, and nothing about the code suggests it matters.
@@ -167,17 +172,17 @@ override it for a one-off run:
 export PUBSUB_WAL_ROOT=/somewhere/else      # before scripts/devsetup.sh
 ```
 
-`deploy.py` then places every write-ahead log and the venue's other durable state under it, and
-says so:
+`deploy.py` then places every write-ahead log and the small synced files under it, and keeps the
+open-order regions in the install directory, on a different filesystem
+([Keep the large file away from the small synced files](#fs_keep_regions_apart)). It says so:
 
 ```
-PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's other durable state go under /mnt/sda2/mystuff2
+PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's small state files go under /mnt/sda2/mystuff2; open-order regions do not
 ```
 
-The name says WAL because the write-ahead log came first; it is the root for all of the venue's
-durable state. A state file or publisher log that an earlier deployment left in the install
-directory is moved across, and `deploy.py` names each one it moves, so changing where they live
-loses no open orders and no epochs.
+The name says WAL because the write-ahead log came first. A file that an earlier deployment put in
+the other place is moved to where it now belongs, and `deploy.py` names each one it moves, so
+changing where these files live loses no open orders and no epochs.
 
 Unset, everything goes under the install directory, which works anywhere. If it is set to
 something that is not a directory, the deploy stops rather than carrying on.
@@ -239,21 +244,66 @@ which gives the filesystem and whether `lazytime` is already set, together, in o
 
 ## Applies to more than the log {#fs_beyond_the_log}
 
-Any memory-mapped file the venue writes to has the same exposure, because the mechanism is about
-mapped writeback rather than about the log. The matching engine's open-order region is the other
-one, written continuously while the venue trades. See [BUG-0071](../bug_list.md#bug_0071), which
-records a related defect in how that region is warmed.
+Any memory-mapped file the venue writes to has the same exposure to timestamp traffic, because the
+mechanism is about mapped writeback rather than about the log. The matching engine's open-order
+region is the other one, written continuously while the venue trades. See
+[BUG-0071](../bug_list.md#bug_0071), which records a related defect in how that region is warmed.
 
-Files written with `fsync` are exposed in a different way. The matching engines' epoch files and
-every lease promise record are written and synced before the vote they record is given, on the
-thread that handles leases. An `fsync` waits for the filesystem's journal to commit, and on a
-filesystem without `lazytime` the journal is kept busy by the timestamp changes from mapped
-writeback, so the sync can take hundreds of milliseconds or more. An arbiter waiting on it renews
-no lease, and the leases of every pair it votes in can run out
+## Keep the large file away from the small synced files {#fs_keep_regions_apart}
+
+The venue writes two kinds of file that interfere with each other when they share a filesystem.
+
+**The small synced files.** Each matching engine's epoch file, and the lease promise record of every
+sequencer, matching engine and arbiter. Each is a few dozen bytes, and each is written and **synced**
+(`fsync`) before the vote or change of leadership it records takes effect, on the thread that handles
+leases. Until the sync returns, that instance answers no lease request and renews nothing. Promise
+records are normally refreshed in the background, seconds before they are needed
+([majority_leases.md](../availability/majority_leases.md), rule 6), but an instance's first record
+after it starts is always written on the lease thread and waited for.
+
+**The large file.** Each matching engine's open-order region, about 500 MB as configured. The engine
+creates it from scratch when it finds none, writing every block, and writes to it continuously while
+the venue trades.
+
+**Why they interfere.** On ext4, as on most journalling filesystems in their default mode, a sync
+does not return until the journal has committed, and a commit does not complete until the data of
+blocks newly written on the same filesystem has reached the disk. A sync of a forty-byte promise
+record on the filesystem where a 500 MB region is being created therefore waits for the region's data.
+`lazytime` does not help: it removes the timestamp updates from the journal, not the wait for data.
+
+**What was measured, on 2026-10-03.** With every file on the `lazytime` device, a scenario started
+the venue and the matching engine created its region:
+
+| Time | What happened |
+|---|---|
+| 19:45:42.858 | The primary sequencer asks to lead; its first promise record has to be written |
+| 19:45:43.126 | The matching engine creates its 496 MB region, on the same filesystem |
+| 19:45:45.175 | The sequencer's promise record write returns, after **2,316 ms** |
+| 19:45:49.273 | The sequencer's lease runs out, its lease thread having been held for **6.4 seconds** |
+
+The same happened that afternoon with the arbiters, whose promise records then shared a filesystem
+with the region, and both arbiters' lease threads stalled for five seconds at once
 ([BUG-0107](../bug_list.md#bug_0107)).
 
-So all of these go on the same `lazytime` device as the write-ahead logs, which is what
-`deploy.py` does when `PUBSUB_WAL_ROOT` is set.
+With the regions moved to a different filesystem and nothing else changed, five consecutive scenario
+runs, the first straight after a build (when the earlier failure happened), recorded **no promise record
+write of 50 ms or more, no lease running out, and no lease-handling callback overrunning**, while the
+engine created a fresh region at every start.
+
+**The rule.** The open-order regions go on a different filesystem from the write-ahead logs and the
+small synced files. `deploy.py` does this: with `PUBSUB_WAL_ROOT` set, the write-ahead logs, epoch
+files and promise records go under it, and the regions stay in the install directory. On the
+development machine that is:
+
+| File | Where | Filesystem |
+|---|---|---|
+| Write-ahead logs, epoch files, promise records | `/mnt/sda2/mystuff2/var` | `/mnt/sda2`, mounted `lazytime` |
+| Open-order regions | `installed/var` | `/mnt/sda1` |
+
+**What this does not settle.** The region's own filesystem is not mounted `lazytime` on the development
+machine, so the matching engine is still exposed to the timestamp traffic described in
+[Applies to more than the log](#fs_beyond_the_log). The best arrangement is a third filesystem,
+mounted `lazytime`, for the regions alone. A production machine should have one.
 
 ## Related
 

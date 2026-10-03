@@ -4819,15 +4819,29 @@ def clear_open_order_regions(prefix: Path) -> None:
 
 
 def venue_state_dir(prefix: Path) -> Path:
-    """The directory holding the matching engines' open-order regions and epoch files, and the arbiters' promise records.
+    """The directory holding the matching engines' open-order regions.
 
-    deploy.py puts these on the same device as the write-ahead logs when PUBSUB_WAL_ROOT names one,
-    and in the install's var directory otherwise, so the directory is read from the deployed
-    matching engine configuration rather than assumed.
+    Read from the deployed matching engine configuration rather than assumed. deploy.py keeps the
+    regions off the filesystem that holds the write-ahead logs and the small state files, because a
+    region being created there delays every sync of those files (BUG-0107).
     """
     config = prefix / "etc" / "matching_engine" / "matching_engine_primary.toml"
     if config.is_file():
         match = re.search(r'^region_path\s*=\s*"([^"]+)"', config.read_text(), re.MULTILINE)
+        if match:
+            return Path(match.group(1)).parent
+    return prefix / "var"
+
+
+def small_state_dir(prefix: Path) -> Path:
+    """The directory holding the matching engines' epoch files and the arbiters' lease promise records.
+
+    deploy.py puts these with the write-ahead logs when PUBSUB_WAL_ROOT names a device, and in the
+    install's var directory otherwise, so it is read from the deployed arbiter configuration.
+    """
+    config = prefix / "etc" / "arbiter" / "arbiter_primary.toml"
+    if config.is_file():
+        match = re.search(r'^promise_file\s*=\s*"([^"]+)"', config.read_text(), re.MULTILINE)
         if match:
             return Path(match.group(1)).parent
     return prefix / "var"
@@ -4847,9 +4861,9 @@ def clear_lease_promise_records(prefix: Path) -> None:
     record an instance waits one lease period before voting, as it does after a reboot.
     """
     candidates = []
-    var_dir = venue_state_dir(prefix)
-    if var_dir.is_dir():
-        candidates += list(var_dir.glob("*lease_promise*"))
+    for state_dir in {small_state_dir(prefix), venue_state_dir(prefix)}:
+        if state_dir.is_dir():
+            candidates += list(state_dir.glob("*lease_promise*"))
     # A sequencer keeps its record in its write-ahead log directory, which is not under var when
     # PUBSUB_WAL_ROOT puts the logs on a disk of their own, so the directory is read from the
     # deployed configuration.
