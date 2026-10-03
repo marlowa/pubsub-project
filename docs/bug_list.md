@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 104 |
-| Open | 39 (25 defects, 14 tasks) |
+| Bugs recorded | 105 |
+| Open | 40 (26 defects, 14 tasks) |
 | Closed | 65 |
-| Next id | BUG-0105 |
+| Next id | BUG-0106 |
 
 ## Open bugs by severity
 
-13 high, 22 medium, 4 low.
+14 high, 22 medium, 4 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,6 +26,7 @@
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
+| [BUG-0105](#bug_0105) | high | defect | A sequencer that takes the lead numbers new records with numbers its log already holds |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -149,6 +150,40 @@ went looking.
 
 ## Open
 
+### BUG-0105: A sequencer that takes the lead numbers new records with numbers its log already holds {#bug_0105}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Writing the design for [BUG-0103](#bug_0103), and then reading the follower's log after `ha_test.py` scenario 59 |
+| Impact | After every change of sequencer leader, the new leader's log holds two records under each of about as many sequence numbers as there were execution reports since the pair last connected. Anything that relies on the numbers only going forward misreads the log: a matching engine's catch-up skips every record at or below the position it gives, and the publishers and the order activity recorder identify records by their number |
+
+**What happens.** The leading sequencer gives each order, and each execution report it logs, the next
+number from one counter (`next_sequence_number_`, `SequencerThread.cpp` lines 540 and 837). The
+follower writes the records its leader replicates under the leader's numbers (`handle_wal_record`,
+`install_peer_wal_inline_handler`) but does not move its own counter forward from them. Its counter
+moves only when it discards a gateway's copy of an order, at line 540, before the role check, so it
+counts orders and never reports. The two counters are made equal only when the peer connection is
+established (`handle_peer_status_response`). So the follower's counter falls behind its own log by one
+for every report, and when it takes the lead it numbers new records from there.
+
+**What was measured.** In the control run of scenario 59 on 2026-10-03, with replication working, the
+secondary's log ends at record 5211872, the old leader's last report. The first order the new leader
+numbered after taking over is 5210870, which is 1,002 below, about the number of reports produced by
+the 1,000 baseline orders. The log goes backwards at that point and four numbers in its last two
+segments are held twice. An earlier run of the same scenario left a second backwards step in the same
+log, from 5209860 to 5208864. The primary's log has neither. The record numbers were read by parsing
+the log files' entry headers directly.
+
+**What closing it needs.** A follower moves its counter past every record it writes, and a sequencer
+taking the lead numbers from the highest record it holds. The design for [BUG-0103](#bug_0103) covers
+this together with what the new leader learns from the matching engine. A test must read the new
+leader's log after a change of leader and require the numbers to go forward.
+
+---
+
 ### BUG-0104: A connection whose reads were paused can stay stalled for seconds after they resume {#bug_0104}
 
 | | |
@@ -246,6 +281,10 @@ sequencer's report for it arrives and sending it again to the new leader, which 
 to recognise a resent order; the follower keeping the orders it discards for one lease period and
 appending those its new leader's log does not hold; or the gateway refusing, with a reply, the orders
 it sent while it knew no leading sequencer. Each has a cost, and the choice needs a design.
+
+**The design.** [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md) sets out
+the options for each part of this, with [BUG-0105](#bug_0105) and [BUG-0097](#bug_0097), and
+recommends one. It is for review; nothing is implemented.
 
 **What a test must do.** Count the orders sent during the change, and require every one of them to be
 answered, accepted or refused. Scenario 59 covers the third fault, orders the engine holds that no

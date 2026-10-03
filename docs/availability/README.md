@@ -12,6 +12,7 @@ different time budgets, and conflating them is the subject of a bug entry.
 - [matching_engine_presence.md](matching_engine_presence.md) — asking the arbiter whether any matching engine exists, rather than waiting on a timer to guess
 - [process_death.md](process_death.md) — the inner loop: what is settled, what `launch.py` already does, and the measurement that ruled out a shared-memory journal
 - [majority_leases.md](majority_leases.md) — how the venue decides which instance leads: only while a majority of three voters grants it a lease; the rules, each failure, and where it is implemented
+- [change_of_sequencer_leader.md](change_of_sequencer_leader.md) — keeping every order and report across a change of sequencer leader: four defects, what the venue must guarantee, the options for each part with their costs, and a recommendation (a design for review)
 - [tla/findings.md](tla/findings.md) — the HA design specified in TLA+ and model checked: what held, eight findings with counterexamples, and directions for fixing
 
 ---
