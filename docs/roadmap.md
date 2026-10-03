@@ -349,51 +349,107 @@ Key architectural decisions and the reasoning behind them.
 
 ### Decided
 
-- **Per-component HA, no central broker.** Each component pair (sequencer, ME, etc.) has its own primary-secondary instances, its own WAL replication, and its own arbitrated failover. Components share framework-level HA *primitives* (WAL data structure, replication-channel pattern, arbiter-client API, fencing discipline) but compose them independently.
+Each entry is a decision. Where what it describes is not built, the entry says so.
+
+- **Per-component HA, no central broker.** Each component that needs a single writer -- the
+  sequencer, the matching engine, the matching engine publisher and the arbiters -- runs as a pair of
+  instances with its own replication and its own decision about which instance leads. The
+  authentication service runs two instances that both serve, and each gateway protocol has two
+  instances to which each member is provisioned. Components share framework-level building blocks
+  (the write-ahead log, `PairLeaseAgent` and the lease rules) but compose them independently. See
+  [WAL and High Availability](availability/wal_and_ha.md).
 
 - **Leadership by majority lease.** An instance leads only while a majority of three voters grants it a lease: itself, its peer, and a third voter that never leads, which is the active arbiter for a component pair and the witness for the arbiters. A lease runs for a fixed period and is renewed; a leader whose lease runs out stops acting. Every leadership generation has an epoch. See [majority_leases.md](availability/majority_leases.md).
 
 - **Arbiter is itself HA — PSA+witness topology.** Two full arbiter instances plus one witness in a failure-independent location. Three votes; majority is two. Three machines is the structural minimum and stays at three. The arbiters decide which of them is active by the same majority lease as every other pair, with the witness as the third voter, implemented by hand rather than with a consensus library.
 
-- **WAL format.** Segmented, mmap'd, single-writer. Entry: `magic | length | seqNo | payload | CRC32`. Replay scans from offset 0; stops at first failure. Tail corruption is equivalent to a clean crash before commit.
+- **Write-ahead log format.** Segmented, memory-mapped, one writer. Each entry is a 24-byte header
+  (`magic`, `payload_size`, `record_id`, and eight reserved bytes), the payload, and a CRC32 of
+  header and payload. Replay reads each segment from the start and stops at the first entry that
+  fails its checks, which after a crash is the unfinished last entry. A damaged entry in the middle
+  of the log is meant to stop the component; today replay skips the rest of that segment and goes
+  on, which is [BUG-0106](bug_list.md#bug_0106).
 
-- **No `fsync` per WAL append.** Disk durability is out-of-band (segment rotation, periodic flusher). Cross-machine durability comes from WAL replication, not disk.
+- **No `fsync` on the write-ahead log.** Nothing in the venue calls `fsync` or `msync` on the log:
+  the operating system writes the mapped pages back to disk in its own time. Durability across a
+  machine failure comes from replication to the other machine, not from the disk.
 
-- **Two-tier commit.** Locally durable (CPU store-release on commit offset) gates send to ME. Replicated (follower has acked) gates ER emission to gateway.
+- **Two-tier commit.** An order is appended to the leader's own log before it is sent to the
+  matching engine, and a member's report is forwarded only once the follower has acknowledged the
+  order's record. [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md)
+  proposes sending an order to the engine only once the follower holds it; that is under review.
 
 - **Epochs travel on the lease messages and on the matching engine's announcement of its role.** A receiver refuses a lease request or an announcement at an epoch lower than one it has already seen. Order-path messages do not carry an epoch; an instance that is not leading forwards nothing and acts on nothing, which is what keeps a stale leader off the order path.
 
-- **Cancel-on-failover as ME HA baseline.** ME-secondary maintains a replicated book; on promotion it reconciles against the sequencer WAL before issuing cancel ERs for outstanding orders. Halt-on-failure is preserved as a fallback for unrecoverable failure modes. Seamless lockstep failover is a future aspiration only.
+- **What a promoted matching engine does with open orders is a setting.** The follower keeps a
+  replicated book. On promotion it catches up from the leading sequencer's log, and then, as
+  `open_orders_on_promotion` says, either cancels every open order and tells each member (`cancel`,
+  the development environment's value) or keeps them (`keep`). An engine that cannot account for
+  what it held halts rather than resume.
 
-- **Integer-only prices and quantities.** All price/qty values multiplied by a constant (e.g. 1,000,000). Avoids floating-point determinism hazards in replay and cross-instance comparison.
+- **Integer prices and quantities, once the venue matches.** Prices and quantities are to be held
+  as integers scaled by a constant, so that replay and comparison between instances cannot be
+  affected by floating-point rounding. Not built: the venue does not match buyers with sellers, and
+  holds each price and quantity as the decimal text the member sent.
 
-- **Dual rolling snapshots.** Truncation gated by the older trusted snapshot, never the newest one just taken. Validation required before promotion.
+- **Halt rather than guess.** Where the venue cannot establish what it holds, it stops and says
+  so rather than carry on with a guess. A matching engine that cannot account for its open-order
+  region halts, and no instance leads without a majority of voters. Mid-segment damage to the
+  write-ahead log is meant to halt too, and does not yet ([BUG-0106](bug_list.md#bug_0106)).
 
-- **Halt is the correct response** to WAL mid-segment corruption, both arbiter halves unreachable during failover, and snapshot validation failure on the only available snapshot.
-
-- **PTP (IEEE 1588), not NTP** for cross-machine clock synchronisation. Required for sub-microsecond accuracy in lease checks and ordering.
+- **PTP (IEEE 1588), not NTP** for cross-machine clock synchronisation. PTP keeps machines' clocks
+  within microseconds of each other, which the leases' drift allowance (250 ms in the development
+  environment) assumes with a wide margin, and which makes timestamps taken on different machines
+  comparable.
 
 - **`CLOCK_MONOTONIC` for local interval measurement.** `CLOCK_MONOTONIC_RAW` was considered and rejected: unaffected by NTP/PTP slewing is a disadvantage for interval timers on long-running processes.
 
-- **Clock injection.** Components that read time take a `MonotonicClock&` or `WallClock&` constructor parameter. Concrete motivator: GTD order support in the ME requires replay-deterministic clock reads.
+- **The time of day is injected.** A component that reads the time of day takes a `WallClock` as a
+  constructor parameter, so that a test can set it and a replay can reproduce it. Intervals are
+  measured with the monotonic clocks `HighResolutionClock` and `MillisecondClock`.
 
-- **Two distinct timer mechanisms.** OS `timerfd` for infrastructure timers (idle timeouts, connect retries, lease heartbeats, FIX logon timeout) — not observable to matching logic. Sequencer-mediated timers for ME-domain events (GTD expiry, auction expiry) — replay-critical, travel through the WAL.
+- **Two distinct timer mechanisms.** Operating-system timers (`timerfd`) for the venue's own
+  housekeeping -- idle timeouts, connect retries, lease renewals, the FIX logon timeout -- which
+  nothing in matching can observe. Timers for events the matching engine must reproduce on replay,
+  such as good-till-date expiry and the end of an auction, are to travel through the sequencer's log.
+  The second kind is not built: the engine records a good-till-date order's expiry time and reports
+  it, and nothing expires the order.
 
-- **Prometheus for statistics.** Hot-path instrumentation via shared-memory atomic counter/gauge/histogram updates. Dedicated gatherer process per machine reads shared memory and exposes scrape endpoints.
+- **Prometheus for statistics, outside the control plane.** Each process serves its own metrics
+  over HTTP for Prometheus to scrape, on a port set in its configuration. Prometheus is optional, so
+  nothing in the venue's operation depends on it.
 
 - **WAL-follower pattern for a single downstream consumer** (e.g. a Kafka publisher). The consumer opens a connection to the sequencer leader with a position cursor and receives WAL records from cursor onward, reusing the existing replication primitive. For multi-subscriber fan-out with replay, the framework now provides the [topic pub/sub primitive](pubsub/pubsub.md) (slice 10) instead; the two coexist and are chosen per consumer.
 
 ### Leaning
 
-- **Per-component HA primitives provided by the framework** as reusable building blocks (`Wal`, replication-channel pattern, arbiter-client API, fencing-discipline helper). Avoids each component implementing HA differently.
+- **High availability building blocks shared by every component.** The write-ahead log is in the
+  framework, and `PairLeaseAgent` and the lease rules are shared by every pair from
+  `applications/fix_common`. The leaning is to move what is still written separately in each
+  component, such as how a follower is brought up to date, into shared building blocks too.
 
 - **Quill backtrace logging** — when an `Error` or `Critical` record fires, a ring of recent diagnostic context is also flushed. Quill v11 supports this directly. Planned when convenient.
 
 ### Open
 
-- **Sub-second sequencer failover target.** How aggressively to tune lease and heartbeat intervals. Should be configurable via `ReactorConfiguration`, not baked in.
+- **How fast a sequencer failover should be.** A follower takes the lead once the old leader's lease
+  has run out, so the lease period sets the failover time. The period, the renewal interval and the
+  drift allowance are set in the environment file (`[lease]`: 3,000, 1,000 and 250 milliseconds in
+  development), and a change of leader took 2.6 to 4.2 seconds in the measured runs. How short to make
+  them is undecided: a shorter lease means a faster failover and less tolerance of a slow machine.
 
-- **Sequencer-to-gateway connection direction.** Currently the sequencer initiates outbound connections to gateways (unusual direction). The reverse (gateway connects to sequencer) is more conventional and easier to scale horizontally. Open until a multi-gateway deployment scenario forces the choice.
+- **Which side opens the connections between gateways and sequencers.** Each gateway opens the
+  connection on which it sends commands to a sequencer, and each sequencer opens the connection on
+  which it sends reports to a gateway, so each sequencer must be configured with every gateway's
+  address. Having the gateways open both connections is more conventional and would make adding a
+  gateway a change to that gateway alone. Open until a deployment with more gateways forces the
+  choice.
+
+- **Reclaiming space in the write-ahead log.** The venue never deletes log segments: the snapshot it
+  writes records a position and holds no state, and nothing truncates the log. Reclaiming space
+  waits on a decision about how long execution reports must be kept. The design in mind keeps two
+  rolling snapshots and truncates only below the older one, so that a snapshot found to be bad
+  always has an earlier one behind it.
 
 - **Market data integration mechanism.** Depends on requirements from the downstream market data consumer. Possibilities: another WAL follower, topic-based pubsub, or bespoke mechanism. Under investigation.
 

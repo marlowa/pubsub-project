@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 105 |
-| Open | 40 (26 defects, 14 tasks) |
+| Bugs recorded | 106 |
+| Open | 41 (27 defects, 14 tasks) |
 | Closed | 65 |
-| Next id | BUG-0106 |
+| Next id | BUG-0107 |
 
 ## Open bugs by severity
 
-14 high, 22 medium, 4 low.
+15 high, 22 medium, 4 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -27,6 +27,7 @@
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0105](#bug_0105) | high | defect | A sequencer that takes the lead numbers new records with numbers its log already holds |
+| [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -149,6 +150,40 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0106: A damaged entry in the write-ahead log silently drops the rest of its segment {#bug_0106}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Checking the roadmap's decision that the venue halts on mid-segment corruption of the write-ahead log, during the documentation audit |
+| Impact | A sequencer that restarts on a log with one damaged entry loses every record after it in the same segment, up to about 16,000 orders and reports, says nothing, and goes on numbering from the true last record, so the loss leaves no visible trace. A matching engine catching up from that log is sent an incomplete history |
+
+**What happens.** `WalReader::replay_segment` stops reading a segment at the first entry whose
+magic number, length or checksum is wrong, and treats everything after it as never written.
+That is right for the unfinished last entry a crash leaves at the end of the log. But
+`WalReader::replay` then goes on to the next segment, and the next, so a damaged entry in the middle
+of the log ends one segment early and replay carries on past it. Nothing is logged, and the end
+position returned is the same as for an undamaged log.
+
+**What was measured.** Three consecutive segments of the primary sequencer's log (`wal_000300.log`
+to `wal_000302.log`, 54,551 records) were copied, and one byte inside the payload of the 1,001st
+entry of the first segment was changed. Replaying the undamaged copy with the library's
+`WalReader::replay` gave 54,551 records with no jumps in numbering. Replaying the damaged copy gave
+38,022 records, one jump from 4892273 to 4908803, and the same last record and end position.
+
+**What it contradicts.** The roadmap's decision log and [BUG-0062](#bug_0062) both said the venue
+halts on mid-segment corruption rather than guess. Nothing implements that.
+
+**What closing it needs.** A damaged entry followed by valid entries, in the same segment or a later
+one, is corruption, not an unfinished tail, and the component must stop and say where the log is
+damaged rather than replay past it. Only a damaged entry with nothing valid after it in the whole log
+is the tail a crash leaves. A unit test must damage an entry in the middle of a log and require
+replay to refuse, and must still accept a log whose only damage is an unfinished last entry.
+
+---
 
 ### BUG-0105: A sequencer that takes the lead numbers new records with numbers its log already holds {#bug_0105}
 
@@ -722,8 +757,9 @@ ask whether the two candidates have been leading separately since Tuesday.
 **What is wanted is detection, not prevention.** Preventing it would block the legitimate case. The
 venue should be able to tell, when instances come together, that they have diverged -- and halt
 rather than pick one. Halting is the venue's established answer to exactly this class of thing:
-mid-segment WAL corruption, both arbiter halves unreachable, and snapshot validation failure on the
-only snapshot all halt rather than guess. See the decision log in [Roadmap](roadmap.md).
+an engine that cannot account for its open-order region halts rather than guess, and no instance
+leads without a majority. The same answer is intended for mid-segment damage to the write-ahead log,
+but is not built: see [BUG-0106](#bug_0106).
 
 Where to look first, none of it investigated: whether a WAL carries anything identifying the
 instance and generation that wrote it; whether the epoch state file records enough to spot a
