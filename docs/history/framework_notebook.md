@@ -7,34 +7,6 @@ longer describes the code. The current description of the framework is
 
 ---
 
-## Database Access Design from C++
-
-
-**Note: the RDBMS is in use today.** Credential and access-control data (firms, comp_ids, gateway permissions) are managed via the Java admin service (`java/admin-service/`) using plain JDBC. The `db/export_credentials.py` script exports SCRAM credentials from the database to `credentials.toml` for the authentication service. The design described in this section concerns a future C++ `DatabaseThread` that would allow C++ components to query the database directly; that has not yet been implemented. The principle is to limit direct database access to as few components as possible — currently only the Java admin service and the credential export script touch the database, and that is the preferred architecture.
-
-**Rationale for a database.** `comp_id` identities appear in many places beyond SCRAM credentials: per-comp-id and per-firm-id gateway throttle limits, risk management parameters, position limits, and more. A flat file per concern quickly becomes unmanageable. The authentication service and risk subsystem both need a relational store. Oracle and PostgreSQL are both plausible targets, and a venue should not have to choose one at build time. To avoid lock-in to either, **unixODBC** is the chosen abstraction layer — the application talks to `libodbc.so` via the standard ODBC API and the DSN configuration selects the underlying driver.
-
-**The async problem.** Standard ODBC has no async API. Each query blocks the calling thread until the RDBMS replies. Blocking the reactor thread or any `ApplicationThread` would stall the entire event loop. The solution is a **thread pool of `std::thread` workers**, each holding a persistent ODBC connection. The reactor thread never touches ODBC directly.
-
-**`DatabaseThread` design.** A subclass of `ApplicationThread`. It owns:
-- A pool of `std::thread` workers (count configurable). Each worker holds one open ODBC connection and blocks on a work queue.
-- An ITC interface: other `ApplicationThread` subclasses post request messages to `DatabaseThread`'s ITC queue. `DatabaseThread::on_itc_message()` dispatches the request to a free worker.
-- A result-delivery path back into the reactor's epoll loop (two open options — see below).
-
-No `std::thread` idle-keepalive timer is needed. `Reactor::check_for_stuck_threads()` checks only callback duration (time from `time_event_started_` to `time_event_finished_` per thread); a `DatabaseThread` that has no work to do sits idle between ITC deliveries and the reactor never marks it stuck. An idle thread is always safe.
-
-**Two open options for worker → reactor result delivery:**
-
-1. **eventfd registered with epoll.** Each worker writes to an `eventfd` when a result is ready. The reactor sees `EPOLLIN` on the `eventfd` and delivers a `DatabaseResult` event to the requesting `ApplicationThread`. Requires a small extension to the framework to support non-socket fds in epoll.
-2. **Workers post directly to the ITC queue.** Workers call `thread.post_to_queue(result_message)` directly. The result lands in the requesting thread's ITC queue without involving the reactor at all. Simpler — no framework changes needed — but the ITC queue must be safe for cross-thread post from a raw `std::thread` (it is: `LockFreeMessageQueue` is MPSC-safe).
-
-Neither option has been chosen yet; this remains an open design question.
-
-**Credential pre-load strategy.** For the authentication service the hot path (SCRAM exchange) must never block on the database. The chosen approach is to **pre-load all credentials at startup** into an `unordered_map<string, ScramCredential>` held in the `AuthenticationThread`. The hot path only reads the in-memory map. On SIGHUP or an admin PDU, `DatabaseThread` reloads the credential table and posts the new map to `AuthenticationThread` via ITC. This also avoids the N idle ODBC connections problem — the worker pool can be shut down after the initial load (or kept alive only for periodic refresh).
-
----
-
-
 ## Development Sessions
 
 The full session-by-session narrative is in **[SESSIONS.md](../history/sessions.md)**. That file

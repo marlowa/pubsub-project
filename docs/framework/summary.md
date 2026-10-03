@@ -495,11 +495,14 @@ Any class that needs to log receives a `QuillLogger&` in its constructor and sto
 
 ### 15. Database Access
 
-No venue component holds a connection to the database in order to do its work. What a component
-needs is read from an export when it starts, and each later change is sent to it. The
-authentication service is the example: it reads `credentials.toml`, exported from the database by
-`db/export_credentials.py`, and the administration service, which is the only component that
-writes the database, sends it every change afterwards.
+No C++ component uses the database, and the framework contains no database code. The work the
+venue does with the database at runtime is done in Java, over JDBC, by the administration service
+(`java/admin-service/`), which is the only component that writes it.
+
+What a C++ component needs from the database is read from an export when it starts, and each later
+change is sent to it. The authentication service is the example: it reads `credentials.toml`,
+which `db/export_credentials.py` exports from the database when the venue is deployed, and the
+administration service sends it every change afterwards.
 
 The reason is that a store the venue must be able to reach in order to work turns every outage of
 that store into a trading outage, for a cause that has nothing to do with trading.
