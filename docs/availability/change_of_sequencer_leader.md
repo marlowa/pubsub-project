@@ -292,10 +292,20 @@ field.
 
 ### Decided
 
-- **The cost of 4.2 option A is accepted, subject to measurement.** The added latency is measured
-  first, by the method in `docs/operations/latency_findings.md`, and option A is kept if the
-  measurement confirms the estimate in section 4.2. If it does not, the choice is revisited with the
-  figure in hand.
+- **Option A of 4.2 is chosen, at its measured cost.** Measured by the method in
+  `docs/operations/latency_findings.md`, three runs of each after one discarded, with no change of
+  leader in any run, on one machine:
+
+  | | Median | 90th percentile | 99th percentile |
+  |---|---|---|---|
+  | Sending to the engine at once | 105.0 us | 115.0 us | 141.9 us |
+  | Option A | 124.4 us | 144.0 us | 174.8 us |
+  | Added | about 19.5 us | about 29 us | about 33 us |
+
+  The estimate in 4.2 was about 40 microseconds at the median; the measured cost is half that, and
+  acceptable. Across two machines the network adds to it. The orders a leader holds until the follower
+  acknowledges them are kept in storage of fixed size, allocated when the sequencer starts, so holding
+  an order allocates no memory.
 - **The venue plans for 50 million orders a day, and is tested with 100 million.** That sizes the
   day's identifier record that 4.3 depends on (R-0119). Held as a 128-bit hash of the comp id and the
   `ClOrdID`, 50 million identifiers are 800 MB of hashes, and roughly 1.6 GB once a hash table's own
