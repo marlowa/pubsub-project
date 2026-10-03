@@ -306,6 +306,28 @@ field.
   acceptable. Across two machines the network adds to it. The orders a leader holds until the follower
   acknowledges them are kept in storage of fixed size, allocated when the sequencer starts, so holding
   an order allocates no memory.
+- **A follower that falls too far behind is treated as gone, and the leader runs as if alone.** A
+  fault in the follower is a loss of resilience, not a loss of service: while the leader is working,
+  it goes on offering the service. *Considered and rejected: refusing new orders until the follower
+  catches up,* which keeps the guarantee of 4.2 unconditional but turns a fault in the backup into an
+  outage, and would make a follower that is alive but stalled more dangerous than one that has died,
+  since a dead follower's connection drops and the leader already runs alone then. Running alone with
+  a follower that is behind carries no more risk than running with no follower, which the venue
+  already accepts. Five things go with it:
+  1. **The trigger.** The leader declares the follower behind when its storage for held orders is
+     full, or when no acknowledgement has arrived for 100 milliseconds while it holds orders, so that a
+     follower that stops answering is noticed quickly rather than after thousands of orders. Both
+     limits are constants in the code, with their reasoning beside them.
+  2. **A clean switch.** The orders it holds are sent to the matching engine in sequence order, new
+     orders go to the engine at once, and reports stop waiting for the follower's acknowledgement, as
+     when the follower disconnects.
+  3. **A clean return.** When the follower has acknowledged every record the leader has written, the
+     leader goes back to waiting for its acknowledgements.
+  4. **Loud reporting.** A Warning when the leader starts running alone, saying why and how far behind
+     the follower is; one line when it stops, saying for how long; and a metric an operator can alert
+     on. Not a line per order.
+  5. **A follower that is behind must not take the lead.** Running alone happens more often under this
+     decision, so open question 2, a stale instance taking the lead, is the next work after 4.2.
 - **The venue plans for 50 million orders a day, and is tested with 100 million.** That sizes the
   day's identifier record that 4.3 depends on (R-0119). Held as a 128-bit hash of the comp id and the
   `ClOrdID`, 50 million identifiers are 800 MB of hashes, and roughly 1.6 GB once a hash table's own
@@ -324,8 +346,9 @@ field.
    recommendation, the promoted engine catches up from the new leader's log, as it does now. A command
    the old leader held alone was never applied by either engine, and the gateway sends it again. This
    needs a scenario before it is relied on.
-2. **A leader running alone.** While no follower is connected, the leader sends commands to the engine
-   at once, so its log alone holds them. If it then dies, the instance that takes over has an older
+2. **A leader running alone.** The next work after 4.2 (see the decision above). While no follower is
+   connected, or the follower is too far behind, the leader sends commands to the engine at once, so
+   its log alone holds them. If it then dies, the instance that takes over has an older
    log. A voter granting a lease does not compare the two instances' logs, so nothing stops the stale
    instance leading. Raft prevents this by refusing to vote for a candidate whose log is behind. That is
    a change to the lease rules (`majority_leases.md`) and needs its own design.
@@ -353,11 +376,13 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    and B. The change is kept only if option A is chosen.
 3. **4.2,** the chosen option, with the matching engine's guard described under 4.1. Scenario 59 then
    passes and its expected failure is removed.
-4. **4.4,** the follower keeping reports, with the new reports scenario.
-5. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
+4. **Open question 2,** so that a follower that has fallen behind cannot take the lead. A change to the
+   lease rules, designed and agreed first.
+5. **4.4,** the follower keeping reports, with the new reports scenario.
+6. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
    scenario 1 strengthened. This is the largest part, and it closes the gap the specification records
    under R-0119.
-6. **4.5,** the rejoin, with the new rejoin scenario. This closes BUG-0097.
+7. **4.5,** the rejoin, with the new rejoin scenario. This closes BUG-0097.
 
 Related: [wal_and_ha.md](wal_and_ha.md), [majority_leases.md](majority_leases.md),
 [order_acceptance.md](order_acceptance.md), [tla/findings.md](tla/findings.md), and the requirements
