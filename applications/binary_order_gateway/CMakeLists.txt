@@ -10,19 +10,22 @@ target_include_directories(binary_order_gateway PRIVATE
         ${FIX_DSL_INCLUDE_DIR}
 )
 
+# fix_codec for one thing only: its rule for what a decimal number is (FixField::as_decimal), so a
+# quantity or price is held to the same rule whichever protocol carried it. Clients speak the
+# generated PDUs directly, so there is no FIX text to parse here.
 target_link_libraries(binary_order_gateway PRIVATE
         pubsub_itc_fw
         scram_crypto
+        fix_codec
         tsl::robin_map
 )
 
-# No fix_codec or fix_dictionary dependency, unlike the FIX order gateway: clients speak the
-# generated PDUs directly, so there is no FIX text to parse or validate here.
 # leader_follower_generated: BinaryOrderGatewayThread.hpp includes leader_follower.hpp, which is generated.
 add_dependencies(binary_order_gateway fix_orders_generated binary_session_generated authentication_generated leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(binary_order_gateway PRIVATE
+        BinaryCommandChecks.hpp
         BinaryOrderGateway.hpp
         BinaryOrderGatewayConfiguration.hpp
         BinaryOrderGatewayConfigurationLoader.hpp
@@ -90,6 +93,7 @@ install(TARGETS binary_load_client
 
 # ── Unit tests ────────────────────────────────────────────────────────────────
 add_executable(binary_order_gateway_tests
+        tests/BinaryCommandChecksTest.cpp
         tests/BinaryProtocolTest.cpp
 )
 
@@ -101,6 +105,7 @@ target_include_directories(binary_order_gateway_tests PRIVATE
 
 target_link_libraries(binary_order_gateway_tests PRIVATE
         pubsub_itc_fw
+        fix_codec
         GTest::gtest_main
 )
 

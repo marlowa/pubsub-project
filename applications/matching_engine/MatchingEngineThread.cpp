@@ -907,7 +907,8 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
             recon_er.cl_ord_id = view.cl_ord_id;
             recon_er.has_orig_cl_ord_id = true;
             recon_er.orig_cl_ord_id = view.orig_cl_ord_id;
-            recon_er.has_order_qty = true;
+            // OrderQty is optional on a cancel (R-0142), so the report carries it only if the cancel did.
+            recon_er.has_order_qty = view.has_order_qty;
             recon_er.order_qty = view.order_qty;
             send_er_to_sequencer(recon_er, sequence_number, session, ReportIsRepeat::yes);
             ++reconciliation_reports_sent_;
@@ -951,13 +952,15 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
         er.cl_ord_id = view.cl_ord_id;
         er.has_orig_cl_ord_id = true;
         er.orig_cl_ord_id = view.orig_cl_ord_id;
-        er.has_order_qty = true;
+        er.has_order_qty = view.has_order_qty;
         er.order_qty = view.order_qty;
         er.has_ord_rej_reason = true;
         er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::UnknownOrder;
 
         send_er_to_sequencer(er, sequence_number);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: sent rejection ER ExecID={} OrigClOrdID={} (UnknownOrder)", exec_id,
+        // Info: a member asking to cancel an order the venue does not hold is the member's doing,
+        // and the venue has answered it correctly.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent rejection ER ExecID={} OrigClOrdID={} (UnknownOrder)", exec_id,
                    view.orig_cl_ord_id);
         return;
     }

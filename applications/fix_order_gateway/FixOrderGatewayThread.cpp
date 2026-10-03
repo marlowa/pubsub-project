@@ -1489,8 +1489,8 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
     // taking on work it cannot do, which is the correct response to the condition, and the
     // orders already deferred are WAL-committed.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "FixOrderGatewayThread: the venue is no longer accepting orders -- {} order(s) deferred over {}s. Members are still being acknowledged; "
-               "refusing them is not built yet (BUG-0009 step 4)",
+               "FixOrderGatewayThread: the venue is no longer accepting orders -- {} order(s) deferred over {}s. New orders and cancels are refused "
+               "until it is",
                view.deferred_order_count, view.degraded_for_seconds);
 }
 
@@ -2020,6 +2020,7 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
     // Optional, so forward it only when the member sent one -- the same guard the
     // cancel-on-disconnect path uses when it has no stored quantity to pass on.
     if (!order_qty.empty()) {
+        ocr.has_order_qty = true;
         ocr.order_qty = order_qty;
     }
 
@@ -2468,6 +2469,7 @@ void FixOrderGatewayThread::drain_pending_cancels() {
         ocr.side = static_cast<pubsub_itc_fw_app::Side>(entry->side);
         ocr.transact_time = config_.wall_clock->now_ns();
         if (entry->order_qty_len > 0) {
+            ocr.has_order_qty = true;
             ocr.order_qty = std::string_view(entry->order_qty, entry->order_qty_len);
         }
 

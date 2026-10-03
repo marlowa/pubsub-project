@@ -17,8 +17,10 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -53,6 +55,14 @@ struct Options {
     std::string cl_ord_id;
     // When set, send an OrderCancelRequest for this OrigClOrdID instead of placing orders.
     std::string cancel_cl_ord_id;
+    // The order's fields, settable so that a test can send an order the venue must refuse: a
+    // Side the protocol does not define, a quantity that is not a number, and so on.
+    char side{'1'};
+    std::string order_qty{"100"};
+    std::string price{"100.00"};
+    // How long to wait for each reply, in seconds; 0 waits for ever. A test that sends an order
+    // the venue cannot answer needs the client to give up and say so.
+    int reply_timeout_seconds{0};
 };
 
 bool parse_options(int argc, char** argv, Options& options) {
@@ -77,15 +87,30 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.cl_ord_id = argv[++index];
         } else if (argument == "--cancel" && has_value) {
             options.cancel_cl_ord_id = argv[++index];
+        } else if (argument == "--side" && has_value && std::string_view(argv[index + 1]).size() == 1) {
+            options.side = argv[++index][0];
+        } else if (argument == "--order-qty" && has_value) {
+            options.order_qty = argv[++index];
+        } else if (argument == "--price" && has_value) {
+            options.price = argv[++index];
+        } else if (argument == "--reply-timeout" && has_value) {
+            options.reply_timeout_seconds = std::stoi(argv[++index]);
         } else {
             fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] [--password P]\n", argv[0]);
             fmt::print("          [--target-comp-id ID] [--symbol SYM] [--orders N]\n");
             fmt::print("          [--cl-ord-id ID] [--cancel ORIG-CL-ORD-ID]\n");
+            fmt::print("          [--side C] [--order-qty Q] [--price P] [--reply-timeout S]\n");
             fmt::print("\n");
             fmt::print("  --cl-ord-id  use this ClOrdID instead of a generated one, so a later\n");
             fmt::print("               run on a new connection can refer to the same order\n");
             fmt::print("  --cancel     send an OrderCancelRequest for this OrigClOrdID rather\n");
             fmt::print("               than placing an order\n");
+            fmt::print("  --side, --order-qty, --price\n");
+            fmt::print("               the order's fields, sent as given even when invalid, so a\n");
+            fmt::print("               test can check what the venue refuses (default 1, 100, 100.00)\n");
+            fmt::print("  --reply-timeout\n");
+            fmt::print("               give up waiting for a reply after this many seconds and\n");
+            fmt::print("               exit with status 3 (default: wait for ever)\n");
             return false;
         }
     }
@@ -115,6 +140,11 @@ int connect_to_gateway(const Options& options) {
 
     const int no_delay = 1;
     ::setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay));
+    if (options.reply_timeout_seconds > 0) {
+        timeval timeout{};
+        timeout.tv_sec = options.reply_timeout_seconds;
+        ::setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    }
     return socket_fd;
 }
 
@@ -251,7 +281,7 @@ int main(int argc, char** argv) {
         const std::string cancel_cl_ord_id = options.cancel_cl_ord_id + "-CANCEL";
         cancel.cl_ord_id = cancel_cl_ord_id;
         cancel.orig_cl_ord_id = options.cancel_cl_ord_id;
-        cancel.side = pubsub_itc_fw_app::Side::Buy;
+        cancel.side = static_cast<pubsub_itc_fw_app::Side>(options.side);
         cancel.symbol = options.symbol;
         cancel.transact_time = now_nanoseconds();
 
@@ -263,6 +293,11 @@ int main(int argc, char** argv) {
         fmt::print("sent OrderCancelRequest OrigClOrdID={}\n", options.cancel_cl_ord_id);
 
         if (!receive_pdu(socket_fd, pdu_id, seq_no, payload)) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                fmt::print("no reply to the cancel within {}s\n", options.reply_timeout_seconds);
+                ::close(socket_fd);
+                return 3;
+            }
             fmt::print("connection closed with no reply to the cancel\n");
             ::close(socket_fd);
             return 1;
@@ -293,8 +328,10 @@ int main(int argc, char** argv) {
             ::close(socket_fd);
             return 1;
         }
-        fmt::print("ExecutionReport seq={} ClOrdID={} OrdStatus={} ExecType={}\n", seq_no, std::string_view(report.cl_ord_id.data(), report.cl_ord_id.size()),
-                   pubsub_itc_fw_app::to_string(report.ord_status), pubsub_itc_fw_app::to_string(report.exec_type));
+        // The same layout as an order's report, so one parser reads both.
+        fmt::print("ExecutionReport seq={} ClOrdID={} OrderID={} OrdStatus={} ExecType={} Symbol={} Text={}\n", seq_no, report.cl_ord_id, report.order_id,
+                   pubsub_itc_fw_app::to_string(report.ord_status), pubsub_itc_fw_app::to_string(report.exec_type), report.symbol,
+                   report.has_text ? report.text : std::string_view());
         ::close(socket_fd);
         fmt::print("done\n");
         // A rejected cancel is a failed run: it means the venue could not find the order,
@@ -308,13 +345,13 @@ int main(int argc, char** argv) {
 
         pubsub_itc_fw_app::NewOrderSingle order_message{};
         order_message.cl_ord_id = cl_ord_id;
-        order_message.side = pubsub_itc_fw_app::Side::Buy;
+        order_message.side = static_cast<pubsub_itc_fw_app::Side>(options.side);
         order_message.symbol = options.symbol;
         order_message.ord_type = pubsub_itc_fw_app::OrdType::Limit;
         order_message.transact_time = now_nanoseconds();
-        order_message.order_qty = "100";
+        order_message.order_qty = options.order_qty;
         order_message.has_price = true;
-        order_message.price = "100.00";
+        order_message.price = options.price;
 
         if (!send_pdu(socket_fd, pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, order_message)) {
             fmt::print("failed to send NewOrderSingle\n");
@@ -326,6 +363,11 @@ int main(int argc, char** argv) {
 
     for (int received = 0; received < options.order_count; ++received) {
         if (!receive_pdu(socket_fd, pdu_id, seq_no, payload)) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                fmt::print("no further reply within {}s, after {} execution report(s)\n", options.reply_timeout_seconds, received);
+                ::close(socket_fd);
+                return 3;
+            }
             fmt::print("connection closed after {} execution report(s)\n", received);
             ::close(socket_fd);
             return 1;

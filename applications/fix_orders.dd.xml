@@ -572,7 +572,7 @@
       <field name="Side" required="Y"/>
       <field name="Symbol" required="Y"/>
       <field name="TransactTime" required="Y"/>
-      <field name="OrderQty" required="Y"/>
+      <field name="OrderQty" required="N"/>
       <field name="Account" required="N"/>
       <field name="Text" required="N"/>
     </message>

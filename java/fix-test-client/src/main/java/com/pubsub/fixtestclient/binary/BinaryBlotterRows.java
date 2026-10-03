@@ -46,7 +46,7 @@ public final class BinaryBlotterRows {
                 cancel.cl_ord_id, cancel.orig_cl_ord_id, "", "", "", "", "", "",
                 "", cancel.symbol,
                 asFixChar(cancel.side.value),
-                cancel.order_qty, "", "", "", "", "", "", "", "");
+                cancel.has_order_qty ? cancel.order_qty : "", "", "", "", "", "", "", "", "");
     }
 
     public static BlotterRow fromReport(long id, FixOrders.ExecutionReport report) {

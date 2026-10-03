@@ -129,3 +129,11 @@ initial_slabs    = ${binary_order_gateway_a_command_queue_pool_initial_slabs}
 [open_order_pool]
 objects_per_pool = ${binary_order_gateway_a_open_order_pool_objects_per_pool}
 initial_pools    = ${binary_order_gateway_a_open_order_pool_initial_pools}
+
+# The longest Symbol and OrderQty a member's command may carry, in bytes. A command with a longer
+# value is refused with the limit in its text. The same limits as the FIX gateway's [fix_limits],
+# and at most symbol=64 and order_qty=32, the sizes the open-order record holds. ClOrdID's limit,
+# 64, is the matching engine's book key, shared with the FIX gateway, and is not configurable.
+[order_limits]
+max_symbol_length = ${binary_order_gateway_a_order_limits_max_symbol_length}
+max_order_qty_length = ${binary_order_gateway_a_order_limits_max_order_qty_length}

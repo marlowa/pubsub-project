@@ -107,6 +107,25 @@ names the reason, such as the fields that were missing.
   \covers{ha_test:42}
 \end{requirement}
 
+\begin{requirement}{R-0152}{Both gateways refuse the same commands for the same reasons}
+  Each gateway shall check a member's order or request to cancel before passing it to the
+  sequencer, and shall refuse one that has a required field empty, an enumerated field
+  holding a value the venue does not define, a quantity or price that is not a decimal
+  number, or an identifier, symbol or quantity longer than the venue holds. Each gateway
+  shall also refuse an order or request to cancel while no sequencer is connected or the
+  venue is not accepting orders. A refusal shall be answered, and shall say why.
+  \rationale{A member cannot be held to two sets of rules according to the protocol it
+  happens to speak. A command passed on unchecked is worse than one refused: an identifier
+  longer than the matching engine's book key is cut short there, so two orders can become
+  one, and a command the engine cannot read is dropped with no reply at all.
+
+  A binary command has to be decoded to be checked, which the FIX gateway's parsing
+  already does. Decoding fields at fixed positions costs less than parsing FIX text, so
+  the binary gateway keeps its advantage.}
+  \covers{ha_test:57}
+  \covers{ha_test:42}
+\end{requirement}
+
 \subsection{How fast a member may send}
 \label{subsec:gateway_throttles}
 

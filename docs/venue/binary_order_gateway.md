@@ -76,21 +76,37 @@ somewhere it did not intend should be told, not quietly traded.
 
 ## Order and ER flow
 
-Inbound orders are **not decoded**. The gateway wraps the encoded payload, exactly as the
-client sent it, in a `WalRecord` envelope carrying the routing metadata, and forwards that to
-the sequencers. Outbound ERs are likewise relayed with `send_pdu_payload` without being
-decoded -- only the envelope around them is read.
+**Every member command is decoded and checked**, as the FIX gateway parses and checks every
+order, and then the bytes the member sent are passed on unchanged: the gateway wraps the encoded
+payload in a `WalRecord` envelope carrying the routing metadata and forwards that to the
+sequencers. Decoding the binary layout reads fields at fixed positions, which costs less than
+parsing FIX text, so the binary gateway keeps its advantage over the FIX gateway. Outbound reports
+are relayed with `send_pdu_payload` as the bytes that arrived; each is decoded as well, to keep the
+session's record of open orders.
 
-This is not just an efficiency point. A relay that does not parse what it carries does not
-need rebuilding when a message it merely passes through gains a field, which is exactly what
-the DD-driven generator makes likely.
+**The checks**, in order, each refusing the command if it fails (R-0152):
 
-**Refusals.** The gateway refuses a member's command only when the session has reached its limit
-on new orders or cancels per second ([gateway_throttles.md](gateway_throttles.md)). The command is
-then decoded, because the reply must name it: a new order is answered with a rejected
-`ExecutionReport` whose OrderID the gateway assigns (`GW-ORD-n`), and a cancel with an
-`OrderCancelReject` reporting the order still open. An accepted command is still passed on
-undecoded.
+1. **Every field holds a value its definition allows**: an enumerated field (Side, OrdType,
+   TimeInForce and the rest, including inside repeating groups) holds a value the protocol
+   defines, and a required string is not empty. This is `first_invalid_field`, generated for each
+   message from `applications/fix_orders.dd.xml` alongside the decoder, so the two cannot disagree.
+2. **Identifiers, Symbol and OrderQty are no longer than the venue holds**: ClOrdID and
+   OrigClOrdID at most `fix_order_limits::max_cl_ord_id_length` (64, the matching engine's book
+   key), Symbol and OrderQty at most `[order_limits]` in the configuration.
+3. **Every quantity and price is a decimal number**, by the FIX codec's own rule
+   (`fix_codec::FixField::as_decimal`).
+4. **A sequencer is connected, and the venue is accepting orders.** The leading sequencer says
+   whether the venue is accepting orders with an `OrderAcceptance` message, on the connection it
+   holds to the gateway, as it does to the FIX gateway.
+5. **The session is within its throttle limits** ([gateway_throttles.md](gateway_throttles.md)).
+
+Checks 1 to 3 are `BinaryCommandChecks.hpp`; 4 and 5 are the gateway thread's. The texts of the
+refusals for check 4 are the FIX gateway's. A command whose ClOrdID is empty, or which cannot be
+decoded at all, cannot be named in a reply, so it is dropped and logged at Info.
+
+**Refusals** are answered by the gateway: a new order with a rejected `ExecutionReport` whose
+OrderID the gateway assigns (`GW-ORD-n`), and a cancel with an `OrderCancelReject` reporting the
+order still open (OrdStatus New). A refused command is never passed on.
 
 **The matching engine's refusal of a cancel** arrives as a rejected `ExecutionReport` carrying the
 OrigClOrdID of the order named. The gateway decodes every report it relays, to keep the session's

@@ -570,6 +570,73 @@ class CppGenerator:
         self._emit_max_decode_arena_bytes(msg, w)
         w("")
         self._emit_max_encode_arena_bytes(msg, w)
+        w("")
+        self._emit_first_invalid_field(msg, w, enum_names)
+
+    def _emit_first_invalid_field(self, msg: MessageDecl, w, enum_names=None):
+        """Emit first_invalid_field(const XView&): the check a decoded message's values need.
+
+        The decoder checks only that each field's bytes are there. It accepts any value at all in an
+        enumerated field, and an empty string in a field the definition requires. This function
+        names the first field holding either, looking inside nested messages and lists of them,
+        so that a component taking messages from outside can refuse one the definition does not
+        allow. It is generated from the definition, as the decoder is, so the two cannot disagree
+        about which fields are required or which values an enumeration has.
+        """
+        enum_names = enum_names or set()
+        name = msg.name
+        w("/**")
+        w(f" * @brief The first field of a decoded {name} whose value its definition does not allow.")
+        w(" *")
+        w(" * Two kinds of value are refused: in an enumerated field, a value the enumeration does not")
+        w(" * define, and in a required string field, an empty string. An optional field is checked only")
+        w(" * when present. Nested messages and the elements of lists are checked in the same way.")
+        w(" *")
+        w(" * @param[in] message The decoded message.")
+        w(" * @return The field's name as the definition gives it, or an empty view when every value is allowed.")
+        w(" */")
+        checks: list[str] = []
+        for field in msg.fields:
+            self._emit_field_validity_check(field, checks.append, enum_names)
+        # A message with no field these rules apply to still gets the function, so that every
+        # message can be checked the same way; its parameter is then unused.
+        unused = "" if checks else "[[maybe_unused]] "
+        w(f"[[nodiscard]] inline std::string_view first_invalid_field({unused}const {name}View& message) {{")
+        for line in checks:
+            w(line)
+        w("    return std::string_view{};")
+        w("}")
+        w("")
+
+    def _emit_field_validity_check(self, field: Field, w, enum_names):
+        """One field's part of first_invalid_field."""
+        fname = field.name
+        expr = f"message.{fname}"
+        type_node = field.type
+        guard = f"message.has_{fname} && " if field.optional else ""
+        if isinstance(type_node, StringType):
+            if not field.optional:
+                w(f"    if ({expr}.empty()) return std::string_view(\"{fname}\");")
+        elif isinstance(type_node, ReferenceType):
+            if type_node.name in enum_names:
+                w(f"    if ({guard}!validate({expr})) return std::string_view(\"{fname}\");")
+            else:
+                w("    {")
+                # An absent optional nested message has nothing to check.
+                absent_is_valid = f"!message.has_{fname} ? std::string_view{{}} : " if field.optional else ""
+                w(f"        const std::string_view nested = {absent_is_valid}first_invalid_field({expr});")
+                w("        if (!nested.empty()) return nested;")
+                w("    }")
+        elif isinstance(type_node, ListType):
+            element = type_node.element_type
+            if isinstance(element, ReferenceType):
+                w(f"    for (const auto& element : {expr}) {{")
+                if element.name in enum_names:
+                    w(f"        if (!validate(element)) return std::string_view(\"{fname}\");")
+                else:
+                    w("        const std::string_view nested = first_invalid_field(element);")
+                    w("        if (!nested.empty()) return nested;")
+                w("    }")
 
     # ------------------------------------------------------------------
     # Fixed-size helpers

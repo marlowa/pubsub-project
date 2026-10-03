@@ -547,6 +547,8 @@ sequencer_primary_host                = "sequencer-primary.exchange.internal"   
 sequencer_primary_port                = 11001
 sequencer_secondary_host              = "sequencer-secondary.exchange.internal"  # REPLACE
 sequencer_secondary_port              = 11002
+fix_limits_max_symbol_length = 32
+fix_limits_max_order_qty_length = 24
 
 [binary_order_gateway_a]
 # Reactor waiting: set to match the FIX gateway, so a comparison between the two protocols
@@ -571,6 +573,9 @@ sequencer_secondary_host = "gateway.exchange.internal"                 # REPLACE
 sequencer_secondary_port = 11002
 open_order_pool_objects_per_pool = 4096
 open_order_pool_initial_pools    = 1
+# The longest Symbol and OrderQty a member's command may carry; the same as the FIX gateway's.
+order_limits_max_symbol_length = 32
+order_limits_max_order_qty_length = 24
 
 [sequencer_primary]
 # Reactor waiting: left off here. Whether this deployment spends a core on waiting is its own

@@ -74,10 +74,8 @@ or forwarded later, and the session is not disconnected. Nothing about it reache
   `ExecutionReport` for a new order, and an `OrderCancelReject` (PDU 1003) for a cancel, with the
   same fields and values as the FIX message. The binary protocol is generated from
   `applications/fix_orders.dd.xml`, and `OrderCancelReject` is one of the messages generated from it.
-  The binary gateway passes orders and cancels on without decoding them, which is part of what makes it cheap,
-  and it does not need to decode a command to count it, because the PDU says which kind it is. To
-  reject one, it must name it, so it decodes the command's `ClOrdID` (and `OrigClOrdID` for a cancel)
-  only when it rejects it. An accepted command is still passed on undecoded.
+  The binary gateway decodes every command to check it before the throttle is asked, so the
+  refusal can name the command from the decoded fields.
 
 **The text of every throttle refusal states the limit**, with the kind of command it applies to and
 that it is counted for each session, for example *"Throttled: at most 50 cancels per second for this
@@ -94,10 +92,10 @@ never differ by reason except in their text.
 In each gateway, the throttle is checked after the checks that already exist, and immediately before
 the command is passed to the sequencer:
 
-1. The command is checked as it is today. The FIX gateway checks that required fields are present,
-   that lengths are within limits and that the venue is accepting orders; the binary gateway passes
-   commands on without checking them. A command refused here is refused as today, and the throttle is
-   not consulted.
+1. The command is checked as it is today. Both gateways check that required fields are present and
+   hold allowed values, that lengths are within limits, that a sequencer is connected and that the
+   venue is accepting orders (R-0152). A command refused here is refused as today, and the throttle
+   is not consulted.
 2. The gateway reads the clock and asks the session's throttle for the command's kind.
 3. If the throttle accepts it, the command is passed to the sequencer. If not, the gateway rejects it
    (section 3).

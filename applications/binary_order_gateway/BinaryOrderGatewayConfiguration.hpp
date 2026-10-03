@@ -206,6 +206,16 @@ struct BinaryOrderGatewayConfiguration {
     /** @brief Initial number of pools in the open-order pool. */
     int32_t open_order_pool_initial_pools{1};
 
+    /**
+     * @brief The longest Symbol and OrderQty a member's command may carry, in bytes.
+     *
+     * The same limits as the FIX gateway's [fix_limits], for the same reason: a longer value cannot
+     * be held in the open-order record. ClOrdID's limit is not configurable; it is
+     * fix_order_limits::max_cl_ord_id_length, which the matching engine's book key also uses.
+     */
+    int32_t max_symbol_length{32};
+    int32_t max_order_qty_length{24};
+
     // No wall clock here, unlike the FIX order gateway. That one stamps SendingTime into the
     // FIX messages it builds; this gateway builds none -- orders pass through as the
     // client encoded them, and the sequencer stamps the time that matters.

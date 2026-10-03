@@ -73,7 +73,10 @@ public final class BinaryOrderForm {
         cancel.symbol = trimmed(ctx.formParam("symbol"));
         cancel.side = parseSide(ctx.formParam("side"));
         cancel.transact_time = nowNanoseconds();
-        cancel.order_qty = trimmed(ctx.formParam("qty"));
+        // Optional on a cancel (R-0142): sent only when the form has one.
+        String quantity = trimmed(ctx.formParam("qty"));
+        cancel.has_order_qty = !quantity.isEmpty();
+        cancel.order_qty = quantity;
         return cancel;
     }
 

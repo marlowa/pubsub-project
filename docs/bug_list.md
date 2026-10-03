@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 100 |
+| Bugs recorded | 101 |
 | Open | 38 (24 defects, 14 tasks) |
-| Closed | 62 |
-| Next id | BUG-0101 |
+| Closed | 63 |
+| Next id | BUG-0102 |
 
 ## Open bugs by severity
 
-13 high, 22 medium, 3 low.
+12 high, 23 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,7 +25,6 @@
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
-| [BUG-0100](#bug_0100) | high | defect | The binary gateway checks almost nothing before passing an order or a cancel on |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -48,6 +47,7 @@
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
+| [BUG-0101](#bug_0101) | medium | defect | The matching engine cuts an over-long ClOrdID short instead of refusing it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -148,70 +148,35 @@ went looking.
 
 ## Open
 
-### BUG-0100: The binary gateway checks almost nothing before passing an order or a cancel on {#bug_0100}
+### BUG-0101: The matching engine cuts an over-long ClOrdID short instead of refusing it {#bug_0101}
 
 | | |
 |---|---|
-| Severity | high |
+| Severity | medium |
 | Found | 2026-10-02 |
 | Recorded | 2026-10-02 |
-| How | Comparing how the two gateways refuse a cancel, after [BUG-0099](#bug_0099) was fixed |
-| Impact | A binary member is not told when the venue cannot process its order or cancel. An order with an over-long ClOrdID is accepted with the identifier cut short, so it can collide with another order. An order the matching engine cannot read is dropped without any reply |
+| How | Fixing [BUG-0100](#bug_0100) |
+| Impact | None while both gateways refuse an over-long ClOrdID, which they now do. If either stopped, two orders whose identifiers differ only after the 64th character would be one order to the book |
 
-**What the FIX gateway checks.** Every inbound message is first checked against the FIX dictionary by
-`fix_codec::FixMessageValidator`: every tag is one the dictionary defines and permits in that message
-type, no tag appears twice, every required tag is present, every value has the format of its FIX type
-(an integer, a price, a timestamp), every enumerated value (Side, OrdType, TimeInForce) is one the
-dictionary defines, and every repeating group's count matches its instances. A message that fails is
-answered with a FIX Reject (35=3). Then, for a NewOrderSingle and an OrderCancelRequest,
-`FixOrderGatewayThread` checks that the fields the venue needs are present and not empty, that ClOrdID
-and OrigClOrdID are no longer than `fix_order_limits::max_cl_ord_id_length` (32), and that Symbol and
-OrderQty are within the configured lengths. It refuses the command when no sequencer is connected, when
-the venue is not accepting orders (BUG-0009), and when the session is over its throttle limit. Every
-refusal is answered: a rejected ExecutionReport for an order, an OrderCancelReject for a cancel.
+**What happens.** `OrderKey::make` and `OrderEntry` copy at most `fix_order_limits::max_cl_ord_id_length`
+(64) characters of a ClOrdID, and the rest is dropped without a word. An over-long OrigClOrdID on a
+cancel is cut short the same way, so the cancel can find an order it does not name.
 
-**What the binary gateway checks.** Only that the session has logged on, and the throttle limits. It
-passes every other NewOrderSingle and OrderCancelRequest to the sequencer without decoding it. The
-generated decoder, which the matching engine then runs, checks only that the bytes are long enough for
-each field: it accepts any byte as a Side or an OrdType, an empty string in a required field, an
-identifier of any length, and any text as a quantity or a price.
+**What to do.** The engine refuses a new order or a cancel whose identifiers are longer than its key
+holds: a rejected ExecutionReport for an order, and for a cancel the rejected report the gateways
+already turn into an OrderCancelReject. No gateway should be the only thing between a member and a
+silent collision.
 
-**What follows from that, as read in the code.**
-
-- **The venue not accepting orders, or no sequencer connected:** the binary member is told nothing,
-  where the FIX member is refused at once. This is BUG-0009's defect, still present for binary members.
-- **A ClOrdID longer than 32 characters:** the matching engine's book key keeps only the first 32
-  (`OrderKey` and `OrderEntry` copy `std::min(size, max_cl_ord_id_length)`). Two orders whose
-  identifiers differ only after the 32nd character are then the same order to the book, so the second
-  is refused as a duplicate, or a cancel for one finds the other.
-- **An order the matching engine cannot decode:** the sequencer, which reads only the envelope, has
-  already written it to the write-ahead log. The engine then logs "failed to decode NewOrderSingle --
-  dropping" at Warning and sends nothing back, so the member waits for an answer that never comes. The
-  Warning is also the wrong level by the project's rule, since the fault is the member's.
-- **Values the dictionary does not define**, such as a Side that is neither buy nor sell, reach the
-  matching engine. What it does with each has not been checked.
-
-**What to do.** The binary gateway checks a command as thoroughly as the FIX gateway does, and answers
-every refusal in the same way. A binary order has to be decoded to be checked, so the gateway can no
-longer pass accepted commands on undecoded. That should still cost less than the FIX gateway's checks:
-the decoder reads fields at known positions, where the FIX parser scans text for delimiters and the
-validator then checks the format of each value. Decoding is the gap measured on 2026-09-21, where the
-binary gateway's whole path was 1.8 microseconds faster at the median. Two parts of the work:
-
-- **The decoder, or a check run straight after it,** refuses enumerated values the dictionary does not
-  define and empty required strings, generated from `applications/fix_orders.dd.xml` as the decoder
-  is, so the two cannot drift apart.
-- **The gateway's own checks** (identifier and field lengths, sequencer connected, venue accepting
-  orders) are shared with the FIX gateway in `fix_common`, as the throttle and the cancel refusal
-  already are, so that the rules cannot drift apart either.
-
-Separately, the matching engine should refuse, not cut short, a ClOrdID longer than its key holds: no
-gateway should be the only thing between a member and a silent collision. And an order it cannot decode
-should be answered, if it can be named, and logged at Info.
-
-Verifying it needs the binary gateway in a test that runs it. `ha_test.py` does not start it today.
+**Why it was not done with BUG-0100.** The engine's new-order and cancel paths run differently while
+it catches up after a restart (RECONCILING): there, every record is counted towards the catch-up
+being complete (R-0101, checked by count), and a record refused before it is counted would stop a
+healthy engine from taking over. The refusal has to be placed so that the count still sees the
+record, and the replay of a refused record has to produce the same refusal, marked as a possible
+repeat. That needs its own care and its own test, which restarts the engine with such an order in
+the log.
 
 ---
+
 
 ### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
 
@@ -2440,6 +2405,93 @@ content, and refuse to append it silently.
 Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
 ## Closed
+
+### BUG-0100: The binary gateway checks almost nothing before passing an order or a cancel on {#bug_0100}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-02 |
+| Recorded | 2026-10-02 |
+| Fixed | 2026-10-02 -- the binary gateway now makes the FIX gateway's checks; the matching engine's part is [BUG-0101](#bug_0101) |
+| How | Comparing how the two gateways refuse a cancel, after [BUG-0099](#bug_0099) was fixed |
+| Impact | A binary member is not told when the venue cannot process its order or cancel. An order with an over-long ClOrdID is accepted with the identifier cut short, so it can collide with another order. An order the matching engine cannot read is dropped without any reply |
+
+**What the FIX gateway checks.** Every inbound message is first checked against the FIX dictionary by
+`fix_codec::FixMessageValidator`: every tag is one the dictionary defines and permits in that message
+type, no tag appears twice, every required tag is present, every value has the format of its FIX type
+(an integer, a price, a timestamp), every enumerated value (Side, OrdType, TimeInForce) is one the
+dictionary defines, and every repeating group's count matches its instances. A message that fails is
+answered with a FIX Reject (35=3). Then, for a NewOrderSingle and an OrderCancelRequest,
+`FixOrderGatewayThread` checks that the fields the venue needs are present and not empty, that ClOrdID
+and OrigClOrdID are no longer than `fix_order_limits::max_cl_ord_id_length` (64), and that Symbol and
+OrderQty are within the configured lengths. It refuses the command when no sequencer is connected, when
+the venue is not accepting orders (BUG-0009), and when the session is over its throttle limit. Every
+refusal is answered: a rejected ExecutionReport for an order, an OrderCancelReject for a cancel.
+
+**What the binary gateway checks.** Only that the session has logged on, and the throttle limits. It
+passes every other NewOrderSingle and OrderCancelRequest to the sequencer without decoding it. The
+generated decoder, which the matching engine then runs, checks only that the bytes are long enough for
+each field: it accepts any byte as a Side or an OrdType, an empty string in a required field, an
+identifier of any length, and any text as a quantity or a price.
+
+**What follows from that, as read in the code.**
+
+- **The venue not accepting orders, or no sequencer connected:** the binary member is told nothing,
+  where the FIX member is refused at once. This is BUG-0009's defect, still present for binary members.
+- **A ClOrdID longer than 64 characters:** the matching engine's book key keeps only the first 64
+  (`OrderKey` and `OrderEntry` copy `std::min(size, max_cl_ord_id_length)`). Two orders whose
+  identifiers differ only after the 64th character are then the same order to the book, so the second
+  is refused as a duplicate, or a cancel for one finds the other.
+- **An order the matching engine cannot decode:** the sequencer, which reads only the envelope, has
+  already written it to the write-ahead log. The engine then logs "failed to decode NewOrderSingle --
+  dropping" at Warning and sends nothing back, so the member waits for an answer that never comes. The
+  Warning is also the wrong level by the project's rule, since the fault is the member's.
+- **Values the dictionary does not define** reach the matching engine, and it accepts them: with
+  the gateway's checks switched off, an order with Side "Z" was accepted onto the book as a New
+  order (`ha_test.py` scenario 57, run against a build with the checks removed).
+
+**What to do.** The binary gateway checks a command as thoroughly as the FIX gateway does, and answers
+every refusal in the same way. A binary order has to be decoded to be checked, so the gateway can no
+longer pass accepted commands on undecoded. That should still cost less than the FIX gateway's checks:
+the decoder reads fields at known positions, where the FIX parser scans text for delimiters and the
+validator then checks the format of each value. Decoding is the gap measured on 2026-09-21, where the
+binary gateway's whole path was 1.8 microseconds faster at the median. Two parts of the work:
+
+- **The decoder, or a check run straight after it,** refuses enumerated values the dictionary does not
+  define and empty required strings, generated from `applications/fix_orders.dd.xml` as the decoder
+  is, so the two cannot drift apart.
+- **The gateway's own checks** (identifier and field lengths, sequencer connected, venue accepting
+  orders) are shared with the FIX gateway in `fix_common`, as the throttle and the cancel refusal
+  already are, so that the rules cannot drift apart either.
+
+Separately, the matching engine should refuse, not cut short, a ClOrdID longer than its key holds: no
+gateway should be the only thing between a member and a silent collision. And an order it cannot decode
+should be answered, if it can be named, and logged at Info.
+
+Verifying it needs the binary gateway in a test that runs it. `ha_test.py` does not start it today.
+
+**What was done.**
+
+- **The generator** now emits, for every message, `first_invalid_field`: the first field holding an
+  enumerated value the definition does not define, or an empty required string, looking inside
+  nested messages and lists of them. It is made from the same definition as the decoder.
+- **The dictionary** now marks OrderQty optional on an OrderCancelRequest, as R-0142 says it is,
+  so the generated check does not refuse a cancel that leaves it out.
+- **The binary gateway** decodes every order and cancel and checks it before passing on the bytes
+  the member sent: the generated check; identifier, Symbol and OrderQty lengths (Symbol and
+  OrderQty from a new `[order_limits]` section, with the FIX gateway's values); quantities and
+  prices as decimal numbers by the FIX codec's rule; a sequencer connected; and the venue
+  accepting orders, which it now learns from the sequencer's `OrderAcceptance` message instead of
+  dropping it. The first three are `BinaryCommandChecks.hpp`, with fifteen unit tests. Each refusal
+  is answered as the throttle's are, and the texts of the refusals for an outage are the FIX
+  gateway's.
+- **`ha_test.py` can start the binary gateway** (the scenario setting `binary_gateway`). Scenario 57
+  sends it a valid order and cancel, and orders and a cancel with one thing wrong each, and checks
+  every reply. Scenario 42 now also requires the binary gateway to refuse an order and a cancel
+  during its outage. Requirement R-0152 states the rule, covered by both.
+
+---
 
 ### BUG-0099: A refused request to cancel is answered as though the order itself had been rejected {#bug_0099}
 

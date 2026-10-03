@@ -861,6 +861,9 @@ command_queue_pool_initial_slabs            = 1
 command_queue_pool_objects_per_slab         = 4096
 event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
+# The longest Symbol and OrderQty a member's command may carry; the same as the FIX gateway's.
+order_limits_max_symbol_length = 32
+order_limits_max_order_qty_length = 24
 
 [binary_order_gateway_b]
 # Reactor waiting: set to match the FIX gateway, so a comparison between the two protocols
@@ -890,6 +893,9 @@ command_queue_pool_initial_slabs            = 1
 command_queue_pool_objects_per_slab         = 4096
 event_queue_pool_initial_slabs              = 1
 event_queue_pool_objects_per_slab           = 80000
+# The longest Symbol and OrderQty a member's command may carry; the same as the FIX gateway's.
+order_limits_max_symbol_length = 32
+order_limits_max_order_qty_length = 24
 
 [sequencer_primary]
 # Reactor waiting: on the order round trip. See the note near the top of this file.

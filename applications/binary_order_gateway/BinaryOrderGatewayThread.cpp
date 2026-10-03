@@ -107,6 +107,7 @@ BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThr
     // Registered unconditionally, as in the FIX gateway: one gateway thread per process, and the
     // handles record nowhere when metrics are disabled.
     throttle_refusal_metrics_.register_metrics(get_reactor().metrics(), "gateway_thread");
+    command_decode_arena_.resize(initial_command_decode_arena_size);
 }
 
 void BinaryOrderGatewayThread::on_app_ready_event() {
@@ -293,6 +294,17 @@ void BinaryOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::Eve
     // and logged-on check the FIX gateway's stamp covers, and after the ER and authentication
     // branches above, which are not client traffic and would pay for a clock read nobody uses.
     current_pdu_ingress_ns_ = config_.wall_clock->now_ns();
+
+    // The sequencers answer this gateway's session announcements on the connections it dialled.
+    // The FIX gateway uses those answers to settle a session's sequence numbers; the binary
+    // protocol has none, so they are read past.
+    const bool from_sequencer = message.connection_id() == sequencer_primary_conn_id_ || message.connection_id() == sequencer_secondary_conn_id_;
+    if (from_sequencer) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: PDU id {} from a sequencer on connection {} -- not needed here",
+                   message.pdu_id(), message.connection_id().get_value());
+        release_pdu_payload(message);
+        return;
+    }
 
     BinarySession* session = find_session(message.connection_id());
     if (session == nullptr) {
@@ -675,13 +687,49 @@ BinarySession* BinaryOrderGatewayThread::find_session_by_conn_id(int32_t conn_id
 
 void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
     ++orders_received_;
-    // No ClOrdID here, unlike the FIX gateway's equivalent: this gateway forwards the order
-    // without decoding it, and decoding one purely to log it would undo the thing that makes
-    // this gateway cheap.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "GW-NOS-RECV connection={} bytes={} comp_id={}", session.conn_id.get_value(),
                message.payload_size(), session.comp_id);
+
+    // The order is decoded to be checked, as the FIX gateway parses and checks every order. The
+    // bytes passed on are still the ones the member sent.
+    pubsub_itc_fw_app::NewOrderSingleView order{};
+    if (!decode_command(order, message) || order.cl_ord_id.empty()) {
+        // A refusal has to name the order by its ClOrdID, and this one cannot be read or has none,
+        // so it cannot be answered. Info: the fault is the member's, and the venue has handled it.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle could not be decoded, or has no ClOrdID, so it cannot be "
+                   "answered -- dropping",
+                   session.conn_id.get_value(), session.comp_id);
+        release_pdu_payload(message);
+        return;
+    }
+
+    const CommandFieldLimits limits{static_cast<size_t>(config_.max_symbol_length), static_cast<size_t>(config_.max_order_qty_length)};
+    const std::string_view invalid = check_new_order(order, limits, command_refusal_text_, sizeof(command_refusal_text_));
+    if (!invalid.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused: {}",
+                   session.conn_id.get_value(), order.cl_ord_id, invalid);
+        refuse_new_order(session, order, invalid);
+        release_pdu_payload(message);
+        return;
+    }
+
+    const std::string_view unavailable = venue_refusal(fix_common::ThrottledCommand::Place);
+    if (!unavailable.empty()) {
+        ++orders_refused_;
+        // Debug: the condition is logged once, when it changes, in handle_order_acceptance, and a
+        // line per refused order would flood the log for the whole outage.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: connection {} NewOrderSingle ClOrdID={} refused: {}",
+                   session.conn_id.get_value(), order.cl_ord_id, unavailable);
+        refuse_new_order(session, order, unavailable);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // Checked last, immediately before the order is passed on, so that only an order the venue
+    // would otherwise accept counts towards the session's limit.
     if (!admit_throttled_command(session, fix_common::ThrottledCommand::Place)) {
-        refuse_new_order(session, message, session.throttles.refusal_text(fix_common::ThrottledCommand::Place));
+        refuse_new_order(session, order, session.throttles.refusal_text(fix_common::ThrottledCommand::Place));
         release_pdu_payload(message);
         return;
     }
@@ -691,14 +739,103 @@ void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, c
 }
 
 void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& session, const pubsub_itc_fw::EventMessage& message) {
+    pubsub_itc_fw_app::OrderCancelRequestView request{};
+    if (!decode_command(request, message) || request.cl_ord_id.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest could not be decoded, or has no ClOrdID, so it cannot be "
+                   "answered -- dropping",
+                   session.conn_id.get_value(), session.comp_id);
+        release_pdu_payload(message);
+        return;
+    }
+
+    const CommandFieldLimits limits{static_cast<size_t>(config_.max_symbol_length), static_cast<size_t>(config_.max_order_qty_length)};
+    const std::string_view invalid = check_cancel(request, limits, command_refusal_text_, sizeof(command_refusal_text_));
+    if (!invalid.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: {}", session.conn_id.get_value(),
+                   request.cl_ord_id, request.orig_cl_ord_id, invalid);
+        refuse_cancel(session, request, invalid);
+        release_pdu_payload(message);
+        return;
+    }
+
+    const std::string_view unavailable = venue_refusal(fix_common::ThrottledCommand::Cancel);
+    if (!unavailable.empty()) {
+        ++cancels_refused_;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "BinaryOrderGatewayThread: connection {} OrderCancelRequest ClOrdID={} OrigClOrdID={} refused: {}", session.conn_id.get_value(),
+                   request.cl_ord_id, request.orig_cl_ord_id, unavailable);
+        refuse_cancel(session, request, unavailable);
+        release_pdu_payload(message);
+        return;
+    }
+
     if (!admit_throttled_command(session, fix_common::ThrottledCommand::Cancel)) {
-        refuse_cancel(session, message, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
+        refuse_cancel(session, request, session.throttles.refusal_text(fix_common::ThrottledCommand::Cancel));
         release_pdu_payload(message);
         return;
     }
     forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), message.payload(),
                               static_cast<size_t>(message.payload_size()), session);
     release_pdu_payload(message);
+}
+
+template <typename ViewType> bool BinaryOrderGatewayThread::decode_command(ViewType& view, const pubsub_itc_fw::EventMessage& message) {
+    for (;;) {
+        pubsub_itc_fw::BumpAllocator arena(command_decode_arena_.data(), command_decode_arena_.size());
+        size_t bytes_consumed = 0;
+        size_t arena_bytes_needed = 0;
+        if (pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+            return true;
+        }
+        // Refused for want of room, not for being malformed: grow and try again, up to the ceiling.
+        if (arena_bytes_needed <= command_decode_arena_.size() || arena_bytes_needed > max_command_decode_arena_size) {
+            return false;
+        }
+        command_decode_arena_.resize(arena_bytes_needed);
+    }
+}
+
+std::string_view BinaryOrderGatewayThread::venue_refusal(fix_common::ThrottledCommand command) const {
+    // The same conditions, and the same texts, as the FIX gateway's.
+    const bool sequencer_connected = sequencer_primary_conn_id_.get_value() != 0 || (config_.ha_enabled && sequencer_secondary_conn_id_.get_value() != 0);
+    if (!sequencer_connected) {
+        return "Sequencer unavailable";
+    }
+    if (!venue_accepting_orders_) {
+        return command == fix_common::ThrottledCommand::Place ? "Venue is not accepting orders: no matching engine available"
+                                                              : "Venue cannot process cancels: no matching engine available. The order is unchanged";
+    }
+    return {};
+}
+
+void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buffer = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
+    size_t bytes_consumed = 0;
+    size_t arena_bytes_needed = 0;
+    pubsub_itc_fw_app::OrderAcceptanceView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: failed to decode OrderAcceptance -- dropping");
+        return;
+    }
+    if (view.accepting == venue_accepting_orders_) {
+        // Logged on the change, not on each arrival: the sequencer repeats this while the venue is degraded.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: OrderAcceptance unchanged accepting={}", view.accepting);
+        return;
+    }
+    venue_accepting_orders_ = view.accepting;
+    if (view.accepting) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: the venue is accepting orders again");
+        return;
+    }
+    // Warning rather than Error, as in the FIX gateway: nothing is lost, and refusing is the
+    // correct response to the condition.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "BinaryOrderGatewayThread: the venue is no longer accepting orders -- {} order(s) deferred over {}s. New orders and cancels are refused "
+               "until it is",
+               view.deferred_order_count, view.degraded_for_seconds);
 }
 
 void BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size, const BinarySession& session) {
@@ -793,6 +930,13 @@ void BinaryOrderGatewayThread::forward_envelope_to_sequencers(const pubsub_itc_f
 }
 
 void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::EventMessage& message) {
+    // The sequencer says whether the venue is accepting orders on the same connection it sends
+    // reports on, because that is the connection it holds to every gateway.
+    if (message.pdu_id() == pubsub_itc_fw_app::OrderAcceptance::message_pdu_id) {
+        handle_order_acceptance(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (message.pdu_id() != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: unexpected PDU id {} from the sequencer -- dropping",
                    message.pdu_id());
@@ -940,21 +1084,7 @@ void BinaryOrderGatewayThread::log_throttling_ended_by_disconnection(const Binar
     }
 }
 
-void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason) {
-    auto& arena_buffer = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
-    size_t bytes_consumed = 0;
-    size_t arena_bytes_needed = 0;
-    pubsub_itc_fw_app::NewOrderSingleView order{};
-    if (!pubsub_itc_fw_app::decode(order, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        // A refusal has to name the order, and this one cannot be read, so it cannot be answered.
-        // Warning, as the FIX gateway logs an order it cannot answer.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "BinaryOrderGatewayThread: connection {} comp_id='{}' NewOrderSingle refused ({}) but could not be decoded to name it -- dropping",
-                   session.conn_id.get_value(), session.comp_id, reason);
-        return;
-    }
-
+void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pubsub_itc_fw_app::NewOrderSingleView& order, std::string_view reason) {
     // Twenty digits is enough for any int64_t, so these never truncate.
     char order_id_buffer[32];
     char exec_id_buffer[32];
@@ -983,19 +1113,7 @@ void BinaryOrderGatewayThread::refuse_new_order(BinarySession& session, const pu
     send_pdu(session.conn_id, pubsub_itc_fw_app::ExecutionReport::message_pdu_id, 0, report);
 }
 
-void BinaryOrderGatewayThread::refuse_cancel(const BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason) {
-    auto& arena_buffer = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
-    size_t bytes_consumed = 0;
-    size_t arena_bytes_needed = 0;
-    pubsub_itc_fw_app::OrderCancelRequestView request{};
-    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "BinaryOrderGatewayThread: connection {} comp_id='{}' OrderCancelRequest refused ({}) but could not be decoded to name it -- dropping",
-                   session.conn_id.get_value(), session.comp_id, reason);
-        return;
-    }
-
+void BinaryOrderGatewayThread::refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request, std::string_view reason) {
     pubsub_itc_fw_app::OrderCancelReject reject{};
     // FIX requires the order's OrderID. The session's record holds it for an order the matching
     // engine acknowledged; otherwise FIX's convention for an identifier not known is "NONE".
@@ -1055,8 +1173,8 @@ void BinaryOrderGatewayThread::report_order_progress() {
     if (accounted % order_progress_interval != 0) {
         return;
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={}", accounted, execution_reports_sent_,
-               execution_reports_dropped_, orders_received_);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} refused={} refused_cancels={}",
+               accounted, execution_reports_sent_, execution_reports_dropped_, orders_received_, orders_refused_, cancels_refused_);
 }
 
 void BinaryOrderGatewayThread::queue_session_for_cleanup(BinarySession& session) {
@@ -1230,6 +1348,7 @@ void BinaryOrderGatewayThread::drain_pending_cancels() {
         cancel.side = static_cast<pubsub_itc_fw_app::Side>(entry->side);
         cancel.transact_time = 0; // the sequencer stamps the authoritative time
         if (entry->order_qty_len > 0) {
+            cancel.has_order_qty = true;
             cancel.order_qty = std::string_view(entry->order_qty, entry->order_qty_len);
         }
 

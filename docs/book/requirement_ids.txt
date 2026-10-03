@@ -154,3 +154,4 @@ R-0148     active    2026-10-02  Each session is limited in how fast it may plac
 R-0149     active    2026-10-02  A limit holds over every one-second period
 R-0150     active    2026-10-02  A command over the limit is refused, and the member is told why
 R-0151     active    2026-10-02  A refused request to cancel is not answered as a rejected order
+R-0152     active    2026-10-02  Both gateways refuse the same commands for the same reasons

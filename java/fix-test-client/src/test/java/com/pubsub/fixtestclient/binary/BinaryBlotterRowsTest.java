@@ -147,6 +147,7 @@ class BinaryBlotterRowsTest {
         cancel.orig_cl_ord_id = "ORD-001";
         cancel.symbol = "BHP";
         cancel.side = FixOrders.Side.Sell;
+        cancel.has_order_qty = true;
         cancel.order_qty = "100";
 
         BlotterRow row = BinaryBlotterRows.fromCancel(3L, cancel);

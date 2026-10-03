@@ -345,6 +345,19 @@ _THROTTLE_RETRIES = _THROTTLE_PLACE_LIMIT + 1
 # How long a gateway log line may take to reach the file after the event it records.
 _THROTTLE_LOG_TIMEOUT = 5.0
 
+# Scenarios 42 and 57, through the binary gateway. A comp id of its own, so the binary client never
+# shares a session with the FIX test client: two gateways holding one comp id would each announce
+# it, and reports for one session could be routed to the other. It is not in the database; its
+# credential is written into credentials.toml, with the empty password, as the FIX test client's is.
+_BINARY_COMP_ID = "BINARY-TEST"
+# How long the binary client waits for each reply before giving up and saying so.
+_BINARY_REPLY_TIMEOUT = 10
+# How long the binary gateway may take to connect to the leading sequencer after the venue starts.
+_BINARY_READY_TIMEOUT = 30.0
+# The longest ClOrdID the venue accepts: fix_order_limits::max_cl_ord_id_length, the size of the
+# matching engine's book key. Repeated here because the scenario must send one a character longer.
+_MAX_CL_ORD_ID_LENGTH = 64
+
 # Scenarios 43-47. With high availability off a sequencer leads the moment it starts -- there is no
 # election to wait for -- so this only has to cover process start and the log reaching disk.
 _HA_OFF_LEAD_TIMEOUT          = 20.0
@@ -829,6 +842,12 @@ class Scenario(NamedTuple):
     # refused, with the limit in the text. See run_scenario's "throttles" block and
     # docs/venue/gateway_throttles.md.
     assert_gateway_throttles: bool = False
+    # When True, also start binary_order_gateway_a, directly after the FIX gateway. Only the
+    # scenarios that test the binary gateway want it.
+    binary_gateway: bool = False
+    # When True, send the binary gateway orders and cancels it must refuse, and some it must
+    # accept, and check each reply. See run_scenario's "binary checks" block and BUG-0100.
+    assert_binary_checks: bool = False
     # When True, take every matching engine away, place an order that the sequencer therefore
     # defers, start one engine COLD, and assert the member is answered for it. See
     # run_scenario's "deferred orders" block, BUG-0064 and the surviving half of BUG-0009.
@@ -2789,6 +2808,9 @@ _SCENARIOS: list[Scenario] = [
         orders_during_override=0,
         orders_after_override=0,
         assert_order_refusal=True,
+        # The binary gateway too, so that its refusals while the venue is not accepting orders are
+        # checked against the same outage (BUG-0100).
+        binary_gateway=True,
         steps=[],
     ),
 
@@ -3318,6 +3340,31 @@ _SCENARIOS: list[Scenario] = [
         assert_gateway_throttles=True,
         steps=[],
     ),
+
+    # 57 -- the binary gateway checks what it is sent, as the FIX gateway does.
+    #
+    # Each command is sent on a connection of its own by binary_client, and its reply is checked
+    # by ClOrdID. A command the gateway refuses must be answered by the gateway itself -- an
+    # OrderID of GW-ORD-n on a rejected order -- with a reason naming the field, and must never
+    # reach the matching engine. A valid order and a valid cancel go through, so the refusals are
+    # shown to come from the checks and not from a gateway that refuses everything. The refusals
+    # while the venue is not accepting orders are checked in scenario 42.
+    Scenario(
+        number=57,
+        short_name="binary_checks",
+        description="The binary gateway refuses orders and cancels the venue cannot accept, and says why",
+        expected_outcome=(
+            "a valid order and a valid cancel are accepted; an order with an undefined Side, a quantity or price that "
+            "is not a number, an over-long ClOrdID or an over-long Symbol is refused by the gateway with the field "
+            "named; a cancel with an undefined Side is refused with an OrderCancelReject; and the matching engine's "
+            "refusal of a cancel for an unknown order arrives as an OrderCancelReject with CxlRejReason 1"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        binary_gateway=True,
+        assert_binary_checks=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -3709,6 +3756,8 @@ def export_credentials(project_root: Path, creds_file: Path) -> None:
     # The comp id the throttle scenario limits. It IS in the database, so its limits arrive with
     # the export and are kept when its SCRAM material is rewritten here.
     ensure_fix8_credentials(creds_file, _THROTTLED_COMP_ID, FIX8_PASSWORD)
+    # The binary client's comp id, for the scenarios that drive the binary gateway.
+    ensure_fix8_credentials(creds_file, _BINARY_COMP_ID, FIX8_PASSWORD)
 
 
 def provision_gateway_pinning(comp_id: str, primary_instance: int,
@@ -4370,6 +4419,61 @@ def gateway_listen_port(prefix: Path, instance: str) -> int:
             return int(match.group(1))
     die(f"no listen_port in {config}")
     return 0  # unreachable; die() exits
+
+
+def binary_gateway_listen_port(prefix: Path) -> int:
+    """Read binary_order_gateway_a's client listen port from its deployed configuration."""
+    config = prefix / "etc" / "binary_order_gateway" / "binary_order_gateway_a.toml"
+    if not config.is_file():
+        die(f"binary_order_gateway_a config not found: {config}")
+    for line in config.read_text().splitlines():
+        match = re.match(r"\s*listen_port\s*=\s*(\d+)", line)
+        if match:
+            return int(match.group(1))
+    die(f"no listen_port in {config}")
+    return 0  # unreachable; die() exits
+
+
+def installed_toml_int(config: Path, key: str) -> int:
+    """Read one integer setting from a deployed configuration file, by its key alone."""
+    for line in config.read_text().splitlines():
+        match = re.match(rf"\s*{re.escape(key)}\s*=\s*(\d+)", line)
+        if match:
+            return int(match.group(1))
+    die(f"no {key} in {config}")
+    return 0  # unreachable; die() exits
+
+
+# One reply as binary_client prints it. Text comes last because it may contain spaces.
+_BINARY_REPORT_LINE = re.compile(
+    r"^ExecutionReport seq=(?P<seq>\S+) ClOrdID=(?P<cl_ord_id>\S*) OrderID=(?P<order_id>\S*) OrdStatus=(?P<ord_status>\S+) "
+    r"ExecType=(?P<exec_type>\S+) Symbol=(?P<symbol>\S*) Text=(?P<text>.*)$")
+_BINARY_CANCEL_REJECT_LINE = re.compile(
+    r"^OrderCancelReject seq=(?P<seq>\S+) ClOrdID=(?P<cl_ord_id>\S*) OrigClOrdID=(?P<orig_cl_ord_id>\S*) OrdStatus=(?P<ord_status>\S+) "
+    r"CxlRejReason=(?P<cxl_rej_reason>\S+) Text=(?P<text>.*)$")
+
+
+def run_binary_client(bin_dir: Path, port: int, *arguments: str) -> tuple[int, list[dict[str, str]], str]:
+    """Run binary_client once as the binary test comp id, and parse the replies it printed.
+
+    Returns its exit status, one dictionary for each ExecutionReport or OrderCancelReject it
+    printed (with "kind" naming which), and its whole output for a failure message. Exit status 3
+    means it gave up waiting for a reply.
+    """
+    command = [str(bin_dir / "binary_client"), "--host", "127.0.0.1", "--port", str(port),
+               "--comp-id", _BINARY_COMP_ID, "--password", FIX8_PASSWORD,
+               "--reply-timeout", str(_BINARY_REPLY_TIMEOUT), *arguments]
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=_BINARY_REPLY_TIMEOUT * 4)
+    replies: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        report = _BINARY_REPORT_LINE.match(line)
+        if report:
+            replies.append({"kind": "ExecutionReport", **report.groupdict()})
+            continue
+        reject = _BINARY_CANCEL_REJECT_LINE.match(line)
+        if reject:
+            replies.append({"kind": "OrderCancelReject", **reject.groupdict()})
+    return result.returncode, replies, result.stdout + result.stderr
 
 
 def write_fix8_variant(filename: str, *, listen_port: int | None = None,
@@ -5074,6 +5178,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # together and both are connected before the sequencer needs either. Appended
     # rather than written into both literals above: only one scenario wants it, and
     # duplicating it in each topology invites the two copies to drift.
+    if scenario.binary_gateway:
+        gateway_a_index = next(index for index, entry in enumerate(launch_table)
+                               if entry[0] == "fix_order_gateway_a")
+        launch_table.insert(gateway_a_index + 1,
+                            ("binary_order_gateway_a", "binary_order_gateway",
+                             etc_dir / "binary_order_gateway" / "binary_order_gateway_a.toml"))
+
     if scenario.gateway_b:
         gateway_a_index = next(index for index, entry in enumerate(launch_table)
                                if entry[0] == "fix_order_gateway_a")
@@ -6684,6 +6795,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  order refusal: cancels are refused too, with an OrderCancelReject, OrdStatus={reply.get(39)}, "
                 f"Text='{reply.get(58, '')}' -- OK")
 
+            # 3a. The binary gateway refuses on the same outage, with the same texts (BUG-0100). It
+            #     learns the venue has stopped accepting orders from the same OrderAcceptance message
+            #     the FIX gateway does.
+            if scenario.binary_gateway:
+                binary_port = binary_gateway_listen_port(prefix)
+                binary_order_id = f"bin-refuse-{datetime.now().strftime('%H%M%S')}"
+                _, replies, output = run_binary_client(bin_dir, binary_port, "--orders", "1", "--cl-ord-id", binary_order_id)
+                answer = next((r for r in replies if r["cl_ord_id"] == binary_order_id), None)
+                expected = "Venue is not accepting orders: no matching engine available"
+                if answer is None or answer["ord_status"] != "Rejected" or answer["text"] != expected:
+                    die(f"order refusal: the binary gateway answered an order during the outage with {answer}; expected a "
+                        f"rejected ExecutionReport with Text='{expected}'. Before BUG-0100 it passed the order on and the "
+                        f"member was told nothing.\n{output}")
+                _, replies, output = run_binary_client(bin_dir, binary_port, "--cancel", binary_order_id)
+                answer = next((r for r in replies if r["cl_ord_id"] == f"{binary_order_id}-CANCEL"), None)
+                expected = "Venue cannot process cancels: no matching engine available. The order is unchanged"
+                if answer is None or answer["kind"] != "OrderCancelReject" or answer["ord_status"] != "New" or answer["text"] != expected:
+                    die(f"order refusal: the binary gateway answered a cancel during the outage with {answer}; expected an "
+                        f"OrderCancelReject, OrdStatus New, Text='{expected}'.\n{output}")
+                log("  order refusal: the binary gateway refuses orders and cancels on the same outage, with the same texts -- OK")
+
             # 4. The health line keeps reporting while nothing progresses.
             #
             # Before BUG-0009 step 2 this line was emitted once per N orders accounted, so when
@@ -6760,6 +6892,86 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  order refusal: the engine's refusal of a cancel for an unknown order is an "
                 "OrderCancelReject with CxlRejReason 1 -- OK")
             member.close()
+
+        # ── Binary checks ─────────────────────────────────────────────────────
+        if scenario.assert_binary_checks:
+            log("=== Binary gateway checks ===")
+            binary_port = binary_gateway_listen_port(prefix)
+            binary_log = log_dir / "binary_order_gateway_a.log"
+            if not poll_log_for(binary_log, "primary sequencer connection", "established", timeout=_BINARY_READY_TIMEOUT)[0]:
+                die("binary checks: the binary gateway never connected to the primary sequencer, so nothing sent to it "
+                    "could reach the venue and every check below would be measuring that instead.")
+            binary_config = prefix / "etc" / "binary_order_gateway" / "binary_order_gateway_a.toml"
+            max_symbol_length = installed_toml_int(binary_config, "max_symbol_length")
+            binary_tag = datetime.now().strftime("%H%M%S")
+
+            def binary_reply(cl_ord_id: str, *arguments: str) -> dict[str, str]:
+                """Run binary_client and return the one reply that names cl_ord_id."""
+                status, replies, output = run_binary_client(bin_dir, binary_port, *arguments)
+                matching = [reply for reply in replies if reply["cl_ord_id"] == cl_ord_id]
+                if not matching:
+                    die(f"binary checks: nothing came back naming ClOrdID '{cl_ord_id}' (binary_client exit {status}). A "
+                        f"command the gateway refuses must still be answered.\n{output}")
+                return matching[0]
+
+            def binary_order(label: str, *arguments: str, cl_ord_id: str = "") -> dict[str, str]:
+                # Hyphens for spaces: binary_client prints the ClOrdID as one word.
+                cl_ord_id = cl_ord_id or f"bin-{binary_tag}-{label.replace(' ', '-')}"
+                return binary_reply(cl_ord_id, "--orders", "1", "--cl-ord-id", cl_ord_id, *arguments)
+
+            def expect_refused_order(label: str, expected_text: str, *arguments: str, cl_ord_id: str = "") -> None:
+                reply = binary_order(label, *arguments, cl_ord_id=cl_ord_id)
+                if reply["kind"] != "ExecutionReport" or reply["ord_status"] != "Rejected" or not reply["order_id"].startswith("GW-ORD-"):
+                    die(f"binary checks: the order '{label}' came back as {reply}; expected a rejected ExecutionReport that "
+                        "the gateway assigned (OrderID GW-ORD-n), because the order must not reach the venue.")
+                if reply["text"] != expected_text:
+                    die(f"binary checks: the order '{label}' was refused with Text='{reply['text']}'; expected "
+                        f"'{expected_text}'.")
+                log(f"  binary checks: {label} -- refused by the gateway, Text='{expected_text}' -- OK")
+
+            # 1. A valid order reaches the matching engine, so the refusals below are the checks'
+            #    doing and not a gateway that refuses everything.
+            accepted = binary_order("valid")
+            if accepted["ord_status"] != "New" or not accepted["order_id"].startswith("ME-ORD-"):
+                die(f"binary checks: a valid order came back as {accepted}; expected OrdStatus New from the matching "
+                    "engine (OrderID ME-ORD-n).")
+            log(f"  binary checks: a valid order was accepted by the matching engine, OrderID={accepted['order_id']} -- OK")
+
+            # 2. Orders the gateway must refuse, one field wrong in each.
+            expect_refused_order("undefined side", "side is missing or holds a value the protocol does not define", "--side", "Z")
+            expect_refused_order("quantity not a number", "order_qty is not a decimal number", "--order-qty", "1e3")
+            expect_refused_order("price not a number", "price is not a decimal number", "--price", "ten")
+            expect_refused_order("over-long ClOrdID", f"cl_ord_id exceeds maximum length of {_MAX_CL_ORD_ID_LENGTH}",
+                                 cl_ord_id="L" * (_MAX_CL_ORD_ID_LENGTH + 1))
+            expect_refused_order("over-long Symbol", f"symbol exceeds maximum length of {max_symbol_length}",
+                                 "--symbol", "S" * (max_symbol_length + 1))
+            expect_refused_order("empty Symbol", "symbol is missing or holds a value the protocol does not define", "--symbol", "")
+
+            # 3. A cancel the gateway must refuse is answered with an OrderCancelReject that says the
+            #    order is still open (R-0151).
+            bad_cancel_id = f"{accepted['cl_ord_id']}-CANCEL"
+            reply = binary_reply(bad_cancel_id, "--cancel", accepted["cl_ord_id"], "--side", "Z")
+            if (reply["kind"] != "OrderCancelReject" or reply["ord_status"] != "New" or reply["cxl_rej_reason"] != "99"
+                    or reply["text"] != "side is missing or holds a value the protocol does not define"):
+                die(f"binary checks: a cancel with an undefined Side came back as {reply}; expected an OrderCancelReject "
+                    "with OrdStatus New, CxlRejReason 99 and the field named.")
+            log("  binary checks: a cancel with an undefined Side was refused with an OrderCancelReject, OrdStatus New -- OK")
+
+            # 4. A valid cancel of the valid order goes through.
+            reply = binary_reply(bad_cancel_id, "--cancel", accepted["cl_ord_id"])
+            if reply["kind"] != "ExecutionReport" or reply["ord_status"] != "Canceled":
+                die(f"binary checks: cancelling the valid order came back as {reply}; expected OrdStatus Canceled.")
+            log("  binary checks: a valid cancel cancelled the order -- OK")
+
+            # 5. The matching engine's refusal of a cancel for an order it never held arrives as an
+            #    OrderCancelReject with CxlRejReason 1, Unknown order.
+            unknown = f"bin-{binary_tag}-never-placed"
+            reply = binary_reply(f"{unknown}-CANCEL", "--cancel", unknown)
+            if reply["kind"] != "OrderCancelReject" or reply["cxl_rej_reason"] != "1":
+                die(f"binary checks: a cancel for an order never placed came back as {reply}; expected an "
+                    "OrderCancelReject with CxlRejReason 1.")
+            log("  binary checks: the engine's refusal of a cancel for an unknown order is an OrderCancelReject with "
+                "CxlRejReason 1 -- OK")
 
         # ── Throttles ─────────────────────────────────────────────────────────
         # Nothing is killed. A comp id with small limits sends bursts over them, and the replies

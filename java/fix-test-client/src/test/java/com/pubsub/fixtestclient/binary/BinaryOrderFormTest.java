@@ -246,6 +246,18 @@ class BinaryOrderFormTest {
     }
 
     @Test
+    void buildCancel_withNoQuantitySendsNone() {
+        form("symbol", "BHP");
+        form("side", "1");
+        form("origClOrdId", "ORD-001");
+
+        FixOrders.OrderCancelRequest cancel = BinaryOrderForm.buildCancel(ctx, "CXL-002");
+
+        // OrderQty is optional on a cancel (R-0142), and an absent one must not be sent as an empty value.
+        assertFalse(cancel.has_order_qty);
+    }
+
+    @Test
     void buildCancel_readsTheOrderItCancels() {
         minimalForm();
         form("origClOrdId", " ORD-001 ");
@@ -257,6 +269,7 @@ class BinaryOrderFormTest {
         assertEquals("ORD-001", cancel.orig_cl_ord_id);
         assertEquals("BHP", cancel.symbol);
         assertEquals(FixOrders.Side.Sell, cancel.side);
+        assertTrue(cancel.has_order_qty);
         assertEquals("100", cancel.order_qty);
         assertTrue(cancel.transact_time > 0L);
     }

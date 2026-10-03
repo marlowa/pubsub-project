@@ -33,6 +33,7 @@
 
 #include <scram_crypto/ScramCrypto.hpp> // IWYU pragma: keep
 
+#include "BinaryCommandChecks.hpp"
 #include "BinaryOrderGatewayConfiguration.hpp"
 #include "BinarySession.hpp"
 #include "CancelClOrdId.hpp"
@@ -117,26 +118,46 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     /**
      * @brief Refuses a new order with a rejected ExecutionReport carrying @p reason.
      *
-     * This gateway passes orders on without decoding them; a refused one is decoded here, and
-     * only here, because the reply must name it.
-     *
      * @param[in,out] session The session the order arrived on.
-     * @param[in]     message The NewOrderSingle PDU, still undecoded.
+     * @param[in]     order   The decoded order.
      * @param[in]     reason  The text to send. Must stay valid for the call.
      */
-    void refuse_new_order(BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason);
+    void refuse_new_order(BinarySession& session, const pubsub_itc_fw_app::NewOrderSingleView& order, std::string_view reason);
 
     /**
      * @brief Refuses a request to cancel with an OrderCancelReject carrying @p reason.
      *
      * The reply says the order is still open (OrdStatus New), because a refusal by the gateway has
-     * not touched it. Decoded here for the same reason as refuse_new_order.
+     * not touched it.
      *
      * @param[in] session The session the request arrived on.
-     * @param[in] message The OrderCancelRequest PDU, still undecoded.
+     * @param[in] request The decoded request.
      * @param[in] reason  The text to send. Must stay valid for the call.
      */
-    void refuse_cancel(const BinarySession& session, const pubsub_itc_fw::EventMessage& message, std::string_view reason);
+    void refuse_cancel(const BinarySession& session, const pubsub_itc_fw_app::OrderCancelRequestView& request, std::string_view reason);
+
+    /**
+     * @brief Decodes a member's command into @p view, growing the decode buffer once if its groups need more room.
+     *
+     * The views point into the PDU's payload, which must outlive them, and into this thread's
+     * command decode buffer.
+     *
+     * @param[out] view    The decoded command.
+     * @param[in]  message The PDU.
+     * @return True if the command was decoded. False if it is malformed, or its repeating groups
+     *         need more room than max_command_decode_arena_size.
+     */
+    template <typename ViewType> [[nodiscard]] bool decode_command(ViewType& view, const pubsub_itc_fw::EventMessage& message);
+
+    /**
+     * @brief Refuses a command the gateway itself cannot accept now: no sequencer connected, or the
+     *        venue not accepting orders.
+     * @return The reason, or an empty view if the venue can take the command.
+     */
+    [[nodiscard]] std::string_view venue_refusal(fix_common::ThrottledCommand command) const;
+
+    /// Handles the sequencer's statement of whether the venue is accepting orders.
+    void handle_order_acceptance(const pubsub_itc_fw::EventMessage& message);
 
     /**
      * @brief Sends the matching engine's refusal of a cancel to the member as an OrderCancelReject.
@@ -338,6 +359,24 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     int64_t orders_received_{0};
     int64_t execution_reports_sent_{0};
     int64_t execution_reports_dropped_{0};
+
+    // Whether the venue can process what it is given, as the leading sequencer last said
+    // (OrderAcceptance). True until told otherwise, as in the FIX gateway; the sequencer says so
+    // as soon as this gateway connects, so a gateway started during an outage learns of it at once.
+    bool venue_accepting_orders_{true};
+    // Commands refused because the venue was not accepting orders, reported on GW-PROGRESS.
+    int64_t orders_refused_{0};
+    int64_t cancels_refused_{0};
+
+    // Where a member's command is decoded to be checked: the views of its repeating groups live
+    // here. Starts small and grows when an order with large groups needs more, up to
+    // max_command_decode_arena_size, as the FIX gateway's group arena does.
+    static constexpr size_t initial_command_decode_arena_size = 4096;
+    static constexpr size_t max_command_decode_arena_size = 1u << 20;
+    std::vector<uint8_t> command_decode_arena_;
+
+    // Where the reason for refusing a command is written, so a refusal does not allocate.
+    char command_refusal_text_[command_refusal_text_capacity]{};
 
     // Cancels sent since this drain began, so the completion line can report the whole
     // drain rather than whatever the final tick happened to do.
