@@ -67,5 +67,5 @@ In order:
    [filesystem requirements](operations/filesystem_requirements.md).
 3. Run `python3 scripts/ha_test.py --scenario all` against the deployed venue.
 4. Build and check the specification with `make -C docs/book check`.
-5. Read `coding-rules-for-ai-chatbots.txt` and `project-summary-for-ai-chatbots.txt` in the
-   repository root before changing code; the build enforces much of what they say.
+5. Read `coding-rules-for-ai-chatbots.txt` in the repository root before changing code; the build
+   enforces much of what it says.
