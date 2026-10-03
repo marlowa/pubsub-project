@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 106 |
-| Open | 40 (26 defects, 14 tasks) |
+| Bugs recorded | 109 |
+| Open | 43 (29 defects, 14 tasks) |
 | Closed | 66 |
-| Next id | BUG-0107 |
+| Next id | BUG-0110 |
 
 ## Open bugs by severity
 
-14 high, 22 medium, 4 low.
+16 high, 22 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -27,6 +27,8 @@
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
+| [BUG-0107](#bug_0107) | high | defect | The arbiters stall for seconds at a time, and every pair loses its leader |
+| [BUG-0108](#bug_0108) | high | defect | A following sequencer forgets the leading matching engine, and when it leads the venue has no engine |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -53,6 +55,7 @@
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
+| [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
 
 ---
 
@@ -149,6 +152,95 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0107: The arbiters stall for seconds at a time, and every pair loses its leader {#bug_0107}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Starting the venue with `scripts/devenv.py start` to measure latency, and finding no stable leader |
+| Impact | Each stall lets the active arbiter's lease run out. The arbiter that takes over grants no component a lease for 3 seconds, so the sequencer and matching engine pairs lose their leaders too and the venue stops trading until the leases settle. After one such period the venue was left with no matching engine at all ([BUG-0108](#bug_0108)) |
+
+**What was seen.** For 90 seconds after the venue was started, the primary arbiter's lease ran out
+seven times, at intervals of 9 to 37 seconds: *"lease ran out -- neither the peer nor the witness
+renewed it in time"*. Each time, the arbiter that became active logged *"granting no component a lease
+for 3000 ms"*, and the primary sequencer's lease ran out with it, five times in that period. Then it
+stopped, and a second start of the venue minutes later was stable from the first second.
+
+**The stall.** Before the first lapse, both arbiters' reactors logged *"callback not finished yet"*
+every half second for five seconds, from 13:37:15 to 13:37:20, and the witness's for 175 ms, in three
+separate processes at the same moment. The lease ran out as the stall ended. A stall shared by three
+processes points to a shared resource rather than to anything in one of them.
+
+**A suspected cause, not established.** The arbiters write their lease promises with `fsync`
+(`LeasePromiseStore`, and `EpochStore` likewise) from inside the lease agent's handling on the
+reactor's thread. Their files are under `installed/var` on `/mnt/sda1`, which is mounted without
+`lazytime`. Without it, writing back the venue's memory-mapped files makes the filesystem journal
+commit timestamp changes, and an `fsync` waits behind that commit; that is what
+`docs/operations/filesystem_requirements.md` and BUG-0070 describe for the sequencer's log. Showing it
+needs an arbiter thread caught waiting on the journal during a stall, for example from its kernel
+stack, and the same start repeated with `/mnt/sda1` mounted `lazytime`.
+
+**Whatever the cause,** a lease agent that can block for seconds inside the code that renews leases
+is fragile: writing a promise record should not be able to stop an arbiter answering.
+
+---
+
+### BUG-0108: A following sequencer forgets the leading matching engine, and when it leads the venue has no engine {#bug_0108}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | The same unstable start as [BUG-0107](#bug_0107), followed in the sequencer's log |
+| Impact | The leading sequencer defers every order, then refuses all orders and cancels, while a matching engine is leading and asking to catch up. Nothing recovers it until the venue is restarted |
+
+**What happened**, from the secondary sequencer's log, while it was a follower:
+
+1. Its connection 5 went to the primary matching engine, recorded as the engine order connection, and
+   connection 6 to the secondary engine, recorded as the standby.
+2. While the matching engines' leases churned, the secondary engine asked to catch up on connection 6.
+   A follower does not serve a catch-up, but it makes that connection its engine order connection and
+   clears the standby (`handle_me_position_request`, *"re-pointed ME order connection"*). From then on
+   nothing refers to connection 5.
+3. The secondary engine announced that it was a follower, so connection 6 was withdrawn from order
+   routing: *"this sequencer knows of no leader to hand it"*.
+4. The secondary sequencer then took the lead, and the primary engine led and asked to catch up on
+   connection 5, twenty-seven times. A request on a connection that is neither the engine order
+   connection nor the standby is dropped without a word, so it was never answered. The sequencer
+   logged *"no matching engine reachable"*, deferred 4,478 orders for 45 seconds and then refused
+   every order and cancel.
+
+**What closing it needs.** The sequencer must keep every connection it holds to a matching engine,
+whatever role it holds and whatever the engines announce, and route to whichever engine leads. A
+request to catch up from a connected engine must never be dropped silently. A scenario must churn the
+engines' leadership while a sequencer follows, then promote it, and require the venue to trade.
+
+---
+
+### BUG-0109: The FIX gateway's health line counts cancel reports as answered orders {#bug_0109}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Reading `GW-PROGRESS` after latency runs in which nine orders in ten are cancelled |
+| Impact | `awaiting`, meant to say how many orders have had no answer, goes negative whenever cancels are answered, so it says nothing in exactly the traffic a venue has: `accounted=48000 sent=45535 dropped=2465 nos_received=24000 awaiting=-24000` |
+
+**Why.** `accounted` is `sent + dropped + refused`, and `execution_reports_sent_` is incremented for
+every report sent to a member, including those that answer cancels, while `awaiting` is
+`orders_received_ - accounted` and counts only new orders. The two sides count different things.
+[order_acceptance.md](availability/order_acceptance.md) describes `awaiting` as intended.
+
+**Not established:** what the 2,465 dropped reports were. A likely explanation is the reports for
+orders deferred in an earlier run, produced after the engine caught up while the member's session was
+connected nowhere ([BUG-0088](#bug_0088)), but that was not checked.
+
+---
 
 ### BUG-0106: A damaged entry in the write-ahead log silently drops the rest of its segment {#bug_0106}
 
