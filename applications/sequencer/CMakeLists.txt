@@ -34,6 +34,28 @@ install(FILES
         DESTINATION etc/sequencer
 )
 
+# ── Test tool ─────────────────────────────────────────────────────────────────
+# Hands one order or cancel straight to a sequencer, bypassing the gateways' checks, so that
+# ha_test.py can test the matching engine's own refusals (BUG-0101). Not for a live venue.
+add_executable(inject_order
+        tools/InjectOrderMain.cpp
+)
+
+target_include_directories(inject_order PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../fix_common
+        ${FIX_DSL_INCLUDE_DIR}
+)
+
+target_link_libraries(inject_order PRIVATE
+        pubsub_itc_fw
+)
+
+add_dependencies(inject_order fix_orders_generated leader_follower_generated authentication_generated)
+
+install(TARGETS inject_order
+        RUNTIME DESTINATION bin
+)
+
 # ── Unit tests ────────────────────────────────────────────────────────────────
 # The configuration loader is the part worth testing here: it grew an array-of-tables
 # parse with duplicate detection and an enabled filter, and a mistake in it produces a

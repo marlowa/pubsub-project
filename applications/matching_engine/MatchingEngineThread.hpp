@@ -138,6 +138,33 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no,
                               const fix_common::SessionIdentity& session = fix_common::SessionIdentity{}, ReportIsRepeat repeat = ReportIsRepeat::no);
 
+    /**
+     * @brief Refuses a new order whose ClOrdID is longer than the book's key holds.
+     *
+     * Sends a rejected report naming the limit. During a catch-up the report is marked as a
+     * possible repeat, as every report a catch-up sends is (R-0122).
+     *
+     * @param[in] view            The order.
+     * @param[in] sequence_number Its sequence number.
+     * @param[in] transact_time   The time the venue took it.
+     * @param[in] session         The session that placed it.
+     * @param[in] repeat          Whether the report may repeat one an earlier engine sent.
+     */
+    void refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                                const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
+
+    /**
+     * @brief Refuses a request to cancel whose ClOrdID or OrigClOrdID is longer than the book's key holds.
+     *
+     * The rejected report carries the OrigClOrdID, so each gateway sends it to the member as an
+     * OrderCancelReject (R-0151). The book never holds an order with an identifier that long,
+     * so there is no order to report the status of.
+     *
+     * Parameters as for refuse_over_long_order.
+     */
+    void refuse_over_long_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+                                 const fix_common::SessionIdentity& session, ReportIsRepeat repeat);
+
     const MatchingEngineConfiguration& config_;
 
     /**

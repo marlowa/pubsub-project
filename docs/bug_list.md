@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 101 |
+| Bugs recorded | 102 |
 | Open | 38 (24 defects, 14 tasks) |
-| Closed | 63 |
-| Next id | BUG-0102 |
+| Closed | 64 |
+| Next id | BUG-0103 |
 
 ## Open bugs by severity
 
@@ -47,7 +47,7 @@
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
-| [BUG-0101](#bug_0101) | medium | defect | The matching engine cuts an over-long ClOrdID short instead of refusing it |
+| [BUG-0102](#bug_0102) | medium | defect | The reactor fairness test fails about one run in five |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -148,34 +148,40 @@ went looking.
 
 ## Open
 
-### BUG-0101: The matching engine cuts an over-long ClOrdID short instead of refusing it {#bug_0101}
+### BUG-0102: The reactor fairness test fails about one run in five {#bug_0102}
 
 | | |
 |---|---|
 | Severity | medium |
-| Found | 2026-10-02 |
-| Recorded | 2026-10-02 |
-| How | Fixing [BUG-0100](#bug_0100) |
-| Impact | None while both gateways refuse an over-long ClOrdID, which they now do. If either stopped, two orders whose identifiers differ only after the 64th character would be one order to the book |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Two failures of the full developer loop during the work on BUG-0100 and BUG-0101, neither of which touched the reactor |
+| Impact | A test that fails by chance cannot be trusted to catch real unfairness, and stops the developer loop for a reason unrelated to the change being tested |
 
-**What happens.** `OrderKey::make` and `OrderEntry` copy at most `fix_order_limits::max_cl_ord_id_length`
-(64) characters of a ClOrdID, and the rest is dropped without a word. An over-long OrigClOrdID on a
-cancel is cut short the same way, so the cancel can find an order it does not name.
+**What fails.** `FrameworkPduBurstIntegrationTest.PollingReactorServesSeveralClientsEvenly`, added on
+2026-09-21, sends 200 MB over each of five connections to one reactor from the same moment, and
+requires the first client to finish to take at least half as long as the last
+(`worst_acceptable_share_of_the_best = 0.5`).
 
-**What to do.** The engine refuses a new order or a cancel whose identifiers are longer than its key
-holds: a rejected ExecutionReport for an order, and for a cancel the rejected report the gateways
-already turn into an OrderCancelReject. No gateway should be the only thing between a member and a
-silent collision.
+**What was measured.** It ran in eleven runs of `scripts/devsetup.sh` on 2–3 October and failed in two:
 
-**Why it was not done with BUG-0100.** The engine's new-order and cancel paths run differently while
-it catches up after a restart (RECONCILING): there, every record is counted towards the catch-up
-being complete (R-0101, checked by count), and a record refused before it is counted would stop a
-healthy engine from taking over. The refusal has to be placed so that the count still sees the
-record, and the replay of a refused record has to produce the same refusal, marked as a possible
-repeat. That needs its own care and its own test, which restarts the engine with such an order in
-the log.
+| When | First to finish | Last to finish | Share | Machine |
+|---|---|---|---|---|
+| 2026-10-02 23:25 | 1226 ms | 2556 ms | 0.48 | a headless browser was rendering a page at the same time |
+| 2026-10-03 07:00 | 1049 ms | 2553 ms | 0.41 | nothing else running |
+
+In both, the clients fell into two groups rather than spreading evenly: on 3 October clients 1 and 3
+finished at about 1050 ms and clients 0, 2 and 4 between 2209 and 2553 ms. None of the commits
+between the two failures touches the framework.
+
+**What is not known.** Whether the reactor serves some connections ahead of others in a way that
+matters, or the test's own timing is at fault. The test's comment expects the five clients to finish
+"well under a second" when served evenly; both failures, and presumably the passes, took one to two
+and a half seconds, so the premise may not hold on this machine. Telling the two apart needs the
+per-connection service counts the test already collects, logged on a pass as well as a failure.
 
 ---
+
 
 
 ### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
@@ -2405,6 +2411,52 @@ content, and refuse to append it silently.
 Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
 ## Closed
+
+### BUG-0101: The matching engine cuts an over-long ClOrdID short instead of refusing it {#bug_0101}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-02 |
+| Recorded | 2026-10-02 |
+| Fixed | 2026-10-03 -- the matching engine refuses an over-long identifier, live and while catching up |
+| How | Fixing [BUG-0100](#bug_0100) |
+| Impact | None while both gateways refuse an over-long ClOrdID, which they do. Had either stopped, two orders whose identifiers differ only after the 64th character would have been one order to the book |
+
+**What happens.** `OrderKey::make` and `OrderEntry` copy at most `fix_order_limits::max_cl_ord_id_length`
+(64) characters of a ClOrdID, and the rest is dropped without a word. An over-long OrigClOrdID on a
+cancel is cut short the same way, so the cancel can find an order it does not name.
+
+**What to do.** The engine refuses a new order or a cancel whose identifiers are longer than its key
+holds: a rejected ExecutionReport for an order, and for a cancel the rejected report the gateways
+already turn into an OrderCancelReject. No gateway should be the only thing between a member and a
+silent collision.
+
+**Why it was not done with BUG-0100.** The engine's new-order and cancel paths run differently while
+it catches up after a restart (RECONCILING): there, every record is counted towards the catch-up
+being complete (R-0101, checked by count), and a record refused before it is counted would stop a
+healthy engine from taking over. The refusal has to be placed so that the count still sees the
+record, and the replay of a refused record has to produce the same refusal, marked as a possible
+repeat. That needs its own care and its own test, which restarts the engine with such an order in
+the log.
+
+**What was done.** `OrderKey::fits` says whether an identifier fits the key whole, and the engine asks
+it before building a key on all four paths: a new order and a cancel, live and while catching up.
+A new order that does not fit is refused with a rejected report saying "ClOrdID exceeds maximum
+length of 64"; a cancel with the OrigClOrdID, so the gateways send it as an OrderCancelReject. While
+catching up, the record is counted towards the catch-up first and refused second, and its refusal is
+reported as a possible repeat, like every report a catch-up sends (R-0122).
+
+**How it is tested.** `inject_order`, a new test tool, hands the sequencer an order or a cancel as a
+gateway would, past both gateways' checks. `ha_test.py` scenario 58 injects two orders whose
+identifiers differ only in the 65th character and a cancel naming one of them, requires all three to
+be refused, restarts the engine, and requires all three to be refused again while it catches up and
+the catch-up to account for every record. Two deliberately broken builds were run against it: one
+that refused during the catch-up before counting the record, which never completed its catch-up,
+and one with no refusal during the catch-up, which refused none of the replayed orders. The scenario
+failed on both.
+
+---
 
 ### BUG-0100: The binary gateway checks almost nothing before passing an order or a cancel on {#bug_0100}
 

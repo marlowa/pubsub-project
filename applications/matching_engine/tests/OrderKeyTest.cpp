@@ -122,8 +122,16 @@ TEST(OrderKeyTest, AnAbsentProtocolMeansTheFixOrderGateway) {
     EXPECT_TRUE(defaulted == explicit_fix);
 }
 
-// The key truncates at the shared ClOrdID limit, which is only safe because the gateways
-// reject longer ones at ingress. If that check is ever dropped, this is where it bites.
+// The engine asks fits() before it builds a key, and refuses an order or a cancel whose
+// identifiers do not fit, so two identifiers differing only beyond the limit are never one order.
+TEST(OrderKeyTest, AClOrdIdFitsUpToTheSharedMaximumAndNoFurther) {
+    EXPECT_TRUE(OrderKey::fits(""));
+    EXPECT_TRUE(OrderKey::fits(std::string(fix_order_limits::max_cl_ord_id_length, 'X')));
+    EXPECT_FALSE(OrderKey::fits(std::string(fix_order_limits::max_cl_ord_id_length + 1, 'X')));
+}
+
+// The key still truncates at the shared ClOrdID limit, so that a defect upstream of fits()
+// cannot write past the end of the array. No member's order reaches this: it is refused first.
 TEST(OrderKeyTest, ClOrdIdIsTruncatedAtTheSharedMaximum) {
     const std::string over_long(fix_order_limits::max_cl_ord_id_length + 10, 'X');
     const OrderKey key = OrderKey::make(fix_session("MEMBER-A"), over_long);

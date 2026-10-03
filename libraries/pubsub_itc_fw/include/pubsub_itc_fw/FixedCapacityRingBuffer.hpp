@@ -55,7 +55,15 @@ namespace pubsub_itc_fw {
  * **Threading.** Not thread-safe. Each buffer must be used by one thread, or every call protected
  * by the caller.
  *
- * @tparam T The element type.
+ * **Why a template.** The buffer is a general-purpose framework container, so the type of element
+ * it holds is the user's choice, not the buffer's. Its first user, the gateways' rate throttle,
+ * holds std::chrono::steady_clock::time_point values; another might hold sequence numbers,
+ * pointers or small structs, and gets the same refusal when full. As a template, each element
+ * type gets its own compiled copy, so an element is stored and read with no conversion, no
+ * virtual call and no allocation per element.
+ *
+ * @tparam T The element type. It need not have a default constructor; it must be movable or
+ *           copyable into the buffer, and its destructor must not throw.
  */
 template <typename T> class FixedCapacityRingBuffer {
   public:

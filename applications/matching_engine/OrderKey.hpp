@@ -46,14 +46,27 @@ struct OrderKey {
     std::array<char, fix_order_limits::max_cl_ord_id_length> cl_ord_id{};
 
     /**
+     * @brief Whether a ClOrdID fits the key whole.
+     *
+     * The matching engine refuses an order or a cancel whose identifiers do not fit, before it
+     * builds a key from them, so two identifiers that differ only beyond the limit are never
+     * taken for the same order. The gateways refuse them too, at the same limit.
+     *
+     * @param[in] id The ClOrdID.
+     * @return True if it is no longer than fix_order_limits::max_cl_ord_id_length.
+     */
+    [[nodiscard]] static bool fits(std::string_view id) {
+        return id.size() <= fix_order_limits::max_cl_ord_id_length;
+    }
+
+    /**
      * @brief Builds a key, truncating an over-long ClOrdID to the shared maximum.
      * @param[in] session The identity of the session that placed the order.
      * @param[in] id      The ClOrdID.
      *
-     * Truncation is safe here only because the gateways validate ClOrdID length at
-     * ingress against the same limit, rejecting anything longer with an
-     * ExecutionReport. Were that check removed, two long ClOrdIDs sharing a prefix
-     * would silently become one key.
+     * Every caller checks fits() first and refuses what does not fit, so the truncation is
+     * never reached through a member's order. It remains so that a defect elsewhere cannot
+     * write past the end of the array.
      */
     static OrderKey make(const fix_common::SessionIdentity& session, std::string_view id) {
         OrderKey key;

@@ -848,6 +848,10 @@ class Scenario(NamedTuple):
     # When True, send the binary gateway orders and cancels it must refuse, and some it must
     # accept, and check each reply. See run_scenario's "binary checks" block and BUG-0100.
     assert_binary_checks: bool = False
+    # When True, hand the sequencer an order and a cancel with identifiers longer than the matching
+    # engine's book key, bypassing both gateways, and check the engine refuses them -- and refuses
+    # them again when it replays them after a restart, without stopping its catch-up. BUG-0101.
+    assert_engine_identifier_refusal: bool = False
     # When True, take every matching engine away, place an order that the sequencer therefore
     # defers, start one engine COLD, and assert the member is answered for it. See
     # run_scenario's "deferred orders" block, BUG-0064 and the surviving half of BUG-0009.
@@ -3365,6 +3369,30 @@ _SCENARIOS: list[Scenario] = [
         assert_binary_checks=True,
         steps=[],
     ),
+
+    # 58 -- the matching engine refuses an identifier longer than its book key, rather than cutting
+    # it short.
+    #
+    # Both gateways refuse these first, so the order and the cancel are handed straight to the
+    # sequencer by inject_order, as a gateway would hand them. Two orders whose identifiers differ
+    # only in the 65th character must both be refused: cut short, they would be one order. Then
+    # the engine is restarted and replays the same records while catching up. Each record must be
+    # refused again, and the catch-up must still account for every record it was sent (R-0101):
+    # a refusal placed before the record was counted would stop a healthy engine from serving.
+    Scenario(
+        number=58,
+        short_name="engine_identifier_refusal",
+        description="The matching engine refuses an over-long ClOrdID instead of cutting it short, live and while catching up",
+        expected_outcome=(
+            "two orders whose ClOrdIDs differ only beyond the 64th character, and a cancel naming one of them, are all "
+            "refused by the matching engine; after a restart the engine refuses them again while catching up, and the "
+            "catch-up still accounts for every record"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_engine_identifier_refusal=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4432,6 +4460,15 @@ def binary_gateway_listen_port(prefix: Path) -> int:
             return int(match.group(1))
     die(f"no listen_port in {config}")
     return 0  # unreachable; die() exits
+
+
+def count_lines_with_all(log_path: Path, *markers: str, from_byte: int = 0) -> int:
+    """Count the lines after from_byte that contain every one of the markers."""
+    if not log_path.is_file():
+        return 0
+    with open(log_path, "r", errors="replace") as handle:
+        handle.seek(from_byte)
+        return sum(1 for line in handle if all(marker in line for marker in markers))
 
 
 def installed_toml_int(config: Path, key: str) -> int:
@@ -6892,6 +6929,66 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  order refusal: the engine's refusal of a cancel for an unknown order is an "
                 "OrderCancelReject with CxlRejReason 1 -- OK")
             member.close()
+
+        # ── The matching engine's own refusal of over-long identifiers ────────
+        if scenario.assert_engine_identifier_refusal:
+            log("=== The matching engine refuses over-long identifiers (BUG-0101) ===")
+            sequencer_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+            order_port = installed_toml_int(sequencer_config, "listen_port")
+            shared_prefix = f"inj{datetime.now().strftime('%H%M%S')}".ljust(_MAX_CL_ORD_ID_LENGTH, "X")
+            first_id = shared_prefix + "A"
+            second_id = shared_prefix + "B"
+            over_long = _MAX_CL_ORD_ID_LENGTH + 1
+
+            def inject(*arguments: str) -> None:
+                result = subprocess.run([str(bin_dir / "inject_order"), "--port", str(order_port), *arguments],
+                                        capture_output=True, text=True, check=False, timeout=30)
+                if result.returncode != 0:
+                    die(f"engine refusal: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+
+            live_pos = file_end(me_log)
+            inject("--cl-ord-id", first_id)
+            inject("--cl-ord-id", second_id)
+            inject("--cl-ord-id", f"inj-cancel-{shared_prefix[:12]}", "--cancel", first_id)
+
+            order_marker = f"ClOrdID is {over_long} characters, longer than the {_MAX_CL_ORD_ID_LENGTH} the book holds"
+            cancel_marker = f"OrigClOrdID is {over_long} characters, longer than the {_MAX_CL_ORD_ID_LENGTH} the book holds"
+            poll_log_for(me_log, "refusing OCR", cancel_marker, timeout=_RAW_REPLY_TIMEOUT, from_byte=live_pos)
+            # Counted by the command as well as the identifier: "ClOrdID is 65 characters" is also
+            # part of "OrigClOrdID is 65 characters".
+            orders_refused = count_lines_with_all(me_log, "refusing NOS", order_marker, from_byte=live_pos)
+            cancels_refused = count_lines_with_all(me_log, "refusing OCR", cancel_marker, from_byte=live_pos)
+            if orders_refused != 2 or cancels_refused != 1:
+                die(f"engine refusal: the matching engine refused {orders_refused} of the 2 over-long orders and "
+                    f"{cancels_refused} of the 1 over-long cancel. Cut short to {_MAX_CL_ORD_ID_LENGTH} characters, the "
+                    "two orders would be one, and the second would be refused as a duplicate of the first.")
+            if count_log_marker(me_log, "accepted NOS", live_pos) or count_log_marker(me_log, "duplicate ClOrdID", live_pos):
+                die("engine refusal: the matching engine accepted an over-long order, or treated the second as a "
+                    "duplicate of the first, which means it cut the identifiers short (BUG-0101).")
+            log("  engine refusal: both over-long orders and the over-long cancel were refused by the matching engine -- OK")
+
+            # The same records again, while the restarted engine catches up. The refusals were not
+            # published, so the engine is sent them again from the write-ahead log.
+            log("  restarting the matching engine, which must replay and refuse the same records")
+            do_restart_step(_me_restart_step(), proc_by_name, app_procs, launch_table, bin_dir, log_dir, prefix / "var")
+            # do_restart_step deletes the engine's log before starting it again, so everything in the
+            # log now was written by the restarted engine, and it is read from the start.
+            restart_pos = 0
+            found, _, _ = poll_log_for(me_log, "book reconciled to seq_no=", "the catch-up accounted for all",
+                                       timeout=_ME_READY_TIMEOUT * 2, from_byte=restart_pos)
+            if not found:
+                die("engine refusal: the restarted matching engine never completed its catch-up. A refusal that stops "
+                    "the catch-up's count would leave a healthy engine unable to serve (R-0101).")
+            if count_log_marker(me_log, "catch-up was not complete", restart_pos):
+                die("engine refusal: the restarted engine reported its catch-up incomplete, so a refused record was not "
+                    "counted (R-0101).")
+            replayed_orders = count_lines_with_all(me_log, "refusing NOS", order_marker, "during catch-up", from_byte=restart_pos)
+            replayed_cancels = count_lines_with_all(me_log, "refusing OCR", cancel_marker, "during catch-up", from_byte=restart_pos)
+            if replayed_orders != 2 or replayed_cancels != 1:
+                die(f"engine refusal: while catching up, the engine refused {replayed_orders} of the 2 over-long orders "
+                    f"and {replayed_cancels} of the 1 over-long cancel it replayed.")
+            log("  engine refusal: after a restart the engine refused the same records again while catching up, and "
+                "the catch-up still accounted for every record -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

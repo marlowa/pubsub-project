@@ -3,9 +3,12 @@
 
 #include "MatchingEngineThread.hpp"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
-
 #include <cstdio>
+
+#include <fmt/format.h>
 
 #include <LeaderEpoch.hpp>
 #include <OrderPathMetrics.hpp>
@@ -575,7 +578,16 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     // outcome that cannot be recovered from.
     if (ha_role_state_ == MeRole::Reconciling) {
         ++reconciliation_records_seen_;
+        // Counted before anything else is decided, the refusal below included: the catch-up is
+        // complete when every record has been offered, and a record refused before it was counted
+        // would leave it looking incomplete for ever (R-0101).
         catch_up_tally_.offer(sequence_number);
+        if (!OrderKey::fits(view.cl_ord_id)) {
+            refuse_over_long_order(view, sequence_number, sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns(), session, ReportIsRepeat::yes);
+            ++reconciliation_reports_sent_;
+            order_book_.publish(sequence_number);
+            return;
+        }
         const OrderKey recon_key = OrderKey::make(session, view.cl_ord_id);
         if (order_book_.contains(recon_key)) {
             return; // duplicate during replay -- ignore
@@ -648,6 +660,10 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
+    if (!OrderKey::fits(view.cl_ord_id)) {
+        refuse_over_long_order(view, sequence_number, now_ns, session, ReportIsRepeat::no);
+        return;
+    }
     const OrderKey order_key = OrderKey::make(session, view.cl_ord_id);
 
     // Stack-allocated ID buffers -- no heap allocation.
@@ -877,7 +893,14 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     // either, so its member is still holding an order it believes is live.
     if (ha_role_state_ == MeRole::Reconciling) {
         ++reconciliation_records_seen_;
+        // Counted first, for the reason the order branch gives.
         catch_up_tally_.offer(sequence_number);
+        if (!OrderKey::fits(view.cl_ord_id) || !OrderKey::fits(view.orig_cl_ord_id)) {
+            refuse_over_long_cancel(view, sequence_number, sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns(), session, ReportIsRepeat::yes);
+            ++reconciliation_reports_sent_;
+            order_book_.publish(sequence_number);
+            return;
+        }
         const OrderKey recon_key = OrderKey::make(session, view.orig_cl_ord_id);
         // Read before the removal, because the report names the order that was cancelled and
         // the entry is what holds its venue order id.
@@ -927,6 +950,10 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     }
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
+    if (!OrderKey::fits(view.cl_ord_id) || !OrderKey::fits(view.orig_cl_ord_id)) {
+        refuse_over_long_cancel(view, sequence_number, now_ns, session, ReportIsRepeat::no);
+        return;
+    }
     const OrderKey orig_key = OrderKey::make(session, view.orig_cl_ord_id);
 
     std::array<char, 32> exec_id_buf{};
@@ -1020,6 +1047,89 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: sent cancel ER OrderID={} ExecID={} ClOrdID={} OrigClOrdID={} book_size={}", order_id, exec_id, view.cl_ord_id,
                view.orig_cl_ord_id, order_book_.size());
+}
+
+void MatchingEngineThread::refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                                                  const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
+    // Refused rather than cut short: the book's key holds max_cl_ord_id_length characters, and
+    // two identifiers that differ only beyond that would otherwise become one order. Info: the
+    // gateways refuse these first, so one reaching here is unusual, but it is the member's.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: refusing NOS seq={} -- ClOrdID is {} characters, longer than the {} the book holds (session comp_id='{}'){}",
+               sequence_number, view.cl_ord_id.size(), fix_order_limits::max_cl_ord_id_length, session.comp_id_view(),
+               repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
+
+    std::array<char, 32> exec_id_buf{};
+    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    std::array<char, 64> text_buf{};
+    const auto text_written =
+        fmt::format_to_n(text_buf.data(), text_buf.size(), "ClOrdID exceeds maximum length of {}", fix_order_limits::max_cl_ord_id_length);
+
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id = "NONE";
+    er.exec_id = exec_id;
+    er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    er.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    er.symbol = view.symbol;
+    er.side = view.side;
+    er.leaves_qty = "0";
+    er.cum_qty = "0";
+    er.avg_px = "0.00";
+    er.transact_time = transact_time;
+    er.has_cl_ord_id = true;
+    er.cl_ord_id = view.cl_ord_id;
+    er.has_order_qty = true;
+    er.order_qty = view.order_qty;
+    er.has_ord_rej_reason = true;
+    er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+    er.has_text = true;
+    er.text = std::string_view(text_buf.data(), std::min(static_cast<size_t>(text_written.size), text_buf.size()));
+    // The session goes on the envelope only for a catch-up's report, as the other catch-up reports
+    // do; otherwise the sequencer routes the report by its sequence number, as every live report.
+    send_er_to_sequencer(er, sequence_number, repeat == ReportIsRepeat::yes ? session : fix_common::SessionIdentity{}, repeat);
+}
+
+void MatchingEngineThread::refuse_over_long_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+                                                   const fix_common::SessionIdentity& session, ReportIsRepeat repeat) {
+    const bool orig_too_long = !OrderKey::fits(view.orig_cl_ord_id);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: refusing OCR seq={} -- {} is {} characters, longer than the {} the book holds (session comp_id='{}'){}", sequence_number,
+               orig_too_long ? "OrigClOrdID" : "ClOrdID", orig_too_long ? view.orig_cl_ord_id.size() : view.cl_ord_id.size(),
+               fix_order_limits::max_cl_ord_id_length, session.comp_id_view(),
+               repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
+
+    std::array<char, 32> exec_id_buf{};
+    const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
+    std::array<char, 64> text_buf{};
+    const auto text_written = fmt::format_to_n(text_buf.data(), text_buf.size(), "{} exceeds maximum length of {}", orig_too_long ? "OrigClOrdID" : "ClOrdID",
+                                               fix_order_limits::max_cl_ord_id_length);
+
+    pubsub_itc_fw_app::ExecutionReport er{};
+    er.order_id = "NONE";
+    er.exec_id = exec_id;
+    er.exec_type = pubsub_itc_fw_app::ExecType::Rejected;
+    er.ord_status = pubsub_itc_fw_app::OrdStatus::Rejected;
+    er.symbol = view.symbol;
+    er.side = view.side;
+    er.leaves_qty = "0";
+    er.cum_qty = "0";
+    er.avg_px = "0.00";
+    er.transact_time = transact_time;
+    er.has_cl_ord_id = true;
+    er.cl_ord_id = view.cl_ord_id;
+    // Carried so the gateways recognise the report as a refused cancel, and send it to the member
+    // as an OrderCancelReject rather than as a rejected order.
+    er.has_orig_cl_ord_id = true;
+    er.orig_cl_ord_id = view.orig_cl_ord_id;
+    er.has_order_qty = view.has_order_qty;
+    er.order_qty = view.order_qty;
+    er.has_ord_rej_reason = true;
+    er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
+    er.has_text = true;
+    er.text = std::string_view(text_buf.data(), std::min(static_cast<size_t>(text_written.size), text_buf.size()));
+    // The session goes on the envelope only for a catch-up's report, as the other catch-up reports
+    // do; otherwise the sequencer routes the report by its sequence number, as every live report.
+    send_er_to_sequencer(er, sequence_number, repeat == ReportIsRepeat::yes ? session : fix_common::SessionIdentity{}, repeat);
 }
 
 bool MatchingEngineThread::holding_reports_until_entitled() const {
