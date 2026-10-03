@@ -281,27 +281,34 @@ resend loop neither could end.
 
 ### Sending a FIX member the reports it missed
 
-When a member sends a ResendRequest, the gateway asks the sequencer for the session's execution
-reports (`SessionReplayRequest`), sends them again with `PossDupFlag=Y` and `OrigSendingTime`, and
-gap-fills only the administrative messages in the range, which is the split FIX prescribes.
+When a member sends a ResendRequest, each number in the range it asks for is answered according to
+what it carried. A number that carried an execution report is sent again, with that report,
+`PossDupFlag=Y` and `OrigSendingTime`. A number that carried a session-level message, such as a
+Logon or a heartbeat, cannot be produced again and is skipped with a `SequenceReset-GapFill`; a run
+of such numbers is covered by one gap fill. That is the split FIX prescribes.
 
-- **The gateway asks for exactly as many reports as the gap the member described,** and the
-  sequencer returns the session's most recent reports up to that number. What a member has missed
-  is the end of its stream, not the beginning. A ResendRequest's `BeginSeqNo` is a number in the
-  member's sequence and the log is numbered by the venue's own sequence, so there is no mapping
-  between them; asking by width avoids needing one. It is exact when the gap is all execution
-  reports, and when it is not, the remainder is gap-filled.
-- **Only reports inside the gap are marked `PossDupFlag=Y`.** A resent report carries a lower
-  sequence number than the member expects, and FIX requires a member to treat that as fatal unless
-  the flag is set, so the flag is not decoration.
+- **The gateway knows which numbers carried reports.** It records each number as it sends a report
+  on it, and the record travels to the sequencer with the session's state and comes back when a
+  gateway takes the session on, so the instance answering a resend after a failover has the record
+  even though it sent none of the messages. How it is recorded and kept is in
+  [Resend provenance](resend_provenance.md).
+- **The gateway names the reports it wants.** `SessionReplayRequest` asks the sequencer to skip the
+  *s* most recent reports for the session and return the next *n*, oldest first, where *s* is the
+  number of report-carrying numbers above the range and *n* the number within it. Neither side needs
+  to know the other's numbering: a ResendRequest's `BeginSeqNo` is a number in the member's sequence
+  and the log is numbered by the venue's own.
+- **A number the venue cannot vouch for is gap-filled, never guessed at,** whether it carried a
+  session-level message or is older than the record reaches.
 - **The range is answered in one pass,** and a second ResendRequest arriving while one is being
   answered is ignored rather than restarting it. Answering one message at a time, or restarting on
   each request, sets off a loop of requests that freezes the session.
 - **The reports come from a scan of the sequencer's log.** Every report is already there, tagged
-  with its session, so nothing is stored twice. The sequencer reads its log from the oldest
-  retained segment and keeps the matching records. Measured: 18 ms to scan a 4 MB log and return
-  3,223 records for one session. The log has no index, deliberately: an index would put work on the
-  path every order takes so that a rare reconnect could be quicker.
+  with its session, so nothing is stored twice. Measured: 18 ms to scan a 4 MB log and return 3,223
+  records for one session. The log has no index, deliberately: an index would put work on the path
+  every order takes so that a rare reconnect could be quicker.
+
+The `PossDupFlag` is not decoration. A report sent again carries a lower number than the member
+expects, and FIX requires a member to treat that as fatal unless the flag is set.
 
 ### Cancel-on-disconnect, per comp id, with a grace period
 
@@ -344,7 +351,8 @@ connection.
 | 19, `cancel_on_disconnect_grace` | With the gateway running, a dropped member's orders are held for the provisioned grace period, the number itself and not the gateway's default, and a reconnect inside it cancels nothing. It fails if the grace period is zero |
 | 20, `session_provisioning` | The gateway admits a comp id provisioned for its instance, naming both numbers, and refuses it once it is provisioned elsewhere, through the database and a real credentials export |
 | 21, `reconnect_inherits_reports` | 1,000 orders rest, the member reconnects on a new connection, the leading matching engine is killed, and all 1,000 cancel reports reach the new connection |
-| 22, `resend_recovery` | With a client that does not reset its numbering, the numbering resumes, the member asks for what it missed, real reports come back, and they carry `PossDupFlag=Y` as received by the client |
+| 22, `resend_recovery` | With a client that does not reset its numbering, the numbering resumes, the member asks for what it missed, real reports come back carrying `PossDupFlag=Y` as received by the client, and a heartbeat placed inside the gap is gap-filled rather than given a report |
+| 40, `bounded_resend` | A ResendRequest for a range in the middle of the session's history is answered with the reports that were sent on those numbers, not the most recent ones |
 | 23, `inflight_gateway_death` | A gateway killed with orders in flight; the member returns to its backup numbered where it had reached, with its orders still live |
 
 The binary gateway's provisioning refusal and its cancel from a new connection, across instances,
