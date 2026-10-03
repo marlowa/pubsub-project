@@ -1,9 +1,11 @@
 # Session binding: how a session outlives its connection {#ha_session_binding}
 
-A member's FIX session is not its TCP connection. The connection dies often — a network blip, a
+A member's session is not its TCP connection. The connection dies often — a network blip, a
 gateway restart, a gateway being killed — and the session is supposed to carry on across that,
 with its sequence numbering intact and its resting orders untouched. This document describes the
 protocol the gateways and the sequencer use to make that true, and what each message in it is for.
+Both gateways bind their sessions this way; the sequence numbering and the resend are the FIX
+gateway's alone, because the binary protocol has neither.
 
 It is the layer underneath [Resend provenance](resend_provenance.md) and the implementation half
 of [Gateway High Availability](gateway_ha.md). Read this first if either of those does not make
@@ -16,12 +18,11 @@ sense.
 a member's resting orders in the matching engine's book, its destination in the sequencer, and its
 sequence numbering.
 
-It used to be the triple `(protocol, instance, connection id)`, which names *a socket on a
-process*. That dies when the socket does, is renumbered on reconnect, and is not even the same
-number at the member's backup gateway — so a returning member could see its orders but not cancel
-them, because they were filed under an address that no longer existed.
-
-The triple is still how a report is **delivered**. It is no longer what a session **is**.
+The triple `(protocol, instance, connection id)` is not a session: it names *a socket on a
+process*. It dies when the socket does, is renumbered on reconnect, and is a different number at the
+member's backup gateway, so orders filed under it could not be cancelled by the returning member.
+The triple is how a report is **delivered**, to wherever the session is bound now; it is not what a
+session **is**.
 
 ## Why the sequencer holds the session's state
 
@@ -47,20 +48,22 @@ longer connected to state them again.
 They belong in `SessionBoundAck` alongside the sequence numbers, for the reason above and no
 other: the gateway taking a session on cannot know them, and the sequencer is the only component
 still running that could have been told. R-0103 in `docs/book` requires them to outlive the
-component that received them; this is where they outlive it.
+component that received them. **This is not built:** `SessionBoundAck` carries the sequence numbers
+and nothing else, so a restarted gateway does not know a member's instructions
+([BUG-0090](../bug_list.md#bug_0090), [BUG-0091](../bug_list.md#bug_0091)).
 
-**This closes the restart case and not the gateway-death case.** A gateway that restarts learns
+**Carrying them in `SessionBoundAck` would close the restart case and not the gateway-death case.** A gateway that restarts learns
 the instructions when the member binds again, because binding is what asks. A gateway that dies
 holding live sessions is not asked anything, and nothing binds on behalf of a member that never
 reconnects — so the instruction that was supposed to fire at exactly that moment still has to be
 carried out by whatever owns the orders. That is R-0113, and it needs a mechanism of its own
 whatever `SessionBoundAck` carries.
 
-Recorded so that the second half is not mistaken for solved by the first.
+So building the first does not solve the second.
 
 ## The messages
 
-Six PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`.
+Seven PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`.
 
 | Id | Message | Direction | What it says |
 |---|---|---|---|
@@ -104,7 +107,7 @@ The identity and its orders outlive the connection — that is the whole point o
 identity — so the sequencer stops addressing reports at a connection that no longer exists, and
 keeps everything else.
 
-It carries three things beyond the identity, and each is there for a reason that was learned:
+It carries three things beyond the identity, each for a reason:
 
 - **The connection id.** So a late unbind cannot tear down a newer binding. A member that
   reconnects fast enough for its new `SessionBound` to overtake the old connection's
@@ -126,11 +129,11 @@ is exact. A returning member is resumed at precisely the right number.
 **Uncleanly.** The gateway is killed. It sends no unbind at all, so the sequencer's record is
 whatever the last `SessionSequenceUpdate` left — up to two seconds stale.
 
-This is why the update on a timer exists, and the way it was learned is worth stating. Reporting
-only at unbind meant a killed gateway reported **nothing**, so the sequencer said *"sequence state
-is new"* and started the returning member at 1. With a client whose own store had also restarted,
-both sides sat at 1, no gap was visible, and the member was silently resynchronised while thousands
-of its orders were live on the book. It was told nothing.
+This is why the update on a timer exists. If the number were reported only at unbind, a killed
+gateway would report **nothing**, the sequencer would treat the session as new and start the
+returning member at 1, and a member whose own store had also restarted would see no gap: both sides
+at 1, the member silently resynchronised, and its orders live on the book without its having been
+told anything.
 
 So after an unclean death the sequencer resumes the member **deliberately high**: the last reported
 number, plus the reports it forwarded since, plus a fixed allowance for the admin traffic it cannot

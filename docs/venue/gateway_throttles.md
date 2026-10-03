@@ -118,7 +118,7 @@ gateway connects to the database; the values arrive with the session when it log
 | Database | Three columns on the `comp_id` table: `max_place_per_second`, `max_amend_per_second`, `max_cancel_per_second`. Integer, not null, default 0, and checked to be between 0 and 100,000, the largest permitted limit (section 6). Added by a new Liquibase changeset, `db/changelog/v4_gateway_throttles.xml`. |
 | Admin service | The three limits can be given when a comp id is created and changed when it is edited: `CompIdHandler.create` and `CompIdHandler.update` both take them, the comp id form (`templates/comp-ids/form.ftl`) shows them in both cases, and `CompIdDao` reads and writes the columns. Both paths refuse a value that is not a whole number from 0 to 100,000, so a mistake is caught where it is typed, not when the member logs on. Creating a comp id without giving the limits leaves them at 0, no limit. |
 | Export | `db/export_credentials.py` writes them into `credentials.toml` beside the comp id's other settings. |
-| Authentication service | Loads them with the comp id, and **writes them back out** whenever it rewrites `credentials.toml` after a credential change. The rewrite once discarded cancel-on-disconnect settings that way ([gateway_ha.md](../availability/gateway_ha.md)); a field it does not write back is silently lost. |
+| Authentication service | Loads them with the comp id, and **writes them back out** whenever it rewrites `credentials.toml` after a credential change. It rewrites the whole file, so a field it does not write back is lost without a word; the cancel-on-disconnect settings and the gateway pinning are written back for the same reason. |
 | `AuthenticationResult` | Three new trailing fields, `i32 max_place_per_second`, `i32 max_amend_per_second`, `i32 max_cancel_per_second`, sent when authentication succeeds. |
 | Gateways | Each session's throttles are created when its logon is granted, from those three values. |
 
@@ -258,13 +258,12 @@ own because the check that deciding about a command never uses the heap replaces
 - the three kinds of command are throttled independently, and so are two sessions;
 - checking a command does not use the heap.
 
-**An end-to-end test in `ha_test.py`, scenario 56,** run against the FIX gateway (the harness does not
-start the binary gateway). It uses the comp id `THROTTLED`, a test fixture of its own, so its limits
+**An end-to-end test in `ha_test.py`, scenario 56,** run against the FIX gateway. It uses the comp id `THROTTLED`, a test fixture of its own, so its limits
 never throttle the comp ids other tests use: a comp id provisioned with a small limit sends more commands
 than the limit within a second, and the test requires the commands beyond the limit to be rejected
 with the throttle's text, and the others accepted. It checks the limit the gateway actually applied,
-not merely that something was rejected: with cancel-on-disconnect, a step that dropped the value left
-the gateway silently on its default, and only a test that checked the number found it. A second comp
+not merely that something was rejected: a step on the route that dropped a value would leave the
+session unlimited, or on some other number, and only a test that checks the number can tell. A second comp
 id with a limit of zero sends the same burst, and nothing is rejected.
 
 ---
