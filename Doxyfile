@@ -1096,6 +1096,7 @@ RECURSIVE              = YES
 
 EXCLUDE                = build \
                          docs/history/sessions.md \
+                         docs/history/framework_notebook.md \
                          docs/framework/summary.md
 
 # The EXCLUDE_SYMLINKS tag can be used to select whether or not files or

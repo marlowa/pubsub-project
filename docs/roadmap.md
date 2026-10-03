@@ -249,7 +249,7 @@ when.
 ### Completed since this list was last revised
 
 Kept as a record of what the "Active / Next" and "Deferred" lists used to hold. The full
-account of each is in [framework_notebook.md](history/framework_notebook.md) under the same item number.
+account of each is in <a href="history/framework_notebook.md">framework_notebook.md</a> under the same item number.
 
 - **Gateway high availability** (gateways) -- built 2026-08-05 and 2026-08-06. Two instances of each
   gateway protocol, members pinned to a primary and a backup, sessions identified by comp id and
@@ -261,7 +261,7 @@ account of each is in [framework_notebook.md](history/framework_notebook.md) und
   2026-10-03. `docs/framework/summary.md` mixed the description of the framework with plans,
   numbered work items and session notes, among them "Arbiter full implementation (slice 8)" in a list
   of work not yet done. The plans, work items and notes are now in
-  [framework_notebook.md](history/framework_notebook.md), which says it is not maintained, and the
+  <a href="history/framework_notebook.md">framework_notebook.md</a>, which says it is not maintained, and the
   summary describes the code as it is.
 
 - **Check the high availability design with TLA+** (high availability) -- done 2026-09-27.
