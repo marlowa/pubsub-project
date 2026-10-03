@@ -142,6 +142,86 @@ execution reports must remain available to a member that asks for them again.
 
 ---
 
+## The leader-follower design
+
+The sequencer, the matching engine and the matching engine publisher each run as **a pair of
+instances**, and so do the arbiters. Every pair follows the same leader-follower design.
+
+### Two instances, two configured identities
+
+Each instance of a pair is configured with an identity that never changes:
+
+- the **primary**, `instance_id` 1, for example `sequencer_primary`;
+- the **secondary**, `instance_id` 2, for example `sequencer_secondary`.
+
+Normally they run on different machines. The identity says which instance is which, nothing more.
+
+### Two runtime roles
+
+At any moment, **one instance holds the leader role and the other holds the follower role**:
+
+- **The leader does the component's work.** The leading sequencer numbers every command, writes it to
+  the log, sends it to the matching engine and routes every report back to its member. The leading
+  matching engine keeps the book and answers every order and cancel. The leading publisher publishes
+  the topics. The active arbiter votes.
+- **The follower keeps itself ready to take over, and does nothing on the order path.** The following
+  sequencer receives every record of the leader's log and writes it to its own. The following
+  matching engine receives every change to the leader's book and applies it to its own copy. Neither
+  sends anything to a matching engine, a gateway or a member.
+
+Either instance can hold either role. The primary is the one that normally leads, but **being the
+primary does not make an instance the leader**: after a failover the secondary leads, and it goes on
+leading until it fails in its turn. Every action a leader takes depends on its role at that moment,
+never on whether it is the primary.
+
+### The life of a pair
+
+**Both start together from nothing.** Each asks the other two voters -- its peer and the active
+arbiter -- to let it lead. The secondary waits one renewal interval longer than the primary before
+asking, so the primary normally asks first, is granted, and adopts the leader role. The secondary,
+having granted the primary its vote, adopts the follower role. Each logs the change: the
+sequencer, the publisher and the arbiter log `role transition unknown -> leader` on one instance and
+`unknown -> follower` on the other; the matching engine logs `adopting LEADER role`.
+
+**Normal running.** The leader renews its lease with both other voters every second. The follower
+grants each renewal; those renewals also tell the follower that the leader is alive. The follower
+receives the leader's state, as above, and waits.
+
+**The leader dies.** The follower stops receiving renewals. Its own promise to the leader runs out
+after one lease period, and so does the arbiter's. The follower then asks to lead, the arbiter grants
+it, and the follower adopts the leader role at the next epoch (`role transition follower -> leader`).
+A sequencer that takes over in this way already holds the whole log, because it received every
+record; a matching engine that takes over catches up with the sequencer before it acts.
+
+**The old leader comes back.** It finds its peer leading. Its request to lead is refused, by its peer,
+which votes for itself, and by the arbiter, which has promised its vote to the peer. It then grants
+its peer's renewals, and adopts the follower role. **Leadership does not move back to the primary on
+its own**; returning it is an operational choice.
+
+**The leader's process dies and its supervisor restarts it within the lease period.** It reads back
+the promises its peer and the arbiter made to it, which it wrote to disk, asks to lead again at once,
+and is granted. It keeps the leader role, and the follower never takes over
+([Process death](process_death.md)).
+
+### How an instance learns its peer's role
+
+When two instances of a pair connect, each sends `StatusQuery` with its identity and epoch, and
+answers the other's with `StatusResponse`, which carries its current role. After that, the lease
+messages carry the decision: a voter's grant to one instance, and the leader's renewals, are what the
+roles rest on.
+
+### Where the design differs between components
+
+- **Sequencer**: the follower's log is identical to the leader's, record for record.
+- **Matching engine**: the follower's book is a copy, and it catches up with the sequencer's log
+  before it acts as leader. What it does with resting orders on taking over is a configured policy.
+- **Matching engine publisher**: it keeps no record of its promises, so a restarted publisher always
+  waits one lease period before voting or asking to lead.
+- **Arbiters**: the leader is called *active* and the follower *passive*, and their third voter is
+  the witness rather than an arbiter.
+
+---
+
 ## How the leader is chosen and kept out when deposed
 
 The full design, its rules, the failure table and the model checking are in

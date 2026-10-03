@@ -395,9 +395,17 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 ---
 ### 12. Leader-Follower Protocol
 
-Each component that needs a single writer runs as a pair: the two sequencers, the two matching
-engines, the two matching engine publishers, and the two arbiters between themselves. **An instance
-leads only while a majority of three voters agrees**: itself, its peer, and a third voter that never
+Each component that needs a single writer runs as **a pair of instances**: the sequencer, the
+matching engine, the matching engine publisher, and the arbiters. Each instance has a fixed
+configured identity -- the **primary** (`instance_id` 1) or the **secondary** (`instance_id` 2) --
+and at any moment **one instance holds the leader role and the other the follower role**. The leader
+does the component's work; the follower receives the leader's state (the sequencer's log, the
+matching engine's book) and does nothing on the order path, ready to take over. The primary normally
+leads, because the secondary gives it a head start when both start together, but either can hold
+either role: after a failover the secondary leads, and the lead does not move back on its own.
+[WAL and High Availability](../availability/wal_and_ha.md) walks through the life of a pair.
+
+How the roles are decided: **an instance leads only while a majority of three voters agrees**: itself, its peer, and a third voter that never
 leads -- the active arbiter for a component pair, the witness for the arbiters. The agreement is a
 lease that runs for a fixed period and must be renewed; a leader whose lease runs out stops acting at
 once. Losing every arbiter does not stop trading, because a leader can renew with its peer alone.
