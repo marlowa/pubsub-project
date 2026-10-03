@@ -919,10 +919,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                 seq_no_to_session_.erase(er_seq_no);
             }
         } else {
-            auto acked_it = wal_acked_seq_nos_.find(gate_seq_no);
-            if (acked_it != wal_acked_seq_nos_.end()) {
-                // Follower already acked this seq_no; forward immediately.
-                wal_acked_seq_nos_.erase(acked_it);
+            if (gate_seq_no <= peer_acked_through_) {
+                // The follower has already acknowledged the record this report depends on.
                 send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
                 note_report_forwarded(routing_identity);
                 release_pdu_payload(message);
@@ -1480,14 +1478,12 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
         stop_running_alone("it has acknowledged every record this leader has written");
     }
 
-    auto it = pending_er_.find(view.seq_no);
-    if (it != pending_er_.end()) {
+    // Every report waiting on a record this acknowledgement covers may now go.
+    const auto covered_end = pending_er_.upper_bound(peer_acked_through_);
+    for (auto it = pending_er_.begin(); it != covered_end; ++it) {
         forward_pending_er(it->second);
-        pending_er_.erase(it);
-    } else {
-        // ER hasn't arrived yet; record the ack so the ER path can forward immediately on arrival.
-        wal_acked_seq_nos_.insert(view.seq_no);
     }
+    pending_er_.erase(pending_er_.begin(), covered_end);
 }
 
 void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -1644,7 +1640,6 @@ void SequencerThread::forward_all_pending_er() {
         forward_pending_er(pending);
     }
     pending_er_.clear();
-    wal_acked_seq_nos_.clear();
 }
 
 void SequencerThread::flush_pending_er() {
@@ -1660,7 +1655,6 @@ void SequencerThread::flush_pending_er() {
         }
         pending_er_.clear();
     }
-    wal_acked_seq_nos_.clear();
 }
 
 void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,

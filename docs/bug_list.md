@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 111 |
-| Open | 42 (28 defects, 14 tasks) |
-| Closed | 69 |
+| Open | 41 (27 defects, 14 tasks) |
+| Closed | 70 |
 | Next id | BUG-0112 |
 
 ## Open bugs by severity
 
-14 high, 23 medium, 5 low.
+14 high, 22 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -49,7 +49,6 @@
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
-| [BUG-0111](#bug_0111) | medium | defect | Acknowledgements of execution report records collect in the leader and are never removed |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -152,27 +151,6 @@ went looking.
 
 ## Open
 
-### BUG-0111: Acknowledgements of execution report records collect in the leader and are never removed {#bug_0111}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Reading `SequencerThread::handle_wal_ack` while building part 4.2 of the change-of-leader design |
-| Impact | The leading sequencer's `wal_acked_seq_nos_` gains one entry for every execution report it logs and replicates, and loses it only when the follower disconnects or the leader starts running as if alone. At 50 million orders a day that is tens of millions of entries in an `std::unordered_set`, allocated on the order path |
-
-**What happens.** The leader logs each execution report under a sequence number of its own and
-replicates it, and the follower acknowledges it like any record. `handle_wal_ack` looks the number up
-in `pending_er_`, which is keyed by the sequence number a report waits on: the order's, for an
-ordinary report. A report record's own number is not a key there, so the acknowledgement is inserted
-into `wal_acked_seq_nos_`, which is cleared only by `forward_all_pending_er`. Nothing else removes it.
-
-**What closing it needs.** Record an acknowledgement only for a number a report may still wait on:
-an order whose report has not yet arrived, or a report that waits on its own record. A test must run
-a sustained load with a follower connected and require the set to stay small.
-
----
 
 
 
@@ -2579,6 +2557,36 @@ Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085
 
 ## Closed
 
+### BUG-0111: Acknowledgements of execution report records collect in the leader and are never removed {#bug_0111}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-03 -- the set is gone; a report is released by comparing its record with the highest acknowledged |
+| How | Reading `SequencerThread::handle_wal_ack` while building part 4.2 of the change-of-leader design |
+| Impact | The leading sequencer's `wal_acked_seq_nos_` gains one entry for every execution report it logs and replicates, and loses it only when the follower disconnects or the leader starts running as if alone. At 50 million orders a day that is tens of millions of entries in an `std::unordered_set`, allocated on the order path |
+
+**What happens.** The leader logs each execution report under a sequence number of its own and
+replicates it, and the follower acknowledges it like any record. `handle_wal_ack` looks the number up
+in `pending_er_`, which is keyed by the sequence number a report waits on: the order's, for an
+ordinary report. A report record's own number is not a key there, so the acknowledgement is inserted
+into `wal_acked_seq_nos_`, which is cleared only by `forward_all_pending_er`. Nothing else removes it.
+
+**What was fixed.** The set is removed. The follower acknowledges records in the order it receives
+them, and the leader already keeps the highest number acknowledged (`peer_acked_through_`), so a
+report whose record is at or below it is forwarded at once, and any other report waits in
+`pending_er_` until an acknowledgement covers it; each acknowledgement releases every waiting report it
+covers. `pending_er_` became an ordered `std::multimap`, so that covered reports come off the front and
+more than one report may wait on one record, which the `unordered_map` it replaced could not hold: a
+second report waiting on the same record was silently dropped by `emplace`.
+
+**How it is checked.** Nothing is left to grow. Scenarios 16 and 21, which require every cancel report
+of a promoted matching engine to reach the member, and those reports wait on their own record, pass,
+as do 1, 19, 22, 42, 59 and 60.
+
+---
 ### BUG-0108: A following sequencer forgets the leading matching engine, and when it leads the venue has no engine {#bug_0108}
 
 | | |

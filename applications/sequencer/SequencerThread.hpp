@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -272,14 +273,15 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         bool erase_routing_entry{false};
     };
 
-    std::unordered_map<int64_t, PendingEr> pending_er_; // seq_no -> buffered ER
-    std::unordered_set<int64_t> wal_acked_seq_nos_;     // acked but ER not yet received
+    // Reports waiting for the follower to acknowledge the record they depend on, keyed by that
+    // record's sequence number and ordered by it, so that an acknowledgement releases every report
+    // it covers from the front. More than one report may wait on one record.
+    std::multimap<int64_t, PendingEr> pending_er_;
 
-    // The highest sequence number the follower has acknowledged. Only ever advances.
-    //
-    // Distinct from wal_acked_seq_nos_ above, which holds individual acks still waiting for
-    // their execution report and is emptied as they arrive. This is a floor: everything at or
-    // below it is on two machines. It is the first of the positions the log's retention will
+    // The highest sequence number the follower has acknowledged. Only ever advances. The follower
+    // acknowledges records in the order it receives them, so everything at or below this is on two
+    // machines, and a report whose record is at or below it can be forwarded at once. That is why no
+    // record of individual acknowledgements is kept (BUG-0111). It is the first of the positions the log's retention will
     // be anchored to -- see the snapshot timer for why nothing is reclaimed yet.
     int64_t peer_acked_through_{0};
 
