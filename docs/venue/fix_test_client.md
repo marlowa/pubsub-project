@@ -154,9 +154,9 @@ Opens on `http://localhost:8081`.
 - FIX Test Client detailed design — see `java/fix-test-client/DESIGN.md` in the source tree
 - [Secure Communications](../operations/secure_comms.md) — TLS 1.2 cap and its cause
 - [Order Gateway](fix_order_gateway.md) — the gateway this client connects to; its
-  [`fix_codec` migration](fix_order_gateway.md#gw_fix_codec_migration) is what motivated
-  the Advanced NOS Fields form
-- [FIX Codec](../fix/codec.md) — the codec library behind that migration
+  [use of `fix_codec`](fix_order_gateway.md#gw_fix_codec_migration) makes the fuller
+  NewOrderSingle cheap to read, which the Advanced NOS Fields form exercises
+- [FIX Codec](../fix/codec.md) — the codec library the gateway uses
 
 The client itself is a Java application. Its internal design is documented alongside the code, in
 `java/fix-test-client/DESIGN.md`.

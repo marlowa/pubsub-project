@@ -17,29 +17,22 @@ The library has two halves that meet at a single generated header:
   field accessor, and a checksum helper — that parses and builds FIX messages
   without allocating on any path.
 
-It is the first of a likely small family of exchange-protocol codecs; a binary
-protocol built on the framework's PDU framing is intended later as a sibling.
+The binary order gateway's protocol is built on the framework's own PDU framing and
+message definitions, not on this library.
 
 ---
 
 ## Status
 
-Complete and green:
+The generator, the dictionary package and the runtime headers are complete. The tests are in
+`libraries/fix_codec/tests/` (GoogleTest, run by `scripts/build.py` as `fix_codec_tests`) and
+`python/tests/test_fix_dictionary.py` (pytest); the `fix_dictionary` package is in the pylint gate.
 
-- Generator, dictionary package, and runtime headers are done.
-- 21 GoogleTest cases (`libraries/fix_codec/tests/`) and 6 pytest cases
-  (`python/tests/test_fix_dictionary.py`) pass.
-- `fix_codec_tests` is wired into `build.py`'s C++ test run; the `fix_dictionary`
-  Python package is in the pylint gate (10.00/10); `check_standards` and
-  clang-format are clean.
-
-**In use inbound, not outbound.** The `fix_order_gateway` frames and validates what it
-receives with this library, and takes its `Tag::` / `MsgType::` from the generated
-dictionary. What it *sends* is still hand-written by `FixSerialiser` / `FixErEncoder`;
-swapping the writer is a later pass, and would also remove the per-message `std::string`
-allocation `validate_checksum` used to incur. What was migrated, what was not, and the
-knock-on effect on how much of a large message like NewOrderSingle the system exercises,
-are in [Order Gateway → Migration to `fix_codec`](../venue/fix_order_gateway.md#gw_fix_codec_migration).
+**In use in both directions.** The `fix_order_gateway` frames and checks what it receives with
+`FixMessageReader` and `FixMessageValidator`, writes what it sends with `FixMessageWriter`, and
+takes its `Tag::` and `MsgType::` from the generated dictionary. How the gateway uses it, and what
+decides how much of a large message like NewOrderSingle reaches the matching engine, are in
+[Order Gateway → How the gateway uses `fix_codec`](../venue/fix_order_gateway.md#gw_fix_codec_migration).
 
 ---
 
@@ -171,9 +164,8 @@ buffer is alive and unmodified. Typed accessors convert on demand (hffix's
 
 ### `FixMessageReader.hpp`
 
-Constructed over a borrowed `(const char*, size_t)` window — deliberately the
-same shape `FixParser::feed` receives from a `MirroredBuffer`, so a later gateway
-migration is a drop-in. It frames **exactly one** message at the window start and
+Constructed over a borrowed `(const char*, size_t)` window, the shape the gateway
+receives from a `MirroredBuffer`. It frames **exactly one** message at the window start and
 reports a `Status`:
 
 | Status | Meaning |
@@ -302,11 +294,11 @@ field.as_string_view() == raw;   // read by exact byte count, not by scanning fo
 Internally the reader's iterator consults the generated `is_data_length_tag(95)` /
 `data_field_for_length_tag(95)` to decide this.
 
-### What the gateway migration did
+### How the gateway reads an order
 
-The [FIX order gateway migration](../venue/fix_order_gateway.md#gw_fix_codec_migration)
-is precisely this reader replacing the hand-written parser. Populating the order
-PDU from an inbound NewOrderSingle is:
+The [FIX order gateway](../venue/fix_order_gateway.md#gw_fix_codec_migration) reads
+every inbound message with this reader. Populating the order PDU from an inbound
+NewOrderSingle is:
 
 ```cpp
 FixMessageReader reader(window.data(), window.size());
@@ -393,5 +385,5 @@ change *what* is generated, edit the emitter and add a pytest case in
   `fix_codec` is the FIX-specific application-tier counterpart, not a replacement.
 - [Secure Communications](../operations/secure_comms.md) — `scram_crypto`, the sibling
   application-tier library.
-- [Order Gateway](../venue/fix_order_gateway.md) — the consumer that will be
-  migrated onto this library.
+- [Order Gateway](../venue/fix_order_gateway.md) — the gateway that reads and writes FIX
+  with this library.

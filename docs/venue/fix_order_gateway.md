@@ -2,269 +2,177 @@
 
 ## Role
 
-The FIX order gateway is the FIX 5.0 SP2 session layer. It accepts raw FIX byte streams from
-FIX clients (`RawBytesProtocolHandler`, port 9879), parses inbound messages, authenticates
-clients via SCRAM-SHA-256, encodes order PDUs for the sequencer, and decodes execution
-report PDUs from the sequencer back into outbound FIX messages.
+The FIX order gateway is the venue's FIX 5.0 SP2 session layer. It accepts FIX connections from
+members, in plain TCP on port 9879 and with TLS on port 9880 for instance `a` (9881 and 9882 for
+instance `b`), authenticates each member with SCRAM-SHA-256, checks every order and cancel, and
+sends those it accepts to the sequencers. It turns the execution reports the leading sequencer
+sends back into FIX ExecutionReports and OrderCancelRejects for the member's session.
 
-The gateway holds no business state beyond what is needed for the current FIX session. The
-`(SenderCompID, TargetCompID)` → `ClOrdID` routing map lives in the sequencer's WAL, not
-in the gateway. This makes the gateway near-stateless and safe to replace or restart without
-losing ER routing capability.
+What the gateway holds is the state of the sessions connected to it: each session's message
+numbering, its open orders (for cancel-on-disconnect), and its throttles. It holds nothing the
+venue needs after the gateway dies. Where each session can be reached, and which session placed
+each order, are held by the sequencer, so a member that reconnects to the other instance of the
+gateway finds its orders and reports there; see [Gateway High Availability](../availability/gateway_ha.md).
 
-## FIX Session Management
+## FIX session management
 
-The gateway uses `RawBytesProtocolHandler` for the FIX listener because FIX 5.0 SP2 is an
-ASCII text protocol. `FixOrderGatewayThread` implements `on_raw_socket_message()` to run a
-hand-written FIX parser (`parse_fields`, `try_extract_message`). Outbound FIX messages are
-serialised by `FixErEncoder`, which writes directly to a caller-supplied fixed-size buffer
-via a `FixWireWriter` cursor — no heap allocation on the ER path.
+The FIX listener uses `RawBytesProtocolHandler` (`TlsRawBytesProtocolHandler` on the TLS port),
+because FIX is a text protocol whose message boundaries the framework does not know. The reactor
+hands the gateway's thread the raw bytes, and `FixParser` frames and checks them (below). Outbound
+messages are written by `FixErEncoder` and `FixSerialiser` straight into a fixed-size buffer, with
+no heap allocation.
 
-**Startup order does not matter.** The sequencer dials this gateway's ER inbound listener
-(`er_listen_port`, 7010 by default) and retries every two seconds until it answers, without
-limit. Starting the sequencer first therefore costs at most one retry interval before reports
-can flow, and loses nothing: there are no orders yet to report on.
+Each session has 16 MiB of receive buffer (`raw_buffer_capacity`). When it is three quarters full
+the reactor stops reading the socket until the gateway has taken enough out, so a member sending
+faster than the gateway can process is slowed by TCP rather than disconnected.
 
-This used to be written as a requirement that the gateway start first, which the retry it was
-written beside had already made untrue. The venue is routinely started the other way round --
-`perf_run.py` starts the sequencers before the gateways -- and works.
+**Startup order does not matter.** Each sequencer connects to the gateway's execution report
+listener (`er_listen_port`, 11010 for instance `a`) and retries every two seconds until it answers,
+without limit. Starting the sequencers first costs at most one retry interval before reports can
+flow, and loses nothing, because there are no orders yet to report on.
 
-The one thing to know is what a *later* disconnection costs, which is a different matter: the
-sequencer drops execution reports addressed to a gateway that is not connected rather than
-rerouting them to the surviving instance of the same protocol. That is a real gap, asserted by
-scenario 18 of `scripts/ha_test.py`, and it is about session handover rather than startup ---
-see [Gateway HA](../availability/gateway_ha.md).
+**Every order goes to both sequencers.** With `ha_enabled = true`, the gateway sends each order and
+cancel to the primary and the secondary sequencer. Only the leading sequencer acts on it; the
+follower discards its copy. With `ha_enabled = false` only the primary is used.
 
-**Dual sequencer publishing:** `forward_pdu_to_sequencers()` sends the encoded PDU to both
-the primary and secondary sequencer connections when `ha_enabled = true`. With
-`ha_enabled = false` (the default for single-instance dev runs) only the primary connection
-is used.
-
-## Migration to `fix_codec`: inbound done, outbound not {#gw_fix_codec_migration}
+## How the gateway uses `fix_codec` {#gw_fix_codec_migration}
 
 <!-- verify: present applications/fix_order_gateway/FixParser.cpp "fix_codec::FixMessageReader" -->
 <!-- verify: present applications/fix_order_gateway/FixParser.cpp "FixMessageValidator" -->
-**The inbound half is migrated.** What arrives on a FIX session is framed by a zero-copy
-reader and checked against a generated dictionary before anything dispatches it. The tags and
-message types come from the same generated source, so `FixMessage.hpp` no longer carries
-tables of its own:
-
 <!-- verify: present applications/fix_order_gateway/FixMessage.hpp "namespace Tag = fix_codec::tag;" -->
+<!-- verify: present applications/fix_order_gateway/FixErEncoder.cpp "fix_codec::FixMessageWriter" -->
+<!-- verify: exists applications/fix_order_gateway/FixSerialiser.hpp -->
+<!-- verify: exists applications/fix_order_gateway/FixErEncoder.hpp -->
+The gateway reads and writes FIX with the [FIX codec](../fix/codec.md) library. The tags and
+message types come from the dictionary generated from the FIX data dictionary, so the gateway has
+no tables of its own:
 
 ```cpp
 namespace MsgType = fix_codec::msg_type;   // FixMessage.hpp
 namespace Tag     = fix_codec::tag;
 ```
 
-<!-- verify: exists applications/fix_order_gateway/FixSerialiser.hpp -->
-<!-- verify: exists applications/fix_order_gateway/FixErEncoder.hpp -->
-**The outbound half is not.** `FixSerialiser` and `FixErEncoder` still hand-write what the
-gateway sends, and they were deliberately out of scope: swapping the writer is a separate
-piece of work with its own risk, and doing both at once would have made a parity failure hard
-to attribute. `FixSession` and `FixCapture` are untouched, neither being a codec concern.
+- **Inbound:** `FixParser` frames each message with `fix_codec::FixMessageReader` and checks it with
+  `FixMessageValidator` before anything acts on it.
+- **Outbound:** `FixErEncoder` (execution reports and cancel rejects) and `FixSerialiser` (session
+  messages) write through `fix_codec::FixMessageWriter`, which computes the body length and checksum
+  in place.
 
-**What landed, and when.** Each stage built and was tested on its own.
+### Framing
 
-| Stage | What it did | Landed |
+`FixParser::feed` takes every complete message from the receive buffer. It constructs a
+`FixMessageReader` at the current position; on a valid message, or one whose checksum is wrong, it
+moves past the message; on an incomplete one it stops and leaves the bytes for the next read; on a
+malformed one it skips one byte and tries again, so the stream resynchronises past garbage. It
+returns the number of bytes consumed, which the gateway commits back to the reactor.
+`FixMessageReader::error()` gives the specific reason a message was malformed, for the log.
+
+A well-framed message with no MsgType (tag 35) is discarded and logged at Info. It cannot be
+rejected, because a Reject names the message type it refers to and there is none to name, and a
+received message must never be dropped without a trace.
+
+### Checks, and how a failure is answered
+
+Two layers of checks, in this order:
+
+| Layer | Checks | Answer |
 |---|---|---|
-| 0 — wiring | `fix_codec` on the link line, `fix_dictionary_generated` as a build dependency | done |
-| 1 — tag tables | the hand-written `Tag::`/`MsgType::` deleted in favour of the generated ones | done |
-| 3 — inbound framing | `FixParser` became a stream driver around `fix_codec::FixMessageReader` | done |
-| 4 — validation | `FixMessageValidator` at the dispatch point, enforcing | `767a971`, 2026-07-22 |
-| 2 — outbound writer | swap `FixSerialiser` onto the codec | **not done** |
-| 5 — deletion | remove `FixSerialiser` / `FixErEncoder` once 2 is done | **not done** |
+| `FixMessageValidator`, before dispatch | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13) | A FIX **Reject (35=3)**: `373` the reason, `371` the tag, `372` the message type, `45` the message's sequence number, `58` a description. The session stays up and the message is not acted on. A failed Logon disconnects instead |
+| The order and cancel handlers | The lengths of `ClOrdID`, `Symbol` and `OrderQty`; whether the venue is accepting orders; the session's throttles | An order is answered with an `ExecutionReport` with OrdStatus Rejected; a cancel with an `OrderCancelReject` that says the order is still open. The text names what was wrong |
 
-Validation **enforces immediately** — a non-conforming inbound message is rejected rather than
-logged and accepted — which the capture-driven reconciliation below established was safe for
-the test client of the day. That reconciliation is a record of what was checked then, not a
-standing guarantee: it must be re-run if the client's field set or the dictionary changes.
+A message missing a field the dictionary requires is answered with a Reject, not dropped. A cancel
+does not need `OrderQty`. The refusals while the venue is not accepting orders are described in
+[Order acceptance](../availability/order_acceptance.md), and the throttles in
+[Gateway throttles](gateway_throttles.md).
 
-The rest of this section describes how the inbound path works, and is a description of the
-code as it stands rather than a plan.
+The binary order gateway makes the same checks of the venue's rules, so an order is refused the
+same way whichever gateway it arrives at.
 
-### Framing: from `FixParser` to a stream driver
+### Which order fields flow end to end
 
-`FixParser::feed` extracts *every* complete message from the MirroredBuffer window and
-resynchronises byte-by-byte past garbage; `FixMessageReader` frames *one* message at the
-window start and reports `Malformed` / `Incomplete`. So the loop and the resync stayed, in a
-thin driver around the reader:
+The generated dictionary covers every FIX 5.0 SP2 field, so reading another field of a
+NewOrderSingle is one call (`reader.find(fix_codec::tag::MinQty)`) and costs no copy. Whether a
+field reaches the matching engine is still decided in three places:
 
-- Loop: construct a `FixMessageReader` at the cursor; on `Valid`/`ChecksumError` advance by
-  `message_size()`; on `Incomplete` stop (leave the partial bytes for the next `recv`); on
-  `Malformed` skip one byte and retry — reproducing `FixParser`'s current resync.
-- Return the total consumed byte count for the `commit_raw_bytes` contract exactly as today.
-- `FixMessageReader::error()` supplies a specific per-cause reason for the `Malformed` log
-  line, in place of the hand-written warnings it replaced.
+1. **The gateway** reads the field and puts it in the order message.
+2. **The order message** in `fix_orders.dsl` carries it. It already carries `price`, `stop_px`,
+   `time_in_force`, `account`, `ex_destination`, `exec_inst`, `min_qty`, `max_floor`,
+   `expire_time` and `text`, among others.
+3. **Something sends it,** so that a test can exercise it. The
+   [FIX Test Client](fix_test_client.md#ftc_advanced_nos) has an Advanced section on its order form
+   for the optional fields, and raw FIX and Groovy scripting for anything else.
 
-A well-framed message carrying no MsgType (tag 35) is neither validated nor rejected: it is
-discarded and logged at Info. It cannot be rejected, because a `35=3` names the message it
-refers to and there is nothing to name; and a received message must never be dropped without
-a trace for support to find.
+## Authentication
 
-### Validation layer and reject mapping
+SCRAM-SHA-256 authentication runs on each FIX Logon:
 
-Protocol validation (fix_codec) sits in front of the gateway's existing business validation:
+1. The gateway receives the Logon and takes its `SenderCompID`.
+2. It sends `AuthenticationRequest` (PDU 500) to the authentication service, instance `a` on port
+   11070 or, failing that, instance `b` on 11071.
+3. It receives `AuthenticationChallenge` (PDU 501) and passes the server nonce, salt and iteration
+   count to the member.
+4. The member returns its proof, and the gateway sends `AuthenticationProof` (PDU 502).
+5. It receives `AuthenticationResult` (PDU 503) and verifies the `ServerSignature`, which proves the
+   service is genuine.
+6. It checks that the member is provisioned for this gateway instance, and applies the member's
+   cancel-on-disconnect settings and throttles, all of which arrive in the `AuthenticationResult`.
+7. On success it completes the Logon and tells the sequencers where the session is
+   (`SessionBound`). On failure it sends a Logout, saying why, and disconnects.
 
-| Layer | Checks | Response |
-|---|---|---|
-| `FixMessageValidator` (pre-dispatch) | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13) | FIX **Reject (35=3)** built from the `FixReject`: `373`=reason, `371`=`ref_tag`, `372`=`ref_msg_type`, `45`=RefSeqNum, `58`=`describe()` text. Session stays up; the message is not dispatched. |
-| existing `handle_*` (unchanged) | symbol/qty length, ClOrdID limit, sequencer availability, risk | existing `ExecutionReport(Rejected)` / `BusinessReject` |
+The `request_id` in the four messages is the gateway's connection id for the session, so the gateway
+can match each answer to the right logon when several are in progress at once.
 
-The gateway builds the `35=3` itself (`FixOrderGatewayThread.cpp`, `set(Tag::MsgType,
-MsgType::Reject)`) and no longer silently drops malformed inbound messages. Session-level
-messages (Logon) keep disconnect-on-failure semantics rather than emitting `35=3`.
+## FIX capture
 
-### Capture-driven reconciliation (why enforce-immediately is safe)
+`FixCapture` records raw FIX bytes to a file for later analysis, at three points: inbound messages
+after framing, outbound session messages, and outbound execution reports. With capture disabled,
+which is the default, each point is one comparison of a null pointer.
 
-Before committing to enforce-immediately, the test client's real traffic was validated
-against the generated dictionary. A live NOS round-trip (client `APM001` → gateway → matching
-engine → ExecutionReport back) was captured and every field checked:
-
-```
-8=FIXT.1.1 9=131 35=D 34=5 49=APM001 52=20260721-...218 56=GATEWAY
-11=LIVECAP-1 21=1 38=100 40=2 44=100 54=1 55=AAPL 60=20260721-...217 10=124
-```
-
-Result: **no rejects** under all six rules for Logon (A), NewOrderSingle (D), and
-OrderCancelRequest (F). In particular the dictionary-required NOS tags the gateway does not
-read — notably `TransactTime` (60) — *are* sent by the client (QuickFIX plus `FixHelper` /
-`MessagesHandler`), and QuickFIX renders `OrderQty`/`Price` as plain integers (`38=100`,
-`44=100`) which pass the decimal-format check. Enforcing immediately therefore did not reject
-the client as it stood on 2026-07-21. This reconciliation must be re-run if the client's field
-set or the dictionary changes.
-
-### Impact on large, complex messages (NewOrderSingle)
-
-This is the concern worth stating plainly, because it is easy to over- or under-estimate what
-the codec buys.
-
-**What `fix_codec` changes.** Its generated dictionary covers the *entire* FIX 5.0 SP2 field
-set, so the gateway is no longer limited by which tags someone remembered to hand-add to
-`FixMessage.hpp`. Reading a further NewOrderSingle field becomes a one-liner
-(`reader.find(fix_codec::tag::MinQty)`) rather than a table edit, and the read is zero-copy.
-For a large message like a NOS — many optional, conditionally-required fields — this makes
-*fuller* coverage cheap where it was previously fiddly.
-
-**What it does not change.** The codec is only the mechanism. Whether a given NOS field flows
-end to end is still a three-layer decision, and the codec touches only the first:
-
-1. **Gateway** — parse, validate, and map the field into the order PDU (the `fix_codec` work).
-2. **DSL topic** — the `NewOrderSingle` message in `fix_orders.dsl` must carry the
-   field. It already carries most of them: `price`, `stop_px`, `time_in_force`, `account`,
-   `ex_destination`, `exec_inst`, `min_qty`, `max_floor`, `expire_time`, `text`. So for those,
-   only steps 1 and 3 remain.
-3. **A producer** — something must actually set the field for a test to exercise it.
-
-**Impact on the blotter entry screen.** The [FIX Test Client](fix_test_client.md) is
-Java/QuickFIX and does **not** use `fix_codec` (a C++ library), so the migration does not
-touch the entry screen directly. The effect is indirect but real: by making richer NOS
-handling cheap on the gateway side, the migration shifts the limiting factor onto the entry
-form. Today the NOS send form exposes only **ClOrdID, Symbol, Side, OrdType, Qty, Price** —
-a small subset of what the topic already carries. Once the gateway can accept the fuller NOS,
-that simple form becomes the thing that can no longer drive it. The recommended response,
-tracked as a follow-up to the migration rather than part of it:
-
-- Keep the six-field form as the default fast path for the common order.
-- Add an **Advanced fields** collapsible section exposing the optional tags
-  (`TimeInForce`, `Account`, `ExDestination`, `StopPx`, `ExpireTime`, `ExecInst`, `MinQty`,
-  `MaxFloor`, `Text`) for interactive testing.
-- Lean on the form's existing **raw-FIX** escape hatch and Groovy scripting for exhaustive or
-  malformed-input coverage, so the UI does not have to grow a control for every tag.
-
-That form change was made, and is described in
-[FIX Test Client → Advanced NOS Fields](fix_test_client.md#ftc_advanced_nos).
-
-The sequencing that fell out of this: migrate the gateway to `fix_codec` first (mechanism and
-full-dictionary access), then widen NOS field coverage as a coordinated change across the
-gateway map, the DSL topic (where a field is not already present), and the entry form.
-
-## Authentication Flow
-
-SCRAM-SHA-256 authentication is triggered on each FIX Logon:
-
-1. Gateway receives FIX Logon; extracts `SenderCompID`.
-2. Sends `AuthenticationRequest` (PDU 500) to the authentication service (port 7070
-   primary, 7071 secondary).
-3. Receives `AuthenticationChallenge` (PDU 501); forwards server nonce, salt, and
-   iterations to the FIX client.
-4. FIX client returns proof; gateway sends `AuthenticationProof` (PDU 502).
-5. Receives `AuthenticationResult` (PDU 503); verifies `ServerSignature`.
-6. On success: completes FIX Logon, registers the session.
-7. On failure: sends FIX Logout and disconnects.
-
-`request_id` in the SCRAM PDUs carries the gateway's `ConnectionID` for the FIX session,
-allowing the gateway to correlate the result with the correct pending session even if
-multiple logons are in progress concurrently.
-
-## FIX Capture
-
-`FixCapture` records raw FIX bytes to a binary file for post-hoc analysis.
-
-**Three capture points:**
-- **Inbound** — after `parser.feed()`, captures consumed bytes of complete FIX messages.
-- **Outbound session messages** — after `FixSerialiser` serialises a session-level message.
-- **Outbound ERs** — after `FixErEncoder` encodes an execution report.
-
-When `capture_` is `nullptr` (capture disabled, the default), all three call sites are
-guarded by `if (capture_ != nullptr)` — zero overhead when not in use.
-
-**Hot-path design — SPSC ring buffer, no heap allocation:**
-
-`capture(Direction, data, size, timestamp_ns)` packs the record directly into a
-pre-allocated byte buffer using `memcpy`. There is no mutex, no heap allocation,
-and no file I/O on the gateway thread. A background writer thread drains the buffer and
-writes to disk.
-
-The backing store is a `std::vector<uint8_t>` (`ring_` in `FixCapture.hpp`) sized to
-`ring_bytes` at construction and **never resized or reallocated**. The ring-buffer behaviour
-— wrap-around, concurrent access — is implemented on top of it via two cache-line-aligned
-atomics: `write_offset_` (written by the producer only) and `read_offset_` (written by the
-consumer only). Actual positions are `offset % capacity_`. This is classic SPSC lock-free
-synchronisation — no CAS, no contention.
-
-When a record would not fit contiguously before the end of the ring, a sentinel record
-(`payload_size = 0xFFFFFFFF`) is written at the current position and both pointers wrap
-to the start. This ensures records are always stored linearly and the writer can pass a
-direct pointer into the ring to `fwrite()` without copying.
-
-If the ring fills (writer thread falling behind), `capture()` drops the record and logs
-a Warning. The gateway thread is never blocked.
+**No heap allocation and no blocking on the gateway's thread.** `capture()` copies each record into
+a buffer allocated once at start (`ring_bytes`, 64 MB by default) and never resized. A background
+thread drains the buffer to disk. The two sides coordinate through two atomic positions on separate
+cache lines, one written only by the gateway's thread and one only by the writer, so neither waits
+for the other. A record that would not fit before the end of the buffer is preceded by a marker
+(`payload_size = 0xFFFFFFFF`) and written at the start, so every record is contiguous and the writer
+can pass a pointer straight to `fwrite()`. If the buffer fills because the writer has fallen behind,
+the record is dropped and a Warning is logged; the gateway's thread is never held up.
 
 **Record format (little-endian):**
 ```
 uint32_t payload_size  -- byte count of raw FIX data
-int64_t  timestamp_ns  -- nanoseconds since Unix epoch (wall clock)
+int64_t  timestamp_ns  -- nanoseconds since the Unix epoch (wall clock)
 uint8_t  direction     -- 0 = inbound, 1 = outbound
 uint8_t  data[...]     -- raw FIX wire bytes
 ```
-Each record is padded to 4-byte alignment. The file format is identical to what was
-written when the ring-buffer implementation replaced the original mutex design.
-
-**Config:** `[fix_capture] enabled`, `file`, and `ring_bytes` in `fix_order_gateway.toml`.
-Disabled by default in `dev.toml`.
-
-`read_fix_capture.py` is available for inspecting capture files in production.
+Each record is padded to a multiple of four bytes. `scripts/read_fix_capture.py` prints a capture
+file.
 
 ## Configuration
 
-Key `fix_order_gateway.toml` sections:
+The main sections of `fix_order_gateway_a.toml` and `_b.toml`; the values come from the environment
+file.
 
-| Key | Purpose |
-|-----|---------|
-| `[network] fix_listener_port` | Inbound FIX port (default 9879) |
-| `[network] sequencer_primary_*` | Host/port for sequencer primary order channel (port 7001) |
-| `[network] sequencer_secondary_*` | Host/port for sequencer secondary (port 7002; used when `ha_enabled=true`) |
-| `[network] er_listener_port` | Inbound ER port from sequencer (default 7010) |
-| `[network] auth_service_a_*` | Authentication service endpoint A (port 7070) |
-| `[network] auth_service_b_*` | Authentication service endpoint B (port 7071) |
-| `[fix_capture] enabled / file` | FIX capture on/off and output file path |
-| `[fix_capture] ring_bytes` | Ring buffer capacity in bytes (default 64 MB); increase if the writer thread falls behind under heavy load |
-| `ha_enabled` | When false, secondary sequencer connect is skipped |
+| Section and key | Purpose |
+|---|---|
+| `[network] listen_port`, `tls_listen_port` | The member listeners, plain and TLS (9879 and 9880 for instance `a`) |
+| `[network] er_listen_port` | Where the sequencers connect to send execution reports (11010 for instance `a`) |
+| `[network] raw_buffer_capacity` | Receive buffer per session, 16 MiB |
+| `[sequencer] primary_host/port`, `secondary_host/port`, `ha_enabled` | The two sequencers' order listeners (11001 and 11002); with `ha_enabled = false` only the primary is used |
+| `[authentication_service] host/port`, `secondary_host/port` | The two authentication service instances (11070 and 11071) |
+| `[gateway] instance_id` | Which instance of the FIX gateway this is, stamped on every order |
+| `[fix_tls] enabled`, `cert`, `key` | The TLS listener and its certificate |
+| `[cancel_on_disconnect] enabled`, `grace_period` | The defaults, which each comp id may override; see [Gateway High Availability](../availability/gateway_ha.md) |
+| `[fix_limits] max_symbol_length`, `max_order_qty_length` | The field lengths the gateway accepts |
+| `[timeouts] logon_timeout`, `scram_auth_timeout` | How long a logon, and its authentication, may take |
+| `[fix_capture] enabled`, `file`, `ring_bytes` | FIX capture, off by default |
+| `[open_order_pool]` | The pool from which open-order entries are taken, so tracking an order allocates nothing |
+| `[metrics]` | This process's Prometheus endpoint |
 
 ## See Also
 
-- [FIX Codec](../fix/codec.md) — the library this gateway's FIX layer will migrate onto
-- [FIX Test Client](fix_test_client.md) — the NOS entry form / blotter driven against this gateway
+- [FIX Codec](../fix/codec.md) — the library the gateway reads and writes FIX with
+- [FIX Test Client](fix_test_client.md) — the order entry form and blotter driven against this gateway
+- [Gateway throttles](gateway_throttles.md) — how many orders, amends and cancels a session may send each second
 - [Secure Communications](../operations/secure_comms.md) — SCRAM-SHA-256 protocol detail
 - [Socket Communications](../framework/socket_comms.md) — `RawBytesProtocolHandler`, `PduFramer`/`PduParser`
 - [Gateway High Availability](../availability/gateway_ha.md) — two instances, provisioning, reconnecting to a backup, resend, and cancel-on-disconnect
