@@ -27,7 +27,7 @@ pass once the work is done. It proposes no code until the recommendation is agre
 
 Sections 2 and 3 describe today's behaviour and the requirements. Section 4 takes the five parts in
 turn. Section 5 walks through a change of leader under the recommended design. Sections 6 to 9 give
-the costs, the open questions, the tests and the order of the work.
+the costs, the decisions and open questions, the tests and the order of the work.
 
 ## 2. What happens today
 
@@ -283,27 +283,38 @@ sent the command again to the new leader under 4.3. Nothing is lost by discardin
 The venue has no wire compatibility to keep before release 1.0.0, so each new field is added as a new
 field.
 
-## 7. Open questions
+## 7. Decisions, and open questions
 
-1. **Whether the cost of 4.2 option A is acceptable,** once it is measured. If not, option B, and the
-   double failure it raises.
-2. **How large the day's identifier record can grow.** R-0119 requires the sequencer to refuse an
-   identifier used earlier that day on the same session, and 4.3 depends on that record. The venue has
-   a few thousand sessions at most, but orders are many: ten million identifiers in a day, held as a
-   128-bit hash of the comp id and the `ClOrdID`, is 160 MB of hashes and roughly twice that once the
-   table's own overhead is included.
-   The expected daily order count decides whether that is acceptable, or whether the record is kept
-   in another form. The record must also survive a restart, so it is rebuilt from the log at start.
-3. **The leading sequencer and the leading matching engine failing together.** Under the
+### Decided
+
+- **The cost of 4.2 option A is accepted, subject to measurement.** The added latency is measured
+  first, by the method in `docs/operations/latency_findings.md`, and option A is kept if the
+  measurement confirms the estimate in section 4.2. If it does not, the choice is revisited with the
+  figure in hand.
+- **The venue plans for 50 million orders a day, and is tested with 100 million.** That sizes the
+  day's identifier record that 4.3 depends on (R-0119). Held as a 128-bit hash of the comp id and the
+  `ClOrdID`, 50 million identifiers are 800 MB of hashes, and roughly 1.6 GB once a hash table's own
+  overhead is included; the 100 million test is roughly 3.2 GB. That is acceptable only if it is
+  planned for, so the form of the record is designed when 4.3 is built. The ways to make it smaller
+  are a table per session keyed on a 64-bit hash of the `ClOrdID` alone, which halves it at the cost
+  of a small chance of refusing a genuine order as a repeat, which must then be stated; and holding it
+  in a table that grows without stalling the thread that owns it, such as `IncrementalRehashMap`. The
+  record must also be rebuilt from the log at start, and how long that takes at 50 million records
+  is to be measured. The order book's own growth at this volume is
+  [BUG-0028](../bug_list.md#bug_0028).
+
+### Open
+
+1. **The leading sequencer and the leading matching engine failing together.** Under the
    recommendation, the promoted engine catches up from the new leader's log, as it does now. A command
    the old leader held alone was never applied by either engine, and the gateway sends it again. This
    needs a scenario before it is relied on.
-4. **A leader running alone.** While no follower is connected, the leader sends commands to the engine
+2. **A leader running alone.** While no follower is connected, the leader sends commands to the engine
    at once, so its log alone holds them. If it then dies, the instance that takes over has an older
    log. A voter granting a lease does not compare the two instances' logs, so nothing stops the stale
    instance leading. Raft prevents this by refusing to vote for a candidate whose log is behind. That is
    a change to the lease rules (`majority_leases.md`) and needs its own design.
-5. **A gateway that dies during the change of leader.** Its store dies with it. Its members recover by
+3. **A gateway that dies during the change of leader.** Its store dies with it. Its members recover by
    resubmitting (R-0003), which depends on the duplicate check, as now.
 
 ## 8. Tests
