@@ -18,8 +18,13 @@
 #
 #  EPOCH SEMANTICS
 #  ---------------
-#  The epoch is a generation counter. Every receiver checks it on
-#  every PDU and discards anything from an older generation.
+#  The epoch is a generation counter, one value for each leadership
+#  generation. It travels on the lease messages and on RoleAnnouncement,
+#  not on orders or reports. A voter refuses a request for an epoch
+#  below the highest it has granted, and the sequencer refuses a
+#  matching engine's announcement older than one it has accepted. What
+#  keeps a deposed leader's orders and reports from being acted on is
+#  its own lease ending, which stops it sending.
 #
 #  Rules:
 #    1. A node that has never taken part starts with epoch 0.

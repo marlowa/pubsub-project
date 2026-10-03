@@ -185,11 +185,10 @@ port had drifted by exactly 4000 before that check was written and read the real
   9. matching_engine          -- order listener 11020; connects out to the sequencers' 11021/11022
 
 Failover timing:
-  Both the sequencer and arbiter followers arm a 15 s peer_heartbeat_timeout
-  when they adopt the follower/passive role.  Each received heartbeat (sent
-  every 5 s) resets the timer.  After a SIGKILL the TCP RST closes all peer
-  connections immediately; the running timeout fires at its remaining value
-  (worst case 15 s).
+  A follower takes over once the promises it and the arbiter made to the old leader have
+  run out: about one lease period plus one renewal interval (3 s and 1 s in the dev
+  environment's [shared] section).  Scenario 1 measures about five and a half seconds,
+  including the new leader's first orders.  See docs/availability/majority_leases.md.
 """
 
 from __future__ import annotations
@@ -689,8 +688,8 @@ class VerifyStep(NamedTuple):
     """
     Poll a log file for a line containing ALL of the given markers.
 
-    Used to verify intermediate PDU-exchange steps (e.g. ArbitrationReport
-    sent, ArbitrationDecision received) without relying solely on the final
+    Used to verify intermediate steps of a change of leader (for example a lease
+    request sent and a grant received) without relying solely on the final
     role-transition marker.
 
     log_name:    base name of the log file in log_dir
@@ -2007,9 +2006,9 @@ _SCENARIOS: list[Scenario] = [
                 restart_timeout=30.0,
                 settle_secs=2.0,
             ),
-            # The promotion timeout is ~15s (ha_timing.heartbeat_timeout_seconds). Waiting 25
-            # leaves no room for argument about whether the secondary simply had not got
-            # round to it.
+            # A follower takes over within about one lease period plus one renewal interval,
+            # a few seconds. Waiting 25 leaves no room for argument about whether the secondary
+            # simply had not got round to it.
             AssertAbsentStep(
                 log_name="matching_engine_secondary.log",
                 markers=("MatchingEngineThread:", "adopting LEADER role"),

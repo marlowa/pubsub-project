@@ -28,7 +28,7 @@ A low-latency, multi-threaded, event-driven application framework using the **re
 (the MEP publishes topics; `topic_probe` and the `TopicSubscriberThread` base subscribe) —
 see [Pub/Sub](../pubsub/pubsub.md)
 - Timers (timerfd, via epoll)
-- High availability via primary/secondary instance pairs with arbitration
+- High availability via instance pairs, each led by whichever instance holds a majority lease
 - A DSL-based binary serialisation layer replacing protobuf/SBE
 - Sample applications demonstrating framework usage: a simple FIX order gateway (FIX 5.0 SP2 client connectivity, SCRAM authentication) and a matching engine (order book, execution report generation), forming a minimal exchange system skeleton
 
@@ -395,91 +395,30 @@ Python code generator producing C++17 headers for zero-copy binary encode/decode
 ---
 ### 12. Leader-Follower Protocol
 
-#### Overview
+Each component that needs a single writer runs as a pair: the two sequencers, the two matching
+engines, the two matching engine publishers, and the two arbiters between themselves. **An instance
+leads only while a majority of three voters agrees**: itself, its peer, and a third voter that never
+leads -- the active arbiter for a component pair, the witness for the arbiters. The agreement is a
+lease that runs for a fixed period and must be renewed; a leader whose lease runs out stops acting at
+once. Losing every arbiter does not stop trading, because a leader can renew with its peer alone.
 
-This is a bespoke, intentionally simple protocol. There is no need for a full consensus algorithm such as Raft or Paxos. The deployment topology is fixed: exactly two participating nodes per site (one configured as primary, one as secondary), with a third node (the arbiter, itself HA) to break ties at startup. Leader election is deterministic — the node with the lowest `instance_id` wins. The arbiter never becomes a leader or follower; it only resolves startup ambiguity when both nodes are undecided.
-
-#### Topology
-
-Four instances in total, each with a unique integer `instance_id` configured in `ReactorConfiguration`. "Main" refers to the site; the four instances run on four different machines at the main site:
-
-| Instance | Site | Role in election |
-|---|---|---|
-| Node A (primary) | Main | Participant |
-| Node B (secondary) | Main | Participant |
-| Node C (primary) | Main | Arbiter |
-| Node D (secondary) | Main | Arbiter |
-
-The arbiter has primary and secondary instances to avoid single-machine SPOF for the arbiter itself.
-Note: a previous early design, now rejected, was to use arbiters at the DR site.
-
-For the sequencer-specific HA deployment described in the "WAL and HA Design" section below, a third arbiter pool member is added: a *witness* machine that holds no state but votes in elections of which of the two arbiters is currently active. The witness is deployed in a failure-independent location (different power, different switch, ideally different network segment) so that no single failure can take out an arbiter and the witness simultaneously. The witness is not part of the generic DSL leader-follower protocol described here; it is an addition specific to the arbiter pool's own internal HA. See "Arbiter PSA topology" in the WAL and HA Design section for protocol details.
-
-#### PDU Summary
+Every leadership generation has an epoch number, which also records which instance leads in it, so
+no two instances ever lead at the same epoch. The epoch travels on the lease messages and on the
+matching engine's announcement of its role.
 
 | Message | ID | Purpose |
 |---|---|---|
-| `StatusQuery` | 100 | Identity + epoch announced on TCP connect |
-| `StatusResponse` | 101 | Identity confirmation + peer echo + current role |
-| `Heartbeat` | 102 | Liveness detection + epoch propagation |
-| `ArbitrationReport` | 200 | Sent when arbitration needed |
-| `ArbitrationDecision` | 201 | authoritative tie-break + epoch assignment |
+| `StatusQuery` | 100 | Identity and epoch, sent when two instances connect |
+| `StatusResponse` | 101 | Identity, epoch and current role, in reply |
+| `RoleAnnouncement` | 117 | A matching engine tells the sequencers which role it holds and at which epoch |
+| `LeaseRequest` | 130 | Ask a voter for a lease, or renew one |
+| `LeaseGrant` | 131 | A voter grants it |
+| `LeaseRefusal` | 132 | A voter refuses, saying the highest epoch it has granted |
+| `ArbiterStateRecord` | 400 | The active arbiter tells the passive one the highest epoch granted in each group |
 
-#### Epoch Semantics
-
-The epoch is a generation counter that identifies which leadership generation the cluster is currently in. A *stale node* is a node that has been isolated from the cluster (e.g. due to a crash or network partition) and has since missed one or more leadership transitions. When it rejoins, its epoch is lower than the current generation's epoch. The epoch comparison allows the cluster to recognise and correctly demote a returning node without manual intervention, regardless of how it believes it left.
-
-Rules:
-
-1. A node that has never participated in an election starts with epoch 0.
-2. At startup, when arbitration is used, the arbiter assigns the epoch in `ArbitrationDecision`. Both nodes adopt this value. Because the arbiter is itself HA (PSA+witness, see "Arbiter PSA topology" in the WAL and HA Design section), the epoch counter is durable across arbiter restarts: the arbiter's primary→secondary replication keeps the most recent epoch state on both full arbiter instances, and on arbiter restart the surviving instance restores from its replicated copy. The arbiter does not lose track of epochs when an arbiter process restarts.
-3. When a follower detects leader death, it does NOT promote itself unilaterally. It contacts the arbiter and requests promotion via `ArbitrationReport`. The arbiter, having confirmed the previous leader's lease has expired, issues an `ArbitrationDecision` granting the requesting node the leader role and assigning the next epoch. The follower adopts the leader role only after receiving this decision. This prevents split-brain in network-partition scenarios where the follower can no longer see the leader but the leader is still alive on the other side of the partition. (An earlier design had the follower promote unilaterally and increment its own epoch by 1; that design was rejected because it permits split-brain when the arbiter is reachable from both partition halves.)
-4. When a restarting node connects and receives a `StatusResponse`, it compares epochs. If the peer's epoch is higher, the restarting node is stale and adopts the follower role immediately without contacting arbiter.
-5. A heartbeat carrying an epoch lower than the receiver's own epoch indicates a stale sender; the receiver logs a warning and ignores the heartbeat.
-
-#### Startup Election Flow
-
-1. On startup, each node attempts TCP connection to its peer (A→B, B→A).
-2. On connection, both sides immediately send `StatusQuery` (identity + epoch).
-3. On receiving `StatusQuery`, each side replies with `StatusResponse` including its `current_role`.
-4. **If the peer's `StatusResponse` carries `Role::leader`:** the connecting node adopts `Role::follower` immediately. No arbiter contact needed.
-5. **If the peer's `StatusResponse` carries `Role::unknown`:** both sides are undecided. Both send `ArbitrationReport` to arbiter (primary first, secondary as fallback).
-6. arbiter receives both reports and issues `ArbitrationDecision` assigning leader and follower deterministically by lowest `instance_id`, and sets the epoch for this generation.
-7. Both nodes adopt their assigned roles and the arbiter connection is closed.
-
-#### Post-Election Steady State
-
-- The peer-to-peer TCP connection remains open with `Heartbeat` messages sent at regular intervals in both directions.
-- Heartbeats carry `instance_id` and `epoch` for liveness detection and stale-node detection.
-- If the **follower** dies: the leader logs a warning. No other action is taken.
-- If the **leader** dies: the follower promotes itself (see Leader Death below).
-
-#### Restart Flow
-
-When a node restarts it connects to the peer and exchanges `StatusQuery`/`StatusResponse`. If the peer's `StatusResponse` carries `Role::leader` and a higher epoch, the restarting node adopts `Role::follower` without contacting arbiter.
-
-#### Leader Death and Follower Promotion
-
-On heartbeat loss:
-1. The surviving node first attempts to reconnect to the peer.
-2. If reconnection succeeds: exchange `StatusQuery`/`StatusResponse`; the epoch resolves roles as normal.
-3. If reconnection fails, the peer is presumed dead. The surviving node sends `ArbitrationReport` to the arbiter requesting promotion. The arbiter checks whether the previous leader's lease has expired; if so, it issues `ArbitrationDecision` granting leadership and assigning the next epoch. The surviving node adopts the leader role only after receiving the decision.
-4. If the arbiter is unreachable, the surviving node cannot promote. It enters a degraded waiting state and continues retrying the arbiter. The system is unavailable for new orders during this window. This is the correct behaviour: without arbiter confirmation that the previous leader is gone, promoting unilaterally risks split-brain.
-
-#### Split-Brain Protection
-
-**Normal startup with arbiter reachable:** arbiter is the sole authority and assigns exactly one leader. Split-brain is impossible.
-
-**One node already established:** The epoch difference immediately resolves this — the restarting node unconditionally adopts follower role.
-
-**Network partition (both nodes alive, link down):** Neither node can promote itself unilaterally (per rule 3). Whichever node can still reach the arbiter requests promotion; the arbiter grants if the other node's lease has expired. If both nodes can reach the arbiter, the arbiter grants to one and refuses the other. If neither can reach the arbiter, both enter degraded waiting state and the system is unavailable until arbiter contact is restored. Split-brain is not possible because no node ever assumes leader role without an `ArbitrationDecision` (or, on cold start, a deterministic arbiter-mediated tie-break).
-
-#### Open Design Questions
-
-- **HA has not considered DR (Disaster Recovery) yet; the design at the moment is for the main site only.**
-- **Heartbeat interval and loss threshold:** Implemented. `heartbeat_interval_seconds` (default 5 s) and `heartbeat_timeout_seconds` (default 15 s) are configurable fields in `SequencerConfiguration` and `ArbiterConfiguration`. The ha_test.py HA scenarios rely on these values: scenarios 1–15 all exercise the heartbeat timeout path and confirm correct failover behaviour within the expected window.
-
----
+The rules, why each is needed, the failure table and the model checking are in
+[Majority leases](../availability/majority_leases.md); the code is `applications/fix_common/PairLeaseAgent.hpp`
+and the classes it uses.
 
 ### 13. Authentication Service and SCRAM-SHA-256
 
@@ -718,7 +657,7 @@ summary (e.g. "session 16", "session 25") to indicate when work was completed.
 - `fix_order_gateway` — FIX session layer complete; PDU encoding to sequencer complete; ER routing back to fix8 complete. Session 17 adds `ha_enabled` flag (default false): when false, secondary sequencer connect is skipped, `forward_pdu_to_sequencers` sends only to primary, and secondary host/port are not required in the toml. When `ha_enabled=true`, dual-publish to primary and secondary is restored. `forward_pdu_to_sequencers` name kept plural — the dual-publish branch returns when leader-follower is fully live.
 - `sequencer` — Slices 1–7 complete. PDU forwarding (NOS, OCR, ER), topology, re-encode fixes all from session 15. WAL (`SequencerWal`: mmap'd segments, snapshot, CRC32, replay on restart), seqNo on wire, `routing_comp_id` stamping, and leader-follower state machine (`Role::unknown/leader/follower`, `adopt_role`, `peer_heartbeat_timeout`, epoch, fence file) from sessions covered by the session-17 entry. Slice 7 (session 18): network WAL replication — leader streams `WalRecord` (id=103) PDUs to follower over peer TCP; follower appends to its WAL and replies `WalAck` (id=104); leader buffers ERs in `pending_er_` keyed by seq_no and gates gateway ER emission on WalAck; follower WAL written exclusively from WalRecord (not from direct gateway PDU); `flush_pending_er()` releases all buffered ERs on peer disconnect (degraded mode). `ha_enabled=false` (default): sequencer immediately adopts `Role::leader` in `on_initial_event` and skips arbiter/peer connects. Both TOMLs now have `ha_enabled=true`.
 - `matching_engine` — complete for the round-trip stub. `on_framework_pdu_message` decodes inbound `NewOrderSingle` PDUs (session 15) and emits a fully-filled `ExecutionReport` over the existing outbound `sequencer_er_conn_id_`. The ER populates every field that `SequencerThread`'s ER decoder reads. No real order book or matching — every order becomes a single fill at its limit price (or a zero sentinel for market orders). `OrderID` and `ExecID` are generated as `ME-ORD-N` / `ME-EXEC-N`. `OrderCancelRequest` is not yet handled (logs and drops at the `else` branch); cancel handling is a small follow-up.
-- `arbiter` — complete. Implements the `ArbitrationReport`/`ArbitrationDecision` PDU exchange. End-to-end arbiter-mediated election verified by ha_test.py scenario 15 (session 2026-06-03).
+- `arbiter` — complete. The third voter in each component pair's majority lease, and one of the three voters deciding which arbiter is active. `ha_test.py` scenario 15 checks each step of a follower being granted the lead.
 - PostgreSQL schema and migration tooling — complete (session 22). `db/create_db.py` idempotent setup script; Liquibase 5.x changelog; three tables: `pubsub_firm`, `pubsub_comp_id` (SCRAM fields, account status, audit timestamps), `pubsub_comp_id_gateway_permission`. Table prefix configurable (default `pubsub_`).
 - Java admin service (`java/admin-service/`) — complete (sessions 22–23). Javalin 6 + Freemarker 2.3 + plain JDBC, no CSS framework. Full CRUD for firms, comp_ids, and gateway permissions. Password set path: derives SCRAM-SHA-256 → writes to DB → pushes plaintext password to auth service via `SetCredentialRequest` (PDU 510) over TLS. Credential revocation: `RemoveCredentialRequest` (PDU 512) sent when a firm or comp_id is disabled, locked, or deleted. Maven build with Checkstyle, SpotBugs (exclude filter for DI false positives), JaCoCo (80% threshold), and OWASP Dependency Check. Logging: SLF4J API + Logback 1.2.13 (not Log4j2 — Logback is the native SLF4J implementation and needs only one dependency; Log4j2 requires an additional `log4j-slf4j-impl` bridge adapter with no benefit in this context; Javalin 6.3.0 depends on SLF4J 1.x so Logback 1.5.x is incompatible — 1.2.13 is the correct version). `logback.xml` suppresses Javalin/Jetty/HikariCP noise to WARN. `FreemarkerRenderer` registered via `config.fileRenderer()` (Javalin 6 requires explicit registration). Fat JAR built with maven-shade-plugin including signature-file exclusion and ServicesResourceTransformer. Service starts cleanly and responds on port 8080. Admin UI authentication: Jenkins-style login system backed by a TOML file (`admin_users.toml`) — no database dependency. BCrypt-hashed passwords (jbcrypt 0.4, cost 12). Two roles: ADMIN (full CRUD) and VIEWER (read-only; POST routes blocked with 403 by `AuthFilter`). First-run setup wizard creates the initial ADMIN account. Force-password-change flag set on admin-created accounts; user is redirected to `/change-password` on next login. Session auth via Jetty `SessionHandler`; `AuthFilter` runs as Javalin `before()` handler. Styling is a single hand-written stylesheet, `static/desktop.css`, bundled in the JAR — no CDN dependency; works in air-gapped corporate environments. Pico.css was removed 2026-07-29. Three branding properties in `application.properties`: `brand.name` (product name shown in titles and nav), `brand.logo-url` (logo image in nav and login page), `brand.css-file` (path to a CSS file inlined into every page for colour overrides). See `java/admin-service/README.md` for deployment and branding instructions. Credential lifecycle gap: re-enabling a firm or comp_id, or unlocking a comp_id, does NOT automatically restore the auth service credential (PDU 510 requires the plaintext password, which is never stored); the operator must reset the password afterwards. The Edit forms display a warning when this applies; the full procedure is documented in the README "Credential Lifecycle" section.
 - `db/export_credentials.py` — complete (session 23). Exports SCRAM credentials from `pubsub_comp_id` (enabled comp_ids from enabled firms, not locked) to `credentials.toml` in auth service `[[credential]]` TOML format. Uses `psql --csv --tuples-only` with `PGPASSWORD` env var. Atomic write via temp file + rename.
@@ -1674,8 +1613,8 @@ What is decided, what is leaning, what is open.
 
 **Decided:**
 
-- Per-component HA, no central broker. Each component pair (sequencer pair, ME pair, etc.) has its own primary-secondary instances, its own state replication, its own arbitrated failover. Components do not share a runtime broker; they share framework-level HA *primitives* (data structures and protocols) but compose them independently.
-- Lease + epoch arbitration. The arbiter holds leadership state; leaders renew via heartbeat; failover requires arbiter consultation, not unilateral promotion. (See "Leader-Follower Protocol" subsystem section above for the DSL-level mechanism.)
+- Per-component HA, no central broker. Each component pair (sequencer pair, ME pair, etc.) has its own primary-secondary instances, its own state replication, its own failover decided by majority lease. Components do not share a runtime broker; they share framework-level HA *primitives* (data structures and protocols) but compose them independently.
+- Leadership by majority lease. An instance leads only while two of three voters -- itself, its peer and the active arbiter -- agree; no instance promotes itself. See [Majority leases](../availability/majority_leases.md).
 - The arbiter is itself HA, in a Primary+Secondary+Witness (PSA) topology. Two full arbiter instances each hold a copy of the leadership-state map; one third small witness machine holds no state but votes on which of the two arbiters is currently active. The witness machine must be in a failure-independent location relative to the two arbiters: different power supply, different network switch, ideally different network segment. Three votes total means a majority is two; this prevents split-brain in network partitions. Three machines is the structural minimum and stays at three -- adding more witnesses degrades the design rather than improving it (four votes means three needed for majority, so any single failure becomes catastrophic). See "Arbiter PSA topology" section below for the protocol mechanics.
 - WAL is segmented, mmap'd, single-writer. Format: `[ magic | length | seqNo | payload | checksum ]`. Replay scans from offset 0 and stops at first failure. Tail corruption equivalent to a clean crash before commit.
 - No `fsync` per WAL append. Disk durability is out-of-band (segment rotation, snapshot writes, periodic flusher). Cross-machine durability comes from replication, not from disk.

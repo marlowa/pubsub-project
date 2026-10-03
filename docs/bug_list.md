@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 102 |
-| Open | 38 (24 defects, 14 tasks) |
+| Bugs recorded | 103 |
+| Open | 39 (25 defects, 14 tasks) |
 | Closed | 64 |
-| Next id | BUG-0103 |
+| Next id | BUG-0104 |
 
 ## Open bugs by severity
 
-12 high, 23 medium, 3 low.
+13 high, 23 medium, 3 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
+| [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -147,6 +148,50 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0103: Orders sent while the sequencers change leader are lost without a reply {#bug_0103}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| How | Checking the claim in `wal_and_ha.md` that a gateway buffers orders across a change of sequencer leader, during the documentation audit |
+| Impact | A member's orders taken by the gateway in the seconds between a leading sequencer dying and its follower taking over are never placed and never answered. The member is not told they were refused, so it cannot tell them from orders still on their way |
+
+**What was measured.** `ha_test.py` scenario 1 on 2026-10-03: 1,000 orders, then 20,000 more sent as the
+leading sequencer was killed, then 1,000 after the follower had taken over 2.6 seconds later. The
+gateway received all 22,000 (`GW-PROGRESS ... nos_received=22000`), and the matching engine accepted
+2,000 (`accepted NOS` appears 2,000 times in its log). For the 20,000 sent during the change the
+gateway received no report of any kind, acceptance or rejection: its last progress line says
+`awaiting=20000`. The scenario passed, because its target counts only the orders sent before and after.
+Its help text says of those orders: "Some may be lost during failover; the Phase 5 target adjusts
+automatically."
+
+**Why.** Each gateway sends every order to both sequencers and keeps no copy
+(`FixOrderGatewayThread::forward_order_in_envelope`, `BinaryOrderGatewayThread::forward_envelope_to_sequencers`).
+A follower discards the copy it receives, because a follower's log is written only from its leader's
+stream so that the two logs stay identical (`SequencerThread`, the order envelope branch). Between the
+leader's death and the follower taking the lead, the follower is still a follower, so every order in
+that window is discarded by the only sequencer still running, and nothing else holds it.
+
+**Reports are affected in the same way (read in the code, not yet measured).** The matching engine
+sends each report to both sequencers. A report sent after the leading sequencer has died, or that it
+received and had not yet forwarded, reaches the follower while it is still following, and a follower
+discards reports (`SequencerThread`, the report branch). A sequencer that takes the lead does not ask
+the engine for reports it may have missed (`SequencerThread::adopt_role`), so the member is not sent
+them. A test must count those too.
+
+**What is not decided.** Which of the remedies fits: the gateway holding each order until the
+sequencer's report for it arrives and sending it again to the new leader, which needs the sequencer
+to recognise a resent order; the follower keeping the orders it discards for one lease period and
+appending those its new leader's log does not hold; or the gateway refusing, with a reply, the orders
+it sent while it knew no leading sequencer. Each has a cost, and the choice needs a design.
+
+**What a test must do.** Count the orders sent during the change, and require every one of them to be
+answered, accepted or refused.
+
+---
 
 ### BUG-0102: The reactor fairness test fails about one run in five {#bug_0102}
 

@@ -432,7 +432,7 @@ the database that is the source of truth for credentials. A comp id gains a prim
 gateway instance, and the gateways learn their own assignments the same way they learn credentials.
 
 This interacts with the already-decided **one comp id may hold a session only once venue-wide**
-(recorded in `pubsub_itc_fw_summary.md`). Pinning narrows that problem usefully: with only two
+(recorded in `docs/framework/summary.md`). Pinning narrows that problem usefully: with only two
 instances able to host a given session, the duplicate check has two places to look rather than N.
 It still needs the sequencer as the shared authority, and it is still a cross-component protocol
 change; it is not solved by pinning, only made smaller.

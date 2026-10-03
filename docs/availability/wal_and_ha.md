@@ -1,699 +1,470 @@
 # WAL and High Availability {#wal_and_ha}
 
-## Design Philosophy
+This document is the overview of how the venue keeps trading when a process or a machine fails. It
+says, for each component, what is duplicated, how the duplicate takes over, and what a member sees.
+The detail lives in the documents it links to:
 
-The design follows the convergent pattern that Aeron Cluster, Kafka, Raft, and database
-checkpointing all arrive at: **separate the irreversible decision (WAL commit) from its
-replayable effects (ME state, ERs, FIX output).** The WAL is authoritative; everything
-downstream is reconstructable from it. Followers observe commits, never infer them.
-Leadership decides who may append; the WAL decides what already happened. These two concerns
-must never leak into each other.
-
----
-
-## HA Is Component-Specific {#ha_component_specific}
-
-There is **no single, generic HA mechanism** in this framework. Each component has a
-different failure model, so each composes HA differently. The framework provides
-reusable *primitives* — the WAL data structure, the point-to-point replication
-channel, the arbiter-client protocol, and epoch/fencing discipline — but a component
-uses only the primitives its failure model needs. In particular, **the WAL is
-central to the sequencer and matching engine but is not used by the gateway or the
-authentication service at all.**
-
-| Component | HA model | Elected leader? | Uses the WAL? | Failover trigger | Client-visible impact |
-|-----------|----------|:---------------:|:-------------:|------------------|----------------------|
-| **Sequencer** | Arbiter-elected leader/follower | Yes (arbiter grant) | Yes — owns the authoritative WAL | Peer-heartbeat loss → arbiter grant | Brief cutover; gateway buffers orders across it |
-| **Matching engine** | Arbiter-elected leader/follower | Yes (arbiter grant) | No WAL of its own; **reconciles from the sequencer's WAL** on promotion | Replication-channel TCP EOF → promotion timer → arbiter grant | Cancel-on-failover: outstanding orders cancelled; client resubmits |
-| **Arbiter** | Primary/secondary + witness (PSA quorum) | Yes (witness vote) | No (small replicated leadership cell) | Active-arbiter heartbeat loss + witness confirm | None — off the data path |
-| **Order gateway** | Single instance today; session-pinned primary/backup planned (see [Gateway HA](gateway_ha.md)) | No | No | FIX client reconnects to the session's backup instance | FIX reconnect (seconds) |
-| **Authentication service** | Active/active, caller-selected | No | No — the database is the source of truth | Caller (gateway) falls to the other endpoint | None — the surviving instance is already current |
-
-Reading the table by column makes the point precise:
-
-- **Only three components elect a leader** (sequencer, ME, arbiter). They are the
-  ones with single-writer state whose hand-off must be atomic, so they connect to
-  the arbiter pool. The gateway and auth service elect nothing.
-- **Only the sequencer and ME are on the WAL path.** The sequencer owns it; the ME
-  has no WAL and reconciles from the sequencer's. The gateway is near-stateless (its
-  routing state lives in the sequencer's WAL); the auth service's state lives in the
-  database, synced by the admin service, not by a WAL.
-- **The failover *trigger* and the *client impact* both differ per component.** A
-  sequencer failover is a brief invisible cutover; an ME failover cancels outstanding
-  orders; a gateway failover is a client-driven FIX reconnect; an auth failover is
-  invisible.
-
-The rest of this document covers each component's model in turn. The
-`primary`/`secondary` and `leader`/`follower` glossary below applies **only** to the
-arbiter-elected components. The gateway (a singleton per FIX endpoint, named
-`fix_order_gateway` with no suffix) and the auth service (active/active instances named
-`a`/`b`) deliberately do not use those terms — see their sections.
+| Subject | Document |
+|---|---|
+| Which instance of a pair leads, and why two never lead at once | [Majority leases](majority_leases.md) |
+| The write-ahead log itself: format, segments, replay | [Write-Ahead Log](../durability/wal.md) |
+| How the matching engine's open orders survive a restart | [Open-order checkpoint](../durability/open_order_checkpoint.md) |
+| How a member keeps trading when a gateway dies | [Gateway High Availability](gateway_ha.md) |
+| What the venue does when no matching engine is running | [Order acceptance](order_acceptance.md) |
+| A process that dies and is restarted on the same machine | [Process death](process_death.md) |
 
 ---
 
-## Glossary
+## Design philosophy
 
-Two pairs of terms with strict, non-overlapping meanings. Confusing them is a recognised
-source of bugs in HA systems.
-
-| Term | Meaning |
-|------|---------|
-| **primary** | Configured identity; the instance with the lower `instance_id`. Set at deploy time; never changes for the life of the instance. Used only for deterministic tiebreaking on cold start. |
-| **secondary** | Configured identity; the instance with the higher `instance_id`. |
-| **leader** | Runtime role; holds the current lease grant from the arbiter. Either configured instance can be leader at any moment. All commit and forward actions check the lease, not the configured identity. |
-| **follower** | Runtime role; the other instance. Tails the leader's WAL; does not send to ME or gateway. |
-| **active / standby** | **NOT USED.** These terms ambiguously refer to either configured identity or runtime role and are a permanent source of confusion. Always use one of the two more specific terms above. |
-
-In the happy path, primary is leader and secondary is follower. After a primary failure and
-failover, secondary becomes leader (still configured as secondary). A graceful failback is
-an operational choice, not automatic.
+The sequencer's write-ahead log is the venue's record of what happened. Every order is written to it
+before anything acts on it, and everything downstream of it -- the matching engine's book, the
+execution reports, what a gateway sends a member -- can be rebuilt from it. Two questions are kept
+apart: which instance may write the log, which is the leadership protocol, and what the log already
+holds, which no leadership change can alter. A follower learns what has been committed by receiving
+the records, never by inferring it.
 
 ---
 
-## Write-Ahead Log (WAL)
+## HA is component-specific {#ha_component_specific}
 
-The WAL data structure — its on-disk format, segmentation, single-writer rule, the
-scan-from-zero / stop-on-damage replay model, and the cursor abstraction — is described in
-its own document, **[Write-Ahead Log](../durability/wal.md)**. It is a shared primitive: the topic
-publisher builds pub/sub fan-out on the same structure (see [Pub/Sub](../pubsub/pubsub.md)).
+There is no single mechanism. Each component's failure model is different, so each uses only the
+pieces it needs.
 
-This section covers only what the *sequencer's* high availability adds on top of that
-primitive: how a commit is made durable across two machines, how records replicate to the
-follower, and how epochs fence stale writers. The sequencer is the WAL's single writer while
-it holds leadership; on mid-log corruption it halts and the replica with a clean prefix is
-promoted.
+| Component | How it is duplicated | Who decides who leads | Uses the write-ahead log | What a member sees on failover |
+|---|---|---|---|---|
+| **Sequencer** | A pair: leader and follower | A majority of three voters: the two sequencers and the active arbiter | Yes: the leader writes it, the follower receives every record | A pause of a few seconds. Orders sent during it are lost ([BUG-0103](../bug_list.md#bug_0103)) |
+| **Matching engine** | A pair: leader and follower, the follower holding a copy of the book | A majority of three voters, as for the sequencer | It has no log of its own; it catches up from the sequencer's | A pause. What happens to resting orders is a configured policy (below) |
+| **Matching engine publisher** | A pair, as for the sequencer | A majority of three voters | It reads the sequencer's log | A subscriber reconnects and asks for records from the sequence number it had reached |
+| **Arbiters** | Two arbiters and a witness | A majority of the two arbiters and the witness | No | None: arbiters are not on the order path |
+| **Order gateways** | Two instances of each protocol; each member session is provisioned to a primary and a backup instance | Nobody: the member chooses which instance to connect to | No | The member reconnects to its other instance |
+| **Authentication service** | Two instances, both serving | Nobody: the gateway uses whichever answers | No: the database is the record | None for a session already logged on |
 
-### Two-Tier Commit
+Three things follow from the table:
 
-"Commit" has two distinct levels, both required:
+- **Only the pairs elect a leader**: the sequencers, the matching engines, the publishers, and the
+  two arbiters between themselves. They hold state with a single writer, so the hand-over must leave
+  exactly one writer at every moment.
+- **Only the sequencer writes the log**, and only the sequencers, the matching engines and the
+  publishers read it. A gateway keeps the open orders of its own sessions and nothing more; the
+  authentication service's state is in the database.
+- **What a member sees differs by component**: a short pause for a sequencer or matching engine, a
+  reconnection for a gateway, nothing for an authentication service or an arbiter.
 
-| Level | Mechanism | Gates |
-|-------|-----------|-------|
-| **Locally durable** | `store-release` on the commit offset | Leader's send to the ME |
-| **Replicated** | Follower acks the record over the replication channel | Leader's emission of the ER to the gateway |
+### Glossary
 
-The ER is held back from the gateway until replication has acked, so the gateway never
-observes an order whose existence is held by only one machine. This gives two-machine
-durability without the overhead of Raft's quorum vote; there is only one follower and
-replication is point-to-point streaming.
+Two pairs of words with separate meanings. They apply only to the components that elect a leader.
 
-**No `fsync` per commit.** Disk durability is out-of-band (segment rotation, snapshot
-writes, periodic flusher). Cross-machine durability comes from replication, not from disk.
-`fsync` per commit would cost 10–100+ µs and is unnecessary.
-
-### Replication Channel
-
-The leader streams WAL records to the follower over a dedicated TCP connection — separate
-from the order/ER data channels and from the arbiter control channel. The follower writes
-records to its own local WAL (own disk, own machine) and sends per-record acks back. The
-leader uses the highest acked seqNo to gate ER emission.
-
-Followers do not infer commits from heartbeat or timing; they observe records arriving on
-the replication channel. The follower's role is strictly passive: it tails, it acks, it
-does not send to the ME, it does not send to the gateway. Connections from gateway and ME
-to the follower exist (so they are pre-warmed for promotion) but carry no data while the
-follower is passive.
-
-**The sequencer-to-follower replication channel is not droppable.** If the follower lags,
-the leader cannot drop it without violating the two-machine durability rule. Instead, the
-leader stops emitting ERs (the gateway sees order receipt but no fills until replication
-catches up). If the follower fails entirely, leadership decisions become
-single-machine-durable until a new follower is paired in, which is itself an
-arbiter-mediated event.
-
-### Epoch Propagation on Every PDU
-
-Every cross-component PDU carries the sender's view of the relevant component pair's
-current leader-epoch. This is fencing applied to every message, not just commit decisions.
-The receiver has three responses:
-
-| Received epoch | Response |
-|----------------|----------|
-| Same/expected | Accept and process normally |
-| Lower than receiver's | Sender is stale; discard with warning. Sender will detect its staleness on its next arbiter heartbeat. |
-| Higher than receiver's | Receiver might be stale. Trigger immediate re-validation with the arbiter; hold the PDU until the answer is known. If receiver's view is stale, update and process. If the claim is from a rogue sender, discard. |
-
-The case that motivates silent-discard being insufficient: ME-secondary believes it has been
-promoted and emits cancel ERs with its claimed epoch. If the sequencer silently discards
-(because it still thinks ME-primary is leader), the cancels are lost without anyone learning
-of the split-brain. Silent discard and silent accept are both wrong; re-validation is the
-only correct response to a higher-than-expected epoch.
-
-### Per-Connection Isolation and Backpressure
-
-Each TCP connection has its own outbound queue and non-blocking send semantics. A stalled
-peer cannot block sends to a fast peer:
-- If ME-secondary stalls, its send cannot block the sequencer's send to ME-primary.
-- If one gateway stalls, the others continue to receive ERs.
-
-A peer that exceeds a configured lag threshold is dropped (TCP reset), forcing
-reconnect-and-replay. The sequencer-to-follower replication channel is the only exception
-(not droppable; see above).
+| Word | Meaning |
+|---|---|
+| **primary** | The instance configured with the lower `instance_id`. Fixed at deployment. It starts first and so normally leads, but nothing else depends on it. |
+| **secondary** | The instance configured with the higher `instance_id`. |
+| **leader** | The instance that currently holds a majority lease. Either instance can be the leader. Everything a leader does on the order path depends on the lease, never on being the primary. |
+| **follower** | The other instance. It receives the leader's state and sends nothing on the order path. |
+| **active / standby** | Not used, because they are read as either of the pairs above. Between the two arbiters, the one that votes is called *active* and the other *passive*. |
 
 ---
 
-## Leader-Follower Protocol
+## Write-ahead log
 
-### PDU Summary
+The log's format, its segments, the single-writer rule and replay are described in
+[Write-Ahead Log](../durability/wal.md). This section covers what the sequencer's pair adds.
 
-| Message | ID | Purpose |
-|---------|-----|---------|
-| `StatusQuery` | 100 | Identity + epoch announced on TCP connect |
-| `StatusResponse` | 101 | Identity confirmation + peer echo + current role |
-| `Heartbeat` | 102 | Liveness detection + epoch propagation |
-| `ArbitrationReport` | 200 | Sent to arbiter when arbitration is needed |
-| `ArbitrationDecision` | 201 | Authoritative tie-break + epoch assignment from arbiter |
+### Two levels of commit
 
-### Epoch Semantics
+"Committed" means two different things, and both are needed before a member is told anything.
 
-The epoch is a generation counter identifying which leadership generation the cluster is
-currently in. A stale node has missed one or more leadership transitions and has a lower
-epoch than the current generation.
+| Level | What makes it so | What it releases |
+|---|---|---|
+| **Written on the leader** | The record has been appended to the leading sequencer's log | The order is sent on to the matching engine |
+| **Held on both machines** | The following sequencer has received the record, written it to its own log, and acknowledged it (`WalAck`) | The execution report for that order is sent to the member's gateway |
 
-Rules:
-1. A node that has never participated starts with epoch 0.
-2. The arbiter assigns the epoch in `ArbitrationDecision`. Both nodes adopt this value. The
-   arbiter is itself HA (PSA+witness, see below) so the epoch is durable across arbiter
-   restarts.
-3. A follower detecting leader death does **not** promote unilaterally. It contacts the
-   arbiter via `ArbitrationReport`; the arbiter checks lease expiry and issues an
-   `ArbitrationDecision` granting the new epoch. Unilateral promotion permits split-brain
-   when the arbiter is reachable from both partition halves.
-4. A restarting node that receives a `StatusResponse` with a higher epoch immediately adopts
-   follower role — no arbiter contact needed.
-5. A heartbeat carrying a lower epoch than the receiver's is from a stale sender; logged as
-   a warning and ignored.
+The leader holds back each execution report until the follower has acknowledged the record of the
+order the report answers. So a member is never told about an order that only one machine holds: if
+the leader's machine died a moment after the report went out, the follower would still have the
+order in its log, and would take over with it.
 
-### Startup Election Flow
+This gives durability on two machines without the cost of a quorum vote of the kind Raft uses. There
+is exactly one follower, and records reach it as a stream over a single connection, so there is no
+vote to collect: one acknowledgement is the whole of the agreement.
 
-1. Each node attempts TCP connection to its peer (A→B, B→A).
-2. Both sides immediately send `StatusQuery` (identity + epoch).
-3. Each side replies with `StatusResponse` including `current_role`.
-4. **Peer is already leader:** connecting node adopts follower immediately. No arbiter needed.
-5. **Both sides unknown:** both send `ArbitrationReport` to the arbiter (primary address first, secondary as fallback).
-6. Arbiter issues `ArbitrationDecision` assigning leader and follower by lowest `instance_id`, and sets the epoch.
-7. Both nodes adopt assigned roles; arbiter connection closed.
+**There is no `fsync` for each record.** Forcing every record to disk would add tens to hundreds of
+microseconds to every order, and it is not what makes a record safe here. A record is safe because
+it is held on two machines; the copy on disk is written by the operating system's page cache in the
+background, and when segments are created and filled. Losing both machines at the same instant is
+the case this does not cover, and it is the case disaster recovery to a second site is for (not
+designed; see the open questions below).
 
-### Post-Election Steady State
+### Replication
 
-- Peer-to-peer TCP connection remains open with periodic `Heartbeat` messages.
-- Heartbeats carry `instance_id` and `epoch` for liveness and stale-node detection.
-- **Follower dies:** leader logs a warning; no other action.
-- **Leader dies:** follower initiates promotion (see below).
+The leader streams every record to the follower over a connection used for nothing else, separate
+from the connections that carry orders and reports. The follower appends each record to its own log,
+on its own machine and its own disk, and acknowledges it. The two logs are identical, record for
+record, because the follower's log is written only from this stream.
 
-### Leader Death and Follower Promotion
+A follower learns what has been committed by receiving the records. It never infers a commit from
+timing or from the leader's silence. Its part is passive: it receives, it acknowledges, and it sends
+nothing on the order path -- not to the matching engine, and not to any gateway.
 
-On heartbeat loss:
-1. Surviving node first attempts reconnection to the peer.
-2. Reconnect succeeds: exchange `StatusQuery`/`StatusResponse`; epoch resolves roles normally.
-3. Reconnect fails: surviving node sends `ArbitrationReport`. Arbiter checks whether the
-   previous leader's lease has expired; if so, issues `ArbitrationDecision` granting
-   leadership at the next epoch. The surviving node adopts leader role only after receiving
-   this decision.
-4. Arbiter unreachable: surviving node cannot promote. Enters degraded waiting state,
-   retries the arbiter. System is unavailable for new orders. This is correct: without
-   arbiter confirmation the previous leader is gone, promoting risks split-brain.
+Each gateway sends every order to both sequencers, and the matching engine sends every report to
+both. Only the leader acts on them. The follower discards the copies it is sent directly, because
+its log must match its leader's exactly. The consequence for orders sent in the seconds after the
+leader has died and before the follower takes over is
+[BUG-0103](../bug_list.md#bug_0103): the follower discards them, and nothing else holds them.
 
-### Split-Brain Protection
+**The replication connection cannot be dropped to protect the leader.** If the follower falls behind,
+the leader keeps writing to its own log and keeps sending orders to the matching engine, but it holds
+back the execution reports until the follower has acknowledged the records they answer. Members then
+see a delay in their reports, not a loss of durability. If the follower stops altogether, reports
+stop until it is back, because sending them would mean telling members about orders that only one
+machine holds.
 
-| Scenario | Outcome |
-|----------|---------|
-| Normal startup, arbiter reachable | Arbiter is sole authority; assigns exactly one leader |
-| One node already established | Epoch difference resolves it; restarting node adopts follower |
-| Network partition, both nodes alive | Neither promotes unilaterally; whichever can reach arbiter requests promotion; arbiter grants to one only |
-| Neither node can reach arbiter | Both enter degraded waiting; system unavailable until arbiter contact restored; split-brain prevented |
+**One slow connection does not hold up the others.** Every send is non-blocking, and each connection
+keeps its own partly sent message while the peer cannot take more. A matching engine or gateway that
+stops reading delays only the messages addressed to it.
+
+### Snapshots and reclaiming disk
+
+The sequencer records where its log has reached every thirty seconds (`Wal::take_snapshot`): the last
+sequence number, the number of records and the position of the end of the log, in a 48-byte file. It
+holds no other state, and taking it deletes nothing. `Wal::truncate_below`, which deletes segments
+below a given sequence number, exists but nothing in the venue calls it, so the log is never
+reclaimed while the venue runs. How long it must be kept waits on a decision about how long
+execution reports must remain available to a member that asks for them again.
+
+### When something is wrong with the log
+
+| Situation | What happens |
+|---|---|
+| The last record is incomplete | Replay stops before it: it was never committed |
+| A record in the middle is damaged | Replay stops at it; nothing after it is applied |
+| The disk is full | Segments are written out in full when created, so the failure comes when a new segment cannot be written: the writer raises an exception |
 
 ---
 
-### Fencing
+## How the leader is chosen and kept out when deposed
 
-*Fencing* means stopping a deposed or partitioned old leader from continuing to act after a new
-leader is elected. This system fences **cooperatively, using the epoch as a fencing token**. It does
-**not** do power fencing (STONITH), and there is deliberately no fence file.
+The full design, its rules, the failure table and the model checking are in
+[Majority leases](majority_leases.md). In outline:
 
-**How the epoch fences.** Every promotion increments a monotonic `epoch` granted by the arbiter (see
-*Epoch Semantics* above). A node stands down the moment it observes a higher epoch, and a leader
-ignores any heartbeat carrying an epoch lower than its own. Combined with the single-writer sequencer
-and monotonic `seq_no`, a stale leader cannot corrupt the record stream: followers and WAL consumers
-skip anything at or below what they have already applied.
+- **An instance leads only while a majority of three voters agrees**: itself, its peer, and the
+  third voter, which for a component pair is the active arbiter. The agreement is a lease that lasts
+  three seconds and is renewed every second. Its own vote plus one other is a majority.
+- **Each voter promises its vote to one instance at a time.** A component instance writes the
+  promise to disk before it grants it, so a restarted process keeps its promises.
+- **A leader whose lease runs out stops acting at once**: it sends nothing more on the order path
+  until it holds a lease again. This is what keeps a deposed or cut-off leader out. It does not need
+  to be told: its own lease, timed on its own clock, ends before any voter's promise does.
+- **Losing every arbiter does not stop trading**: the leader renews with its peer alone. Trading halts
+  only if the arbiters and the leader fail together, because the follower cannot then tell a dead
+  leader from its own isolation.
 
-**The honest limitation.** This is *cooperative* fencing: a deposed leader stops only once it
-**observes** the newer epoch — via a heartbeat, an arbitration decision, or a reconnect. A leader
-that is hung, or partitioned away from both its peer and the arbiter, may keep serving its existing
-clients until it regains contact, at which point the higher epoch forces it to follower. The design
-bounds the damage rather than making it impossible: the arbiter grants the next epoch to exactly one
-node (so there is never a second *authoritative* writer), and the single-writer WAL + `seq_no`
-ordering mean a stale leader's late writes are rejected downstream, not merged. For the scale this
-framework targets, that trade-off is deliberate and sufficient.
+**The epoch.** Each leadership generation has an epoch number, which also records which instance
+leads in it, so no two instances ever lead at the same epoch. Voters never grant an epoch below the
+highest they have granted, and an instance that learns of a higher epoch than its own stops leading.
+The epoch travels on the lease messages and on the matching engine's announcement of its role; it is
+not on orders or reports.
 
-**Why not STONITH / power fencing.** True power fencing forcibly removes a suspect node —
-independently of its OS — via managed PDUs, a BMC/IPMI channel (iLO, DRAC), or SCSI-3 persistent
-reservations on shared storage. It guarantees the old leader is gone, but it needs specific hardware
-and an out-of-band control path, adds significant operational complexity, and is a production-cluster
-concern (Pacemaker/Corosync territory). It is out of scope for this project, whose goal is framework
-validation and which runs its HA pairs cooperatively rather than over managed power hardware.
+**What stops a deposed leader's messages being acted on**, besides its own lease ending:
 
-**If stronger fencing were ever wanted** without STONITH hardware, the natural step is a
-**self-fencing watchdog**: a leader that cannot renew its arbiter lease within the takeover timeout
-stops serving (or restarts) itself, closing the hung/partitioned-old-leader gap above. It would be
-built from a watchdog timer plus the existing epoch/lease — not from a marker file. (An earlier
-write-only `fence_file`, written by every HA component on promotion but never read by anything,
-contributed nothing to correctness and was removed to avoid implying a guarantee the system does not
-make.)
+- a follower sequencer forwards nothing to the matching engine and no report to a gateway;
+- a matching engine that holds no lease discards every order it is sent;
+- the sequencer sends orders only to the matching engine that announced it leads, and refuses an
+  announcement whose epoch is older than one it has accepted.
+
+### STONITH was considered and rejected
+
+Power fencing -- "shoot the other node in the head", STONITH -- removes a suspect node by force
+before its peer takes over: through a managed power supply, the machine's management controller
+(IPMI, iLO, DRAC), or a reservation on shared storage. It guarantees that the old leader is gone.
+It was evaluated and is not used, for three reasons:
+
+- **It is a property of the deployment, not of the software.** It needs an out-of-band management
+  network, hardware that can power-cycle a peer, and credentials to do so. A developer's machine has
+  none of these, and the venue must run the same way there as on production hosts, so a fencing
+  path would be one that is never exercised where it is written and tested.
+- **It is not needed for safety.** A majority of three voters, with leases, already keeps two
+  leaders from acting at once: a leader cut off from its peer and the arbiters stops when its lease
+  runs out, before any voter can grant the lead to anyone else. Two nodes without fencing or a third
+  voter would be unsafe; with a third voter they are not.
+- **It adds operational weight** of the kind production clustering software such as Pacemaker
+  exists to manage, out of proportion to a venue whose pairs already resolve leadership between
+  themselves.
+
+**What it costs not to have it.** A node that has lost its lease keeps running as a process. It
+cannot act as leader, because it stops sending on the order path and nothing it sends is acted on,
+but it may hold its connections and memory until someone stops it. The decision and the discussion
+behind it are in the [decision record](design_notes.md#ha_no_stonith).
 
 ---
 
 ## Sequencer HA
 
-The sequencer has the richest HA state: order log, FIX session map, per-gateway delivery
-cursors, sequence-number authority.
+### Where the routing state lives
 
-### State Location
+The sequencer routes each execution report back to the gateway session that placed the order. The
+key is the session's identity -- its comp id and protocol -- carried on the order's envelope with the
+gateway's protocol and instance and the session's connection. A member that reconnects, to the same
+gateway instance or to its backup, announces where it now is (`SessionBound`), and reports for
+orders it placed earlier follow it. [Session binding](session_binding.md) has the detail.
 
-The FIX `(SenderCompID, TargetCompID)` → `ClOrdID` routing map lives in the sequencer's
-WAL, not in the gateway. This makes the gateway near-stateless:
-- On restart, the gateway does not lose ER routing — the state is in the sequencer's WAL.
-- After sequencer failover, the new leader has the routing map by WAL replay.
-- A FIX client reconnecting to a different gateway is naturally addressable; the new gateway
-  registers `(CompA, CompB)` with the sequencer and the map updates.
+### Connections
 
-**Superseded.** ER routing is now on `gateway_session_conn_id` — the originating connection —
-carried on the `WalRecord` envelope, paired with `origin_gateway_id` to say which gateway that
-connection belongs to. The comp-id pair was dropped because two sessions sharing a comp id
-could reuse a ClOrdID and collide; a connection identifies exactly one session and cannot.
+Each gateway and each matching engine holds connections to both sequencers, and sends to both. Only
+the leader acts on what it receives. A gateway does not need to know which sequencer leads, and a
+change of leader needs no reconnection.
 
-The trade-off that buys is real and is not yet resolved: a connection id is gateway-local and
-does not survive a reconnect, so a client that reconnects to a *different* instance cannot
-be handed reports still in flight for its old connection. Resolving it is the substantial half
-of [Gateway High Availability](gateway_ha.md), which re-keys the routing entry on the session's
-provisioned identity and keeps the connection triple as a mutable destination.
+### Segments and failover time
 
-### Gateway↔Sequencer Connectivity
-
-Gateway and ME each open TCP connections to **both** sequencer instances at startup and keep
-both open. Sends go only to whichever is currently leader. The non-leader rejects send
-commands at the application layer, so clients know which is leader without a separate
-discovery mechanism.
-
-On leader change, the old leader's connection drops or starts rejecting; the new leader's
-connection becomes live. The gateway buffers outbound order PDUs locally during the cutover
-window.
-
-### Snapshots
-
-Snapshots capture sequencer state only. The ME is never snapshotted — its book is rebuilt
-from WAL replay on every restart. Snapshot contents:
-- `lastCommittedSeqNo`
-- FIX session routing tables
-- Per-gateway delivery cursors
-- Everything else needed to assign seqNo `S+1` after restart
-
-Anything that can be recomputed from the WAL is not in the snapshot.
-
-**Snapshotting is non-blocking.** The leader briefly gates new seqNo assignment (tens of
-microseconds), drains in-flight WAL appends to a clean cut at seqNo `S`, captures snapshot
-state in memory, releases the gate, and serialises the file asynchronously. The ME never
-sees a pause.
-
-**Dual rolling snapshots -- designed, not built.** The intent is that two snapshots are kept:
-`snapshot_A` (older, trusted, used as the WAL truncation anchor) and `snapshot_B` (newer,
-candidate, validated before promotion), so that truncation uses the older trusted snapshot rather
-than the newest one just taken. Invariant: **never delete WAL history unless at least one older
-verified snapshot can reproduce the same state.**
-
-**What runs today is a single snapshot.** `take_snapshot()` and `truncate_below()` exist;
-`snapshot_A` and `snapshot_B` appear nowhere in the code. Dual snapshots and snapshot validation
-are slice 9 of the [Roadmap](../roadmap.md), which is not started. Until then the invariant above
-is a statement of intent rather than something the code enforces.
-
-### WAL Truncation
-
-After a snapshot at seqNo `S` is durable and validated:
-- Delete WAL segments fully behind `S`.
-- Keep any segment containing seqNos `> S`.
-- The follower must have replayed at least `S` (or have its own snapshot ≥ `S`) before the
-  leader truncates — otherwise truncation could delete history the follower still needs.
-
-### Cold-Start MTTR and mmap Warm-Up
-
-Three components contribute to recovery time on a cold start:
-
-| Component | Typical cost |
-|-----------|-------------|
-| Snapshot load | Single-digit ms (small) to low hundreds of ms (large) |
-| WAL tail replay | Proportional to tail size since last snapshot |
-| mmap page-in | ~1 GB / disk-read-rate for a warm SSD — commonly the dominant factor |
-
-The mmap page-in cost does not appear in microbenchmarks (warm cache). It appears in
-production cold starts and can easily dominate.
-
-Mitigation: issue `madvise(MADV_WILLNEED)` on the mmap region immediately after opening the
-WAL. The kernel pages the file in parallel with snapshot deserialisation and WAL replay
-setup. A 1–2 second disk I/O cost becomes a parallel overlap rather than a serial bottleneck.
-
-In a normal failover the secondary is already running, its WAL is already paged in (from
-tailing the leader), and the recovery time is only the time to apply any unapplied records.
-Cold-start MTTR matters mainly when bringing a previously-down instance back online.
+Each log segment is written out in full when it is created, so appending a record never allocates a
+disk block, and a helper thread prepares the next segment before the current one fills. In a failover
+the follower's log is already in memory, and taking over costs the lease rules' timing: about five
+and a half seconds in `ha_test.py` scenario 1, including the new leader's first orders.
 
 ---
 
-## Matching Engine HA
+## Matching engine HA
 
-### ME Failover Policy: Cancel-on-Failover
+### What the follower holds
 
-Four options were considered:
+The leading engine sends every change to its book to the follower (`BookUpdate`), so the follower
+holds a copy. Each engine also writes its open orders into a memory-mapped region as it accepts them
+and reads it back when it starts ([Open-order checkpoint](../durability/open_order_checkpoint.md)), so
+an engine that restarts has its own record of what it held.
 
-| Option | Description | Decision |
-|--------|-------------|----------|
-| (a) Slow seamless | ME-secondary cold-starts and replays WAL | Rejected: too slow |
-| (b) Fast lockstep | Both MEs process sequencer input in parallel with deterministic logic; failover is switching to secondary's outputs | Future aspiration; requires full determinism discipline |
-| (c) Halt-on-failure | ME dies, market halts, operator recovers | Preserved as fallback for unrecoverable failure modes |
-| (d) Cancel-on-failover | ME-secondary promoted; issues cancel ERs for all outstanding orders | Baseline until 2026-08-30; now the fallback |
+### Catching up before acting
 
-Cancel-on-failover avoided the long downtime of (c) and the determinism investment of (b),
-while giving FIX clients an explicit "your order has been cancelled" message rather than
-silence.
+An engine that takes the lead, or starts, does nothing on the order path until it has caught up with
+the sequencer's log. It tells the sequencer the last sequence number its book reflects
+(`MePositionRequest`). The sequencer sends it every record after that one and then says how many it
+sent and the last sequence number (`MePositionAck`). The engine applies each record, and checks that
+it has received every record the sequencer said it sent, before it acts (R-0101). If any are missing
+it asks again; it does not act on an incomplete catch-up. Each report it sends while catching up is
+marked as a possible repeat, because an earlier engine may already have sent the same report (R-0122).
 
-**Superseded on the ordinary path, 2026-08-30.** The engine now writes every open order into
-a memory-mapped region as it accepts it, and reads that region back at startup --
-[open_order_checkpoint.md](../durability/open_order_checkpoint.md). A promoted or restarted
-instance therefore has its own record of what it was holding, and after reconciling the
-sequencer's tail onto it the book is consistent with the sequencer. Step 6 below already
-said what follows from that: "any order still on the reconciled book is genuinely
-outstanding". So it is kept, and the member goes on holding what it placed. That is R-0018
-and R-0073.
+**Why the order matters.** Suppose the leading engine accepts an order and trades it, sends the
+execution report, and the sequencer writes that report to its log -- and then the engine dies before
+the change to its book reaches the follower. The follower's copy of the book still shows the order as
+open. If the follower acted on that copy as soon as it took the lead, it would treat a trade that has
+already happened as an order still resting, and could cancel it. A trade that has legally happened
+must never be undone.
 
-Cancelling everything remains the answer where the region cannot be used -- absent, damaged,
-or written by a different build. There the engine cannot say what it held, and the answer is
-to establish it from the sequencer's record, cancel each order, report each cancel, and halt.
-That is R-0102 and R-0123, and it is a halt rather than a resumption, because by then
-somebody has to answer what became of the orders the venue took.
+Catching up first closes that gap. The records the follower is sent include everything the old
+leader did that reached the sequencer's log, so once it has applied them its book agrees with the log,
+and any order still on it is genuinely open. The price is time: nothing on the order path happens
+until the catch-up is complete. A delay is acceptable; undoing a trade is not.
 
-### ME Failover Correctness Rule
+If a sequencer and the matching engine fail at the same time, the engine's catch-up waits for the
+sequencers to settle on a leader, because only a leading sequencer answers a catch-up.
 
-A naive cancel-on-failover implementation has a race condition: ME-primary matches a trade
-and emits an ER, the sequencer commits the ER to its WAL, then ME-primary crashes before
-replicating the book update to ME-secondary. ME-secondary is promoted and sees the order as
-still outstanding — it issues a cancel for an order that already executed. A legally-executed
-trade is wrongly cancelled.
+### What happens to resting orders on promotion
 
-The correct order of operations on ME-secondary promotion:
+**The options considered.** When the leading engine fails, something must be decided about the orders
+resting on its book. These were the choices, and what became of each:
 
-1. Detect ME-primary failure (heartbeat loss).
-2. Request promotion via the arbiter; receive `ArbitrationDecision` with new epoch.
-3. Stop tailing the dead or failed-over sequencer stream.
-4. Connect to the new sequencer leader; exchange position cursors: "my book reflects events
-   up to seqNo M; what does your WAL contain?"
-5. New sequencer leader replays events `M+1..N` from its WAL. ME-secondary applies them.
-6. **Now** the book is consistent with the sequencer's authoritative state. Any order still
-   on the reconciled book is genuinely outstanding.
-7. Resume as leader holding those orders. (Until 2026-08-30 this step issued cancel ERs for
-   every one of them, because a promoted engine could not otherwise say what it held. It now
-   can, and does so only where the region has failed -- see above.)
+| Option | What it means | Decision |
+|---|---|---|
+| Start cold | A new engine starts with an empty book and rebuilds it by replaying the sequencer's log from the start of the day | Rejected: replaying a day's orders takes too long to be a failover, and it needs the whole day's log to be kept |
+| Run in lockstep | Both engines process every command in parallel; failover switches to the follower's output, which is already identical | Not built. It needs every decision the engine makes to be deterministic, so that two engines given the same commands always produce the same results. A possible later direction |
+| Halt | The engine's failure stops trading until an operator recovers it | Kept as the last resort, for when an engine cannot establish what it held (below) |
+| Take over and cancel | The follower, which holds a copy of the book, takes the lead, catches up, then cancels every resting order and reports each cancel | Built, and selected by `"cancel"`, which every environment uses |
+| Take over and keep | As above, but the orders stay on the book and members go on holding them | Built, and selected by `"keep"`. What must be shown before it is used is still being established |
 
-This adds latency to the cancel path (cancels cannot fire until the new sequencer leader is
-up and reconciliation is complete) but eliminates the race. A delayed cancel is acceptable;
-a wrongly-cancelled executed trade is not.
+Cancelling gives a member an explicit "your order has been cancelled" rather than silence, and needs
+neither the time of a cold start nor the determinism of lockstep. Keeping is better for members, who
+lose nothing, and is what an engine that restarts on its own already does.
 
-If the failure event takes out both ME-primary and a sequencer simultaneously, ME failover
-waits for sequencer failover to complete first. The cancel-on-failover latency is bounded
-by the sum of both failover times.
+The choice is a stated policy, `order_book.open_orders_on_promotion`, required in every deployment:
 
-### Orders In Flight During ME Failover
+- **`cancel`**: the promoted engine cancels every order still on its caught-up book and reports each
+  cancel. Every environment is set to this.
+- **`keep`**: the promoted engine keeps them, and members go on holding what they placed.
 
-A `kill -9` of the leader ME gives no clean shutdown; the only signal is the replication TCP
-connection dropping. Between that moment and the promoted ME going live there is a
-**promotion-timeout window** (`heartbeat_timeout_seconds`, ~15 s by default) during which no
-ME is processing orders. What happens to orders the gateway is still sending during that
-window is a common question, and the answer is that **none are lost**:
+An engine that *starts*, rather than taking over from a peer, keeps the orders it recovered from its
+region whatever the policy says (R-0018). Where the region is missing or damaged, the engine cannot
+say what it held: it establishes the open orders from the sequencer's record, cancels each, reports
+each cancel, and halts (R-0102, R-0123).
 
-1. The leader sequencer **WAL-commits every order before it checks the ME connection.**
-   Committing is unconditional for the leader; forwarding is what depends on a live ME.
-2. With no ME connected, the sequencer logs *"no matching engine connected — order seq=N
-   WAL-committed, forward deferred …"* and skips the forward. This is a **deferred forward,
-   not a dropped order** — the record is already durable in the WAL. (The message was
-   historically worded "dropping order PDU", which wrongly read as data loss; it was
-   reworded for exactly this reason.)
-3. On promotion, the ME's WAL reconciliation replays the whole gap — from the ME's
-   last-applied seqNo to the current WAL head — so every order sequenced during the window is
-   applied to the promoted book.
-4. Cancel-on-failover then cancels whatever is genuinely outstanding on the reconciled book,
-   the gap orders included.
+### Orders sent while no matching engine is running
 
-**Client experience.** For an order sent during the gap the client gets **no immediate ER**
-(no live ME), then — after promotion and reconciliation — the **New ER** for it, late. The
-order is on the book and open. The cost is the ~15 s window of order-processing
-unavailability, and nothing is silently lost.
+There are moments with no matching engine to send orders to: after the leading engine dies and before
+its follower takes over, or while every engine is down. What happens to the orders gateways send in
+those moments:
 
-Before 2026-08-30 it received a **Cancel ER with no preceding New ER** instead, and had to
-resubmit. A FIX client must still tolerate that, because it is what the region-has-failed
-path does, but it is no longer what an ordinary failover produces.
+1. **The leading sequencer writes every order to its log before it checks for a matching engine.**
+   Writing is unconditional for the leader; only sending the order on depends on an engine being
+   there.
+2. **With no engine connected, the sequencer defers sending the order** rather than dropping it, and
+   logs that it has done so. The order is already in the log.
+3. **The engine that next leads or starts is sent every deferred order while catching up**, because
+   the catch-up sends everything after the position the engine reports.
+4. **The member is answered then**: the execution report for an order sent during the gap arrives
+   late, when the engine has caught up, and the order is on the book. Nothing is silently lost.
 
-*Verified directly:* a failover under a continuous ~1000 orders/sec stream WAL-committed
-15,000 orders during the 15 s gap and replayed all 15,000 to the promoted ME — none dropped.
+What happens next to the orders on the caught-up book is the promotion policy above.
 
----
+**If the outage lasts longer than any failover plausibly takes**, the sequencer stops accepting
+orders, and tells the gateways so (`OrderAcceptance`). The gateways then refuse new orders and cancels
+with a reply, so members are not left holding orders the venue cannot act on. Acceptance resumes on
+its own when an engine returns. [Order acceptance](order_acceptance.md) has the thresholds and the
+reasoning.
 
-## Gateway Pool
+## Order gateways
 
-Gateway HA differs from sequencer HA. A FIX session is a TCP connection bound to one
-gateway machine. When a gateway dies, the connection is gone and the FIX client must
-re-establish.
-
-**Superseded on 2026-07-30. See [Gateway High Availability](gateway_ha.md), which replaces
-this section.**
-
-This section previously described **N-way pooled redundancy**: a client reconnecting to any
-gateway in the pool, with ER routing on the sequencer's comp-id map. That claim is withdrawn on
-two counts. It was never implemented -- only one gateway instance is ever run -- and it no longer
-matched the code, because ER routing moved to `gateway_session_conn_id`, which is gateway-local
-and so cannot be inherited by a different pool member. The three bullets that used to justify
-pooling rested on the comp-id map that routing no longer uses.
-
-The agreed direction is **session-pinned primary/backup**: a session is provisioned against two
-named gateway instances and may log on to either, which is how venues actually provision order
-entry. The reasoning, the gaps between here and there, and the implementation order are all in
-[Gateway High Availability](gateway_ha.md). It is planned for 0.3.0 and is not built as of 0.2.0;
-the gateway remains a single point of failure until it is.
-
-The user-visible interruption on failover is the FIX reconnect latency -- typically seconds, not
-transparent.
+A member's session is a connection to one gateway process, so when the process dies the member must
+reconnect. Each protocol runs two instances, and each comp id is provisioned in the database to a
+primary and optionally a backup instance; a gateway refuses a logon from a member provisioned
+elsewhere. When a member's connection drops, the gateway keeps its resting orders for a grace period
+configured per comp id, and a member that logs on again within it -- to either instance -- keeps them
+and can cancel them. [Gateway High Availability](gateway_ha.md) has the detail, including what a FIX
+member can and cannot recover by resending.
 
 ---
 
-## Authentication Service HA {#ha_auth_service}
+## Authentication service HA {#ha_auth_service}
 
-The authentication service is **active/active, caller-selected** — not an arbiter-elected
-pair. Two instances, named `a` and `b`, both run and both serve the gateway; neither is a
-leader and neither is promoted. This is the correct model because the auth instances are
-*not* the writer of the state they hold — they are reflectors of an upstream single writer.
+Two instances, `a` and `b`, both run and both serve. Neither leads. They reflect state they do not
+write: the admin service writes each credential change to the database and sends it to both
+instances (`SetCredentialRequest`, `RemoveCredentialRequest`, `RestoreCredentialRequest`), and each
+instance loads the full set from the database export when it starts. The two never diverge, so
+there is nothing to elect.
 
-### What state auth holds, and who writes it
-
-Auth validates FIX logons against a compID credential set using SCRAM. That set is mutable at
-runtime (compIDs are added and removed), so it **is** shared state — but the **admin service
-is its single writer.** The admin service writes the database (the durable source of truth)
-and then fans the credential change out to **both** auth instances
-(`SetCredential`/`RemoveCredential` PDUs) so each keeps its in-memory copy current. Two
-reflectors fed the same changes never diverge, so there is no write-contention to arbitrate
-and therefore no election.
-
-Consequently auth uses **none** of the leader-follower machinery: no arbiter, no WAL, no
-epoch/fencing, no promotion. It also has no failover *window* — because both instances are
-always live and current, there is no leader to lose.
-
-### Failover
-
-Failover is **caller-driven.** The gateway holds a connection to both auth instances and has
-a try-first/backup preference. That preference is a *caller* concept — like a DNS
-primary/secondary resolver — and does **not** imply an election among the auth instances.
-When the preferred instance dies, the gateway detects the dropped connection and
-authenticates the next logon against the surviving instance. An already-established FIX
-session is unaffected (it does not re-authenticate); only new logons exercise the failover.
-
-### Invariants the model depends on
-
-1. **The admin fan-out reaches both instances** on every credential change, so a later
-   failover target is current. Implemented in the admin service's `AuthServiceClient`,
-   best-effort: the operation succeeds if at least one endpoint applies it, and an endpoint
-   that missed a change reconciles from the database on its next start.
-2. **Each instance loads the credential set from the database export on startup**, so a
-   restarted instance is current as of that export.
-
-*Verified:* a live compID create and delete each reach both instances (both log
-`SetCredential`/`RemoveCredential … Success`), and killing instance `a` leaves a fresh FIX
-logon authenticated by instance `b` (`ha_test.py` scenario 17).
+A gateway holds a connection to both and tries one first. When that instance dies, the gateway
+authenticates the next logon with the other. A session already logged on is unaffected, because it
+does not authenticate again. `ha_test.py` scenario 17 kills instance `a` and logs a member on through
+`b`.
 
 ---
 
-## Arbiter
+## Arbiters
 
-### Role
+### What they do
 
-The arbiter is **off the critical data path.** It holds leadership state for each component
-pair: `(component_id, leader_instance_id, epoch, lease_expiry)`. Leaders heartbeat to
-renew their lease. The arbiter never participates in order processing.
+The arbiters are the third voter for each component pair: the sequencers, the matching engines and
+the matching engine publishers. They are not on the order path and hold no venue state. All an
+arbiter does for a component pair is grant or refuse a lease when an instance asks, and promise its
+vote to one instance at a time.
 
-**Leadership state is keyed by `(component-group, instance_id)`**, not by instance id alone.
-The sequencer, matching engine and MEP pairs each use instances `{1, 2}`, so keying on the id by
-itself would alias three different pairs onto the same two slots.
+The name follows common usage. In MongoDB, for example, an arbiter is a member of a replica set
+that votes in elections but holds no data and can never become primary, which is this role exactly.
 
-On failover, the surviving instance contacts the arbiter with `ArbitrationReport`. The
-arbiter performs an atomic compare-and-swap: if the old leader's lease has expired, it
-grants promotion, bumps the epoch, and records the new leader. The old leader on revival
-sees its epoch is stale and steps down.
+### Two arbiters and a witness
 
-### PSA Topology
+The arbiters are themselves duplicated, and they decide which of them votes by the same lease rules,
+with a third process, the witness, as their third voter:
 
-The arbiter is itself HA, using a Primary-Secondary-Arbiter (PSA, or PSW) topology:
+- **Arbiter primary and arbiter secondary.** Each is a full arbiter. The one that holds a lease from
+  the other or from the witness is *active* and votes for the components; the other is *passive*.
+  The active arbiter tells the passive one the highest epoch it has granted in each component group
+  (`ArbiterStateRecord`), so a change of active arbiter does not forget it.
+- **The witness.** A small process that keeps nothing. It answers the arbiters' lease requests, and
+  never becomes active or passive itself.
 
-- **Arbiter primary** — full arbiter instance; holds the leadership-state map.
-- **Arbiter secondary** — full arbiter instance; holds a replicated copy.
-- **Witness** — small process; holds no state; votes on which full arbiter is active.
+An arbiter that becomes active grants no component lease for one lease period, because it cannot
+know what the previously active arbiter had promised. During that wait, each component leader renews
+its lease with its peer alone, so a change of active arbiter costs nothing while both instances of
+every pair are running.
 
-Three votes total; majority is two; any single failure is tolerated. This is the same shape
-MongoDB uses for two-data-bearing-member replica sets.
+**How the components reach them.** Each component instance connects to both arbiters and sends every
+lease request to both. The active arbiter answers; the passive one stays silent, because a refusal
+from it would cancel the request the active arbiter is answering under the same id. Nothing connects
+to the witness except the two arbiters.
 
-**Three machines only.** Adding a second witness makes it four votes, requiring three for
-majority, meaning any single failure leaves the cluster below majority — worse, not better.
-The correct way to add redundancy is to upgrade to five machines (full Raft-style). For this
-framework, three is the chosen and final count.
+### Three machines, and no more
 
-**Failure-independence requirement:** the witness must be on different power, a different
-network switch, and ideally a different network segment from the two full arbiter machines.
-If a witness shares infrastructure with one full arbiter, a single failure can reduce the
-effective vote to 1-of-2, making failover impossible precisely when it is most needed.
+Three votes need a majority of two, so any single machine can fail. Adding a second witness would
+make four votes, needing three for a majority, and then losing any one machine would leave the
+arbiters one failure from having no majority at all: more machines, less resilience. The way to
+tolerate two failures would be five voters, which is the territory of a full consensus cluster.
+Three is the chosen number.
 
-**Component contact protocol:** components have a configured list of two arbiter addresses
-(primary, secondary — never the witness). The responding arbiter either grants the decision
-(if active) or replies "I am not active; contact X" (if passive). Components never contact
-the witness directly.
+**The witness must be independent of both arbiter machines**: on different power, a different network
+switch, and ideally a different network segment. If it shared infrastructure with one arbiter, a
+single failure could remove two of the three votes, and the arbiters could not choose an active one
+at exactly the moment it was needed.
 
-**Internal protocol:**
-- Active heartbeats to passive (with state replication) and to witness (liveness only).
-- Passive heartbeats to witness (liveness only).
-- On active-arbiter heartbeat loss as seen by passive: passive asks the witness "have you
-  also lost the active?". If yes, passive promotes; if no, passive does not promote (the
-  active is still alive, just unreachable from passive's network position).
-- If witness is unreachable from passive: passive cannot promote. System continues with the
-  currently-active arbiter for the lease window, then becomes unavailable for new failover
-  decisions.
+### Why not a consensus library
 
-**Operational limitation:** witness outage during arbiter failover prevents arbiter-pool
-failover. The witness is a SPOF for the *arbiter failover decision* (not for steady-state
-operation). Operational discipline: monitor the witness aggressively and repair outages
-quickly.
+Ready-made implementations of Raft and Paxos for C++, such as NuRaft and braft, were considered for
+the arbiters and rejected:
 
-### Consensus Libraries vs. Lease+Epoch
+- the state to agree on is tiny -- one record for each component group -- so a full consensus
+  library would be far larger than the problem;
+- C++ implementations of Raft are less widely used than those for Java or Go, and taking one on
+  means inheriting subtle defects in code the project did not write;
+- the lease rules used instead are small enough to be specified in TLA+ and model checked
+  exhaustively, which was done ([Model checking](tla/findings.md)), so their correctness is shown
+  rather than assumed.
 
-Raft and Paxos libraries (NuRaft, braft) were considered and rejected for the arbiter's
-internal HA. The reasons:
-- The arbiter's replicated cell is small (one record per component pair); a full consensus
-  library is overkill in code-size terms.
-- C++ Raft implementations are less mature than their Java/Go counterparts; operational
-  risk of inheriting subtle bugs in code the project did not write.
-- The hand-rolled lease+epoch approach is tractable for this cell size and the protocol is
-  fully understood by the author.
+[Arbiter](../venue/arbiter.md) and [Witness](../venue/witness.md) describe the two applications.
 
-The trade-off is accepted: the PSA+witness design is simpler to reason about for this
-specific use case, and correctness is verifiable from first principles.
+## Time
 
----
+**Leases are timed on each machine's steady clock** (`std::chrono::steady_clock`), which never goes
+backwards and is not changed when the wall clock is corrected. Each machine measures how long has
+passed on its own clock, so a difference between two machines' clock readings does not matter. What
+matters is a difference in the *rate* at which they run, and each lease is shortened by an allowance
+for that ([Majority leases](majority_leases.md), section 9). On Linux the steady clock counts from
+when the machine booted, and is the same for every process on the machine, which is what lets a
+restarted process read back the expiry times of the promises it wrote to disk.
 
-## Failover Targets
+**Timestamps that cross machines** -- `TransactTime` on execution reports, and the time the
+sequencer stamps on each record -- come from the wall clock. Auditors expect timestamps taken on
+different machines to agree, so the wall clocks must be synchronised closely.
 
-| Component | Target | Notes |
-|-----------|--------|-------|
-| Sequencer leader → follower | Sub-second; tens of milliseconds aspirational | Drives lease length (~200–500 ms) and heartbeat interval (~50–100 ms) |
-| ME crash | Cancel-on-failover; latency = sequencer failover + book reconciliation | Seamless (lockstep) failover is a future aspiration |
-| Gateway machine failure | Seconds (FIX reconnect to another pool member) | Inherent to gateway-pool design; FIX resend covers the gap |
-| Auth instance failure | Transparent for established sessions; next logon uses the surviving instance | Active/active; caller-selected; no promotion |
-| Arbiter primary failure | Tolerated for the lease window | Secondary takes over via internal arbiter HA if witness is reachable |
-| WAL disk full | Immediate halt | No "best effort" continuation |
+**The intended synchronisation is PTP (IEEE 1588), not NTP.** PTP keeps clocks on a correctly built
+local network within a microsecond of one another; NTP's accuracy is in milliseconds. PTP needs
+network cards that timestamp packets in hardware, a grandmaster clock disciplined by GPS, and
+switches that act as boundary or transparent clocks. That is standard infrastructure at a real
+exchange. The venue relies on it being present and does not implement PTP itself.
 
 ---
 
-## Failure-Handling Boundaries
+## How long a failover takes
 
-| Situation | Correct behaviour |
-|-----------|------------------|
-| Leader crash before WAL commit | Order disappears (never existed); gateway resends or FIX client retries |
-| Leader crash after WAL commit, before ME send | Follower promotes, replays WAL, sends order to ME, emits ER |
-| Leader crash after ME send, before ER emission | Same — new leader replays from the WAL; FIX client eventually receives ER |
-| ME crash | ME restarts empty; new leader replays from ME's `lastAppliedSeqNo + 1` |
-| Gateway crash | Gateway reconnects, exchanges cursors, replays any gap |
-| WAL disk full | Sequencer immediately gates ingress; halt cleanly or fail to replica |
-| WAL tail corruption | Truncate at last good entry; treat as crash before commit |
-| WAL mid-segment corruption | Halt; promote replica with clean prefix |
-| Snapshot corrupt during validation | Snapshot discarded; system continues with the older trusted snapshot |
-| Snapshot format incompatible after upgrade | Roll back binary; the older snapshot in the dual-snapshot pair still works |
-| Both arbiters + witness unreachable | No failover decision can be made; leader continues for lease window only |
+| What fails | What happens, and how long it takes |
+|---|---|
+| The leading sequencer | Its follower takes over once its promise and the arbiter's to the old leader have run out: about one lease period plus one renewal interval. `ha_test.py` scenario 1 measures about five and a half seconds, including the new leader's first orders. Orders sent in that time are lost ([BUG-0103](../bug_list.md#bug_0103)) |
+| The leading matching engine | Its follower takes over on the same timing, then catches up with the sequencer before it acts. Orders sent meanwhile are deferred, not lost, and answered once it has caught up |
+| A leading process, restarted by its supervisor within the lease period | It keeps the lead, because its peer and the arbiter promised their votes to it. The interruption is the restart: about 3.5 seconds for a matching engine from dying to leading ([Process death](process_death.md)) |
+| A gateway | The member reconnects to its other provisioned instance, typically within seconds; resting orders are kept for the comp id's grace period |
+| An authentication service | None for a session already logged on; the next logon uses the other instance |
+| The active arbiter | The other arbiter becomes active once the lease between them has run out, then waits one lease period before granting component leases. Component leaders renew with their peers meanwhile, so nothing changes for members |
+| Every arbiter | Nothing, while both instances of each pair are running. If a leader then fails too, trading halts until an arbiter returns ([Majority leases](majority_leases.md), section 7) |
 
 ---
 
-## Time Synchronisation
+## What happens at each point of failure
 
-Several mechanisms depend on clocks across machines agreeing closely:
-- **Lease expiry checks** — clock skew between leader and arbiter can cause premature
-  step-down (benign) or continued operation past expiry (split-brain risk).
-- **TransactTime on ERs** — auditors expect timestamps from different machines to be in a
-  sensible total order.
-- **Heartbeat liveness detection** — "N milliseconds of silence" must mean the same thing
-  on both endpoints.
-
-The intended solution is **PTP (IEEE 1588)**, not NTP. PTP delivers sub-microsecond
-synchronisation across a correctly configured local network. NTP's millisecond-range
-accuracy is insufficient for tight lease checks.
-
-PTP requires hardware-timestamped NICs, a GPS-disciplined grandmaster, and boundary/
-transparent clocks on switches. This is standard infrastructure at real exchanges; the
-framework relies on it being present but does not implement PTP itself.
-
-**Framework clock discipline:**
-- `CLOCK_MONOTONIC` for hot-path interval measurement (heartbeat timers, timeout checks).
-  It never goes backwards and is gently slewed by NTP/PTP to track real wall time.
-  `CLOCK_MONOTONIC_RAW` is explicitly **not** used — it is unaffected by slewing, so
-  intervals can drift from real-world expectations on long-running processes.
-- `CLOCK_REALTIME` (PTP-disciplined) for cross-machine timestamps: lease expiry, WAL entry
-  timestamps, `TransactTime` fields.
-- Lease grants should ideally carry both an absolute expiry time and a TTL; the leader can
-  use whichever frame is safer locally. Open design question.
+| Situation | What happens |
+|---|---|
+| The leading sequencer dies before writing an order to its log | The order was never taken. The member receives no reply ([BUG-0103](../bug_list.md#bug_0103)) |
+| The leading sequencer dies after writing an order and replicating it | The follower holds it, takes over, and sends it to the matching engine as part of the engine's catch-up; the member is answered |
+| The leading sequencer dies after sending an order to the engine but before the report reached the member | The follower holds the order. The engine sends its report to both sequencers, but the follower discards reports while it is still following, and on taking the lead it does not ask for them again, so the member is not sent the report (read in the code, recorded with [BUG-0103](../bug_list.md#bug_0103)) |
+| A matching engine restarts | It reads its open orders back from its region and catches up with the sequencer from the last position its book reflects |
+| The log's last record is incomplete | It was never committed; replay stops before it |
+| A record in the middle of the log is damaged | Replay stops at it; nothing after it is applied |
+| The disk holding the log is full | Writing a new segment fails and the writer raises an exception |
+| Every arbiter and the witness are unreachable | Each leader renews with its peer; no leader can be replaced until an arbiter returns |
 
 ---
 
-## Open Design Questions
+## Open design questions
 
 | Question | Status |
-|----------|--------|
-| DR (Disaster Recovery) topology | Not designed; main-site only for now |
-| Sub-second sequencer failover tuning | Lease/heartbeat intervals should be configurable via `ReactorConfiguration` |
-| Multi-instrument scaling (sharded sequencer?) | Not in scope; deferred |
-| Sequencer-to-gateway connection direction (who initiates?) | Currently sequencer initiates; may need reversing for multi-gateway deployments |
-| Market data integration mechanism | Pending requirements for the downstream market data consumer |
-| Arbiter PSA+witness internal protocol detail | **Done** — implemented in `applications/arbiter/` and `applications/witness/` |
+|---|---|
+| Orders sent during a change of sequencer leader | Lost without a reply; the remedy needs a design ([BUG-0103](../bug_list.md#bug_0103)) |
+| Disaster recovery to a second site | Not designed |
+| Several instruments: one sequencer, or one per group of instruments | Not designed |
+| How long the log must be kept | Waiting on a decision about how long execution reports must be available |
 
 ---
 
-## Implementation status
+## See also
 
-**Tracked in the [Roadmap](../roadmap.md), which is the single record.** It carries the numbered
-slices this design is delivered in, and it carries the ones that are *not* done -- which is why
-the status does not live here as well. This document used to repeat slices 1 to 8, all marked
-Done, and omit slice 9. A reader had no way to tell that dual snapshots and snapshot validation,
-which are WAL work described above, are not started.
-
-The matching-engine pair (role config, book replication, arbiter-mediated promotion, WAL
-reconciliation with cancel-on-failover) landed on 2026-07-05 and is recorded there too.
-
----
-
-## See Also
-
-- [Write-Ahead Log](../durability/wal.md) — the WAL data structure this HA design builds on
-- [Pub/Sub](../pubsub/pubsub.md) — the topic publisher, which reuses the WAL as a fan-out backlog
-- [Architecture](../orientation/architecture.md) — component topology and order flow
-- [Arbiter](../venue/arbiter.md) — the arbiter application (PSA active/passive + replication)
-- [Witness](../venue/witness.md) — the witness application (tiebreaker)
-- [Reactor](../framework/reactor.md) — the event loop that drives the replication and heartbeat paths
-- [Sequencer](../venue/sequencer_app.md) — the sequencer application
-- [Secure Comms](../operations/secure_comms.md) — the authentication service (active/active) and TLS
+- [Majority leases](majority_leases.md) and [the model checking](tla/findings.md)
+- [Write-Ahead Log](../durability/wal.md) and [replay](../durability/replay.md)
+- [Architecture](../orientation/architecture.md)
+- [Sequencer](../venue/sequencer_app.md), [Matching engine](../venue/matching_engine.md),
+  [Arbiter](../venue/arbiter.md), [Witness](../venue/witness.md)
+- [Secure comms](../operations/secure_comms.md), for the authentication service and TLS

@@ -1,214 +1,218 @@
 # Architecture {#architecture}
 
-## What It Is
+## What it is
 
-A low-latency, multi-threaded, event-driven application framework using the **reactor pattern**.
-The goal is a foundation on which a real exchange system skeleton could be built, demonstrating
-that the framework's latency and correctness properties hold under load.
+A low-latency, multi-threaded, event-driven application framework built on the **reactor pattern**,
+and a simplified exchange built on it to show that the framework's latency and correctness hold up
+under the demands of a real system.
 
-**Framework primitives:**
+**What the framework provides:**
 
-- Inter-thread communication (ITC) via lock-free MPSC queues
-- Inter-process communication (IPC) via unicast TCP with zero-copy PDU paths
-- Lock-free pool, bump, and slab allocators — no heap allocation on any hot path
-- Timers via `timerfd` and `epoll`
-- High availability, composed per component (no single generic mechanism): arbiter-elected
-  leader/follower + WAL for the sequencer and matching engine; active/active for auth; pooled
-  redundancy for the gateway (see [WAL and HA](../availability/wal_and_ha.md#ha_component_specific))
-- Binary serialisation DSL (Python code generator → C++17 headers; sub-100ns encode/decode)
+- Communication between threads through lock-free queues with many producers and one consumer
+- Communication between processes over TCP, with incoming messages handed to the application
+  thread without being copied
+- Pool, bump and slab allocators, so that nothing on the order path allocates from the heap
+- Timers, through `timerfd` and `epoll`
+- High availability, composed differently for each component: a pair whose leader holds a majority
+  lease, for the sequencer, the matching engine and its publisher; two instances serving at once,
+  for the authentication service; and two gateway instances per protocol, each member provisioned
+  to a primary and a backup ([WAL and HA](../availability/wal_and_ha.md#ha_component_specific))
+- A serialisation language: message definitions from which a Python generator writes the C++
+  encoders and decoders
 
-**Sample applications** (framework validation, not production code):
-
-- Order Gateway — FIX 5.0 SP2 client connectivity, SCRAM authentication
-- Sequencer — total order assignment, WAL, HA
-- Matching Engine — order book stub, execution report generation
-- Matching Engine Publisher — WAL follower + topic fanout (planned)
-- Arbiter / Witness — leader election
+**The applications** are a working venue that accepts orders and cancels them. It does not match
+buyers with sellers; the functional specification in `docs/book` records what it does and does not do.
 
 ---
 
-## Design Principles
+## Design principles
 
-| Principle | Implementation |
-|-----------|---------------|
-| No heap allocation on hot paths | Pool, bump, and slab allocators; slab-backed PDU payloads |
-| Lock-free fast paths | Vyukov MPSC queues; tagged CAS in pool allocator |
-| Zero-copy PDU paths | Slab-allocated inbound payload handed directly to application thread |
-| CPU-pinned threads | Shared-memory CPU registry; each thread claims a CPU at startup |
-| Deterministic shutdown | Lifecycle state machine; notify fd wakes epoll; join with timeout |
-| Message ordering preserved | Single sequencer is the sole writer to the ME input stream |
-| WAL = truth | Sequencer WAL is the authoritative record; all other state is derived |
-
----
-
-## Framework vs Applications
-
-The framework (`libraries/pubsub_itc_fw/`) provides the infrastructure. Applications
-(`applications/`) use the framework but contain no framework-level logic. The framework
-makes no assumptions about message content; the DSL defines message shapes and generates
-the encode/decode headers that applications use.
+| Principle | How it is met |
+|---|---|
+| Nothing on the order path allocates from the heap | Pool, bump and slab allocators; slab-backed message payloads |
+| Fast paths take no locks | Lock-free queues; compare-and-swap in the pool allocator |
+| Incoming messages are not copied | The slab chunk a message arrived in is handed to the application thread |
+| Threads stay on their cores | A shared registry of CPUs; each thread claims its cores at startup |
+| Shutdown is deterministic | A lifecycle state machine; a descriptor that wakes `epoll`; joins with a timeout |
+| One order of events | The leading sequencer alone decides the order in which the matching engine sees commands |
+| The log is the record | The sequencer's write-ahead log holds every order; everything else can be rebuilt from it |
 
 ---
 
-## Component Topology
+## Framework and applications
 
-The diagram below shows a single-instrument deployment. The framework is currently validated
-at this scale; multi-instrument scaling is an open design question.
+The framework (`libraries/pubsub_itc_fw/`) provides the infrastructure. The applications
+(`applications/`) use it and contain no framework logic. The framework knows nothing of what a
+message means: message shapes are defined in the serialisation language, and the generated headers
+encode and decode them.
+
+---
+
+## The processes
+
+One instrument, as the venue is built and tested today. How the venue would be divided for several
+instruments is not designed.
 
 ```
-                    ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-                    │  FIX client │  │  FIX client │  │  FIX client │
-                    │      A      │  │      B      │  │      C      │
-                    └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-                           │                │                │
-                           │  FIX wire (TCP, port 9879)
-                           │  orders, ERs, heartbeats
-                           ▼                ▼                ▼
-                    ┌──────────────────────────────────────────────┐
-                    │               FIX Gateway POOL               │
-                    │   (N gateways; FIX clients pin to one each)  │
-                    │                                              │
-                    │  - parses FIX, encodes PDU                   │
-                    │  - maintains comp-id ↔ ConnectionID table    │
-                    │  - reconnects on sequencer leader change      │
-                    └────┬────────────────────────────────────┬────┘
-                         │ order PDUs (→ leader only)         │ ER PDUs (← leader only)
-                         ▼                                    ▼
-        ┌──────────────────────────┐       ┌──────────────────────────┐
-        │   Sequencer: PRIMARY     │       │   Sequencer: SECONDARY   │
-        │   (currently LEADER)     │       │   (currently FOLLOWER)   │
-        │                          │       │                          │
-        │  - assigns seqNo         │◄──────┤  - tails leader WAL      │
-        │  - appends to WAL        │  WAL  │  - never sends to ME     │
-        │  - routes FixSession     │  repl │  - never sends to GW     │
-        │  - sends to ME           │       │  - on promotion: replays │
-        │  - sends ERs to GW       │──────►│    WAL, becomes leader   │
-        │                          │ WalAck│                          │
-        │  ┌──────────────────┐    │       │  ┌──────────────────┐    │
-        │  │ WAL (mmap, disk) │    │       │  │ WAL (mmap, disk) │    │
-        │  └──────────────────┘    │       │  └──────────────────┘    │
-        └────┬──────────────▲──────┘       └──────────────────────────┘
-             │ order PDUs   │ ER PDUs
-             ▼              │
-        ┌──────────────────────────┐       ┌──────────────────────────┐
-        │   Matching Engine:       │       │   Matching Engine:       │
-        │   PRIMARY (LEADER)       │       │   SECONDARY (FOLLOWER)   │
-        │                          │       │                          │
-        │  - receives orders in    │──────►│  - tails book updates    │
-        │    seqNo order           │ book  │  - on primary failure:   │
-        │  - mutates book          │ repl  │    reconcile vs WAL,     │
-        │  - emits ERs             │       │    issue cancel ERs      │
-        └──────────────────────────┘       └──────────────────────────┘
+   Members, FIX                                        Members, binary protocol
+       │                                                          │
+       ▼                                                          ▼
+ ┌──────────────────────┐                          ┌───────────────────────────┐
+ │ FIX gateway  a  /  b │                          │ Binary gateway  a  /  b   │
+ │ checks each command, │                          │ checks each command,      │
+ │ applies the session's│                          │ applies the session's     │
+ │ throttles            │                          │ throttles                 │
+ └─────────┬────────────┘                          └─────────────┬─────────────┘
+           │   every order and cancel, to BOTH sequencers        │
+           └───────────────────────┬──────────────────────────────┘
+                                   ▼
+ ┌──────────────────────────────┐   records, and acknowledgements   ┌──────────────────────────────┐
+ │ Sequencer (leading)          │ ────────────────────────────────► │ Sequencer (following)        │
+ │ numbers each command,        │ ◄──────────────────────────────── │ writes its log only from the │
+ │ writes it to the log,        │                                   │ leader's records; forwards   │
+ │ sends it to the engine,      │                                   │ nothing                      │
+ │ routes each report back      │                                   │                              │
+ └───────┬───────────▲──────────┘                                   └──────────────────────────────┘
+         │ commands  │ reports (the engine sends each to both sequencers)
+         ▼           │
+ ┌──────────────────────────────┐   every change to the book        ┌──────────────────────────────┐
+ │ Matching engine (leading)    │ ────────────────────────────────► │ Matching engine (following)  │
+ │ keeps the book and its open  │                                   │ keeps a copy of the book     │
+ │ orders on disk; reports      │                                   │                              │
+ └──────────────────────────────┘                                   └──────────────────────────────┘
 
-        ╔═════════════════════════════════════════════════════════╗
-        ║            ARBITER POOL  (PSA + witness)                ║
-        ║                                                         ║
-        ║  ┌─────────────────┐  ┌─────────────────┐  ┌────────┐  ║
-        ║  │ Arbiter PRIMARY │  │ Arbiter SECONDARY│  │WITNESS │  ║
-        ║  │  (ACTIVE)       │  │  (PASSIVE)       │  │(votes) │  ║
-        ║  └─────────────────┘  └─────────────────┘  └────────┘  ║
-        ║  3 votes total; majority = 2; split-brain prevented     ║
-        ║  Witness must be on independent power + network switch  ║
-        ║  Components NEVER contact the witness directly          ║
-        ║  NEVER on the order/ER data path                        ║
-        ╚═════════════════════════════════════════════════════════╝
+ ┌──────────────────────────────┐
+ │ Matching engine publisher    │  reads the sequencer's log and publishes topics to subscribers
+ │ (a leading and a following   │
+ │ instance)                    │
+ └──────────────────────────────┘
+
+ ┌──────────────────────────────────────────────────────────────────────────────────────┐
+ │ Arbiter  primary  /  secondary,  and the witness                                     │
+ │ The active arbiter is the third voter in each pair's majority lease. The arbiters    │
+ │ decide which of them is active the same way, with the witness as their third voter.  │
+ │ Not on the order path. The witness must not share power or a switch with either      │
+ │ arbiter machine.                                                                     │
+ └──────────────────────────────────────────────────────────────────────────────────────┘
+
+ ┌──────────────────────────────┐   ┌──────────────────────────────┐
+ │ Authentication service a / b │ ◄─│ Admin service (Java)         │  writes credentials to the
+ │ both serve; the gateways     │   │ and the database             │  database and sends each
+ │ check each logon with one    │   └──────────────────────────────┘  change to both instances
+ └──────────────────────────────┘
 ```
 
-### Channel summary
+### The connections
 
-| Channel | Direction | Protocol |
-|---------|-----------|----------|
-| FIX | FIX clients ↔ Gateway pool | TCP, FIX 5.0 SP2 wire |
-| Orders | Gateway → Sequencer | TCP, PDU; gateway sends to leader only |
-| ERs | Sequencer → Gateway | TCP, PDU; leader sends only |
-| ME orders | Sequencer → ME | TCP, PDU; leader sends only |
-| ME ERs | ME → Sequencer | TCP, PDU; ME sends to leader only |
-| WAL replication | Leader → Follower | TCP, dedicated; follower sends acks |
-| Arbiter control | Components ↔ Active arbiter | TCP; not on data path |
-| Arbiter HA | Arbiter ↔ Arbiter, Arbiter ↔ Witness | Internal lease+epoch + witness vote |
+| Connection | Direction | What travels on it |
+|---|---|---|
+| Members to gateways | Member → gateway | FIX 5.0 SP2, or the binary protocol, over TCP |
+| Commands | Gateway → both sequencers | Each order or cancel in a `WalRecord` envelope; only the leader acts on it |
+| Reports to gateways | Leading sequencer → gateway | Each report, routed to the session that placed the order |
+| Commands to the engine | Leading sequencer → leading engine | Numbered commands, in order |
+| Reports from the engine | Engine → both sequencers | Each report; only the leader forwards it |
+| Log replication | Leading → following sequencer | Every record; the follower acknowledges each |
+| Book replication | Leading → following engine | Every change to the book (`BookUpdate`) |
+| Leases | Each instance ↔ its peer and both arbiters | `LeaseRequest`, `LeaseGrant`, `LeaseRefusal` |
+| Arbiters | Arbiter ↔ arbiter, arbiter ↔ witness | The same lease messages, and the highest epoch granted in each group |
+| Topics | Publisher → subscribers | Records from the sequencer's log, by topic |
+| Authentication | Gateway ↔ both authentication services | The SCRAM-SHA-256 exchange for each logon |
 
 ---
 
-## Order Flow (happy path)
+## How an order travels
 
 ```
-FIX client sends NewOrderSingle
-    │  raw FIX bytes
-    ▼
-Order Gateway
-    - parses FIX message
-    - SCRAM authenticates client (once, at logon)
-    - encodes NewOrderSingle PDU
-    │  PDU (port 7001)
-    ▼
-Sequencer (leader)
-    - assigns sequence number
-    - appends to WAL
-    - forwards PDU to Matching Engine
-    │  PDU (port 7020)  ─── simultaneously ──►  WAL record (port 7003)
-    ▼                                           Sequencer (follower)
-Matching Engine                                     - appends to own WAL
-    - matches order (or fills immediately in stub)  - sends WalAck
-    - generates ExecutionReport PDU             ◄───
-    │  PDU (port 7021)
-    ▼
-Sequencer (leader)
-    - receives WalAck from follower
-    - releases buffered ER (gated on WalAck)
-    - routes ER to correct gateway via SenderCompID
-    │  PDU (port 7010)
-    ▼
-Order Gateway
-    - encodes FIX ExecutionReport
-    │  raw FIX bytes
-    ▼
-FIX client receives ExecutionReport
+Member sends a new order
+   │
+   ▼
+Gateway
+   - FIX: checks the message against the FIX dictionary and the venue's rules
+     binary: decodes it and checks it against the protocol's definition and the venue's rules
+   - refuses it, with a reply, if it fails, if the venue is not accepting orders, or if the
+     session is over its limit per second
+   - wraps it in a WalRecord envelope naming the session, and sends it to both sequencers
+   │
+   ▼
+Sequencer (leading)
+   - gives it the next sequence number
+   - writes it to the log, and sends the record to the following sequencer
+   - sends it to the leading matching engine
+   │
+   ▼
+Matching engine (leading)
+   - refuses it if its ClOrdID is already in use by the session, or is too long for the book
+   - otherwise puts it on the book, records it in its open-order region, and sends the change
+     to the following engine
+   - sends the execution report to both sequencers
+   │
+   ▼
+Sequencer (leading)
+   - holds the report until the following sequencer has acknowledged the order's record
+   - sends it to the gateway the order's session is now connected to
+   │
+   ▼
+Gateway
+   - FIX: writes the FIX ExecutionReport, numbered in the session's sequence
+     binary: relays the report as it arrived
+   │
+   ▼
+Member receives the execution report
 ```
 
-The sequencer is the **sole writer** to the ME's input stream, imposing total order on all
-messages. The WAL is the authoritative record of every committed order. All downstream
-state (routing tables, book replicas) is derived from the WAL and can be rebuilt by replay.
+The leading sequencer alone decides the order in which the matching engine sees commands. The log
+holds every order the venue took; the engines' books and the routing of reports can be rebuilt
+from it.
 
 ---
 
-## Port Allocation
+## Ports
 
-| Port | Usage |
-|------|-------|
-| 9879 | FIX clients → gateway (inbound) |
-| 7001 | gateway → sequencer primary (order PDUs) |
-| 7002 | gateway → sequencer secondary (order PDUs; HA) |
-| 7003/7004 | sequencer peer-to-peer WAL replication |
-| 7010 | sequencer → gateway (ER forwarding inbound) |
-| 7020 | sequencer → ME primary (sequenced order PDUs) |
-| 7021 | ME → sequencer ER listener |
-| 7022 | ME → sequencer secondary ER listener (HA) |
-| 7070 | gateway → authentication service primary |
-| 7071 | gateway → authentication service secondary |
-| 7100 | sequencer → arbiter |
-| 7030–7047 | MEP topic ports (see [Pub/Sub](../pubsub/pubsub.md)) |
+The development environment's values, from `environments/dev.toml` as deployed into
+`installed/etc`. Each environment file sets its own.
 
----
-
-## Component Summary
-
-| Component | Language | Role |
-|-----------|----------|------|
-| `fix_order_gateway` | C++ | FIX 5.0 SP2 session layer; PDU encode/decode; SCRAM auth |
-| `binary_order_gateway` | C++ | Same venue over the internal PDU protocol; no FIX translation layer |
-| `sequencer` | C++ | Total order assignment; WAL; leader-follower HA |
-| `matching_engine` | C++ | Order book; execution report generation |
-| `matching_engine_publisher` | C++ | WAL follower; topic fanout to downstream consumers (planned) |
-| `arbiter` / `witness` | C++ | External leader election; lease+epoch; split-brain prevention |
-| `authentication_service` | C++ | SCRAM-SHA-256 credential store; responds to gateway auth requests |
-| `admin_service` | Java | Web UI for firm/comp-id CRUD; credential lifecycle management |
-| `fix_test_client` | Java | FIX test harness; Groovy scripting; message capture |
+| Port | Listener |
+|---|---|
+| 9879, 9881 | FIX gateway a, b: members (9880, 9882 with TLS) |
+| 9890, 9891 | Binary gateway a, b: members |
+| 11010, 11011 | FIX gateway a, b: reports from the sequencers |
+| 11110, 11111 | Binary gateway a, b: reports from the sequencers |
+| 11001, 11002 | Sequencer primary, secondary: commands from the gateways |
+| 11003, 11004 | Sequencer primary, secondary: the peer |
+| 11021, 11022 | Sequencer primary, secondary: reports from the matching engines |
+| 11030, 11031 | Sequencer primary, secondary: the publishers, reading the log |
+| 11020, 11023 | Matching engine primary, secondary: commands from the sequencers |
+| 11025, 11026 | Matching engine primary, secondary: the peer |
+| 11040 to 11043 | Matching engine publisher: topic subscribers |
+| 11044, 11045 | Matching engine publisher primary, secondary: the peer |
+| 11070, 11071 | Authentication service a, b: the gateways |
+| 11072, 11073 | Authentication service a, b: the admin service |
+| 11100 | Witness: the arbiters |
+| 11200, 11201 | Arbiter primary, secondary: the components |
+| 11203, 11204 | Arbiter primary, secondary: the other arbiter |
+| 9201 to 9214 | Each process's Prometheus metrics |
 
 ---
 
-## See Also
+## The components
 
-- [Roadmap](../roadmap.md) — slice plan and outstanding items
-- [WAL and High Availability](../availability/wal_and_ha.md) — detailed HA design
-- [Reactor](../framework/reactor.md) — event loop internals
-- [Threading](../framework/threading.md) and [CPU Pinning](../framework/cpu_pinning.md)
+| Component | Language | What it does |
+|---|---|---|
+| `fix_order_gateway` | C++ | The FIX 5.0 SP2 session layer; checks each command; SCRAM authentication |
+| `binary_order_gateway` | C++ | The same venue over the binary protocol, with the same checks |
+| `sequencer` | C++ | Numbers every command, writes the log, routes reports |
+| `matching_engine` | C++ | The order book, the open-order region, execution reports |
+| `matching_engine_publisher` | C++ | Reads the sequencer's log and publishes topics |
+| `arbiter`, `witness` | C++ | The third voters in the majority leases |
+| `authentication_service` | C++ | Holds the SCRAM-SHA-256 credentials and each comp id's settings; answers the gateways |
+| `admin_service` | Java | Web pages for firms and comp ids; writes the database and tells the authentication service |
+| `fix_test_client` | Java | A FIX and binary test client with Groovy scripting and message capture |
+
+---
+
+## See also
+
+- [WAL and High Availability](../availability/wal_and_ha.md) and [Majority leases](../availability/majority_leases.md)
+- [Roadmap](../roadmap.md)
+- [Reactor](../framework/reactor.md)
+- [Threading](../framework/threading.md) and [CPU pinning](../framework/cpu_pinning.md)

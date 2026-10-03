@@ -231,11 +231,19 @@ Scripts are run from the repository root — `python3 scripts/deploy.py`, `./scr
 
 ## High Availability
 
-The framework provides a built-in leader-follower protocol for deploying resilient application pairs. Two application instances are deployed — primary and secondary — and leader election is deterministic: the node with the lowest configured `instance_id` wins.
+Each component that needs a single writer runs as a pair: the sequencer, the matching engine and
+the matching engine publisher. An instance leads only while a majority of three voters agrees -- the
+two instances and an arbiter -- and the agreement is a lease that must be renewed every second. A
+leader whose lease runs out stops acting at once, so two instances never act as leader together.
+Losing every arbiter does not stop trading, because a leader can renew with its peer alone.
 
-A separate pool of up to three dedicated arbiter processes (arbiter_primary, arbiter_secondary, witness) provides external arbitration to prevent split-brain when both nodes are undecided. Once elected, the peer-to-peer connection between the two application nodes is maintained with heartbeats. If the leader fails, the follower promotes itself and increments the epoch, ensuring that any restarting node can immediately recognise it is stale and rejoin as follower without requiring further arbitration.
+Two arbiters and a witness provide the third vote: the arbiters decide which of them is active by
+the same rule, with the witness as their third voter. The rules were specified in TLA+ and model
+checked before they were built; [Majority leases](docs/availability/majority_leases.md) describes them.
 
-The protocol is intentionally simple — there is no need for a full consensus algorithm such as Raft or Paxos given the fixed two-node-plus-arbiter topology.
+The gateways run two instances per protocol, and each member is provisioned to a primary and a
+backup; the authentication service runs two instances that both serve.
+[WAL and High Availability](docs/availability/wal_and_ha.md) is the overview.
 
 ## Security (TLS and SCRAM)
 

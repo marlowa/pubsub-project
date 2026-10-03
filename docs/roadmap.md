@@ -236,7 +236,7 @@ when.
 ### Deferred
 
 - **Find out why a first-time reader concludes the arbiter is unfinished** (documentation).  
-  Raised 2026-08-23, from a note made some time earlier. `pubsub_itc_fw_summary.md` was given to
+  Raised 2026-08-23, from a note made some time earlier. `docs/framework/summary.md` was given to
   a reader with no other knowledge of the project -- a large language model, which is a fair proxy
   for someone who has cloned the repository and read only this -- and it reported "Next: Arbiter
   full implementation (slice 8)" among the open items. The arbiter is implemented, deployed, and
@@ -280,7 +280,7 @@ when.
 ### Completed since this list was last revised
 
 Kept as a record of what the "Active / Next" and "Deferred" lists used to hold. The full
-account of each is in `pubsub_itc_fw_summary.md` under the same item number.
+account of each is in `docs/framework/summary.md` under the same item number.
 
 - **Check the high availability design with TLA+** (high availability) -- done 2026-09-27.
   The design the code implements is specified in two TLA+ descriptions, one of the sequencer pair

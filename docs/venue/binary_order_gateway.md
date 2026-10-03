@@ -24,7 +24,7 @@ FIX gateway's samples against 11% here), so both gateways now emit the same mark
 cadence -- keep it that way or any comparison measures logging. And a throughput comparison is
 still not available, because the FIX harness infers completion from log polling rather than
 measuring it. The metrics that would settle it properly are specified under item 16 in
-`pubsub_itc_fw_summary.md`; the comparison is deferred until then.
+`docs/framework/summary.md`; the comparison is deferred until then.
 
 ## Wire protocol
 
@@ -269,7 +269,7 @@ gateway that cannot read a message still has no business withholding it.
   never stored or forwarded, but it is not a substitute for transport encryption. Whether
   to add it -- and whether the argument extends to the internal PDU hops, since order flow
   is itself sensitive -- is an open question; see the encryption TODO in
-  `pubsub_itc_fw_summary.md`.
+  `docs/framework/summary.md`.
 - **No proprietary logon mode.** The FIX gateway has one; the binary order gateway offers SCRAM
   only. A proprietary mode was considered and rejected: its purpose would have been to test
   a different venue's binary protocol, which this client cannot speak in any case.

@@ -165,25 +165,25 @@ means shipping a promotion path that is never tested where it is written.
 
 **What is relied on instead** is Option A, and section 9's conclusion permits exactly this:
 *"a 2-node HA system without fencing **or an arbiter** is fundamentally unsafe"*. The arbiter
-is the answer to that "or".
+is the answer to that "or", as the third voter in a majority lease ([section 11f](#ha_majority_leases)).
 
-* **Arbiter-mediated leadership.** A follower does not promote itself. It asks, and the
-  arbiter decides from live connection state -- if the peer still holds a connection, the
-  peer keeps leadership. Two nodes cannot both be told they lead.
-* **Epoch fencing on every PDU, not only on commits.** Every cross-component PDU carries the
-  sender's view of the relevant pair's leader epoch, and receivers check it before
-  processing: equal accepted, lower discarded as stale, higher re-validated with the arbiter.
-  A stale leader that believes it still leads is therefore rejected at every interaction it
-  attempts, rather than at a commit boundary. This is a narrower guarantee than STONITH --
-  the stale node keeps running -- but it is a stronger one than commit-time fencing, and it
-  needs no hardware.
-* **A fence file written on becoming leader**, covering split-brain between two instances on
-  one host, where a network-level mechanism sees nothing to judge.
+* **Leadership by majority, with leases.** An instance leads only while two of three voters --
+  itself, its peer and the active arbiter -- have granted it a lease, and each voter promises its
+  vote to one instance at a time. No instance promotes itself.
+* **A leader whose lease runs out stops acting.** It times its lease on its own clock, counted from
+  before the voter granted it, so it stops before any voter is free to grant the lead to someone
+  else. A leader cut off from both its peer and the arbiters therefore stops of its own accord: it
+  needs neither to be told nor to be switched off.
+* **Receivers refuse what a non-leader sends.** A follower sequencer forwards nothing; a matching
+  engine without a lease discards every order; the sequencer routes orders only to the matching
+  engine that announced it leads, at an epoch no older than one it has accepted.
 
-**What this costs, stated plainly.** STONITH resolves uncertainty by removing a node; this
-does not. A node that is partitioned but alive keeps running and keeps being refused. That is
-the accepted trade: it cannot corrupt shared state, because nothing it sends is accepted, but
-it also does not stop, and it may hold resources until someone intervenes.
+**What this costs, stated plainly.** STONITH guarantees a suspect node is gone; this does not. A
+node that has lost its lease keeps running as a process. It cannot act as leader, because it stops
+sending on the order path when its lease runs out and nothing it sends after that is acted on, but
+it may hold resources, such as its connections and its memory, until someone intervenes. The
+guarantee also rests on one timing assumption: that the machines' clocks run at nearly the same
+rate, which each lease allows for ([Majority leases](majority_leases.md), section 4).
 
 ---
 
@@ -289,12 +289,10 @@ accepts a claim only when its epoch is at least as new as the last one it accept
 group, so an instance whose leadership has been superseded cannot reclaim routing: its epoch is
 behind, and the claim is refused without anyone having to ask the arbiter anything.
 
-This is the same mechanism the venue already uses everywhere else -- epochs travel on every PDU
-precisely so a stale sender is detectable by the receiver -- and the same shape as
-`StatusResponse`, which already carries `current_role` and `epoch` so that a restarting
-sequencer can adopt follower without arbitration. The authority rests with the lease rules of
-[section 11f](#ha_majority_leases): an instance leads in an epoch only once a majority has granted
-it.
+It is the same shape as `StatusResponse`, which carries `current_role` and `epoch` for the same
+reason. The authority rests with the lease rules of [section 11f](#ha_majority_leases): an instance
+leads in an epoch only once a majority has granted it, so an announcement at an older epoch than one
+already accepted cannot come from the current leader.
 
 ## 11c. An arbiter that restarts is told who leads; it does not remember {#ha_arbiter_relearns}
 
@@ -387,9 +385,11 @@ believing it otherwise -- which is what makes it a lease rather than a record.
 
 ## 11e. The epoch must outlive the process, and not everything may issue one
 
-The epoch is the venue's generation counter for leadership. Every component checks it on
-every PDU and rejects anything from an older generation. That check is the whole of the
-fencing, and it works only while the counter never goes backwards.
+The epoch is the venue's generation counter for leadership. Voters refuse a request for an epoch
+below the highest they have granted, and the sequencer refuses a matching engine's announcement of
+its role at an older epoch than one it has accepted. Those checks work only while the counter never
+goes backwards. (What keeps a deposed leader's orders and reports from being acted on is its own
+lease ending, which stops it sending; see [section 11f](#ha_majority_leases).)
 
 Held only in memory, it went backwards. It started at zero on every start, so a pair
 restarted together both came back at zero, elected a leader between them, and stamped
