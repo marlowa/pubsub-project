@@ -33,6 +33,30 @@ records correctly and deadlocks waiting for a response it never sends. The gatew
 `TlsContext` caps at TLS 1.2 to work around this. See
 [Secure Communications](../operations/secure_comms.md).
 
+## Logon modes {#ftc_logon_modes}
+
+Each FIX endpoint in the configuration has a logon mode. **Standard** is the default and is what
+this venue's FIX gateways expect. **Proprietary** is for connecting the client to a FIX gateway
+whose logon departs from the standard in the ways below. Nothing in this venue listens for it;
+it is kept so that the client can be pointed at such a gateway.
+
+With `logon_mode = "proprietary"` on an endpoint, the client:
+
+- **connects in plain TCP only.** A proprietary logon with TLS is refused, and the logon page
+  disables TLS for that endpoint;
+- **stamps `SendingTime` (52) and `TransactTime` (60) with nanosecond precision** on every
+  message, from `NanoClock`, which derives nanosecond wall time from the millisecond clock and a
+  `System.nanoTime()` difference, so the precision does not depend on the platform's clock;
+- **sends the password in `EncryptedPassword` (1402)** with `EncryptedPasswordMethod` (1400) set to
+  101, instead of in `Password` (554). The password is sent as written for now: encrypting it
+  before it is placed in the field is still to be done (a TODO in `FixApplication`);
+- **does not ask to reset sequence numbers.** `ResetSeqNumFlag` (141) is removed and the session
+  is not reset at logon, so numbering carries on from the client's message store, or from the
+  starting number given on the logon form or with `setNextOutgoingSeqNum`;
+- **sends `NextExpectedMsgSeqNum` (789)** in the Logon.
+
+`TargetCompID` can be set on the logon form for either mode, and defaults to `GATEWAY`.
+
 ## UI (Five Pages)
 
 All pages display a persistent nav bar and a live session status strip.
@@ -100,7 +124,7 @@ Scripts run in `ScriptRunner` via `GroovyShell` with three bindings:
 
 | Binding | Type | Purpose |
 |---------|------|---------|
-| `session` | `FixSessionBinding` | `logon()`, `logout()`, `send(Message)` |
+| `session` | `FixSessionBinding` | `logon(...)` to the first standard FIX endpoint, `logonTo(key, ...)` to a named endpoint, `logonProprietary(compId[, targetCompId], password)` to the first proprietary endpoint, `logout()`, `disconnect()`, `setNextOutgoingSeqNum(n)`, `send(Message)` |
 | `fix` | `FixHelper` | Message factory: `newOrderSingle()`, `orderCancelRequest()` |
 | `sleep` | `groovy.lang.Closure` | `sleep(ms)` — pauses script without blocking the JVM |
 
@@ -141,13 +165,22 @@ Opens on `http://localhost:8081`.
 
 ## Configuration
 
-`app.toml` (in the working directory when the JAR is run):
+`config/app.toml` (relative to the working directory when the JAR is run); the values in `${...}`
+come from the environment file when the venue is deployed.
 
-| Key | Purpose |
+| Section and key | Purpose |
 |-----|---------|
-| `[fix] host / port` | Gateway FIX listener (default port 9879) |
-| `[fix] sender_comp_id / target_comp_id` | FIX session identifiers |
-| `[fix] heartbeat_interval` | FIX heartbeat interval in seconds |
+| `[server] port` | The web interface's port |
+| `[fix] target_comp_id` | The default `TargetCompID`, `GATEWAY` |
+| `[fix] tls_enabled`, `trust_store_path`, `trust_store_password` | TLS to the FIX gateway, and the trust store holding the gateway's certificate |
+| `[[gateway]]` | One entry per endpoint the logon page offers, in order: `key`, `label`, `protocol` (`fix` or `binary`), `host`, `port`, `tls_port` (omitted where there is no TLS listener) and `logon_mode` (`proprietary`, or omitted for standard) |
+| `[capture] output_dir` | Where message captures are written |
+| `[scripts] scripts_dir` | Where scripts are loaded from and saved to |
+
+The development configuration lists both instances of each gateway, deliberately including
+instances a comp id may not be provisioned for, so that a gateway's refusal can be shown. A member is
+told its endpoints when it is provisioned, which is why they are configured here rather than
+discovered from the venue's own configuration.
 
 ## See Also
 
