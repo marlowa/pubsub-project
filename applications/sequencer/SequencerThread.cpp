@@ -470,6 +470,12 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         if (carried_orders) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: matching engine order connection {} lost: {} -- the other engine may promote and reconnect", id.get_value(), reason);
+            if (awaiting_engine_position_) {
+                // The engine that was asked is gone. Whichever engine acts next catches up from this
+                // log before it acts, which sends it everything the asked one lacked, so nothing more
+                // is waited for.
+                stop_awaiting_engine_position("the matching engine it asked has disconnected; whichever engine acts next catches up from this log");
+            }
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: standby matching engine connection {} lost: {}", id.get_value(),
                        reason);
@@ -538,6 +544,13 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     // elsewhere left the venue with no engine while one was leading and asking (BUG-0108).
     if (message.pdu_id() == pubsub_itc_fw_app::MePositionRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
         handle_me_position_request(conn_id, message);
+        release_pdu_payload(message);
+        return;
+    }
+
+    // The leading matching engine's answer to the question a new leader asks on taking the lead.
+    if (message.pdu_id() == pubsub_itc_fw_app::EnginePosition::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
+        handle_engine_position(message);
         release_pdu_payload(message);
         return;
     }
@@ -728,7 +741,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // docs/availability/a_follower_behind_does_not_lead.md), and never ahead of an order already
         // waiting. Until then the order is replicated and published at once and waits: in the storage
         // for held orders, or in the log once that is full.
-        if (config_.ha_enabled && (needs_wal_ack() || !may_act_without_follower() || !held_orders_.empty() || first_unheld_seq_ != 0)) {
+        if (config_.ha_enabled &&
+            (needs_wal_ack() || !may_act_without_follower() || !held_orders_.empty() || first_unheld_seq_ != 0 || awaiting_engine_position_)) {
             if (!needs_wal_ack()) {
                 say_follower_may_not_lead();
             }
@@ -1143,6 +1157,9 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == acknowledgement_watch_timer_id_) {
         check_follower_acknowledgements();
+        if (awaiting_engine_position_ && std::chrono::steady_clock::now() - engine_position_asked_at_ >= engine_position_ask_interval) {
+            ask_engine_for_position();
+        }
         return;
     }
 }
@@ -1195,7 +1212,16 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         // kept every report the engine sent it, so it forwards them all now
         // (docs/availability/change_of_sequencer_leader.md, section 4.4).
         forward_kept_reports();
+
+        // This instance's log may hold orders the engine never received: the follower wrote and
+        // acknowledged them, and the previous leader died before the acknowledgement reached it.
+        // Ask the engine how far it has got, and send it the rest before anything new
+        // (docs/availability/commands_during_a_change_of_leader.md, section 3.5).
+        if (config_.ha_enabled) {
+            ask_engine_for_position();
+        }
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
+        awaiting_engine_position_ = false;
         discard_held_orders();
         first_unheld_seq_ = 0;
         pause_or_resume_order_reading();
@@ -1930,6 +1956,12 @@ void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) 
 }
 
 void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
+    // A new leader sends nothing new until the engine has been sent the orders it lacks, or the
+    // engine would act on a later order before an earlier one.
+    if (awaiting_engine_position_) {
+        pause_or_resume_order_reading();
+        return;
+    }
     while (!held_orders_.empty() && held_orders_.front().envelope.seq_no <= acknowledged_seq_no) {
         const HeldOrder& held = held_orders_.front();
         send_held_order_to_matching_engine(held);
@@ -2037,6 +2069,88 @@ void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
                first, through);
 }
 
+void SequencerThread::ask_engine_for_position() {
+    const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
+    if (!engine.is_valid()) {
+        // No engine to ask. Whichever engine acts next catches up from this log before it acts, and
+        // is sent everything after its own position, the orders asked about here included.
+        if (awaiting_engine_position_) {
+            stop_awaiting_engine_position("no matching engine is connected; whichever engine acts next catches up from this log");
+        }
+        return;
+    }
+    if (!awaiting_engine_position_) {
+        awaiting_engine_position_ = true;
+        held_at_takeover_ = next_sequence_number_ - 1;
+        engine_position_asks_ = 0;
+    }
+    ++engine_position_request_id_;
+    ++engine_position_asks_;
+    engine_position_asked_at_ = std::chrono::steady_clock::now();
+    pubsub_itc_fw_app::EnginePositionQuery query{};
+    query.request_id = engine_position_request_id_;
+    send_pdu(engine, pubsub_itc_fw_app::EnginePositionQuery::message_pdu_id, 0, query);
+    // A few asks are routine: when the venue starts, the engine is still catching up as the first
+    // leader takes the lead, and answers only once it has finished, a second or two later. Five asks
+    // means it has not answered for four seconds while new orders wait, which is worth a Warning, once.
+    PUBSUB_LOG(get_logger(),
+               engine_position_asks_ == engine_position_asks_before_warning ? pubsub_itc_fw::FwLogLevel::Warning : pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: asking the matching engine on connection {} for the highest order it has acted on (ask {}, request {}) -- this log "
+               "holds records through {}, and new orders wait until the engine has every one it lacks",
+               engine.get_value(), engine_position_asks_, engine_position_request_id_, held_at_takeover_);
+}
+
+void SequencerThread::handle_engine_position(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::EnginePositionView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode EnginePosition -- dropping");
+        return;
+    }
+    if (!awaiting_engine_position_ || role_ != pubsub_itc_fw_app::Role::leader || view.request_id != engine_position_request_id_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "SequencerThread: EnginePosition for request {} not awaited (awaiting request {}) -- ignoring", view.request_id,
+                   awaiting_engine_position_ ? engine_position_request_id_ : 0);
+        return;
+    }
+
+    awaiting_engine_position_ = false;
+    if (view.highest_applied < held_at_takeover_) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the matching engine has acted on orders through {} -- sending it the orders this log holds from {} to {}, which it "
+                   "never received",
+                   view.highest_applied, view.highest_applied + 1, held_at_takeover_);
+        send_logged_orders(view.highest_applied + 1, held_at_takeover_);
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the matching engine has acted on orders through {}, and this log holds nothing after that it has not been sent",
+                   view.highest_applied);
+    }
+    release_orders_that_waited_for_the_engine();
+}
+
+void SequencerThread::stop_awaiting_engine_position(const char* reason) {
+    awaiting_engine_position_ = false;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: no longer waiting for the matching engine's position -- {}", reason);
+    release_orders_that_waited_for_the_engine();
+}
+
+void SequencerThread::release_orders_that_waited_for_the_engine() {
+    // The orders that arrived meanwhile now go the way they would have gone: once the follower
+    // acknowledges them, or once a voter has confirmed that the follower may not lead.
+    if (needs_wal_ack()) {
+        release_held_orders_through(peer_acked_through_);
+    } else {
+        release_if_confirmed();
+    }
+    pause_or_resume_order_reading();
+}
+
 int64_t SequencerThread::released_through() const {
     if (!held_orders_.empty()) {
         return held_orders_.front().envelope.seq_no - 1;
@@ -2048,7 +2162,8 @@ int64_t SequencerThread::released_through() const {
 }
 
 void SequencerThread::pause_or_resume_order_reading() {
-    const bool waiting_for_confirmation = role_ == pubsub_itc_fw_app::Role::leader && !needs_wal_ack() && !may_act_without_follower();
+    const bool waiting_for_confirmation =
+        role_ == pubsub_itc_fw_app::Role::leader && ((!needs_wal_ack() && !may_act_without_follower()) || awaiting_engine_position_);
     if (!order_reading_paused_) {
         if (waiting_for_confirmation && (held_orders_.size() >= pause_order_reading_at || first_unheld_seq_ != 0)) {
             for (const pubsub_itc_fw::ConnectionID& id : order_connection_ids_) {
@@ -3147,6 +3262,13 @@ bool SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID&
     envelope.gateway_session_conn_id = view.gateway_session_conn_id;
     envelope.has_sender_comp_id = view.has_sender_comp_id;
     envelope.sender_comp_id = view.sender_comp_id;
+    // The engine files an order under the session's comp id AND its gateway protocol, so the
+    // protocol must travel too: without it a binary gateway's member is filed under the default
+    // protocol, and the engine's reports and its check for a repeated ClOrdID name the wrong session.
+    envelope.has_origin_gateway_id = view.has_origin_gateway_id;
+    envelope.origin_gateway_id = view.origin_gateway_id;
+    envelope.has_gateway_instance_id = view.has_gateway_instance_id;
+    envelope.gateway_instance_id = view.gateway_instance_id;
 
     send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, envelope);
     (void)wall_time_ns;

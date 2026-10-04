@@ -577,6 +577,9 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void become_leader_when_current();
     void send_me_position_request();
     void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);
+    // A sequencer that has just taken the lead asks for the highest order or cancel this engine has
+    // acted on, so that it can send any its log holds above that (EnginePositionQuery, 118).
+    void handle_engine_position_query(const pubsub_itc_fw::EventMessage& message);
 
     /**
      * @brief Whether the engine can say what it is holding.

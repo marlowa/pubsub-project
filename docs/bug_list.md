@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 114 |
+| Bugs recorded | 115 |
 | Open | 43 (28 defects, 15 tasks) |
-| Closed | 71 |
-| Next id | BUG-0115 |
+| Closed | 72 |
+| Next id | BUG-0116 |
 
 ## Open bugs by severity
 
@@ -2645,6 +2645,50 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0115: An order in the new sequencer leader's log that the matching engine never received is never applied or answered {#bug_0115}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-04 |
+| Fixed | 2026-10-04 -- a sequencer that takes the lead asks the leading matching engine for the highest order it has acted on, and sends it every order its log holds above that before any new one |
+| How | Reading the code while designing part 4.3 of [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md), then shown by `ha_test.py` scenario 66 |
+| Impact | Orders the venue has written to both sequencers' logs are never placed and never answered after a change of sequencer leader. The member is not told they were refused, so it cannot tell them from orders still on their way |
+
+**What happens.** The leading sequencer sends an order to the matching engine once its follower has
+acknowledged the order's record (part 4.2 of the design). If the leader dies after the follower wrote
+the record and before the acknowledgement reached the leader, the leader never sent the order to the
+engine. The follower holds it, takes the lead, and does not send it either: a sequencer that takes the
+lead sends the engine nothing from its log, and an engine asks a sequencer to catch it up only when the
+engine itself starts or is promoted.
+
+**What was measured.** `ha_test.py` scenario 66 on 2026-10-04. The secondary sequencer was started
+with `libblock_sends_to_ports.so` blocking its sends to its peer once a flag file existed, so it wrote
+and acknowledged the leader's records and the leader never heard. A member sent three orders through
+the FIX gateway, and the leader was stopped 20 milliseconds later, before its 100 millisecond wait
+could make it send them to the engine. The follower's log held all three, and the engine's log showed
+none of them. The leader was killed and confirmed dead, and the follower took the lead 1.5 seconds
+later. Over the next ten seconds the member received no report for any of the three, and the engine
+never accepted them.
+
+**The remedy.** A sequencer that takes the lead asks the leading matching engine for the highest order
+it has acted on, and sends it every order its log holds above that, before any new one
+([commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md), section
+3.5).
+
+**Fixed (2026-10-04).** The new leader sends `EnginePositionQuery` (118) to the leading engine, which
+answers with `EnginePosition` (119). New orders wait, held or in the log, until the answer has been
+acted on. Scenario 66 now passes: the new leader asked, the engine answered that it had acted on
+orders through 2494769, and the leader sent it the three orders numbered 2494770 to 2494773 from its
+log; the engine accepted each once, and the member received each acceptance. The same run passed
+scenarios 1, 2, 16, 21, 59 to 65.
+
+In the same change, orders sent from the log carry the member's gateway protocol
+(`origin_gateway_id`) and instance. Before, they did not, so the engine filed an order from a binary
+gateway member under the default protocol. That function also sends the catch-up an engine performs
+when it starts or is promoted, so the catch-up had the same fault for binary gateway members.
 
 ### BUG-0097: A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's {#bug_0097}
 

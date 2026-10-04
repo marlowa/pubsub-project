@@ -199,6 +199,7 @@ import os
 import re
 import secrets
 import signal
+import socket
 import struct
 import urllib.request
 import subprocess
@@ -847,6 +848,13 @@ class Scenario(NamedTuple):
     # reach the member from the new leader, marked PossResend. See run_scenario's "kept reports"
     # block, and section 4.4 of docs/availability/change_of_sequencer_leader.md.
     assert_kept_reports_forwarded: bool = False
+    # When True, the secondary sequencer is started with libblock_sends_to_ports.so preloaded, set to
+    # block what it sends to its peer once the flag file exists, so the follower writes and
+    # acknowledges records whose acknowledgements never reach the leader. The scenario sends orders,
+    # stops the leader before it can act on them, kills it, and requires every order to be answered
+    # once the follower leads. See run_scenario's "logged commands reach the engine" block, and
+    # section 3.5 of docs/availability/commands_during_a_change_of_leader.md.
+    assert_logged_commands_reach_engine: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3604,6 +3612,28 @@ _SCENARIOS: list[Scenario] = [
         assert_kept_reports_forwarded=True,
         steps=[],
     ),
+
+    # 66 -- a command the new leader's log holds, which the matching engine never received, is applied.
+    #
+    # The secondary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
+    # exists, nothing it sends to its peer arrives, so the follower writes and acknowledges every record
+    # the leader sends it, and the leader never hears. A member sends orders; the leader holds them,
+    # waiting for acknowledgements that cannot arrive, and is stopped before its 100 ms wait could make
+    # it send them to the engine. It is killed. The follower holds the orders and takes the lead, and
+    # every order must then be applied and answered.
+    Scenario(
+        number=66,
+        short_name="logged_commands_reach_engine",
+        description="Orders in the new sequencer leader's log that the matching engine never received are applied and answered",
+        expected_outcome=(
+            "the follower's log holds the orders and the engine has applied none of them when the leader is killed; once the "
+            "follower leads, the engine applies each order once and the member receives its acceptance"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_logged_commands_reach_engine=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -5774,6 +5804,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 extra_environment = blocked_peer_environment(prefix, block_flag)
             if scenario.assert_kept_reports_forwarded and name == "sequencer_primary":
                 extra_environment = blocked_gateway_environment(prefix, block_flag)
+            if scenario.assert_logged_commands_reach_engine and name == "sequencer_secondary":
+                extra_environment = blocked_peer_environment(prefix, block_flag)
             if extra_environment is not None:
                 log(f"  {name} has libblock_sends_to_ports.so preloaded, blocking ports "
                     f"{extra_environment['PUBSUB_TEST_BLOCK_PORTS']} once {block_flag.name} exists")
@@ -7927,6 +7959,123 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"kept reports: the acceptance of {unmarked} arrived without PossResend. The new leader cannot tell whether "
                     "the old leader forwarded it, so a member that already had it would read it as a second event (R-0122).")
             log(f"  the member was told of all {len(kept)} acceptances, each marked PossResend -- OK")
+
+        # ── Logged commands reach the engine ──────────────────────────────────
+        if scenario.assert_logged_commands_reach_engine:
+            log("=== Orders the new leader's log holds, and the matching engine never received, are applied ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("logged commands: sequencer_primary is not leading.")
+            secondary_config = prefix / "etc" / "sequencer" / "sequencer_secondary.toml"
+            secondary_wal = secondary_config.parent / installed_toml_section_value(secondary_config, "wal", "directory")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            # Each order must leave at once. With Nagle's algorithm on, the second and third small
+            # writes wait for the first to be acknowledged, up to 40 ms, and the leader is stopped
+            # 20 ms after the orders are sent.
+            if member.sock is not None:
+                member.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("logged commands: the raw client could not log on.")
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            def acceptances_for(cl_ord_ids: list[str], timeout: float) -> dict[str, list[dict[int, str]]]:
+                """Every acceptance (OrdStatus=0) naming one of cl_ord_ids, received until the timeout runs out."""
+                received: dict[str, list[dict[int, str]]] = {cl_ord_id: [] for cl_ord_id in cl_ord_ids}
+                deadline = time.monotonic() + timeout
+                while (remaining := deadline - time.monotonic()) > 0:
+                    report = member.receive_until("8", timeout=min(1.0, remaining))
+                    if report is not None and report.get(11) in received and report.get(39) == "0":
+                        received[report[11]].append(report)
+                return received
+
+            def times_in_follower_log(cl_ord_id: str) -> int:
+                needle = cl_ord_id.encode()
+                return sum(path.read_bytes().count(needle) for path in secondary_wal.glob("wal_*.log"))
+
+            # 1. Before anything is blocked, an order is answered, so the session works.
+            before = f"logged-{run_tag}-before"
+            member.new_order_single(before)
+            if not acceptances_for([before], _RAW_REPLY_TIMEOUT)[before]:
+                member.close()
+                die("logged commands: an order sent before anything was blocked was never accepted.")
+            log("  an order sent before the block is accepted -- OK")
+
+            # 2. Nothing the follower sends to the leader arrives from now on, and the library says so.
+            block_flag.touch()
+            if not poll_log_for(log_dir / "sequencer_secondary.stdout", "block_sends_to_ports: the flag file exists",
+                                timeout=_RAW_REPLY_TIMEOUT)[0]:
+                member.close()
+                die("logged commands: libblock_sends_to_ports.so never reported that it had begun blocking the follower.")
+            log("  the follower's sends to the leader are now discarded, and the library has said so -- OK")
+
+            # 3. Orders the leader holds, waiting for acknowledgements that cannot arrive. It is stopped
+            #    well inside its 100 ms wait, so it cannot run as if alone and send them to the engine.
+            primary = proc_by_name["sequencer_primary"]
+            logged = [f"logged-{run_tag}-{number}" for number in (1, 2, 3)]
+            accepted_from = file_end(me_log)
+            for cl_ord_id in logged:
+                member.new_order_single(cl_ord_id)
+            time.sleep(0.02)
+            os.kill(primary.pid, signal.SIGSTOP)
+            with open(f"/proc/{primary.pid}/stat", encoding="ascii") as stat:
+                state = stat.read().rsplit(")", 1)[1].split()[0]
+            if state != "T":
+                member.close()
+                die(f"logged commands: sequencer_primary is in state {state!r} after SIGSTOP, not stopped.")
+            log(f"  {len(logged)} orders sent, and the leader stopped 20 ms later")
+            time.sleep(1.0)
+
+            # 4. The case this scenario exists for: the follower holds the orders, the engine none of them.
+            missing = [c for c in logged if times_in_follower_log(c) == 0]
+            if missing:
+                member.close()
+                die(f"logged commands: the follower's log does not hold {missing}, so this run is not the case being tested "
+                    "(the leader may have been stopped before it replicated them).")
+            early = [c for c in logged if count_lines_with_all(me_log, "accepted NOS", f"ClOrdID={c} ", from_byte=accepted_from) > 0]
+            if early:
+                member.close()
+                die(f"logged commands: the engine already accepted {early} before the leader was killed, so this run is not the "
+                    "case being tested.")
+            log("  the follower's log holds all the orders and the engine has applied none of them -- correct so far")
+
+            # 5. The leader dies, and the follower takes the lead.
+            takeover_from = file_end(secondary_log)
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if Path(f"/proc/{primary.pid}").exists():
+                member.close()
+                die(f"logged commands: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            log("  sequencer_primary confirmed dead")
+            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            if not found:
+                member.close()
+                die(f"logged commands: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            log(f"  sequencer_secondary took the lead {elapsed:.1f}s after the kill")
+
+            # 6. The requirement: each order applied once, and its acceptance reaches the member.
+            received = acceptances_for(logged, _RAW_REPLY_TIMEOUT)
+            member.close()
+            unanswered = [c for c, reports in received.items() if not reports]
+            if unanswered:
+                die(f"logged commands: the member was never told {unanswered} were accepted. The new leader's log holds them and "
+                    "nothing sent them to the matching engine (section 3.5 of docs/availability/commands_during_a_change_of_leader.md).")
+            applied_twice = [c for c in logged if count_lines_with_all(me_log, "accepted NOS", f"ClOrdID={c} ", from_byte=accepted_from) != 1]
+            if applied_twice:
+                die(f"logged commands: the engine did not accept each of {applied_twice} exactly once.")
+            log(f"  the engine applied each of the {len(logged)} orders once, and the member was told of each -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

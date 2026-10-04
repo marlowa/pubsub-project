@@ -462,6 +462,11 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
         release_pdu_payload(message);
         return;
     }
+    if (pdu_id == pubsub_itc_fw_app::EnginePositionQuery::message_pdu_id) {
+        handle_engine_position_query(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (pdu_id == pubsub_itc_fw_app::BookUpdate::message_pdu_id) {
         // BookUpdate from ME-primary -- secondary updates its replica book.
         apply_book_update(message);
@@ -1964,6 +1969,39 @@ void MatchingEngineThread::send_me_position_request() {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: MePositionRequest sent to connection {} (last_seq_no={}, {})",
                    conn_id.get_value(), last_replicated_seq_no_, reconciling_to_lead_ ? "asking to lead" : "starting, not asking to lead");
     }
+}
+
+void MatchingEngineThread::handle_engine_position_query(const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::EnginePositionQueryView query{};
+    if (!pubsub_itc_fw_app::decode(query, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode EnginePositionQuery -- dropping");
+        return;
+    }
+
+    // Answered only by an engine that acts on the orders it is sent, the same test the order path
+    // applies. An engine that is still catching up as part of a promotion catches up from the
+    // sequencer that asks, so its answer would be out of date by the time it finished; the
+    // sequencer asks again until it gets one.
+    const bool acting_on_orders = !ha_enabled_ || ha_role_state_ == MeRole::Leader;
+    if (!acting_on_orders) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "MatchingEngineThread: EnginePositionQuery {} on connection {} -- not acting on orders (state={}), not answering", query.request_id,
+                   message.connection_id().get_value(), static_cast<int>(ha_role_state_));
+        return;
+    }
+
+    pubsub_itc_fw_app::EnginePosition answer{};
+    answer.request_id = query.request_id;
+    answer.highest_applied = highest_live_seq_no_;
+    send_pdu(message.connection_id(), pubsub_itc_fw_app::EnginePosition::message_pdu_id, 0, answer);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: EnginePositionQuery {} on connection {} -- the highest order or cancel acted on is seq_no={}", query.request_id,
+               message.connection_id().get_value(), highest_live_seq_no_);
 }
 
 void MatchingEngineThread::handle_me_position_ack(const pubsub_itc_fw::EventMessage& message) {

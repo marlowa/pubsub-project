@@ -506,6 +506,33 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // On taking the lead: forwards every kept report to its member's gateway, marked as a possible repeat, and empties the store.
     void forward_kept_reports();
 
+    // From taking the lead until the leading matching engine says the highest order it has acted
+    // on. Meanwhile new orders are written and replicated but wait, held or in the log, so that the
+    // engine is sent the orders this log holds and it never received before any later one
+    // (docs/availability/commands_during_a_change_of_leader.md, section 3.5).
+    //
+    // The engine is asked on a connection other than the one the previous leader used, so in
+    // principle an order that leader sent could still be on its way when the engine answers. It is
+    // not in practice: this instance leads only once the previous leader's lease has run out,
+    // seconds after it last sent anything, and the engine has long since read what was sent.
+    bool awaiting_engine_position_{false};
+    // The highest record this instance held when it took the lead: the orders the engine may lack.
+    int64_t held_at_takeover_{0};
+    int64_t engine_position_request_id_{0};
+    int engine_position_asks_{0};
+    std::chrono::steady_clock::time_point engine_position_asked_at_{};
+    // How long to wait for the engine's answer before asking again.
+    static constexpr std::chrono::milliseconds engine_position_ask_interval{1000};
+    // Which ask is logged as a Warning: the engine has then not answered for four seconds.
+    static constexpr int engine_position_asks_before_warning = 5;
+
+    // Asks the leading matching engine for the highest order it has acted on, or stops waiting if
+    // no engine is connected.
+    void ask_engine_for_position();
+    void handle_engine_position(const pubsub_itc_fw::EventMessage& message);
+    void stop_awaiting_engine_position(const char* reason);
+    void release_orders_that_waited_for_the_engine();
+
     // Where a report about to be forwarded came from.
     enum class ReportSource {
         // The matching engine has just sent it to this instance, which is leading.

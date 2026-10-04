@@ -125,16 +125,35 @@ have been written to any log, and treating it as held would lose it.
 
 ### 3.5 A command the new leader holds and the engine never received
 
-On taking the lead, the new leader asks every matching engine to catch up from it. The leading
-engine sends `MePositionRequest`, giving the last record it applied, and the new leader sends it every
-command after that from its log, by the existing catch-up path, before any new command. The engine
-marks the reports from a catch-up as possible repeats, as it already does. The new leader holds new
-commands until the catch-up is complete, using the deferral it already has for a matching engine that
-is not ready.
+On taking the lead, the new leader asks the leading matching engine for the highest sequence number of
+an order or cancel it has acted on (`EnginePositionQuery`, message 118). The engine answers with that
+number (`EnginePosition`, message 119). The new leader then sends it, from its log, every order and
+cancel numbered above that and up to the highest record it held when it took the lead. The engine
+has never received these, so it acts on them as ordinary orders, and their reports are not marked
+as repeats.
 
-This adds a small new message, from the sequencer to the engines, asking them to catch up. An engine
-already performs the catch-up when it starts or is promoted; this lets a new sequencer leader ask for
-it too.
+- **New orders wait meanwhile.** Until the answer arrives, the new leader writes and replicates each
+  new order but does not send it to the engine: it waits with the orders that wait for the
+  follower's acknowledgement or for a voter's confirmation, so that the engine never acts on a later
+  order before an earlier one. When the answer has been acted on, those orders go the way they would
+  have gone.
+- **Only an engine that acts on orders answers:** with HA off, the single engine; with HA on, the
+  leading one. An engine that is still catching up as part of a promotion does not answer; it is
+  catching up from this sequencer, which sends it everything anyway. The new leader asks again once a
+  second until it is answered, with a Warning the first time it asks again.
+- **If no engine is connected, or the asked engine disconnects,** the new leader stops waiting. The
+  engine that acts next catches up from the log before it acts, which sends it everything.
+- **Why the engine's answer can be trusted.** The engine is asked on a different connection from the
+  one the previous leader used, so in principle an order that leader sent could still be on its way.
+  It is not in practice: the new leader leads only once the previous leader's lease has run out,
+  seconds after it last sent anything, and the engine has long since read it.
+- **Orders sent from the log carry the member's gateway protocol.** The engine files an order under
+  the session's comp id and its gateway protocol, so the protocol is copied onto each order sent from
+  the log. The same function sends the catch-up an engine performs when it starts or is promoted, so
+  this also corrects the catch-up for members of the binary gateway, which were filed under the
+  default protocol.
+
+`ha_test.py` scenario 66 checks this ([BUG-0115](../bug_list.md#bug_0115)).
 
 ### 3.6 How a command the new leader already holds is answered
 
@@ -143,7 +162,7 @@ nothing new is needed for any of them:
 
 1. The engine applied it and its report reached the follower, which kept it and forwards it on taking
    the lead (part 4.4).
-2. The engine never received it, and the catch-up of section 3.5 sends it.
+2. The engine never received it, and the new leader sends it from its log (section 3.5).
 3. The engine applies it, or reports on it, after the change of leader, and the new leader forwards
    that report by the ordinary path.
 
@@ -161,8 +180,9 @@ answer today ([BUG-0089](../bug_list.md#bug_0089)). It is outside this design.
 3. The follower takes the lead and numbers above every record it holds (part 4.1). It completes its
    record of identifiers from its log.
 4. It forwards the kept reports (part 4.4). The gateways release the commands those answer.
-5. It sends `OrderAcceptance`, carrying its epoch, and asks the engines to catch up.
-6. The leading engine catches up, applying any command in the log it never received, and reports.
+5. It sends `OrderAcceptance`, carrying its epoch, and asks the leading engine for its position.
+6. It sends the engine any order in its log the engine never received, and the engine applies and
+   reports them.
 7. Each gateway sends again every command it still holds, marked `sent_again`. The new leader
    sequences those its log does not hold, and discards those it does.
 8. Every command is answered once, or answered and repeated with the repeat marked.
@@ -174,7 +194,7 @@ answer today ([BUG-0089](../bug_list.md#bug_0089)). It is outside this design.
 | Gateway store | A copy of each command's envelope, about 200 bytes, and an index entry; removed when its report arrives | Memory set in configuration |
 | `OrderAcceptance` epoch, `sent_again` | One field each | None |
 | Record of identifiers | A hash and an insert per command in the sequencer, on the sequencer thread | Memory: see section 7, decision 1. A read once a second while following |
-| Catch-up on a change of sequencer leader | None | A round trip between sequencer and engine at each change of leader, before new commands are sent |
+| Engine position on a change of sequencer leader | None | A round trip between sequencer and engine at each change of leader, before new commands are sent |
 
 The cost on the ordinary path is to be measured by the method in
 `docs/operations/latency_findings.md` once built, as part 4.2's was.
@@ -247,7 +267,7 @@ is now.
 
 ## 8. The order of the work
 
-1. The scenario for section 3.5, shown to fail; then the catch-up on a change of sequencer leader.
+1. The scenario for section 3.5, shown to fail; then the position query on a change of sequencer leader.
 2. The record of identifiers in the sequencer, with its unit tests, and the startup read measured.
 3. `sent_again` on the envelope and the check in the sequencer.
 4. The epoch on `OrderAcceptance`, and the reordering of section 3.3.

@@ -404,6 +404,36 @@ message RoleAnnouncement (id=117, version=1)
 end
 
 # ------------------------------------------------------------
+#  118 -- EnginePositionQuery
+#  Sent by a sequencer that has just taken the lead to the leading
+#  matching engine, to ask for the highest sequence number of an
+#  order or cancel the engine has acted on.
+#
+#  The new leader's log can hold orders the engine never received:
+#  the follower wrote and acknowledged them, and the old leader died
+#  before the acknowledgement reached it, so it never sent them on.
+#  Nothing else sends them, because an engine asks to catch up only
+#  when it starts or is promoted. The answer tells the new leader
+#  which orders to send from its log before any new one. See
+#  docs/availability/commands_during_a_change_of_leader.md, 3.5.
+# ------------------------------------------------------------
+message EnginePositionQuery (id=118, version=1)
+    i64 request_id         # echoed on the answer, so a late answer to an earlier query is recognised
+end
+
+# ------------------------------------------------------------
+#  119 -- EnginePosition
+#  The matching engine's answer to EnginePositionQuery. Sent only
+#  by an engine that is acting on orders: an engine that is still
+#  catching up as part of a promotion does not answer, and the
+#  sequencer asks again until it does.
+# ------------------------------------------------------------
+message EnginePosition (id=119, version=1)
+    i64 request_id         # the request_id of the query this answers
+    i64 highest_applied    # the highest sequence number of an order or cancel the engine has acted on
+end
+
+# ------------------------------------------------------------
 #  120 -- SessionBound
 #  Sent by a gateway to the sequencer once a client session is
 #  authenticated and established, and again on every reconnect.
