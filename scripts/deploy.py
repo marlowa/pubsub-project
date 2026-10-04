@@ -924,7 +924,11 @@ def main() -> None:
                 other_place = (install_dir / configured) if goes_with_logs else ((Path(wal_root) / configured) if wal_root else None)
                 state_path.parent.mkdir(parents=True, exist_ok=True)
                 if other_place is not None and other_place != state_path:
-                    for earlier, later in ((other_place, state_path), (Path(str(other_place) + ".lease_promise"), Path(str(state_path) + ".lease_promise"))):
+                    # Each file may have companions beside it: an engine's epoch file its lease promise
+                    # record, and an arbiter's promise record the statements it holds from component
+                    # leaders. They move with it.
+                    companions = ("", ".lease_promise", ".component_statements")
+                    for earlier, later in ((Path(str(other_place) + suffix), Path(str(state_path) + suffix)) for suffix in companions):
                         if earlier.exists() and not later.exists():
                             shutil.move(str(earlier), str(later))
                             print(f"moved {earlier} to {later}")

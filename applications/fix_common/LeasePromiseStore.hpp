@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -16,6 +17,8 @@
 
 #include <fmt/format.h>
 
+#include <LeaderStatement.hpp>
+#include <LeasePromiseRecord.hpp>
 #include <LeasePromiseRecorderInterface.hpp>
 
 namespace fix_common {
@@ -30,21 +33,26 @@ namespace fix_common {
  * boot is not believed: the instance then knows nothing of what it promised, and waits out one lease
  * period as any voter that has forgotten must.
  *
- * The file holds one line: the boot id, the instance promised to (zero for none), and the expiry in
- * nanoseconds on the steady clock. It is written the way EpochStore writes the epoch: to a temporary
- * file, flushed, and renamed over the real one, with the directory flushed too, so a reader sees the
- * old record or the new one whatever moment the process dies at. A missing, damaged or foreign record
- * reads as none, which is safe: the instance waits.
+ * The record also holds the newest leader's statement the instance holds about which instance may not
+ * lead (LeaderStatement). A statement does not depend on the clock, so it is believed whichever boot
+ * wrote it: an instance that has recorded that its peer may not lead must go on refusing that peer
+ * after the machine reboots.
+ *
+ * The file holds one line: the boot id, the instance promised to (zero for none), the expiry in
+ * nanoseconds on the steady clock, and then the statement as its leader (zero for none), epoch, number,
+ * and 1 or 0 for whether the leader's peer may lead. A line without the statement reads as holding
+ * none. It is written the way EpochStore writes the epoch: to a temporary file, flushed, and renamed
+ * over the real one, with the directory flushed too, so a reader sees the old record or the new one
+ * whatever moment the process dies at. A missing or damaged record reads as none, which is safe for
+ * the promise, because the instance then waits; a lost statement is the risk described in
+ * docs/availability/tla/findings.md section 12.5.
  */
 class LeasePromiseStore : public LeasePromiseRecorderInterface {
   public:
     using Clock = std::chrono::steady_clock;
 
-    /// A promise read back from the record.
-    struct Record {
-        int64_t promised_to{0};
-        Clock::time_point until{};
-    };
+    /// What the record holds.
+    using Record = LeasePromiseRecord;
 
     /**
      * @param[in] path File to hold the record. Its directory must already exist.
@@ -77,45 +85,31 @@ class LeasePromiseStore : public LeasePromiseRecorderInterface {
      *         written during a different boot. An instance that gets nothing must wait out a lease period.
      */
     [[nodiscard]] std::optional<Record> load() const {
-        if (boot_id_.empty()) {
+        const std::optional<std::pair<std::string, Record>> read = read_line();
+        if (!read.has_value() || boot_id_.empty() || read->first != boot_id_) {
             return std::nullopt;
         }
-        const int fd = ::open(path_.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd < 0) {
-            return std::nullopt;
-        }
-        char buffer[160] = {};
-        const ssize_t bytes_read = ::read(fd, buffer, sizeof(buffer) - 1);
-        ::close(fd);
-        if (bytes_read <= 0) {
-            return std::nullopt;
-        }
-        const std::string line(buffer, static_cast<size_t>(bytes_read));
-        const size_t first_space = line.find(' ');
-        const size_t second_space = first_space == std::string::npos ? std::string::npos : line.find(' ', first_space + 1);
-        if (second_space == std::string::npos || line.substr(0, first_space) != boot_id_) {
-            return std::nullopt;
-        }
-        errno = 0;
-        char* end = nullptr;
-        const long long promised_to = std::strtoll(line.c_str() + first_space + 1, &end, 10);
-        if (errno != 0 || end != line.c_str() + second_space || promised_to < 0) {
-            return std::nullopt;
-        }
-        const long long until_ns = std::strtoll(line.c_str() + second_space + 1, &end, 10);
-        if (errno != 0 || end == line.c_str() + second_space + 1) {
-            return std::nullopt;
-        }
-        return Record{static_cast<int64_t>(promised_to), Clock::time_point{std::chrono::nanoseconds{until_ns}}};
+        return read->second;
     }
 
-    [[nodiscard]] bool record(int64_t promised_to, Clock::time_point until) override {
+    /**
+     * @brief Read back only the statement, whichever boot of the machine wrote it.
+     * @return The statement recorded, or one naming no leader when there is no readable record.
+     */
+    [[nodiscard]] LeaderStatement load_statement() const {
+        const std::optional<std::pair<std::string, Record>> read = read_line();
+        return read.has_value() ? read->second.statement : LeaderStatement{};
+    }
+
+    [[nodiscard]] bool record(const LeasePromiseRecord& record) override {
         if (boot_id_.empty()) {
             // Without a boot id the record could not be told apart from one written before a reboot.
             return false;
         }
-        const std::string line =
-            fmt::format("{} {} {}\n", boot_id_, promised_to, std::chrono::duration_cast<std::chrono::nanoseconds>(until.time_since_epoch()).count());
+        const LeaderStatement& statement = record.statement;
+        const std::string line = fmt::format("{} {} {} {} {} {} {}\n", boot_id_, record.promised_to,
+                                             std::chrono::duration_cast<std::chrono::nanoseconds>(record.until.time_since_epoch()).count(), statement.leader_id,
+                                             statement.epoch, statement.number, statement.peer_may_lead ? 1 : 0);
         const int fd = ::open(temp_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (fd < 0) {
             return false;
@@ -148,6 +142,60 @@ class LeasePromiseStore : public LeasePromiseRecorderInterface {
     }
 
   private:
+    // The boot id and the record from the file, or nothing if the file is missing or damaged.
+    [[nodiscard]] std::optional<std::pair<std::string, Record>> read_line() const {
+        const int fd = ::open(path_.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            return std::nullopt;
+        }
+        char buffer[256] = {};
+        const ssize_t bytes_read = ::read(fd, buffer, sizeof(buffer) - 1);
+        ::close(fd);
+        if (bytes_read <= 0) {
+            return std::nullopt;
+        }
+        const std::string line(buffer, static_cast<size_t>(bytes_read));
+        const size_t first_space = line.find(' ');
+        if (first_space == std::string::npos || first_space == 0) {
+            return std::nullopt;
+        }
+        // Up to six numbers follow the boot id: two for the promise, then four for the statement.
+        long long numbers[6] = {0, 0, 0, 0, 0, 0};
+        int count = 0;
+        const char* next = line.c_str() + first_space;
+        for (; count < 6; ++count) {
+            while (*next == ' ') {
+                ++next;
+            }
+            if (*next == '\n' || *next == '\0') {
+                break;
+            }
+            errno = 0;
+            char* end = nullptr;
+            numbers[count] = std::strtoll(next, &end, 10);
+            if (errno != 0 || end == next) {
+                return std::nullopt;
+            }
+            next = end;
+        }
+        if ((count != 2 && count != 6) || numbers[0] < 0) {
+            return std::nullopt;
+        }
+        Record record{static_cast<int64_t>(numbers[0]), Clock::time_point{std::chrono::nanoseconds{numbers[1]}}, LeaderStatement{}};
+        if (count == 6) {
+            const bool names_a_leader = numbers[2] == 1 || numbers[2] == 2;
+            if ((numbers[2] != 0 && !names_a_leader) || (names_a_leader && numbers[4] < 1) || numbers[3] < 0 ||
+                numbers[3] > std::numeric_limits<int32_t>::max() || (numbers[5] != 0 && numbers[5] != 1)) {
+                return std::nullopt;
+            }
+            if (names_a_leader) {
+                record.statement =
+                    LeaderStatement{static_cast<int64_t>(numbers[2]), static_cast<int32_t>(numbers[3]), static_cast<int64_t>(numbers[4]), numbers[5] == 1};
+            }
+        }
+        return std::make_pair(line.substr(0, first_space), record);
+    }
+
     bool abandon_temp(int fd) const {
         ::close(fd);
         ::unlink(temp_path_.c_str());

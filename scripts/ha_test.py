@@ -4859,6 +4859,11 @@ def clear_lease_promise_records(prefix: Path) -> None:
 
     A scenario's premise is a venue started from cold, in which the primary is preferred. Without a
     record an instance waits one lease period before voting, as it does after a reboot.
+
+    The same pattern also removes each arbiter's record of the statements component leaders have made
+    about whether their peers may lead, which is named after its promise record with
+    ".component_statements" added. Left in place, a statement from one scenario would have the arbiter
+    refuse an instance in the next.
     """
     candidates = []
     for state_dir in {small_state_dir(prefix), venue_state_dir(prefix)}:

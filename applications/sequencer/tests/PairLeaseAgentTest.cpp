@@ -14,12 +14,15 @@
 #include <gtest/gtest.h>
 
 #include <BackgroundPromiseRecorder.hpp>
+#include <LeaderStatement.hpp>
 #include <LeaseLinksInterface.hpp>
+#include <LeasePromiseRecord.hpp>
 #include <LeasePromiseRecorderInterface.hpp>
 #include <LeasePromiseStore.hpp>
 #include <LeaseTiming.hpp>
 #include <LeaseVoter.hpp>
 #include <PairLeaseAgent.hpp>
+#include <PeerStatementsFlag.hpp>
 #include <leader_follower.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
@@ -64,12 +67,13 @@ struct Outbox : public fix_common::LeaseLinksInterface {
 struct KeptPromises : public fix_common::LeasePromiseRecorderInterface {
     int64_t promised_to{0};
     Clock::time_point until{};
+    fix_common::LeaderStatement statement{};
     bool recorded_anything{false};
     bool fail{false};
     std::chrono::milliseconds delay{0};
     std::atomic<int> records_written{0};
 
-    bool record(int64_t to, Clock::time_point when) override {
+    bool record(const fix_common::LeasePromiseRecord& record) override {
         if (delay.count() > 0) {
             std::this_thread::sleep_for(delay);
         }
@@ -77,8 +81,9 @@ struct KeptPromises : public fix_common::LeasePromiseRecorderInterface {
             return false;
         }
         ++records_written;
-        promised_to = to;
-        until = when;
+        promised_to = record.promised_to;
+        until = record.until;
+        statement = record.statement;
         recorded_anything = true;
         return true;
     }
@@ -87,7 +92,7 @@ struct KeptPromises : public fix_common::LeasePromiseRecorderInterface {
         if (!recorded_anything) {
             return std::nullopt;
         }
-        return fix_common::LeasePromiseStore::Record{promised_to, until};
+        return fix_common::LeasePromiseStore::Record{promised_to, until, statement};
     }
 };
 
@@ -97,7 +102,16 @@ class PairLeaseAgentTest : public ::testing::Test {
         : logger_(pubsub_itc_fw::FwLogLevel::Info, [this](const std::string& record) { log_.push_back(record); }), arbiter_(timing_.period, start_, 0) {
         for (int i = 0; i < 2; ++i) {
             agents_[i] = std::make_unique<fix_common::PairLeaseAgent>("TestThread", logger_, outboxes_[i], pubsub_itc_fw_app::ComponentGroup::sequencer, i + 1,
-                                                                      i == 0 ? 2 : 1, arbiter_id, "the arbiter", timing_, start_, 0);
+                                                                      i == 0 ? 2 : 1, arbiter_id, "the arbiter", timing_, start_, 0, peer_statements_);
+        }
+    }
+
+    // Before the first step: make both instances' leaders say whether their peer may lead, as the sequencer pair's do.
+    void make_statements() {
+        peer_statements_ = fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::SayWhetherPeerMayLead};
+        for (int i = 0; i < 2; ++i) {
+            agents_[i] = std::make_unique<fix_common::PairLeaseAgent>("TestThread", logger_, outboxes_[i], pubsub_itc_fw_app::ComponentGroup::sequencer, i + 1,
+                                                                      i == 0 ? 2 : 1, arbiter_id, "the arbiter", timing_, start_, 0, peer_statements_);
         }
     }
 
@@ -127,10 +141,10 @@ class PairLeaseAgentTest : public ::testing::Test {
                     if (down_[peer]) {
                         continue;
                     }
-                    record(peer,
-                           agents_[peer]->on_request(pubsub_itc_fw::ConnectionID{}, request.candidate_instance_id, request.epoch, request.request_id, now_));
+                    record(peer, agents_[peer]->on_request(pubsub_itc_fw::ConnectionID{}, request.candidate_instance_id, request.epoch, request.request_id,
+                                                           statement_on(request), now_));
                     for (const auto& grant : outboxes_[peer].grants) {
-                        record(i, agents_[i]->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, now_));
+                        record(i, agents_[i]->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, now_));
                     }
                     for (const auto& refusal : outboxes_[peer].refusals) {
                         record(i, agents_[i]->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, now_));
@@ -145,7 +159,13 @@ class PairLeaseAgentTest : public ::testing::Test {
                     }
                     const auto answer = arbiter_.consider(request.candidate_instance_id, request.epoch, now_);
                     if (answer.verdict == fix_common::LeaseVoter::Verdict::Granted) {
-                        record(i, agents_[i]->on_grant(arbiter_id, request.epoch, request.request_id, now_));
+                        int64_t echoed = 0;
+                        const fix_common::LeaderStatement statement = statement_on(request);
+                        if (statement.leader_id != 0) {
+                            arbiter_.record_statement(statement);
+                            echoed = arbiter_.holds_statement(statement) ? statement.number : 0;
+                        }
+                        record(i, agents_[i]->on_grant(arbiter_id, request.epoch, request.request_id, echoed, now_));
                     } else {
                         record(i, agents_[i]->on_refusal(arbiter_id, answer.highest_epoch, request.request_id,
                                                          pubsub_itc_fw_app::LeaseRefusalReason::promised_elsewhere, now_));
@@ -153,6 +173,18 @@ class PairLeaseAgentTest : public ::testing::Test {
                 }
             }
         }
+    }
+
+    // Steps until instance 1 leads, which with nothing failing it does first.
+    bool step_until_the_primary_leads() {
+        for (int i = 0; i < 80 && !agents_[0]->acting(now_); ++i) {
+            step();
+        }
+        return agents_[0]->acting(now_);
+    }
+
+    static fix_common::LeaderStatement statement_on(const pubsub_itc_fw_app::LeaseRequest& request) {
+        return fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead};
     }
 
     // Instance i's process dies. It neither ticks nor answers until restart() is called.
@@ -167,16 +199,16 @@ class PairLeaseAgentTest : public ::testing::Test {
         down_[i] = false;
         agents_[i] = std::make_unique<fix_common::PairLeaseAgent>("TestThread", logger_, outboxes_[i], pubsub_itc_fw_app::ComponentGroup::sequencer, i + 1,
                                                                   i == 0 ? 2 : 1, arbiter_id, "the arbiter", timing_, now_,
-                                                                  keep_epoch ? agents_[i]->highest_epoch() : 0);
+                                                                  keep_epoch ? agents_[i]->highest_epoch() : 0, peer_statements_);
         if (keep_promises) {
-            agents_[i]->keep_promises_in(kept_[i], kept_[i].as_record(), now_);
+            agents_[i]->keep_promises_in(kept_[i], kept_[i].as_record(), kept_[i].statement, now_);
         }
         changes_[i].clear();
     }
 
     void keep_promises() {
         for (int i = 0; i < 2; ++i) {
-            agents_[i]->keep_promises_in(kept_[i], std::nullopt, now_);
+            agents_[i]->keep_promises_in(kept_[i], std::nullopt, fix_common::LeaderStatement{}, now_);
         }
     }
 
@@ -196,6 +228,7 @@ class PairLeaseAgentTest : public ::testing::Test {
     }
 
     fix_common::LeaseTiming timing_{};
+    fix_common::PeerStatementsFlag peer_statements_{fix_common::PeerStatementsFlag::PeerAlwaysMayLead};
     const Clock::time_point start_{};
     Clock::time_point now_{};
     std::vector<std::string> log_;
@@ -515,8 +548,8 @@ TEST_F(PairLeaseAgentTest, ASlowRecordWrittenInTheBackgroundDoesNotHoldUpTheLeas
     {
         fix_common::BackgroundPromiseRecorder background_0(kept_[0]);
         fix_common::BackgroundPromiseRecorder background_1(kept_[1]);
-        agents_[0]->keep_promises_in(background_0, std::nullopt, now_);
-        agents_[1]->keep_promises_in(background_1, std::nullopt, now_);
+        agents_[0]->keep_promises_in(background_0, std::nullopt, fix_common::LeaderStatement{}, now_);
+        agents_[1]->keep_promises_in(background_1, std::nullopt, fix_common::LeaderStatement{}, now_);
         // The first records are written on the lease thread, because nothing is on disk yet.
         for (int i = 0; i < 60; ++i) {
             step();
@@ -556,6 +589,126 @@ TEST_F(PairLeaseAgentTest, WithoutABackgroundWriterASlowRecordHoldsUpTheLeaseThr
     EXPECT_GE(longest_step, std::chrono::milliseconds{150});
 }
 
+TEST_F(PairLeaseAgentTest, APairThatMakesNoStatementsSendsNone) {
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    for (int i = 0; i < 40; ++i) {
+        now_ += fix_common::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
+        for (const auto& request : outboxes_[0].to_peer) {
+            EXPECT_EQ(request.statement_leader_id, 0);
+        }
+        deliver();
+    }
+    EXPECT_EQ(kept_[1].statement.leader_id, 0);
+}
+
+TEST_F(PairLeaseAgentTest, ALeaderSaysItsPeerMayNotLeadOnItsRequestsAndRecordsItFirst) {
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    EXPECT_EQ(kept_[0].statement.instance_that_may_not_lead(), 2) << "the leader's own statement is not on disk";
+    bool carried = false;
+    for (int i = 0; i < 40 && !carried; ++i) {
+        now_ += fix_common::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
+        for (const auto& request : outboxes_[0].to_peer) {
+            carried = request.statement_leader_id == 1 && !request.peer_may_lead;
+        }
+        deliver();
+    }
+    EXPECT_TRUE(carried) << "no renewal carried the statement";
+}
+
+TEST_F(PairLeaseAgentTest, AFollowerTheLeaderSaysMayNotLeadDoesNotTakeOverWhenTheLeaderDies) {
+    // Nothing here says the follower has caught up, so the leader goes on saying that its peer may
+    // not lead, as it does while it acts on commands the peer lacks. When the leader dies, neither the
+    // follower nor the arbiter, both of which recorded that, lets the follower lead.
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    for (int i = 0; i < 40; ++i) {
+        step();
+    }
+    EXPECT_EQ(kept_[1].statement.instance_that_may_not_lead(), 2);
+    EXPECT_TRUE(log_contains("says this instance may not lead"));
+    crash(0);
+    for (int i = 0; i < 200; ++i) {
+        step();
+        ASSERT_FALSE(agents_[1]->acting(now_)) << "the follower took the lead at step " << i;
+    }
+}
+
+TEST_F(PairLeaseAgentTest, OnceThePeerHoldsEverythingItTakesOverWhenTheLeaderDies) {
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    agents_[0]->peer_holds_everything(now_);
+    deliver();
+    for (int i = 0; i < 40; ++i) {
+        step();
+    }
+    EXPECT_EQ(kept_[1].statement.instance_that_may_not_lead(), 0);
+    crash(0);
+    for (int i = 0; i < 200 && !agents_[1]->acting(now_); ++i) {
+        step();
+    }
+    EXPECT_TRUE(agents_[1]->acting(now_));
+}
+
+TEST_F(PairLeaseAgentTest, ALeaderMayActWithoutItsPeerOnlyOnceAnotherVoterHasEchoedItsStatement) {
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    EXPECT_FALSE(agents_[0]->may_act_without_peer()) << "no request has carried the statement yet";
+    for (int i = 0; i < 40 && !agents_[0]->may_act_without_peer(); ++i) {
+        step();
+    }
+    EXPECT_TRUE(agents_[0]->may_act_without_peer());
+    agents_[0]->peer_holds_everything(now_);
+    EXPECT_FALSE(agents_[0]->may_act_without_peer());
+    agents_[0]->begin_running_without_peer(now_);
+    EXPECT_FALSE(agents_[0]->may_act_without_peer()) << "the new statement has not been echoed";
+    deliver();
+    EXPECT_TRUE(agents_[0]->may_act_without_peer()) << "the requests sent at once carried the new statement, and were granted";
+}
+
+TEST_F(PairLeaseAgentTest, ALeaderWhoseOwnStatementCannotBeWrittenNeverActsWithoutItsPeer) {
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    agents_[0]->peer_holds_everything(now_);
+    deliver();
+    kept_[0].fail = true;
+    agents_[0]->begin_running_without_peer(now_);
+    for (int i = 0; i < 40; ++i) {
+        step();
+        ASSERT_FALSE(agents_[0]->may_act_without_peer()) << "acting on a command the peer lacks, with the leader's own statement not on disk";
+    }
+}
+
+TEST_F(PairLeaseAgentTest, ARestartedLeaderRefusesAPeerItsRecordSaysMayNotLead) {
+    // The leader stays down until its record of leading has run out, so that after restarting it is not
+    // resuming the lead, and so not voting for itself. Its peer's request then meets only the statement
+    // the restarted leader took back from its record.
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    arbiter_up_ = false;
+    crash(0);
+    for (int i = 0; i < 200; ++i) {
+        step();
+    }
+    ASSERT_LT(kept_[0].until, now_) << "the record of leading has not run out, so this test proves nothing";
+    restart(0, true);
+    outboxes_[0].refusals.clear();
+    outboxes_[0].grants.clear();
+    record(0, agents_[0]->on_request(pubsub_itc_fw::ConnectionID{}, 2, 1000, 99, fix_common::LeaderStatement{}, now_));
+    EXPECT_TRUE(outboxes_[0].grants.empty()) << "the restarted leader granted a peer its record says may not lead";
+    ASSERT_EQ(outboxes_[0].refusals.size(), 1U);
+    EXPECT_EQ(outboxes_[0].refusals.front().reason, pubsub_itc_fw_app::LeaseRefusalReason::may_not_lead);
+}
+
 // A record written on the lease thread while a background write is in progress waits for it, and the
 // record it writes is the one left on disk; the background write's outcome is not reported afterwards.
 TEST(BackgroundPromiseRecorderTest, ARecordWrittenAtOnceWaitsForTheBackgroundWriteAndReplacesIt) {
@@ -563,10 +716,11 @@ TEST(BackgroundPromiseRecorderTest, ARecordWrittenAtOnceWaitsForTheBackgroundWri
     store.delay = std::chrono::milliseconds{300};
     {
         fix_common::BackgroundPromiseRecorder recorder(store);
-        ASSERT_TRUE(recorder.record_in_background(2, Clock::time_point{std::chrono::seconds{10}}));
-        EXPECT_FALSE(recorder.record_in_background(2, Clock::time_point{std::chrono::seconds{11}})) << "a second background write was started";
+        ASSERT_TRUE(recorder.record_in_background(fix_common::LeasePromiseRecord{2, Clock::time_point{std::chrono::seconds{10}}, {}}));
+        EXPECT_FALSE(recorder.record_in_background(fix_common::LeasePromiseRecord{2, Clock::time_point{std::chrono::seconds{11}}, {}}))
+            << "a second background write was started";
         const auto started = std::chrono::steady_clock::now();
-        ASSERT_TRUE(recorder.record(1, Clock::time_point{std::chrono::seconds{20}}));
+        ASSERT_TRUE(recorder.record(fix_common::LeasePromiseRecord{1, Clock::time_point{std::chrono::seconds{20}}, {}}));
         EXPECT_GE(std::chrono::steady_clock::now() - started, std::chrono::milliseconds{500}) << "the write at once did not wait for the background one";
         EXPECT_FALSE(recorder.background_result().has_value());
     }
@@ -580,7 +734,7 @@ TEST(BackgroundPromiseRecorderTest, AFailedBackgroundWriteIsReportedOnce) {
     KeptPromises store;
     store.fail = true;
     fix_common::BackgroundPromiseRecorder recorder(store);
-    ASSERT_TRUE(recorder.record_in_background(1, Clock::time_point{std::chrono::seconds{10}}));
+    ASSERT_TRUE(recorder.record_in_background(fix_common::LeasePromiseRecord{1, Clock::time_point{std::chrono::seconds{10}}, {}}));
     std::optional<bool> outcome;
     for (int i = 0; i < 200 && !outcome.has_value(); ++i) {
         outcome = recorder.background_result();

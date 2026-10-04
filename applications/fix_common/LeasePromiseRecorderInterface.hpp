@@ -3,9 +3,9 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <chrono>
-#include <cstdint>
 #include <optional>
+
+#include <LeasePromiseRecord.hpp>
 
 namespace fix_common {
 
@@ -17,18 +17,20 @@ namespace fix_common {
  * has recorded its promise has not forgotten, and can vote, and ask to lead, as soon as it restarts.
  * That is what lets a process restarted by its supervisor within the lease period keep the lead, rather
  * than being overtaken by its peer. See docs/availability/majority_leases.md, rule 6.
+ *
+ * The record also holds the newest leader's statement the instance holds about which instance may not
+ * lead (LeaderStatement), so that a restart does not forget that either.
  */
 class LeasePromiseRecorderInterface {
   public:
     virtual ~LeasePromiseRecorderInterface() = default;
 
     /**
-     * @brief Record, durably, that this instance has promised its vote to @p promised_to until @p until.
-     * @param[in] promised_to The instance promised to, or zero for no promise.
-     * @param[in] until When the promise runs out, on the steady clock. A later time than the true one is safe.
+     * @brief Record, durably, the promise this instance has made and the statement it holds.
+     * @param[in] record The promise, whose expiry may safely be later than the true one, and the statement.
      * @return true when the record reached the disk. When it did not, the caller must not grant the lease.
      */
-    [[nodiscard]] virtual bool record(int64_t promised_to, std::chrono::steady_clock::time_point until) = 0;
+    [[nodiscard]] virtual bool record(const LeasePromiseRecord& record) = 0;
 
     /**
      * @brief Start writing a record without waiting for it, if this recorder can.
@@ -40,7 +42,7 @@ class LeasePromiseRecorderInterface {
      *
      * @return true when the write was started; false when it was not, and nothing was asked for.
      */
-    [[nodiscard]] virtual bool record_in_background(int64_t /*promised_to*/, std::chrono::steady_clock::time_point /*until*/) {
+    [[nodiscard]] virtual bool record_in_background(const LeasePromiseRecord& /*record*/) {
         return false;
     }
 

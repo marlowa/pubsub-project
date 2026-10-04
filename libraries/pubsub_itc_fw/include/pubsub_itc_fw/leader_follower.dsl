@@ -704,12 +704,25 @@ end
 #  Ids need only be unique within one process's lifetime: a reply
 #  travels on the connection its request came in on, and a process
 #  that restarts has new connections.
+#
+#  A leader of the sequencer pair also says, on every request,
+#  whether its peer may lead. It says the peer may not while it has
+#  the matching engine act on commands the peer does not hold. A
+#  voter that grants the request records the statement if it is
+#  newer than the one it holds, and refuses a lease to the instance
+#  it names. See docs/availability/a_follower_behind_does_not_lead.md.
+#  A candidate's request, and every request in other pairs, carries
+#  no statement: statement_leader_id is zero.
 # ------------------------------------------------------------
 message LeaseRequest (id=130, version=1)
     i64 candidate_instance_id   # the instance asking
     ComponentGroup group        # the pair it belongs to
     i32 epoch                   # the epoch it asks to lead in, or leads in
     i64 request_id              # echoed on the reply
+    i64 statement_leader_id # the leader making the statement about its peer, or zero for none
+    i32 statement_epoch # the epoch of the leadership that made it
+    i64 statement_number # goes up by one each time that leadership changes what it says
+    bool peer_may_lead # false: the leader's peer may not lead
 end
 
 # ------------------------------------------------------------
@@ -723,6 +736,7 @@ message LeaseGrant (id=131, version=1)
     ComponentGroup group
     i32 epoch                   # the epoch granted, as asked
     i64 request_id              # echoed from the request
+    i64 echoed_statement_number # the number of the request's statement, if the voter now holds it; otherwise zero
 end
 
 # ------------------------------------------------------------
@@ -751,11 +765,22 @@ end
 #  would also not know the highest epoch granted, and could grant a
 #  lower one, which receivers then ignore. This record is what it
 #  knows instead.
+#
+#  It also carries the newest statement the arbiter holds from the
+#  group's leader about whether the leader's peer may lead, and is
+#  sent whenever that changes. Unlike a promise, a statement must not
+#  be forgotten when the active arbiter changes: it is what keeps an
+#  instance lacking commands the matching engine acted on from
+#  leading.
 # ------------------------------------------------------------
 message ArbiterStateRecord (id=400, version=1)
     i64 component_instance_id    # the instance that leads in the epoch: its remainder on division by 4
     i64 leader_instance_id       # the same
     i32 epoch                    # the highest epoch granted in the group
     ComponentGroup group         # the component pair
+    i64 statement_leader_id # the leader that made the newest statement held, or zero for none
+    i32 statement_epoch # the epoch of the leadership that made it
+    i64 statement_number # its number within that leadership
+    bool peer_may_lead # false: the leader's peer may not lead
 end
 

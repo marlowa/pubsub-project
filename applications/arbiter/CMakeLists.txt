@@ -37,6 +37,7 @@ install(FILES
 
 add_executable(arbiter_tests
         tests/ComponentLeaseVotersTest.cpp
+        tests/ComponentStatementStoreTest.cpp
 )
 
 target_include_directories(arbiter_tests PRIVATE
@@ -47,9 +48,11 @@ target_include_directories(arbiter_tests PRIVATE
 
 add_dependencies(arbiter_tests leader_follower_generated)
 
-# pubsub_itc_fw for fmt and PreconditionAssertion, which LeaseVoter.hpp uses.
+# pubsub_itc_fw for fmt and PreconditionAssertion, which LeaseVoter.hpp uses; the test helpers for a
+# scratch directory in which ComponentStatementStoreTest writes its file.
 target_link_libraries(arbiter_tests PRIVATE
         pubsub_itc_fw
+        pubsub_itc_fw_test_helpers
         GTest::gtest_main
 )
 

@@ -112,10 +112,11 @@ that the statement survives the voter's own restart:
   `LeasePromiseStore`). It does not wait for the disk before granting, for the reason given in 4.5.
   While it holds the statement, in memory or on disk, it does not ask to lead, and it grants its peer's
   requests to lead.
-- **The arbiter** writes it to disk, and sends it to the passive arbiter in the same way it already
-  sends the highest epoch granted in each group (`ArbiterStateRecord`). It refuses a lease to an
-  instance its record says may not lead, with a refusal reason that says so, and the instance logs
-  that reason.
+- **The arbiter** writes it to disk, in a file beside its own promise record named after it with
+  `.component_statements` added, and sends it to the passive arbiter in the same way it already
+  sends the highest epoch granted in each group (`ArbiterStateRecord`); the passive arbiter writes it
+  to disk too. Its grant echoes the statement only once the file has been written. It refuses a lease
+  to an instance its record says may not lead, with the refusal reason `may_not_lead`.
 
 ### 4.3 What the leader does
 
@@ -271,7 +272,9 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    to find the fault when a part of the rule is removed. Only a pair constructed with
    `PeerStatementsFlag::SayWhetherPeerMayLead` makes statements, and no component does so until step 4.
 3. The new fields on `LeaseRequest` and `LeaseGrant`, the follower's and the arbiter's records, and the
-   arbiter's copy to the passive arbiter, with the unit tests.
+   arbiter's copy to the passive arbiter, with the unit tests. Done: `PairLeaseAgent` carries, records,
+   echoes and keeps statements, and the arbiter keeps them in `ComponentStatementStore`; the sequencer
+   still constructs its agent with `PeerStatementsFlag::PeerAlwaysMayLead` until step 4.
 4. The sequencer's switch: confirm before acting, the order of going back to waiting, and stopping reading
    from gateway connections while waiting.
 5. The new scenarios.

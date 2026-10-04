@@ -6,6 +6,8 @@
 #include <chrono>
 
 #include <LeaderEpoch.hpp>
+#include <LeaderStatement.hpp>
+#include <PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -73,15 +75,27 @@ ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
     , config_(config)
     , peer_instance_id_{static_cast<int64_t>(config.peer_instance_id)}
     , component_voters_(config.lease.period)
-    , lease_promise_store_(config.lease_promise_file, fix_common::LeasePromiseStore::current_boot_id()) {}
+    , lease_promise_store_(config.lease_promise_file, fix_common::LeasePromiseStore::current_boot_id())
+    , component_statement_store_(config.lease_promise_file.empty() ? std::string{} : config.lease_promise_file + ".component_statements") {}
 
 void ArbiterThread::on_initial_event() {
     // An arbiter keeps no epoch on disk, so it starts knowing none. It does keep its promise in
     // deciding which arbiter is active, so that a restart by its supervisor does not forget it.
     pool_lease_.emplace("ArbiterThread", get_logger(), pool_links_, pubsub_itc_fw_app::ComponentGroup::arbiter, static_cast<int64_t>(config_.instance_id),
-                        peer_instance_id_, witness_voter_id, "the witness", config_.lease, std::chrono::steady_clock::now(), 0);
+                        peer_instance_id_, witness_voter_id, "the witness", config_.lease, std::chrono::steady_clock::now(), 0,
+                        fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::PeerAlwaysMayLead});
     background_promise_recorder_.emplace(lease_promise_store_);
-    pool_lease_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), std::chrono::steady_clock::now());
+    pool_lease_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
+                                  std::chrono::steady_clock::now());
+    for (const auto& [group, statement] : component_statement_store_.load()) {
+        component_voters_.learn_statement(group, statement);
+        if (statement.instance_that_may_not_lead() != 0) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "ArbiterThread: group={} -- the recorded statement from instance {} at epoch {} says instance {} may not lead; no lease is granted "
+                       "to it until its leader says otherwise",
+                       pubsub_itc_fw_app::to_string(group), statement.leader_id, statement.epoch, statement.instance_that_may_not_lead());
+        }
+    }
     lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -104,9 +118,17 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: {} peer connection {} established", svc == "peer" ? "outbound" : "inbound",
                    id.get_value());
         // A peer that has just restarted knows no epochs at all. Telling it the highest granted in
-        // each group means it will not grant a lower one if it becomes active.
+        // each group means it will not grant a lower one if it becomes active; telling it each
+        // statement means it will not grant a lease to an instance a leader has said may not lead.
+        std::map<pubsub_itc_fw_app::ComponentGroup, bool> groups;
         for (const auto& entry : component_voters_.highest_epochs()) {
-            send_highest_epoch_to_peer(id, entry.first, entry.second);
+            groups[entry.first] = true;
+        }
+        for (const auto& entry : component_voters_.statements()) {
+            groups[entry.first] = true;
+        }
+        for (const auto& entry : groups) {
+            send_group_state_to_peer(id, entry.first);
         }
     } else if (svc == "witness") {
         witness_conn_id_ = id;
@@ -243,7 +265,10 @@ void ArbiterThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn
                    pubsub_itc_fw_app::to_string(request.group));
         return;
     }
-    act_on(pool_lease_->on_request(conn_id, request.candidate_instance_id, request.epoch, request.request_id, std::chrono::steady_clock::now()));
+    act_on(pool_lease_->on_request(
+        conn_id, request.candidate_instance_id, request.epoch, request.request_id,
+        fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead},
+        std::chrono::steady_clock::now()));
 }
 
 void ArbiterThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& message) {
@@ -257,7 +282,7 @@ void ArbiterThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& messag
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: failed to decode LeaseGrant -- dropping");
         return;
     }
-    act_on(pool_lease_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, std::chrono::steady_clock::now()));
+    act_on(pool_lease_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
 }
 
 void ArbiterThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {
@@ -305,12 +330,31 @@ void ArbiterThread::handle_component_lease_request(const pubsub_itc_fw::Connecti
         component_voters_.consider(request.group, request.candidate_instance_id, request.epoch, std::chrono::steady_clock::now());
 
     if (answer.verdict == fix_common::LeaseVoter::Verdict::Granted) {
+        // A leader's statement is recorded, and on disk, before the grant echoes it: the leader may
+        // rely on the echo to act on a command its peer lacks.
+        int64_t echoed = 0;
+        bool statement_changed = false;
+        const fix_common::LeaderStatement statement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead};
+        if (statement.leader_id != 0) {
+            const fix_common::LeaderStatement before = component_voters_.statement(request.group);
+            echoed = component_voters_.record_statement(request.group, statement);
+            statement_changed = !component_voters_.statement(request.group).same_as(before);
+            if (statement_changed && !save_component_statements()) {
+                echoed = 0;
+            }
+        }
         pubsub_itc_fw_app::LeaseGrant grant{};
         grant.voter_instance_id = arbiter_pool_voter_id;
         grant.group = request.group;
         grant.epoch = request.epoch;
         grant.request_id = request.request_id;
+        grant.echoed_statement_number = echoed;
         send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+        if (statement_changed) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: group={} instance {} says at epoch {} (statement {}) that its peer {}",
+                       pubsub_itc_fw_app::to_string(request.group), statement.leader_id, statement.epoch, statement.number,
+                       statement.peer_may_lead ? "may lead" : "may not lead");
+        }
 
         int64_t& last = last_granted_to_[request.group];
         if (last != request.candidate_instance_id) {
@@ -319,10 +363,10 @@ void ArbiterThread::handle_component_lease_request(const pubsub_itc_fw::Connecti
                        pubsub_itc_fw_app::to_string(request.group), request.candidate_instance_id, request.epoch);
             last = request.candidate_instance_id;
         }
-        if (answer.highest_epoch > highest_before) {
+        if (answer.highest_epoch > highest_before || statement_changed) {
             const pubsub_itc_fw::ConnectionID peer = peer_active_conn();
             if (peer.is_valid()) {
-                send_highest_epoch_to_peer(peer, request.group, answer.highest_epoch);
+                send_group_state_to_peer(peer, request.group);
             }
         }
         return;
@@ -339,14 +383,29 @@ void ArbiterThread::handle_component_lease_request(const pubsub_itc_fw::Connecti
                pubsub_itc_fw_app::to_string(request.group), request.candidate_instance_id, request.epoch, pubsub_itc_fw_app::to_string(refusal.reason));
 }
 
-void ArbiterThread::send_highest_epoch_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group, int32_t epoch) {
+void ArbiterThread::send_group_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group) {
     pubsub_itc_fw_app::ArbiterStateRecord record{};
     record.group = group;
-    record.epoch = epoch;
+    record.epoch = component_voters_.highest_epoch(group);
     // The epoch records which instance leads in it: its remainder on division by 4 is that instance's id.
-    record.leader_instance_id = epoch % fix_common::LeaderEpoch::epoch_stride;
+    record.leader_instance_id = record.epoch % fix_common::LeaderEpoch::epoch_stride;
     record.component_instance_id = record.leader_instance_id;
+    const fix_common::LeaderStatement statement = component_voters_.statement(group);
+    record.statement_leader_id = statement.leader_id;
+    record.statement_epoch = statement.epoch;
+    record.statement_number = statement.number;
+    record.peer_may_lead = statement.peer_may_lead;
     send_pdu(conn_id, pubsub_itc_fw_app::ArbiterStateRecord::message_pdu_id, 0, record);
+}
+
+bool ArbiterThread::save_component_statements() {
+    if (component_statement_store_.save(component_voters_.statements())) {
+        return true;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+               "ArbiterThread: could not write the component statements to '{}' -- the newest statement is held in memory only, and is not echoed",
+               component_statement_store_.path());
+    return false;
 }
 
 void ArbiterThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -376,6 +435,13 @@ void ArbiterThread::handle_arbiter_state_record(const pubsub_itc_fw::EventMessag
         return;
     }
     component_voters_.learn_epoch(record.group, record.epoch);
+    const fix_common::LeaderStatement statement{record.statement_leader_id, record.statement_epoch, record.statement_number, record.peer_may_lead};
+    if (statement.leader_id != 0 && component_voters_.learn_statement(record.group, statement)) {
+        const bool saved = save_component_statements();
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: peer reports group={} instance {} said at epoch {} that its peer {}{}",
+                   pubsub_itc_fw_app::to_string(record.group), statement.leader_id, statement.epoch, statement.peer_may_lead ? "may lead" : "may not lead",
+                   saved ? "" : " -- held in memory only");
+    }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "ArbiterThread: peer reports group={} has been granted epoch {}",
                pubsub_itc_fw_app::to_string(record.group), record.epoch);
 }

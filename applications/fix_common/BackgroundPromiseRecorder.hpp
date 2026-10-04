@@ -5,12 +5,12 @@
 
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
 #include <mutex>
 #include <optional>
 
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
+#include <LeasePromiseRecord.hpp>
 #include <LeasePromiseRecorderInterface.hpp>
 
 namespace fix_common {
@@ -67,24 +67,23 @@ class BackgroundPromiseRecorder : public LeasePromiseRecorderInterface {
      * The outcome of a background write this waited for is discarded: the record written here
      * replaces it.
      */
-    [[nodiscard]] bool record(int64_t promised_to, std::chrono::steady_clock::time_point until) override {
+    [[nodiscard]] bool record(const LeasePromiseRecord& record) override {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             idle_.wait(lock, [this] { return !request_pending_ && !writing_; });
             result_.reset();
         }
-        return store_.record(promised_to, until);
+        return store_.record(record);
     }
 
     /** @brief Start a write on the writer thread; false, and nothing asked for, if one is already in progress. */
-    [[nodiscard]] bool record_in_background(int64_t promised_to, std::chrono::steady_clock::time_point until) override {
+    [[nodiscard]] bool record_in_background(const LeasePromiseRecord& record) override {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             if (request_pending_ || writing_ || stopping_) {
                 return false;
             }
-            requested_promised_to_ = promised_to;
-            requested_until_ = until;
+            requested_ = record;
             request_pending_ = true;
             result_.reset();
         }
@@ -103,20 +102,18 @@ class BackgroundPromiseRecorder : public LeasePromiseRecorderInterface {
   private:
     void write_requests() {
         for (;;) {
-            int64_t promised_to = 0;
-            std::chrono::steady_clock::time_point until{};
+            LeasePromiseRecord request{};
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 wake_.wait(lock, [this] { return stopping_ || request_pending_; });
                 if (stopping_) {
                     return;
                 }
-                promised_to = requested_promised_to_;
-                until = requested_until_;
+                request = requested_;
                 request_pending_ = false;
                 writing_ = true;
             }
-            const bool written = store_.record(promised_to, until);
+            const bool written = store_.record(request);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 writing_ = false;
@@ -133,8 +130,7 @@ class BackgroundPromiseRecorder : public LeasePromiseRecorderInterface {
     bool stopping_{false};
     bool request_pending_{false};
     bool writing_{false};
-    int64_t requested_promised_to_{0};
-    std::chrono::steady_clock::time_point requested_until_{};
+    LeasePromiseRecord requested_{};
     std::optional<bool> result_;
     pubsub_itc_fw::ThreadWithJoinTimeout writer_; ///< Last, so it starts after every member it uses exists and stops first.
 };

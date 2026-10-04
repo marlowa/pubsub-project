@@ -22,6 +22,7 @@
 
 #include "ArbiterConfiguration.hpp"
 #include "ComponentLeaseVoters.hpp"
+#include "ComponentStatementStore.hpp"
 
 namespace arbiter {
 
@@ -111,6 +112,10 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
     std::optional<fix_common::BackgroundPromiseRecorder> background_promise_recorder_;
 
+    // The newest statement from each component pair's leader about whether its peer may lead,
+    // kept on disk beside the promise record, so that a restart does not forget it.
+    ComponentStatementStore component_statement_store_;
+
     // The instance last granted a lease in each group, so that a change of leader is logged and a
     // renewal is not.
     std::map<pubsub_itc_fw_app::ComponentGroup, int64_t> last_granted_to_;
@@ -128,8 +133,12 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     /// A component instance asks the arbiter pool for a lease.
     void handle_component_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
-    /// Tells the peer arbiter the highest epoch granted in @p group, so that it is not forgotten if the peer becomes active.
-    void send_highest_epoch_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group, int32_t epoch);
+    /// Tells the peer arbiter the highest epoch granted in @p group, and the newest statement held from its leader, so that
+    /// neither is forgotten if the peer becomes active.
+    void send_group_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group);
+
+    /// Writes every statement held to disk. Logs, and returns false, when it cannot.
+    [[nodiscard]] bool save_component_statements();
 
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_arbiter_state_record(const pubsub_itc_fw::EventMessage& message);

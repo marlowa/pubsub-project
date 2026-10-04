@@ -11,7 +11,9 @@
 #include <fmt/format.h>
 
 #include <LeaderEpoch.hpp>
+#include <LeaderStatement.hpp>
 #include <OrderPathMetrics.hpp>
+#include <PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
@@ -277,9 +279,11 @@ void MatchingEngineThread::on_app_ready_event() {
     if (ha_enabled_) {
         const int64_t self_id = static_cast<int64_t>(config_.instance_id);
         lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::matching_engine, self_id,
-                             peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_);
+                             peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
+                             fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::PeerAlwaysMayLead});
         background_promise_recorder_.emplace(lease_promise_store_);
-        lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), std::chrono::steady_clock::now());
+        lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
+                                       std::chrono::steady_clock::now());
         lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -1665,7 +1669,10 @@ void MatchingEngineThread::handle_lease_request(const pubsub_itc_fw::ConnectionI
                    pubsub_itc_fw_app::to_string(request.group));
         return;
     }
-    act_on(lease_agent_->on_request(conn_id, request.candidate_instance_id, request.epoch, request.request_id, std::chrono::steady_clock::now()));
+    act_on(lease_agent_->on_request(
+        conn_id, request.candidate_instance_id, request.epoch, request.request_id,
+        fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead},
+        std::chrono::steady_clock::now()));
 }
 
 void MatchingEngineThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& message) {
@@ -1682,7 +1689,7 @@ void MatchingEngineThread::handle_lease_grant(const pubsub_itc_fw::EventMessage&
     if (grant.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
         return;
     }
-    act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, std::chrono::steady_clock::now()));
+    act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
 }
 
 void MatchingEngineThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {

@@ -15,8 +15,10 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
+#include <LeaderStatement.hpp>
 #include <LeaseLinksInterface.hpp>
 #include <LeaseParticipant.hpp>
+#include <LeasePromiseRecord.hpp>
 #include <LeasePromiseRecorderInterface.hpp>
 #include <LeasePromiseStore.hpp>
 #include <LeaseTiming.hpp>
@@ -39,6 +41,12 @@ namespace fix_common {
  *   - It answers the peer's requests.
  *   - It says when this instance starts leading, stops leading, or agrees that its peer leads, so
  *     that the owner can change what it does.
+ *   - In the sequencer pair, it carries the leader's statement about whether its peer may lead on
+ *     every request, records the peer's statement when it grants, echoes it on the grant, and keeps
+ *     the statement it holds on disk with its promise (rule 11 in
+ *     docs/availability/a_follower_behind_does_not_lead.md). The statement is written in the
+ *     background, so the lease thread does not wait for the disk; the leader acts on a command its
+ *     peer lacks only once its own statement is on disk and another voter has echoed it.
  *
  * Primary and secondary are only names, but the primary is preferred when both start together and
  * neither has any other claim. The secondary gives it one renewal interval's head start, counted from the end of
@@ -70,10 +78,11 @@ class PairLeaseAgent {
      * @param[in] timing The lease timings, which every voter shares.
      * @param[in] started_at When this instance started.
      * @param[in] persisted_epoch The highest epoch this instance knew of when it last stopped, or zero.
+     * @param[in] peer_statements Whether this pair's leader says whether its peer may lead: only the sequencer pair's does.
      */
     PairLeaseAgent(std::string owner_name, pubsub_itc_fw::QuillLogger& logger, LeaseLinksInterface& links, pubsub_itc_fw_app::ComponentGroup group,
                    int64_t self_id, int64_t peer_id, int64_t third_voter_id, std::string third_voter_name, const LeaseTiming& timing,
-                   Clock::time_point started_at, int32_t persisted_epoch)
+                   Clock::time_point started_at, int32_t persisted_epoch, PeerStatementsFlag peer_statements)
         : owner_name_(std::move(owner_name))
         , logger_(logger)
         , links_(links)
@@ -83,7 +92,7 @@ class PairLeaseAgent {
         , third_voter_id_(third_voter_id)
         , third_voter_name_(std::move(third_voter_name))
         , timing_(timing)
-        , participant_(self_id, timing.period, timing.drift_allowance, started_at, persisted_epoch, PeerStatementsFlag{PeerStatementsFlag::PeerAlwaysMayLead})
+        , participant_(self_id, timing.period, timing.drift_allowance, started_at, persisted_epoch, peer_statements)
         , random_(static_cast<std::mt19937::result_type>(self_id)) {
         // Measured from the end of the first lease period, during which neither instance may ask at all.
         if (self_id > peer_id) {
@@ -100,9 +109,15 @@ class PairLeaseAgent {
      * promised nothing still running. A process restarted by its supervisor within the lease period
      * can then keep the lead it held, rather than being overtaken by its peer. Without a record it
      * waits, as any voter that has forgotten must.
+     *
+     * @p kept_statement is the statement the record holds, whichever boot wrote it: unlike a promise,
+     * it does not depend on the clock, so it is taken back even when the promise is not.
      */
-    void keep_promises_in(LeasePromiseRecorderInterface& recorder, const std::optional<LeasePromiseStore::Record>& kept, Clock::time_point now) {
+    void keep_promises_in(LeasePromiseRecorderInterface& recorder, const std::optional<LeasePromiseStore::Record>& kept, const LeaderStatement& kept_statement,
+                          Clock::time_point now) {
         recorder_ = &recorder;
+        participant_.restore_recorded_statement(kept_statement);
+        recorded_statement_ = kept_statement;
         if (!kept.has_value()) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                        "{}: no promise recorded during this boot of the machine -- waiting one lease period before voting or asking to lead", owner_name_);
@@ -138,6 +153,8 @@ class PairLeaseAgent {
     /// Apply the lease rules. Called every LeaseTiming::tick_interval.
     [[nodiscard]] Change on_tick(Clock::time_point now) {
         adopt_background_record();
+        write_statement_if_needed();
+        report_whether_this_instance_may_lead();
         Change change = Change::Nothing;
         if (participant_.stop_if_lease_ran_out(now)) {
             // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
@@ -184,11 +201,18 @@ class PairLeaseAgent {
      * @return AgreedPeerLeads when the request was granted.
      */
     [[nodiscard]] Change on_request(const pubsub_itc_fw::ConnectionID& reply_to, int64_t candidate_id, int32_t epoch, int64_t request_id,
-                                    Clock::time_point now) {
+                                    const LeaderStatement& statement, Clock::time_point now) {
         const LeaseParticipant::PeerRequestOutcome outcome = participant_.on_peer_request(candidate_id, epoch, now);
         if (outcome.gave_up_asking_to_lead) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                        "{}: the peer asks to lead at epoch {}, above the epoch this instance asked for -- giving way to it", owner_name_, epoch);
+        }
+
+        // The peer's statement is recorded in memory before the grant, and reaches the disk in the
+        // background; the grant does not wait for it (docs/availability/a_follower_behind_does_not_lead.md, 4.5).
+        int64_t echoed = 0;
+        if (outcome.answer.verdict == LeaseVoter::Verdict::Granted && statement.leader_id != 0) {
+            echoed = participant_.record_peer_statement(statement);
         }
 
         if (outcome.answer.verdict == LeaseVoter::Verdict::Granted && !promise_recorded(candidate_id)) {
@@ -209,11 +233,14 @@ class PairLeaseAgent {
 
         if (outcome.answer.verdict == LeaseVoter::Verdict::Granted) {
             reported_no_leader_ = false;
+            write_statement_if_needed();
+            report_whether_this_instance_may_lead();
             pubsub_itc_fw_app::LeaseGrant grant{};
             grant.voter_instance_id = self_id_;
             grant.group = group_;
             grant.epoch = epoch;
             grant.request_id = request_id;
+            grant.echoed_statement_number = echoed;
             links_.send_grant(reply_to, grant);
             return Change::AgreedPeerLeads;
         }
@@ -234,8 +261,9 @@ class PairLeaseAgent {
      * @brief A voter granted one of this instance's requests.
      * @return BecameLeader when this instance now leads.
      */
-    [[nodiscard]] Change on_grant(int64_t voter_id, int32_t epoch, int64_t request_id, Clock::time_point now) {
+    [[nodiscard]] Change on_grant(int64_t voter_id, int32_t epoch, int64_t request_id, int64_t echoed_statement_number, Clock::time_point now) {
         const LeaseHolder::Event event = participant_.on_grant(voter_id, request_id, epoch, now);
+        participant_.note_echo(epoch, echoed_statement_number);
         if (event == LeaseHolder::Event::LeaseExtended) {
             record_leading();
         }
@@ -296,7 +324,95 @@ class PairLeaseAgent {
         return participant_.highest_epoch();
     }
 
+    /**
+     * @brief Say that the peer may not lead, before having the matching engine act on a command the peer does not hold.
+     *
+     * The statement is written to disk in the background and sent to both other voters at once. The
+     * owner acts on such a command only once may_act_without_peer() is true. Only in a pair constructed
+     * with PeerStatementsFlag::SayWhetherPeerMayLead, and only while leading.
+     */
+    void begin_running_without_peer(Clock::time_point now) {
+        participant_.begin_running_without_peer();
+        statement_changed(now);
+    }
+
+    /**
+     * @brief Say that the peer may lead again.
+     *
+     * Call only once the peer has acknowledged every record this instance holds, and after going back
+     * to acting only on commands the peer holds.
+     */
+    void peer_holds_everything(Clock::time_point now) {
+        participant_.peer_holds_everything();
+        statement_changed(now);
+    }
+
+    /**
+     * @brief Whether the owner may have the matching engine act on a command its peer does not hold.
+     *
+     * True only while this instance leads saying its peer may not lead, that statement is on disk, and
+     * a voter other than this instance has echoed it.
+     */
+    [[nodiscard]] bool may_act_without_peer() const {
+        return participant_.may_act_without_peer() && recorder_ != nullptr && recorded_statement_.same_as(participant_.statement());
+    }
+
   private:
+    // The leader's own statement changed: start writing it, and tell both other voters at once rather
+    // than at the next renewal.
+    void statement_changed(Clock::time_point now) {
+        write_statement_if_needed();
+        if (participant_.acting(now)) {
+            last_renewal_ = now;
+            ask_voters(participant_.epoch(), now);
+        }
+    }
+
+    /**
+     * @brief Write the record when the statement held is not the one on disk, in the background if the recorder can.
+     *
+     * The promise in the record is written unchanged. If a write is already in progress, this is tried
+     * again at the next tick, once that write has finished. A recorder that cannot write in the
+     * background declines, and the record is then written on the lease thread.
+     */
+    void write_statement_if_needed() {
+        if (recorder_ == nullptr || background_in_flight_ || recorded_statement_.same_as(participant_.recorded_statement())) {
+            return;
+        }
+        const LeasePromiseRecord record{recorded_to_, recorded_until_, participant_.recorded_statement()};
+        if (recorder_->record_in_background(record)) {
+            background_in_flight_ = true;
+            background_record_ = record;
+            return;
+        }
+        const bool written = write_promise_record(recorded_to_, recorded_until_);
+        if (!written && !reported_statement_not_written_) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                       "{}: could not write the statement held about which instance may not lead -- it is held in memory only, and is tried again at "
+                       "every tick",
+                       owner_name_);
+        }
+        reported_statement_not_written_ = !written;
+    }
+
+    // Says once, when it changes, whether this instance holds a statement that it may not lead.
+    void report_whether_this_instance_may_lead() {
+        const bool may_not_lead = participant_.recorded_statement().instance_that_may_not_lead() == self_id_;
+        if (may_not_lead == reported_may_not_lead_) {
+            return;
+        }
+        reported_may_not_lead_ = may_not_lead;
+        if (may_not_lead) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                       "{}: the peer, leading at epoch {}, says this instance may not lead -- its log lacks commands the matching engine has acted on. "
+                       "It does not ask to lead until the peer says otherwise",
+                       owner_name_, participant_.recorded_statement().epoch);
+        } else {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: no statement that this instance may not lead is held any longer -- it may lead again",
+                       owner_name_);
+        }
+    }
+
     /**
      * @brief Make durable the promise just made to @p candidate_id, when the record does not already cover it.
      *
@@ -344,8 +460,9 @@ class PairLeaseAgent {
         }
         background_in_flight_ = false;
         if (*outcome) {
-            recorded_to_ = background_promised_to_;
-            recorded_until_ = background_until_;
+            recorded_to_ = background_record_.promised_to;
+            recorded_until_ = background_record_.until;
+            recorded_statement_ = background_record_.statement;
         } else {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "{}: could not refresh the lease promise record in the background -- it will be written when it is needed", owner_name_);
@@ -365,11 +482,10 @@ class PairLeaseAgent {
         if (background_in_flight_ || recorded_until_ - expires_at > refresh_ahead) {
             return;
         }
-        const Clock::time_point until = expires_at + promise_record_margin;
-        if (recorder_->record_in_background(promised_to, until)) {
+        const LeasePromiseRecord record{promised_to, expires_at + promise_record_margin, participant_.recorded_statement()};
+        if (recorder_->record_in_background(record)) {
             background_in_flight_ = true;
-            background_promised_to_ = promised_to;
-            background_until_ = until;
+            background_record_ = record;
         }
     }
 
@@ -383,7 +499,11 @@ class PairLeaseAgent {
      */
     [[nodiscard]] bool write_promise_record(int64_t promised_to, Clock::time_point until) {
         const auto started = Clock::now();
-        const bool written = recorder_->record(promised_to, until);
+        const LeasePromiseRecord record{promised_to, until, participant_.recorded_statement()};
+        const bool written = recorder_->record(record);
+        if (written) {
+            recorded_statement_ = record.statement;
+        }
         const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started);
         if (took >= slow_promise_record_write) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
@@ -460,6 +580,13 @@ class PairLeaseAgent {
         request.candidate_instance_id = self_id_;
         request.group = group_;
         request.epoch = epoch;
+        if (participant_.state() == LeaseHolder::State::Leading) {
+            const LeaderStatement& statement = participant_.statement();
+            request.statement_leader_id = statement.leader_id;
+            request.statement_epoch = statement.epoch;
+            request.statement_number = statement.number;
+            request.peer_may_lead = statement.peer_may_lead;
+        }
         request.request_id = participant_.record_request(peer_id_, now);
         links_.send_request_to_peer(request);
         request.request_id = participant_.record_request(third_voter_id_, now);
@@ -501,10 +628,12 @@ class PairLeaseAgent {
     int64_t recorded_to_{0};
     Clock::time_point recorded_until_{};
 
+    // The statement the record on disk holds.
+    LeaderStatement recorded_statement_{};
+
     // A record being written in the background, and what it will say once written. See refresh_in_background().
     bool background_in_flight_{false};
-    int64_t background_promised_to_{0};
-    Clock::time_point background_until_{};
+    LeasePromiseRecord background_record_{};
 
     // Until when this instance, restarted while it led, is resuming that lead; see on_refusal().
     Clock::time_point resuming_lead_until_{};
@@ -512,6 +641,12 @@ class PairLeaseAgent {
     // Whether the group having no leader has been reported since this instance last led or agreed
     // that its peer leads. Reported once, as a warning, rather than at every attempt.
     bool reported_no_leader_{false};
+
+    // Whether this instance was last reported as holding a statement that it may not lead.
+    bool reported_may_not_lead_{false};
+
+    // Whether a failure to write the statement has been reported and has not since been cured.
+    bool reported_statement_not_written_{false};
 };
 
 } // namespaces
