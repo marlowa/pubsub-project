@@ -252,6 +252,11 @@ machine like this one, so most of it is read from disk: at about 2 GB a second, 
 for 230 GB. **Not measured:** the arithmetic is from measured record sizes; the scan itself has not
 been timed on a log that large. The function logs how long each scan took (`scanned_in_ms`).
 
+**The same pattern serves a matching engine's catch-up.** When an engine starts or is promoted it asks
+the leading sequencer for every order after its position, and `SequencerThread::handle_me_position_request`
+also reads the log from its first record, on the sequencer thread, to find them. The log's own
+`scan_start_for` already finds the segment holding a given record, so that read could start there.
+
 **The sequencer does not hold the log in memory.** It maps the segment it is writing, and a reader
 maps a file only while reading it. The problem is the amount read on each request and the thread it
 runs on, not memory.
