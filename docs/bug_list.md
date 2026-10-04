@@ -228,8 +228,13 @@ decision under [BUG-0048](#bug_0048) that retention is the whole trading day is 
 because of the storage it implies. Two models are in use at other venues: a fixed number of recent
 messages per member, beyond which a resend is answered with a FIX gap fill (the London Stock Exchange
 and Turquoise, which keeps the last 65,000 messages per comp id), and the whole business day (Eurex,
-and Nasdaq's OUCH sessions). Also to be considered: dividing the log into files by period of time,
-for example two hours each, so that a period that is no longer needed can be removed whole.
+and Nasdaq's OUCH sessions). **Decided (2026-10-04): a table of segments, not files by period of
+time.** The log is already divided into segments of 4 MB. The sequencer keeps a small table of the
+time and sequence number of each segment's first record, about 1.4 MB for a 230 GB day. With it a
+reader finds the segment holding any moment or any record in one step, and everything before a given
+time can be removed by deleting whole segments. Files covering a period such as two hours were
+considered: they would reach about 25 GB each on a busy day, and the writer prepares each file at its
+full size and maps it into memory, which is not built for files that large.
 
 ### BUG-0112: One send that cannot complete stops a process sending anything on any connection {#bug_0112}
 
