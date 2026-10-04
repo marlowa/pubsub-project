@@ -1007,7 +1007,10 @@ class CppGenerator:
         fname = field.name
 
         if field.optional:
-            w("    if (bytes_remaining < 1) return false;")
+            # A message that ends where an optional field would begin was encoded before the field
+            # existed, so the field is absent. That is how a field is added to a message whose
+            # earlier encodings are still read, such as the records in a write-ahead log.
+            w(f"    if (bytes_remaining == 0) {{ out.has_{fname} = false; goto skip_field_{fname}; }}")
             w("    {")
             w("        std::uint8_t presence_flag = *read_cursor;")
             w("        read_cursor += 1;")
@@ -1208,7 +1211,8 @@ class CppGenerator:
         name = field.name
 
         if field.optional:
-            w("    if (bytes_remaining < 1) return false;")
+            # As in decoding: a message that ends where an optional field would begin lacks it.
+            w(f"    if (bytes_remaining == 0) goto skip_field_{name};")
             w("    {")
             w("        std::uint8_t presence_flag = *read_cursor;")
             w("        read_cursor += 1;")

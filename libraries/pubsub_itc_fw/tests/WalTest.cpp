@@ -27,6 +27,7 @@
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
+#include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
@@ -625,6 +626,140 @@ TEST_F(WalClassTest, TruncateBelowIsNoOpWhenNothingToReclaim) {
     }
     wal.truncate_below(1); // nothing lives before the first record
     EXPECT_TRUE(std::filesystem::exists(dir_ + "/wal_000000.log"));
+}
+
+// Discarding the records after a point, as a rejoining sequencer follower does.
+
+namespace {
+
+void append_records(Wal& wal, int64_t first, int64_t last, uint8_t fill) {
+    const std::vector<uint8_t> payload(100, fill);
+    for (int64_t seq_no = first; seq_no <= last; ++seq_no) {
+        wal.append(seq_no, 1000, payload.data(), static_cast<int>(payload.size()), seq_no);
+    }
+}
+
+std::vector<CapturedRecord> read_back(const std::string& dir) {
+    std::vector<CapturedRecord> records;
+    Wal wal;
+    wal.open(dir, segment_size, capture(records), WalOpenMode{WalOpenMode::IgnoreSnapshot});
+    return records;
+}
+
+} // un-named namespace
+
+TEST_F(WalClassTest, TruncateAfterKeepsTheRecordsUpToThePointAndNoMore) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        append_records(wal, 1, 10, 0xAA);
+        wal.truncate_after(6);
+        EXPECT_EQ(wal.last_seq_no(), 6);
+        EXPECT_EQ(wal.record_count(), 6U);
+    }
+    const auto records = read_back(dir_);
+    ASSERT_EQ(records.size(), 6U);
+    EXPECT_EQ(records.back().seq_no, 6);
+}
+
+TEST_F(WalClassTest, RecordsAppendedAfterTruncatingFollowTheKeptOnes) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        append_records(wal, 1, 10, 0xAA);
+        wal.truncate_after(4);
+        append_records(wal, 5, 7, 0xBB);
+    }
+    const auto records = read_back(dir_);
+    ASSERT_EQ(records.size(), 7U);
+    for (size_t i = 0; i < records.size(); ++i) {
+        EXPECT_EQ(records[i].seq_no, static_cast<int64_t>(i + 1));
+    }
+    EXPECT_EQ(records[4].payload.front(), 0xBB) << "record 5 is the one appended after truncating, not the one discarded";
+}
+
+TEST_F(WalClassTest, AnOlderEntryBeyondTheNewEndIsNeverReadAgain) {
+    // A record appended after truncating, exactly as long as the discarded record it replaces, ends
+    // exactly where the next discarded record begins. Unless everything after the new end was zeroed,
+    // that record and the ones after it would be read again as if they followed.
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        append_records(wal, 1, 20, 0xAA);
+        wal.truncate_after(5);
+        append_records(wal, 6, 6, 0xBB);
+    }
+    const auto records = read_back(dir_);
+    ASSERT_EQ(records.size(), 6U);
+    EXPECT_EQ(records.back().seq_no, 6);
+    EXPECT_EQ(records.back().payload.front(), 0xBB);
+}
+
+TEST_F(WalClassTest, TruncateAfterRemovesLaterSegments) {
+    // A segment of 4096 bytes holds a few dozen of these records, so 200 span several segments.
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        append_records(wal, 1, 200, 0xAA);
+        wal.truncate_after(3);
+        append_records(wal, 4, 5, 0xBB);
+    }
+    const auto records = read_back(dir_);
+    ASSERT_EQ(records.size(), 5U);
+    EXPECT_EQ(records.back().payload.front(), 0xBB);
+}
+
+TEST_F(WalClassTest, TruncateAfterZeroKeepsNothing) {
+    {
+        Wal wal;
+        wal.open(dir_, segment_size);
+        append_records(wal, 1, 50, 0xAA);
+        wal.truncate_after(0);
+        EXPECT_EQ(wal.last_seq_no(), 0);
+        append_records(wal, 1, 2, 0xBB);
+    }
+    const auto records = read_back(dir_);
+    ASSERT_EQ(records.size(), 2U);
+    EXPECT_EQ(records.front().payload.front(), 0xBB);
+}
+
+TEST_F(WalClassTest, TruncateAfterRemovesASnapshotThatCouldPointBeyondTheNewEnd) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    append_records(wal, 1, 10, 0xAA);
+    wal.take_snapshot();
+    ASSERT_TRUE(std::filesystem::exists(snapshot_path()));
+    wal.truncate_after(5);
+    EXPECT_FALSE(std::filesystem::exists(snapshot_path()));
+}
+
+TEST_F(WalClassTest, ReadingFromTheScanStartReachesTheRecordWithoutReadingEarlierSegments) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    append_records(wal, 1, 200, 0xAA);
+    const WalPosition start = wal.scan_start_for(150);
+    EXPECT_GT(start.segment, 0U) << "200 records span several segments, so record 150 is not in the first";
+    WalCursor cursor;
+    cursor.open(dir_, start);
+    int64_t record_id = 0;
+    const uint8_t* payload = nullptr;
+    size_t size = 0;
+    ASSERT_TRUE(cursor.read_next(record_id, payload, size));
+    EXPECT_LE(record_id, 150) << "the segment found starts after the record";
+    bool reached = record_id == 150;
+    while (!reached && cursor.read_next(record_id, payload, size)) {
+        reached = record_id == 150;
+    }
+    EXPECT_TRUE(reached);
+    EXPECT_EQ(wal.scan_start_for(1).segment, 0U);
+}
+
+TEST_F(WalClassTest, TruncateAfterARecordNotInTheLogIsRefused) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    append_records(wal, 1, 10, 0xAA);
+    EXPECT_THROW(wal.truncate_after(11), PreconditionAssertion);
+    EXPECT_THROW(wal.truncate_after(-1), PreconditionAssertion);
 }
 
 } // namespaces

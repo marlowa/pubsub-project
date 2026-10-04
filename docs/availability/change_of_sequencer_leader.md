@@ -386,7 +386,7 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    The rule itself is built into the lease classes, the lease agent and the arbiter; the sequencer does
    not yet use it.
 5. **4.5,** the rejoin, designed in [follower_log_repair.md](follower_log_repair.md), with its
-   scenarios. This closes BUG-0097. It comes before the sequencer uses open question 2's rule, because
+   scenarios. **Done:** [BUG-0097](../bug_list.md#bug_0097), scenarios 61 and 62. It comes before the sequencer uses open question 2's rule, because
    that rule lets the leader say its follower may lead again only once the follower holds every record
    the leader holds, and only 4.5 makes that knowable for a follower that has reconnected.
 6. **The sequencer uses open question 2's rule:** step 4 of

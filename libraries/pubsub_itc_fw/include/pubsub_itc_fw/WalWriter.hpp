@@ -98,6 +98,15 @@ class WalWriter {
     void append(int64_t record_id, const void* payload, size_t size);
 
     /**
+     * @brief Closes the current segment and stops the segment-preparing helper, so that the log can
+     *        be changed on disk and the writer opened again with open().
+     *
+     * Used by Wal::truncate_after(). A segment the helper had prepared is released; its file stays
+     * on disk for the caller to keep or delete.
+     */
+    void close();
+
+    /**
      * @brief Returns the current write position (segment + offset).
      *
      * Applications store this in their snapshot so that WalReader::replay()

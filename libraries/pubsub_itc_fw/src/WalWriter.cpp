@@ -49,6 +49,13 @@ WalWriter::~WalWriter() {
     close_segment();
 }
 
+void WalWriter::close() {
+    stop_helper();
+    discard_prepared();
+    close_segment();
+    prep_state_.store(PrepState::Idle, std::memory_order_release);
+}
+
 // Path helper
 
 std::string WalWriter::segment_path(uint64_t seg_num) const {

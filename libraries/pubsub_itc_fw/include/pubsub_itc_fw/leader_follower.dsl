@@ -222,6 +222,12 @@ message WalRecord (id=103, version=1)
     # report there is no answer, and without the mark an answer the member already had reads
     # as a second event.
     bool poss_resend
+    # The epoch of the leadership that sequenced this record. Two logs that hold a record with
+    # the same sequence number and the same epoch hold the same record, which is how a rejoining
+    # follower finds the last record its log and its leader's agree on
+    # (docs/availability/follower_log_repair.md). Optional, and last, so that records written
+    # before it existed still decode: such a record lacks it and is taken to be from epoch zero.
+    optional i32 leader_epoch
 end
 
 # ------------------------------------------------------------
@@ -233,6 +239,40 @@ end
 # ------------------------------------------------------------
 message WalAck (id=104, version=1)
     i64 seq_no      # sequence number echoed from the WalRecord
+end
+
+# ------------------------------------------------------------
+#  107 -- LogPositionRequest
+#  Sent by a sequencer follower to its leader when it connects, when
+#  it starts following, and again every second until the two logs
+#  agree. It names the follower's last record and that record's
+#  epoch. See docs/availability/follower_log_repair.md.
+# ------------------------------------------------------------
+message LogPositionRequest (id=107, version=1)
+    i64 last_seq_no # the follower's last record, or zero for an empty log
+    i32 last_epoch # the epoch of the leadership that wrote it, or zero
+end
+
+# ------------------------------------------------------------
+#  108 -- LogPositionReply
+#  The leader's answer. seq_no is the last record, at or below the
+#  follower's last, that the leader's log holds with an epoch no later
+#  than the follower's last epoch, and epoch is that record's epoch in
+#  the leader's log. The follower discards every record after seq_no,
+#  and asks again. When agreed is true, the follower's last record is
+#  seq_no with that epoch, the two logs agree up to it, and the leader
+#  sends every record after it, followed by live records.
+#
+#  When the leader stops sending live records to its follower, because
+#  a peer connection opened or closed or it has just taken the lead, it
+#  sends a reply with ask_again set and nothing else: the follower
+#  forgets that the logs agree and asks again.
+# ------------------------------------------------------------
+message LogPositionReply (id=108, version=1)
+    i64 seq_no # the record the follower keeps its log through
+    i32 epoch # that record's epoch in the leader's log
+    bool agreed # true: the logs agree, and the records after seq_no follow
+    bool ask_again # true: the leader has stopped sending; ask again, and ignore the other fields
 end
 
 # ------------------------------------------------------------

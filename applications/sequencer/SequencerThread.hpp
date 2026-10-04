@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -34,6 +35,7 @@
 #include "GatewayIds.hpp"
 #include "LeaseLinksInterface.hpp"
 #include "LeasePromiseStore.hpp"
+#include "LogEpochTable.hpp"
 #include "PairLeaseAgent.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
@@ -107,6 +109,31 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // the lead, so that it numbers new records above every record its log holds.
     std::atomic<int64_t> highest_replicated_seq_no_{0};
 
+    // Repairing a follower's log when it rejoins: docs/availability/follower_log_repair.md.
+    //
+    // Which leadership wrote each record of this instance's log. Guarded by its mutex, because a
+    // follower's records are written on the reactor's thread by the inline handler as well as on
+    // this one.
+    LogEpochTable log_epochs_;
+    mutable std::mutex log_epochs_mutex_;
+
+    // As a follower: whether this log and the leader's are known to agree, so that the records the
+    // leader sends may be written. Until then they are discarded. Set and cleared on this thread,
+    // read by the inline handler.
+    std::atomic<bool> follower_log_agreed_{false};
+
+    // As a follower: replicated records the inline handler passed to this thread that this thread
+    // has not yet written or discarded. The inline handler writes a record itself only while this is
+    // zero, so that records are written in order and by one thread at a time.
+    std::atomic<int64_t> replicated_records_queued_{0};
+
+    // As a leader: whether the follower's log is known to agree with this one, so that live records
+    // are sent to it. Until then it is sent none: written after a gap, they would be out of place.
+    bool follower_log_matches_{false};
+
+    // As a follower: when this instance last asked its leader where their logs agree.
+    std::chrono::steady_clock::time_point last_position_request_at_{};
+
     // Outbound gateway connections for ER forwarding, keyed by (protocol, instance).
     //
     // More than one gateway feeds the same book -- the ASCII FIX one and the binary one --
@@ -156,7 +183,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // before the sequencer begins accepting connections.
     /// Commits one record to the log and records how long it took. Every append goes through
     /// here, so there is one place that knows what a commit costs.
-    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns);
+    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
+
+    /// Opens the log, builds the table of epochs, and discards everything after the first gap, if there is one.
+    void open_wal_trusting_it_up_to_any_gap();
 
     pubsub_itc_fw::Wal wal_;
 
@@ -340,6 +370,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
     void install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id);
+
+    /// As a follower: asks the leader where their logs agree, unless they already do.
+    void send_log_position_request();
+    /// As a leader: answers a follower, and once the logs agree sends it every record after its last.
+    void handle_log_position_request(const pubsub_itc_fw::EventMessage& message);
+    /// As a follower: discards what the leader's answer says it does not hold, and asks again or starts writing.
+    void handle_log_position_reply(const pubsub_itc_fw::EventMessage& message);
+    /// The two logs no longer known to agree, because a peer connection or this instance's role changed.
+    void forget_log_agreement();
+    /// As a follower: whether a replicated record is the next one this log needs. A record already held is not; one that would leave
+    /// a gap is not either, and the logs are then no longer taken to agree. Called on either thread that writes replicated records.
+    [[nodiscard]] bool replicated_record_is_next(int64_t seq_no);
 
     // ---- Sending an order to the matching engine only once the follower holds it -------------
     //

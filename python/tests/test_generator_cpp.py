@@ -65,6 +65,19 @@ def test_message_struct_generation():
     assert "int32_t qty" in code
 
 
+def test_an_optional_field_at_the_end_of_the_buffer_reads_as_absent():
+    text = """
+        message Trade (id=1)
+            i64 price
+            optional i32 qty
+        end
+    """
+    code = generate(text)
+    # A message encoded before the optional field existed ends where the field would begin.
+    assert "if (bytes_remaining == 0) { out.has_qty = false; goto skip_field_qty; }" in code
+    assert "if (bytes_remaining == 0) goto skip_field_qty;" in code
+
+
 def test_list_field_generation():
     text = """
         message Foo (id=1)

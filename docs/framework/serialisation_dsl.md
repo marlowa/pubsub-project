@@ -57,7 +57,10 @@ reference. On little-endian hardware, `list<primitive>` decode is zero-copy
 **`T[N]`** — fixed-length array. No length prefix. Encoded as N consecutive elements.
 
 **`optional T`** — presence flag (1 byte: 0=absent, 1=present) followed by the encoded
-value if present.
+value if present. A message whose bytes end exactly where an optional field would begin
+decodes with that field absent. That is what lets an optional field be added at the end of
+a message while encodings made before it existed are still read, as the records already in a
+write-ahead log are.
 
 ### Enums
 

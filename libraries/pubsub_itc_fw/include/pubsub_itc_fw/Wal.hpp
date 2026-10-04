@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/WalWriter.hpp>
 
@@ -182,6 +183,29 @@ class Wal {
      */
     void truncate_below(int64_t safe_seq_no);
 
+    /**
+     * @brief Discard every record after @p seq_no, so that the next record appended follows it.
+     *
+     * Used by a sequencer follower whose log holds records its leader does not, or that follow a gap,
+     * before it writes the records its leader sends it (docs/availability/follower_log_repair.md).
+     * Everything after the record in its segment is overwritten with zeros, so that a reader stops
+     * there and no older entry beyond it can be read again once new records are appended; every later
+     * segment is deleted; and the snapshot is removed, because it may point beyond the new end. The
+     * writer is reopened after the record.
+     *
+     * @param[in] seq_no The last record to keep, or zero to keep none. Must be in the log.
+     */
+    void truncate_after(int64_t seq_no);
+
+    /**
+     * @brief Where to start reading to reach record @p seq_no without reading the log from its start.
+     *
+     * The start of the last segment whose first record is numbered @p seq_no or below, found by
+     * reading only the first entry of each segment. Records are numbered in rising order through the
+     * segments, so the record, if the log holds it, is in that segment or a later one.
+     */
+    [[nodiscard]] WalPosition scan_start_for(int64_t seq_no) const;
+
     [[nodiscard]] size_t record_count() const {
         return record_count_;
     }
@@ -233,6 +257,8 @@ class Wal {
     [[nodiscard]] std::string segment_path_for_delete(uint64_t seg_num) const;
     bool load_snapshot(WalPosition& out_pos);
     void delete_segments_before(uint64_t seg_num) const;
+    void delete_segments_after(uint64_t seg_num) const;
+    [[nodiscard]] std::vector<uint64_t> segment_numbers() const;
 
     std::string directory_;
     size_t segment_size_{0};

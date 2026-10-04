@@ -823,6 +823,16 @@ class Scenario(NamedTuple):
     # trading, and returns to waiting for the follower when it runs again. See run_scenario's
     # "stalled follower" block.
     assert_stalled_follower_runs_alone: bool = False
+    # When True, kill the follower sequencer, have the leader take orders, restart the follower and
+    # require its log to end identical to the leader's from where it stopped, then kill the leader
+    # and require the new leader to hold every order the engine accepted. See run_scenario's
+    # "follower restarts" block, and docs/availability/follower_log_repair.md.
+    assert_restarted_follower_log_repaired: bool = False
+    # When True, make the leading sequencer hold records its follower never received, kill it, have
+    # the follower lead and take orders, restart the old leader, and require it to discard those
+    # records and end with a log identical to the new leader's. Needs block_leader_peer_sends. See
+    # run_scenario's "old leader rejoins" block.
+    assert_rejoining_old_leader_log_repaired: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3473,6 +3483,50 @@ _SCENARIOS: list[Scenario] = [
         assert_stalled_follower_runs_alone=True,
         steps=[],
     ),
+
+    # 61 -- a follower that restarts is sent the records it missed.
+    #
+    # The follower sequencer is killed and the leader takes orders without it. When the follower is
+    # restarted, it and the leader find the last record their logs agree on, and the leader sends it
+    # every record after that. Its log must then hold the same records, with the same contents, as
+    # the leader's from where it stopped: no gap. Then the leader is killed, and the follower, which
+    # takes the lead, must hold every order the matching engine accepted while it was away.
+    Scenario(
+        number=61,
+        short_name="restarted_follower_log_repaired",
+        description="A follower sequencer that restarts is sent the records it missed, and can then take over",
+        expected_outcome=(
+            "after the follower restarts, its log holds the same records as the leader's from where it stopped, with no gap; "
+            "when the leader is then killed, the new leader's log holds every order the engine accepted while the follower was down"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_restarted_follower_log_repaired=True,
+        steps=[],
+    ),
+
+    # 62 -- an old leader that rejoins discards the records its new leader does not have.
+    #
+    # The primary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
+    # exists nothing it sends its follower arrives, so orders sent to it are written to its log only;
+    # it is stopped at once, before its 100 ms wait could make it act on them. It is killed, the
+    # follower takes the lead and takes orders of its own, numbered where the old leader's were. The
+    # flag file is removed and the old leader restarted. It must discard the records the new leader
+    # does not hold, and its log must end identical to the new leader's.
+    Scenario(
+        number=62,
+        short_name="rejoining_old_leader_log_repaired",
+        description="An old sequencer leader that rejoins discards the records its new leader does not have",
+        expected_outcome=(
+            "the restarted old leader reports discarding the records its new leader never had, none of the orders only it held "
+            "remains in its log, and its log then holds the same records as the new leader's"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        block_leader_peer_sends=True,
+        assert_rejoining_old_leader_log_repaired=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4585,6 +4639,54 @@ def wal_record_ids(wal_dir: Path, after: tuple[int, int] = (-1, -1)) -> list[tup
                 entries.append(((segment, offset), record_id))
             offset += _WAL_ENTRY_HEADER.size + size + 4
     return entries
+
+
+def wal_records_after(wal_dir: Path, after_seq_no: int, from_position: tuple[int, int] = (-1, -1)) -> dict[int, int]:
+    """Each record numbered above after_seq_no in a sequencer's write-ahead log, mapped to the checksum stored with it.
+
+    A follower writes the bytes its leader sends it unchanged, so the same record in two logs carries
+    the same checksum, and two logs whose maps are equal hold the same records. Reading starts at the
+    segment of from_position, which a caller passes to avoid reading a long log from its start.
+    """
+    records: dict[int, int] = {}
+    for segment_path in sorted(wal_dir.glob("wal_*.log")):
+        segment = int(segment_path.stem.split("_")[1])
+        if segment < from_position[0]:
+            continue
+        data = segment_path.read_bytes()
+        offset = 0
+        while offset + _WAL_ENTRY_HEADER.size <= len(data):
+            magic, size, record_id, _ = _WAL_ENTRY_HEADER.unpack_from(data, offset)
+            if magic != _WAL_ENTRY_MAGIC:
+                break
+            checksum_at = offset + _WAL_ENTRY_HEADER.size + size
+            if record_id > after_seq_no and checksum_at + 4 <= len(data):
+                records[record_id] = struct.unpack_from("<I", data, checksum_at)[0]
+            offset = checksum_at + 4
+    return records
+
+
+def compare_logs_after(label: str, leader_dir: Path, leader_from: tuple[int, int], follower_dir: Path, follower_from: tuple[int, int],
+                       after_seq_no: int) -> int:
+    """Fail unless the two logs hold the same records, with the same contents, numbered above after_seq_no, without a gap."""
+    leader = wal_records_after(leader_dir, after_seq_no, leader_from)
+    follower = wal_records_after(follower_dir, after_seq_no, follower_from)
+    if not leader:
+        die(f"{label}: the leader's log holds no record above {after_seq_no}, so there is nothing to compare.")
+    expected = list(range(after_seq_no + 1, max(leader) + 1))
+    if sorted(leader) != expected:
+        die(f"{label}: the leader's own log has a gap above record {after_seq_no}.")
+    missing = [seq for seq in expected if seq not in follower]
+    if missing:
+        die(f"{label}: the follower's log lacks {len(missing)} of the leader's {len(expected)} records above {after_seq_no}, "
+            f"the first {missing[0]}. Its log has a gap where it missed records.")
+    different = [seq for seq in expected if follower[seq] != leader[seq]]
+    if different:
+        die(f"{label}: {len(different)} records hold different contents in the two logs, the first record {different[0]}.")
+    extra = sorted(seq for seq in follower if seq > max(leader))
+    if extra:
+        die(f"{label}: the follower's log holds {len(extra)} records the leader's does not, from record {extra[0]}.")
+    return len(expected)
 
 
 def check_new_leader_numbers_forward(wal_dir: Path, from_position: tuple[int, int]) -> None:
@@ -7397,6 +7499,156 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if running_alone_gauge() not in ("0", "0.0"):
                 die(f"stalled follower: the leader went back to waiting for its follower but its gauge reads {running_alone_gauge()}.")
             log("  the follower caught up, the leader waits for its acknowledgements again, and the gauge reads 0 -- OK")
+
+        # ── Follower restarts ─────────────────────────────────────────────────
+        if scenario.assert_restarted_follower_log_repaired:
+            log("=== A follower that restarts is sent the records it missed ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("follower restarts: sequencer_primary is not leading, so killing sequencer_secondary would not kill a follower.")
+            sequencer_etc = prefix / "etc" / "sequencer"
+            configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
+            order_ports = {which: installed_toml_section_value(config, "network", "listen_port") for which, config in configs.items()}
+            wal_dirs = {which: config.parent / installed_toml_section_value(config, "wal", "directory") for which, config in configs.items()}
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            def inject_orders(port: str, cl_ord_id: str, count: int = 1) -> None:
+                result = subprocess.run([str(bin_dir / "inject_order"), "--port", port, "--cl-ord-id", cl_ord_id, "--count", str(count)],
+                                        capture_output=True, text=True, check=False, timeout=60)
+                if result.returncode != 0:
+                    die(f"follower restarts: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+
+            # Where both logs end now, with the follower keeping up.
+            time.sleep(1.0)
+            start_positions = {which: wal_end_position(path) for which, path in wal_dirs.items()}
+            stopped_at = max(wal_records_after(wal_dirs["secondary"], 0, start_positions["secondary"]) or {0: 0})
+
+            follower = proc_by_name["sequencer_secondary"]
+            log(f"  SIGKILL -> sequencer_secondary (PID {follower.pid})")
+            follower.kill()
+            follower.wait()
+            if Path(f"/proc/{follower.pid}").exists():
+                die(f"follower restarts: sequencer_secondary (PID {follower.pid}) is still running after SIGKILL.")
+            log("  sequencer_secondary confirmed dead")
+
+            missed = f"missed-{run_tag}"
+            accepted_from = file_end(me_log)
+            inject_orders(order_ports["primary"], missed, 20)
+            missed_ids = [f"{missed}-{number}" for number in range(1, 21)]
+            for cl_ord_id in missed_ids:
+                if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={cl_ord_id} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=accepted_from)[0]:
+                    die(f"follower restarts: the matching engine did not accept {cl_ord_id}, sent while the follower was down.")
+            log(f"  the leader took {len(missed_ids)} orders while the follower was down, and the engine accepted them all")
+
+            agreed_from = file_end(primary_log)
+            do_restart_step(RestartStep(proc_name="sequencer_secondary", ready_log_name="sequencer_secondary.log", ready_markers=("SequencerThread:",),
+                                        ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
+                            proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+            if not poll_log_for(primary_log, "the follower's log agrees with this one through record", timeout=30.0, from_byte=agreed_from)[0]:
+                die("follower restarts: the leader never reported that the restarted follower's log agrees with its own.")
+            if not poll_log_for(log_dir / "sequencer_secondary.log", "this log agrees with the leader's through record", timeout=30.0)[0]:
+                die("follower restarts: the restarted follower never reported that its log agrees with the leader's.")
+            inject_orders(order_ports["primary"], f"after-{run_tag}")
+            time.sleep(2.0)
+            compared = compare_logs_after("follower restarts", wal_dirs["primary"], start_positions["primary"], wal_dirs["secondary"],
+                                          start_positions["secondary"], stopped_at)
+            log(f"  the restarted follower's log holds the same {compared} records as the leader's from record {stopped_at + 1}, with no gap -- OK")
+
+            # The follower can now take over without losing anything the engine acted on.
+            primary = proc_by_name["sequencer_primary"]
+            takeover_from = file_end(log_dir / "sequencer_secondary.log")
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if Path(f"/proc/{primary.pid}").exists():
+                die(f"follower restarts: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            if not poll_log_for(log_dir / "sequencer_secondary.log", _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout,
+                                from_byte=takeover_from)[0]:
+                die(f"follower restarts: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            held = wal_records_after(wal_dirs["secondary"], stopped_at, start_positions["secondary"])
+            leader_view = wal_records_after(wal_dirs["primary"], stopped_at, start_positions["primary"])
+            lacking = [seq for seq in leader_view if seq not in held]
+            if lacking:
+                die(f"follower restarts: the new leader's log lacks {len(lacking)} records the old leader wrote while it was down, "
+                    "including orders the matching engine accepted.")
+            log("  the follower took the lead holding every record the old leader wrote while it was down, so every order the "
+                "engine accepted is in the new leader's log -- OK")
+
+        # ── Old leader rejoins ────────────────────────────────────────────────
+        if scenario.assert_rejoining_old_leader_log_repaired:
+            log("=== An old leader that rejoins discards the records its new leader does not have ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("old leader rejoins: sequencer_primary is not leading.")
+            sequencer_etc = prefix / "etc" / "sequencer"
+            configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
+            order_ports = {which: installed_toml_section_value(config, "network", "listen_port") for which, config in configs.items()}
+            wal_dirs = {which: config.parent / installed_toml_section_value(config, "wal", "directory") for which, config in configs.items()}
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            def occurrences_in_log(wal_dir: Path, cl_ord_id: str) -> int:
+                needle = cl_ord_id.encode()
+                return sum(path.read_bytes().count(needle) for path in wal_dir.glob("wal_*.log"))
+
+            time.sleep(1.0)
+            start_positions = {which: wal_end_position(path) for which, path in wal_dirs.items()}
+            agreed_through = max(wal_records_after(wal_dirs["secondary"], 0, start_positions["secondary"]) or {0: 0})
+
+            block_flag.touch()
+            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists", timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("old leader rejoins: libblock_sends_to_ports.so never reported that it had begun blocking.")
+            primary = proc_by_name["sequencer_primary"]
+            only_old = f"onlyold-{run_tag}"
+            injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", only_old, "--count", "3"],
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            sent_line = injector.stdout.readline() if injector.stdout is not None else ""
+            os.kill(primary.pid, signal.SIGSTOP)
+            injector.wait(timeout=30)
+            if not sent_line.startswith("sent "):
+                die(f"old leader rejoins: inject_order did not report sending the orders: {sent_line!r}")
+            time.sleep(1.0)
+            only_old_ids = [f"{only_old}-{number}" for number in (1, 2, 3)]
+            if any(occurrences_in_log(wal_dirs["primary"], cl_ord_id) == 0 for cl_ord_id in only_old_ids):
+                die("old leader rejoins: the leader's log does not hold the three orders sent to it, so it holds nothing its follower lacks.")
+            log("  the leader wrote three orders its follower never received, and was stopped before it could act on them")
+
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if Path(f"/proc/{primary.pid}").exists():
+                die(f"old leader rejoins: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            takeover_from = file_end(secondary_log)
+            if not poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)[0]:
+                die(f"old leader rejoins: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            new_orders = f"newleader-{run_tag}"
+            result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_ports["secondary"], "--cl-ord-id", new_orders, "--count", "5"],
+                                    capture_output=True, text=True, check=False, timeout=60)
+            if result.returncode != 0:
+                die(f"old leader rejoins: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+            log("  the follower took the lead and took five orders of its own, numbered where the old leader's three were")
+
+            block_flag.unlink(missing_ok=True)
+            discarded_from = 0
+            do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready_markers=("SequencerThread:",),
+                                        ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
+                            proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+            if not poll_log_for(primary_log, "this log agrees with the leader's through record", timeout=30.0, from_byte=discarded_from)[0]:
+                die("old leader rejoins: the restarted old leader never reported that its log agrees with the new leader's.")
+            if not poll_log_for(primary_log, "from this instance's log -- the leader does not hold them", timeout=5.0, from_byte=discarded_from)[0]:
+                die("old leader rejoins: the restarted old leader never reported discarding the records its new leader does not hold.")
+            remaining = [cl_ord_id for cl_ord_id in only_old_ids if occurrences_in_log(wal_dirs["primary"], cl_ord_id) > 0]
+            if remaining:
+                die(f"old leader rejoins: the old leader's log still holds {remaining}, which its new leader never had.")
+            log("  the old leader discarded the three records its new leader never had -- OK")
+            result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_ports["secondary"], "--cl-ord-id", f"after-{run_tag}"],
+                                    capture_output=True, text=True, check=False, timeout=60)
+            if result.returncode != 0:
+                die(f"old leader rejoins: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+            time.sleep(2.0)
+            compared = compare_logs_after("old leader rejoins", wal_dirs["secondary"], start_positions["secondary"], wal_dirs["primary"],
+                                          start_positions["primary"], agreed_through)
+            log(f"  the old leader's log now holds the same {compared} records as the new leader's from record {agreed_through + 1} -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

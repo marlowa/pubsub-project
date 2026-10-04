@@ -3,17 +3,22 @@
 
 #include <pubsub_itc_fw/Wal.hpp>
 
+#include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include <fmt/format.h>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <pubsub_itc_fw/Crc32.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
@@ -186,6 +191,130 @@ void Wal::truncate_below(int64_t safe_seq_no) {
     }
     // No record at/after safe_seq_no: everything is consumed but nothing is safe to
     // reclaim yet (the current segment is still being written), so leave it.
+}
+
+void Wal::truncate_after(int64_t seq_no) {
+    if (seq_no < 0 || seq_no > last_seq_no_) {
+        throw PreconditionAssertion(fmt::format("Wal::truncate_after: record {} is not in a log whose last record is {}", seq_no, last_seq_no_), __FILE__,
+                                    __LINE__);
+    }
+    if (seq_no == last_seq_no_) {
+        return;
+    }
+
+    // Where the record to keep ends, and how many records follow it. Reading starts at the segment
+    // that holds the record, not at the start of the log.
+    WalPosition end{0, 0};
+    size_t discarded = record_count_;
+    if (seq_no > 0) {
+        WalCursor cursor;
+        cursor.open(directory_, scan_start_for(seq_no));
+        int64_t record_id = 0;
+        const uint8_t* payload = nullptr;
+        size_t size = 0;
+        bool found = false;
+        while (cursor.read_next(record_id, payload, size)) {
+            if (record_id == seq_no) {
+                end = cursor.position();
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw PubSubItcException(fmt::format("Wal::truncate_after: record {} was not found in {}", seq_no, directory_));
+        }
+        discarded = 0;
+        while (cursor.read_next(record_id, payload, size)) {
+            ++discarded;
+        }
+    }
+
+    writer_.close();
+
+    // Zero the rest of the segment the record ends in. Zeroing only the next entry's header would not
+    // do: a record appended later could end part way through an older entry, and an older entry
+    // after that could then be read as if it followed.
+    const std::string segment = segment_path_for_delete(end.segment);
+    const int fd = ::open(segment.c_str(), O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        throw PubSubItcException("Wal::truncate_after: open(" + segment + "): " + StringUtils::get_errno_string());
+    }
+    std::vector<uint8_t> zeros(64 * 1024, 0);
+    for (size_t offset = end.offset; offset < segment_size_;) {
+        const size_t chunk = std::min(zeros.size(), segment_size_ - offset);
+        const ssize_t written = ::pwrite(fd, zeros.data(), chunk, static_cast<off_t>(offset));
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            const std::string reason = StringUtils::get_errno_string();
+            ::close(fd);
+            throw PubSubItcException("Wal::truncate_after: pwrite(" + segment + "): " + reason);
+        }
+        offset += static_cast<size_t>(written);
+    }
+    ::fsync(fd);
+    ::close(fd);
+
+    delete_segments_after(end.segment);
+    ::unlink(snapshot_path().c_str());
+
+    last_seq_no_ = seq_no;
+    record_count_ = discarded > record_count_ ? 0 : record_count_ - discarded;
+    writer_.open(directory_, segment_size_, end);
+}
+
+WalPosition Wal::scan_start_for(int64_t seq_no) const {
+    WalPosition start{0, 0};
+    for (const uint64_t segment : segment_numbers()) {
+        const int fd = ::open(segment_path_for_delete(segment).c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            break;
+        }
+        // The first entry's header: magic (4 bytes), payload size (4), record id (8), reserved (8).
+        uint8_t header[24] = {};
+        const ssize_t got = ::pread(fd, header, sizeof(header), 0);
+        ::close(fd);
+        uint32_t magic = 0;
+        int64_t record_id = 0;
+        std::memcpy(&magic, header, sizeof(magic));
+        std::memcpy(&record_id, header + 8, sizeof(record_id));
+        if (got != static_cast<ssize_t>(sizeof(header)) || magic != WalWriter::entry_magic || record_id > seq_no) {
+            break;
+        }
+        start = WalPosition{segment, 0};
+    }
+    return start;
+}
+
+std::vector<uint64_t> Wal::segment_numbers() const {
+    std::vector<uint64_t> numbers;
+    DIR* dir = ::opendir(directory_.c_str());
+    if (dir == nullptr) {
+        return numbers;
+    }
+    while (const dirent* entry = ::readdir(dir)) {
+        const std::string name(entry->d_name);
+        if (name.size() != 14 || name.compare(0, 4, "wal_") != 0 || name.compare(10, 4, ".log") != 0) {
+            continue;
+        }
+        char* parsed_end = nullptr;
+        const unsigned long long number = std::strtoull(name.c_str() + 4, &parsed_end, 10);
+        if (parsed_end == name.c_str() + 10) {
+            numbers.push_back(number);
+        }
+    }
+    ::closedir(dir);
+    std::sort(numbers.begin(), numbers.end());
+    return numbers;
+}
+
+void Wal::delete_segments_after(uint64_t seg_num) const {
+    for (const uint64_t segment : segment_numbers()) {
+        if (segment > seg_num) {
+            ::unlink(segment_path_for_delete(segment).c_str());
+        }
+    }
 }
 
 void Wal::delete_segments_before(uint64_t seg_num) const {

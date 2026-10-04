@@ -7,40 +7,30 @@ one to the follower, which writes it to its own log and acknowledges it. While t
 connected, its log is a copy of the leader's.
 
 When the follower has been disconnected, or has restarted, or when it is an old leader rejoining
-after a change of leader, its log is no longer a copy, and nothing makes it one again. This is
-[BUG-0097](../bug_list.md#bug_0097), and part 4.5 of
-[change_of_sequencer_leader.md](change_of_sequencer_leader.md) outlines a fix. This document sets out
-that fix in full.
+after a change of leader, its log is no longer a copy. This document describes how it is made one
+again. It is the fix for [BUG-0097](../bug_list.md#bug_0097) and part 4.5 of
+[change_of_sequencer_leader.md](change_of_sequencer_leader.md).
 
-It also has to come first. Rule 11 ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md))
-lets a leader say that its follower may lead again only once the follower holds every record the leader
-holds, and today the leader cannot tell whether that is true for a follower that has rejoined.
+It is also what rule 11 ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md))
+depends on. That rule lets a leader say that its follower may lead again only once the follower holds
+every record the leader holds, and only a repaired log makes that knowable for a follower that has
+rejoined.
 
-## 2. What happens today
+## 2. Why a rejoining follower's log needs repairing
 
-These are read from `SequencerThread.cpp`.
-
-- **A rejoining follower skips what it missed.** When the two instances connect, each asks the other
-  how far the sequence has reached (`StatusQuery`, `StatusResponse`). An instance whose own next
-  sequence number is lower moves it up to the other's, and from then on receives only new records. The
-  records it missed are never sent to it, so its log has a gap.
-- **The follower writes whatever it is sent.** Replicated records are written by a handler that runs on
-  the reactor thread as each one arrives (`install_peer_wal_inline_handler`), and by `handle_wal_record`
-  on the sequencer thread for any the handler passes on. Both append the record under the sequence
-  number it carries, with no check against what the log already holds.
-- **An old leader keeps records its new leader does not have.** An instance that led, wrote records its
+- **A follower that was away missed records.** Records the leader wrote while the follower was
+  disconnected or down were never sent to it. Receiving only new records, its log would have a gap.
+- **An old leader holds records its new leader does not have.** An instance that led, wrote records its
   follower never received, and then stopped leading, still holds them when it rejoins. The new leader
   may have written different records under the same numbers.
-- **The leader counts the highest acknowledgement, not the highest unbroken one.** `peer_acked_through_`
-  is the highest sequence number the follower has acknowledged, on any connection. Within one
-  connection that is the same thing as "every record up to here", because records arrive in order. After
-  a reconnection it is not: a follower with a gap acknowledges new records, and the leader then believes
-  it holds everything up to its latest record.
+- **The highest acknowledgement is not the highest unbroken one across connections.** Within one
+  connection, records arrive in order, so the highest record the follower has acknowledged means "every
+  record up to here". A follower with a gap would acknowledge new records too, so after a reconnection
+  the leader could not tell from acknowledgements alone that records were missing.
 
-The consequences are serious. A follower whose log has a gap, or holds records the leader does not, can
-be elected. When it leads, the matching engine catches up from its log and misses the records in the
-gap, and the publishers and the order activity recorder read a log that disagrees with the one the
-venue acted on.
+A follower whose log had a gap, or held records the leader does not, could be elected. When it led, the
+matching engine would catch up from its log and miss the records in the gap, and the publishers and the
+order activity recorder would read a log that disagrees with the one the venue acted on.
 
 ## 3. What must hold
 
@@ -58,7 +48,9 @@ closer fit, because, like this venue, it numbers records itself and keeps the le
 
 `WalRecord` gains a field, `leader_epoch`: the epoch in which the leader that sequenced the record held
 the lead. The follower stores records exactly as it receives them, so the field is in both logs.
-Records written before the field existed read it as zero.
+Records written before the field existed read it as zero: the field is optional and last, and the
+generated decoder reads a message that ends where an optional field would begin as lacking it
+([serialisation_dsl.md](../framework/serialisation_dsl.md)).
 
 Each instance keeps in memory a table of the epochs that appear in its log and the first sequence number
 written in each. A sequencer reads its whole log when it opens it, so the table is built then, and it is
@@ -89,24 +81,50 @@ epoch.
 The leader answers with `LogPositionReply`: the last record, at or below the follower's last record,
 that the leader's log holds with an epoch no later than the follower's last epoch, and that record's
 epoch in the leader's log. The follower discards every record after that one (4.4). If the record it is
-left with has the same epoch as the leader said, the two logs agree up to it. If not, the follower asks
-again with its new last record, and the answer moves further back. Each round moves the follower's last
-record back, or its epoch back, so this ends; in practice it takes one round, or two after a change of
-leader.
+left with has the same epoch as the leader said, the logs agree up to it, and the follower asks once
+more; the leader, seeing that the follower's last record is the one it would answer with, answers that
+the logs agree and sends what follows (4.5). If the epochs differ, the follower discards the whole run
+of its records from the epoch of its record there, and asks again. Some of those records may be in the
+leader's log too; discarding them is safe, because the leader sends them again, and doing so needs
+nothing to be true of the order of epochs in either log. Each round leaves the follower fewer records,
+so the exchange ends, and it takes a round for each run discarded rather than one for each record.
+Records from different epochs differ only when an instance whose log lacked records led, which rule 11
+prevents once it is in force, or after an epoch went backwards.
 
-A follower whose log is empty sends zero, and the answer is zero.
+A follower whose log is empty sends zero, and the answer is zero. A follower whose logs are not known to
+agree asks again every second, so that a request or reply lost with a connection does not leave it
+waiting.
 
 Until the leader has answered a follower's request, it sends that follower no live records, and the
 follower writes none. A live record sent before the two logs agreed would be written after a gap. On
 the follower, the handler on the reactor thread declines every replicated record until the logs agree,
 which passes it to the sequencer thread, and the sequencer thread discards it and logs that it did.
 
+When the leader stops sending live records to a follower whose log agreed with its own, because a peer
+connection opened or closed or it has just taken the lead, it tells the follower so with a reply marked
+`ask_again`, and the follower asks again. Each instance has two peer connections, one opened by each,
+and the leader sends records on one of them; a change of connection is a point at which records could
+otherwise arrive out of order.
+
+Once the logs agree, the follower writes a replicated record only if it is the next one its log needs.
+One it already holds, sent again after the logs were found to agree, is acknowledged and not written
+twice. One that would leave a gap is not written; the follower stops writing, as when the logs are not
+known to agree, and asks again.
+
+**Which thread writes.** A follower's replicated records are written by the handler on the reactor
+thread when it can, and otherwise passed to the sequencer thread. The handler counts every record it
+passes on, the sequencer thread counts each one back when it has written or discarded it, and the
+handler writes a record itself only while that count is zero. So records are written in the order they
+arrived, and never by both threads at once, however often writing moves between them.
+
 ### 4.4 The follower discards the records after that point
 
 This needs a new operation in the framework's write-ahead log, `Wal::truncate_after(seq_no)`. It finds
-where record `seq_no` ends, overwrites the header of the entry after it with zeros so that a reader stops
-there, deletes every later segment, and reopens the writer at that point; the sequencer trims its table
-of epochs to match.
+where record `seq_no` ends, reading from the segment that holds it rather than from the start of the
+log; overwrites everything after it in that segment with zeros, so that a reader stops there and no
+older entry beyond it can be read again once new records are appended; deletes every later segment and
+the snapshot, which may point beyond the new end; and reopens the writer at that point. The sequencer
+trims its table of epochs to match.
 Only a follower calls it, and only before it writes anything the leader sends it. It runs on the
 sequencer thread while the reactor thread's handler is declining every record (4.3), so the two never
 write the log at the same time.
@@ -118,11 +136,13 @@ The follower logs at Warning how many records it discarded and their numbers and
 
 ### 4.5 The leader sends the follower everything after that point
 
-Having answered, the leader reads its own log from the start and sends the follower every record after
-the agreed one, in order, and only then starts sending it live records. This is how the publishers and
-the matching engine already catch up from the sequencer (`handle_wal_subscribe_request`,
-`handle_me_position_request`), and it has the same cost: the sequencer thread reads the log, and the
-order path waits while it does. Section 6 gives the cost and section 7 the open question about it.
+Having answered that the logs agree, the leader reads its own log from the segment that holds the first
+record to send, and sends the follower every record after the agreed one, in order, exactly as stored,
+and only then starts sending it live records. The segment is found by reading only the first entry of
+each segment file (`Wal::scan_start_for`). The publishers and the matching engine catch up from the
+sequencer in the same way (`handle_wal_subscribe_request`, `handle_me_position_request`), and the cost is
+of the same kind: the sequencer thread reads the log, and the order path waits while it does. Section 6
+gives the cost and section 7 the open question about it.
 
 The follower acknowledges each record as now. On answering, the leader sets `peer_acked_through_` to the
 agreed record, replacing whatever it held from an earlier connection. From then on it is again "every
@@ -152,47 +172,47 @@ sequencer's by subscription, already starting from the position they hold.
 | 4.2 gap check | None | A check of the log at startup, which reads it already |
 | 4.3 finding the agreed record | None | One exchange, sometimes two, when a follower connects |
 | 4.4 discarding | None | A new log operation, used only by a rejoining follower |
-| 4.5 sending what it missed | The order path waits while the leader reads its log | Proportional to the size of the log, as the publishers' and the engine's catch-up are today |
+| 4.5 sending what it missed | The order path waits while the leader reads its log | Proportional to the records the follower missed, from the start of the segment holding the first of them |
 
 ## 7. Open question
 
-**Reading the log on the sequencer thread.** The leader reads its whole log to find the records to send,
-because the log has no index by sequence number. That is what the other two catch-ups do, and the
-startup measurement recorded under [BUG-0107](../bug_list.md#bug_0107) shows the size of it: opening a
-log of 5.5 million records, 1.4 GB, took 2.6 seconds with the files already in memory, and noticeably
-longer straight after a build, when they were not. A follower that restarts late in a
-50-million-order day would hold up the order path for the length of that read. Two ways to remove it, for
-later, and not part of this design:
-
-- read and send from a thread of its own, handing the leader the point where it stops so that live
-  records follow without a gap;
-- keep an index from sequence number to position in the log, so that the read starts at the agreed
-  record.
-
-This design takes the cost as the other catch-ups do, and the question applies to all three.
+**Reading the log on the sequencer thread.** The leader reads the records the follower missed on the
+sequencer thread, and the order path waits while it does. Reading starts at the segment holding the first
+of them, so the cost is proportional to what the follower missed rather than to the size of the log. A
+follower that has been down for long in a busy day misses many records: at 50 million orders a day,
+an hour's absence is several million records, and the startup measurement recorded under
+[BUG-0107](../bug_list.md#bug_0107) puts reading 5.5 million records at 2.6 seconds with the files
+already in memory. Reading and sending from a thread of its own, handing the leader the point where it
+stops so that live records follow without a gap, would remove the wait. The publishers' and the matching
+engine's catch-ups, which still read their log from its start, have the same question.
 
 ## 8. Tests
 
-Each test must fail on today's code, shown before it is used to judge the change.
+Each scenario was run with the repair disabled, by building the sequencer with the leader sending no
+missed records and the follower discarding nothing, and each failed; with the repair in place each
+passes.
 
-| Test | What it requires | Today |
+| Test | What it requires | With the repair disabled |
 |---|---|---|
-| Scenario, new: a follower restarts | The follower is killed, the leader takes orders, the follower is restarted. Once it has caught up, its log holds the same records, in the same order, with the same contents, as the leader's | Fails: the follower's log has a gap |
-| Scenario, new: an old leader rejoins | The leader's sends to its follower are blocked with `libblock_sends_to_ports.so`, so that it holds records the follower does not. It is killed, the follower takes the lead and takes orders, and the old leader is restarted. Its log ends identical to the new leader's | Fails: the old leader's records stay in its log |
-| Scenario, new: a gap is not taken for agreement | As the first, and then the leader is killed. The instance that takes over holds every record the matching engine acted on | Fails today; with rule 11 switched on it is also the check that the leader says "may lead" only once the follower holds everything |
-| Unit tests | `Wal::truncate_after` leaves a log that reads back up to the record and no further, and appends after it; the answer to a position request for each shape of divergence; the gap check | Not yet written |
+| `ha_test.py` scenario 61: a follower restarts | The follower is killed, the leader takes 20 orders, the follower is restarted. Once its log agrees with the leader's, it holds the same records, with the same contents, as the leader's from where it stopped, without a gap. Then the leader is killed, and the new leader holds every record the old leader wrote while it was down | Fails: the follower's log lacks all 42 of the records written while it was down |
+| `ha_test.py` scenario 62: an old leader rejoins | The leader's sends to its follower are blocked with `libblock_sends_to_ports.so`, so that it writes three orders the follower does not have. It is killed, the follower takes the lead and takes orders, and the old leader is restarted. It discards the three, and its log ends identical to the new leader's | Fails: the old leader never reaches agreement with the new leader |
+| `LogEpochTableTest` | The epoch of each record; the leader's answer and the follower's step for a follower that is behind, an old leader, a divergence across two changes of leader, a follower whose records are from a later epoch, an empty follower, and an epoch that went backwards | |
+| `WalClassTest`, `truncate_after` and `scan_start_for` | A truncated log reads back up to the record and no further, records appended after it follow it, an older entry beyond the new end is never read again, later segments and the snapshot are removed, and reading from the scan start reaches the record | The test of an older entry fails when the zeroing is left out |
+| `WalRecordEncodingTest` | A record carries its epoch, and a record written before the field existed still decodes | The second fails with the generator's earlier handling of optional fields |
 
-Comparing two logs needs a tool that prints every record's sequence number, epoch and a checksum of its
-contents; the scenarios compare the two outputs.
+Comparing two logs uses the checksum stored with each entry: a follower stores the bytes its leader
+sends it unchanged, so the same record carries the same checksum in both logs.
 
 ## 9. Order of the work
+
+Steps 1 to 5 are done.
 
 1. `leader_epoch` on `WalRecord`, and the table of epochs.
 2. `Wal::truncate_after`, with its unit tests.
 3. The gap check at startup.
 4. `LogPositionRequest` and `LogPositionReply`, the follower's discarding, the leader's sending, and the
    removal of the step that moves the next sequence number up.
-5. The log comparison tool and the three scenarios.
+5. The comparison of logs and the scenarios.
 6. Then step 4 of [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8,
    which switches rule 11 on.
 

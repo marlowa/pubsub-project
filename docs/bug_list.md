@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 112 |
-| Open | 42 (28 defects, 14 tasks) |
-| Closed | 70 |
+| Open | 41 (27 defects, 14 tasks) |
+| Closed | 71 |
 | Next id | BUG-0113 |
 
 ## Open bugs by severity
 
-14 high, 23 medium, 5 low.
+13 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,7 +24,6 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
-| [BUG-0097](#bug_0097) | high | defect | A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
@@ -2556,6 +2555,8 @@ part of the fix. The cost to the gateway's speed is measured
 before and after. Both gateways' orders are tested with the same malformed values, and must be
 treated identically.
 
+## Closed
+
 ### BUG-0097: A sequencer that stops leading keeps the orders it sequenced, and its log can disagree with its new leader's {#bug_0097}
 
 | | |
@@ -2563,6 +2564,7 @@ treated identically.
 | Severity | high |
 | Found | 2026-09-27 |
 | Recorded | 2026-09-27 |
+| Fixed | 2026-10-04 -- a rejoining follower and its leader find the last record their logs agree on; the follower discards everything after it and the leader sends it everything it lacks |
 | How | Designing the rule that a leader stands down when it hears its peer leading at a newer generation, after the TLA+ checking in `docs/availability/tla/findings.md` showed that two leaders otherwise never resolve |
 | Impact | Orders a sequencer accepted while it wrongly believed it led can be left in its own log only, or overwritten in meaning by different orders carrying the same sequence numbers from its new leader. The two instances' records of what the venue accepted then disagree, and nothing reports it |
 
@@ -2602,7 +2604,21 @@ leader holds were never acted on, which is what makes discarding them safe.
 
 Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
-## Closed
+**What was fixed.** Each record carries the epoch of the leadership that sequenced it. When a follower
+connects, or starts following, it and its leader find the last record their logs agree on; the follower
+discards every record after it, which needs the new `Wal::truncate_after`, and the leader sends it every
+record after it before any live record. A follower writes a replicated record only if it is the next one
+its log needs, and a log with a gap is trusted at startup only up to the gap. The design is
+[follower_log_repair.md](availability/follower_log_repair.md). The orders a superseded leader held were
+never acted on, under part 4.2 of [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md),
+which is what makes discarding them safe; answering their members is part 4.3, which is
+[BUG-0103](#bug_0103).
+
+**How it is checked.** `ha_test.py` scenario 61, a follower that restarts, and 62, an old leader that
+rejoins holding records its new leader never had, each require the two logs to end identical, compared by
+the checksum stored with each record. Each fails with the repair disabled.
+
+---
 
 ### BUG-0111: Acknowledgements of execution report records collect in the leader and are never removed {#bug_0111}
 
