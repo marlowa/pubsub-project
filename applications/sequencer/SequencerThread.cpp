@@ -4,6 +4,7 @@
 #include "SequencerThread.hpp"
 
 #include <cstring>
+#include <limits>
 
 #include <algorithm>
 #include <array>
@@ -140,6 +141,7 @@ void SequencerThread::on_initial_event() {
     // never erased, causing unbounded heap growth under high throughput.
     // ERs for unroutable seq_nos are handled gracefully by the "not in
     // routing map" fallback in on_framework_pdu_message().
+    reserve_record_of_identifiers();
     open_wal_trusting_it_up_to_any_gap();
     const int64_t recovered_seq = wal_.last_seq_no();
     if (recovered_seq > 0) {
@@ -315,8 +317,11 @@ void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
                 size_t arena_bytes_needed = 0;
                 size_t bytes_consumed = 0;
                 pubsub_itc_fw_app::WalRecordView view{};
-                if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed) && view.has_leader_epoch) {
-                    epoch = view.leader_epoch;
+                if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
+                    if (view.has_leader_epoch) {
+                        epoch = view.leader_epoch;
+                    }
+                    note_logged_command(view);
                 }
             }
             log_epochs_.note_record(seq_no, epoch);
@@ -334,6 +339,13 @@ void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
         wal_.truncate_after(last_before_gap);
     }
     highest_replicated_seq_no_.store(wal_.last_seq_no(), std::memory_order_release);
+    // Everything the log holds has been read; a follower reads on from where the log now ends.
+    identifiers_read_position_ = wal_.scan_start_for(wal_.last_seq_no() + 1);
+    if (logged_identifiers_.has_value()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the record of command identifiers holds {} identifier(s) from the log, of {} reserved", logged_identifiers_->size(),
+                   logged_identifiers_->capacity());
+    }
 }
 
 void SequencerThread::on_app_ready_event() {
@@ -647,6 +659,22 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
+        // A command a gateway sends again after a change of leader, because nothing had answered it.
+        // If this log already holds it, it must not be sequenced twice: its answer comes from the
+        // engine, by one of the routes in docs/availability/commands_during_a_change_of_leader.md,
+        // section 3.6. If not, nothing ever acted on it, and it is sequenced as a new command.
+        if (role_ == pubsub_itc_fw_app::Role::leader && inbound.has_sent_again && inbound.sent_again && command_already_logged(inbound)) {
+            ++sent_again_already_logged_;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                       "SequencerThread: command ClOrdID={} from comp_id='{}' sent again -- this log already holds it, not sequencing it twice",
+                       inbound.cl_ord_id, inbound.sender_comp_id);
+            release_pdu_payload(message);
+            return;
+        }
+        if (inbound.has_sent_again && inbound.sent_again) {
+            ++sent_again_sequenced_;
+        }
+
         const int64_t seq = next_sequence_number_++;
         const int64_t wall_time_ns = config_.wall_clock->now_ns();
 
@@ -676,6 +704,19 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.gateway_session_conn_id = inbound.gateway_session_conn_id;
         envelope.has_sender_comp_id = inbound.has_sender_comp_id;
         envelope.sender_comp_id = inbound.sender_comp_id;
+        // The session is its comp id AND its gateway protocol, so the protocol and the instance are
+        // logged with the order and travel on to the matching engine. Without them the engine files a
+        // binary gateway member's order under the default protocol, and its reports name the wrong
+        // session -- which matters wherever a report is routed by the identity it carries, such as the
+        // reports a new leader forwards after a change of leader.
+        envelope.has_origin_gateway_id = inbound.has_origin_gateway_id;
+        envelope.origin_gateway_id = inbound.origin_gateway_id;
+        envelope.has_gateway_instance_id = inbound.has_gateway_instance_id;
+        envelope.gateway_instance_id = inbound.gateway_instance_id;
+        // Logged so that the record of identifiers can be rebuilt from the log, and kept up to date by
+        // a follower, without decoding the command itself.
+        envelope.has_cl_ord_id = inbound.has_cl_ord_id;
+        envelope.cl_ord_id = inbound.cl_ord_id;
 
         // The time the gateway read this order off the client connection travels on to the
         // matching engine as well as being remembered above. The sequencer does not need it
@@ -689,6 +730,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // returned above. An instance that has not yet learnt its role appends locally because
         // it may become the leader.
         append_envelope_to_wal(envelope);
+        note_logged_command(envelope.has_sender_comp_id ? envelope.sender_comp_id : std::string_view{},
+                            envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent, inner_pdu_id,
+                            envelope.has_cl_ord_id ? envelope.cl_ord_id : std::string_view{});
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
                    message.connection_id().get_value(), inner_pdu_id, seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
@@ -994,6 +1038,11 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     // use of this envelope below.
     envelope.has_sender_comp_id = !routing_identity.empty();
     envelope.sender_comp_id = routing_identity.comp_id_view();
+    // The ClOrdID of the command the report answers, so that a gateway can tell which command it
+    // holds unanswered is now answered without decoding the report itself, which the binary gateway
+    // relays as it arrives (docs/availability/commands_during_a_change_of_leader.md, section 3.1).
+    envelope.has_cl_ord_id = view.has_cl_ord_id;
+    envelope.cl_ord_id = view.cl_ord_id;
     // Whether the member may already hold the report, worked out above. The gateway writes it
     // as PossResend. See R-0122.
     envelope.poss_resend = possible_repeat;
@@ -1056,6 +1105,9 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
             pending.pdu_id = inbound.pdu_id;
             pending.seq_no = er_seq_no;
             pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
+            if (view.has_cl_ord_id) {
+                pending.cl_ord_id.assign(view.cl_ord_id);
+            }
             pending.identity = routing_identity;
             pending.has_gateway_ingress_ns = has_routing_ingress_ns;
             pending.gateway_ingress_ns = routing_ingress_ns;
@@ -1157,8 +1209,15 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 
     if (id == acknowledgement_watch_timer_id_) {
         check_follower_acknowledgements();
-        if (awaiting_engine_position_ && std::chrono::steady_clock::now() - engine_position_asked_at_ >= engine_position_ask_interval) {
+        const auto now = std::chrono::steady_clock::now();
+        if (awaiting_engine_position_ && now - engine_position_asked_at_ >= engine_position_ask_interval) {
             ask_engine_for_position();
+        }
+        if (role_ != pubsub_itc_fw_app::Role::leader && now - identifiers_read_at_ >= identifiers_read_interval) {
+            read_identifiers_from_log();
+        }
+        if (log_tail_index_.has_value() && now - log_tail_index_used_at_ >= log_tail_index_idle_limit) {
+            discard_log_tail_index("no command has been sent again for a minute");
         }
         return;
     }
@@ -1189,6 +1248,11 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     forget_log_agreement();
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
+        // The record of identifiers must hold every command in the log before a command sent again
+        // is checked against it. A follower reads the records it was sent once a second; this reads
+        // the rest. From here this instance writes every record itself and notes each as it writes it.
+        read_identifiers_from_log();
+
         // Number new records above every record the log holds. Records replicated while this
         // instance followed were written under its leader's numbers and did not move
         // next_sequence_number_, so without this the new leader would give new records numbers
@@ -1201,17 +1265,23 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
             next_sequence_number_ = highest_replicated + 1;
         }
 
+        // The previous leader may have died holding reports it had not forwarded. This instance
+        // kept every report the engine sent it, so it forwards them all now
+        // (docs/availability/change_of_sequencer_leader.md, section 4.4).
+        forward_kept_reports();
+
+        // After the kept reports, and on the same connections, so that a gateway has the answers to
+        // the commands it holds before it is told to send them again, and sends again only those still
+        // unanswered (docs/availability/commands_during_a_change_of_leader.md, section 3.3). The
+        // message carries this leadership's epoch, which is what tells a gateway that a new instance
+        // leads.
+        //
         // Tell the gateways where this venue now stands on accepting orders. They may be holding
         // what the previous leader last said, which was true of a process that is no longer
         // running. This instance has deferred nothing, so it accepts -- but that has to be said
         // rather than assumed, because silence here leaves a refusal in place that nothing will
         // ever lift.
         broadcast_order_acceptance();
-
-        // The previous leader may have died holding reports it had not forwarded. This instance
-        // kept every report the engine sent it, so it forwards them all now
-        // (docs/availability/change_of_sequencer_leader.md, section 4.4).
-        forward_kept_reports();
 
         // This instance's log may hold orders the engine never received: the follower wrote and
         // acknowledged them, and the previous leader died before the acknowledgement reached it.
@@ -1222,6 +1292,13 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         }
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         awaiting_engine_position_ = false;
+        if (log_tail_index_.has_value()) {
+            discard_log_tail_index("this instance has stopped leading");
+        }
+        // Every record the log holds now was noted as it was written or read. The reactor thread
+        // writes nothing until this log and the leader's are found to agree, so the end of the log
+        // does not move under this read of it.
+        identifiers_read_position_ = wal_.scan_start_for(wal_.last_seq_no() + 1);
         discard_held_orders();
         first_unheld_seq_ = 0;
         pause_or_resume_order_reading();
@@ -1795,6 +1872,11 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
         if (keep_through < last_before) {
             wal_.truncate_after(keep_through);
             log_epochs_.truncate_after(keep_through);
+            // The records after keep_through are gone, and the leader sends others under the same
+            // numbers, so the record of identifiers reads on from where the log now ends. Identifiers
+            // of the discarded records stay in it; a command that matches one of them is checked
+            // against the log exactly, and not found, so it is sequenced as new.
+            identifiers_read_position_ = wal_.scan_start_for(keep_through + 1);
         }
     }
     if (keep_through < last_before) {
@@ -2067,6 +2149,111 @@ void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: sent {} order(s) numbered {} to {} to the matching engine from the log", sent,
                first, through);
+}
+
+void SequencerThread::reserve_record_of_identifiers() {
+    if (!config_.ha_enabled) {
+        return;
+    }
+    identifiers_growth_reporter_.report_threshold_bytes = 1;
+    identifiers_growth_reporter_.on_large_allocation = [this](size_t bytes, size_t /*largest*/) { identifiers_table_bytes_ = bytes; };
+    const auto started = std::chrono::steady_clock::now();
+    logged_identifiers_.emplace(config_.identifiers_reserved, &identifiers_growth_reporter_);
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: reserved the record of command identifiers for {} identifier(s): {} slots, {} MiB, in {} ms", config_.identifiers_reserved,
+               logged_identifiers_->slot_count(), identifiers_table_bytes_ / (1024 * 1024), took.count());
+}
+
+void SequencerThread::note_logged_command(const pubsub_itc_fw_app::WalRecordView& view) {
+    note_logged_command(view.has_sender_comp_id ? view.sender_comp_id : std::string_view{},
+                        view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent, view.pdu_id,
+                        view.has_cl_ord_id ? view.cl_ord_id : std::string_view{});
+}
+
+void SequencerThread::note_logged_command(std::string_view comp_id, int16_t protocol, int16_t inner_pdu_id, std::string_view cl_ord_id) {
+    if (!logged_identifiers_.has_value() || cl_ord_id.empty() || comp_id.empty()) {
+        return;
+    }
+    if (inner_pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
+        inner_pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+        return;
+    }
+    if (logged_identifiers_->add(LoggedCommandIdentifiers::identifier(comp_id, protocol, cl_ord_id)) == LoggedCommandIdentifiers::Added::full &&
+        !identifiers_full_reported_) {
+        identifiers_full_reported_ = true;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: the record of command identifiers is full at {} -- later commands are not recorded, so every command a gateway "
+                   "sends again after a change of leader is checked against the log itself. Raise commands.identifiers_reserved",
+                   logged_identifiers_->capacity());
+    }
+}
+
+bool SequencerThread::command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound) {
+    if (!logged_identifiers_.has_value() || !inbound.has_cl_ord_id || inbound.cl_ord_id.empty() || !inbound.has_sender_comp_id ||
+        inbound.sender_comp_id.empty()) {
+        // Without HA there is no change of leader, and so nothing is ever sent again; a command that
+        // does not say whose it is cannot be looked for.
+        return false;
+    }
+    const int16_t protocol = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
+    const uint64_t id = LoggedCommandIdentifiers::identifier(inbound.sender_comp_id, protocol, inbound.cl_ord_id);
+    // Not in the record means certainly not in the log -- unless the record is full, when a command
+    // logged after it filled would not be in it either.
+    if (!logged_identifiers_->full() && !logged_identifiers_->may_hold(id)) {
+        return false;
+    }
+    if (!log_tail_index_.has_value()) {
+        log_tail_index_.emplace(config_.wal_directory);
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: commands are being sent again after the change of leader -- reading the end of the log to check them exactly");
+    }
+    log_tail_index_used_at_ = std::chrono::steady_clock::now();
+    const int64_t first_sent_no_earlier_than = inbound.has_gateway_ingress_ns ? inbound.gateway_ingress_ns : std::numeric_limits<int64_t>::min();
+    return log_tail_index_->holds(inbound.sender_comp_id, protocol, inbound.cl_ord_id, first_sent_no_earlier_than);
+}
+
+void SequencerThread::discard_log_tail_index(const char* reason) {
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: commands sent again since the change of leader: {} already in this log and not sequenced twice, {} sequenced as new; "
+               "{} log record(s) read to check them -- {}",
+               sent_again_already_logged_, sent_again_sequenced_, log_tail_index_->records_read(), reason);
+    log_tail_index_.reset();
+    sent_again_already_logged_ = 0;
+    sent_again_sequenced_ = 0;
+}
+
+void SequencerThread::read_identifiers_from_log() {
+    identifiers_read_at_ = std::chrono::steady_clock::now();
+    if (!logged_identifiers_.has_value()) {
+        return;
+    }
+    // Only records whose checksum is complete are read, so a record the reactor thread is part way
+    // through writing is not read until the next time. Records already noted are noted again
+    // harmlessly.
+    identifiers_read_position_ =
+        pubsub_itc_fw::WalReader::replay(config_.wal_directory, identifiers_read_position_, [this](int64_t /*record_id*/, const void* payload, size_t size) {
+            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+            if (size <= header_size) {
+                return;
+            }
+            int16_t pdu_id{};
+            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
+            if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+                return;
+            }
+            auto& arena_buf = decode_arena_buffer();
+            pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+            size_t arena_bytes_needed = 0;
+            size_t bytes_consumed = 0;
+            pubsub_itc_fw_app::WalRecordView view{};
+            if (pubsub_itc_fw_app::decode(view, static_cast<const uint8_t*>(payload) + header_size, size - header_size, bytes_consumed, arena,
+                                          arena_bytes_needed)) {
+                note_logged_command(view);
+            }
+        });
 }
 
 void SequencerThread::ask_engine_for_position() {
@@ -2424,6 +2611,8 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
     state.degraded_for_seconds =
         deferring_orders_ ? static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_).count())
                           : 0;
+    state.has_leader_epoch = true;
+    state.leader_epoch = epoch_;
     send_pdu(conn_id, pubsub_itc_fw_app::OrderAcceptance::message_pdu_id, 0, state);
 }
 
@@ -2905,6 +3094,8 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     envelope.gateway_ingress_ns = pending.gateway_ingress_ns;
     envelope.has_sender_comp_id = !pending.identity.empty();
     envelope.sender_comp_id = pending.identity.comp_id_view();
+    envelope.has_cl_ord_id = !pending.cl_ord_id.empty();
+    envelope.cl_ord_id = pending.cl_ord_id;
     envelope.poss_resend = pending.poss_resend;
 
     if (destination != nullptr) {

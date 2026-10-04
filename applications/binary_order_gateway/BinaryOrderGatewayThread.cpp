@@ -111,6 +111,15 @@ BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThr
 }
 
 void BinaryOrderGatewayThread::on_app_ready_event() {
+    // The store of unanswered commands, allocated once, here, so that keeping a command on the order
+    // path allocates nothing. Only with high availability on: without it there is one sequencer and
+    // no change of leader, so nothing is ever sent again.
+    if (config_.ha_enabled) {
+        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: keeping up to {} unanswered command(s) in {} MiB, to send again after a change of sequencer leader",
+                   config_.unanswered_commands_capacity, config_.unanswered_commands_bytes / (1024 * 1024));
+    }
     open_order_pool_ = std::make_unique<pubsub_itc_fw::ExpandablePoolAllocator<open_orders::OpenOrderEntry>>(
         "BinaryOpenOrderPool", config_.open_order_pool_objects_per_pool, config_.open_order_pool_initial_pools,
         /*expansion_threshold_hint=*/0,
@@ -733,8 +742,12 @@ void BinaryOrderGatewayThread::handle_new_order_single(BinarySession& session, c
         release_pdu_payload(message);
         return;
     }
-    forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), message.payload(),
-                              static_cast<size_t>(message.payload_size()), session);
+    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), message.payload(),
+                                   static_cast<size_t>(message.payload_size()), session, order.cl_ord_id)) {
+        // The store of unanswered commands is full: so many commands wait for an answer that the
+        // venue is not answering them. Refused with a reply, never dropped.
+        refuse_new_order(session, order, "the venue is busy: too many commands are waiting to be answered");
+    }
     release_pdu_payload(message);
 }
 
@@ -776,8 +789,10 @@ void BinaryOrderGatewayThread::handle_order_cancel_request(BinarySession& sessio
         release_pdu_payload(message);
         return;
     }
-    forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), message.payload(),
-                              static_cast<size_t>(message.payload_size()), session);
+    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), message.payload(),
+                                   static_cast<size_t>(message.payload_size()), session, request.cl_ord_id)) {
+        refuse_cancel(session, request, "the venue is busy: too many commands are waiting to be answered");
+    }
     release_pdu_payload(message);
 }
 
@@ -820,6 +835,16 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: failed to decode OrderAcceptance -- dropping");
         return;
     }
+    // A higher epoch than any before means a new sequencer instance leads. The commands still held
+    // unanswered may never have reached any log, so each is sent again. The first epoch seen only
+    // sets the mark: a gateway that has just started holds nothing.
+    if (view.has_leader_epoch && view.leader_epoch > highest_leader_epoch_seen_) {
+        const bool first_seen = highest_leader_epoch_seen_ == 0;
+        highest_leader_epoch_seen_ = view.leader_epoch;
+        if (!first_seen) {
+            send_unanswered_commands_again(view.leader_epoch);
+        }
+    }
     if (view.accepting == venue_accepting_orders_) {
         // Logged on the change, not on each arrival: the sequencer repeats this while the venue is degraded.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "BinaryOrderGatewayThread: OrderAcceptance unchanged accepting={}", view.accepting);
@@ -838,7 +863,8 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
                view.deferred_order_count, view.degraded_for_seconds);
 }
 
-void BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size, const BinarySession& session) {
+bool BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size, const BinarySession& session,
+                                                         std::string_view cl_ord_id) {
     pubsub_itc_fw_app::WalRecord envelope{};
     envelope.pdu_id = inner_pdu_id;
     envelope.payload.data = payload;
@@ -855,6 +881,10 @@ void BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, c
     // this gateway measure the whole round trip without keeping any per-order state.
     envelope.has_gateway_ingress_ns = (current_pdu_ingress_ns_ != 0);
     envelope.gateway_ingress_ns = current_pdu_ingress_ns_;
+    // The command's ClOrdID, so the sequencer can keep its record of the identifiers in its log
+    // without decoding the command (docs/availability/commands_during_a_change_of_leader.md, 3.4).
+    envelope.has_cl_ord_id = !cl_ord_id.empty();
+    envelope.cl_ord_id = cl_ord_id;
     if (!session.comp_id.empty()) {
         envelope.has_sender_comp_id = true;
         envelope.sender_comp_id = session.comp_id;
@@ -875,7 +905,13 @@ void BinaryOrderGatewayThread::forward_order_in_envelope(int16_t inner_pdu_id, c
         }
     }
 
+    // A copy is kept until a report answers the command, so that it can be sent again to a new
+    // sequencer leader (docs/availability/commands_during_a_change_of_leader.md, section 3.1).
+    if (!keep_until_answered(envelope, session.comp_id, cl_ord_id)) {
+        return false;
+    }
     forward_envelope_to_sequencers(envelope);
+    return true;
 }
 
 void BinaryOrderGatewayThread::announce_session_bound(const BinarySession& session) {
@@ -959,6 +995,13 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: failed to decode the ER envelope -- dropping");
         release_pdu_payload(message);
         return;
+    }
+
+    // The first report for a command answers it, whichever session it reaches or whether it reaches
+    // one at all: the venue has acted on the command, so it is not sent again to a new leader. The
+    // sequencer copies the command's ClOrdID onto the envelope, so the report is not decoded here.
+    if (unanswered_commands_.has_value() && envelope.has_sender_comp_id && envelope.has_cl_ord_id) {
+        static_cast<void>(unanswered_commands_->answered(envelope.sender_comp_id, envelope.cl_ord_id));
     }
 
     if (!envelope.has_gateway_session_conn_id) {
@@ -1267,6 +1310,69 @@ void BinaryOrderGatewayThread::arm_grace_timer() {
     grace_timer_active_ = true;
 }
 
+bool BinaryOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id) {
+    if (!unanswered_commands_.has_value() || comp_id.empty() || cl_ord_id.empty()) {
+        return true;
+    }
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(envelope, nullptr, 0, bytes_written, bytes_needed));
+    if (unanswered_encode_buffer_.size() < bytes_needed) {
+        unanswered_encode_buffer_.resize(bytes_needed);
+    }
+    if (!pubsub_itc_fw_app::encode(envelope, unanswered_encode_buffer_.data(), unanswered_encode_buffer_.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(
+            get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+            "BinaryOrderGatewayThread: could not encode the command ClOrdID={} to keep it -- sent without a copy, so it is not sent again after a change "
+            "of sequencer leader",
+            cl_ord_id);
+        return true;
+    }
+    const auto kept = unanswered_commands_->keep(comp_id, cl_ord_id, unanswered_encode_buffer_.data(), bytes_written);
+    if (kept == fix_common::UnansweredCommandStore::Kept::full) {
+        ++refused_because_store_full_;
+        if (!unanswered_store_full_) {
+            unanswered_store_full_ = true;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "BinaryOrderGatewayThread: the store of unanswered commands is full with {} command(s) waiting -- the venue is not answering, and new "
+                       "commands are refused until it does",
+                       unanswered_commands_->unanswered());
+        }
+        return false;
+    }
+    if (unanswered_store_full_) {
+        unanswered_store_full_ = false;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: the store of unanswered commands has room again -- {} command(s) were refused while it was full",
+                   refused_because_store_full_);
+    }
+    return true;
+}
+
+void BinaryOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {
+    if (!unanswered_commands_.has_value()) {
+        return;
+    }
+    size_t sent = 0;
+    unanswered_commands_->for_each_unanswered([this, &sent](const uint8_t* bytes, size_t size) {
+        pubsub_itc_fw::BumpAllocator arena(resend_arena_buffer_.data(), resend_arena_buffer_.size());
+        size_t bytes_consumed = 0;
+        size_t arena_bytes_needed = 0;
+        pubsub_itc_fw_app::WalRecordView kept{};
+        if (!pubsub_itc_fw_app::decode(kept, bytes, size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "BinaryOrderGatewayThread: a kept command could not be decoded -- not sent again");
+            return;
+        }
+        const pubsub_itc_fw_app::WalRecord again = fix_common::envelope_to_send_again(kept);
+        forward_envelope_to_sequencers(again);
+        ++sent;
+    });
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "BinaryOrderGatewayThread: a new sequencer leader at epoch {} -- sent again {} command(s) still unanswered, each marked as sent again",
+               new_epoch, sent);
+}
+
 void BinaryOrderGatewayThread::expire_grace_sessions() {
     grace_timer_active_ = false;
 
@@ -1276,6 +1382,10 @@ void BinaryOrderGatewayThread::expire_grace_sessions() {
     while (!grace_sessions_.empty() && grace_sessions_.front().cancel_due <= now) {
         expired_orders += grace_sessions_.front().open_orders.size();
         ++expired_sessions;
+        // The session has ended for good, so its unanswered commands are not sent again.
+        if (unanswered_commands_.has_value()) {
+            static_cast<void>(unanswered_commands_->drop_session(grace_sessions_.front().comp_id));
+        }
         pending_cancel_sessions_.push_back(std::move(grace_sessions_.front()));
         grace_sessions_.pop_front();
     }
@@ -1381,6 +1491,10 @@ void BinaryOrderGatewayThread::drain_pending_cancels() {
                 envelope.has_sender_comp_id = true;
                 envelope.sender_comp_id = dead.comp_id;
             }
+            envelope.has_cl_ord_id = true;
+            envelope.cl_ord_id = cancel.cl_ord_id;
+            // Kept if there is room, and sent whether or not: no member is waiting to have it refused.
+            static_cast<void>(keep_until_answered(envelope, dead.comp_id, cancel.cl_ord_id));
             // No gateway_ingress_ns: this cancel is the gateway's own doing, not a client's
             // order. The client has already gone, so there is nobody waiting on it and no
             // round trip to attribute to the venue.

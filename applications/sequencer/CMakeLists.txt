@@ -12,6 +12,7 @@ target_include_directories(sequencer PRIVATE
 
 target_link_libraries(sequencer PRIVATE
         pubsub_itc_fw
+        tsl::robin_map
 )
 
 add_dependencies(sequencer fix_orders_generated leader_follower_generated)
@@ -86,6 +87,8 @@ add_executable(sequencer_tests
         tests/LeasePromiseStoreTest.cpp
         tests/KeptReportStoreTest.cpp
         tests/LogEpochTableTest.cpp
+        tests/LoggedCommandIdentifiersTest.cpp
+        tests/LogTailIndexTest.cpp
         tests/WalRecordEncodingTest.cpp
         SequencerConfigurationLoader.cpp
 )
@@ -99,6 +102,7 @@ target_include_directories(sequencer_tests PRIVATE
 target_link_libraries(sequencer_tests PRIVATE
         pubsub_itc_fw
         pubsub_itc_fw_test_helpers
+        tsl::robin_map
         GTest::gtest_main
 )
 

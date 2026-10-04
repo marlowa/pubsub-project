@@ -189,6 +189,16 @@ BinaryOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& 
     validate_positive(config.open_order_pool_objects_per_pool, "open_order_pool.objects_per_pool");
     validate_positive(config.open_order_pool_initial_pools, "open_order_pool.initial_pools");
 
+    int64_t unanswered_commands = 0;
+    int64_t unanswered_bytes = 0;
+    toml.get_required_except("unanswered_commands.commands", unanswered_commands);
+    toml.get_required_except("unanswered_commands.bytes", unanswered_bytes);
+    if (unanswered_commands < 1 || unanswered_bytes < 1) {
+        throw pubsub_itc_fw::ConfigurationException("BinaryOrderGatewayConfigurationLoader: unanswered_commands.commands and .bytes must both be >= 1");
+    }
+    config.unanswered_commands_capacity = static_cast<size_t>(unanswered_commands);
+    config.unanswered_commands_bytes = static_cast<size_t>(unanswered_bytes);
+
     toml.get_required_except("order_limits.max_symbol_length", config.max_symbol_length);
     toml.get_required_except("order_limits.max_order_qty_length", config.max_order_qty_length);
     if (config.max_symbol_length < 1 || static_cast<size_t>(config.max_symbol_length) > open_orders::max_supported_symbol_length) {

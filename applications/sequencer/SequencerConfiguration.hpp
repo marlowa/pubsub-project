@@ -147,6 +147,15 @@ struct SequencerConfiguration {
      */
     fix_common::LeaseTiming lease{};
 
+    /**
+     * @brief How many command identifiers the record of the identifiers in the log reserves room
+     * for. Only applies when ha_enabled=true, because only a change of leader produces commands sent
+     * again, which are what the record is for. 16 bytes a slot, in a table whose size is a power of
+     * two: 200 million reserves 4 GiB. See LoggedCommandIdentifiers and
+     * docs/availability/commands_during_a_change_of_leader.md.
+     */
+    size_t identifiers_reserved{0};
+
     // HA mode -- when false, the sequencer starts as leader immediately
     // with no peer election. Set to true only when running a paired
     // primary + secondary deployment.

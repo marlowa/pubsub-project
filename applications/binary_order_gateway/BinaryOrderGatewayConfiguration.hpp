@@ -207,6 +207,15 @@ struct BinaryOrderGatewayConfiguration {
     int32_t open_order_pool_initial_pools{1};
 
     /**
+     * @brief The store of commands sent to the sequencers and not yet answered, kept to be sent again
+     * after a change of sequencer leader: how many commands, and how many bytes of their envelopes.
+     * Used only with high availability on. See fix_common::UnansweredCommandStore and
+     * docs/availability/commands_during_a_change_of_leader.md, section 7, decision 4.
+     */
+    size_t unanswered_commands_capacity{262144};
+    size_t unanswered_commands_bytes{64 * 1024 * 1024};
+
+    /**
      * @brief The longest Symbol and OrderQty a member's command may carry, in bytes.
      *
      * The same limits as the FIX gateway's [fix_limits], for the same reason: a longer value cannot

@@ -54,6 +54,9 @@ period_milliseconds = 3000
 drift_allowance_milliseconds = 250
 renewal_interval_milliseconds = 1000
 
+[commands]
+identifiers_reserved = 1000
+
 [wal_subscriber]
 listen_host = "127.0.0.1"
 listen_port = 11030
@@ -311,4 +314,31 @@ instance = 1
 host     = "10.0.0.1"
 )"),
                  pubsub_itc_fw::ConfigurationException);
+}
+
+namespace {
+
+const char* const one_gateway = R"(
+[[gateway]]
+protocol = 1
+instance = 1
+host     = "10.0.0.1"
+port     = 7010
+)";
+
+} // namespaces
+
+TEST(SequencerConfigurationLoaderTest, ReadsHowManyCommandIdentifiersToReserve) {
+    const auto config = load_with_gateways(one_gateway);
+    EXPECT_EQ(config.identifiers_reserved, 1000U);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsReservingNoCommandIdentifiers) {
+    std::string sections(required_sections);
+    const std::string reserved = "identifiers_reserved = 1000";
+    sections.replace(sections.find(reserved), reserved.size(), "identifiers_reserved = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }

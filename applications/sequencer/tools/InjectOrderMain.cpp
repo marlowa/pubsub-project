@@ -59,6 +59,7 @@ struct Options {
     std::string cancel_orig_cl_ord_id;
     std::string symbol{"AAPL"};
     int count{1};
+    bool sent_again{false};
 };
 
 bool parse_options(int argc, char** argv, Options& options) {
@@ -79,10 +80,14 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.symbol = argv[++index];
         } else if (argument == "--count" && has_value) {
             options.count = std::stoi(argv[++index]);
+        } else if (argument == "--sent-again") {
+            options.sent_again = true;
         } else {
-            fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] --cl-ord-id ID [--cancel ORIG-CL-ORD-ID] [--symbol SYM] [--count N]\n", argv[0]);
+            fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] --cl-ord-id ID [--cancel ORIG-CL-ORD-ID] [--symbol SYM] [--count N] [--sent-again]\n",
+                       argv[0]);
             fmt::print("\n  Sends one NewOrderSingle, or with --cancel one OrderCancelRequest, straight to the sequencer's\n");
             fmt::print("  order listener, bypassing every gateway check. For testing the matching engine only.\n");
+            fmt::print("  --sent-again marks it as a command a gateway sends again after a change of sequencer leader.\n");
             return false;
         }
     }
@@ -204,6 +209,14 @@ std::vector<uint8_t> encode_command(const Options& options, const std::string& c
     envelope.origin_gateway_id = gateway_ids::binary_order_gateway;
     envelope.has_sender_comp_id = true;
     envelope.sender_comp_id = options.comp_id;
+    // As a gateway stamps them: the ClOrdID, for the sequencer's record of identifiers, and the time
+    // the command was received, which bounds how far back the sequencer looks for a command sent again.
+    envelope.has_cl_ord_id = true;
+    envelope.cl_ord_id = cl_ord_id;
+    envelope.has_gateway_ingress_ns = true;
+    envelope.gateway_ingress_ns = now_nanoseconds();
+    envelope.has_sent_again = options.sent_again;
+    envelope.sent_again = options.sent_again;
     return encode_message(envelope);
 }
 

@@ -63,6 +63,20 @@ envelope, exactly as sent, so that sending it again sends the same bytes.
   are not being answered, which is a loss of service, so it is logged as a Warning when it starts and
   again when it ends, and published as a metric.
 
+How it is built:
+
+- The store is `fix_common::UnansweredCommandStore`, shared by both gateways, and exists only with high
+  availability on, because without it there is no change of leader. A copy is kept just before the
+  command is sent, so a command that cannot be kept is not sent.
+- A report is matched to its command by the member's comp id and the `ClOrdID`, both of which the
+  sequencer puts on the report's envelope. The binary gateway relays a report without decoding it, so
+  the sequencer copies the `ClOrdID` from the report it decodes anyway.
+- A member's command refused because the store is full is answered as the gateway answers any command
+  it refuses itself: a rejected report for an order, an order cancel reject for a cancel, each saying
+  the venue is busy. A cancel the gateway generates itself when a member disconnects is sent even if it
+  cannot be kept, because no member is waiting to have it refused.
+- A unit test counts heap allocations while commands are kept and answered, and requires none.
+
 The normal number of commands in flight is small, a handful per session, because a command is
 answered in about 100 microseconds. The store is sized for the commands that wait while the venue
 cannot answer, such as during a change of leader or while no matching engine is running.
@@ -122,6 +136,10 @@ have been written to any log, and treating it as held would lose it.
   record is complete before it is used. That read is at most about a second of records.
 - At startup, the sequencer already reads its whole log, to build the table of epochs and to find a
   gap. The identifiers are added during the same read.
+- Each command's `ClOrdID` is copied onto its envelope by the gateway, and the leader logs it, so that
+  the record can be built and kept up to date from the log without decoding each command. The leader
+  also logs the member's gateway protocol and instance from the envelope, which it did not before, so
+  that a command is identified by the whole of its session.
 
 ### 3.5 A command the new leader holds and the engine never received
 
@@ -201,15 +219,17 @@ The cost on the ordinary path is to be measured by the method in
 
 ## 6. Tests
 
-Each test is shown to fail before the change it tests is made.
+Each test was shown to fail before the change it tests was made.
 
 | Test | What it requires |
 |---|---|
-| Scenario 1, strengthened | Every one of the orders sent while the leader is killed is answered, accepted or refused, and none is placed twice. Today none of 20,000 is answered |
-| New: a command in the log the engine never received | The follower's acknowledgements to the leader are blocked with `libblock_sends_to_ports.so`, so the follower writes and acknowledges orders that the leader never sends to the engine. The leader is killed. Every order is answered. This shows the gap of section 3.5 before it is fixed |
-| New: a command sent again that the new leader holds | The member is answered once, and the matching engine holds one order for it, not two |
-| New: the gateway's store is full | A command beyond the store's capacity is refused with a reply, and the venue says why |
-| Unit tests | The gateway store, its index, and the record of identifiers, including a model test like the one for `KeptReportStore` |
+| Scenario 66 | The follower's acknowledgements to the leader are blocked with `libblock_sends_to_ports.so`, so the follower writes and acknowledges orders the leader never sends to the engine; the leader is stopped and killed. Every order is applied once and answered. Section 3.5, [BUG-0115](../bug_list.md#bug_0115) |
+| Scenario 67 | An order, then the same order marked as sent again, then an order marked as sent again that was never sent before. The first is applied once and never refused as a duplicate; the last is applied once. Section 3.4 |
+| Scenario 68 | A member sends orders at 100 a second from a second before the leader is killed until two seconds after the follower takes the lead. Every order is answered, and none is applied twice. Before the gateways kept commands, 266 of 598 orders were never answered |
+| Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `LoggedCommandIdentifiers`; `LogTailIndex`, against a real log |
+
+Scenario 1 sends its 20,000 orders while the leader is killed, but they now all reach the venue before
+the kill, so it no longer exercises orders sent during the change of leader; scenario 68 does.
 
 ## 7. Decisions
 
@@ -231,11 +251,22 @@ protocol and the `ClOrdID`.
   number that is in it means only that the command may be, so the new leader checks: it searches its
   own log, backwards from the end, for a record with exactly the same comp id, protocol and `ClOrdID`.
   It searches no further back than the time the gateway first received the command, which the envelope
-  carries (`gateway_ingress_ns`), normally a few seconds of records. Found, the command is held and is
-  not sequenced again; not found, the numbers merely matched, and the command is sequenced as new. A
-  match therefore never causes a command to be lost.
-- *When the table is full,* the sequencer logs an Error and refuses, with a reply, a command sent again
-  that it cannot check, rather than risk placing it twice.
+  carries (`gateway_ingress_ns`), less five seconds for any difference between the machines' clocks:
+  normally a few seconds of records. Found, the command is held and is not sequenced again; not found,
+  the numbers merely matched, and the command is sequenced as new. A match therefore never causes a
+  command to be lost. Right after a change of leader many commands can need this check, so the search
+  is not repeated for each: the new leader builds an exact index of the end of its log
+  (`LogTailIndex`) on the first one, reading each record once, forwards for records written since and
+  backwards only as far as a command's time requires, and discards it a minute after the last command
+  sent again. A command that carries no receipt time, such as a cancel a gateway generated itself when a
+  member disconnected, is looked for in the whole log.
+- *The same check covers records a repair discards.* When a rejoining follower discards records its
+  leader does not hold, their identifiers stay in the table. A command sent again that matches one is
+  not found in the log, and is sequenced as new. Nothing needs removing from the table.
+- *When the table is full,* the sequencer logs an Error once. Commands logged after that are not in the
+  table, so a number that is not in it no longer proves anything, and every command sent again is then
+  checked against the log by the same index. Nothing is refused: refusing a command that may be live
+  would tell a member it was refused when it was not.
 
 **Decision 2, decided: only commands marked `sent_again` are checked, in this part.** Checking every
 command, which would meet R-0119, is a separate change, recorded as [BUG-0114](../bug_list.md#bug_0114).
@@ -267,12 +298,20 @@ is now.
 
 ## 8. The order of the work
 
+All six steps are built.
+
 1. The scenario for section 3.5, shown to fail; then the position query on a change of sequencer leader.
-2. The record of identifiers in the sequencer, with its unit tests, and the startup read measured.
+2. The record of identifiers in the sequencer, with its unit tests. Reserving it for 200 million
+   identifiers takes about 0.9 seconds at startup, measured, well within the guide of about five
+   seconds.
 3. `sent_again` on the envelope and the check in the sequencer.
 4. The epoch on `OrderAcceptance`, and the reordering of section 3.3.
-5. The gateway store and sending again, in the FIX gateway and then the binary gateway.
-6. Scenario 1 strengthened, and the remaining scenarios.
+5. The gateway store and sending again, in the FIX gateway and the binary gateway.
+6. Scenario 68 in place of strengthening scenario 1, for the reason in section 6.
+
+One consequence found while testing is recorded as [BUG-0116](../bug_list.md#bug_0116): the reports a
+new leader forwards from part 4.4 include almost every report of the last few seconds, which the old
+leader had already forwarded, so a member can receive tens of thousands of repeats at once.
 
 Related: [change_of_sequencer_leader.md](change_of_sequencer_leader.md),
 [majority_leases.md](majority_leases.md), [order_acceptance.md](order_acceptance.md), and the

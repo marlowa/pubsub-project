@@ -228,6 +228,14 @@ message WalRecord (id=103, version=1)
     # (docs/availability/follower_log_repair.md). Optional, and last, so that records written
     # before it existed still decode: such a record lacks it and is taken to be from epoch zero.
     optional i32 leader_epoch
+    # The command's ClOrdID, copied onto the envelope by the gateway so that the sequencer can keep
+    # its record of the identifiers in its log without decoding the command itself. Absent on a
+    # report, and on a record written before the field existed.
+    # See docs/availability/commands_during_a_change_of_leader.md, section 3.4.
+    optional string cl_ord_id
+    # True on a command a gateway sends again after a change of sequencer leader, because it was
+    # still unanswered. The new leader sequences it only if its log does not already hold it.
+    optional bool sent_again
 end
 
 # ------------------------------------------------------------
@@ -749,6 +757,10 @@ message OrderAcceptance (id=127, version=1)
     bool accepting                  # false: the venue will not take new orders it cannot process
     i64  deferred_order_count       # orders accepted and not yet forwarded, at send time
     i32  degraded_for_seconds       # how long the venue has been unable to forward, 0 when accepting
+    # The epoch of the leadership that sent this. A gateway that sees a higher epoch than any before
+    # knows a new instance leads, and sends it again every command it is still holding unanswered
+    # (docs/availability/commands_during_a_change_of_leader.md, section 3.2).
+    optional i32 leader_epoch
 end
 
 # ------------------------------------------------------------

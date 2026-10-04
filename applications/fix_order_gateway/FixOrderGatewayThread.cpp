@@ -233,6 +233,16 @@ FixOrderGatewayThread::FixOrderGatewayThread(pubsub_itc_fw::ApplicationThread::C
 }
 
 void FixOrderGatewayThread::on_app_ready_event() {
+    // The store of unanswered commands, allocated once, here, so that keeping a command on the order
+    // path allocates nothing. Only with high availability on: without it there is one sequencer and
+    // no change of leader, so nothing is ever sent again.
+    if (config_.ha_enabled) {
+        unanswered_commands_.emplace(config_.unanswered_commands_bytes, config_.unanswered_commands_capacity);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: keeping up to {} unanswered command(s) in {} MiB, to send again after a change of sequencer leader",
+                   config_.unanswered_commands_capacity, config_.unanswered_commands_bytes / (1024 * 1024));
+    }
+
     // Initialise the open-order pool.
     open_order_pool_ = std::make_unique<pubsub_itc_fw::ExpandablePoolAllocator<OpenOrderEntry>>(
         "OpenOrderPool", config_.open_order_pool_objects_per_pool, config_.open_order_pool_initial_pools,
@@ -719,6 +729,12 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     if (view.ord_status == pubsub_itc_fw_app::OrdStatus::New) {
         order_path_metrics::observe_checkpoint(er_in_elapsed_histogram_, envelope.has_gateway_ingress_ns, envelope.gateway_ingress_ns,
                                                config_.wall_clock->now_ns());
+    }
+
+    // The first report for a command answers it, whichever session it reaches or whether it reaches
+    // one at all: the venue has acted on the command, so it is not sent again to a new leader.
+    if (unanswered_commands_.has_value() && envelope.has_sender_comp_id && envelope.has_cl_ord_id) {
+        static_cast<void>(unanswered_commands_->answered(envelope.sender_comp_id, envelope.cl_ord_id));
     }
 
     // Route to the exact FIX session identified by gateway_session_conn_id, which
@@ -1471,6 +1487,17 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
         return;
     }
 
+    // A higher epoch than any before means a new sequencer instance leads. The commands still held
+    // unanswered may never have reached any log, so each is sent again. The first epoch seen only
+    // sets the mark: a gateway that has just started holds nothing.
+    if (view.has_leader_epoch && view.leader_epoch > highest_leader_epoch_seen_) {
+        const bool first_seen = highest_leader_epoch_seen_ == 0;
+        highest_leader_epoch_seen_ = view.leader_epoch;
+        if (!first_seen) {
+            send_unanswered_commands_again(view.leader_epoch);
+        }
+    }
+
     if (view.accepting == venue_accepting_orders_) {
         // The sequencer repeats this while the venue is degraded, so most arrivals say nothing
         // new. Logged on the change, not on the arrival -- the same rule the heartbeats follow,
@@ -1916,8 +1943,14 @@ void FixOrderGatewayThread::handle_new_order_single(FixSession& session, const P
     // ClOrdID collision problem) and its SenderCompID (for audit) travel on the
     // WalRecord envelope, not inside the DD-derived PDU. Forward the pure NOS
     // wrapped in that envelope to both sequencer instances.
-    forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos, session.conn_id.get_value(),
-                              session.client_comp_id, current_read_ingress_ns_);
+    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle), nos, session.conn_id.get_value(),
+                                   session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse)) {
+        // The store of unanswered commands is full: so many commands wait for an answer that the
+        // venue is not answering them. Refused with a reply, never dropped.
+        ++orders_refused_;
+        send_reject_execution_report(session, msg, "the venue is busy: too many commands are waiting to be answered");
+        return;
+    }
 
     // Do NOT record the order here. We record it when the ME sends back a
     // non-terminal ExecutionReport (OrdStatus=New), which confirms the order
@@ -2026,8 +2059,11 @@ void FixOrderGatewayThread::handle_order_cancel_request(FixSession& session, con
 
     // Connection id (cancel-ER routing) and SenderCompID (audit) ride on the
     // WalRecord envelope, not inside the PDU (same mechanism as NOS).
-    forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, session.conn_id.get_value(),
-                              session.client_comp_id, current_read_ingress_ns_);
+    if (!forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, session.conn_id.get_value(),
+                                   session.client_comp_id, current_read_ingress_ns_, WhenStoreFull::refuse)) {
+        ++cancels_refused_;
+        send_order_cancel_reject(session, msg, "the venue is busy: too many commands are waiting to be answered");
+    }
 }
 
 void FixOrderGatewayThread::disconnect_session(const FixSession& session, const std::string& reason) {
@@ -2383,6 +2419,68 @@ void FixOrderGatewayThread::arm_grace_timer() {
     grace_timer_active_ = true;
 }
 
+bool FixOrderGatewayThread::keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id) {
+    if (!unanswered_commands_.has_value() || comp_id.empty() || cl_ord_id.empty()) {
+        return true;
+    }
+    size_t bytes_written = 0;
+    size_t bytes_needed = 0;
+    static_cast<void>(pubsub_itc_fw_app::encode(envelope, nullptr, 0, bytes_written, bytes_needed));
+    if (unanswered_encode_buffer_.size() < bytes_needed) {
+        unanswered_encode_buffer_.resize(bytes_needed);
+    }
+    if (!pubsub_itc_fw_app::encode(envelope, unanswered_encode_buffer_.data(), unanswered_encode_buffer_.size(), bytes_written, bytes_needed)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "FixOrderGatewayThread: could not encode the command ClOrdID={} to keep it -- sent without a copy, so it is not sent again after a change "
+                   "of sequencer leader",
+                   cl_ord_id);
+        return true;
+    }
+    const auto kept = unanswered_commands_->keep(comp_id, cl_ord_id, unanswered_encode_buffer_.data(), bytes_written);
+    if (kept == fix_common::UnansweredCommandStore::Kept::full) {
+        ++refused_because_store_full_;
+        if (!unanswered_store_full_) {
+            unanswered_store_full_ = true;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "FixOrderGatewayThread: the store of unanswered commands is full with {} command(s) waiting -- the venue is not answering, and new "
+                       "commands are refused until it does",
+                       unanswered_commands_->unanswered());
+        }
+        return false;
+    }
+    if (unanswered_store_full_) {
+        unanswered_store_full_ = false;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: the store of unanswered commands has room again -- {} command(s) were refused while it was full",
+                   refused_because_store_full_);
+    }
+    return true;
+}
+
+void FixOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {
+    if (!unanswered_commands_.has_value()) {
+        return;
+    }
+    size_t sent = 0;
+    unanswered_commands_->for_each_unanswered([this, &sent](const uint8_t* bytes, size_t size) {
+        pubsub_itc_fw::BumpAllocator arena(resend_arena_buffer_.data(), resend_arena_buffer_.size());
+        size_t bytes_consumed = 0;
+        size_t arena_bytes_needed = 0;
+        pubsub_itc_fw_app::WalRecordView kept{};
+        if (!pubsub_itc_fw_app::decode(kept, bytes, size, bytes_consumed, arena, arena_bytes_needed)) {
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "FixOrderGatewayThread: a kept command could not be decoded -- not sent again");
+            return;
+        }
+        const pubsub_itc_fw_app::WalRecord again = fix_common::envelope_to_send_again(kept);
+        forward_pdu_to_sequencers(pubsub_itc_fw_app::WalRecord::message_pdu_id, again);
+        ++sent;
+    });
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: a new sequencer leader at epoch {} -- sent again {} command(s) still unanswered, each marked as sent again", new_epoch,
+               sent);
+}
+
 void FixOrderGatewayThread::expire_grace_sessions() {
     grace_timer_active_ = false;
 
@@ -2392,6 +2490,10 @@ void FixOrderGatewayThread::expire_grace_sessions() {
     while (!grace_sessions_.empty() && grace_sessions_.front().cancel_due <= now) {
         expired_orders += grace_sessions_.front().open_orders.size();
         ++expired_sessions;
+        // The session has ended for good, so its unanswered commands are not sent again.
+        if (unanswered_commands_.has_value()) {
+            static_cast<void>(unanswered_commands_->drop_session(grace_sessions_.front().client_comp_id));
+        }
         pending_cancel_sessions_.push_back(std::move(grace_sessions_.front()));
         grace_sessions_.pop_front();
     }
@@ -2477,8 +2579,8 @@ void FixOrderGatewayThread::drain_pending_cancels() {
         // No ingress stamp: this cancel is the gateway's own doing, not a client's order.
         // The client it belongs to has already gone, so there is nobody waiting on it and
         // no round trip to attribute to the venue.
-        forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, dead.session_conn_id, dead.client_comp_id,
-                                  /*gateway_ingress_ns=*/0);
+        static_cast<void>(forward_order_in_envelope(static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest), ocr, dead.session_conn_id,
+                                                    dead.client_comp_id, /*gateway_ingress_ns=*/0, WhenStoreFull::send_without_keeping));
 
         open_order_pool_->deallocate(entry);
         ++dead.next_order_index;

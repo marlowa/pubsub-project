@@ -262,6 +262,16 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
             throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: open_order_pool.initial_pools must be >= 1");
         }
 
+        int64_t unanswered_commands = 0;
+        int64_t unanswered_bytes = 0;
+        toml.get_required_except("unanswered_commands.commands", unanswered_commands);
+        toml.get_required_except("unanswered_commands.bytes", unanswered_bytes);
+        if (unanswered_commands < 1 || unanswered_bytes < 1) {
+            throw pubsub_itc_fw::ConfigurationException("FixOrderGatewayConfigurationLoader: unanswered_commands.commands and .bytes must both be >= 1");
+        }
+        config.unanswered_commands_capacity = static_cast<size_t>(unanswered_commands);
+        config.unanswered_commands_bytes = static_cast<size_t>(unanswered_bytes);
+
     } catch (const pubsub_itc_fw::ConfigurationException&) {
         throw;
     }

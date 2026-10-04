@@ -855,6 +855,16 @@ class Scenario(NamedTuple):
     # once the follower leads. See run_scenario's "logged commands reach the engine" block, and
     # section 3.5 of docs/availability/commands_during_a_change_of_leader.md.
     assert_logged_commands_reach_engine: bool = False
+    # When True, send the leading sequencer an order, then the same order marked as sent again, then
+    # an order marked as sent again that was never sent, and require the engine to apply each order
+    # once. See run_scenario's "commands sent again" block, and section 3.4 of
+    # docs/availability/commands_during_a_change_of_leader.md.
+    assert_sent_again_sequenced_once: bool = False
+    # When True, a member sends orders at a steady rate from before the leading sequencer is killed
+    # until after the follower has taken the lead, and every order must be answered, and none applied
+    # twice. See run_scenario's "orders during a change of leader" block, and
+    # docs/availability/commands_during_a_change_of_leader.md.
+    assert_orders_during_change_answered: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3632,6 +3642,47 @@ _SCENARIOS: list[Scenario] = [
         orders_during_override=0,
         orders_after_override=0,
         assert_logged_commands_reach_engine=True,
+        steps=[],
+    ),
+
+    # 67 -- a command sent again is sequenced only if the leader's log does not already hold it.
+    #
+    # inject_order hands the leading sequencer an order as a gateway would. The same order is then
+    # sent marked as sent again, as a gateway sends an unanswered command after a change of leader,
+    # and must not be sequenced a second time. An order marked as sent again that was never sent
+    # before must be sequenced. Nothing is killed: the leader checks every command marked this way.
+    Scenario(
+        number=67,
+        short_name="sent_again_sequenced_once",
+        description="A command a gateway sends again is sequenced only if the leader's log does not already hold it",
+        expected_outcome=(
+            "the order sent twice, the second time marked as sent again, is applied once and never refused as a duplicate; the "
+            "order marked as sent again that was never sent before is applied once"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_sent_again_sequenced_once=True,
+        steps=[],
+    ),
+
+    # 68 -- every order sent while the sequencers change leader is answered, and none twice.
+    #
+    # A member sends orders at a steady rate through the FIX gateway, starting a second before the
+    # leading sequencer is killed and continuing until a few seconds after the follower has taken
+    # the lead. The orders sent in between reach only the follower, which discards them while it
+    # follows. The gateway keeps each command until it is answered and sends the unanswered ones
+    # again when the new leader announces itself; each must then be answered, and the engine must
+    # apply none of them twice.
+    Scenario(
+        number=68,
+        short_name="orders_during_change_answered",
+        description="Every order sent while the sequencers change leader is answered, and none is applied twice",
+        expected_outcome=(
+            "every order the member sent across the change of leader receives a report, and the matching engine accepts each at most once"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_orders_during_change_answered=True,
         steps=[],
     ),
 ]
@@ -8076,6 +8127,150 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if applied_twice:
                 die(f"logged commands: the engine did not accept each of {applied_twice} exactly once.")
             log(f"  the engine applied each of the {len(logged)} orders once, and the member was told of each -- OK")
+
+        # ── Commands sent again ───────────────────────────────────────────────
+        if scenario.assert_sent_again_sequenced_once:
+            log("=== A command sent again is sequenced only if the leader's log does not already hold it ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("sent again: sequencer_primary is not leading.")
+            primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+            order_port = installed_toml_section_value(primary_config, "network", "listen_port")
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            def inject_sent_again_test(cl_ord_id: str, *extra: str) -> None:
+                result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_port, "--cl-ord-id", cl_ord_id, *extra],
+                                        capture_output=True, text=True, check=False, timeout=30)
+                if result.returncode != 0:
+                    die(f"sent again: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+
+            def accepted_by_engine(cl_ord_id: str, from_byte: int) -> int:
+                return count_lines_with_all(me_log, "accepted NOS", f"ClOrdID={cl_ord_id} ", from_byte=from_byte)
+
+            def refused_as_duplicate(cl_ord_id: str, from_byte: int) -> int:
+                return count_lines_with_all(me_log, "duplicate ClOrdID", f"ClOrdID={cl_ord_id} ", from_byte=from_byte)
+
+            started_from = file_end(me_log)
+            held = f"again-{run_tag}-held"
+            inject_sent_again_test(held)
+            if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={held} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=started_from)[0]:
+                die("sent again: the matching engine never accepted the first order.")
+            log("  an order is sent and accepted")
+
+            check_from = file_end(primary_log)
+            inject_sent_again_test(held, "--sent-again")
+            never_sent = f"again-{run_tag}-new"
+            inject_sent_again_test(never_sent, "--sent-again")
+            if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={never_sent} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=started_from)[0]:
+                die(f"sent again: the order {never_sent}, marked as sent again but never sent before, was not applied. Nothing ever "
+                    "acted on it, so it must be sequenced as a new command.")
+            time.sleep(1.0)
+            if refused_as_duplicate(held, started_from) or accepted_by_engine(held, started_from) != 1:
+                die(f"sent again: the order {held} was sequenced a second time when sent again -- the engine accepted it "
+                    f"{accepted_by_engine(held, started_from)} time(s) and refused it as a duplicate {refused_as_duplicate(held, started_from)} time(s). "
+                    "The leader's log already held it, so it must not be sequenced twice.")
+            if accepted_by_engine(never_sent, started_from) != 1:
+                die(f"sent again: the engine accepted {never_sent} {accepted_by_engine(never_sent, started_from)} times, not once.")
+            if not poll_log_for(primary_log, "commands are being sent again after the change of leader", timeout=1.0, from_byte=check_from)[0]:
+                die("sent again: the leader never built its index of the end of the log, so the check above did not run as designed.")
+            log("  the order sent again was not sequenced twice, and the order sent again for the first time was applied once -- OK")
+
+        # ── Orders during a change of leader ──────────────────────────────────
+        if scenario.assert_orders_during_change_answered:
+            log("=== Every order sent while the sequencers change leader is answered, and none twice ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("orders during change: sequencer_primary is not leading.")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+            import threading  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            if member.sock is not None:
+                member.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("orders during change: the raw client could not log on.")
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            # Reports are read on a thread of their own while orders are sent, so that the gateway
+            # is never left with a member that has stopped reading.
+            answers: dict[str, list[str]] = {}
+            stop_reading = threading.Event()
+
+            def read_reports() -> None:
+                while not stop_reading.is_set():
+                    report = member.receive_until("8", timeout=0.5)
+                    if report is not None and report.get(11, "").startswith(f"during-{run_tag}-"):
+                        answers.setdefault(report[11], []).append(report.get(39, "?"))
+
+            reader = threading.Thread(target=read_reports, name="report-reader", daemon=True)
+            reader.start()
+
+            sent: list[str] = []
+            interval = 0.01  # 100 orders a second
+
+            def send_for(seconds: float) -> None:
+                deadline = time.monotonic() + seconds
+                while time.monotonic() < deadline:
+                    cl_ord_id = f"during-{run_tag}-{len(sent) + 1}"
+                    member.new_order_single(cl_ord_id)
+                    sent.append(cl_ord_id)
+                    time.sleep(interval)
+
+            accepted_from = file_end(me_log)
+            send_for(1.0)
+            primary = proc_by_name["sequencer_primary"]
+            takeover_from = file_end(secondary_log)
+            log(f"  {len(sent)} orders sent; SIGKILL -> sequencer_primary (PID {primary.pid}), still sending")
+            primary.kill()
+            sent_before_kill = len(sent)
+            # Keep sending while the follower takes the lead: these are the orders at risk.
+            took_over = False
+            waited = 0.0
+            while not took_over and waited < args.failover_timeout:
+                send_for(0.5)
+                waited += 0.5
+                took_over = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=0.01, from_byte=takeover_from)[0]
+            primary.wait()
+            if Path(f"/proc/{primary.pid}").exists():
+                stop_reading.set()
+                member.close()
+                die(f"orders during change: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            if not took_over:
+                stop_reading.set()
+                member.close()
+                die(f"orders during change: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            sent_during = len(sent) - sent_before_kill
+            send_for(2.0)
+            log(f"  sequencer_secondary took the lead; {sent_during} orders were sent between the kill and the takeover, {len(sent)} in all")
+
+            # Every order must be answered. Wait until it is, or the time runs out.
+            deadline = time.monotonic() + 20.0
+            while time.monotonic() < deadline and any(c not in answers for c in sent):
+                time.sleep(0.5)
+            stop_reading.set()
+            reader.join(timeout=5)
+            member.close()
+
+            unanswered = [c for c in sent if c not in answers]
+            log(f"  {len(sent) - len(unanswered)} of {len(sent)} orders answered")
+            if unanswered:
+                die(f"orders during change: {len(unanswered)} of the {len(sent)} orders were never answered, for example "
+                    f"{unanswered[:5]}. The gateway must keep each command until it is answered and send it again to the new "
+                    "leader (section 3 of docs/availability/commands_during_a_change_of_leader.md, BUG-0103).")
+            applied_twice = [c for c in sent if count_lines_with_all(me_log, "accepted NOS", f"ClOrdID={c} ", from_byte=accepted_from) > 1]
+            if applied_twice:
+                die(f"orders during change: the matching engine accepted {applied_twice[:5]} more than once.")
+            log(f"  every one of the {len(sent)} orders was answered, and none was applied twice -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

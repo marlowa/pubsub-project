@@ -130,6 +130,16 @@ initial_slabs    = ${binary_order_gateway_b_command_queue_pool_initial_slabs}
 objects_per_pool = ${binary_order_gateway_b_open_order_pool_objects_per_pool}
 initial_pools    = ${binary_order_gateway_b_open_order_pool_initial_pools}
 
+# The commands this gateway has sent to the sequencers and not yet seen answered, kept so that they
+# can be sent again to a new sequencer leader. A command is normally answered in a tenth of a
+# millisecond, so the store fills only while answers stop arriving, chiefly during a change of
+# sequencer leader. When it is full, new commands are refused with a reply. 262,144 commands of
+# about 200 bytes hold about eight seconds of the venue's highest measured rate through one gateway.
+# Used only with high availability on.
+[unanswered_commands]
+commands = 262144
+bytes    = 67108864
+
 # The longest Symbol and OrderQty a member's command may carry, in bytes. A command with a longer
 # value is refused with the limit in its text. The same limits as the FIX gateway's [fix_limits],
 # and at most symbol=64 and order_qty=32, the sizes the open-order record holds. ClOrdID's limit,

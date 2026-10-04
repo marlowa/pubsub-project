@@ -5,6 +5,7 @@ add_executable(fix_common_tests
         tests/RollingWindowThrottleTest.cpp
         tests/SessionThrottlesTest.cpp
         tests/ThrottleHeapUseTest.cpp
+        tests/UnansweredCommandStoreTest.cpp
 )
 
 target_include_directories(fix_common_tests PRIVATE
@@ -13,6 +14,7 @@ target_include_directories(fix_common_tests PRIVATE
 
 target_link_libraries(fix_common_tests PRIVATE
         pubsub_itc_fw
+        tsl::robin_map
         GTest::gtest_main
 )
 

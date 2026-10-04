@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -37,6 +38,8 @@
 #include "LeaseLinksInterface.hpp"
 #include "LeasePromiseStore.hpp"
 #include "LogEpochTable.hpp"
+#include "LogTailIndex.hpp"
+#include "LoggedCommandIdentifiers.hpp"
 #include "PairLeaseAgent.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
@@ -277,6 +280,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         int16_t pdu_id{};
         int64_t seq_no{};
         std::vector<uint8_t> payload; // copy of the raw encoded ER from ME
+        // The ClOrdID of the command the report answers, copied onto the envelope for the gateway.
+        std::string cl_ord_id;
         // Whose report this is. Deliberately the identity and not a resolved destination:
         // this record exists precisely because delivery is being deferred until the
         // follower acks, and a session can reconnect during that wait -- which is the case
@@ -532,6 +537,39 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_engine_position(const pubsub_itc_fw::EventMessage& message);
     void stop_awaiting_engine_position(const char* reason);
     void release_orders_that_waited_for_the_engine();
+
+    // The identifiers of the commands this instance's log holds, so that a command a gateway sends
+    // again after a change of leader is not sequenced twice (LoggedCommandIdentifiers, and
+    // docs/availability/commands_during_a_change_of_leader.md, section 3.4). Reserved at startup when
+    // HA is on; touched only by this thread. While leading, each command is noted as it is written;
+    // while following, the records the reactor thread wrote are read from the log once a second, and
+    // the rest on taking the lead.
+    std::optional<LoggedCommandIdentifiers> logged_identifiers_;
+    pubsub_itc_fw::AllocationGrowthReporter identifiers_growth_reporter_;
+    size_t identifiers_table_bytes_{0};
+    bool identifiers_full_reported_{false};
+    // Where the next read of the log for identifiers starts: just after the last record read.
+    pubsub_itc_fw::WalPosition identifiers_read_position_{};
+    std::chrono::steady_clock::time_point identifiers_read_at_{};
+    static constexpr std::chrono::milliseconds identifiers_read_interval{1000};
+
+    void reserve_record_of_identifiers();
+    void note_logged_command(const pubsub_itc_fw_app::WalRecordView& view);
+    void note_logged_command(std::string_view comp_id, int16_t protocol, int16_t inner_pdu_id, std::string_view cl_ord_id);
+    void read_identifiers_from_log();
+
+    // An exact index of the end of the log, built when the first command is sent again after a
+    // change of leader and discarded a minute after the last, or when this instance stops leading.
+    std::optional<LogTailIndex> log_tail_index_;
+    std::chrono::steady_clock::time_point log_tail_index_used_at_{};
+    static constexpr std::chrono::seconds log_tail_index_idle_limit{60};
+    int64_t sent_again_already_logged_{0};
+    int64_t sent_again_sequenced_{0};
+
+    // Whether this log already holds a command a gateway has sent again. Exact: the record of
+    // identifiers rules a command out, and the index of the end of the log confirms one it does not.
+    [[nodiscard]] bool command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound);
+    void discard_log_tail_index(const char* reason);
 
     // Where a report about to be forwarded came from.
     enum class ReportSource {

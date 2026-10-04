@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 115 |
+| Bugs recorded | 116 |
 | Open | 43 (28 defects, 15 tasks) |
-| Closed | 72 |
-| Next id | BUG-0116 |
+| Closed | 73 |
+| Next id | BUG-0117 |
 
 ## Open bugs by severity
 
-14 high, 24 medium, 5 low.
+13 high, 25 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,7 +24,6 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
-| [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
@@ -51,6 +50,7 @@
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
 | [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
 | [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
+| [BUG-0116](#bug_0116) | medium | defect | A new sequencer leader sends members every report of the last few seconds again |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -155,6 +155,48 @@ went looking.
 
 
 
+
+### BUG-0116: A new sequencer leader sends members every report of the last few seconds again {#bug_0116}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-04 |
+| How | `ha_test.py` scenario 1 failed once, in a run of the part 4.3 work, and passed when run again |
+| Impact | After a change of sequencer leader, each member is sent again, marked as possible repeats, the reports it received in the few seconds before the old leader died. At a busy moment that is tens of thousands of messages to one member in a fraction of a second. In the failing run the member's FIX client then lost its place in the message numbering and disconnected |
+
+**What happens.** A sequencer that is not leading keeps every report the matching engine sends it,
+and on taking the lead forwards them all, marked as possible repeats (part 4.4 of
+[change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md)). It keeps a report until it
+is a lease period plus the drift allowance older than its last grant of the leader's lease, and a
+grant comes once a second, so it forwards up to about 4.25 seconds of reports. It cannot tell which of
+them the old leader had already forwarded, and almost all of them it had.
+
+**What was measured.** Scenario 1 on 2026-10-04: 20,000 orders sent while the leader was killed. The
+new leader logged "forwarding 21000 kept report(s) (4845906 bytes), each marked as a possible repeat",
+and the gateway sent 21,000 more reports to the member within 50 milliseconds, bringing its outbound
+count from 21,000 to 42,000. The member's FIX client then sent a ResendRequest from message 41156 and
+closed its connection, so the 1,000 orders of the scenario's fifth phase, written to that client,
+never reached the gateway. Run again on the same build, the same 21,000 reports were forwarded and
+the client coped, and the scenario passed. Why the client lost its place is not established; it may
+be [BUG-0006](#bug_0006), resends never exercised under load.
+
+**Repeats are allowed** (R-0122), so this is not a loss. It is a flood that a member should not have
+to absorb, and its size grows with the order rate: at the highest measured rate it would be on the
+order of 200,000 messages.
+
+**Ways to send fewer.** The follower needs to know which reports the old leader forwarded.
+
+- *The leader says so.* Each record the leader replicates could carry the highest engine report it
+  has forwarded, and the follower discards the kept reports up to that point. Precise, and one field
+  on the envelope.
+- *A shorter window.* The follower already receives the leader's records continuously, so the time it
+  last received one could replace the last grant as the time reports age against, with a window of a
+  few hundred milliseconds, the longest the leader holds a report before forwarding it. Cheaper, but it
+  rests on that bound, which waiting for a voter's confirmation under rule 11 can exceed.
+
+Not decided.
 
 ### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
 
@@ -367,91 +409,6 @@ once; or keep reading into the kernel's buffer and apply backpressure only at a 
 Any of them needs the soak and fairness tests the reactor's other foundational changes were given.
 
 ---
-
-### BUG-0103: Orders sent while the sequencers change leader are lost without a reply {#bug_0103}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Checking the claim in `wal_and_ha.md` that a gateway buffers orders across a change of sequencer leader, during the documentation audit |
-| Impact | A member's orders taken by the gateway in the seconds between a leading sequencer dying and its follower taking over are never placed and never answered. The member is not told they were refused, so it cannot tell them from orders still on their way |
-
-**What was measured.** `ha_test.py` scenario 1 on 2026-10-03: 1,000 orders, then 20,000 more sent as the
-leading sequencer was killed, then 1,000 after the follower had taken over 2.6 seconds later. The
-gateway received all 22,000 (`GW-PROGRESS ... nos_received=22000`), and the matching engine accepted
-2,000 (`accepted NOS` appears 2,000 times in its log). For the 20,000 sent during the change the
-gateway received no report of any kind, acceptance or rejection: its last progress line says
-`awaiting=20000`. The scenario passed, because its target counts only the orders sent before and after.
-Its help text says of those orders: "Some may be lost during failover; the Phase 5 target adjusts
-automatically."
-
-**Why.** Each gateway sends every order to both sequencers and keeps no copy
-(`FixOrderGatewayThread::forward_order_in_envelope`, `BinaryOrderGatewayThread::forward_envelope_to_sequencers`).
-A follower discards the copy it receives, because a follower's log is written only from its leader's
-stream so that the two logs stay identical (`SequencerThread`, the order envelope branch). Between the
-leader's death and the follower taking the lead, the follower is still a follower, so every order in
-that window is discarded by the only sequencer still running, and nothing else holds it.
-
-**Reports are affected in the same way (read in the code, not yet measured).** The matching engine
-sends each report to both sequencers. A report sent after the leading sequencer has died, or that it
-received and had not yet forwarded, reaches the follower while it is still following, and a follower
-discards reports (`SequencerThread`, the report branch). A sequencer that takes the lead does not ask
-the engine for reports it may have missed (`SequencerThread::adopt_role`), so the member is not sent
-them. A test must count those too.
-
-**The fault in reports is fixed (2026-10-04).** A sequencer that is not leading now keeps a copy of
-every report the engine sends it, and on taking the lead forwards them all, each marked as a possible
-repeat (part 4.4 of the design). `ha_test.py` scenario 65 blocks the leader's sends to the gateways,
-has a member send three orders, kills the leader, and requires the member to receive all three
-acceptances, marked PossResend. With the new leader's forwarding switched off, the member received
-none of them and the scenario failed; with it, the scenario passes.
-
-**The matching engine holds orders that no surviving log holds (measured).** The leading sequencer
-sends each order to the matching engine before it sends the order's record to its follower, and the
-engine does not check that the sequence numbers it is sent only go forward. If the leader dies between
-the two, the engine has accepted an order the follower never received. The follower takes the lead
-without it and gives its sequence number to the next order it receives. The member is never told of
-the order, because its report waits for the follower's acknowledgement, yet it rests on the book and
-could trade.
-
-`ha_test.py` scenario 59 shows this on 2026-10-03. The primary sequencer is started with
-`libblock_sends_to_ports.so` preloaded, a test library that, once a flag file exists, stops anything
-the process sends to its peer from arriving. With the flag set, three orders were handed to both
-sequencers by `inject_order`, as a gateway hands them. The matching engine accepted all three, the
-leader was killed and confirmed dead, and the follower took the lead 4.2 seconds later. The old
-leader's log files held all three ClOrdIDs and the new leader's held none, and the engine went on to
-accept an order from the new leader. In a control run with the library blocking an unused port, the
-new leader's log held all three and the scenario passed, so the failure comes from the records not
-arriving and not from the way the test looks for them.
-
-**This fault is fixed (2026-10-03).** The leading sequencer now holds each order until the follower
-acknowledges its record, and only then sends it to the matching engine (part 4.2 of the design, option
-A). Scenario 59 now stops the leader straight after sending it three orders it cannot replicate, and
-requires the engine to have accepted none of them and to hold nothing the new leader's log lacks; it
-passes. Reports lost during the change of leader are fixed by part 4.4, as described above. Orders lost during
-the change of leader remain open, for part 4.3.
-
-**What is not decided.** Which of the remedies fits: the gateway holding each order until the
-sequencer's report for it arrives and sending it again to the new leader, which needs the sequencer
-to recognise a resent order; the follower keeping the orders it discards for one lease period and
-appending those its new leader's log does not hold; or the gateway refusing, with a reply, the orders
-it sent while it knew no leading sequencer. Each has a cost, and the choice needs a design.
-
-**The design.** [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md) sets out
-the options for each part of this, with [BUG-0105](#bug_0105) and [BUG-0097](#bug_0097), and
-recommends one. Parts 4.1, 4.2, 4.4 and 4.5 are built; part 4.3 is not.
-
-**What a test must do.** Count the orders sent during the change, and require every one of them to be
-answered, accepted or refused. Scenario 59 covers the third fault, orders the engine holds that no
-surviving log holds; the first two still need a test that counts the orders and reports sent during
-the change.
-
----
-
-
-
 
 ### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
 
@@ -2645,6 +2602,88 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0103: Orders sent while the sequencers change leader are lost without a reply {#bug_0103}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-04 -- the gateways keep each command until it is answered and send the unanswered ones again to a new sequencer leader, which sequences only those its log does not hold; with the earlier parts of the design, every order and report of a change of leader is answered |
+| How | Checking the claim in `wal_and_ha.md` that a gateway buffers orders across a change of sequencer leader, during the documentation audit |
+| Impact | A member's orders taken by the gateway in the seconds between a leading sequencer dying and its follower taking over are never placed and never answered. The member is not told they were refused, so it cannot tell them from orders still on their way |
+
+**What was measured.** `ha_test.py` scenario 1 on 2026-10-03: 1,000 orders, then 20,000 more sent as the
+leading sequencer was killed, then 1,000 after the follower had taken over 2.6 seconds later. The
+gateway received all 22,000 (`GW-PROGRESS ... nos_received=22000`), and the matching engine accepted
+2,000 (`accepted NOS` appears 2,000 times in its log). For the 20,000 sent during the change the
+gateway received no report of any kind, acceptance or rejection: its last progress line says
+`awaiting=20000`. The scenario passed, because its target counts only the orders sent before and after.
+Its help text says of those orders: "Some may be lost during failover; the Phase 5 target adjusts
+automatically."
+
+**Why.** Each gateway sends every order to both sequencers and keeps no copy
+(`FixOrderGatewayThread::forward_order_in_envelope`, `BinaryOrderGatewayThread::forward_envelope_to_sequencers`).
+A follower discards the copy it receives, because a follower's log is written only from its leader's
+stream so that the two logs stay identical (`SequencerThread`, the order envelope branch). Between the
+leader's death and the follower taking the lead, the follower is still a follower, so every order in
+that window is discarded by the only sequencer still running, and nothing else holds it.
+
+**Reports are affected in the same way (read in the code, not yet measured).** The matching engine
+sends each report to both sequencers. A report sent after the leading sequencer has died, or that it
+received and had not yet forwarded, reaches the follower while it is still following, and a follower
+discards reports (`SequencerThread`, the report branch). A sequencer that takes the lead does not ask
+the engine for reports it may have missed (`SequencerThread::adopt_role`), so the member is not sent
+them. A test must count those too.
+
+**The fault in reports is fixed (2026-10-04).** A sequencer that is not leading now keeps a copy of
+every report the engine sends it, and on taking the lead forwards them all, each marked as a possible
+repeat (part 4.4 of the design). `ha_test.py` scenario 65 blocks the leader's sends to the gateways,
+has a member send three orders, kills the leader, and requires the member to receive all three
+acceptances, marked PossResend. With the new leader's forwarding switched off, the member received
+none of them and the scenario failed; with it, the scenario passes.
+
+**The matching engine holds orders that no surviving log holds (measured).** The leading sequencer
+sends each order to the matching engine before it sends the order's record to its follower, and the
+engine does not check that the sequence numbers it is sent only go forward. If the leader dies between
+the two, the engine has accepted an order the follower never received. The follower takes the lead
+without it and gives its sequence number to the next order it receives. The member is never told of
+the order, because its report waits for the follower's acknowledgement, yet it rests on the book and
+could trade.
+
+`ha_test.py` scenario 59 shows this on 2026-10-03. The primary sequencer is started with
+`libblock_sends_to_ports.so` preloaded, a test library that, once a flag file exists, stops anything
+the process sends to its peer from arriving. With the flag set, three orders were handed to both
+sequencers by `inject_order`, as a gateway hands them. The matching engine accepted all three, the
+leader was killed and confirmed dead, and the follower took the lead 4.2 seconds later. The old
+leader's log files held all three ClOrdIDs and the new leader's held none, and the engine went on to
+accept an order from the new leader. In a control run with the library blocking an unused port, the
+new leader's log held all three and the scenario passed, so the failure comes from the records not
+arriving and not from the way the test looks for them.
+
+**This fault is fixed (2026-10-03).** The leading sequencer now holds each order until the follower
+acknowledges its record, and only then sends it to the matching engine (part 4.2 of the design, option
+A). Scenario 59 now stops the leader straight after sending it three orders it cannot replicate, and
+requires the engine to have accepted none of them and to hold nothing the new leader's log lacks; it
+passes. Reports lost during the change of leader are fixed by part 4.4, as described above.
+
+**The fault in orders is fixed (2026-10-04).** Each gateway keeps every command it sends until a
+report answers it, and when a new sequencer leader announces itself, by an `OrderAcceptance` carrying a
+higher epoch, sends every command still unanswered again, marked as sent again. The new leader
+sequences a command sent again only if its log does not already hold it (part 4.3 of the design,
+detailed in [commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md)).
+`ha_test.py` scenario 68 has a member send orders at 100 a second from a second before the leader is
+killed until two seconds after the follower takes the lead. Before the gateways kept commands, 266 of
+598 orders were never answered. With them, all 546 orders of the run were answered and none was
+applied twice; the gateway logged that it sent again the 250 commands still unanswered. Scenario 1 no
+longer tests this, because its orders now all reach the venue before the leader is killed.
+
+**What remains.** Each part of the design is built and tested. A report that reached neither
+sequencer, for example because the engine's connection to the follower was down when the leader died,
+is still recoverable only by an order status enquiry, which the venue does not answer
+([BUG-0089](#bug_0089)). The reports a new leader forwards include almost every report of the last few
+seconds again, which a member can receive by the tens of thousands ([BUG-0116](#bug_0116)).
 
 ### BUG-0115: An order in the new sequencer leader's log that the matching engine never received is never applied or answered {#bug_0115}
 

@@ -55,9 +55,18 @@ class WalReader {
      */
     [[nodiscard]] static WalPosition replay(const std::string& directory, WalPosition from, const EntryCallback& cb);
 
-  private:
-    // Scan one segment file starting at start_offset.
-    // Returns the byte offset at which the scan stopped.
+    /**
+     * @brief Replays the valid entries of one segment file, from `start_offset` to the end of its
+     *        committed data.
+     *
+     * For a reader that needs one segment and not every later one, such as one that reads a log
+     * backwards a segment at a time.
+     *
+     * @param[in] path          The segment file.
+     * @param[in] start_offset  The byte offset of the first entry to read; zero for the whole segment.
+     * @param[in] cb            Called for each valid entry (may be nullptr to skip callbacks).
+     * @return The byte offset at which the scan stopped.
+     */
     static size_t replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb);
 };
 

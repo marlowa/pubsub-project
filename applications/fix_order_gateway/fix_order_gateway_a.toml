@@ -182,3 +182,13 @@ max_order_qty_length = ${fix_order_gateway_a_fix_limits_max_order_qty_length}
 # Size to the maximum expected concurrent open orders with headroom.
 objects_per_pool = ${fix_order_gateway_a_open_order_pool_objects_per_pool}
 initial_pools    = ${fix_order_gateway_a_open_order_pool_initial_pools}
+
+[unanswered_commands]
+# The commands this gateway has sent to the sequencers and not yet seen answered, kept so that they
+# can be sent again to a new sequencer leader. A command is normally answered in a tenth of a
+# millisecond, so the store fills only while answers stop arriving, chiefly during a change of
+# sequencer leader. When it is full, new commands are refused with a reply. 262,144 commands of
+# about 200 bytes hold about eight seconds of the venue's highest measured rate through one gateway.
+# Used only with high availability on.
+commands = 262144
+bytes    = 67108864

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,8 +29,10 @@
 #include "FixSession.hpp"
 #include "GatewayIds.hpp"
 #include "PoolMetricsReporter.hpp"
+#include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
+#include "UnansweredCommandStore.hpp"
 
 // authentication.hpp must be included before fix_orders.hpp because only
 // authentication.hpp defines BytesView inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS
@@ -328,9 +331,20 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     //            issued on client disconnect). Zero is stamped as absent, so a
     //            gateway-invented order never contributes a round trip that no client
     //            ever waited for.
+    // What to do with a command when the store of unanswered commands is full.
+    enum class WhenStoreFull {
+        // Do not send it; the caller refuses it with a reply. For a member's own command.
+        refuse,
+        // Send it without keeping a copy. For a cancel this gateway generates itself when a member
+        // disconnects, which no member is waiting to have refused.
+        send_without_keeping
+    };
+
+    // @return False when the command was not sent because the store of unanswered commands is full,
+    //         and the caller must refuse it; true otherwise.
     template <typename MsgT>
-    void forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id, std::string_view sender_comp_id,
-                                   int64_t gateway_ingress_ns) {
+    [[nodiscard]] bool forward_order_in_envelope(int16_t inner_pdu_id, const MsgT& msg, int32_t gateway_session_conn_id, std::string_view sender_comp_id,
+                                                 int64_t gateway_ingress_ns, WhenStoreFull when_full) {
         size_t bytes_written = 0;
         size_t bytes_needed = 0;
         // Measure then fit: a zero-size out buffer makes encode report bytes_needed
@@ -346,7 +360,8 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         if (!encode(msg, order_encode_buffer_.data(), order_encode_buffer_.size(), bytes_written, bytes_needed)) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                        "FixOrderGatewayThread: failed to encode order PDU {} ({} bytes needed) -- not forwarded", inner_pdu_id, bytes_needed);
-            return;
+            // Logged as the error it is. Not a reason to tell the caller the venue is busy.
+            return true;
         }
 
         pubsub_itc_fw_app::WalRecord envelope{};
@@ -369,6 +384,10 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
         // gateway measure the whole round trip without keeping any per-order state itself.
         envelope.has_gateway_ingress_ns = (gateway_ingress_ns != 0);
         envelope.gateway_ingress_ns = gateway_ingress_ns;
+        // The command's ClOrdID, so the sequencer can keep its record of the identifiers in its log
+        // without decoding the command (docs/availability/commands_during_a_change_of_leader.md, 3.4).
+        envelope.has_cl_ord_id = !msg.cl_ord_id.empty();
+        envelope.cl_ord_id = msg.cl_ord_id;
         if (!sender_comp_id.empty()) {
             envelope.has_sender_comp_id = true;
             envelope.sender_comp_id = sender_comp_id;
@@ -389,8 +408,35 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
             }
         }
 
+        // A copy is kept until a report answers the command, so that it can be sent again to a new
+        // sequencer leader (docs/availability/commands_during_a_change_of_leader.md, section 3.1).
+        if (!keep_until_answered(envelope, sender_comp_id, msg.cl_ord_id) && when_full == WhenStoreFull::refuse) {
+            return false;
+        }
         forward_pdu_to_sequencers(pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope);
+        return true;
     }
+
+    // Keeps a copy of a command's envelope until it is answered. Returns false only when the store is
+    // full; true when the copy was kept, when the command is already held unanswered, and when the
+    // store is not in use because high availability is off.
+    bool keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id);
+    // Sends again, marked as sent again, every command still unanswered: a new sequencer leads.
+    void send_unanswered_commands_again(int32_t new_epoch);
+
+    // The commands sent to the sequencers and not yet answered. Present only with high availability
+    // on, because only a change of sequencer leader makes a command need sending again.
+    std::optional<fix_common::UnansweredCommandStore> unanswered_commands_;
+    // The envelope of a command being kept is encoded here; grown to the largest seen, then reused.
+    std::vector<uint8_t> unanswered_encode_buffer_;
+    // A copy being sent again is decoded with this, apart from the arena of the message being handled.
+    std::vector<uint8_t> resend_arena_buffer_ = std::vector<uint8_t>(64 * 1024);
+    // Whether the store was full at the last command, so that it is reported when it fills and when it
+    // has room again, not at every command refused.
+    bool unanswered_store_full_{false};
+    int64_t refused_because_store_full_{0};
+    // The highest sequencer leadership epoch an OrderAcceptance has carried; zero before the first.
+    int32_t highest_leader_epoch_seen_{0};
 
     const FixOrderGatewayConfiguration& config_;
 

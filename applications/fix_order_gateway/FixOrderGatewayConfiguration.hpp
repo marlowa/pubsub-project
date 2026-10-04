@@ -296,6 +296,12 @@ struct FixOrderGatewayConfiguration {
     int32_t open_order_pool_objects_per_pool{4096};
     int32_t open_order_pool_initial_pools{1};
 
+    // The store of commands sent to the sequencers and not yet answered, kept to be sent again after
+    // a change of sequencer leader. Used only with high availability on. See UnansweredCommandStore and
+    // docs/availability/commands_during_a_change_of_leader.md, section 7, decision 4.
+    size_t unanswered_commands_capacity{262144};
+    size_t unanswered_commands_bytes{64 * 1024 * 1024};
+
     /**
      * @brief This process's Prometheus scrape endpoint; see docs/operations/metrics.md.
      *

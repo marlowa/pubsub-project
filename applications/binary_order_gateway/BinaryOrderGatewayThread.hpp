@@ -7,6 +7,7 @@
 #include <cstdint> // IWYU pragma: keep
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -39,8 +40,10 @@
 #include "CancelClOrdId.hpp"
 #include "GatewayIds.hpp"
 #include "PoolMetricsReporter.hpp"
+#include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
 #include "ThrottledCommand.hpp"
+#include "UnansweredCommandStore.hpp"
 
 namespace binary_order_gateway {
 
@@ -190,7 +193,27 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] size         Length of @p payload in bytes.
      * @param[in] session      The originating client session.
      */
-    void forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size, const BinarySession& session);
+    // @return False when the command was not sent because the store of unanswered commands is full,
+    //         and the caller must refuse it; true otherwise.
+    [[nodiscard]] bool forward_order_in_envelope(int16_t inner_pdu_id, const uint8_t* payload, size_t size, const BinarySession& session,
+                                                 std::string_view cl_ord_id);
+
+    // Keeps a copy of a command's envelope until it is answered. Returns false only when the store is
+    // full; true when the copy was kept, when the command is already held unanswered, and when the
+    // store is not in use because high availability is off.
+    bool keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id);
+    // Sends again, marked as sent again, every command still unanswered: a new sequencer leads.
+    void send_unanswered_commands_again(int32_t new_epoch);
+
+    // The commands sent to the sequencers and not yet answered. Present only with high availability
+    // on, because only a change of sequencer leader makes a command need sending again.
+    std::optional<fix_common::UnansweredCommandStore> unanswered_commands_;
+    std::vector<uint8_t> unanswered_encode_buffer_;
+    std::vector<uint8_t> resend_arena_buffer_ = std::vector<uint8_t>(64 * 1024);
+    bool unanswered_store_full_{false};
+    int64_t refused_because_store_full_{0};
+    // The highest sequencer leadership epoch an OrderAcceptance has carried; zero before the first.
+    int32_t highest_leader_epoch_seen_{0};
 
     /** @brief Sends an already-encoded envelope PDU to both sequencers when HA is on. */
     void forward_envelope_to_sequencers(const pubsub_itc_fw_app::WalRecord& envelope);

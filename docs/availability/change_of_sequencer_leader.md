@@ -186,12 +186,10 @@ unanswered ones again to the new leader.**
   already sends to every gateway on taking the lead. The message gains the leader's epoch. A gateway
   that sees a higher epoch than the last one it saw sends every command it is still holding to the new
   leader, in the order they were first sent, each marked as sent again.
-- The new leader checks each command marked as sent again against the record of identifiers used that
-  day, per session, that R-0119 and R-0010 require the sequencer to keep. A command it does not hold
-  is sequenced as a new one. A command it already holds is not sequenced again: the new leader asks the
-  matching engine for the order's current state, and the engine answers with a report marked as a
-  possible repeat (R-0122). That report also covers the case where the original report was lost at the
-  change of leader.
+- The new leader checks each command marked as sent again against a record of the identifiers in its
+  log. A command it does not hold is sequenced as a new one. A command it already holds is not
+  sequenced again; its answer comes from the engine by one of the routes in section 3.6 of
+  [commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md).
 - Cancels are handled the same way, by the cancel's own `ClOrdID`.
 
 Costs: memory in each gateway for the commands in flight, which is normally a handful per session;
@@ -216,8 +214,9 @@ gateway's store dies with it. As the answer to a change of sequencer leader it l
 notice the silence and act on its own timeout, for a failure the venue knows about and the member
 does not.
 
-**Recommendation: option A.** Its detailed design, with the decisions it needs, is
-[commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md).
+**Recommendation: option A.** It is built. Its detailed design, and what was decided, is
+[commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md); `ha_test.py` scenarios
+66, 67 and 68 check it.
 
 ### 4.4 Reports sent during the change of leader (G3)
 
@@ -237,11 +236,13 @@ log would then show exactly which reports were forwarded, and the new leader wou
 were not. That is precise, but it adds another trip to the follower and back to every report, about
 40 microseconds more on top of 4.2.
 
-**Option C: rely on 4.3 alone.** The state request in 4.3 recovers the report for every command a
-gateway sends again, but not reports that answer no such command.
+**Option C: rely on 4.3 alone.** Sending commands again under 4.3 recovers a command that no log
+holds, but not the report of a command the engine has already acted on, nor reports that answer no
+such command.
 
-**Recommendation: option A, with 4.3's state request as the backstop** for a command whose report the
-follower never received, for example because its connection to the engine was down.
+**Recommendation: option A.** A report that reached neither sequencer, for example because the
+engine's connection to the follower was down when the leader died, is recovered only by an order
+status enquiry (R-0002), which the venue does not answer today ([BUG-0089](../bug_list.md#bug_0089)).
 
 **Option A is built.** How it works:
 
@@ -364,7 +365,7 @@ that its new leader never had were acted on by nobody, and the old leader discar
 |---|---|---|
 | 4.1 numbering | None | None |
 | 4.2 option A | About 40 microseconds per order at the median on one machine, estimated; to be measured | Simpler report handling |
-| 4.3 option A | A copy of each command in flight, in the gateway | A fixed store per gateway; one field on `OrderAcceptance` and one on the envelope; the day's identifier record in the sequencer; a state request from sequencer to engine |
+| 4.3 option A | A copy of each command in flight, in the gateway; an insert into the record of identifiers in the sequencer | A fixed store per gateway; a field on `OrderAcceptance` and two on the envelope; the record of identifiers, 4 GiB reserved in each sequencer; a position query from a new leader to the engine |
 | 4.4 option A | None | A fixed store of reports in the follower |
 | 4.5 | None | One field on each record; a short exchange when a follower connects |
 
@@ -472,9 +473,12 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8. **Done:**
    scenarios 63 and 64.
 7. **4.4,** the follower keeping reports, with the new reports scenario. **Done:** scenario 65.
-8. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
-   scenario 1 strengthened. This is the largest part, and it closes the gap the specification records
-   under R-0119.
+8. **4.3,** the gateway keeping commands, the record of identifiers in the sequencer's log, and the
+   new leader sending the engine the orders it lacks. **Done:** scenarios 66, 67 and 68, and
+   [BUG-0115](../bug_list.md#bug_0115). No request from the sequencer to the engine for an order's
+   state is needed: section 3.6 of [commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md)
+   says why. The
+   gap the specification records under R-0119 is a separate change, [BUG-0114](../bug_list.md#bug_0114).
 
 Related: [wal_and_ha.md](wal_and_ha.md), [majority_leases.md](majority_leases.md),
 [order_acceptance.md](order_acceptance.md), [tla/findings.md](tla/findings.md), and the requirements

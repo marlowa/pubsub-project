@@ -162,6 +162,13 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
             config.peer_listen_port = static_cast<uint16_t>(peer_listen_port);
             config.peer_port = static_cast<uint16_t>(peer_port);
             config.lease = fix_common::LeaseTiming::load(toml, "SequencerConfigurationLoader");
+
+            int64_t identifiers_reserved = 0;
+            toml.get_required_except("commands.identifiers_reserved", identifiers_reserved);
+            if (identifiers_reserved <= 0) {
+                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: commands.identifiers_reserved must be positive");
+            }
+            config.identifiers_reserved = static_cast<size_t>(identifiers_reserved);
         }
 
         int32_t wal_subscriber_listen_port = 0;
