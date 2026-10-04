@@ -750,3 +750,105 @@ which also writes a web page that steps through them. The install fails if any o
 its property. Each is rerun with the smallest failure budget that produces it, which is smaller than the
 budgets in the tables above. The script's list of counterexamples gives the exact settings of each.
 `docs/orientation/building.md` describes the step and what it needs.
+
+## 12. Rule 11: a follower that is behind must not lead
+
+Rule 11 keeps an instance whose log lacks commands the matching engine has acted on from taking the
+lead. It is described in [../a_follower_behind_does_not_lead.md](../a_follower_behind_does_not_lead.md)
+and specified in `FollowerBehindHA.tla`.
+
+A leader normally has the engine act on a command only once its follower holds it. When it acts on a
+command the follower does not hold, because the follower has disconnected or fallen behind, rule 11
+requires it first to have a voter record that the follower may not lead.
+
+### 12.1 How this specification differs from MajorityLeaseHA.tla
+
+- **Leadership is one step.** `MajorityLeaseHA.tla` shows that two instances never act as leader at
+  the same moment. This specification takes that as given: when no instance is acting, an instance
+  becomes leader if one other running voter grants it, and a leader may stop acting at any moment,
+  which stands for its lease running out. Leaving out the timing of leases is what makes it small
+  enough to check. Adding rule 11 to `MajorityLeaseHA.tla` instead gives a state space that more than
+  450 million states of exploration did not exhaust.
+- **A voter may refuse or ignore any request.** So every behaviour the lease rules allow is included,
+  and some they do not.
+- **Commands are modelled.** Each instance's log is the set of commands it holds, kept on disk, and
+  the specification records which commands the engine has acted on. Writing a command, copying the
+  log to the peer, and having the engine act are separate steps, so a leader can stop or die between
+  any two of them.
+- **Statements may be delayed, reordered or lost.** A grant that echoes a statement reaches the leader
+  at once or is lost. A later echo would only let the leader act later, which it may always choose to
+  do, so this allows every behaviour that delayed echoes allow.
+
+### 12.2 The properties
+
+| Property | Kind | What it says |
+|----------|------|--------------|
+| `LeaderHoldsActed` | Safety | The instance acting as leader holds every command the engine has acted on. |
+| `NoChangeOfLeaderAfterActing` | Safety, expected to be broken | After one instance has had the engine act on a command, the other never leads. It is checked to show the specification is not vacuous: if rule 11 stopped every change of leader, it would hold. |
+
+### 12.3 What held
+
+With every part of rule 11 in place, and an instance writing a statement it receives to disk before it
+grants, `LeaderHoldsActed` holds. The run is exhaustive, with two commands, three statements in each
+leadership, three leaderships, two crashes of the instances, one restart of the arbiter, and at most two
+statements in flight at once: 38,773,460 distinct states. With at most three statements in flight and
+the same budgets otherwise, it also holds: 437,751,224 distinct states, which takes about twenty minutes
+on 24 workers.
+
+`NoChangeOfLeaderAfterActing` is broken within eight steps: instance 1 has the engine act on a command
+that instance 2 holds, its lease runs out, and instance 2 is elected. Rule 11 does not stop a change of
+leader when the follower holds what was acted on.
+
+### 12.4 Each part of the rule is needed
+
+Each part of rule 11 was removed in turn. Every one of these runs breaks `LeaderHoldsActed`.
+
+| Setting | What happens | Trace |
+|---------|--------------|-------|
+| `RecordStatement = FALSE` | Instance 1 has the engine act on command 1 before instance 2 holds it, with nothing recorded. Its lease runs out, and the arbiter elects instance 2. | `traces/behind-1-no-statement.txt` |
+| `LeaderRecordsOwn = FALSE` | The arbiter records that instance 2 may not lead, and instance 1 acts on command 1. Instance 1's lease runs out. It has not crashed, but it holds no record of its own statement, so it votes for instance 2. | `traces/behind-2-leader-keeps-no-record.txt` |
+| `LeaderStartsBarred = FALSE` | Instance 1 says instance 2 may not lead and acts on command 1. It is elected again, and its new leadership starts by saying instance 2 may lead, which replaces its own record while instance 2 still lacks command 1. Its lease runs out and it votes for instance 2. | `traces/behind-3-leader-starts-saying-may-lead.txt` |
+| `ThirdKeepsRecord = FALSE` | The arbiter records that instance 2 may not lead, then restarts and forgets, and elects instance 2. | `traces/behind-4-arbiter-forgets.txt` |
+
+The second row is why the leader keeps a record of its own statement. A leader whose lease runs out is
+still running, and its peer's request to lead can reach it before it asks to lead again.
+
+### 12.5 The risk accepted
+
+In the design as decided, an instance that receives a statement records it in memory, grants at once,
+and writes it to disk in the background, so that a follower whose disk has stopped answering does not
+pause trading. With `InstancesRecordFirst = FALSE`, `LeaderHoldsActed` is broken
+(`traces/behind-5-follower-records-in-memory.txt`):
+
+1. Instance 1 sends its statement that instance 2 may not lead to both voters.
+2. Instance 2 records it in memory and grants. The echo reaches instance 1, which has the engine act on
+   command 1. The statement to the arbiter has not yet arrived.
+3. Instance 1's lease runs out.
+4. Instance 2 crashes before its record reaches the disk, and restarts knowing nothing.
+5. The arbiter, which never recorded the statement, elects instance 2.
+
+This needs the follower's process to restart within the moments between granting and its background
+write completing, and the arbiter not to have recorded the statement in that time, and the leader to
+stop acting in that time. That is the risk accepted in section 4.5 of the design.
+
+### 12.6 Limits
+
+- Leadership is abstracted, so this specification depends on `MajorityLeaseHA.tla` for the guarantee
+  that two instances never act at once.
+- The order of commands within a log is not modelled, nor is the repair of a follower's log when it
+  rejoins a leader whose log differs.
+- The operator's tool that lets a follower lead after the old leader's machine is lost is not modelled.
+  Using it breaks `LeaderHoldsActed` by definition.
+
+### 12.7 Files
+
+| File | What it is |
+|------|------------|
+| `FollowerBehindHA.tla` | Rule 11, with leadership abstracted |
+| `FollowerBehindHA.cfg` | Every part of rule 11 on, with an instance writing to disk before it grants |
+| `traces/behind-*.txt` | The counterexamples in 12.4 and 12.5 |
+
+The counterexamples in 12.4 and 12.5 are reproduced on every install by `scripts/tla_trace_pages.py`,
+in the same way as those of section 11, and the install fails if any of them stops breaking
+`LeaderHoldsActed` or no longer matches its committed trace. They appear as text traces only, not on
+the web page.

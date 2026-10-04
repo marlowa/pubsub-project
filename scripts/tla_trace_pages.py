@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-tla_trace_pages.py -- Reproduce the counterexamples of MajorityLeaseHA.tla with the TLC model checker,
-confirm that each one still fails, and write them out as text traces and as a web page that steps
-through them.
+tla_trace_pages.py -- Reproduce the counterexamples of MajorityLeaseHA.tla and FollowerBehindHA.tla with
+the TLC model checker, confirm that each one still fails, and write them out as text traces and, for
+MajorityLeaseHA.tla, as a web page that steps through them.
 
 MajorityLeaseHA.tla (in docs/availability/tla/) specifies the proposed design for deciding which instance
 of a pair leads. Most of what was learned from checking it is recorded as counterexamples: runs in which
@@ -12,9 +12,14 @@ if any no longer breaks the property it is listed against. A counterexample that
 specification has changed in a way that no longer shows what findings.md section 11 says it shows, and
 that has to be looked at, not discovered months later.
 
+FollowerBehindHA.tla specifies rule 11 of the same design, which keeps an instance whose log lacks
+commands the matching engine has acted on from leading. Its counterexamples, described in findings.md
+section 12, are reproduced and compared in the same way. They appear as text traces only: the captions
+and the page are written for the variables of MajorityLeaseHA.tla.
+
 For each counterexample the script:
-  1. writes a TLC configuration from MajorityLeaseHA.cfg, with the constants listed below changed and the
-     property to check replaced;
+  1. writes a TLC configuration from the specification's own .cfg file, with the constants listed below
+     changed and the property to check replaced;
   2. runs TLC with one worker thread, so that the counterexample it reports is the same on every run;
   3. checks that TLC reports the expected property as broken;
   4. converts TLC's description of each state into a table row, and into a plain English caption made
@@ -22,7 +27,8 @@ For each counterexample the script:
 
 It then writes, into the output directory:
   - one text file per counterexample, a table of states, named as in docs/availability/tla/traces/;
-  - majority_lease_counterexamples.html, a self-contained page that steps through all of them.
+  - majority_lease_counterexamples.html, a self-contained page that steps through those of
+    MajorityLeaseHA.tla.
 
 The committed text traces of the safety counterexamples in docs/availability/tla/traces/ are compared
 with the ones generated. A difference fails the run, with a message saying which file differs. Run with
@@ -65,6 +71,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _TLA_DIR = _PROJECT_ROOT / 'docs' / 'availability' / 'tla'
 _TRACES_DIR = _TLA_DIR / 'traces'
 _SPEC = 'MajorityLeaseHA'
+_FOLLOWER_SPEC = 'FollowerBehindHA'
+# The CONSTRAINT line each specification's runs use to keep the search finite.
+_CONSTRAINTS = {_SPEC: 'EpochBound', _FOLLOWER_SPEC: 'InFlightBound'}
 _TEMPLATE = Path(__file__).resolve().parent / 'tla_trace_page.html'
 _PAGE_NAME = 'majority_lease_counterexamples.html'
 _TLA_TOOLS_VERSION = '1.7.4'
@@ -76,6 +85,11 @@ _TLC_TIMEOUT_SECONDS = 300
 # no violation, rather than searching for hours.
 _NO_FAILURES = {'MaxEpoch': '0', 'MaxCrashes': '0', 'MaxThirdRestarts': '0', 'MaxLinkFailures': '0'}
 _ARBITER_DOWN_FOR_GOOD = dict(_NO_FAILURES, Prompt='TRUE', ThirdUpAtStart='FALSE', ThirdStaysDown='TRUE')
+
+# The same for FollowerBehindHA.tla: one command, two statements per leadership, two leaderships and no
+# failures, before each run's own changes.
+_FOLLOWER_SMALL = {'MaxCommands': '1', 'MaxStatements': '2', 'MaxElections': '2', 'MaxCrashes': '0',
+                   'MaxThirdRestarts': '0', 'MaxInFlight': '2'}
 
 
 @dataclass
@@ -89,6 +103,7 @@ class Counterexample:
     title: str
     change: str
     summary: str
+    spec: str = _SPEC              # the specification, without .tla
 
 
 COUNTEREXAMPLES: List[Counterexample] = [
@@ -143,6 +158,51 @@ COUNTEREXAMPLES: List[Counterexample] = [
         'The peer\'s vote removed, with the arbiter down: only the arbiter can supply a second vote.',
         'With the arbiter down and the instances not voting for each other, no instance can ever gather two of the three '
         'votes, so nobody leads. This is why the peer\'s vote is what keeps trading going when the arbiters are lost.'),
+    Counterexample(
+        'behind-1-no-statement', dict(_FOLLOWER_SMALL, RecordStatement='FALSE'),
+        'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
+        'Acting on a command the follower lacks, with nothing recorded',
+        'Rule 11 removed: the leader acts on a command its peer does not hold without any voter recording that the peer '
+        'may not lead.',
+        'Instance 1 leads, writes command 1 and has the engine act on it before instance 2 holds it. Its lease runs out, the '
+        'arbiter elects instance 2, and instance 2 leads without command 1.',
+        _FOLLOWER_SPEC),
+    Counterexample(
+        'behind-2-leader-keeps-no-record', dict(_FOLLOWER_SMALL, LeaderRecordsOwn='FALSE'),
+        'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
+        'The leader does not record its own statement',
+        'The leader sends its statement but does not record it itself.',
+        'The arbiter records that instance 2 may not lead, and instance 1 acts on command 1. Instance 1\'s lease runs out. '
+        'It does not crash, but it knows nothing of its own statement, so it votes for instance 2, which leads without '
+        'command 1.',
+        _FOLLOWER_SPEC),
+    Counterexample(
+        'behind-3-leader-starts-saying-may-lead', dict(_FOLLOWER_SMALL, MaxElections='3', MaxStatements='3',
+                                                       LeaderStartsBarred='FALSE'),
+        'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
+        'A leadership that starts by saying the peer may lead',
+        'Each leadership starts by saying that the peer may lead, instead of saying that it may not.',
+        'Instance 1 says instance 2 may not lead and acts on command 1. Its lease runs out, it is elected again, and its new '
+        'leadership starts by saying instance 2 may lead, which replaces its own record although instance 2 still lacks '
+        'command 1. Its lease runs out again and it votes for instance 2.',
+        _FOLLOWER_SPEC),
+    Counterexample(
+        'behind-4-arbiter-forgets', dict(_FOLLOWER_SMALL, MaxThirdRestarts='1', ThirdKeepsRecord='FALSE'),
+        'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
+        'An arbiter that forgets its record when it restarts',
+        'The arbiter keeps its record only in memory.',
+        'The arbiter records that instance 2 may not lead, and instance 1 acts on command 1. Instance 1\'s lease runs out, '
+        'the arbiter restarts and forgets, and it elects instance 2.',
+        _FOLLOWER_SPEC),
+    Counterexample(
+        'behind-5-follower-records-in-memory', dict(_FOLLOWER_SMALL, MaxCrashes='1', InstancesRecordFirst='FALSE'),
+        'Spec', 'INVARIANTS LeaderHoldsActed', 'LeaderHoldsActed',
+        'The risk accepted: the follower records the statement in memory first',
+        'Nothing: this is the design as decided, in which the follower grants before its record reaches the disk.',
+        'Instance 2 records in memory that it may not lead and grants. Instance 1 acts on command 1 before the arbiter has '
+        'recorded the statement. Instance 1\'s lease runs out, and instance 2 crashes before its record reaches the disk. '
+        'It restarts knowing nothing, and the arbiter, which never recorded the statement, elects it.',
+        _FOLLOWER_SPEC),
 ]
 
 # Voter 3 is the arbiter when the design is applied to a component pair, and the witness when it is
@@ -183,25 +243,26 @@ def make_config(base: str, example: Counterexample) -> str:
         if len(matches) != 1:
             # A misspelt constant would otherwise leave the default in place, and the run would check
             # something other than what the entry says.
-            raise TraceError(f'{example.name}: constant {name} appears {len(matches)} times in {_SPEC}.cfg, not once')
+            raise TraceError(f'{example.name}: constant {name} appears {len(matches)} times in {example.spec}.cfg, not once')
         indent = pattern.match(lines[matches[0]]).group(1)
         lines[matches[0]] = f'{indent}{name} = {value}'
     text = '\n'.join(lines)
     head = text[:text.index('\nSPECIFICATION')]
-    return f'{head}\nSPECIFICATION {example.specification}\nCONSTRAINT EpochBound\n{example.check}\n'
+    return f'{head}\nSPECIFICATION {example.specification}\nCONSTRAINT {_CONSTRAINTS[example.spec]}\n{example.check}\n'
 
 
 def run_tlc(java: str, jar: Path, example: Counterexample) -> str:
     """Run TLC on the example in a scratch directory and return everything it printed."""
-    base = (_TLA_DIR / f'{_SPEC}.cfg').read_text()
+    spec = example.spec
+    base = (_TLA_DIR / f'{spec}.cfg').read_text()
     with tempfile.TemporaryDirectory(prefix='tla_trace_') as work:
         work_dir = Path(work)
-        shutil.copy(_TLA_DIR / f'{_SPEC}.tla', work_dir)
-        (work_dir / f'{_SPEC}.cfg').write_text(make_config(base, example))
+        shutil.copy(_TLA_DIR / f'{spec}.tla', work_dir)
+        (work_dir / f'{spec}.cfg').write_text(make_config(base, example))
         # One worker, so that the reported counterexample is the same on every run. -metadir keeps
         # TLC's state files inside the scratch directory.
         command = [java, '-XX:+UseParallelGC', '-cp', str(jar), 'tlc2.TLC', '-deadlock', '-workers', '1',
-                   '-metadir', str(work_dir / 'states'), '-config', f'{_SPEC}.cfg', f'{_SPEC}.tla']
+                   '-metadir', str(work_dir / 'states'), '-config', f'{spec}.cfg', f'{spec}.tla']
         try:
             result = subprocess.run(command, cwd=work_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     universal_newlines=True, timeout=_TLC_TIMEOUT_SECONDS, check=False)
@@ -448,8 +509,38 @@ def _numbers(values: list) -> str:
     return '<<' + ','.join(str(v) for v in values) + '>>'
 
 
+def follower_text_trace(example: Counterexample, output: str, states: List[dict]) -> str:
+    """A counterexample of FollowerBehindHA.tla as a table of states, one line per step."""
+    lines = [
+        f'Error: {violation_text(example, output)}.',
+        'Columns. up, barred and disk list voters 1, 2 and 3 in that order; lepoch, stmt and confirmed list instances 1 and 2.',
+        'leader is the instance acting as leader, or 0 for none. log lists the commands each instance holds, and acted the',
+        'commands the matching engine has acted on. barred is the instance each voter has recorded may not lead, 0 for none,',
+        'and disk is the same as written to disk. stmt "bar:N" or "may:N" is what a leader says about its peer, may not lead',
+        'or may lead, and the statement\'s number. confirmed is the highest statement number a grant has echoed back.',
+        'msgs lists statements in flight as "st from>to eEPOCH.NUMBER bar|may".',
+        f'Reproduced by scripts/tla_trace_pages.py, entry {example.name}.',
+    ]
+    for number, state in enumerate(states, start=1):
+        action = state['action'] + (f'({state["arg"]})' if state['arg'] else '')
+        if action == 'Next':
+            action = 'a statement arrives'
+        logs = '<<' + ','.join('{' + ','.join(str(c) for c in sorted(entry)) + '}' for entry in state['log']) + '>>'
+        acted = '{' + ','.join(str(c) for c in sorted(state['acted'])) + '}'
+        statements = ' '.join(f'{"bar" if st["bar"] else "may"}:{st["num"]}' for st in state['stmt'])
+        messages = '{' + ', '.join(sorted(f'st {m["from"]}>{m["to"]} e{m["key"][0]}.{m["key"][1]} {"bar" if m["bar"] else "may"}'
+                                          for m in state['msgs'])) + '}'
+        lines.append(f'{number:3} {action:22} up={_flags(state["up"]):14} leader={state["leader"]} '
+                     f'lepoch={_numbers(state["lepoch"]):7} log={logs:12} acted={acted:6} barred={_numbers(state["barred"]):9} '
+                     f'disk={_numbers(state["barDisk"]):9} stmt={statements:12} confirmed={_numbers(state["confirmed"]):6} '
+                     f'msgs={messages}')
+    return '\n'.join(line.rstrip() for line in lines) + '\n'
+
+
 def text_trace(example: Counterexample, output: str, states: List[dict], loop: Optional[int]) -> str:
     """The counterexample as a table of states, one line per step."""
+    if example.spec == _FOLLOWER_SPEC:
+        return follower_text_trace(example, output, states)
     lines = [
         f'Error: {violation_text(example, output)}.',
         'Columns. up, epoch, promise and quiet list voters 1, 2 and 3 in that order; role lists instances 1 and 2.',
@@ -537,7 +628,8 @@ def main() -> int:
                 # several loops that break it, and which one varies from run to run even with one worker,
                 # so a liveness trace is required to break its property but not to match the committed file.
                 differing.append(committed)
-            pages.append(page_data(example, output, states, loop))
+            if example.spec == _SPEC:
+                pages.append(page_data(example, output, states, loop))
             print(f'  {example.name}: {example.broken} broken, as expected ({len(states)} states)')
         page = _TEMPLATE.read_text().replace('__TRACES_JSON__', json.dumps(pages, separators=(',', ':')))
         page = page.replace('__LEASE_TICKS__', lease_ticks()).replace('__TLA_TOOLS_VERSION__', _TLA_TOOLS_VERSION)

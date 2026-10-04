@@ -253,8 +253,9 @@ answers in a second, where the build answers one warning at a time.
 
 ## The TLA+ counterexample pages {#tla_pages}
 
-The install step also reruns the counterexamples recorded for the proposed leadership design, which is
-specified in TLA+ in `docs/availability/tla/MajorityLeaseHA.tla`. It is done by
+The install step also reruns the counterexamples recorded for the leadership design, which is specified
+in TLA+ in `docs/availability/tla/MajorityLeaseHA.tla`, and for its rule 11, which keeps a follower that
+is behind from leading and is specified in `docs/availability/tla/FollowerBehindHA.tla`. It is done by
 `scripts/tla_trace_pages.py`, attached to the install through an `install(CODE ...)` hook in the same way
 as Doxygen, and it takes a few seconds.
 
@@ -264,8 +265,9 @@ needed. For each one the script runs TLC, checks that the expected property is r
 TLC's output into a table of states and a plain English caption for every step. It then writes:
 
 - one text file per counterexample, a table of states;
-- `majority_lease_counterexamples.html`, a single self-contained page that steps through all of them,
-  with a diagram of the three voters, the messages in flight, and each voter's promises and leases.
+- `majority_lease_counterexamples.html`, a single self-contained page that steps through those of
+  `MajorityLeaseHA.tla`, with a diagram of the three voters, the messages in flight, and each voter's
+  promises and leases. The counterexamples of `FollowerBehindHA.tla` are text traces only.
 
 Both go into `build/tla_pages/` and are installed into the documentation directory under `tla/`, beside
 the Doxygen output. The page opens directly in a browser. It asks Google Fonts for its typefaces and uses
@@ -274,15 +276,16 @@ the browser's own fonts where there is no network.
 **The install fails if:**
 
 - a counterexample no longer breaks the property it is listed against. That means the specification has
-  changed in a way that no longer shows what `docs/availability/tla/findings.md` section 11 says it shows.
+  changed in a way that no longer shows what `docs/availability/tla/findings.md` section 11 or 12 says it
+  shows.
   Each run allows only the failures its counterexample needs, so this is reported within about two minutes;
 - a committed safety trace in `docs/availability/tla/traces/` differs from what TLC now produces. After
   a deliberate change to the specification, run
   `scripts/tla_trace_pages.py --output-dir build/tla_pages --update-traces` and commit the new traces.
   The two liveness traces are not compared, because TLC reports one of several loops that break a liveness
   property and which one varies from run to run;
-- a constant listed for a counterexample does not appear in `MajorityLeaseHA.cfg`, which is how a
-  misspelt name is caught instead of silently leaving the default in place.
+- a constant listed for a counterexample does not appear in its specification's `.cfg` file, which is how
+  a misspelt name is caught instead of silently leaving the default in place.
 
 **What it needs.** Java 11 or later, and `tla2tools.jar` from release 1.7.4 of the TLA+ tools, published
 at `https://github.com/tlaplus/tlaplus/releases`. The jar is taken from `-DTLA2TOOLS_JAR`, then the

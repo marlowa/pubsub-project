@@ -67,15 +67,19 @@ This keeps the reasoning that makes Raft safe: any majority that could elect the
 voter that knows the follower may not lead. The majorities that could elect the follower are the
 follower with the arbiter, and the follower with the old leader:
 
-- **The follower with the old leader.** While the old leader is alive and leading, it does not vote for
-  its peer (rule 4 of [majority_leases.md](majority_leases.md)). If it dies and restarts, it asks to lead
-  again and votes for itself. A follower that may not lead does not ask to lead, so it grants the old
-  leader the lead instead (4.4).
+- **The follower with the old leader.** While the old leader is leading, it does not vote for its peer
+  (rule 4 of [majority_leases.md](majority_leases.md)). But once its lease has run out, whether its
+  process is still running or has died and restarted, its peer's request to lead can reach it before it
+  has asked to lead again, and an instance that knew nothing would grant it. So the leader is a voter
+  that knows, like the other two: it writes each statement to its own record on disk before it sends
+  it, and while its record says its peer may not lead, it refuses that peer's requests to lead. The
+  model check in section 12 of [tla/findings.md](tla/findings.md) finds the follower elected without
+  this, even with no crash.
 - **The follower with the arbiter.** Either the follower knows it may not lead and does not ask, or the
   arbiter knows and refuses. One of the two knowing is enough.
 
-So the leader needs one confirmation, from either the follower or the arbiter, before it acts on a
-command the follower lacks.
+So the leader needs its own record on disk and one confirmation, from either the follower or the
+arbiter, before it acts on a command the follower lacks.
 
 ### 4.2 How the statement travels: on the lease requests the leader already sends
 
@@ -86,8 +90,9 @@ request rather than adding a new exchange.
 
 Each `LeaseRequest` from a leader gains two fields:
 
-- **Whether its peer may lead.** "Yes" while the leader is waiting for its follower's acknowledgements.
-  "No" while it is sending to the engine without waiting.
+- **Whether its peer may lead.** "No" from the moment the leader takes the lead, and for as long as it
+  sends to the engine without waiting. "Yes" only once the follower has acknowledged every record the
+  leader holds and the leader has gone back to waiting for acknowledgements (4.3).
 - **A number for that statement,** which goes up by one every time the leader changes it. A voter keeps
   only the statement with the highest number it has seen from that group at that epoch or a later one,
   so a delayed message cannot undo a newer statement. Without it, an old "yes" arriving late, after a
@@ -99,6 +104,9 @@ leader treats a statement as recorded only when a grant echoes its number.
 A voter records a "no" before it sends the grant, exactly as it records a promise before granting, so
 that the statement survives the voter's own restart:
 
+- **The leader** writes its own statement to its record on disk before it sends it, in the same file
+  as its lease promise record. An instance whose record says its peer may not lead refuses that peer's
+  requests to lead, whether it has restarted or its lease has simply run out.
 - **The follower** records it in memory at once and grants, and writes it to disk and syncs it on its
   background thread, in the same way as its lease promise record (`BackgroundPromiseRecorder` and
   `LeasePromiseStore`). It does not wait for the disk before granting, for the reason given in 4.5.
@@ -141,9 +149,13 @@ sending anything at all, to members as well as to both sequencers, once the kern
 connection are full ([BUG-0112](../bug_list.md#bug_0112)). A stop of a few milliseconds is absorbed by
 those buffers; a long one freezes every gateway.
 
-**At start of day.** A leader that starts with no follower connected is in the same position, and it
-does the same thing: it acts on no command until a voter has recorded that its peer may not lead. A
-secondary that starts later therefore cannot lead until it has caught up.
+**Every leadership starts with "no".** A leader does not know, when it takes the lead, whether its
+follower holds every record it holds: its own log may hold records it wrote in an earlier leadership
+that the follower never received. So every leadership starts by saying that the peer may not lead, and
+says "yes" only once the follower has acknowledged everything. A leadership that started with "yes"
+would replace the leader's own record of an earlier "no" while the follower still lacked commands the
+engine had acted on, and the model check finds the follower elected that way. At start of day this
+means a secondary that starts later cannot lead until it has caught up.
 
 **Going back to waiting.** When the follower has acknowledged every record the leader has written, the
 leader first goes back to waiting for acknowledgements, and only then sends a request saying its peer may
@@ -180,10 +192,13 @@ a pause. The statement is then held only by the follower's running process until
 completes.
 
 The commands only the leader holds could be lost only if all of these happened while the statement was
-held in memory alone: the leader dies; the follower's process restarts, losing what it held in memory;
-the arbiter pool was unreachable throughout, so the arbiter recorded nothing; and an arbiter then
-returns and elects the follower. That window is short, because the lease rules already end this
-situation within seconds. A follower must write each promise to disk before it gives the grant that
+held in the follower's memory alone, and before the arbiter had recorded it: the leader acts on the
+follower's grant; the leader stops acting, because it dies or its lease runs out; the follower's process
+restarts, losing what it held in memory; and the arbiter, which never recorded the statement, elects the
+follower. Section 12.5 of [tla/findings.md](tla/findings.md) gives this sequence as found by the model
+check. When the arbiter is reachable it records the statement within milliseconds, so the window is that
+short. When the arbiter pool is unreachable, the window lasts until the follower's disk write completes,
+and that is short too, because the lease rules already end this situation within seconds. A follower must write each promise to disk before it gives the grant that
 carries it (rule 6 of [majority_leases.md](majority_leases.md)), and its promise record covers promises
 for only about ten seconds ahead. When that runs out, a follower whose disk has stopped answering can no
 longer grant renewals. With the arbiter pool also unreachable, the leader then holds no lease, and it
@@ -246,12 +261,13 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
 | Scenario, new: arbiter restarted | As the first, but the active arbiter is restarted after the statement is recorded and before the leader is killed. The follower must still not lead | Expected to fail |
 | Unit tests | In `LeaseRulesTest.cpp`: a voter records a "no" before it grants, keeps the highest numbered statement, refuses the named instance, and a follower that may not lead does not ask and grants its peer | Not yet written |
 | Simulation | `LeaseSimulationTest.cpp` gains logs and the engine's set of acted-on commands, and checks after every step that no instance leads without every acted-on command. A run with the recording step removed must find a violation, which shows the check can fail | Not yet written |
-| TLA+ | The model in [tla/](tla/) gains the same, with the same invariant. Removing the recording step must produce a counterexample | Not yet written |
+| TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 12 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install |
 
 ## 8. Order of the work
 
 1. Agreement to the design.
-2. The TLA+ model and the simulation, with the recording step removed first to show each finds the fault.
+2. The TLA+ model, done in section 12 of [tla/findings.md](tla/findings.md), and the simulation, each
+   shown to find the fault when a part of the rule is removed.
 3. The new fields on `LeaseRequest` and `LeaseGrant`, the follower's and the arbiter's records, and the
    arbiter's copy to the passive arbiter, with the unit tests.
 4. The sequencer's switch: confirm before acting, the order of going back to waiting, and stopping reading

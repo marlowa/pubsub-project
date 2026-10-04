@@ -338,8 +338,8 @@ endif()
 # ------------------------------------------------------------
 # TLA+ counterexample pages (run at install time)
 #
-# scripts/tla_trace_pages.py reruns each counterexample recorded for the proposed leadership
-# design (docs/availability/tla/MajorityLeaseHA.tla) with the TLC model checker. It fails if any
+# scripts/tla_trace_pages.py reruns each counterexample recorded for the leadership design
+# (docs/availability/tla/MajorityLeaseHA.tla and FollowerBehindHA.tla) with the TLC model checker. It fails if any
 # of them no longer breaks the property it is listed against, or if a committed safety trace in
 # docs/availability/tla/traces/ no longer matches what TLC produces. It writes the traces and a
 # web page that steps through them into ${CMAKE_BINARY_DIR}/tla_pages, which is installed beside
