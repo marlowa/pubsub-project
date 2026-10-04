@@ -196,7 +196,8 @@ order of 200,000 messages.
   few hundred milliseconds, the longest the leader holds a report before forwarding it. Cheaper, but it
   rests on that bound, which waiting for a voter's confirmation under rule 11 can exceed.
 
-Not decided.
+**Decided (2026-10-04): the leader says so.** Each record the leader replicates carries the highest
+engine report it has forwarded, and the follower discards the kept reports up to that point.
 
 ### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
 
