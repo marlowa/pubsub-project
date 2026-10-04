@@ -216,7 +216,8 @@ gateway's store dies with it. As the answer to a change of sequencer leader it l
 notice the silence and act on its own timeout, for a failure the venue knows about and the member
 does not.
 
-**Recommendation: option A.**
+**Recommendation: option A.** Its detailed design, with the decisions it needs, is
+[commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md).
 
 ### 4.4 Reports sent during the change of leader (G3)
 
