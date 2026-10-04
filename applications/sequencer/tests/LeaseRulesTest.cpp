@@ -6,9 +6,11 @@
 
 #include <gtest/gtest.h>
 
+#include <LeaderStatement.hpp>
 #include <LeaseHolder.hpp>
 #include <LeaseParticipant.hpp>
 #include <LeaseVoter.hpp>
+#include <PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace {
@@ -19,6 +21,16 @@ using std::chrono::milliseconds;
 constexpr milliseconds lease_period{3000};
 constexpr milliseconds drift_allowance{250};
 const Clock::time_point start{};
+const fix_common::PeerStatementsFlag no_statements{fix_common::PeerStatementsFlag::PeerAlwaysMayLead};
+const fix_common::PeerStatementsFlag statements{fix_common::PeerStatementsFlag::SayWhetherPeerMayLead};
+
+// Makes instance 1 the leader at epoch 1 with the arbiter's grant, at start + lease_period.
+void make_first_instance_lead(fix_common::LeaseParticipant& participant) {
+    const Clock::time_point now = start + lease_period;
+    ASSERT_EQ(participant.begin_asking_to_lead(), 1);
+    const int64_t request = participant.record_request(3, now);
+    ASSERT_EQ(participant.on_grant(3, request, 1, now), fix_common::LeaseHolder::Event::BecameLeader);
+}
 
 } // un-named namespace
 
@@ -107,13 +119,13 @@ TEST(LeaseRulesTest, HolderRejectsADriftAllowanceAsLongAsTheLease) {
 }
 
 TEST(LeaseRulesTest, ParticipantAsksInTheNextEpochInWhichItLeads) {
-    fix_common::LeaseParticipant participant(2, lease_period, drift_allowance, start, 5);
+    fix_common::LeaseParticipant participant(2, lease_period, drift_allowance, start, 5, no_statements);
     ASSERT_TRUE(participant.may_ask_to_lead(start + lease_period));
     EXPECT_EQ(participant.begin_asking_to_lead(), 6);
 }
 
 TEST(LeaseRulesTest, ParticipantDoesNotAskToLeadWhileItsGrantToThePeerIsLive) {
-    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0);
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, no_statements);
     const Clock::time_point granted_at = start + lease_period;
     EXPECT_EQ(participant.on_peer_request(2, 2, granted_at).answer.verdict, fix_common::LeaseVoter::Verdict::Granted);
     EXPECT_FALSE(participant.may_ask_to_lead(granted_at + milliseconds{2999}));
@@ -121,7 +133,7 @@ TEST(LeaseRulesTest, ParticipantDoesNotAskToLeadWhileItsGrantToThePeerIsLive) {
 }
 
 TEST(LeaseRulesTest, ParticipantAskingToLeadRefusesItsPeer) {
-    fix_common::LeaseParticipant participant(2, lease_period, drift_allowance, start, 0);
+    fix_common::LeaseParticipant participant(2, lease_period, drift_allowance, start, 0, no_statements);
     const Clock::time_point now = start + lease_period;
     EXPECT_EQ(participant.begin_asking_to_lead(), 2);
     const auto outcome = participant.on_peer_request(1, 1, now);
@@ -130,7 +142,7 @@ TEST(LeaseRulesTest, ParticipantAskingToLeadRefusesItsPeer) {
 }
 
 TEST(LeaseRulesTest, ParticipantAskingToLeadGivesWayToAHigherEpoch) {
-    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0);
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, no_statements);
     const Clock::time_point now = start + lease_period;
     EXPECT_EQ(participant.begin_asking_to_lead(), 1);
     const auto outcome = participant.on_peer_request(2, 2, now);
@@ -140,7 +152,7 @@ TEST(LeaseRulesTest, ParticipantAskingToLeadGivesWayToAHigherEpoch) {
 }
 
 TEST(LeaseRulesTest, LeaderDoesNotGiveWayToItsPeer) {
-    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0);
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, no_statements);
     const Clock::time_point now = start + lease_period;
     EXPECT_EQ(participant.begin_asking_to_lead(), 1);
     const int64_t request = participant.record_request(3, now);
@@ -152,7 +164,7 @@ TEST(LeaseRulesTest, LeaderDoesNotGiveWayToItsPeer) {
 }
 
 TEST(LeaseRulesTest, ParticipantStopsWhenItsLeaseRunsOut) {
-    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0);
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, no_statements);
     const Clock::time_point now = start + lease_period;
     EXPECT_EQ(participant.begin_asking_to_lead(), 1);
     const int64_t request = participant.record_request(3, now);
@@ -165,7 +177,7 @@ TEST(LeaseRulesTest, ParticipantStopsWhenItsLeaseRunsOut) {
 }
 
 TEST(LeaseRulesTest, ParticipantStopsAndWaitsOnLearningOfANewerEpoch) {
-    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0);
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, no_statements);
     const Clock::time_point now = start + lease_period;
     EXPECT_EQ(participant.begin_asking_to_lead(), 1);
     const int64_t request = participant.record_request(3, now);
@@ -182,8 +194,8 @@ TEST(LeaseRulesTest, TwoInstancesAskingAtOnceWithNoArbiterSettleOnOneLeader) {
     // Without the rule that a candidate gives way to a higher epoch, each refuses the other and the
     // same thing can happen on every attempt (docs/availability/tla/traces/lease-6-no-yield-livelock.txt).
     const Clock::time_point now = start + lease_period;
-    fix_common::LeaseParticipant first(1, lease_period, drift_allowance, start, 0);
-    fix_common::LeaseParticipant second(2, lease_period, drift_allowance, start, 0);
+    fix_common::LeaseParticipant first(1, lease_period, drift_allowance, start, 0, no_statements);
+    fix_common::LeaseParticipant second(2, lease_period, drift_allowance, start, 0, no_statements);
     const int32_t first_epoch = first.begin_asking_to_lead();
     const int32_t second_epoch = second.begin_asking_to_lead();
     const int64_t first_request = first.record_request(2, now);
@@ -204,4 +216,122 @@ TEST(LeaseRulesTest, TwoInstancesAskingAtOnceWithNoArbiterSettleOnOneLeader) {
     }
     EXPECT_NE(first.acting(now), second.acting(now));
     EXPECT_TRUE(second.acting(now));
+}
+
+TEST(LeaseRulesTest, VoterRefusesAnInstanceAStatementSaysMayNotLead) {
+    fix_common::LeaseVoter voter(lease_period, start, 0);
+    voter.record_statement(fix_common::LeaderStatement{1, 5, 1, false});
+    const Clock::time_point now = start + lease_period;
+    EXPECT_EQ(voter.consider(2, 6, now).verdict, fix_common::LeaseVoter::Verdict::RefusedMayNotLead);
+    EXPECT_EQ(voter.consider(1, 9, now).verdict, fix_common::LeaseVoter::Verdict::Granted);
+}
+
+TEST(LeaseRulesTest, VoterKeepsOnlyTheNewestStatement) {
+    fix_common::LeaseVoter voter(lease_period, start, 0);
+    const Clock::time_point now = start + lease_period;
+    voter.record_statement(fix_common::LeaderStatement{1, 5, 2, false});
+    // An older statement from the same leadership arrives late, and must not let instance 2 lead.
+    voter.record_statement(fix_common::LeaderStatement{1, 5, 1, true});
+    EXPECT_FALSE(voter.holds_statement(fix_common::LeaderStatement{1, 5, 1, true}));
+    EXPECT_EQ(voter.consider(2, 6, now).verdict, fix_common::LeaseVoter::Verdict::RefusedMayNotLead);
+    voter.record_statement(fix_common::LeaderStatement{1, 5, 3, true});
+    EXPECT_TRUE(voter.holds_statement(fix_common::LeaderStatement{1, 5, 3, true}));
+    EXPECT_EQ(voter.consider(2, 6, now).verdict, fix_common::LeaseVoter::Verdict::Granted);
+}
+
+TEST(LeaseRulesTest, AStatementFromALaterEpochReplacesOneWithAHigherNumber) {
+    fix_common::LeaseVoter voter(lease_period, start, 0);
+    voter.record_statement(fix_common::LeaderStatement{1, 5, 7, false});
+    voter.record_statement(fix_common::LeaderStatement{2, 6, 1, false});
+    EXPECT_TRUE(voter.may_lead(2));
+    EXPECT_FALSE(voter.may_lead(1));
+}
+
+TEST(LeaseRulesTest, VoterRejectsAStatementThatNamesNoLeader) {
+    fix_common::LeaseVoter voter(lease_period, start, 0);
+    EXPECT_THROW(voter.record_statement(fix_common::LeaderStatement{0, 5, 1, false}), pubsub_itc_fw::PreconditionAssertion);
+    EXPECT_THROW(voter.record_statement(fix_common::LeaderStatement{1, 5, 0, false}), pubsub_itc_fw::PreconditionAssertion);
+}
+
+TEST(LeaseRulesTest, LeaderStartsEachLeadershipSayingItsPeerMayNotLead) {
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
+    make_first_instance_lead(participant);
+    EXPECT_FALSE(participant.statement().peer_may_lead);
+    EXPECT_EQ(participant.statement().number, 1);
+    EXPECT_EQ(participant.recorded_statement().instance_that_may_not_lead(), 2);
+}
+
+TEST(LeaseRulesTest, AnOldLeaderWhoseLeaseRanOutRefusesAPeerItsRecordSaysMayNotLead) {
+    // An old leader that has not crashed, and whose lease has merely run out, would otherwise vote for a
+    // peer lacking commands the engine acted on (docs/availability/tla/traces/behind-2-leader-keeps-no-record.txt).
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
+    make_first_instance_lead(participant);
+    const Clock::time_point later = start + lease_period + milliseconds{2750};
+    ASSERT_TRUE(participant.stop_if_lease_ran_out(later));
+    EXPECT_EQ(participant.on_peer_request(2, 2, later).answer.verdict, fix_common::LeaseVoter::Verdict::RefusedMayNotLead);
+}
+
+TEST(LeaseRulesTest, LeaderMayActWithoutItsPeerOnlyOnceAnotherVoterEchoesTheStatement) {
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
+    make_first_instance_lead(participant);
+    EXPECT_FALSE(participant.may_act_without_peer());
+    participant.note_echo(5, 1);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "an echo for another epoch counts for nothing";
+    participant.note_echo(1, 1);
+    EXPECT_TRUE(participant.may_act_without_peer());
+
+    participant.peer_holds_everything();
+    EXPECT_TRUE(participant.statement().peer_may_lead);
+    EXPECT_EQ(participant.statement().number, 2);
+    EXPECT_FALSE(participant.may_act_without_peer());
+    EXPECT_EQ(participant.recorded_statement().instance_that_may_not_lead(), 0);
+
+    participant.begin_running_without_peer();
+    EXPECT_EQ(participant.statement().number, 3);
+    participant.note_echo(1, 2);
+    EXPECT_FALSE(participant.may_act_without_peer()) << "an echo of an earlier statement must not count";
+    participant.note_echo(1, 3);
+    EXPECT_TRUE(participant.may_act_without_peer());
+}
+
+TEST(LeaseRulesTest, SayingTheSameThingAgainDoesNotChangeTheStatement) {
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
+    make_first_instance_lead(participant);
+    participant.begin_running_without_peer();
+    EXPECT_EQ(participant.statement().number, 1);
+    participant.peer_holds_everything();
+    participant.peer_holds_everything();
+    EXPECT_EQ(participant.statement().number, 2);
+}
+
+TEST(LeaseRulesTest, APairThatMakesNoStatementsNeverStopsItsPeerLeading) {
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, no_statements);
+    make_first_instance_lead(participant);
+    EXPECT_EQ(participant.statement().leader_id, 0);
+    EXPECT_EQ(participant.recorded_statement().instance_that_may_not_lead(), 0);
+    EXPECT_THROW(participant.begin_running_without_peer(), pubsub_itc_fw::PreconditionAssertion);
+    EXPECT_FALSE(participant.may_act_without_peer());
+}
+
+TEST(LeaseRulesTest, OnlyALeaderMakesStatements) {
+    fix_common::LeaseParticipant participant(1, lease_period, drift_allowance, start, 0, statements);
+    EXPECT_THROW(participant.begin_running_without_peer(), pubsub_itc_fw::PreconditionAssertion);
+    EXPECT_THROW(participant.peer_holds_everything(), pubsub_itc_fw::PreconditionAssertion);
+}
+
+TEST(LeaseRulesTest, AnInstanceThatHoldsAStatementThatItMayNotLeadDoesNotAsk) {
+    fix_common::LeaseParticipant participant(2, lease_period, drift_allowance, start, 0, statements);
+    const Clock::time_point later = start + milliseconds{60000};
+    EXPECT_EQ(participant.record_peer_statement(fix_common::LeaderStatement{1, 1, 2, false}), 2);
+    EXPECT_FALSE(participant.may_ask_to_lead(later));
+    EXPECT_EQ(participant.record_peer_statement(fix_common::LeaderStatement{1, 1, 1, true}), 0) << "a late statement is not echoed";
+    EXPECT_FALSE(participant.may_ask_to_lead(later));
+    EXPECT_EQ(participant.record_peer_statement(fix_common::LeaderStatement{1, 1, 3, true}), 3);
+    EXPECT_TRUE(participant.may_ask_to_lead(later));
+}
+
+TEST(LeaseRulesTest, ARestoredStatementIsHonouredAfterARestart) {
+    fix_common::LeaseParticipant participant(2, lease_period, drift_allowance, start, 1, statements);
+    participant.restore_recorded_statement(fix_common::LeaderStatement{1, 1, 1, false});
+    EXPECT_FALSE(participant.may_ask_to_lead(start + milliseconds{60000}));
 }

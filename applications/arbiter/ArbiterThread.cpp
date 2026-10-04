@@ -33,6 +33,8 @@ pubsub_itc_fw_app::LeaseRefusalReason refusal_reason_for(fix_common::LeaseVoter:
             return pubsub_itc_fw_app::LeaseRefusalReason::promised_elsewhere;
         case fix_common::LeaseVoter::Verdict::RefusedEpochBehind:
             return pubsub_itc_fw_app::LeaseRefusalReason::epoch_behind;
+        case fix_common::LeaseVoter::Verdict::RefusedMayNotLead:
+            return pubsub_itc_fw_app::LeaseRefusalReason::may_not_lead;
         case fix_common::LeaseVoter::Verdict::Granted:
             break;
     }

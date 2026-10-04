@@ -259,15 +259,17 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
 | Scenario, new: arbiters down | As above, but with the arbiters stopped, and the follower made to fall behind by blocking its acknowledgements with `libblock_sends_to_ports.so`, so that its lease handling still answers. The follower records the statement, and must not lead | Expected to fail |
 | Scenario, new: caught up again | The follower falls behind, catches up, and the leader goes back to waiting. The leader is then killed, and the follower must take the lead normally | Passes today; it guards against the change blocking a healthy failover |
 | Scenario, new: arbiter restarted | As the first, but the active arbiter is restarted after the statement is recorded and before the leader is killed. The follower must still not lead | Expected to fail |
-| Unit tests | In `LeaseRulesTest.cpp`: a voter records a "no" before it grants, keeps the highest numbered statement, refuses the named instance, and a follower that may not lead does not ask and grants its peer | Not yet written |
-| Simulation | `LeaseSimulationTest.cpp` gains logs and the engine's set of acted-on commands, and checks after every step that no instance leads without every acted-on command. A run with the recording step removed must find a violation, which shows the check can fail | Not yet written |
+| Unit tests | In `LeaseRulesTest.cpp`: a voter keeps only the newest statement and refuses the instance it names; a leader starts each leadership saying "no" and records it itself, so that once its lease has run out it refuses its peer; it may act without its peer only once another voter echoes the current statement; an instance that holds a "no" about itself does not ask to lead; a restored statement is honoured; a pair that makes no statements never stops its peer leading | Done |
+| Simulation | `LeaseSimulationTest.cpp` gains logs, the engine's set of acted-on commands, copying to the peer that sometimes stalls, and statements and echoes, and checks after every step that an instance starting to act as leader holds every acted-on command. Runs with the leader not waiting for an echo, with the arbiter forgetting its statement, and with an instance forgetting its statement each find a violation | Done |
 | TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 12 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install |
 
 ## 8. Order of the work
 
 1. Agreement to the design.
-2. The TLA+ model, done in section 12 of [tla/findings.md](tla/findings.md), and the simulation, each
-   shown to find the fault when a part of the rule is removed.
+2. The TLA+ model, done in section 12 of [tla/findings.md](tla/findings.md), and the simulation, done
+   in `LeaseSimulationTest.cpp` with the rule itself in `LeaseVoter` and `LeaseParticipant`, each shown
+   to find the fault when a part of the rule is removed. Only a pair constructed with
+   `PeerStatementsFlag::SayWhetherPeerMayLead` makes statements, and no component does so until step 4.
 3. The new fields on `LeaseRequest` and `LeaseGrant`, the follower's and the arbiter's records, and the
    arbiter's copy to the passive arbiter, with the unit tests.
 4. The sequencer's switch: confirm before acting, the order of going back to waiting, and stopping reading

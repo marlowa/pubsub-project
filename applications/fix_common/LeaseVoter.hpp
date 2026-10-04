@@ -8,6 +8,7 @@
 
 #include <fmt/format.h>
 
+#include <LeaderStatement.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace fix_common {
@@ -29,6 +30,9 @@ namespace fix_common {
  *   - It never grants an epoch lower than the highest it has granted.
  *   - While the instance it belongs to is leading, or asking to lead, it has voted for that instance
  *     and grants nothing to anyone else.
+ *   - It keeps the newest statement a leader has made about its peer, and grants nothing to an instance
+ *     that statement says may not lead (LeaderStatement). Its owner records the statement durably
+ *     before sending the grant that carries it, as it does a promise.
  *
  * Time is passed in rather than read, so that the rules can be tested without waiting.
  */
@@ -41,7 +45,8 @@ class LeaseVoter {
         Granted,
         RefusedWhileRestarting,   ///< it started less than one lease period ago
         RefusedPromisedElsewhere, ///< its vote is promised to another instance, or to its own
-        RefusedEpochBehind        ///< the request's epoch is below one it has already granted
+        RefusedEpochBehind,       ///< the request's epoch is below one it has already granted
+        RefusedMayNotLead         ///< it holds a leader's statement that the asker may not lead
     };
 
     /// The answer to one request.
@@ -82,6 +87,9 @@ class LeaseVoter {
         }
         if (epoch < highest_epoch_) {
             return Answer{Verdict::RefusedEpochBehind, highest_epoch_};
+        }
+        if (!may_lead(candidate_id)) {
+            return Answer{Verdict::RefusedMayNotLead, highest_epoch_};
         }
         promised_to_ = candidate_id;
         promise_expires_ = now + lease_period_;
@@ -153,6 +161,52 @@ class LeaseVoter {
     }
 
     /**
+     * @brief Record a leader's statement about its peer: one carried on a request this voter has
+     *        granted, or, for an instance that leads, its own.
+     *
+     * Only a statement newer than the one held replaces it, so a statement that arrives late cannot
+     * undo a newer one. The owner must make the statement durable before it sends anything that
+     * depends on it.
+     *
+     * @param[in] statement The statement to record.
+     */
+    void record_statement(const LeaderStatement& statement) {
+        if (statement.leader_id < 1 || statement.leader_id > 2 || statement.number < 1) {
+            throw pubsub_itc_fw::PreconditionAssertion(
+                fmt::format("LeaseVoter::record_statement: leader {} and number {} do not name a statement", statement.leader_id, statement.number), __FILE__,
+                __LINE__);
+        }
+        if (statement.newer_than(recorded_statement_)) {
+            recorded_statement_ = statement;
+        }
+    }
+
+    /// Whether the statement this voter holds is @p statement, so that a grant may echo its number.
+    [[nodiscard]] bool holds_statement(const LeaderStatement& statement) const {
+        return recorded_statement_.same_as(statement);
+    }
+
+    /// Whether this voter would let @p instance_id lead: it holds no statement saying that instance may not.
+    [[nodiscard]] bool may_lead(int64_t instance_id) const {
+        return recorded_statement_.instance_that_may_not_lead() != instance_id;
+    }
+
+    /// The newest statement this voter holds, which its owner keeps durably. Its leader_id is zero if it holds none.
+    [[nodiscard]] const LeaderStatement& recorded_statement() const {
+        return recorded_statement_;
+    }
+
+    /**
+     * @brief Take back the statement this voter recorded durably before it restarted.
+     *
+     * Unlike a promise, a statement does not run out, so a voter that has lost it must not grant
+     * as if it held none: its owner restores it before the voter answers anything.
+     */
+    void restore_recorded_statement(const LeaderStatement& statement) {
+        recorded_statement_ = statement;
+    }
+
+    /**
      * @brief Record an epoch learnt from elsewhere, such as a refusal, so that nothing below it is granted.
      *
      * Raising the epoch only makes a voter stricter, so this is safe whatever the source.
@@ -174,6 +228,7 @@ class LeaseVoter {
     Clock::time_point promise_expires_{};
     bool held_for_self_{false};
     int32_t highest_epoch_{0};
+    LeaderStatement recorded_statement_{};
 };
 
 } // namespaces

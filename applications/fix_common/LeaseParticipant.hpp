@@ -6,9 +6,14 @@
 #include <chrono>
 #include <cstdint>
 
+#include <fmt/format.h>
+
 #include <LeaderEpoch.hpp>
+#include <LeaderStatement.hpp>
 #include <LeaseHolder.hpp>
 #include <LeaseVoter.hpp>
+#include <PeerStatementsFlag.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace fix_common {
 
@@ -33,6 +38,24 @@ namespace fix_common {
  * The epoch an instance asks to lead in is the next one above the highest it knows in which it leads
  * (LeaderEpoch::next_for). The highest epoch it knows is what the owner keeps on disk: read it with
  * highest_epoch() after any call and store it when it has risen.
+ *
+ * In the sequencer pair, constructed with PeerStatementsFlag::SayWhetherPeerMayLead, it also holds what
+ * a leading instance says about its peer (LeaderStatement, rule 11 in
+ * docs/availability/a_follower_behind_does_not_lead.md):
+ *
+ *   - Every leadership starts by saying that the peer may not lead, and this instance's own voter
+ *     records that at once, so that it refuses its peer even after its own lease has run out.
+ *   - The owner calls begin_running_without_peer() before it has the matching engine act on a command
+ *     the peer does not hold, and peer_holds_everything() once the peer has acknowledged every record
+ *     this instance holds, after it has gone back to acting only on commands the peer holds.
+ *   - may_act_without_peer() is true only once a voter other than this instance has echoed the current
+ *     statement that the peer may not lead.
+ *   - An instance whose voter holds a statement that it may not lead does not ask to lead.
+ *
+ * The owner sends statement() on every lease request while leading, records the statement each grant
+ * echoes with note_echo(), and keeps recorded_statement() durably whenever it changes, before
+ * sending anything that depends on it. In every other pair the leader makes no statements, and its
+ * statement() names no leader.
  */
 class LeaseParticipant {
   public:
@@ -50,9 +73,11 @@ class LeaseParticipant {
      * @param[in] drift_allowance How much shorter than the lease period this instance takes a lease it holds to be.
      * @param[in] started_at When this instance started.
      * @param[in] persisted_epoch The highest epoch this instance knew of when it last stopped.
+     * @param[in] peer_statements Whether this pair's leader says whether its peer may lead: only the sequencer pair's does.
      */
-    LeaseParticipant(int64_t self_id, Clock::duration lease_period, Clock::duration drift_allowance, Clock::time_point started_at, int32_t persisted_epoch)
-        : self_id_(self_id), voter_(lease_period, started_at, persisted_epoch), holder_(lease_period, drift_allowance) {}
+    LeaseParticipant(int64_t self_id, Clock::duration lease_period, Clock::duration drift_allowance, Clock::time_point started_at, int32_t persisted_epoch,
+                     PeerStatementsFlag peer_statements)
+        : self_id_(self_id), voter_(lease_period, started_at, persisted_epoch), holder_(lease_period, drift_allowance), peer_statements_(peer_statements) {}
 
     /**
      * @brief The peer asks this instance for a lease.
@@ -75,10 +100,12 @@ class LeaseParticipant {
      * @brief Whether this instance may start asking to lead now.
      *
      * It may not while it leads or already asks, while it started less than a lease period ago, while
-     * its vote is promised to its peer, or while it is waiting after a failed attempt.
+     * its vote is promised to its peer, while it is waiting after a failed attempt, or while it holds a
+     * leader's statement that it may not lead.
      */
     [[nodiscard]] bool may_ask_to_lead(Clock::time_point now) const {
-        return holder_.state() == LeaseHolder::State::Idle && !voter_.restarting(now) && !voter_.promised_elsewhere(self_id_, now) && now >= wait_until_;
+        return holder_.state() == LeaseHolder::State::Idle && !voter_.restarting(now) && !voter_.promised_elsewhere(self_id_, now) && now >= wait_until_ &&
+               voter_.may_lead(self_id_);
     }
 
     /**
@@ -99,14 +126,100 @@ class LeaseParticipant {
 
     /**
      * @brief A voter granted a request.
-     * @return BecameLeader when this instance now leads; its epoch is then the highest it knows.
+     * @return BecameLeader when this instance now leads; its epoch is then the highest it knows, and it
+     *         says, and has recorded, that its peer may not lead. The owner must make that record
+     *         durable before it sends a request carrying the statement.
      */
     [[nodiscard]] LeaseHolder::Event on_grant(int64_t voter_id, int64_t request_id, int32_t epoch, Clock::time_point now) {
         const LeaseHolder::Event event = holder_.on_grant(voter_id, request_id, epoch, now);
         if (event == LeaseHolder::Event::BecameLeader) {
             voter_.learn_epoch(epoch);
+            if (peer_statements_ == PeerStatementsFlag::SayWhetherPeerMayLead) {
+                statement_ = LeaderStatement{self_id_, epoch, 1, false};
+                echoed_ = 0;
+                voter_.record_statement(statement_);
+            }
         }
         return event;
+    }
+
+    /**
+     * @brief A grant echoed the number of the statement its voter recorded.
+     * @param[in] epoch The epoch the grant was for.
+     * @param[in] number The statement number it echoed, or zero.
+     */
+    void note_echo(int32_t epoch, int64_t number) {
+        if (holder_.state() == LeaseHolder::State::Leading && epoch == holder_.epoch() && number > echoed_) {
+            echoed_ = number;
+        }
+    }
+
+    /// What this instance, while leading, says about its peer. Sent on every lease request. Names no leader in a pair that makes no statements.
+    [[nodiscard]] const LeaderStatement& statement() const {
+        return statement_;
+    }
+
+    /**
+     * @brief Say that the peer may not lead, before acting on a command the peer does not hold.
+     *
+     * The statement is recorded by this instance's own voter at once. The owner makes it durable, then
+     * sends it to both other voters, and acts on such a command only once may_act_without_peer() is true.
+     */
+    void begin_running_without_peer() {
+        require_leading("begin_running_without_peer");
+        if (!statement_.peer_may_lead) {
+            return;
+        }
+        statement_.number += 1;
+        statement_.peer_may_lead = false;
+        voter_.record_statement(statement_);
+    }
+
+    /**
+     * @brief Say that the peer may lead again.
+     *
+     * Call only once the peer has acknowledged every record this instance holds, and after going back
+     * to acting only on commands the peer holds.
+     */
+    void peer_holds_everything() {
+        require_leading("peer_holds_everything");
+        if (statement_.peer_may_lead) {
+            return;
+        }
+        statement_.number += 1;
+        statement_.peer_may_lead = true;
+        voter_.record_statement(statement_);
+    }
+
+    /**
+     * @brief Whether this instance may have the matching engine act on a command its peer does not hold.
+     *
+     * True only while it leads, says that its peer may not lead, holds that statement in its own voter,
+     * and a voter other than itself has echoed that statement.
+     */
+    [[nodiscard]] bool may_act_without_peer() const {
+        return holder_.state() == LeaseHolder::State::Leading && !statement_.peer_may_lead && echoed_ >= statement_.number &&
+               voter_.holds_statement(statement_);
+    }
+
+    /**
+     * @brief The peer, leading, made a statement on a request this instance has granted.
+     * @return The statement number to echo on the grant, or zero. The owner must make
+     *         recorded_statement() durable before sending the grant.
+     */
+    [[nodiscard]] int64_t record_peer_statement(const LeaderStatement& statement) {
+        voter_.record_statement(statement);
+        return voter_.holds_statement(statement) ? statement.number : 0;
+    }
+
+    /// The newest statement this instance's voter holds, its peer's or its own. The owner keeps it durably.
+    [[nodiscard]] const LeaderStatement& recorded_statement() const {
+        return voter_.recorded_statement();
+    }
+
+    /// Take back the statement recorded durably before this instance restarted. Call before answering anything.
+    void restore_recorded_statement(const LeaderStatement& statement) {
+        voter_.restore_recorded_statement(statement);
     }
 
     /**
@@ -192,10 +305,23 @@ class LeaseParticipant {
     }
 
   private:
+    void require_leading(const char* caller) const {
+        if (peer_statements_ == PeerStatementsFlag::PeerAlwaysMayLead) {
+            throw pubsub_itc_fw::PreconditionAssertion(fmt::format("LeaseParticipant::{}: this pair makes no statements about the peer", caller), __FILE__,
+                                                       __LINE__);
+        }
+        if (holder_.state() != LeaseHolder::State::Leading) {
+            throw pubsub_itc_fw::PreconditionAssertion(fmt::format("LeaseParticipant::{}: this instance is not leading", caller), __FILE__, __LINE__);
+        }
+    }
+
     int64_t self_id_;
     LeaseVoter voter_;
     LeaseHolder holder_;
     Clock::time_point wait_until_{};
+    PeerStatementsFlag peer_statements_;
+    LeaderStatement statement_{};
+    int64_t echoed_{0}; ///< the highest statement number a grant in this leadership has echoed
 };
 
 } // namespaces

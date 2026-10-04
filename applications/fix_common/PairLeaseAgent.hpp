@@ -20,6 +20,7 @@
 #include <LeasePromiseRecorderInterface.hpp>
 #include <LeasePromiseStore.hpp>
 #include <LeaseTiming.hpp>
+#include <PeerStatementsFlag.hpp>
 #include <leader_follower.hpp>
 
 namespace fix_common {
@@ -82,7 +83,7 @@ class PairLeaseAgent {
         , third_voter_id_(third_voter_id)
         , third_voter_name_(std::move(third_voter_name))
         , timing_(timing)
-        , participant_(self_id, timing.period, timing.drift_allowance, started_at, persisted_epoch)
+        , participant_(self_id, timing.period, timing.drift_allowance, started_at, persisted_epoch, PeerStatementsFlag{PeerStatementsFlag::PeerAlwaysMayLead})
         , random_(static_cast<std::mt19937::result_type>(self_id)) {
         // Measured from the end of the first lease period, during which neither instance may ask at all.
         if (self_id > peer_id) {
@@ -437,6 +438,8 @@ class PairLeaseAgent {
                 return pubsub_itc_fw_app::LeaseRefusalReason::promised_elsewhere;
             case LeaseVoter::Verdict::RefusedEpochBehind:
                 return pubsub_itc_fw_app::LeaseRefusalReason::epoch_behind;
+            case LeaseVoter::Verdict::RefusedMayNotLead:
+                return pubsub_itc_fw_app::LeaseRefusalReason::may_not_lead;
             case LeaseVoter::Verdict::Granted:
                 break;
         }

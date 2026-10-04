@@ -103,6 +103,7 @@ enum LeaseRefusalReason : i32 {
     restarting         = 1    # the voter started less than one lease period ago
     promised_elsewhere = 2    # its vote is promised to another instance, or to its own
     epoch_behind       = 3    # it has already granted a higher epoch
+    may_not_lead = 4 # it holds a leader's statement that the asker may not lead, because the asker lacks commands the matching engine acted on
 }
 
 # ------------------------------------------------------------
