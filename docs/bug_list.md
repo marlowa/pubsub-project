@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 116 |
-| Open | 43 (28 defects, 15 tasks) |
-| Closed | 73 |
+| Open | 42 (27 defects, 15 tasks) |
+| Closed | 74 |
 | Next id | BUG-0117 |
 
 ## Open bugs by severity
 
-13 high, 25 medium, 5 low.
+13 high, 24 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -50,7 +50,6 @@
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
 | [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
 | [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
-| [BUG-0116](#bug_0116) | medium | defect | A new sequencer leader sends members every report of the last few seconds again |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -155,49 +154,6 @@ went looking.
 
 
 
-
-### BUG-0116: A new sequencer leader sends members every report of the last few seconds again {#bug_0116}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-04 |
-| Recorded | 2026-10-04 |
-| How | `ha_test.py` scenario 1 failed once, in a run of the part 4.3 work, and passed when run again |
-| Impact | After a change of sequencer leader, each member is sent again, marked as possible repeats, the reports it received in the few seconds before the old leader died. At a busy moment that is tens of thousands of messages to one member in a fraction of a second. In the failing run the member's FIX client then lost its place in the message numbering and disconnected |
-
-**What happens.** A sequencer that is not leading keeps every report the matching engine sends it,
-and on taking the lead forwards them all, marked as possible repeats (part 4.4 of
-[change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md)). It keeps a report until it
-is a lease period plus the drift allowance older than its last grant of the leader's lease, and a
-grant comes once a second, so it forwards up to about 4.25 seconds of reports. It cannot tell which of
-them the old leader had already forwarded, and almost all of them it had.
-
-**What was measured.** Scenario 1 on 2026-10-04: 20,000 orders sent while the leader was killed. The
-new leader logged "forwarding 21000 kept report(s) (4845906 bytes), each marked as a possible repeat",
-and the gateway sent 21,000 more reports to the member within 50 milliseconds, bringing its outbound
-count from 21,000 to 42,000. The member's FIX client then sent a ResendRequest from message 41156 and
-closed its connection, so the 1,000 orders of the scenario's fifth phase, written to that client,
-never reached the gateway. Run again on the same build, the same 21,000 reports were forwarded and
-the client coped, and the scenario passed. Why the client lost its place is not established; it may
-be [BUG-0006](#bug_0006), resends never exercised under load.
-
-**Repeats are allowed** (R-0122), so this is not a loss. It is a flood that a member should not have
-to absorb, and its size grows with the order rate: at the highest measured rate it would be on the
-order of 200,000 messages.
-
-**Ways to send fewer.** The follower needs to know which reports the old leader forwarded.
-
-- *The leader says so.* Each record the leader replicates could carry the highest engine report it
-  has forwarded, and the follower discards the kept reports up to that point. Precise, and one field
-  on the envelope.
-- *A shorter window.* The follower already receives the leader's records continuously, so the time it
-  last received one could replace the last grant as the time reports age against, with a window of a
-  few hundred milliseconds, the longest the leader holds a report before forwarding it. Cheaper, but it
-  rests on that bound, which waiting for a voter's confirmation under rule 11 can exceed.
-
-**Decided (2026-10-04): the leader says so.** Each record the leader replicates carries the highest
-engine report it has forwarded, and the follower discards the kept reports up to that point.
 
 ### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
 
@@ -2608,6 +2564,68 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0116: A new sequencer leader sends members every report of the last few seconds again {#bug_0116}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-04 |
+| Fixed | 2026-10-04 -- the engine numbers its reports, every record the leader writes says how far it has forwarded them, and a new leader sends again only those not covered by records written at least 100 milliseconds before its predecessor's last |
+| How | `ha_test.py` scenario 1 failed once, in a run of the part 4.3 work, and passed when run again |
+| Impact | After a change of sequencer leader, each member is sent again, marked as possible repeats, the reports it received in the few seconds before the old leader died. At a busy moment that is tens of thousands of messages to one member in a fraction of a second. In the failing run the member's FIX client then lost its place in the message numbering and disconnected |
+
+**What happens.** A sequencer that is not leading keeps every report the matching engine sends it,
+and on taking the lead forwards them all, marked as possible repeats (part 4.4 of
+[change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md)). It keeps a report until it
+is a lease period plus the drift allowance older than its last grant of the leader's lease, and a
+grant comes once a second, so it forwards up to about 4.25 seconds of reports. It cannot tell which of
+them the old leader had already forwarded, and almost all of them it had.
+
+**What was measured.** Scenario 1 on 2026-10-04: 20,000 orders sent while the leader was killed. The
+new leader logged "forwarding 21000 kept report(s) (4845906 bytes), each marked as a possible repeat",
+and the gateway sent 21,000 more reports to the member within 50 milliseconds, bringing its outbound
+count from 21,000 to 42,000. The member's FIX client then sent a ResendRequest from message 41156 and
+closed its connection, so the 1,000 orders of the scenario's fifth phase, written to that client,
+never reached the gateway. Run again on the same build, the same 21,000 reports were forwarded and
+the client coped, and the scenario passed. Why the client lost its place is not established; it may
+be [BUG-0006](#bug_0006), resends never exercised under load.
+
+**Repeats are allowed** (R-0122), so this is not a loss. It is a flood that a member should not have
+to absorb, and its size grows with the order rate: at the highest measured rate it would be on the
+order of 200,000 messages.
+
+**Ways to send fewer.** The follower needs to know which reports the old leader forwarded.
+
+- *The leader says so.* Each record the leader replicates could carry the highest engine report it
+  has forwarded, and the follower discards the kept reports up to that point. Precise, and one field
+  on the envelope.
+- *A shorter window.* The follower already receives the leader's records continuously, so the time it
+  last received one could replace the last grant as the time reports age against, with a window of a
+  few hundred milliseconds, the longest the leader holds a report before forwarding it. Cheaper, but it
+  rests on that bound, which waiting for a voter's confirmation under rule 11 can exceed.
+
+**Decided (2026-10-04): the leader says so, with a delay.** The matching engine numbers its reports.
+Each record the leader writes carries the highest report number up to which it has forwarded every
+report. On taking the lead, the new leader looks at the last record it holds from the old leader, and
+discards the kept reports covered by the number carried on records written at least 100 milliseconds
+before it; it forwards the rest again, marked as repeats. "Forwarded" means handed to the connection to
+the gateway, not received by it, and a report still in the old leader's send buffers when its machine
+or network failed would be lost if the follower discarded it at once; the delay keeps the last
+100 milliseconds of reports. At normal rates that is a handful of repeats, and about 5,000 at the
+highest measured rate. A report is lost only if it sat undelivered on the old leader's machine for more
+than 100 milliseconds before the machine failed. Scenario 65, whose reports are blocked after the leader
+hands them over, keeps passing. *Considered:* without the delay, which loses those reports; and the
+gateways saying which reports they received, which is exact but costs a steady stream of messages from
+every gateway to both sequencers.
+
+**Fixed (2026-10-04).** Built as decided above. `ha_test.py` scenario 69 has a member send 1,000 orders
+and wait for every acceptance, then one more half a second later, before the leader is killed. On the
+build without the change the new leader forwarded 2,001 kept reports and the member received 1,001
+repeats. With it, the new leader discarded 1,999 as forwarded and sent 2 again, and the member received
+2 repeats. Scenario 65, whose reports are blocked after the leader hands them over, still passes, as do
+scenarios 1, 2, 16, 21, 57 and 59 to 68.
 
 ### BUG-0103: Orders sent while the sequencers change leader are lost without a reply {#bug_0103}
 

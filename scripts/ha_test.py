@@ -866,6 +866,10 @@ class Scenario(NamedTuple):
     # twice. See run_scenario's "orders during a change of leader" block, and
     # docs/availability/commands_during_a_change_of_leader.md.
     assert_orders_during_change_answered: bool = False
+    # When True, a member sends a burst of orders and waits for every answer, the leading sequencer
+    # is killed, and the new leader must send the member again only the few reports the old leader
+    # had not said it forwarded. See run_scenario's "few repeats" block, and BUG-0116.
+    assert_few_repeats_after_change: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3686,6 +3690,26 @@ _SCENARIOS: list[Scenario] = [
         orders_during_override=0,
         orders_after_override=0,
         assert_orders_during_change_answered=True,
+        steps=[],
+    ),
+
+    # 69 -- after a change of leader, a member is sent again only the reports the old leader had not forwarded.
+    #
+    # A member sends 1,000 orders and waits for every acceptance, then sends one more half a second
+    # later, so that the leader writes a record well after the burst. The leader is killed. Its records
+    # said how far it had forwarded the engine's reports, so the new leader forwards again only the few
+    # it had not said it forwarded, rather than every report of the last few seconds (BUG-0116).
+    Scenario(
+        number=69,
+        short_name="few_repeats_after_change",
+        description="After a change of sequencer leader, a member is sent again only the reports the old leader had not forwarded",
+        expected_outcome=(
+            "the new leader forwards at most 10 kept reports, and the member receives at most 10 reports marked as possible repeats, "
+            "rather than the 1,000 acceptances it already had"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_few_repeats_after_change=True,
         steps=[],
     ),
 ]
@@ -8275,6 +8299,99 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if applied_twice:
                 die(f"orders during change: the matching engine accepted {applied_twice[:5]} more than once.")
             log(f"  every one of the {len(sent)} orders was answered, and none was applied twice -- OK")
+
+        # ── Few repeats after a change of leader ──────────────────────────────
+        if scenario.assert_few_repeats_after_change:
+            log("=== After a change of leader, a member is sent again only the reports the old leader had not forwarded ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("few repeats: sequencer_primary is not leading.")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("few repeats: the raw client could not log on.")
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            def collect(cl_ord_ids: set[str], timeout: float) -> list[dict[int, str]]:
+                """Every report naming one of cl_ord_ids, until each has an acceptance or the time runs out."""
+                reports: list[dict[int, str]] = []
+                accepted: set[str] = set()
+                deadline = time.monotonic() + timeout
+                while (remaining := deadline - time.monotonic()) > 0 and accepted != cl_ord_ids:
+                    report = member.receive_until("8", timeout=min(1.0, remaining))
+                    if report is not None and report.get(11) in cl_ord_ids:
+                        reports.append(report)
+                        if report.get(39) == "0":
+                            accepted.add(report[11])
+                return reports
+
+            burst = {f"repeat-{run_tag}-{number}" for number in range(1, 1001)}
+            for cl_ord_id in sorted(burst):
+                member.new_order_single(cl_ord_id)
+            got = collect(burst, 30.0)
+            if len({r[11] for r in got if r.get(39) == "0"}) != len(burst):
+                member.close()
+                die("few repeats: not every order of the burst was accepted.")
+            time.sleep(0.5)
+            last = f"repeat-{run_tag}-last"
+            member.new_order_single(last)
+            if not collect({last}, _RAW_REPLY_TIMEOUT):
+                member.close()
+                die("few repeats: the last order was not accepted.")
+            log(f"  {len(burst)} orders accepted, and one more half a second later")
+
+            primary = proc_by_name["sequencer_primary"]
+            takeover_from = file_end(secondary_log)
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if Path(f"/proc/{primary.pid}").exists():
+                member.close()
+                die(f"few repeats: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            if not found:
+                member.close()
+                die(f"few repeats: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            log(f"  sequencer_secondary took the lead {elapsed:.1f}s after the kill")
+
+            # Everything the member is sent for these orders after the change of leader.
+            repeats: list[dict[int, str]] = []
+            deadline = time.monotonic() + 5.0
+            while (remaining := deadline - time.monotonic()) > 0:
+                report = member.receive_until("8", timeout=min(1.0, remaining))
+                if report is not None and report.get(11, "").startswith(f"repeat-{run_tag}-"):
+                    repeats.append(report)
+            member.close()
+            marked = [r for r in repeats if r.get(97) == "Y"]
+            unmarked = [r for r in repeats if r.get(97) != "Y"]
+            forwarded_line = ""
+            with open(secondary_log, encoding="utf-8", errors="replace") as handle:
+                handle.seek(takeover_from)
+                for line in handle:
+                    if "forwarding" in line and "kept report(s)" in line:
+                        forwarded_line = line.strip()
+            match = re.search(r"forwarding (\d+) kept report", forwarded_line)
+            forwarded = int(match.group(1)) if match else -1
+            log(f"  the new leader forwarded {forwarded} kept report(s); the member received {len(marked)} repeat(s) marked PossResend")
+            if unmarked:
+                die(f"few repeats: the member received {len(unmarked)} report(s) for these orders after the change of leader without PossResend.")
+            if forwarded < 0:
+                die("few repeats: the new leader did not log how many kept reports it forwarded.")
+            if forwarded > 10 or len(marked) > 10:
+                die(f"few repeats: the new leader forwarded {forwarded} kept report(s) and the member received {len(marked)} repeats. The old "
+                    "leader's records said how far it had forwarded, so only the reports it had not forwarded should be sent again (BUG-0116).")
+            log("  only the few reports the old leader had not said it forwarded were sent again -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

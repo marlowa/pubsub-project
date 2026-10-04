@@ -199,3 +199,31 @@ TEST(KeptReportStoreTest, RandomSizesAgreeWithASimpleModel) {
         }
     }
 }
+
+TEST(KeptReportStoreTest, CopiesTheLeaderHasForwardedAreDiscardedUpToThePositionItGives) {
+    sequencer::KeptReportStore store(1000, 100);
+    for (int64_t number = 1; number <= 5; ++number) {
+        const std::vector<uint8_t> bytes = report_bytes(number, 10);
+        store.keep(number, bytes.data(), bytes.size(), start + milliseconds{number}, start, sequencer::EngineReportPosition{3, number});
+    }
+    EXPECT_EQ(store.discard_through(sequencer::EngineReportPosition{3, 3}), 3U);
+    EXPECT_EQ(take_all(store), (std::vector<int64_t>{4, 5}));
+}
+
+TEST(KeptReportStoreTest, APositionInAnEarlierEngineLeadershipCoversNothingInALaterOne) {
+    sequencer::KeptReportStore store(1000, 100);
+    const std::vector<uint8_t> first = report_bytes(1, 10);
+    const std::vector<uint8_t> second = report_bytes(2, 10);
+    store.keep(1, first.data(), first.size(), start + milliseconds{1}, start, sequencer::EngineReportPosition{3, 900});
+    // A new engine leadership numbers from 1 again, under a higher epoch.
+    store.keep(2, second.data(), second.size(), start + milliseconds{2}, start, sequencer::EngineReportPosition{4, 1});
+    EXPECT_EQ(store.discard_through(sequencer::EngineReportPosition{3, 1000}), 1U);
+    EXPECT_EQ(take_all(store), (std::vector<int64_t>{2}));
+}
+
+TEST(KeptReportStoreTest, ACopyThatDoesNotSayWhereItStandsIsNotDiscardedByPosition) {
+    sequencer::KeptReportStore store(1000, 100);
+    keep(store, 1, 10);
+    EXPECT_EQ(store.discard_through(sequencer::EngineReportPosition{9, 1000}), 0U);
+    EXPECT_EQ(take_all(store), (std::vector<int64_t>{1}));
+}

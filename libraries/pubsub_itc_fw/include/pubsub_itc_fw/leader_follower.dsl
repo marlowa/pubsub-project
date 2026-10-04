@@ -236,6 +236,16 @@ message WalRecord (id=103, version=1)
     # True on a command a gateway sends again after a change of sequencer leader, because it was
     # still unanswered. The new leader sequences it only if its log does not already hold it.
     optional bool sent_again
+    # On an execution report from the matching engine: where it stands in the reports the engine
+    # sends. The epoch of the engine leadership that sent it, and its number within that leadership,
+    # counted from 1.
+    optional i32 report_engine_epoch
+    optional i64 report_number
+    # On every record a leading sequencer writes: the position up to which it has forwarded every
+    # report from the engine to its gateway. A follower uses it, read from its log, to discard the
+    # copies of reports it keeps in case it takes the lead (docs/bug_list.md, BUG-0116).
+    optional i32 reports_forwarded_through_epoch
+    optional i64 reports_forwarded_through_number
 end
 
 # ------------------------------------------------------------

@@ -7,10 +7,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 #include <pubsub_itc_fw/FixedCapacityRingBuffer.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+
+#include "EngineReportPosition.hpp"
 
 namespace sequencer {
 
@@ -65,8 +68,10 @@ class KeptReportStore {
      * @param[in] size The number of bytes at @p bytes.
      * @param[in] received_at When the report arrived.
      * @param[in] needed_from Copies that arrived at or after this time may still be needed.
+     * @param[in] position Where the report stands in the engine's reports, when it says.
      */
-    void keep(int64_t seq_no, const uint8_t* bytes, size_t size, Clock::time_point received_at, Clock::time_point needed_from) {
+    void keep(int64_t seq_no, const uint8_t* bytes, size_t size, Clock::time_point received_at, Clock::time_point needed_from,
+              std::optional<EngineReportPosition> position = std::nullopt) {
         if (size > bytes_.size()) {
             // Larger than the whole block, so it cannot be kept however much is overwritten.
             ++lost_;
@@ -75,7 +80,7 @@ class KeptReportStore {
         const size_t offset = make_room(size, needed_from);
         std::memcpy(bytes_.data() + offset, bytes, size);
         // make_room has left a free slot in the list, so this cannot be refused.
-        (void)entries_.push_back(Entry{offset, size, seq_no, received_at});
+        (void)entries_.push_back(Entry{offset, size, seq_no, received_at, position});
         next_offset_ = offset + size;
         bytes_used_ += size;
     }
@@ -90,6 +95,24 @@ class KeptReportStore {
         while (!entries_.empty() && entries_.front().received_at < cutoff) {
             discard_oldest();
         }
+    }
+
+    /**
+     * @brief Discards every copy of a report at or before @p forwarded_through: the leader has
+     *        forwarded every one of those, so none needs forwarding again.
+     *
+     * Reports arrive in the order the engine numbered them, so this removes copies from the oldest end
+     * until it reaches one after @p forwarded_through, or one that does not say where it stands.
+     *
+     * @return How many copies were discarded.
+     */
+    size_t discard_through(const EngineReportPosition& forwarded_through) {
+        size_t discarded = 0;
+        while (!entries_.empty() && entries_.front().position.has_value() && entries_.front().position->is_before_or_at(forwarded_through)) {
+            discard_oldest();
+            ++discarded;
+        }
+        return discarded;
     }
 
     /**
@@ -126,6 +149,7 @@ class KeptReportStore {
         size_t size{0};
         int64_t seq_no{0};
         Clock::time_point received_at{};
+        std::optional<EngineReportPosition> position;
     };
 
     // Returns the offset at which a copy of @p size bytes can be written, overwriting the oldest

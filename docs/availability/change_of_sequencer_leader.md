@@ -263,6 +263,19 @@ status enquiry (R-0002), which the venue does not answer today ([BUG-0089](../bu
   asking, so nothing more ages, however long the change of leader then takes: a voter that is slow to
   answer, or an arbiter that is down, cannot make the follower discard a report the old leader never
   forwarded.
+- **Which reports are sent again.** Discarding by age alone keeps every report of the last few
+  seconds, almost all of which the old leader had forwarded, so a member would be sent them all again.
+  So the matching engine numbers its reports: each carries the epoch of the engine leadership that sent
+  it and its number within that leadership. Every record the leader writes carries the position up to
+  which it has forwarded every report, stopping just before any report still waiting for an
+  acknowledgement. The follower reads those positions from its log, with the time the leader wrote each
+  record, and discards the kept reports covered by the position on records written at least
+  100 milliseconds before the latest record it holds; both times are by the leader's clock. The delay
+  is there because "forwarded" means handed to the connection to the gateway, not received there: a
+  report still in the old leader's send buffers when its machine or network failed would be lost if
+  the follower discarded it at once. `ha_test.py` scenario 69 checks it: after 1,000 orders and one
+  more half a second later, the new leader discarded 1,999 kept reports and forwarded 2 again, where
+  it forwarded 2,001 before ([BUG-0116](../bug_list.md#bug_0116)).
 - **When the store is full,** the oldest copies are overwritten. A copy overwritten while it may still
   have been needed is a report that may never reach its member, so the sequencer logs a Warning when
   that happens and keeps the total in the metric `sequencer_kept_reports_lost`, which is expected to

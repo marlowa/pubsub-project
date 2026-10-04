@@ -345,6 +345,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // set_epoch(), which also writes it to disk. A restart that forgets the
     // epoch lets this node claim a generation the venue has already spent.
     int32_t epoch_{0};
+    // How many reports this instance has sent to the sequencers while leading under epoch_, so that
+    // each carries its position in the engine's reports (report_engine_epoch, report_number). Counted
+    // from 1, and from 1 again under each new epoch.
+    int64_t report_number_{0};
+    int32_t report_number_epoch_{0};
+    // Gives a report about to be sent its position in the reports this engine sends.
+    void number_report(pubsub_itc_fw_app::WalRecord& envelope);
 
     // Where the epoch outlives the process. Read once at startup, rewritten
     // whenever the epoch moves.

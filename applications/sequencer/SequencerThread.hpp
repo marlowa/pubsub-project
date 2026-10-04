@@ -32,6 +32,7 @@
 
 #include "BackgroundPromiseRecorder.hpp"
 #include "EngineOrderRouting.hpp"
+#include "EngineReportPosition.hpp"
 #include "EpochStore.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReportStore.hpp"
@@ -282,6 +283,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         std::vector<uint8_t> payload; // copy of the raw encoded ER from ME
         // The ClOrdID of the command the report answers, copied onto the envelope for the gateway.
         std::string cl_ord_id;
+        // Where the report stands in the engine's reports. While it waits here, the leader has not
+        // forwarded every report up to it, which is what reports_forwarded_through() says.
+        std::optional<EngineReportPosition> position;
         // Whose report this is. Deliberately the identity and not a resolved destination:
         // this record exists precisely because delivery is being deferred until the
         // follower acks, and a session can reconnect during that wait -- which is the case
@@ -570,6 +574,36 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // identifiers rules a command out, and the index of the end of the log confirms one it does not.
     [[nodiscard]] bool command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound);
     void discard_log_tail_index(const char* reason);
+
+    // The latest report from the engine this instance has handled while leading: forwarded, waiting
+    // for an acknowledgement, or dropped because its session was not connected.
+    std::optional<EngineReportPosition> latest_report_seen_;
+    // The position up to which this leader has forwarded every report from the engine: the latest
+    // seen, or just before the oldest still waiting for an acknowledgement. Written on every record
+    // this leader writes, for a follower to read (docs/bug_list.md, BUG-0116).
+    [[nodiscard]] std::optional<EngineReportPosition> reports_forwarded_through() const;
+    void stamp_reports_forwarded_through(pubsub_itc_fw_app::WalRecord& envelope) const;
+
+    // What a follower reads back from its leader's records. The leader's "forwarded" means handed to
+    // its connection to the gateway, not received there, and a report still in the leader's send
+    // buffers when its machine or network fails is lost. So a follower discards only the kept reports
+    // covered by the position on records written at least reports_forwarded_delay before the latest
+    // record it holds, both times by the leader's clock.
+    struct ForwardedSample {
+        int64_t written_ns{0};
+        EngineReportPosition through{};
+    };
+    static constexpr std::chrono::milliseconds reports_forwarded_delay{100};
+    static constexpr size_t forwarded_sample_capacity = 4096;
+    std::vector<ForwardedSample> forwarded_samples_ = std::vector<ForwardedSample>(forwarded_sample_capacity);
+    size_t forwarded_samples_head_{0};
+    size_t forwarded_samples_count_{0};
+    int64_t latest_record_written_ns_{0};
+    int64_t kept_reports_discarded_as_forwarded_{0};
+    // Notes the position a record read from the log carries, and when the leader wrote it.
+    void note_forwarded_sample(int64_t written_ns, const pubsub_itc_fw_app::WalRecordView& view);
+    // Discards the kept reports the leader had forwarded at least reports_forwarded_delay before the latest record.
+    void discard_kept_reports_the_leader_forwarded();
 
     // Where a report about to be forwarded came from.
     enum class ReportSource {

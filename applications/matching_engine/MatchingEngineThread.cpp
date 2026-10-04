@@ -1254,6 +1254,7 @@ void MatchingEngineThread::release_held_reports() {
         envelope.has_origin_gateway_id = !held.session.empty();
         envelope.origin_gateway_id = held.session.protocol;
         envelope.poss_resend = held.poss_resend;
+        number_report(envelope);
 
         if (sequencer_er_conn_id_.is_valid()) {
             send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
@@ -1262,6 +1263,21 @@ void MatchingEngineThread::release_held_reports() {
             send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
         }
     }
+}
+
+void MatchingEngineThread::number_report(pubsub_itc_fw_app::WalRecord& envelope) {
+    // Where this report stands in the reports this engine sends, so that the leading sequencer can
+    // say how far it has forwarded them and a follower can discard the copies it keeps
+    // (docs/bug_list.md, BUG-0116). Numbered as it is sent, so the numbers follow the order the
+    // sequencers receive the reports in. A new leadership numbers from 1 again under its higher epoch.
+    if (report_number_epoch_ != epoch_) {
+        report_number_epoch_ = epoch_;
+        report_number_ = 0;
+    }
+    envelope.has_report_engine_epoch = true;
+    envelope.report_engine_epoch = epoch_;
+    envelope.has_report_number = true;
+    envelope.report_number = ++report_number_;
 }
 
 void MatchingEngineThread::discard_held_reports(const char* reason) {
@@ -1347,6 +1363,8 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
     // matching engine now running had started.
     envelope.has_gateway_ingress_ns = has_current_order_ingress_ns_;
     envelope.gateway_ingress_ns = current_order_ingress_ns_;
+
+    number_report(envelope);
 
     if (sequencer_er_conn_id_.is_valid()) {
         // A member is waiting for this: it is the report on its way back to them.
