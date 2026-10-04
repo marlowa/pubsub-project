@@ -159,11 +159,12 @@ Options:
                           command to exit with code 0.
     install_prefix        Path to cmake install prefix (default: installed)
     --orders-before N     Bursts of 1000 NOS to confirm health before kill (default: 1)
-    --orders-during N     Extra bursts of 1000 NOS sent after the health check
-                          and left in flight during Phase 4 so orders are
-                          flowing when the kill happens (default: 20).  Some
-                          may be lost during failover; the Phase 5 target
-                          adjusts automatically.
+    --orders-during N     Extra bursts of 1000 NOS sent after the health check,
+                          without waiting, just before the Phase 4 kill
+                          (default: 20).  At the venue's current speed they
+                          are all processed before the kill happens, so they
+                          load the venue but are not sent during the change
+                          of leader; scenario 68 tests orders sent then.
     --orders-after N      Bursts of 1000 NOS sent as recovery orders (default: 1)
     --ready-timeout SECS  Max seconds for initial leader election (default: 10)
     --failover-timeout S  Max seconds per failover step (default: 30)
@@ -995,6 +996,8 @@ def _me_primary_restart_step() -> RestartStep:
 #   to lead, the arbiter grants it, and it leads. The gateway already has a connection to the
 #   secondary and forwards new orders to it; the matching engine already sends its execution
 #   reports to both sequencers, so they reach the secondary at once.
+#   The burst of orders sent just before the kill reaches the venue before the kill happens, so
+#   this scenario does not send orders during the change of leader. Scenario 68 does.
 #
 # Scenario 2 — Primary arbiter death
 #   arbiter_primary, the active arbiter, is killed. arbiter_secondary asks the witness once the
@@ -6023,14 +6026,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
             running_me_total = before_total
             running_me_pos   = me_pos
 
-        # Send extra T commands WITHOUT waiting — these orders will be in flight
-        # during Phase 4 so the kill happens while the system is under load.
-        # Suppressed for extra_steps scenarios (e.g. WAL recovery) where
-        # precise control of order counts between steps is required.
+        # Send extra T commands WITHOUT waiting, just before Phase 4, so the venue
+        # is under load as the kill approaches. At the venue's current speed they are
+        # all processed before the kill, so they are not orders sent during the change
+        # of leader; scenario 68 tests those. Suppressed for extra_steps scenarios
+        # (e.g. WAL recovery) where precise control of order counts between steps is
+        # required.
         if orders_during > 0 and not scenario.extra_steps and f8proc is not None:
             log(
-                f"  Sending {orders_during * 1000} in-flight orders "
-                f"(will span Phase 4 kill) ..."
+                f"  Sending {orders_during * 1000} orders just before Phase 4, without waiting ..."
             )
             for _ in range(orders_during):
                 f8proc.stdin.write(b"T\n")

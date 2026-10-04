@@ -228,8 +228,9 @@ Each test was shown to fail before the change it tests was made.
 | Scenario 68 | A member sends orders at 100 a second from a second before the leader is killed until two seconds after the follower takes the lead. Every order is answered, and none is applied twice. Before the gateways kept commands, 266 of 598 orders were never answered |
 | Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `LoggedCommandIdentifiers`; `LogTailIndex`, against a real log |
 
-Scenario 1 sends its 20,000 orders while the leader is killed, but they now all reach the venue before
-the kill, so it no longer exercises orders sent during the change of leader; scenario 68 does.
+Scenario 1 sends a burst of 20,000 orders just before the leader is killed. They all reach the venue
+before the kill, so scenario 1 does not test orders sent during the change of leader, and its
+description says so; scenario 68 tests them.
 
 ## 7. Decisions
 
