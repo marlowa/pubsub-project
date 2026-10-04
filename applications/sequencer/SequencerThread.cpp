@@ -258,6 +258,10 @@ void SequencerThread::on_initial_event() {
         "sequencer_thread", "sequencer_running_alone",
         "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
         "resilience. Expected to be 0");
+    kept_reports_lost_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_kept_reports_lost",
+        "Reports from the matching engine, kept in case this instance takes the lead, that were overwritten while still needed because the store "
+        "was full. Expected to be 0");
 }
 
 void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch) {
@@ -789,263 +793,303 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         release_pdu_payload(message);
 
     } else if (is_er_pdu) {
-        // ExecutionReport from the ME. Leader forwards to gateway; follower drops.
         if (role_ != pubsub_itc_fw_app::Role::leader) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER PDU on connection {} -- follower, discarding",
-                       message.connection_id().get_value());
+            // Kept in case this instance takes the lead before the leader has forwarded it.
+            keep_report_from_engine(message);
             release_pdu_payload(message);
             return;
         }
-
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER PDU on connection {} pdu_id={} seq={} -- forwarding to gateway",
                    message.connection_id().get_value(), message.pdu_id(), message.seq_no());
-
-        // Which gateway this ER belongs to is not known until the envelope has been
-        // decoded and the routing map consulted, so the "is that gateway connected?"
-        // check happens at the point of sending rather than here.
-
-        auto& arena_buf = decode_arena_buffer();
-        pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-        arena.reset();
-        size_t arena_bytes_needed = 0;
-        size_t bytes_consumed = 0;
-        // The ER arrives wrapped in a WalRecord envelope from the ME. Unwrap it; the
-        // inner ER is decoded only to read ord_status (for routing-map eviction) -- its
-        // payload is forwarded opaque.
-        pubsub_itc_fw_app::WalRecordView inbound{};
-        if (!pubsub_itc_fw_app::decode(inbound, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ER envelope -- dropping");
-            release_pdu_payload(message);
-            return;
-        }
-        if (inbound.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ER envelope carries unexpected pdu_id {} -- dropping",
-                       inbound.pdu_id);
-            release_pdu_payload(message);
-            return;
-        }
-        pubsub_itc_fw_app::ExecutionReportView view{};
-        if (!pubsub_itc_fw_app::decode(view, inbound.payload.data, inbound.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
-            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ExecutionReport -- dropping");
-            release_pdu_payload(message);
-            return;
-        }
-
-        // The report that acknowledges a new order is the only one the order-path checkpoints
-        // record, matching the population the gateway's round-trip histogram measures. Every
-        // report for an order carries the same ingress stamp, so a Canceled report would be
-        // recorded as though the path had taken as long as the order rested on the book --
-        // which would swamp the distribution rather than merely widen it.
-        //
-        // ord_status is already decoded here for the routing map, so the restriction costs
-        // nothing beyond the comparison.
-        const bool is_new_order_ack = (view.ord_status == pubsub_itc_fw_app::OrdStatus::New);
-
-        // The report has arrived from the matching engine. Against the matching engine's own
-        // er_out this gives the hop between the two processes; against er_out below it gives
-        // what this component costs the report, which includes sequencing it into the log and
-        // any wait for the follower to acknowledge it.
-        if (is_new_order_ack) {
-            order_path_metrics::observe_checkpoint(er_in_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns,
-                                                   config_.wall_clock->now_ns());
-        }
-
-        // Route the ER back to the originating FIX session. The ME echoes the order's
-        // seq_no in the transport header, so message.seq_no() resolves via the map for
-        // ordinary ERs. ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
-        // ERs) instead carry the conn id on the inbound envelope. The conn id rides on the
-        // envelope, never inside the DD-derived ER.
-        const int64_t er_seq_no = message.seq_no();
-        // The session this report belongs to, and then -- separately -- where that session
-        // can be reached. Keeping the two apart is the whole of step 5: an order is filed
-        // under an identity that outlives connections, and the address is resolved at the
-        // last possible moment, so a member that reconnected while the report was in flight
-        // still receives it.
-        fix_common::SessionIdentity routing_identity{};
-        bool has_routing_conn = false;
-        int32_t routing_conn_id = 0;
-        int16_t routing_gateway_id = gateway_ids::default_when_absent;
-        int16_t routing_gateway_instance = gateway_ids::first_instance;
-        // The originating gateway's ingress stamp, returned to it on the ER so it can
-        // measure the round trip. Only the routing-map branch can supply one: an ER that
-        // is not tied to a sequenced order never had an originating read to measure from.
-        bool has_routing_ingress_ns = false;
-        int64_t routing_ingress_ns = 0;
-        bool erase_routing_entry = false;
-        {
-            auto it = seq_no_to_session_.find(er_seq_no);
-            if (it != seq_no_to_session_.end()) {
-                routing_identity = it->second.identity;
-                has_routing_ingress_ns = it->second.has_ingress_ns;
-                routing_ingress_ns = it->second.gateway_ingress_ns;
-
-                switch (view.ord_status) {
-                    case pubsub_itc_fw_app::OrdStatus::Filled:
-                    case pubsub_itc_fw_app::OrdStatus::Canceled:
-                    case pubsub_itc_fw_app::OrdStatus::Rejected:
-                    case pubsub_itc_fw_app::OrdStatus::Expired:
-                    case pubsub_itc_fw_app::OrdStatus::DoneForDay:
-                    case pubsub_itc_fw_app::OrdStatus::Replaced:
-                        erase_routing_entry = true;
-                        break;
-                    default:
-                        break;
-                }
-            } else if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
-                // No originating order sequence: the cancel-on-failover reports a promoted
-                // matching engine emits. They carry the identity of the session whose order
-                // was cancelled, which is exactly what is needed -- and it is why the ME now
-                // stores the identity against each resting order rather than the connection
-                // that placed it, which by definition no longer exists in this scenario.
-                routing_identity = fix_common::SessionIdentity::make(inbound.sender_comp_id, inbound.has_origin_gateway_id ? inbound.origin_gateway_id
-                                                                                                                           : gateway_ids::default_when_absent);
-            } else {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                           "SequencerThread: ER seq_no={} not in routing map and no comp id on the envelope -- forwarding unaddressed", er_seq_no);
-            }
-
-            // Now the address, resolved from the identity rather than remembered with it.
-            if (!routing_identity.empty()) {
-                const fix_common::SessionDestination* destination = session_destination(routing_identity);
-                if (destination != nullptr) {
-                    has_routing_conn = true;
-                    routing_conn_id = destination->conn_id;
-                    routing_gateway_id = routing_identity.protocol;
-                    routing_gateway_instance = destination->instance;
-                } else {
-                    // The session is not connected anywhere. Its reports are dropped, as
-                    // they always were -- but now for a reason that names the session
-                    // rather than a connection id that stopped meaning anything.
-                    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                               "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} -- session not bound to any instance, dropping", er_seq_no,
-                               routing_identity.comp_id_view(), routing_identity.protocol);
-                }
-            }
-        }
-
-        // Sequence the ER into the WAL and deliver it the same three ways an order is
-        // (append, replicate to the peer follower, stream to external subscribers) so
-        // the MEP -- an external WAL subscriber -- publishes it on the execution_reports
-        // topic. Each ER gets its OWN seq_no (an order can emit several ERs -- New, Fill,
-        // Canceled -- so they cannot share the order's seq). The stored/replicated/streamed
-        // record is the WalRecord-wrapped ER; the routing conn id rides on the envelope
-        // (the MEP unwraps and publishes only the inner DD-derived ER). Replay skips ER
-        // records (dispatch_replay_records only re-sends NOS/OCR). NOTE: an ER driven by a
-        // sequenced order is forwarded to the gateway gated on the *order's* WalAck, not on
-        // this ER record's own -- so at a failover instant a just-forwarded ER may be
-        // missing from the new leader's WAL (an execution_reports-topic gap at the seam).
-        // Full two-tier commit of ordinary ERs is still a follow-up; ERs with no
-        // originating order sequence already gate on their own record, see below.
-        const int64_t er_wal_seq = next_sequence_number_++;
-        const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
-
-        pubsub_itc_fw_app::WalRecord envelope{};
-        envelope.seq_no = er_wal_seq;
-        envelope.pdu_id = inbound.pdu_id;
-        envelope.payload = inbound.payload;
-        envelope.wall_time_ns = er_wall_time_ns;
-        envelope.has_leader_epoch = true;
-        envelope.leader_epoch = epoch_;
-        envelope.has_gateway_session_conn_id = has_routing_conn;
-        envelope.gateway_session_conn_id = routing_conn_id;
-        envelope.has_origin_gateway_id = has_routing_conn;
-        envelope.origin_gateway_id = routing_gateway_id;
-        envelope.has_gateway_instance_id = has_routing_conn;
-        envelope.gateway_instance_id = routing_gateway_instance;
-        envelope.has_gateway_ingress_ns = has_routing_ingress_ns;
-        envelope.gateway_ingress_ns = routing_ingress_ns;
-        // The identity travels with the report as well as the address, and outlasts it: the
-        // address is only true while the session stays where it is, whereas this says whose
-        // report it was. That is what a WAL reader, a topic subscriber, or a replay after a
-        // reconnect has to key on -- the connection ids in an old record name sockets that
-        // are long gone. The string_view points into routing_identity, which outlives every
-        // use of this envelope below.
-        envelope.has_sender_comp_id = !routing_identity.empty();
-        envelope.sender_comp_id = routing_identity.comp_id_view();
-        // Carried through from the matching engine, which is the only component that knows
-        // whether a report repeats one the member may already hold. The gateway writes it as
-        // PossResend; the sequencer only has to not lose it. See R-0122.
-        envelope.poss_resend = inbound.poss_resend;
-
-        append_envelope_to_wal(envelope);
-        send_wal_record(envelope);
-        stream_wal_record_to_external_subscribers(envelope);
-
-        // Which WalAck releases this ER to the gateway.
-        //
-        // Ordinarily it is the *order's* WAL entry: do not tell a client its order
-        // executed until the follower has durably committed the order itself.
-        //
-        // An ER with no originating order sequence cannot use that rule. The
-        // cancel-on-failover ERs a promoted matching engine emits carry seq_no 0,
-        // because they are generated on promotion rather than driven by a sequenced
-        // order. Gating those on seq_no 0 waited for a WalAck that can never arrive:
-        // every one was parked in pending_er_ forever -- never delivered, never
-        // dropped, and traced only by the Debug line below. Worse, pending_er_ is
-        // keyed on the gate sequence, so all of them collided on key 0 and only the
-        // first was even retained; the rest were discarded outright. The whole book
-        // was cancelled and no client was ever told.
-        //
-        // They gate on the ER record's own WAL sequence instead. The follower acks
-        // every WalRecord it receives (see handle_peer_wal_record), so er_wal_seq is
-        // acked exactly as an order's seq_no is, and it is unique per ER so the keys
-        // no longer collide. This is strictly the stronger guarantee -- the client
-        // learns of the cancel only once the backup holds the cancel record itself --
-        // and it is the "full two-tier commit of ERs" noted above, applied to the one
-        // case that had no working gate at all.
-        //
-        // A report that repeats one already sent needs the same treatment, for the same reason
-        // arrived at from the other direction. It names the sequence of an order the venue took
-        // earlier, and that order's WalAck came and was consumed at the time -- so gating on it
-        // waits for an acknowledgement that is in the past and never comes again. Every report
-        // a matching engine sends out of a catch-up is such a report, which is what the mark on
-        // the envelope says. Without this the deferred order that catch-up exists to answer is
-        // applied, reported, and then parked in pending_er_ -- answered everywhere except at
-        // the member.
-        const bool gate_on_own_record = (er_seq_no == 0) || inbound.poss_resend;
-        const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
-
-        if (!needs_wal_ack()) {
-            send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
-            note_report_forwarded(routing_identity);
-            release_pdu_payload(message);
-            if (erase_routing_entry) {
-                seq_no_to_session_.erase(er_seq_no);
-            }
-        } else {
-            if (gate_seq_no <= peer_acked_through_) {
-                // The follower has already acknowledged the record this report depends on.
-                send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
-                note_report_forwarded(routing_identity);
-                release_pdu_payload(message);
-                if (erase_routing_entry) {
-                    seq_no_to_session_.erase(er_seq_no);
-                }
-            } else {
-                // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
-                PendingEr pending{};
-                pending.pdu_id = inbound.pdu_id;
-                pending.seq_no = er_seq_no;
-                pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
-                pending.identity = routing_identity;
-                pending.has_gateway_ingress_ns = has_routing_ingress_ns;
-                pending.gateway_ingress_ns = routing_ingress_ns;
-                pending.poss_resend = inbound.poss_resend;
-                pending.is_new_order_ack = is_new_order_ack;
-                pending.erase_routing_entry = erase_routing_entry;
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower",
-                           er_seq_no, gate_seq_no);
-                pending_er_.emplace(gate_seq_no, std::move(pending));
-                release_pdu_payload(message);
-            }
-        }
-
+        forward_report_from_engine(message.payload(), static_cast<size_t>(message.payload_size()), message.seq_no(), ReportSource::matching_engine);
+        release_pdu_payload(message);
     } else {
         // Unknown source -- log and discard.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: PDU on unexpected connection {} ({}) -- dropping",
                    message.connection_id().get_value(), svc);
         release_pdu_payload(message);
     }
+}
+
+void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source) {
+
+    // Which gateway this ER belongs to is not known until the envelope has been
+    // decoded and the routing map consulted, so the "is that gateway connected?"
+    // check happens at the point of sending rather than here.
+
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    // The ER arrives wrapped in a WalRecord envelope from the ME. Unwrap it; the
+    // inner ER is decoded only to read ord_status (for routing-map eviction) -- its
+    // payload is forwarded opaque.
+    pubsub_itc_fw_app::WalRecordView inbound{};
+    if (!pubsub_itc_fw_app::decode(inbound, bytes, size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ER envelope -- dropping");
+        return;
+    }
+    if (inbound.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: ER envelope carries unexpected pdu_id {} -- dropping", inbound.pdu_id);
+        return;
+    }
+    pubsub_itc_fw_app::ExecutionReportView view{};
+    if (!pubsub_itc_fw_app::decode(view, inbound.payload.data, inbound.payload.size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode ExecutionReport -- dropping");
+        return;
+    }
+
+    // The report that acknowledges a new order is the only one the order-path checkpoints
+    // record, matching the population the gateway's round-trip histogram measures. Every
+    // report for an order carries the same ingress stamp, so a Canceled report would be
+    // recorded as though the path had taken as long as the order rested on the book --
+    // which would swamp the distribution rather than merely widen it.
+    //
+    // ord_status is already decoded here for the routing map, so the restriction costs
+    // nothing beyond the comparison.
+    //
+    // A kept report is not measured at all: it waited in the store for a change of leader, which
+    // has nothing to do with how long the path takes.
+    const bool is_new_order_ack = (source == ReportSource::matching_engine) && (view.ord_status == pubsub_itc_fw_app::OrdStatus::New);
+
+    // Whether the member may already hold this report. The matching engine says so of a report it
+    // repeats. A kept report may have been forwarded by the leader before it died, and nothing here
+    // can tell whether it was, so it is always marked. See R-0122.
+    const bool possible_repeat = inbound.poss_resend || (source == ReportSource::kept_while_not_leading);
+
+    // The report has arrived from the matching engine. Against the matching engine's own
+    // er_out this gives the hop between the two processes; against er_out below it gives
+    // what this component costs the report, which includes sequencing it into the log and
+    // any wait for the follower to acknowledge it.
+    if (is_new_order_ack) {
+        order_path_metrics::observe_checkpoint(er_in_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns,
+                                               config_.wall_clock->now_ns());
+    }
+
+    // Route the ER back to the originating FIX session. The ME echoes the order's
+    // seq_no in the transport header, so er_seq_no resolves via the map for
+    // ordinary ERs. ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
+    // ERs) instead carry the conn id on the inbound envelope. The conn id rides on the
+    // envelope, never inside the DD-derived ER.
+    // The session this report belongs to, and then -- separately -- where that session
+    // can be reached. Keeping the two apart is the whole of step 5: an order is filed
+    // under an identity that outlives connections, and the address is resolved at the
+    // last possible moment, so a member that reconnected while the report was in flight
+    // still receives it.
+    fix_common::SessionIdentity routing_identity{};
+    bool has_routing_conn = false;
+    int32_t routing_conn_id = 0;
+    int16_t routing_gateway_id = gateway_ids::default_when_absent;
+    int16_t routing_gateway_instance = gateway_ids::first_instance;
+    // The originating gateway's ingress stamp, returned to it on the ER so it can
+    // measure the round trip. Only the routing-map branch can supply one: an ER that
+    // is not tied to a sequenced order never had an originating read to measure from.
+    bool has_routing_ingress_ns = false;
+    int64_t routing_ingress_ns = 0;
+    bool erase_routing_entry = false;
+    {
+        auto it = seq_no_to_session_.find(er_seq_no);
+        if (it != seq_no_to_session_.end()) {
+            routing_identity = it->second.identity;
+            has_routing_ingress_ns = it->second.has_ingress_ns;
+            routing_ingress_ns = it->second.gateway_ingress_ns;
+
+            switch (view.ord_status) {
+                case pubsub_itc_fw_app::OrdStatus::Filled:
+                case pubsub_itc_fw_app::OrdStatus::Canceled:
+                case pubsub_itc_fw_app::OrdStatus::Rejected:
+                case pubsub_itc_fw_app::OrdStatus::Expired:
+                case pubsub_itc_fw_app::OrdStatus::DoneForDay:
+                case pubsub_itc_fw_app::OrdStatus::Replaced:
+                    erase_routing_entry = true;
+                    break;
+                default:
+                    break;
+            }
+        } else if (inbound.has_sender_comp_id && !inbound.sender_comp_id.empty()) {
+            // The order's sequence is not in the map. Either the report has no originating
+            // order sequence, as with the cancel-on-failover reports a promoted matching
+            // engine emits, or it was kept while this instance was not leading, and only a
+            // leader fills the map. Every report the engine sends carries the identity of the
+            // session whose order it is about, which is exactly what is needed -- and it is
+            // why the ME stores the identity against each resting order rather than the
+            // connection that placed it, which by then may no longer exist.
+            routing_identity = fix_common::SessionIdentity::make(inbound.sender_comp_id,
+                                                                 inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent);
+        } else {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: ER seq_no={} not in routing map and no comp id on the envelope -- forwarding unaddressed", er_seq_no);
+        }
+
+        // Now the address, resolved from the identity rather than remembered with it.
+        if (!routing_identity.empty()) {
+            const fix_common::SessionDestination* destination = session_destination(routing_identity);
+            if (destination != nullptr) {
+                has_routing_conn = true;
+                routing_conn_id = destination->conn_id;
+                routing_gateway_id = routing_identity.protocol;
+                routing_gateway_instance = destination->instance;
+            } else {
+                // The session is not connected anywhere. Its reports are dropped, as
+                // they always were -- but now for a reason that names the session
+                // rather than a connection id that stopped meaning anything.
+                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                           "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} -- session not bound to any instance, dropping", er_seq_no,
+                           routing_identity.comp_id_view(), routing_identity.protocol);
+            }
+        }
+    }
+
+    // Sequence the ER into the WAL and deliver it the same three ways an order is
+    // (append, replicate to the peer follower, stream to external subscribers) so
+    // the MEP -- an external WAL subscriber -- publishes it on the execution_reports
+    // topic. Each ER gets its OWN seq_no (an order can emit several ERs -- New, Fill,
+    // Canceled -- so they cannot share the order's seq). The stored/replicated/streamed
+    // record is the WalRecord-wrapped ER; the routing conn id rides on the envelope
+    // (the MEP unwraps and publishes only the inner DD-derived ER). Replay skips ER
+    // records (dispatch_replay_records only re-sends NOS/OCR). NOTE: an ER driven by a
+    // sequenced order is forwarded to the gateway gated on the *order's* WalAck, not on
+    // this ER record's own -- so at a failover instant a just-forwarded ER may be
+    // missing from the new leader's WAL (an execution_reports-topic gap at the seam).
+    // Full two-tier commit of ordinary ERs is still a follow-up; ERs with no
+    // originating order sequence already gate on their own record, see below.
+    const int64_t er_wal_seq = next_sequence_number_++;
+    const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
+
+    pubsub_itc_fw_app::WalRecord envelope{};
+    envelope.seq_no = er_wal_seq;
+    envelope.pdu_id = inbound.pdu_id;
+    envelope.payload = inbound.payload;
+    envelope.wall_time_ns = er_wall_time_ns;
+    envelope.has_leader_epoch = true;
+    envelope.leader_epoch = epoch_;
+    envelope.has_gateway_session_conn_id = has_routing_conn;
+    envelope.gateway_session_conn_id = routing_conn_id;
+    envelope.has_origin_gateway_id = has_routing_conn;
+    envelope.origin_gateway_id = routing_gateway_id;
+    envelope.has_gateway_instance_id = has_routing_conn;
+    envelope.gateway_instance_id = routing_gateway_instance;
+    envelope.has_gateway_ingress_ns = has_routing_ingress_ns;
+    envelope.gateway_ingress_ns = routing_ingress_ns;
+    // The identity travels with the report as well as the address, and outlasts it: the
+    // address is only true while the session stays where it is, whereas this says whose
+    // report it was. That is what a WAL reader, a topic subscriber, or a replay after a
+    // reconnect has to key on -- the connection ids in an old record name sockets that
+    // are long gone. The string_view points into routing_identity, which outlives every
+    // use of this envelope below.
+    envelope.has_sender_comp_id = !routing_identity.empty();
+    envelope.sender_comp_id = routing_identity.comp_id_view();
+    // Whether the member may already hold the report, worked out above. The gateway writes it
+    // as PossResend. See R-0122.
+    envelope.poss_resend = possible_repeat;
+
+    append_envelope_to_wal(envelope);
+    send_wal_record(envelope);
+    stream_wal_record_to_external_subscribers(envelope);
+
+    // Which WalAck releases this ER to the gateway.
+    //
+    // Ordinarily it is the *order's* WAL entry: do not tell a client its order
+    // executed until the follower has durably committed the order itself.
+    //
+    // An ER with no originating order sequence cannot use that rule. The
+    // cancel-on-failover ERs a promoted matching engine emits carry seq_no 0,
+    // because they are generated on promotion rather than driven by a sequenced
+    // order. Gating those on seq_no 0 waited for a WalAck that can never arrive:
+    // every one was parked in pending_er_ forever -- never delivered, never
+    // dropped, and traced only by the Debug line below. Worse, pending_er_ is
+    // keyed on the gate sequence, so all of them collided on key 0 and only the
+    // first was even retained; the rest were discarded outright. The whole book
+    // was cancelled and no client was ever told.
+    //
+    // They gate on the ER record's own WAL sequence instead. The follower acks
+    // every WalRecord it receives (see handle_peer_wal_record), so er_wal_seq is
+    // acked exactly as an order's seq_no is, and it is unique per ER so the keys
+    // no longer collide. This is strictly the stronger guarantee -- the client
+    // learns of the cancel only once the backup holds the cancel record itself --
+    // and it is the "full two-tier commit of ERs" noted above, applied to the one
+    // case that had no working gate at all.
+    //
+    // A report that repeats one already sent needs the same treatment, for the same reason
+    // arrived at from the other direction. It names the sequence of an order the venue took
+    // earlier, and that order's WalAck came and was consumed at the time -- so gating on it
+    // waits for an acknowledgement that is in the past and never comes again. Every report
+    // a matching engine sends out of a catch-up is such a report, which is what the mark on
+    // the envelope says. Without this the deferred order that catch-up exists to answer is
+    // applied, reported, and then parked in pending_er_ -- answered everywhere except at
+    // the member.
+    const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
+    const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
+
+    if (!needs_wal_ack()) {
+        send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
+        note_report_forwarded(routing_identity);
+        if (erase_routing_entry) {
+            seq_no_to_session_.erase(er_seq_no);
+        }
+    } else {
+        if (gate_seq_no <= peer_acked_through_) {
+            // The follower has already acknowledged the record this report depends on.
+            send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
+            note_report_forwarded(routing_identity);
+            if (erase_routing_entry) {
+                seq_no_to_session_.erase(er_seq_no);
+            }
+        } else {
+            // WalAck not yet received; buffer the inner (unwrapped) ER until it arrives.
+            PendingEr pending{};
+            pending.pdu_id = inbound.pdu_id;
+            pending.seq_no = er_seq_no;
+            pending.payload.assign(inbound.payload.data, inbound.payload.data + inbound.payload.size);
+            pending.identity = routing_identity;
+            pending.has_gateway_ingress_ns = has_routing_ingress_ns;
+            pending.gateway_ingress_ns = routing_ingress_ns;
+            pending.poss_resend = possible_repeat;
+            pending.is_new_order_ack = is_new_order_ack;
+            pending.erase_routing_entry = erase_routing_entry;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower", er_seq_no,
+                       gate_seq_no);
+            pending_er_.emplace(gate_seq_no, std::move(pending));
+        }
+    }
+}
+
+std::chrono::steady_clock::time_point SequencerThread::kept_reports_needed_from() const {
+    // Before this instance has granted any request, no leader has been seen forwarding anything, so
+    // every kept report may be needed.
+    if (last_granted_to_leader_ == std::chrono::steady_clock::time_point{}) {
+        return std::chrono::steady_clock::time_point::min();
+    }
+    return last_granted_to_leader_ - config_.lease.period - config_.lease.drift_allowance;
+}
+
+void SequencerThread::keep_report_from_engine(const pubsub_itc_fw::EventMessage& message) {
+    const std::chrono::steady_clock::time_point needed_from = kept_reports_needed_from();
+    kept_reports_.discard_received_before(needed_from);
+    kept_reports_.keep(message.seq_no(), message.payload(), static_cast<size_t>(message.payload_size()), std::chrono::steady_clock::now(), needed_from);
+
+    if (kept_reports_.lost() != kept_reports_lost_reported_) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: the store of reports kept in case this instance takes the lead is full, and {} report(s) still needed have "
+                   "been overwritten. If this instance takes the lead now, those reports reach their members only if the leader forwarded them "
+                   "before it stopped",
+                   kept_reports_.lost() - kept_reports_lost_reported_);
+        kept_reports_lost_reported_ = kept_reports_.lost();
+        kept_reports_lost_gauge_.set(static_cast<double>(kept_reports_.lost()));
+    }
+}
+
+void SequencerThread::forward_kept_reports() {
+    kept_reports_.discard_received_before(kept_reports_needed_from());
+    const size_t count = kept_reports_.count();
+    const size_t bytes = kept_reports_.bytes_used();
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: taking the lead -- forwarding {} kept report(s) ({} bytes), each marked as a possible repeat", count, bytes);
+    kept_reports_.take_all([this](int64_t er_seq_no, const uint8_t* report, size_t size) {
+        forward_report_from_engine(report, size, er_seq_no, ReportSource::kept_while_not_leading);
+    });
 }
 
 void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
@@ -1146,6 +1190,11 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         // rather than assumed, because silence here leaves a refusal in place that nothing will
         // ever lift.
         broadcast_order_acceptance();
+
+        // The previous leader may have died holding reports it had not forwarded. This instance
+        // kept every report the engine sent it, so it forwards them all now
+        // (docs/availability/change_of_sequencer_leader.md, section 4.4).
+        forward_kept_reports();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         discard_held_orders();
         first_unheld_seq_ = 0;
@@ -1224,10 +1273,15 @@ void SequencerThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& co
                    pubsub_itc_fw_app::to_string(request.group));
         return;
     }
-    act_on(lease_agent_->on_request(
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    const fix_common::PairLeaseAgent::Change change = lease_agent_->on_request(
         conn_id, request.candidate_instance_id, request.epoch, request.request_id,
-        fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead},
-        std::chrono::steady_clock::now()));
+        fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead}, now);
+    if (change == fix_common::PairLeaseAgent::Change::AgreedPeerLeads) {
+        // The peer now leads, and forwards the engine's reports, until at least a lease period from now.
+        last_granted_to_leader_ = now;
+    }
+    act_on(change);
 }
 
 void SequencerThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& message) {

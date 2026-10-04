@@ -319,6 +319,13 @@ discards reports (`SequencerThread`, the report branch). A sequencer that takes 
 the engine for reports it may have missed (`SequencerThread::adopt_role`), so the member is not sent
 them. A test must count those too.
 
+**The fault in reports is fixed (2026-10-04).** A sequencer that is not leading now keeps a copy of
+every report the engine sends it, and on taking the lead forwards them all, each marked as a possible
+repeat (part 4.4 of the design). `ha_test.py` scenario 65 blocks the leader's sends to the gateways,
+has a member send three orders, kills the leader, and requires the member to receive all three
+acceptances, marked PossResend. With the new leader's forwarding switched off, the member received
+none of them and the scenario failed; with it, the scenario passes.
+
 **The matching engine holds orders that no surviving log holds (measured).** The leading sequencer
 sends each order to the matching engine before it sends the order's record to its follower, and the
 engine does not check that the sequence numbers it is sent only go forward. If the leader dies between
@@ -341,8 +348,8 @@ arriving and not from the way the test looks for them.
 acknowledges its record, and only then sends it to the matching engine (part 4.2 of the design, option
 A). Scenario 59 now stops the leader straight after sending it three orders it cannot replicate, and
 requires the engine to have accepted none of them and to hold nothing the new leader's log lacks; it
-passes. The other two faults, orders and reports lost during the change of leader, remain open, for
-parts 4.3 and 4.4.
+passes. Reports lost during the change of leader are fixed by part 4.4, as described above. Orders lost during
+the change of leader remain open, for part 4.3.
 
 **What is not decided.** Which of the remedies fits: the gateway holding each order until the
 sequencer's report for it arrives and sending it again to the new leader, which needs the sequencer
@@ -352,7 +359,7 @@ it sent while it knew no leading sequencer. Each has a cost, and the choice need
 
 **The design.** [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md) sets out
 the options for each part of this, with [BUG-0105](#bug_0105) and [BUG-0097](#bug_0097), and
-recommends one. It is for review; nothing is implemented.
+recommends one. Parts 4.1, 4.2, 4.4 and 4.5 are built; part 4.3 is not.
 
 **What a test must do.** Count the orders sent during the change, and require every one of them to be
 answered, accepted or refused. Scenario 59 covers the third fault, orders the engine holds that no

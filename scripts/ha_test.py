@@ -841,6 +841,12 @@ class Scenario(NamedTuple):
     # docs/availability/a_follower_behind_does_not_lead.md.
     assert_follower_behind_does_not_lead: bool = False
     restart_arbiter_before_leader_dies: bool = False
+    # When True, the primary sequencer is started with libblock_sends_to_ports.so preloaded, set to
+    # block what it sends to the gateways once the flag file exists. The scenario sends orders whose
+    # reports the leader therefore cannot forward, kills the leader, and requires each report to
+    # reach the member from the new leader, marked PossResend. See run_scenario's "kept reports"
+    # block, and section 4.4 of docs/availability/change_of_sequencer_leader.md.
+    assert_kept_reports_forwarded: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3577,6 +3583,27 @@ _SCENARIOS: list[Scenario] = [
         restart_arbiter_before_leader_dies=True,
         steps=[],
     ),
+
+    # 65 -- reports the leader received but never forwarded reach the member from the new leader.
+    #
+    # The primary sequencer is started with libblock_sends_to_ports.so preloaded. Once the flag file
+    # exists, nothing it sends to a gateway arrives. A member then sends orders: the matching engine
+    # accepts them and sends its reports to both sequencers, and the leader's copies go nowhere. The
+    # leader is killed. The follower kept every report the engine sent it, and on taking the lead
+    # forwards them all, each marked as a possible repeat.
+    Scenario(
+        number=65,
+        short_name="kept_reports_forwarded_by_new_leader",
+        description="Reports the sequencer leader never forwarded reach the member from the new leader",
+        expected_outcome=(
+            "the member receives no report while the leader's sends to the gateways are blocked; after the leader is killed, "
+            "the member receives the acceptance of every order it sent, each marked PossResend"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_kept_reports_forwarded=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4801,6 +4828,31 @@ def blocked_peer_environment(prefix: Path, flag: Path) -> dict[str, str]:
     return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag)}
 
 
+def blocked_gateway_environment(prefix: Path, flag: Path) -> dict[str, str]:
+    """The environment that makes libblock_sends_to_ports.so block the primary sequencer's sends to the gateways.
+
+    The sequencer opens a connection to each gateway listed in a [[gateway]] table of its
+    configuration and sends reports on it, so blocking each listed port blocks every report it sends.
+    """
+    library = prefix / "lib" / "libblock_sends_to_ports.so"
+    if not library.is_file():
+        die(f"{library} is not installed; it is built with the sequencer and installed by devsetup.sh")
+    config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+    ports: list[str] = []
+    in_gateway_table = False
+    for line in config.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_gateway_table = stripped == "[[gateway]]"
+            continue
+        match = re.match(r"port\s*=\s*(\d+)", stripped)
+        if in_gateway_table and match:
+            ports.append(match.group(1))
+    if not ports:
+        die(f"no [[gateway]] ports in {config}, so there is nothing to block")
+    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag)}
+
+
 def installed_toml_int(config: Path, key: str) -> int:
     """Read one integer setting from a deployed configuration file, by its key alone."""
     for line in config.read_text().splitlines():
@@ -5720,6 +5772,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             extra_environment = None
             if scenario.block_leader_peer_sends and name == "sequencer_primary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
+            if scenario.assert_kept_reports_forwarded and name == "sequencer_primary":
+                extra_environment = blocked_gateway_environment(prefix, block_flag)
+            if extra_environment is not None:
                 log(f"  {name} has libblock_sends_to_ports.so preloaded, blocking ports "
                     f"{extra_environment['PUBSUB_TEST_BLOCK_PORTS']} once {block_flag.name} exists")
             proc = launch_app(name, bin_name, config, bin_dir, log_dir,
@@ -7771,6 +7826,107 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if not poll_log_for(primary_log, "saying it may lead again", timeout=30.0, from_byte=leader_from)[0]:
                 die("rule 11: the follower caught up but the leader never said it may lead again.")
             log("  the follower caught up, and the leader says it may lead again -- OK")
+
+        # ── Kept reports: the new leader forwards what the old one never did ──
+        if scenario.assert_kept_reports_forwarded:
+            log("=== Reports the leader never forwarded reach the member from the new leader ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("kept reports: sequencer_primary is not leading, so blocking its sends would not stop any report.")
+            # The fix8 client logs on with the same comp id, and two sessions cannot share one.
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("kept reports: the raw client could not log on.")
+
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            def reports_for(cl_ord_ids: list[str], timeout: float) -> dict[str, list[dict[int, str]]]:
+                """Every ExecutionReport that names one of cl_ord_ids, received until the timeout runs out."""
+                received: dict[str, list[dict[int, str]]] = {cl_ord_id: [] for cl_ord_id in cl_ord_ids}
+                deadline = time.monotonic() + timeout
+                while (remaining := deadline - time.monotonic()) > 0:
+                    report = member.receive_until("8", timeout=min(1.0, remaining))
+                    if report is not None and report.get(11) in received:
+                        received[report[11]].append(report)
+                return received
+
+            # 1. Before anything is blocked, an order is answered, so the member's session does
+            #    receive reports, and the silence in step 2 is the block and nothing else.
+            before = f"kept-{run_tag}-before"
+            member.new_order_single(before)
+            if not reports_for([before], _RAW_REPLY_TIMEOUT)[before]:
+                member.close()
+                die("kept reports: an order sent before anything was blocked was never answered, so silence later would prove nothing.")
+            log("  an order sent before the block is answered -- OK")
+
+            # 2. Nothing the leader sends to a gateway arrives from now on, and the library says so.
+            block_flag.touch()
+            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists",
+                                timeout=_RAW_REPLY_TIMEOUT)[0]:
+                member.close()
+                die("kept reports: libblock_sends_to_ports.so never reported that it had begun blocking.")
+            log("  the leader's sends to the gateways are now discarded, and the library has said so -- OK")
+
+            # 3. Orders the engine accepts, whose reports the leader cannot forward.
+            kept = [f"kept-{run_tag}-{number}" for number in (1, 2, 3)]
+            accepted_from = file_end(me_log)
+            for cl_ord_id in kept:
+                member.new_order_single(cl_ord_id)
+            for cl_ord_id in kept:
+                if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={cl_ord_id} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=accepted_from)[0]:
+                    member.close()
+                    die(f"kept reports: the matching engine never accepted {cl_ord_id}, so it sent no report to keep.")
+            early = {c: r for c, r in reports_for(kept, 2.0).items() if r}
+            if early:
+                member.close()
+                die(f"kept reports: the member was answered for {sorted(early)} while the leader's sends were blocked; only the "
+                    "leader forwards reports, so the block is not doing what this scenario needs.")
+            log(f"  the engine accepted all {len(kept)} orders and the member has heard nothing of them -- correct so far")
+
+            # 4. The leader dies, and the follower takes the lead.
+            primary = proc_by_name["sequencer_primary"]
+            takeover_from = file_end(secondary_log)
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if Path(f"/proc/{primary.pid}").exists():
+                member.close()
+                die(f"kept reports: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            log("  sequencer_primary confirmed dead")
+            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            if not found:
+                member.close()
+                die(f"kept reports: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            log(f"  sequencer_secondary took the lead {elapsed:.1f}s after the kill")
+
+            # 5. The requirement: every order's acceptance reaches the member, marked PossResend.
+            received = reports_for(kept, _RAW_REPLY_TIMEOUT)
+            member.close()
+            for cl_ord_id, reports in received.items():
+                for report in reports:
+                    log(f"    {cl_ord_id}: OrdStatus={report.get(39)} ExecType={report.get(150)} PossResend={report.get(97, 'absent')}")
+            unanswered = [c for c, reports in received.items() if not any(r.get(39) == "0" for r in reports)]
+            if unanswered:
+                die(f"kept reports: the member was never told {unanswered} were accepted. The engine accepted them and the "
+                    "follower received the reports, so the new leader must forward them (section 4.4 of "
+                    "docs/availability/change_of_sequencer_leader.md).")
+            unmarked = [c for c, reports in received.items() if any(r.get(39) == "0" and r.get(97) != "Y" for r in reports)]
+            if unmarked:
+                die(f"kept reports: the acceptance of {unmarked} arrived without PossResend. The new leader cannot tell whether "
+                    "the old leader forwarded it, so a member that already had it would read it as a second event (R-0122).")
+            log(f"  the member was told of all {len(kept)} acceptances, each marked PossResend -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

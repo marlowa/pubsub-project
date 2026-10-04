@@ -122,10 +122,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     static constexpr size_t max_er_group_arena_size = 1u << 20; // 1 MiB sanity ceiling
     std::vector<uint8_t> er_group_arena_buffer_ = std::vector<uint8_t>(initial_er_group_arena_size);
 
-    // Wraps the ER in a WalRecord envelope and sends it to the sequencer(s). Routing
-    // metadata for ERs not tied to a sequenced order (the seq_no==0 cancel-on-failover
-    // ERs) rides on the envelope, so the ER PDU itself stays purely DD-derived. For
-    // ordinary ERs the sequencer routes by the echoed seq_no, so no session is supplied.
+    // Wraps the ER in a WalRecord envelope and sends it to both sequencers. The identity of
+    // the session whose order the report is about rides on the envelope, so the ER PDU itself
+    // stays purely DD-derived. Every report carries it. The leading sequencer routes an
+    // ordinary report by the echoed seq_no when it can, but a report with no originating
+    // sequence (the seq_no==0 cancel-on-failover reports) has only the identity to go on, and
+    // so does a report a sequencer kept while it was not leading and forwards after taking the
+    // lead, because only the leader records which session sent which order
+    // (docs/availability/change_of_sequencer_leader.md, section 4.4).
     //
     // What travels is the session's identity, never an address. The ME has no idea where a
     // session is connected -- and on the path that needs this most, promotion after a
@@ -136,8 +140,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     /// (tag 97). See R-0122.
     enum class ReportIsRepeat { no, yes };
 
-    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no,
-                              const fix_common::SessionIdentity& session = fix_common::SessionIdentity{}, ReportIsRepeat repeat = ReportIsRepeat::no);
+    void send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
+                              ReportIsRepeat repeat = ReportIsRepeat::no);
 
     /**
      * @brief Refuses a new order whose ClOrdID is longer than the book's key holds.
@@ -182,17 +186,18 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     /**
      * @brief Refuses a new order whose sequence number is not above the last the engine acted on.
      *
-     * Parameters as for refuse_over_long_order, without the session and the repeat marking: this is
-     * only ever a live refusal, routed by its sequence number.
+     * Parameters as for refuse_over_long_order, without the repeat marking: this is only ever a live refusal.
      */
-    void refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time);
+    void refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                                      const fix_common::SessionIdentity& session);
 
     /**
      * @brief Refuses a request to cancel whose sequence number is not above the last the engine acted on.
      *
      * The report carries the OrigClOrdID, so each gateway sends it as an OrderCancelReject.
      */
-    void refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time);
+    void refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+                                       const fix_common::SessionIdentity& session);
 
     const MatchingEngineConfiguration& config_;
 

@@ -84,6 +84,7 @@ add_executable(sequencer_tests
         tests/PairLeaseAgentTest.cpp
         tests/EngineOrderRoutingTest.cpp
         tests/LeasePromiseStoreTest.cpp
+        tests/KeptReportStoreTest.cpp
         tests/LogEpochTableTest.cpp
         tests/WalRecordEncodingTest.cpp
         SequencerConfigurationLoader.cpp

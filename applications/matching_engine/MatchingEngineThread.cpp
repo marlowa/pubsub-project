@@ -666,7 +666,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     if (sequence_goes_backwards(sequence_number)) {
-        refuse_out_of_sequence_order(view, sequence_number, now_ns);
+        refuse_out_of_sequence_order(view, sequence_number, now_ns, session);
         return;
     }
     if (!OrderKey::fits(view.cl_ord_id)) {
@@ -710,7 +710,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         halt_er.has_text = true;
         halt_er.text = "trading is halted";
 
-        send_er_to_sequencer(halt_er, sequence_number);
+        send_er_to_sequencer(halt_er, sequence_number, session);
         return;
     }
 
@@ -742,7 +742,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         er.has_ord_rej_reason = true;
         er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::DuplicateOrder;
 
-        send_er_to_sequencer(er, sequence_number);
+        send_er_to_sequencer(er, sequence_number, session);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent rejection ER ExecID={} ClOrdID={} (DuplicateOrder)", exec_id,
                    view.cl_ord_id);
         return;
@@ -803,7 +803,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         full_er.has_text = true;
         full_er.text = "the venue is holding as many open orders as it can";
 
-        send_er_to_sequencer(full_er, sequence_number);
+        send_er_to_sequencer(full_er, sequence_number, session);
         return;
     }
 
@@ -874,7 +874,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         er_group_arena_buffer_.resize(std::max(group_arena.bytes_used(), er_group_arena_buffer_.size() * 2));
     }
 
-    send_er_to_sequencer(er, sequence_number);
+    send_er_to_sequencer(er, sequence_number, session);
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
     // and the test breaks, silently and elsewhere.
     //
@@ -960,7 +960,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     if (sequence_goes_backwards(sequence_number)) {
-        refuse_out_of_sequence_cancel(view, sequence_number, now_ns);
+        refuse_out_of_sequence_cancel(view, sequence_number, now_ns, session);
         return;
     }
     if (!OrderKey::fits(view.cl_ord_id) || !OrderKey::fits(view.orig_cl_ord_id)) {
@@ -997,7 +997,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
         er.has_ord_rej_reason = true;
         er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::UnknownOrder;
 
-        send_er_to_sequencer(er, sequence_number);
+        send_er_to_sequencer(er, sequence_number, session);
         // Info: a member asking to cancel an order the venue does not hold is the member's doing,
         // and the venue has answered it correctly.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent rejection ER ExecID={} OrigClOrdID={} (UnknownOrder)", exec_id,
@@ -1052,7 +1052,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     er.has_ord_type = true;
     er.ord_type = entry.ord_type;
 
-    send_er_to_sequencer(er, sequence_number);
+    send_er_to_sequencer(er, sequence_number, session);
 
     // Last, and only now, for the same reason as on the accept path.
     order_book_.publish(sequence_number);
@@ -1099,7 +1099,7 @@ void MatchingEngineThread::refuse_over_long_order(const pubsub_itc_fw_app::NewOr
     er.text = std::string_view(text_buf.data(), std::min(static_cast<size_t>(text_written.size), text_buf.size()));
     // The session goes on the envelope only for a catch-up's report, as the other catch-up reports
     // do; otherwise the sequencer routes the report by its sequence number, as every live report.
-    send_er_to_sequencer(er, sequence_number, repeat == ReportIsRepeat::yes ? session : fix_common::SessionIdentity{}, repeat);
+    send_er_to_sequencer(er, sequence_number, session, repeat);
 }
 
 void MatchingEngineThread::refuse_over_long_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
@@ -1142,7 +1142,7 @@ void MatchingEngineThread::refuse_over_long_cancel(const pubsub_itc_fw_app::Orde
     er.text = std::string_view(text_buf.data(), std::min(static_cast<size_t>(text_written.size), text_buf.size()));
     // The session goes on the envelope only for a catch-up's report, as the other catch-up reports
     // do; otherwise the sequencer routes the report by its sequence number, as every live report.
-    send_er_to_sequencer(er, sequence_number, repeat == ReportIsRepeat::yes ? session : fix_common::SessionIdentity{}, repeat);
+    send_er_to_sequencer(er, sequence_number, session, repeat);
 }
 
 bool MatchingEngineThread::sequence_goes_backwards(int64_t sequence_number) {
@@ -1157,7 +1157,8 @@ bool MatchingEngineThread::sequence_goes_backwards(int64_t sequence_number) {
     return false;
 }
 
-void MatchingEngineThread::refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time) {
+void MatchingEngineThread::refuse_out_of_sequence_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
+                                                        const fix_common::SessionIdentity& session) {
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
 
@@ -1180,11 +1181,11 @@ void MatchingEngineThread::refuse_out_of_sequence_order(const pubsub_itc_fw_app:
     er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
     er.has_text = true;
     er.text = "Venue could not process the order: it arrived out of sequence";
-    send_er_to_sequencer(er, sequence_number);
+    send_er_to_sequencer(er, sequence_number, session);
 }
 
-void MatchingEngineThread::refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number,
-                                                         int64_t transact_time) {
+void MatchingEngineThread::refuse_out_of_sequence_cancel(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t transact_time,
+                                                         const fix_common::SessionIdentity& session) {
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
 
@@ -1210,7 +1211,7 @@ void MatchingEngineThread::refuse_out_of_sequence_cancel(const pubsub_itc_fw_app
     er.ord_rej_reason = pubsub_itc_fw_app::OrdRejReason::Other;
     er.has_text = true;
     er.text = "Venue could not process the cancel: it arrived out of sequence. The order is unchanged";
-    send_er_to_sequencer(er, sequence_number);
+    send_er_to_sequencer(er, sequence_number, session);
 }
 
 bool MatchingEngineThread::holding_reports_until_entitled() const {
@@ -1275,11 +1276,12 @@ void MatchingEngineThread::discard_held_reports(const char* reason) {
 void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::ExecutionReport& er, int64_t seq_no, const fix_common::SessionIdentity& session,
                                                 ReportIsRepeat repeat) {
     // Encode the ER, then wrap it in a WalRecord envelope. The echoed seq_no travels in
-    // the transport header, which is how the sequencer routes an ordinary ER: it looks the
-    // order's sequence up and finds the session that placed it. The session identity on
-    // the envelope is for the ERs that have no such sequence -- the seq_no==0
-    // cancel-on-failover ones -- and says whose order was cancelled without saying where
-    // that member is, which the ME cannot know and which by then has usually changed.
+    // the transport header, which is how the leading sequencer usually routes an ER: it looks
+    // the order's sequence up and finds the session that placed it. The session identity on
+    // the envelope says whose order the report is about without saying where that member is,
+    // which the ME cannot know and which may have changed. It is what routes a report with
+    // no originating sequence, such as the seq_no==0 cancel-on-failover reports, and a report
+    // a sequencer kept while it was not leading, which has no record of who sent which order.
     // Measure then fit: a zero-size out buffer makes encode report bytes_needed, then
     // the reusable buffer is grown to hold it -- no fixed cap that could silently drop
     // an over-large ER, and no per-ER allocation once the buffer reaches its high-water

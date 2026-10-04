@@ -242,6 +242,39 @@ gateway sends again, but not reports that answer no such command.
 **Recommendation: option A, with 4.3's state request as the backstop** for a command whose report the
 follower never received, for example because its connection to the engine was down.
 
+**Option A is built.** How it works:
+
+- **What is kept.** A sequencer that is not leading keeps a copy of every report the matching engine
+  sends it, exactly as the engine sent it, in `KeptReportStore`. The copies are written into a block of
+  128 MiB, and a list of where each copy lies holds up to 262,144 of them. Both are allocated when the
+  sequencer starts, so keeping a report allocates nothing. When a leader dies, its follower holds the
+  reports of up to one renewal interval plus one lease period plus the drift allowance, 4.25 seconds
+  with the usual timings. At the highest rate measured on this venue, about 34,000 orders a second, and
+  taking one and a half reports an order, that is about 212,000 reports, which the store holds. The
+  block allows an average of 512 bytes a report; the acceptances scenario 65 forwards are 182 bytes
+  each, envelope included.
+- **How long a report is kept.** A report is discarded once it arrived more than one lease period plus
+  the drift allowance before the follower last granted its leader's request to lead. A leader that has
+  just been granted a lease leads for at least a lease period, and forwards each report within a small
+  fraction of a second, so a report that old has been forwarded. The age is measured against the last
+  grant and not against the clock, and that is what makes it safe. When the leader dies, it stops
+  asking, so nothing more ages, however long the change of leader then takes: a voter that is slow to
+  answer, or an arbiter that is down, cannot make the follower discard a report the old leader never
+  forwarded.
+- **When the store is full,** the oldest copies are overwritten. A copy overwritten while it may still
+  have been needed is a report that may never reach its member, so the sequencer logs a Warning when
+  that happens and keeps the total in the metric `sequencer_kept_reports_lost`, which is expected to
+  be 0.
+- **On taking the lead,** the sequencer forwards every copy it holds, oldest first, through the same
+  code that forwards a report the engine has just sent, each marked as a possible repeat. Each is given
+  its own record in the new leader's log, as any report is, so the log and the `execution_reports`
+  topic may also hold a report twice across a change of leader, the repeat marked. A forwarded report
+  is routed by the member's identity, which the matching engine puts on the envelope of every report
+  it sends, so the new leader does not need the old leader's record of which session sent which
+  order. It then empties the store.
+
+`ha_test.py` scenario 65 checks it.
+
 ### 4.5 An instance rejoining as a follower (G5, BUG-0097)
 
 The design in full, which also covers a follower that has merely restarted, is
@@ -413,8 +446,8 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
 | Scenario 59 | The engine holds no order the new leader's log does not hold | Fails, measured; marked as expected to fail |
 | Numbering, added to scenarios 1 and 59 | After the change of leader, the numbers in the new leader's log only go forward | Fails, measured by reading the log files |
 | Scenario 1, strengthened | Every order sent during the change of leader is answered, accepted or refused, and none is placed twice | Fails: 20,000 sent, none answered |
-| Reports, new | With the leader's sends to the gateways blocked by `libblock_sends_to_ports.so` and then the leader killed, every report reaches its member, repeats marked | Expected to fail; not yet written |
-| Rejoin, new | The old leader, holding records the new leader does not, is restarted, and its log ends identical to the new leader's | Expected to fail; not yet written |
+| Scenario 65 | With the leader's sends to the gateways blocked by `libblock_sends_to_ports.so` and then the leader killed, every report reaches its member, repeats marked | Passes; fails with the new leader's forwarding switched off, shown |
+| Scenario 62 | The old leader, holding records the new leader does not, is restarted, and its log ends identical to the new leader's | Passes |
 | Latency | The order round trip before and after 4.2, measured by the method in `docs/operations/latency_findings.md` | A measurement, not a pass or fail |
 
 ## 9. The order of the work
@@ -437,7 +470,7 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
 6. **The sequencer uses open question 2's rule:** step 4 of
    [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8. **Done:**
    scenarios 63 and 64.
-7. **4.4,** the follower keeping reports, with the new reports scenario.
+7. **4.4,** the follower keeping reports, with the new reports scenario. **Done:** scenario 65.
 8. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
    scenario 1 strengthened. This is the largest part, and it closes the gap the specification records
    under R-0119.

@@ -33,6 +33,7 @@
 #include "EngineOrderRouting.hpp"
 #include "EpochStore.hpp"
 #include "GatewayIds.hpp"
+#include "KeptReportStore.hpp"
 #include "LeaseLinksInterface.hpp"
 #include "LeasePromiseStore.hpp"
 #include "LogEpochTable.hpp"
@@ -470,6 +471,53 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void stop_running_alone(const char* reason);
     void check_follower_acknowledgements();
     void forward_all_pending_er();
+
+    // The reports from the matching engine kept while this instance is not leading, so that it can
+    // forward them if it takes the lead (docs/availability/change_of_sequencer_leader.md, section 4.4).
+    //
+    // How much the store must hold: a follower grants its leader's request once every renewal
+    // interval, and keeps the reports that arrived up to a lease period plus the drift allowance
+    // before the last grant. When the leader dies, the store therefore holds up to a renewal
+    // interval plus a lease period plus the drift allowance of reports, 4.25 seconds with the usual
+    // timings. At the highest rate measured on this venue, about 34,000 orders a second, and taking
+    // one and a half reports an order, that is about 212,000 reports. The store holds up to
+    // 262,144, and 128 MiB of their bytes, which allows an average of 512 bytes a report. Both are
+    // allocated once, when the sequencer starts.
+    static constexpr size_t kept_report_capacity_bytes = 128U * 1024U * 1024U;
+    static constexpr size_t kept_report_capacity_reports = 262144;
+    KeptReportStore kept_reports_{kept_report_capacity_bytes, kept_report_capacity_reports};
+
+    // When this instance last granted its peer's request to lead. The peer leads, and forwards the
+    // reports it receives, for a lease period after each grant, so a kept report that arrived more
+    // than a lease period plus the drift allowance before this time was forwarded and is no longer
+    // needed. Reports age only against this time, not against the clock: once the leader stops
+    // asking, because it has died, nothing more ages however long the change of leader takes.
+    std::chrono::steady_clock::time_point last_granted_to_leader_{};
+
+    // The number of kept reports lost when this instance last said so, so that a loss is reported
+    // when it happens rather than for every report lost after it.
+    int64_t kept_reports_lost_reported_{0};
+    pubsub_itc_fw::GaugeHandle kept_reports_lost_gauge_;
+
+    // How long before the last grant to the leader a kept report must have arrived to be no longer needed.
+    [[nodiscard]] std::chrono::steady_clock::time_point kept_reports_needed_from() const;
+    // Keeps a copy of a report from the matching engine, received while this instance is not leading.
+    void keep_report_from_engine(const pubsub_itc_fw::EventMessage& message);
+    // On taking the lead: forwards every kept report to its member's gateway, marked as a possible repeat, and empties the store.
+    void forward_kept_reports();
+
+    // Where a report about to be forwarded came from.
+    enum class ReportSource {
+        // The matching engine has just sent it to this instance, which is leading.
+        matching_engine,
+        // It was kept while this instance was not leading, and the leader then may or may not have forwarded it.
+        kept_while_not_leading
+    };
+    // Gives a report from the matching engine its own record in the log, replicates and streams it,
+    // and forwards it to its member's gateway once the record it depends on is acknowledged.
+    // @p bytes is the report's WalRecord envelope as the engine sent it, and @p er_seq_no the
+    // sequence number sent with it. The caller keeps @p bytes valid until this returns.
+    void forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source);
 
     // Raise highest_replicated_seq_no_ to seq_no if it is lower. Called from both threads that
     // write replicated records, so it never lowers the value whichever runs last.
