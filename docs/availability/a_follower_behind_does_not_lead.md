@@ -276,7 +276,9 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    echoes and keeps statements, and the arbiter keeps them in `ComponentStatementStore`; the sequencer
    still constructs its agent with `PeerStatementsFlag::PeerAlwaysMayLead` until step 4.
 4. The sequencer's switch: confirm before acting, the order of going back to waiting, and stopping reading
-   from gateway connections while waiting.
+   from gateway connections while waiting. This waits for [follower_log_repair.md](follower_log_repair.md):
+   the leader may say its follower may lead again only once the follower holds every record the leader
+   holds, and for a follower that has reconnected nothing makes that knowable until its log is repaired.
 5. The new scenarios.
 6. Rules added to [majority_leases.md](majority_leases.md), and open question 2 of
    [change_of_sequencer_leader.md](change_of_sequencer_leader.md) marked as answered here.

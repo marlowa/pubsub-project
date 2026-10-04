@@ -244,6 +244,9 @@ follower never received, for example because its connection to the engine was do
 
 ### 4.5 An instance rejoining as a follower (G5, BUG-0097)
 
+The design in full, which also covers a follower that has merely restarted, is
+[follower_log_repair.md](follower_log_repair.md). The outline:
+
 Each record gains the epoch of the leader that wrote it. When an instance connects to a leader as a
 follower, it sends the sequence number and epoch of its last record. The leader replies with the
 highest sequence number at which the two logs agree: the last record they both hold under the same
@@ -379,12 +382,19 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    passes and its expected failure is removed. **Done:** option A, running as if alone when the follower
    falls behind (scenario 60), and the guard.
 4. **Open question 2,** so that a follower that has fallen behind cannot take the lead. A change to the
-   lease rules, designed and agreed first.
-5. **4.4,** the follower keeping reports, with the new reports scenario.
-6. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
+   lease rules, designed in [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md).
+   The rule itself is built into the lease classes, the lease agent and the arbiter; the sequencer does
+   not yet use it.
+5. **4.5,** the rejoin, designed in [follower_log_repair.md](follower_log_repair.md), with its
+   scenarios. This closes BUG-0097. It comes before the sequencer uses open question 2's rule, because
+   that rule lets the leader say its follower may lead again only once the follower holds every record
+   the leader holds, and only 4.5 makes that knowable for a follower that has reconnected.
+6. **The sequencer uses open question 2's rule:** step 4 of
+   [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8.
+7. **4.4,** the follower keeping reports, with the new reports scenario.
+8. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
    scenario 1 strengthened. This is the largest part, and it closes the gap the specification records
    under R-0119.
-7. **4.5,** the rejoin, with the new rejoin scenario. This closes BUG-0097.
 
 Related: [wal_and_ha.md](wal_and_ha.md), [majority_leases.md](majority_leases.md),
 [order_acceptance.md](order_acceptance.md), [tla/findings.md](tla/findings.md), and the requirements

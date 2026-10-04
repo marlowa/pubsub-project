@@ -2590,6 +2590,16 @@ specification (`docs/book`), and it needs its own design before any code. Whatev
 follower must detect a replicated record whose sequence number it already holds with different
 content, and refuse to append it silently.
 
+**A wider form of the same defect.** A follower that has merely been disconnected or restarted is
+affected too: on reconnecting it moves its next sequence number up to its leader's and receives only new
+records, so its log has a gap, and the leader, which counts the highest acknowledgement rather than the
+highest unbroken one, then takes it to hold everything. The rule that keeps a follower that is behind
+from leading depends on knowing when a follower holds every record, so this has to be fixed before the
+sequencer uses that rule. The repair is designed in
+[follower_log_repair.md](availability/follower_log_repair.md); under part 4.2 of
+[change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md) the records a superseded
+leader holds were never acted on, which is what makes discarding them safe.
+
 Related: `docs/availability/tla/findings.md`, findings 1, 2 and 4, and [BUG-0085](#bug_0085).
 
 ## Closed

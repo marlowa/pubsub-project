@@ -14,6 +14,7 @@ different time budgets, and conflating them is the subject of a bug entry.
 - [majority_leases.md](majority_leases.md) — how the venue decides which instance leads: only while a majority of three voters grants it a lease; the rules, each failure, and where it is implemented
 - [change_of_sequencer_leader.md](change_of_sequencer_leader.md) — keeping every order and report across a change of sequencer leader: four defects, what the venue must guarantee, the options for each part with their costs, and a recommendation (a design for review)
 - [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) — how a leader that sends to the matching engine without waiting for its follower stops that follower taking the lead: the problem, why Raft's rule does not fit, the design and its two decisions (for review)
+- [follower_log_repair.md](follower_log_repair.md) — repairing a sequencer follower's log when it rejoins: today it skips what it missed and keeps records its leader does not have; the epoch on each record, finding the last record the two logs agree on, discarding after it and sending what it missed (a design for review)
 - [tla/findings.md](tla/findings.md) — the HA design specified in TLA+ and model checked: what held, eight findings with counterexamples, and directions for fixing
 
 ---
