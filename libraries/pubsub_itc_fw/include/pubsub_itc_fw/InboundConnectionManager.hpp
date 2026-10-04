@@ -209,6 +209,24 @@ class InboundConnectionManager {
     [[nodiscard]] bool process_send_raw_command(const ReactorControlCommand& command);
 
     /**
+     * @brief Stop watching a connection for incoming data, at the application's request.
+     * @param[in] id The connection.
+     * @return false if this manager holds no such connection.
+     */
+    [[nodiscard]] bool pause_reading(ConnectionID id);
+
+    /**
+     * @brief Watch a connection for incoming data again after pause_reading().
+     *
+     * Epoll here is level-triggered, so data that arrived while reading was paused is reported at
+     * once and read.
+     *
+     * @param[in] id The connection.
+     * @return false if this manager holds no such connection.
+     */
+    [[nodiscard]] bool resume_reading(ConnectionID id);
+
+    /**
      * @brief Advances the inbound MirroredBuffer tail for a RawBytesProtocolHandler
      *        connection by the number of bytes the application has consumed.
      *
@@ -291,6 +309,11 @@ class InboundConnectionManager {
     [[nodiscard]] uint16_t get_listener_port(int index) const;
 
   private:
+    // Whether a connection should be watched for incoming data: neither its handler nor the application has paused it.
+    [[nodiscard]] static bool wants_reads(const InboundConnection& conn);
+    // Re-register a connection with epoll for what it now wants: incoming data, a send in flight, errors.
+    void rearm(InboundConnection& conn);
+
     int epoll_fd_;
     const ReactorConfiguration& config_;
     ExpandableSlabAllocator& inbound_allocator_;

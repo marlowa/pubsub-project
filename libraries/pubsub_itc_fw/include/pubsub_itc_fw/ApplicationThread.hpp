@@ -419,6 +419,33 @@ class ApplicationThread {
     void commit_raw_bytes(const ConnectionID& conn_id, int64_t bytes_consumed);
 
     /**
+     * @brief Stops the reactor reading from a connection until resume_reading() is called.
+     *
+     * For a thread that must stop taking work from a peer for a while: the reactor stops watching
+     * the connection for incoming data, the kernel's receive buffer fills, and TCP stops the peer
+     * sending. Nothing is lost or refused. Messages the reactor had already read before the request
+     * reached it are still delivered, so a caller pausing because its own storage is filling must
+     * leave room for them. A peer whose sends cannot complete may stop sending on its other
+     * connections too (docs/bug_list.md BUG-0112), so a pause should be short.
+     *
+     * Works on any connection this thread owns, PDU or raw-bytes, inbound or outbound. It is kept
+     * apart from a raw-bytes handler's own pause for a full buffer: reading resumes only when
+     * neither has paused it.
+     *
+     * @param[in] conn_id A connection belonging to this thread.
+     */
+    void pause_reading(const ConnectionID& conn_id);
+
+    /**
+     * @brief Lets the reactor read from a connection again after pause_reading().
+     *
+     * Data that arrived while reading was paused is read at once.
+     *
+     * @param[in] conn_id A connection belonging to this thread.
+     */
+    void resume_reading(const ConnectionID& conn_id);
+
+    /**
      * @brief Sends raw bytes on a RawBytesProtocolHandler connection.
      *
      * Allocates a slab chunk, copies the supplied bytes into it, and enqueues a

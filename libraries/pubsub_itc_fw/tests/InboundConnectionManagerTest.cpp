@@ -18,6 +18,13 @@
  *     the PDU field whatever the tag said. Every FIX byte to a member is sent
  *     raw, so the pointer was always null and the deallocate precondition
  *     always fired.
+ *
+ *   PausingAndResumingReadingSetTheConnectionsFlag,
+ *   PausingOrResumingAConnectionThisManagerDoesNotHoldReportsFalse,
+ *   ACommitOfBytesDoesNotUndoAnApplicationsPause,
+ *   TheNewCommandsNameThemselves
+ *     The mechanism behind ApplicationThread::pause_reading() and resume_reading(). Their effect on
+ *     a running reactor is tested in integration_tests/PauseReadingIntegrationTest.cpp.
  */
 
 #include <arpa/inet.h>
@@ -221,6 +228,40 @@ TEST_F(InboundConnectionManagerTest, TeardownFreesAStashedRawSendRatherThanANull
     EXPECT_NE(chunk, nullptr);
     EXPECT_LE(allocator_->slab_count(), slabs_before) << "Slab count grew after teardown -- the stashed chunk was not freed";
     allocator_->deallocate(slab_id, chunk);
+}
+
+TEST_F(InboundConnectionManagerTest, PausingAndResumingReadingSetTheConnectionsFlag) {
+    const ConnectionID id{7};
+    ASSERT_TRUE(accept_one_connection(id));
+    InboundConnection* conn = reactor_->inbound_manager().find_by_id(id);
+    ASSERT_NE(conn, nullptr);
+    EXPECT_FALSE(conn->reading_paused_by_application());
+    EXPECT_TRUE(reactor_->inbound_manager().pause_reading(id));
+    EXPECT_TRUE(conn->reading_paused_by_application());
+    EXPECT_TRUE(reactor_->inbound_manager().resume_reading(id));
+    EXPECT_FALSE(conn->reading_paused_by_application());
+}
+
+TEST_F(InboundConnectionManagerTest, PausingOrResumingAConnectionThisManagerDoesNotHoldReportsFalse) {
+    EXPECT_FALSE(reactor_->inbound_manager().pause_reading(ConnectionID{99}));
+    EXPECT_FALSE(reactor_->inbound_manager().resume_reading(ConnectionID{99}));
+}
+
+TEST_F(InboundConnectionManagerTest, ACommitOfBytesDoesNotUndoAnApplicationsPause) {
+    // A raw-bytes handler resumes its own reading when the application commits bytes; that path must
+    // leave the application's own pause in place.
+    const ConnectionID id{8};
+    ASSERT_TRUE(accept_one_connection(id));
+    ASSERT_TRUE(reactor_->inbound_manager().pause_reading(id));
+    EXPECT_TRUE(reactor_->inbound_manager().process_commit_raw_bytes(id, 0));
+    InboundConnection* conn = reactor_->inbound_manager().find_by_id(id);
+    ASSERT_NE(conn, nullptr);
+    EXPECT_TRUE(conn->reading_paused_by_application());
+}
+
+TEST(ReactorControlCommandTest, TheNewCommandsNameThemselves) {
+    EXPECT_EQ(ReactorControlCommand(ReactorControlCommand::CommandTag::PauseReading).as_string(), "PauseReading");
+    EXPECT_EQ(ReactorControlCommand(ReactorControlCommand::CommandTag::ResumeReading).as_string(), "ResumeReading");
 }
 
 } // namespaces

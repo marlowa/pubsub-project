@@ -186,7 +186,7 @@ The gateway listens for FIX connections on port 9879. The matching engine log at
 | `InboundConnectionManager` | Owns all inbound connection state: listener registry, accepted connection maps, accept/read/write/teardown/idle-timeout logic |
 | `OutboundConnectionManager` | Owns all outbound connection state: connection maps, connect/read/write/teardown/timeout logic |
 | `ReactorConfiguration` | All config: timeouts, slab sizes, HA topology, command queue config, `connect_timeout` (default 5s), `socket_maximum_inactivity_interval_` (default 60s) |
-| `ReactorControlCommand` | Commands: `AddTimer`, `CancelTimer`, `Connect`, `Disconnect`, `SendPdu`, `SendRaw`, `CommitRawBytes`, `InstallInlinePduHandler`, `RequestWritableNotification` |
+| `ReactorControlCommand` | Commands: `AddTimer`, `CancelTimer`, `Connect`, `Disconnect`, `SendPdu`, `SendRaw`, `CommitRawBytes`, `InstallInlinePduHandler`, `RequestWritableNotification`, `PauseReading`, `ResumeReading` |
 | `ServiceRegistry` | Static service catalog; interns each service to a stable `ServiceID` at registration and maps id→(name, `ServiceEndpoints`); populated before threads start; no file I/O. `connect_to_service(name)` resolves the name to its id up front (fail-fast on unknown), so a `Connect` command carries the integer id, not a `std::string` |
 | `ServiceEndpoints` | Primary + secondary `NetworkEndpointConfig`; secondary port==0 means not configured |
 | `ConnectionID` | Strongly-typed connection identifier; 0 = invalid; monotonically increasing from 1; allocated by `Reactor::allocate_connection_id()` which is shared between both managers |
@@ -639,7 +639,7 @@ The receiving node's reactor accepts data via epoll and delivers it zero-copy to
 | `Connect` | `requesting_thread_id_`, `service_id_` (a `ServiceID`; the name is resolved to this id by `connect_to_service`, fail-fast on unknown) |
 | `Disconnect` | `connection_id_` |
 | `SendPdu` | `connection_id_`, `slab_id_`, `pdu_chunk_ptr_`, `pdu_byte_count_` |
-| `SendRaw`, `CommitRawBytes`, `InstallInlinePduHandler`, `RequestWritableNotification` | See the comments on each tag in `ReactorControlCommand.hpp` |
+| `SendRaw`, `CommitRawBytes`, `InstallInlinePduHandler`, `RequestWritableNotification`, `PauseReading`, `ResumeReading` | See the comments on each tag in `ReactorControlCommand.hpp`, and for the last two [reactor.md](reactor.md) |
 
 ---
 

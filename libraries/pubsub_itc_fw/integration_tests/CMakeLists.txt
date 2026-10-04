@@ -9,6 +9,7 @@ message(STATUS "Building integration tests for pubsub_itc_fw")
 
 add_executable(pubsub_itc_fw_integration_tests
     OutboundConnectionRetryIntegrationTest.cpp
+    PauseReadingIntegrationTest.cpp
     PduBurstIntegrationTest.cpp
     PduProtocolHandlerIntegrationTest.cpp
     RawBytesBackPressureIntegrationTest.cpp

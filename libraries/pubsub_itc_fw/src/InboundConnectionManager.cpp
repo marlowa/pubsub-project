@@ -234,7 +234,10 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
         // and is never retried because EPOLLOUT never fires.
         const int fd = conn.get_fd();
         epoll_event ev{};
-        ev.events = EPOLLIN | EPOLLOUT | EPOLLERR;
+        ev.events = EPOLLOUT | EPOLLERR;
+        if (wants_reads(conn)) {
+            ev.events |= EPOLLIN;
+        }
         ev.data.fd = fd;
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) == -1) {
             PUBSUB_LOG(logger_, FwLogLevel::Error,
@@ -265,7 +268,7 @@ void InboundConnectionManager::on_write_ready(InboundConnection& conn) {
         // backpressure. The pause state is restored once the buffer drains
         // below the low-water mark via process_commit_raw_bytes().
         ev.events = EPOLLERR;
-        if (!conn.handler()->is_reads_paused()) {
+        if (wants_reads(conn)) {
             ev.events |= EPOLLIN;
         }
         ev.data.fd = fd;
@@ -397,7 +400,7 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
         epoll_event ev{};
         // Add EPOLLIN only if reads are not currently paused for backpressure.
         ev.events = EPOLLOUT | EPOLLERR;
-        if (!conn.handler()->is_reads_paused()) {
+        if (wants_reads(conn)) {
             ev.events |= EPOLLIN;
         }
         ev.data.fd = conn_fd;
@@ -437,7 +440,7 @@ bool InboundConnectionManager::process_send_raw_command(const ReactorControlComm
         epoll_event ev{};
         // Add EPOLLIN only if reads are not currently paused for backpressure.
         ev.events = EPOLLOUT | EPOLLERR;
-        if (!conn.handler()->is_reads_paused()) {
+        if (wants_reads(conn)) {
             ev.events |= EPOLLIN;
         }
         ev.data.fd = conn_fd;
@@ -455,9 +458,9 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
     InboundConnection& conn = *it->second;
     const bool resume_reads = conn.handler()->commit_bytes(bytes_consumed);
 
-    if (resume_reads) {
-        // Read-side backpressure released: re-register EPOLLIN. Preserve
-        // EPOLLOUT if a send is currently in flight, and always keep EPOLLERR.
+    if (resume_reads && !conn.reading_paused_by_application()) {
+        // Read-side backpressure released: re-register EPOLLIN, unless the application has paused
+        // reading too. Preserve EPOLLOUT if a send is currently in flight, and always keep EPOLLERR.
         const int fd = conn.get_fd();
         epoll_event ev{};
         ev.events = EPOLLIN | EPOLLERR;
@@ -554,6 +557,46 @@ uint16_t InboundConnectionManager::get_listener_port(int index) const {
         return ntohs(reinterpret_cast<const sockaddr_in6*>(&addr)->sin6_port);
     }
     return 0;
+}
+
+bool InboundConnectionManager::wants_reads(const InboundConnection& conn) {
+    return !conn.handler()->is_reads_paused() && !conn.reading_paused_by_application();
+}
+
+void InboundConnectionManager::rearm(InboundConnection& conn) {
+    epoll_event ev{};
+    ev.events = EPOLLERR;
+    if (wants_reads(conn)) {
+        ev.events |= EPOLLIN;
+    }
+    if (conn.handler()->has_pending_send()) {
+        ev.events |= EPOLLOUT;
+    }
+    ev.data.fd = conn.get_fd();
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn.get_fd(), &ev) == -1) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::rearm: epoll_ctl MOD failed for connection {} from '{}': {}", conn.id().get_value(),
+                   conn.peer_description(), StringUtils::get_errno_string());
+    }
+}
+
+bool InboundConnectionManager::pause_reading(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    it->second->pause_reading_by_application();
+    rearm(*it->second);
+    return true;
+}
+
+bool InboundConnectionManager::resume_reading(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    it->second->resume_reading_by_application();
+    rearm(*it->second);
+    return true;
 }
 
 } // namespaces

@@ -282,7 +282,7 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
             const int conn_fd = conn.get_fd();
             epoll_event ev{};
             ev.events = EPOLLERR;
-            if (!pause_reads) {
+            if (!pause_reads && !conn.reading_paused_by_application()) {
                 ev.events |= EPOLLIN;
             }
             if (conn.protocol_handler()->has_pending_send()) {
@@ -346,7 +346,7 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
             const int fd = conn.get_fd();
             epoll_event ev{};
             ev.events = EPOLLERR;
-            if (!conn.protocol_handler()->is_reads_paused()) {
+            if (wants_reads(conn)) {
                 ev.events |= EPOLLIN;
             }
             ev.data.fd = fd;
@@ -374,7 +374,10 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
 
         const int fd = conn.get_fd();
         epoll_event ev{};
-        ev.events = EPOLLIN | EPOLLERR;
+        ev.events = EPOLLERR;
+        if (wants_reads(conn)) {
+            ev.events |= EPOLLIN;
+        }
         ev.data.fd = fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
     }
@@ -439,7 +442,10 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
         conn.set_pending_send(command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
         const int conn_fd = conn.get_fd();
         epoll_event ev{};
-        ev.events = EPOLLIN | EPOLLOUT | EPOLLERR;
+        ev.events = EPOLLOUT | EPOLLERR;
+        if (wants_reads(conn)) {
+            ev.events |= EPOLLIN;
+        }
         ev.data.fd = conn_fd;
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
     } else {
@@ -491,7 +497,7 @@ bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCom
         const int conn_fd = conn.get_fd();
         epoll_event ev{};
         ev.events = EPOLLERR;
-        if (!conn.protocol_handler()->is_reads_paused()) {
+        if (wants_reads(conn)) {
             ev.events |= EPOLLIN;
         }
         ev.events |= EPOLLOUT;
@@ -515,7 +521,7 @@ bool OutboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_
     }
 
     const bool resume_reads = conn.protocol_handler()->commit_bytes(bytes_consumed);
-    if (resume_reads) {
+    if (resume_reads && !conn.reading_paused_by_application()) {
         const int conn_fd = conn.get_fd();
         epoll_event ev{};
         ev.events = EPOLLIN | EPOLLERR;
@@ -738,6 +744,52 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
     }
 
     connections_.erase(it);
+}
+
+bool OutboundConnectionManager::wants_reads(const OutboundConnection& conn) {
+    const bool paused_by_handler = conn.protocol_handler() != nullptr && conn.protocol_handler()->is_reads_paused();
+    return !paused_by_handler && !conn.reading_paused_by_application();
+}
+
+void OutboundConnectionManager::rearm(OutboundConnection& conn) {
+    if (!conn.is_established()) {
+        // Before it is established a connection is watched for the connect completing, not for
+        // data; the application's pause takes effect when it is.
+        return;
+    }
+    epoll_event ev{};
+    ev.events = EPOLLERR;
+    if (wants_reads(conn)) {
+        ev.events |= EPOLLIN;
+    }
+    if (conn.has_pending_send()) {
+        ev.events |= EPOLLOUT;
+    }
+    ev.data.fd = conn.get_fd();
+    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn.get_fd(), &ev) == -1) {
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::rearm: epoll_ctl MOD failed for connection {} to '{}': {}", conn.id().get_value(),
+                   conn.service_name(), StringUtils::get_errno_string());
+    }
+}
+
+bool OutboundConnectionManager::pause_reading(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    it->second->pause_reading_by_application();
+    rearm(*it->second);
+    return true;
+}
+
+bool OutboundConnectionManager::resume_reading(ConnectionID id) {
+    const auto it = connections_.find(id);
+    if (it == connections_.end()) {
+        return false;
+    }
+    it->second->resume_reading_by_application();
+    rearm(*it->second);
+    return true;
 }
 
 } // namespaces

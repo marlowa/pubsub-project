@@ -155,6 +155,27 @@ class InboundConnection {
         return handler_.get();
     }
 
+    /**
+     * @brief Stop watching this connection for incoming data, at the application's request.
+     *
+     * See ApplicationThread::pause_reading(). Kept apart from the handler's own pause for a full
+     * buffer, so that neither can undo the other: the connection is watched for incoming data only
+     * while neither has paused it.
+     */
+    void pause_reading_by_application() {
+        reading_paused_by_application_ = true;
+    }
+
+    /// Undo pause_reading_by_application().
+    void resume_reading_by_application() {
+        reading_paused_by_application_ = false;
+    }
+
+    /// Whether the application has paused reading from this connection.
+    [[nodiscard]] bool reading_paused_by_application() const {
+        return reading_paused_by_application_;
+    }
+
   private:
     ConnectionID id_;
     std::string peer_description_;
@@ -165,6 +186,7 @@ class InboundConnection {
 
     std::chrono::steady_clock::time_point last_activity_time_;
     IdleTimeoutFlag idle_timeout_;
+    bool reading_paused_by_application_{false};
 };
 
 } // namespaces

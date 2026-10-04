@@ -21,7 +21,7 @@ This separation keeps all file-descriptor state — connection maps, timer fds, 
 | `InboundConnectionManager` | Owns all inbound connection state: listener registry, accepted-connection maps, accept/read/write/teardown/idle-timeout logic |
 | `OutboundConnectionManager` | Owns all outbound connection state: connection maps, connect/read/write/teardown/timeout logic |
 | `ReactorConfiguration` | All config: timeouts, slab sizes, HA topology, command queue capacity, `connect_timeout` (default 5 s), `socket_maximum_inactivity_interval_` (default 60 s) |
-| `ReactorControlCommand` | Commands sent from application threads to the reactor: `AddTimer`, `CancelTimer`, `Connect`, `Disconnect`, `SendPdu`, `SendRaw`, `CommitRawBytes` |
+| `ReactorControlCommand` | Commands sent from application threads to the reactor: `AddTimer`, `CancelTimer`, `Connect`, `Disconnect`, `SendPdu`, `SendRaw`, `CommitRawBytes`, `InstallInlinePduHandler`, `RequestWritableNotification`, `PauseReading`, `ResumeReading` |
 | `ServiceRegistry` | Static service catalog; interns each service to a stable `ServiceID` at registration and maps id→(name, `ServiceEndpoints`); populated before threads start; no file I/O at runtime. `connect_to_service(name)` resolves the name to its `ServiceID` up front (fail-fast on an unknown name), so a `Connect` command carries the integer id, not a `std::string` |
 | `ServiceEndpoints` | Primary + secondary `NetworkEndpointConfig`; secondary `port==0` means not configured |
 | `ConnectionID` | Strongly-typed connection identifier; 0 = invalid; monotonically increasing from 1; allocated by `Reactor::allocate_connection_id()`, shared across both managers |
@@ -207,6 +207,31 @@ data arrived" from "tail advanced and window shifted" when both happen simultane
 can cause `payload_size()` to increase or decrease in the same direction.
 
 ---
+
+## Pausing reading at the application's request
+
+An application thread can ask the reactor to stop reading from one of its connections for a while,
+with `ApplicationThread::pause_reading()`, and to start again with `resume_reading()`. The two send
+the `PauseReading` and `ResumeReading` commands. The reactor stops watching the connection's socket
+for incoming data; the kernel's receive buffer fills, and TCP stops the peer sending. Nothing is lost
+or refused. The sequencer uses this when its storage for orders waiting on a voter's confirmation is
+filling (docs/availability/a_follower_behind_does_not_lead.md).
+
+- It works on any connection, inbound or outbound, PDU or raw bytes. Each connection manager keeps
+  the application's pause apart from a raw-bytes handler's own pause for a full buffer, and watches a
+  connection for incoming data only while neither has paused it. Every place that re-registers a
+  connection with epoll asks that one question.
+- Messages the reactor had already read before the command reached it are still delivered. A thread
+  pausing because its own storage is filling must leave room for them.
+- Epoll is level-triggered, so data that arrived during the pause is reported, and read, as soon as
+  reading resumes.
+- A peer whose sends cannot complete can stop sending on its other connections too
+  ([BUG-0112](../bug_list.md#bug_0112)), so a pause should be short.
+
+`integration_tests/PauseReadingIntegrationTest.cpp` tests it with real reactors and sockets: a paused
+inbound or outbound connection delivers nothing more while paused and everything, once and in order,
+afterwards; other connections and timers are served while one is paused; and a thousand pauses and
+resumes during a long burst lose, duplicate and reorder nothing.
 
 ## Outbound PDU Ownership
 

@@ -45,6 +45,8 @@ namespace pubsub_itc_fw {
  *   SendPdu        -- connection_id_, allocator_, slab_id_, pdu_chunk_ptr_, pdu_byte_count_
  *   SendRaw        -- connection_id_, allocator_, slab_id_, raw_chunk_ptr_, raw_byte_count_
  *   CommitRawBytes -- connection_id_, bytes_consumed_
+ *   PauseReading   -- connection_id_
+ *   ResumeReading  -- connection_id_
  *
  * SendPdu vs SendRaw:
  *   SendPdu is for framework-native PDU connections (PduProtocolHandler). The
@@ -60,16 +62,18 @@ class ReactorControlCommand {
     enum CommandTag {
         AddTimer,
         CancelTimer,
-        Connect,                    ///< Request the reactor to establish an outbound TCP connection.
-        Disconnect,                 ///< Request the reactor to close an established connection.
-        SendPdu,                    ///< Request the reactor to send a framed PDU on a PDU connection.
-        SendRaw,                    ///< Request the reactor to send raw bytes on a raw-bytes connection.
-        CommitRawBytes,             ///< Notify the reactor that the application has consumed N bytes from
-                                    ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
-        InstallInlinePduHandler,    ///< Install a reactor-thread inline PDU handler on a connection's
-                                    ///< PduParser, bypassing the ITC dispatch path for matching PDUs.
-        RequestWritableNotification ///< Request a one-shot ConnectionWritable event when the connection
-                                    ///< can accept another outbound frame (connection_id_).
+        Connect,                     ///< Request the reactor to establish an outbound TCP connection.
+        Disconnect,                  ///< Request the reactor to close an established connection.
+        SendPdu,                     ///< Request the reactor to send a framed PDU on a PDU connection.
+        SendRaw,                     ///< Request the reactor to send raw bytes on a raw-bytes connection.
+        CommitRawBytes,              ///< Notify the reactor that the application has consumed N bytes from
+                                     ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
+        InstallInlinePduHandler,     ///< Install a reactor-thread inline PDU handler on a connection's
+                                     ///< PduParser, bypassing the ITC dispatch path for matching PDUs.
+        RequestWritableNotification, ///< Request a one-shot ConnectionWritable event when the connection
+                                     ///< can accept another outbound frame (connection_id_).
+        PauseReading,                ///< Stop watching a connection for incoming data (connection_id_).
+        ResumeReading                ///< Watch a connection for incoming data again (connection_id_).
     };
 
   public:
@@ -131,6 +135,12 @@ class ReactorControlCommand {
         }
         if (tag_ == RequestWritableNotification) {
             return "RequestWritableNotification";
+        }
+        if (tag_ == PauseReading) {
+            return "PauseReading";
+        }
+        if (tag_ == ResumeReading) {
+            return "ResumeReading";
         }
         return fmt::format("unknown ({})", static_cast<int>(tag_));
     }
