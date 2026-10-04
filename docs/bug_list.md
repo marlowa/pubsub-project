@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 112 |
-| Open | 41 (27 defects, 14 tasks) |
+| Bugs recorded | 114 |
+| Open | 43 (28 defects, 15 tasks) |
 | Closed | 71 |
-| Next id | BUG-0113 |
+| Next id | BUG-0115 |
 
 ## Open bugs by severity
 
-13 high, 23 medium, 5 low.
+14 high, 24 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,6 +26,7 @@
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0103](#bug_0103) | high | defect | Orders sent while the sequencers change leader are lost without a reply |
 | [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
+| [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -49,6 +50,7 @@
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
 | [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
+| [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -153,6 +155,81 @@ went looking.
 
 
 
+
+### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-04 |
+| How | Deciding, in the design of part 4.3, which commands the sequencer's record of identifiers checks ([commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md), decision 2) |
+| Impact | A member can reuse a `ClOrdID` on the same session and day once the first order with it has been filled or cancelled, and the venue publishes two different orders under one identifier, which R-0119 forbids |
+
+**What happens.** The only check for a repeated `ClOrdID` is the matching engine's, against the orders
+currently on its book (`MatchingEngineThread::handle_new_order_single`, `order_book_.contains`). An
+order that has ended is no longer on the book, so its identifier is accepted again. The specification
+records this as a gap under R-0119.
+
+**What is decided.** Part 4.3 gives the sequencer a record of every identifier in its log, for the
+trading day: a set of 64-bit numbers derived from the session and the `ClOrdID`, reserved for 200
+million entries. In part 4.3 it checks only commands a gateway sends again after a change of leader.
+Checking every command against it would meet R-0119, and is this separate change.
+
+**What it needs.** A lookup per command on the order path, measured by the method in
+`docs/operations/latency_findings.md`; a way for the sequencer to refuse a command with a report,
+which today only the matching engine produces; and, because the record holds 64-bit numbers rather
+than the identifiers themselves, an exact check of each match against the log before refusing, as
+part 4.3 does for a command sent again. A scenario that reuses the identifier of a cancelled order,
+which R-0119's coverage note says does not exist.
+
+### BUG-0113: Every resend request reads the whole day's log on the thread that sequences orders {#bug_0113}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-04 |
+| How | Checking whether the sequencer holds its write-ahead log in memory, while sizing the record of identifiers for part 4.3 of [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md) |
+| Impact | One member's FIX resend request late in a busy day stops the leading sequencer taking orders for as long as it takes to read the whole log, which by the arithmetic below is minutes. Every member's orders wait meanwhile |
+
+**What happens.** A member's FIX `ResendRequest` reaches the gateway, which sends a
+`SessionReplayRequest` to the sequencers (`FixOrderGatewayThread::handle_resend_request`). The leading
+sequencer answers it in `SequencerThread::handle_session_replay_request`. That function reads the log
+from its first record (`WalReader::replay` from position `{0, 0}`), decodes every record of every
+member, and keeps the ones that are this member's execution reports. It runs on the sequencer thread,
+the thread that sequences orders, so no order is sequenced until it finishes. The comment beside it
+says the scan is deliberate, because the log has no index and resends are rare.
+
+**How large the read becomes.** Every trading day starts with an empty log, so the read grows through
+the day. The figures measured under [BUG-0048](#bug_0048), 3.72 log records per order and 310 bytes per
+record, give about 46 GB in one sequencer's log at the close of a 40 million order day, and about
+230 GB at 200 million orders, the figure a MiFID test uses. That cannot be held in memory on a
+machine like this one, so most of it is read from disk: at about 2 GB a second, around two minutes
+for 230 GB. **Not measured:** the arithmetic is from measured record sizes; the scan itself has not
+been timed on a log that large. The function logs how long each scan took (`scanned_in_ms`).
+
+**The sequencer does not hold the log in memory.** It maps the segment it is writing, and a reader
+maps a file only while reading it. The problem is the amount read on each request and the thread it
+runs on, not memory.
+
+**The direction chosen (2026-10-04).** A separate recovery service, as some exchanges run a recovery
+channel apart from order entry. It follows the sequencer's log, as the publishers do, writes each
+member's execution reports into that member's own store, and answers resend requests itself, so the
+sequencer never serves one. Reaching a member's reports then means reading only that member's
+reports. It also means the reports are no longer a reason for the sequencer's log to cover the whole
+day: once the matching engine's checkpoint exists, the log need only reach back to it, and could be
+reclaimed during the day, which bounds both its size and the time a restarted sequencer spends reading
+it at startup.
+
+Still to be decided: how long a member's reports are kept, which R-0008 requires to be stated. The
+decision under [BUG-0048](#bug_0048) that retention is the whole trading day is being reconsidered,
+because of the storage it implies. Two models are in use at other venues: a fixed number of recent
+messages per member, beyond which a resend is answered with a FIX gap fill (the London Stock Exchange
+and Turquoise, which keeps the last 65,000 messages per comp id), and the whole business day (Eurex,
+and Nasdaq's OUCH sessions). Also to be considered: dividing the log into files by period of time,
+for example two hours each, so that a period that is no longer needed can be removed whole.
 
 ### BUG-0112: One send that cannot complete stops a process sending anything on any connection {#bug_0112}
 

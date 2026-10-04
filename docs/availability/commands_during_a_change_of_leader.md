@@ -7,8 +7,8 @@ This is the detailed design of part 4.3 of
 from a member is answered when the leading sequencer dies, including the commands sent in the
 seconds before the follower takes the lead. That document chose the approach, option A: the gateway
 keeps each command until it is answered, and sends the unanswered ones again to the new leader. This
-document says how each part of that works, what it costs, and which questions need a decision before
-it is built. Section 7 lists those questions.
+document says how each part of that works, what it costs, and what has been decided about it.
+Section 7 records the decisions, and the one still open.
 
 A "command" here is a new order (`NewOrderSingle`) or a request to cancel (`OrderCancelRequest`). The
 guarantee is G1 of the parent document: every command a gateway accepted is answered, placed and
@@ -113,7 +113,12 @@ have been written to any log, and treating it as held would lose it.
   as it writes it.
 - While following, most records are written by the reactor thread, as they arrive from the leader.
   The sequencer thread reads the records written since it last looked, once a second, and adds their
-  identifiers. On taking the lead it reads the rest before it handles any command sent again, so the
+  identifiers. It reads only up to `highest_replicated_seq_no_`, which the writing thread raises only
+  after a record is completely written. Whether the log's reader may safely read a segment while the
+  reactor thread appends to it, and while a repair cuts the log back, is to be confirmed in the code
+  before this is built. If it may not, the reactor thread instead passes each record's sequence number
+  and identifier to the sequencer thread through a fixed-size queue with one writer and one reader, and
+  the table is still touched by one thread only. On taking the lead it reads the rest before it handles any command sent again, so the
   record is complete before it is used. That read is at most about a second of records.
 - At startup, the sequencer already reads its whole log, to build the table of epochs and to find a
   gap. The identifiers are added during the same read.
@@ -186,60 +191,59 @@ Each test is shown to fail before the change it tests is made.
 | New: the gateway's store is full | A command beyond the store's capacity is refused with a reply, and the venue says why |
 | Unit tests | The gateway store, its index, and the record of identifiers, including a model test like the one for `KeptReportStore` |
 
-## 7. Decisions needed
+## 7. Decisions
 
-These are separate questions, each needing its own answer.
+**Decision 1, decided: the record is a `tsl::robin_set<uint64_t>` reserved for 200 million
+identifiers.** The venue plans for 50 million orders a day and tests with 100 million; a MiFID test
+doubles that. Each identifier is a 64-bit number derived from the session's comp id, its gateway
+protocol and the `ClOrdID`.
 
-**Decision 1. The form of the record of identifiers.** The venue plans for 50 million orders a day
-and is tested with 100 million (section 7 of the parent document).
+- *Memory.* The table is reserved at startup and never grows during the day, so it never pauses to
+  rehash. Its size is a power of two and each slot is 16 bytes, the number and the library's
+  bookkeeping, so 200 million identifiers at a maximum fill of 0.9 take 2^28 slots, 4 GiB. Reserving it
+  writes to all of it at startup, so inserting during the day never waits for the kernel to supply a
+  page. Before each insert the sequencer compares the number held with the reserved size and treats
+  reaching it as full, rather than letting the table grow. The table uses the standard allocator, so it
+  is given `GrowthReportingAllocator`, as other containers whose storage is not the venue's own are.
+- *Why a match is checked.* An identifier is a string of up to dozens of characters, and a 64-bit
+  number cannot give each one a different value, so two different identifiers can, rarely, give the
+  same number. A number that is not in the table means the command is certainly not in the log. A
+  number that is in it means only that the command may be, so the new leader checks: it searches its
+  own log, backwards from the end, for a record with exactly the same comp id, protocol and `ClOrdID`.
+  It searches no further back than the time the gateway first received the command, which the envelope
+  carries (`gateway_ingress_ns`), normally a few seconds of records. Found, the command is held and is
+  not sequenced again; not found, the numbers merely matched, and the command is sequenced as new. A
+  match therefore never causes a command to be lost.
+- *When the table is full,* the sequencer logs an Error and refuses, with a reply, a command sent again
+  that it cannot check, rather than risk placing it twice.
 
-- *Recommended: a set of 64-bit hashes, of fixed size set in configuration, allocated at start.* Each
-  identifier is a 64-bit hash of the session's comp id, its gateway protocol and the `ClOrdID`. The
-  table is kept at most half full, so 50 million identifiers need 2^27 slots of 8 bytes, 1 GiB; the
-  100 million test needs 2 GiB. A fixed size means the table never grows during the day and never
-  pauses to grow. Two different commands with the same hash would make the new leader treat a command
-  sent again as one it holds, and not sequence it. With 50 million identifiers and a thousand commands
-  sent again, the chance of that at one change of leader is about one in 370 million.
-- *Alternative: 128-bit hashes,* which make a collision impossible in practice, at twice the memory:
-  2 GiB at 50 million, 4 GiB at 100 million.
-- *Alternative: the venue's growing hash table, `IncrementalRehashMap`,* which needs no size in
-  configuration but holds a value with each key and keeps two tables during growth: about 2.3 GiB at
-  50 million and more while growing.
-- *When a fixed-size table is full,* the sequencer cannot record more identifiers. It would log an
-  Error and, for a command sent again that it cannot check, refuse it with a reply rather than risk
-  placing it twice. The table would be sized so that this does not happen in a day.
+**Decision 2, decided: only commands marked `sent_again` are checked, in this part.** Checking every
+command, which would meet R-0119, is a separate change, recorded as [BUG-0114](../bug_list.md#bug_0114).
 
-**Decision 2. Which commands the record checks.**
+**Decision 3, decided: the record covers the whole log, which is the whole trading day.** Every trading
+day starts with no log: after end of day the processes are stopped and the logs moved away, and the
+next day starts with none. So a log holds exactly one day, and a `ClOrdID` used on an earlier day is
+never in it. A sequencer that starts at the start of the day has an empty log and builds an empty
+record. Only a sequencer restarted during the day reads records at startup, and it already reads its
+whole log then, to build the table of epochs and to find a gap; the record adds a hash per record to
+that read. How long that read takes late in a busy day is part of a wider question, recorded under
+[BUG-0113](../bug_list.md#bug_0113): the size of the log, which the move of resends to a separate
+recovery service is to bound.
 
-- *Recommended: only commands marked `sent_again`, in this part.* That is what G1 needs, and it costs
-  nothing on the ordinary path beyond the insert.
-- *Alternative: every command,* which would also meet R-0119 (an identifier used today is refused for
-  the rest of the day), a gap the specification records. It costs a lookup per command on the order
-  path, typically a cache miss in a table of a gigabyte, and the sequencer would have to produce the
-  refusal report itself, which today only the matching engine does. It is a separate change and is
-  better made on its own.
+**Decision 4, open: the size of each gateway's store.** The gateway keeps a copy of each command until
+its answer arrives, normally a tenth of a millisecond later, so the store normally holds only a
+handful. It fills only while answers stop arriving, chiefly during a change of sequencer leader,
+about three seconds, when every command members send through that gateway is added and none removed.
+It must hold all of them, or the gateway refuses the rest with a reply saying the venue is busy. Each
+copy is about 200 bytes. At the highest rate measured, about 34,000 orders a second for the whole
+venue, room for 65,536 commands (16 MiB) lasts about two seconds if one gateway carries all of it, less
+than a change of leader takes. Proposed instead: room for 262,144 commands, 64 MiB, about eight seconds
+of the venue's whole peak through one gateway. Set in the gateway's configuration.
 
-**Decision 3. How much of the log the record covers.** R-0119 bounds the record by the trading day,
-but the sequencer does not yet hold the trading day: the technical events that carry it are designed
-in [trading_phases.md](../venue/trading_phases.md) and not built.
-
-- *Recommended: every command in the log, until the trading day exists.* The log is not reclaimed
-  today ([BUG-0048](../bug_list.md#bug_0048)), so a log that spans several days gives a record that
-  spans them too, and the table must be sized for that, or the venue started with a fresh log each day
-  as it is now. The record is cut back to the trading day when the technical events are built.
-- How long the startup read takes at 50 million records is to be measured against the guide of about
-  five seconds for startup.
-
-**Decision 4. The size of each gateway's store.** Recommended: 65,536 commands and 16 MiB, set in the
-gateway's configuration. At the highest rate measured, about 34,000 orders a second across the venue,
-that holds about two seconds of every order the venue takes, through one gateway. A change of leader
-takes about three seconds, so a gateway taking the venue's whole flow would refuse some commands
-during it, with a reply, rather than hold them. A larger store costs only memory.
-
-**Decision 5. A session that disconnects while its commands are held.** Recommended: keep them, send
-them again at a change of leader like any other, and drop them when the session's grace period ends.
-The session's identity outlives the connection, so a report for one of them is routed to the member
-when it reconnects, as it is now.
+**Decision 5, decided: a session that disconnects keeps its commands.** They are sent again at a change
+of leader like any other, and dropped when the session's grace period ends. The session's identity
+outlives the connection, so a report for one of them is routed to the member when it reconnects, as it
+is now.
 
 ## 8. The order of the work
 
