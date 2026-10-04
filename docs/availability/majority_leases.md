@@ -120,6 +120,16 @@ vote of just one other voter: either its peer or the third voter.
 10. **An instance whose request to lead fails waits before asking again.** In the implementation this wait should vary
     from one attempt to the next, which is the usual way of making repeated collisions unlikely; rule 9 is what
     guarantees they end.
+11. **In the sequencer pair, a leader acts on a command its follower does not hold only once a voter other than itself
+    has recorded that the follower may not lead.** The leader says on every lease request whether its peer may lead,
+    as a numbered statement so that a late message cannot undo a newer one, and records it on its own disk first.
+    Every leadership starts by saying the peer may not lead, and says it may only once the peer has acknowledged every
+    record and the leader waits for its acknowledgements again. A voter that grants the request records the
+    statement, and its grant echoes it; a voter refuses a lease to an instance a statement it holds says may not lead,
+    and an instance holding one about itself does not ask to lead. Any majority that could elect the follower then
+    includes a voter that knows it lacks commands the matching engine acted on. The design, its decisions and its
+    tests are in [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md), and its model check in
+    section 12 of [tla/findings.md](tla/findings.md).
 
 ## 4. Why two instances never act as leader at the same moment
 

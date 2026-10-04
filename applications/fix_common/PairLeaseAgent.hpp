@@ -273,6 +273,13 @@ class PairLeaseAgent {
         reported_no_leader_ = false;
         resuming_lead_until_ = Clock::time_point{};
         record_leading();
+        if (participant_.statement().leader_id != 0) {
+            // A new leadership starts by saying its peer may not lead, and the owner may wait on an
+            // echo of that before acting on a command its peer lacks; it is sent now rather than at
+            // the first renewal.
+            last_renewal_ = now;
+            ask_voters(participant_.epoch(), now);
+        }
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: leading at epoch {} -- granted a lease by {}, which with its own vote is a majority",
                    owner_name_, epoch, voter_name(voter_id));
@@ -355,6 +362,11 @@ class PairLeaseAgent {
      */
     [[nodiscard]] bool may_act_without_peer() const {
         return participant_.may_act_without_peer() && recorder_ != nullptr && recorded_statement_.same_as(participant_.statement());
+    }
+
+    /// Whether this instance, leading, says its peer may lead. True in a pair that makes no statements.
+    [[nodiscard]] bool says_peer_may_lead() const {
+        return participant_.statement().leader_id == 0 || participant_.statement().peer_may_lead;
     }
 
   private:

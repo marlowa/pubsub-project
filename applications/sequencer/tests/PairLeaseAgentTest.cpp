@@ -660,11 +660,9 @@ TEST_F(PairLeaseAgentTest, ALeaderMayActWithoutItsPeerOnlyOnceAnotherVoterHasEch
     make_statements();
     keep_promises();
     ASSERT_TRUE(step_until_the_primary_leads());
-    EXPECT_FALSE(agents_[0]->may_act_without_peer()) << "no request has carried the statement yet";
-    for (int i = 0; i < 40 && !agents_[0]->may_act_without_peer(); ++i) {
-        step();
-    }
-    EXPECT_TRUE(agents_[0]->may_act_without_peer());
+    // A new leader sends its first statement as it takes the lead, not at its first renewal, so in
+    // this harness, which delivers every message at once, the echo is already back.
+    EXPECT_TRUE(agents_[0]->may_act_without_peer()) << "the statement sent on taking the lead was not echoed without waiting for a renewal";
     agents_[0]->peer_holds_everything(now_);
     EXPECT_FALSE(agents_[0]->may_act_without_peer());
     agents_[0]->begin_running_without_peer(now_);

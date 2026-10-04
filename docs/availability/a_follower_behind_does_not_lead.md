@@ -127,23 +127,21 @@ commands until a grant echoes that statement. Only then does it send the held co
 stop waiting for acknowledgements. The delay is one round trip to the nearer voter plus that voter's
 synced write: normally a few milliseconds.
 
-While it waits for the confirmation, the leader goes on logging commands and holding them. If its
-storage for held commands fills before the confirmation arrives, it stops reading new commands from its
-gateway connections until the confirmation arrives. The commands wait in the connections, and nothing is
-lost or refused. This is a rare fallback: the storage holds 16,384 commands, which lasts about a third of
-a second at 50,000 orders a second, and a confirmation normally takes a few milliseconds.
+While it waits for the confirmation, the leader goes on logging commands and holding them. When three
+quarters of its storage for held commands (16,384) is in use, it stops reading from its gateway
+connections, with `ApplicationThread::pause_reading()`, and starts again when the held commands fall to
+a quarter. The commands wait in the connections, and nothing is lost or refused. This is a rare
+fallback: three quarters of the storage lasts about a quarter of a second at 50,000 orders a second, and
+a confirmation normally takes a few milliseconds.
 
-Stopping and restarting reads needs two things the framework does not yet have:
-
-- **A way for an application thread to ask for it.** The reactor can already stop watching a socket for
-  incoming data and start again (`InboundConnectionManager`), but only a raw-bytes connection uses
-  this, when its own buffer fills. Two new reactor commands are needed, one to stop reading a connection
-  and one to start again, and the sequencer's gateway connections, which carry framework messages, must
-  honour them.
-- **Room for what is already on its way.** Stopping reads does not stop messages already read, which are
-  already queued for the sequencer's thread, and that thread cannot stop taking from its queue, because
-  lease messages arrive on the same queue. So the leader stops reading when its storage passes a high
-  mark, leaving room for those, and starts again when it falls below a lower mark.
+Stopping reads does not stop messages already read and queued for the sequencer's thread, and that
+thread cannot stop taking from its queue, because lease messages arrive on the same queue. The remaining
+quarter of the storage leaves room for them, but no fixed amount can be guaranteed to, so the storage is
+not the only place a command can wait. Every command is written to the log before it is held, and once
+the storage is full, later commands are logged and replicated but not held. When the confirmation
+arrives, the leader sends the held commands to the matching engine and then reads the rest from its own
+log, in order, as the engine's own catch-up does. Nothing is lost or reordered, memory stays bounded, and
+nothing is acted on before the confirmation.
 
 A long stop has a cost beyond the sequencer. A gateway whose sends to the sequencer cannot complete stops
 sending anything at all, to members as well as to both sequencers, once the kernel's buffers for that
@@ -254,12 +252,12 @@ has caught up.
 
 Each test must fail on today's code. That is shown, not assumed, before it is used to judge the change.
 
-| Test | What it requires | Today |
+| Test | What it requires | Status |
 |---|---|---|
-| Scenario, new: follower stopped | The follower is stopped with SIGSTOP. The leader runs without it and has orders placed. The leader is killed and the follower resumed. The follower must not lead. The old leader is restarted, leads, and its log holds every order that was placed | Expected to fail: the follower takes the lead |
-| Scenario, new: arbiters down | As above, but with the arbiters stopped, and the follower made to fall behind by blocking its acknowledgements with `libblock_sends_to_ports.so`, so that its lease handling still answers. The follower records the statement, and must not lead | Expected to fail |
-| Scenario, new: caught up again | The follower falls behind, catches up, and the leader goes back to waiting. The leader is then killed, and the follower must take the lead normally | Passes today; it guards against the change blocking a healthy failover |
-| Scenario, new: arbiter restarted | As the first, but the active arbiter is restarted after the statement is recorded and before the leader is killed. The follower must still not lead | Expected to fail |
+| `ha_test.py` scenario 63: follower stopped | The follower is stopped with SIGSTOP. The leader says the follower may not lead, and the matching engine accepts an order only after the arbiter has echoed that. The leader is killed and the follower resumed: the follower must not lead. The old leader is restarted, leads holding the order, and says the follower may lead again once it has caught up | Passes. With the voters made to ignore statements, it fails: the follower takes the lead |
+| `ha_test.py` scenario 64: arbiter restarted | As scenario 63, with the active arbiter killed and restarted after the order is accepted and before the leader is killed. The restarted arbiter reports the recorded statement, and the follower must still not lead | Passes |
+| Caught up again | After the follower has fallen behind and caught up, the leader says it may lead, and a failover proceeds normally | Covered by scenario 61, whose final step kills the leader once the restarted follower has caught up and requires the follower to take over, and by scenario 63's last step |
+| Arbiters down | The follower falls behind with the arbiters stopped, records the statement itself, and must not lead | Not built as a scenario: the follower's acknowledgements and its lease grants travel on the same peer connection, so `libblock_sends_to_ports.so` cannot block one without the other. The follower recording and echoing a statement is covered by `PairLeaseAgentTest`, and the property with any voter recording it by the simulation and the TLA+ model |
 | Unit tests | In `LeaseRulesTest.cpp`: a voter keeps only the newest statement and refuses the instance it names; a leader starts each leadership saying "no" and records it itself, so that once its lease has run out it refuses its peer; it may act without its peer only once another voter echoes the current statement; an instance that holds a "no" about itself does not ask to lead; a restored statement is honoured; a pair that makes no statements never stops its peer leading | Done |
 | Simulation | `LeaseSimulationTest.cpp` gains logs, the engine's set of acted-on commands, copying to the peer that sometimes stalls, and statements and echoes, and checks after every step that an instance starting to act as leader holds every acted-on command. Runs with the leader not waiting for an echo, with the arbiter forgetting its statement, and with an instance forgetting its statement each find a violation | Done |
 | TLA+ | `FollowerBehindHA.tla` checks that the instance acting as leader holds every command the engine has acted on, and each part of the rule is removed in turn to show it is needed | Done: section 12 of [tla/findings.md](tla/findings.md). Each counterexample is rerun on every install |
@@ -273,16 +271,15 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    `PeerStatementsFlag::SayWhetherPeerMayLead` makes statements, and no component does so until step 4.
 3. The new fields on `LeaseRequest` and `LeaseGrant`, the follower's and the arbiter's records, and the
    arbiter's copy to the passive arbiter, with the unit tests. Done: `PairLeaseAgent` carries, records,
-   echoes and keeps statements, and the arbiter keeps them in `ComponentStatementStore`; the sequencer
-   still constructs its agent with `PeerStatementsFlag::PeerAlwaysMayLead` until step 4.
+   echoes and keeps statements, and the arbiter keeps them in `ComponentStatementStore`.
 4. The sequencer's switch: confirm before acting, the order of going back to waiting, and stopping reading
-   from gateway connections while waiting. It depends on [follower_log_repair.md](follower_log_repair.md),
-   which is built: the leader may say its follower may lead again only once the follower holds every
-   record the leader holds, and the repair is what makes that knowable for a follower that has
-   reconnected.
-5. The new scenarios.
-6. Rules added to [majority_leases.md](majority_leases.md), and open question 2 of
-   [change_of_sequencer_leader.md](change_of_sequencer_leader.md) marked as answered here.
+   from gateway connections while waiting. Done: the sequencer constructs its agent with
+   `PeerStatementsFlag::SayWhetherPeerMayLead`; reading pauses through
+   `ApplicationThread::pause_reading()`; commands beyond the storage wait in the log. It depends on
+   [follower_log_repair.md](follower_log_repair.md), which is built.
+5. The new scenarios. Done: 63 and 64.
+6. Rule 11 added to [majority_leases.md](majority_leases.md), and open question 2 of
+   [change_of_sequencer_leader.md](change_of_sequencer_leader.md) marked as answered here. Done.
 
 Related: [majority_leases.md](majority_leases.md), [change_of_sequencer_leader.md](change_of_sequencer_leader.md),
 [tla/findings.md](tla/findings.md).

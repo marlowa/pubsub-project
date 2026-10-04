@@ -833,6 +833,14 @@ class Scenario(NamedTuple):
     # records and end with a log identical to the new leader's. Needs block_leader_peer_sends. See
     # run_scenario's "old leader rejoins" block.
     assert_rejoining_old_leader_log_repaired: bool = False
+    # When True, stop the follower, have the leader take an order once a voter confirms that the
+    # follower may not lead, kill the leader, and require the follower NOT to take the lead; then
+    # restart the old leader and require it to lead holding the order. With
+    # restart_arbiter_before_leader_dies, the active arbiter is restarted before the leader is killed,
+    # and its record of the statement must survive. See run_scenario's "rule 11" block, and
+    # docs/availability/a_follower_behind_does_not_lead.md.
+    assert_follower_behind_does_not_lead: bool = False
+    restart_arbiter_before_leader_dies: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3525,6 +3533,48 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         block_leader_peer_sends=True,
         assert_rejoining_old_leader_log_repaired=True,
+        steps=[],
+    ),
+
+    # 63 -- a follower that is behind does not take the lead.
+    #
+    # The follower sequencer is stopped with SIGSTOP. An order sent to the leader cannot wait for the
+    # follower's acknowledgement, so the leader says that the follower may not lead and sends the order
+    # to the matching engine only once the arbiter has echoed that statement. The leader is then killed
+    # and the follower let run: it lacks the order the engine acted on, so it must not lead. The old
+    # leader is restarted, leads again holding the order, and once the follower has caught up says that
+    # it may lead again.
+    Scenario(
+        number=63,
+        short_name="follower_behind_does_not_lead",
+        description="A follower sequencer that lacks an order the engine acted on does not take the lead",
+        expected_outcome=(
+            "the order sent while the follower was stopped is accepted after the arbiter confirms the statement; after the "
+            "leader is killed the follower does not lead; the restarted old leader leads holding the order, and says the "
+            "follower may lead again once it has caught up"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_follower_behind_does_not_lead=True,
+        steps=[],
+    ),
+
+    # 64 -- as 63, with the active arbiter restarted before the leader dies.
+    #
+    # The arbiter keeps the leader's statement on disk and copies it to the passive arbiter, so a
+    # restart, which forgets every promise, must not forget it.
+    Scenario(
+        number=64,
+        short_name="follower_behind_does_not_lead_across_arbiter_restart",
+        description="A follower that is behind does not take the lead even after the active arbiter restarts",
+        expected_outcome=(
+            "as scenario 63, with the active arbiter killed and restarted after the order is accepted and before the leader "
+            "is killed; the follower still does not lead"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_follower_behind_does_not_lead=True,
+        restart_arbiter_before_leader_dies=True,
         steps=[],
     ),
 ]
@@ -7649,6 +7699,78 @@ def run_scenario(scenario: Scenario, args) -> bool:
             compared = compare_logs_after("old leader rejoins", wal_dirs["secondary"], start_positions["secondary"], wal_dirs["primary"],
                                           start_positions["primary"], agreed_through)
             log(f"  the old leader's log now holds the same {compared} records as the new leader's from record {agreed_through + 1} -- OK")
+
+        # ── Rule 11: a follower that is behind does not lead ──────────────────
+        if scenario.assert_follower_behind_does_not_lead:
+            log("=== A follower that is behind does not take the lead ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("rule 11: sequencer_primary is not leading.")
+            sequencer_etc = prefix / "etc" / "sequencer"
+            configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
+            order_port = installed_toml_section_value(configs["primary"], "network", "listen_port")
+            primary_wal = configs["primary"].parent / installed_toml_section_value(configs["primary"], "wal", "directory")
+            run_tag = datetime.now().strftime("%H%M%S")
+            behind = f"behind-{run_tag}"
+
+            def send_order_to_leader(cl_ord_id: str) -> None:
+                result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_port, "--cl-ord-id", cl_ord_id],
+                                        capture_output=True, text=True, check=False, timeout=30)
+                if result.returncode != 0:
+                    die(f"rule 11: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+
+            # Let the follower catch up and the leader say it may lead, so that the statement below is a change.
+            if not poll_log_for(primary_log, "saying it may lead again", timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("rule 11: the leader never said its follower may lead, so it would never have said otherwise.")
+
+            follower = proc_by_name["sequencer_secondary"]
+            statement_from = file_end(primary_log)
+            accepted_from = file_end(me_log)
+            os.kill(follower.pid, signal.SIGSTOP)
+            log(f"  SIGSTOP -> sequencer_secondary (PID {follower.pid})")
+            send_order_to_leader(behind)
+            if not poll_log_for(primary_log, "saying the follower may not lead", timeout=_RAW_REPLY_TIMEOUT, from_byte=statement_from)[0]:
+                die("rule 11: the leader never said the follower may not lead before acting on an order it lacks.")
+            if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={behind} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=accepted_from)[0]:
+                die("rule 11: the matching engine never accepted the order, so the arbiter's confirmation never released it.")
+            log("  the leader said the follower may not lead, the arbiter confirmed, and the engine accepted the order -- OK")
+
+            if scenario.restart_arbiter_before_leader_dies:
+                arbiter_from = 0
+                do_restart_step(RestartStep(proc_name="arbiter_primary", ready_log_name="arbiter_primary.log", ready_markers=("ArbiterThread:",),
+                                            ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
+                                proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+                if not poll_log_for(log_dir / "arbiter_primary.log", "says instance 2 may not lead", timeout=10.0, from_byte=arbiter_from)[0]:
+                    die("rule 11: the restarted arbiter did not report the recorded statement that instance 2 may not lead.")
+                log("  the active arbiter restarted and still holds the statement that the follower may not lead -- OK")
+
+            primary = proc_by_name["sequencer_primary"]
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if Path(f"/proc/{primary.pid}").exists():
+                die(f"rule 11: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            takeover_from = file_end(secondary_log)
+            os.kill(follower.pid, signal.SIGCONT)
+            log(f"  SIGCONT -> sequencer_secondary (PID {follower.pid}); it lacks the order the engine acted on")
+            took_over, _, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=2 * args.failover_timeout, from_byte=takeover_from)
+            if took_over:
+                die("rule 11: the follower took the lead although it lacks an order the matching engine acted on.")
+            log(f"  the follower did not take the lead in {2 * args.failover_timeout:.0f}s -- OK")
+
+            leader_from = 0
+            do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready_markers=("SequencerThread:",),
+                                        ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
+                            proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout * 2, from_byte=leader_from)[0]:
+                die("rule 11: the restarted old leader did not take the lead back.")
+            if behind.encode() not in b"".join(path.read_bytes() for path in primary_wal.glob("wal_*.log")):
+                die("rule 11: the old leader's log does not hold the order the engine accepted.")
+            log("  the old leader took the lead back, holding the order -- OK")
+            if not poll_log_for(primary_log, "saying it may lead again", timeout=30.0, from_byte=leader_from)[0]:
+                die("rule 11: the follower caught up but the leader never said it may lead again.")
+            log("  the follower caught up, and the leader says it may lead again -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

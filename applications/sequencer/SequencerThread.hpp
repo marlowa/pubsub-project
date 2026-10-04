@@ -421,6 +421,23 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     pubsub_itc_fw::FixedCapacityRingBuffer<HeldOrder> held_orders_{held_order_capacity};
 
+    // Orders numbered from here on were written to the log and replicated but not held, because the
+    // storage above was full; zero when there are none. They are sent to the engine from the log
+    // when they are released, so the storage bounds memory without bounding how many orders can
+    // wait. While this is set, no later order is held either, so that orders are sent in order.
+    int64_t first_unheld_seq_{0};
+
+    // The connections gateways send orders on, and whether reading from them has been paused because
+    // orders are waiting faster than they are released (docs/availability/a_follower_behind_does_not_lead.md, 4.3).
+    std::vector<pubsub_itc_fw::ConnectionID> order_connection_ids_;
+    bool order_reading_paused_{false};
+
+    // Reading from the gateways is paused when this many orders are held while waiting for a voter's
+    // confirmation, leaving room for orders already read, and resumed when the held orders fall to
+    // the lower mark. Orders that arrive with the storage full anyway wait in the log.
+    static constexpr size_t pause_order_reading_at = held_order_capacity * 3 / 4;
+    static constexpr size_t resume_order_reading_at = held_order_capacity / 4;
+
     // True while a follower is connected but has fallen too far behind, and the leader is sending
     // orders to the engine at once and forwarding reports without waiting, as it does with no
     // follower connected. A loss of resilience, not of service.
@@ -430,6 +447,21 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::GaugeHandle running_alone_gauge_;
 
     void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);
+    /// Whether the leader may send the engine an order its follower does not hold: HA is off, or a voter has confirmed that the follower
+    /// may not lead.
+    [[nodiscard]] bool may_act_without_follower() const;
+    /// Says, if it does not already, that the follower may not lead, before acting on orders the follower lacks.
+    void say_follower_may_not_lead();
+    /// Says that the follower may lead again, once it holds every record and the leader waits for its acknowledgements again.
+    void say_follower_may_lead_if_it_holds_everything();
+    /// Sends the engine every waiting order and every waiting report, once acting without the follower is confirmed.
+    void release_if_confirmed();
+    /// Sends the engine, in order, the orders numbered from first to through that waited in the log rather than the storage.
+    void send_logged_orders(int64_t first, int64_t through);
+    /// The last order released to the engine: everything numbered at or below it has been sent or deferred, and nothing above it.
+    [[nodiscard]] int64_t released_through() const;
+    /// Pauses reading from the gateways while too many orders wait, and resumes it when they have drained.
+    void pause_or_resume_order_reading();
     void send_held_order_to_matching_engine(const HeldOrder& held);
     void release_held_orders_through(int64_t acknowledged_seq_no);
     void release_all_held_orders();

@@ -176,7 +176,7 @@ void SequencerThread::on_initial_event() {
         const int64_t peer_id = self_id == 1 ? 2 : 1;
         lease_agent_.emplace("SequencerThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::sequencer, self_id, peer_id,
                              arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
-                             fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::PeerAlwaysMayLead});
+                             fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::SayWhetherPeerMayLead});
         background_promise_recorder_.emplace(lease_promise_store_);
         lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                        std::chrono::steady_clock::now());
@@ -423,6 +423,15 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         send_status_query(id);
         forget_log_agreement();
         send_log_position_request();
+    } else if (svc == "inbound:" + std::to_string(config_.listen_port)) {
+        // A gateway's connection for orders. While reading from the gateways is paused, a gateway that
+        // connects is paused too.
+        order_connection_ids_.push_back(id);
+        if (order_reading_paused_) {
+            pause_reading(id);
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway order connection {} established{}", id.get_value(),
+                   order_reading_paused_ ? " -- reading from it is paused while orders wait" : "");
     } else if (svc == wal_subscriber_inbound_svc_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: external WAL subscriber connection {} established -- awaiting WalSubscribeRequest", id.get_value());
@@ -477,6 +486,10 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: inbound peer connection {} lost: {}", id.get_value(), reason);
         forget_log_agreement();
         flush_pending_er();
+    } else if (const auto order_connection = std::find(order_connection_ids_.begin(), order_connection_ids_.end(), id);
+               order_connection != order_connection_ids_.end()) {
+        order_connection_ids_.erase(order_connection);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway order connection {} lost: {}", id.get_value(), reason);
     } else if (id.service_name() == wal_subscriber_inbound_svc_) {
         wal_subscriber_conn_ids_.erase(id);
         external_wal_subscriber_registry_.remove_subscriber(id);
@@ -700,21 +713,30 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
         // With a follower connected and keeping up, the order goes to the matching engine only once
         // the follower has acknowledged its record, so the engine never acts on an order the follower
-        // does not hold (docs/availability/change_of_sequencer_leader.md, part 4.2). It is replicated
-        // and published at once and held until the acknowledgement arrives, which sends it on. If the
-        // storage for held orders is full the follower is too far behind, and the leader runs as if
-        // alone: the order is sent at once, below.
-        if (needs_wal_ack()) {
-            if (!held_orders_.full()) {
-                send_wal_record(envelope);
-                stream_wal_record_to_external_subscribers(envelope);
-                hold_until_acknowledged(envelope, message);
-                return; // The payload is released when the held order is sent on.
-            }
+        // does not hold (docs/availability/change_of_sequencer_leader.md, part 4.2). If the storage
+        // for held orders is full the follower is too far behind, and the leader runs as if alone.
+        if (needs_wal_ack() && (held_orders_.full() || first_unheld_seq_ != 0)) {
             start_running_alone("its storage for orders waiting on the follower is full");
         }
 
-        // Sent at once: no follower is connected, or the leader is running as if alone.
+        // Without a follower that keeps up, the leader acts on an order its follower lacks only once a
+        // voter has confirmed its statement that the follower may not lead (rule 11,
+        // docs/availability/a_follower_behind_does_not_lead.md), and never ahead of an order already
+        // waiting. Until then the order is replicated and published at once and waits: in the storage
+        // for held orders, or in the log once that is full.
+        if (config_.ha_enabled && (needs_wal_ack() || !may_act_without_follower() || !held_orders_.empty() || first_unheld_seq_ != 0)) {
+            if (!needs_wal_ack()) {
+                say_follower_may_not_lead();
+            }
+            send_wal_record(envelope);
+            stream_wal_record_to_external_subscribers(envelope);
+            hold_until_acknowledged(envelope, message);
+            pause_or_resume_order_reading();
+            release_if_confirmed();
+            return; // The payload is released when the held order is sent on, or at once if it waits in the log.
+        }
+
+        // Sent at once: HA is off, or no follower keeps up and a voter has confirmed that it may not lead.
         if (engine_routing_.active().is_valid()) {
             // Reachable again. Anything deferred is recovered by the catch-up the arriving engine
             // performs before it acts, and an operator wants one line saying what the outage cost.
@@ -1067,6 +1089,8 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     if (id == lease_tick_timer_id_) {
         const auto now = std::chrono::steady_clock::now();
         act_on(lease_agent_->on_tick(now));
+        release_if_confirmed();
+        say_follower_may_lead_if_it_holds_everything();
         if (!follower_log_agreed_.load(std::memory_order_acquire) && now - last_position_request_at_ >= std::chrono::seconds{1}) {
             send_log_position_request();
         }
@@ -1124,6 +1148,8 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         broadcast_order_acceptance();
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         discard_held_orders();
+        first_unheld_seq_ = 0;
+        pause_or_resume_order_reading();
         send_log_position_request();
         if (running_alone_) {
             running_alone_ = false;
@@ -1219,6 +1245,8 @@ void SequencerThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& mess
         return;
     }
     act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
+    // A grant may carry the echo that confirms the leader's statement, which releases what waits on it.
+    release_if_confirmed();
 }
 
 void SequencerThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {
@@ -1747,6 +1775,7 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
         forward_pending_er(it->second);
     }
     pending_er_.erase(pending_er_.begin(), covered_end);
+    say_follower_may_lead_if_it_holds_everything();
 }
 
 void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id) {
@@ -1816,13 +1845,18 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
 }
 
 void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message) {
-    // The caller has checked there is room, so this cannot fail; the result is checked anyway, and a
-    // failure sends the order at once rather than losing it.
-    if (!held_orders_.push_back(HeldOrder{envelope, message.slab_id(), message.payload(), std::chrono::steady_clock::now()})) {
-        start_running_alone("its storage for orders waiting on the follower is full");
-        send_held_order_to_matching_engine(HeldOrder{envelope, message.slab_id(), message.payload(), std::chrono::steady_clock::now()});
-        release_pdu_payload(message);
+    // Once one order waits in the log, every later one does too, so that orders are sent in order.
+    if (first_unheld_seq_ == 0 && held_orders_.push_back(HeldOrder{envelope, message.slab_id(), message.payload(), std::chrono::steady_clock::now()})) {
+        return;
     }
+    if (first_unheld_seq_ == 0) {
+        first_unheld_seq_ = envelope.seq_no;
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: the storage for waiting orders is full -- orders from seq={} wait in the write-ahead log, and are sent to the matching "
+                   "engine from there when they are released",
+                   envelope.seq_no);
+    }
+    release_pdu_payload(message);
 }
 
 void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) {
@@ -1848,15 +1882,141 @@ void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
         release_pdu_payload(held.slab_id, held.buffer);
         held_orders_.pop_front();
     }
+    // Every held order is numbered below the first that waits in the log, so these follow them.
+    if (first_unheld_seq_ != 0 && first_unheld_seq_ <= acknowledged_seq_no) {
+        send_logged_orders(first_unheld_seq_, acknowledged_seq_no);
+        first_unheld_seq_ = acknowledged_seq_no >= next_sequence_number_ - 1 ? 0 : acknowledged_seq_no + 1;
+    }
+    pause_or_resume_order_reading();
 }
 
 void SequencerThread::release_all_held_orders() {
-    while (!held_orders_.empty()) {
-        const HeldOrder& held = held_orders_.front();
-        send_held_order_to_matching_engine(held);
-        release_pdu_payload(held.slab_id, held.buffer);
-        held_orders_.pop_front();
+    release_held_orders_through(next_sequence_number_ - 1);
+}
+
+bool SequencerThread::may_act_without_follower() const {
+    return !config_.ha_enabled || !lease_agent_.has_value() || lease_agent_->may_act_without_peer();
+}
+
+void SequencerThread::say_follower_may_not_lead() {
+    const auto now = std::chrono::steady_clock::now();
+    if (!lease_agent_.has_value() || role_ != pubsub_itc_fw_app::Role::leader || !lease_agent_->acting(now) || !lease_agent_->says_peer_may_lead()) {
+        return;
     }
+    lease_agent_->begin_running_without_peer(now);
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: saying the follower may not lead -- orders it does not hold wait until a voter confirms that statement");
+}
+
+void SequencerThread::say_follower_may_lead_if_it_holds_everything() {
+    const auto now = std::chrono::steady_clock::now();
+    if (!lease_agent_.has_value() || role_ != pubsub_itc_fw_app::Role::leader || !lease_agent_->acting(now) || lease_agent_->says_peer_may_lead()) {
+        return;
+    }
+    // In this order: the leader waits for the follower's acknowledgements again, nothing waits, and the
+    // follower has acknowledged every record; only then is it true that the follower holds everything
+    // the engine has acted on.
+    if (!needs_wal_ack() || !held_orders_.empty() || first_unheld_seq_ != 0 || peer_acked_through_ < next_sequence_number_ - 1) {
+        return;
+    }
+    lease_agent_->peer_holds_everything(now);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: the follower holds every record through {} -- saying it may lead again",
+               peer_acked_through_);
+}
+
+void SequencerThread::release_if_confirmed() {
+    if (role_ != pubsub_itc_fw_app::Role::leader || needs_wal_ack() || !may_act_without_follower()) {
+        return;
+    }
+    if (!held_orders_.empty() || first_unheld_seq_ != 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: a voter has confirmed that the follower may not lead -- sending the {} held order(s){} to the matching engine",
+                   held_orders_.size(), first_unheld_seq_ != 0 ? " and the orders waiting in the log" : "");
+        release_all_held_orders();
+    }
+    if (!pending_er_.empty()) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: no follower keeps up -- forwarding {} buffered ERs to their gateways without waiting for it", pending_er_.size());
+        forward_all_pending_er();
+    }
+    pause_or_resume_order_reading();
+}
+
+void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
+    const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
+    int64_t sent = 0;
+    [[maybe_unused]] const auto end_position = pubsub_itc_fw::WalReader::replay(
+        config_.wal_directory, wal_.scan_start_for(first), [this, &engine, first, through, &sent](int64_t record_id, const void* payload, size_t size) {
+            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+            if (record_id < first || record_id > through || size <= header_size) {
+                return;
+            }
+            int64_t wall_time_ns{};
+            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
+            int16_t pdu_id{};
+            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
+            const auto* record = static_cast<const uint8_t*>(payload) + header_size;
+            if (engine.is_valid()) {
+                if (stream_wal_record_to_me(engine, record_id, pdu_id, record, size - header_size, wall_time_ns)) {
+                    ++sent;
+                }
+                return;
+            }
+            // No engine: an order is deferred, as one sent from the storage would be, and recovered
+            // by the catch-up whichever engine acts next performs.
+            auto& arena_buf = decode_arena_buffer();
+            pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+            size_t arena_bytes_needed = 0;
+            size_t bytes_consumed = 0;
+            pubsub_itc_fw_app::WalRecordView view{};
+            if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id &&
+                pubsub_itc_fw_app::decode(view, record, size - header_size, bytes_consumed, arena, arena_bytes_needed) &&
+                (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) ||
+                 view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest))) {
+                note_order_deferred(record_id);
+            }
+        });
+    if (engine.is_valid()) {
+        note_matching_engine_reachable();
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: sent {} order(s) numbered {} to {} to the matching engine from the log", sent,
+               first, through);
+}
+
+int64_t SequencerThread::released_through() const {
+    if (!held_orders_.empty()) {
+        return held_orders_.front().envelope.seq_no - 1;
+    }
+    if (first_unheld_seq_ != 0) {
+        return first_unheld_seq_ - 1;
+    }
+    return next_sequence_number_ - 1;
+}
+
+void SequencerThread::pause_or_resume_order_reading() {
+    const bool waiting_for_confirmation = role_ == pubsub_itc_fw_app::Role::leader && !needs_wal_ack() && !may_act_without_follower();
+    if (!order_reading_paused_) {
+        if (waiting_for_confirmation && (held_orders_.size() >= pause_order_reading_at || first_unheld_seq_ != 0)) {
+            for (const pubsub_itc_fw::ConnectionID& id : order_connection_ids_) {
+                pause_reading(id);
+            }
+            order_reading_paused_ = true;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: {} orders wait for a voter to confirm that the follower may not lead -- reading from the {} gateway connection(s) "
+                       "is paused until they are released",
+                       held_orders_.size(), order_connection_ids_.size());
+        }
+        return;
+    }
+    if (waiting_for_confirmation && (held_orders_.size() > resume_order_reading_at || first_unheld_seq_ != 0)) {
+        return;
+    }
+    for (const pubsub_itc_fw::ConnectionID& id : order_connection_ids_) {
+        resume_reading(id);
+    }
+    order_reading_paused_ = false;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: reading from the gateways resumed -- {} order(s) still held",
+               held_orders_.size());
 }
 
 void SequencerThread::discard_held_orders() {
@@ -1883,12 +2043,12 @@ void SequencerThread::start_running_alone(const char* reason) {
     running_alone_since_ = std::chrono::steady_clock::now();
     running_alone_gauge_.set(1.0);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "SequencerThread: the follower is too far behind -- {}. Running as if alone: orders go to the matching engine at once and reports are "
-               "forwarded without waiting, so resilience is reduced until the follower catches up. {} order(s) held; the follower has acknowledged "
-               "through {} of {}",
+               "SequencerThread: the follower is too far behind -- {}. Running as if alone: once a voter confirms that the follower may not lead, "
+               "orders go to the matching engine without waiting for it and reports are forwarded, so resilience is reduced until the follower "
+               "catches up. {} order(s) held; the follower has acknowledged through {} of {}",
                reason, held_orders_.size(), peer_acked_through_, next_sequence_number_ - 1);
-    release_all_held_orders();
-    forward_all_pending_er();
+    say_follower_may_not_lead();
+    release_if_confirmed();
 }
 
 void SequencerThread::stop_running_alone(const char* reason) {
@@ -1922,18 +2082,18 @@ void SequencerThread::forward_all_pending_er() {
 }
 
 void SequencerThread::flush_pending_er() {
-    release_all_held_orders();
     if (running_alone_) {
         stop_running_alone("it has disconnected, and the leader runs alone as it does with no follower");
     }
-    if (!pending_er_.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: peer lost -- flushing {} buffered ERs to gateway (degraded mode)",
-                   pending_er_.size());
-        for (auto& [seq_no, pending] : pending_er_) {
-            forward_pending_er(pending);
-        }
-        pending_er_.clear();
+    // Held orders and buffered reports go once a voter confirms that the follower, now gone, may not
+    // lead; with HA off they go at once.
+    if (!config_.ha_enabled) {
+        release_all_held_orders();
+        forward_all_pending_er();
+        return;
     }
+    say_follower_may_not_lead();
+    release_if_confirmed();
 }
 
 void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,
@@ -2790,7 +2950,10 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
         return;
     }
 
-    const int64_t wal_head = wal_.last_seq_no();
+    // Only orders already released to the engine: one still waiting for the follower's
+    // acknowledgement, or for a voter's confirmation, is sent live when it is released, and sending it
+    // here as well would act on it early.
+    const int64_t wal_head = released_through();
     me_catchup_conn_id_ = conn_id;
 
     // A negative position is an engine saying it holds nothing and has applied nothing of this
@@ -2828,11 +2991,12 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // to tell those apart: see R-0123.
     int64_t earliest_retained = 0;
     [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, {0, 0}, [this, &conn_id, last_seq_no, &streamed, &earliest_retained](int64_t record_id, const void* payload, size_t size) {
+        config_.wal_directory, {0, 0},
+        [this, &conn_id, last_seq_no, wal_head, &streamed, &earliest_retained](int64_t record_id, const void* payload, size_t size) {
             if (earliest_retained == 0) {
                 earliest_retained = record_id;
             }
-            if (record_id <= last_seq_no) {
+            if (record_id <= last_seq_no || record_id > wal_head) {
                 return;
             }
             constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);

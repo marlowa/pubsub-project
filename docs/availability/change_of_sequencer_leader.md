@@ -257,6 +257,52 @@ Discarding is safe only with option A of 4.2. Under that option, a record the ol
 new leader does not was never acted on by the engine and never answered to a member, and the gateway
 sent the command again to the new leader under 4.3. Nothing is lost by discarding it.
 
+### 4.6 What is committed and what is applied, in Raft's terms
+
+Raft, the consensus algorithm most of this design follows, keeps two numbers for a replicated log. The
+**commit index** is the last record known to be held by a majority, and so safe to act on. The
+**applied index** is the last record the state machine has acted on. The sequencer keeps neither under
+those names, and stores neither on disk. This is what stands in for each.
+
+**When an order may be acted on (Raft's commit).** There are three voters for the sequencer pair, the
+two instances and the arbiter, so a majority is the leader and one other. The leader has the matching
+engine act on an order in one of two cases:
+
+- **The follower holds it.** The follower has acknowledged the order's record: it is at or below
+  `peer_acked_through_` (`SequencerThread.hpp`), the highest record the follower has acknowledged. The
+  follower's log is repaired when it rejoins ([follower_log_repair.md](follower_log_repair.md)), so
+  "acknowledged through N" means the follower holds exactly the leader's records 1 to N.
+  `release_held_orders_through()` sends the orders an acknowledgement covers. This is option A of 4.2.
+- **The follower does not, and a voter has recorded that it may not lead.** When no follower keeps up,
+  the leader acts on an order its follower lacks only once a voter other than itself has echoed its
+  statement that the follower may not lead
+  ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md), rule 11). The majority
+  behind the decision is then the leader, which holds the record, and a voter that holds the statement
+  instead of the record. What Raft guarantees with its commit index, that a new leader holds every
+  committed record, this guarantees by keeping any instance that lacks one from being elected.
+
+A report is forwarded to its member on the same terms: once the follower holds the record it waits on,
+or once acting without the follower has been confirmed.
+
+**What has been acted on (Raft's applied).** `released_through()` (`SequencerThread.cpp`) is the last
+order the leader has sent to the matching engine: every order at or below it has been sent, or deferred
+because no engine was connected, and none above it. Orders above it are waiting, for the follower's
+acknowledgement or a voter's confirmation, in the storage for held orders or, once that is full, in the
+log. The matching engine knows its own position, the last record it applied: an engine that is starting
+reads it from the open-order region it recovers, and one taking the lead from the replica it maintained
+while following. It gives that position when it asks to catch up. The leader's catch-up sends it records up to
+`released_through()` and no further, so that nothing waiting is acted on early.
+
+**After a change of leader.** A new leader does not work out either number from its peer. It treats its
+whole log as safe to act on, and numbers new records from the highest record it holds plus one (4.1).
+That is sound because of the two guarantees above: the engine acted only on records the follower held,
+or with the follower barred from leading, so the instance that takes the lead holds every record the
+engine acted on. Its log may hold more: records the old leader had replicated but not yet sent to the
+engine. Both instances hold those, which is a majority, so they are safe to act on, and the engine acts
+on them when it catches up from the new leader's log, from its own position. Records an old leader held
+that its new leader never had were acted on by nobody, and the old leader discards them when it rejoins
+([follower_log_repair.md](follower_log_repair.md)).
+
 ## 5. A change of leader under the recommended design
 
 1. The leading sequencer dies. Some commands are in its log and acknowledged by the follower; the
@@ -349,13 +395,12 @@ field.
    recommendation, the promoted engine catches up from the new leader's log, as it does now. A command
    the old leader held alone was never applied by either engine, and the gateway sends it again. This
    needs a scenario before it is relied on.
-2. **A leader running alone.** The next work after 4.2 (see the decision above). While no follower is
-   connected, or the follower is too far behind, the leader sends commands to the engine at once, so
-   its log alone holds them. If it then dies, the instance that takes over has an older
-   log. A voter granting a lease does not compare the two instances' logs, so nothing stops the stale
-   instance leading. Raft prevents this by refusing to vote for a candidate whose log is behind. That is
-   a change to the lease rules (`majority_leases.md`). The design, for review, is
-   [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md).
+2. **A leader running alone. Answered and built.** While no follower is connected, or the follower is
+   too far behind, the leader acts on commands its follower lacks, so if it dies the instance that
+   takes over has an older log. Rule 11 of [majority_leases.md](majority_leases.md) keeps that
+   instance from leading: the leader acts on such commands only once a voter has recorded that its
+   follower may not lead. The design is [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md),
+   and `ha_test.py` scenarios 63 and 64 check it.
 3. **A gateway that dies during the change of leader.** Its store dies with it. Its members recover by
    resubmitting (R-0003), which depends on the duplicate check, as now.
 
@@ -390,7 +435,8 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
    that rule lets the leader say its follower may lead again only once the follower holds every record
    the leader holds, and only 4.5 makes that knowable for a follower that has reconnected.
 6. **The sequencer uses open question 2's rule:** step 4 of
-   [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8.
+   [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8. **Done:**
+   scenarios 63 and 64.
 7. **4.4,** the follower keeping reports, with the new reports scenario.
 8. **4.3,** the gateway keeping commands, the day's identifier record and the state request, with
    scenario 1 strengthened. This is the largest part, and it closes the gap the specification records
