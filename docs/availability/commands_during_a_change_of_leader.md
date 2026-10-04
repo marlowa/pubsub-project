@@ -8,7 +8,7 @@ from a member is answered when the leading sequencer dies, including the command
 seconds before the follower takes the lead. That document chose the approach, option A: the gateway
 keeps each command until it is answered, and sends the unanswered ones again to the new leader. This
 document says how each part of that works, what it costs, and what has been decided about it.
-Section 7 records the decisions, and the one still open.
+Section 7 records the decisions.
 
 A "command" here is a new order (`NewOrderSingle`) or a request to cancel (`OrderCancelRequest`). The
 guarantee is G1 of the parent document: every command a gateway accepted is answered, placed and
@@ -230,15 +230,15 @@ that read. How long that read takes late in a busy day is part of a wider questi
 [BUG-0113](../bug_list.md#bug_0113): the size of the log, which the move of resends to a separate
 recovery service is to bound.
 
-**Decision 4, open: the size of each gateway's store.** The gateway keeps a copy of each command until
+**Decision 4, decided: room for 262,144 commands and 64 MiB in each gateway's store.** The gateway keeps a copy of each command until
 its answer arrives, normally a tenth of a millisecond later, so the store normally holds only a
 handful. It fills only while answers stop arriving, chiefly during a change of sequencer leader,
 about three seconds, when every command members send through that gateway is added and none removed.
 It must hold all of them, or the gateway refuses the rest with a reply saying the venue is busy. Each
 copy is about 200 bytes. At the highest rate measured, about 34,000 orders a second for the whole
 venue, room for 65,536 commands (16 MiB) lasts about two seconds if one gateway carries all of it, less
-than a change of leader takes. Proposed instead: room for 262,144 commands, 64 MiB, about eight seconds
-of the venue's whole peak through one gateway. Set in the gateway's configuration.
+than a change of leader takes. So the store has room for 262,144 commands, 64 MiB, about eight seconds
+of the venue's whole peak through one gateway. Both are set in the gateway's configuration.
 
 **Decision 5, decided: a session that disconnects keeps its commands.** They are sent again at a change
 of leader like any other, and dropped when the session's grace period ends. The session's identity
