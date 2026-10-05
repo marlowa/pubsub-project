@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 116 |
-| Open | 42 (27 defects, 15 tasks) |
-| Closed | 74 |
+| Open | 41 (27 defects, 14 tasks) |
+| Closed | 75 |
 | Next id | BUG-0117 |
 
 ## Open bugs by severity
 
-13 high, 24 medium, 5 low.
+13 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -17,7 +17,7 @@
 | [BUG-0028](#bug_0028) | high | defect | Growing the order book by doubling needs more memory than the machine has |
 | [BUG-0029](#bug_0029) | high | defect | A process death on the same host takes the machine-death path |
 | [BUG-0056](#bug_0056) | high | defect | The FIX gateway stopped completing logons while still running |
-| [BUG-0061](#bug_0061) | high | defect | HA cannot actually be turned off, and the venue silently stops trading |
+| [BUG-0061](#bug_0061) | high | defect | With high availability off, a secondary sequencer started alone leads but no gateway can reach it |
 | [BUG-0062](#bug_0062) | high | defect | Two instances led with HA off, and nothing notices when they are reunited |
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
@@ -47,7 +47,6 @@
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
-| [BUG-0098](#bug_0098) | medium | task | Two design documents still describe leader election by arbitration and heartbeats |
 | [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
 | [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
@@ -369,38 +368,6 @@ not at all for 1.5 seconds. `ss -tnoi` showed `timer:(persist,...)` with `backof
 is full, rather than once, after resuming; or resume at a lower fill so that more room opens at
 once; or keep reading into the kernel's buffer and apply backpressure only at a much higher level.
 Any of them needs the soak and fairness tests the reactor's other foundational changes were given.
-
----
-
-### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task -- documentation |
-| Found | 2026-09-27 |
-| Recorded | 2026-09-27 |
-| How | Checking, after leadership moved to majority leases, where the documents still claim that the lowest instance id is preferred |
-| Impact | A reader of either document learns a mechanism the venue does not have: arbitration requests and decisions, peer heartbeats, promotion timeouts, a lowest-id rule, and self-promotion when no arbiter answers |
-
-**What is wrong.** Leadership is decided by a majority of three voters, each granting leases, as
-`docs/availability/majority_leases.md` and `docs/availability/design_notes.md` section 11f state.
-Two documents still describe the mechanism that replaced:
-
-- `docs/availability/wal_and_ha.md`: the table of which components have high availability, the
-  whole "Leader-Follower Protocol" section (the message summary, epoch semantics, startup
-  election, leader death and promotion, split-brain protection), the matching engine failover
-  steps, the "Arbiter" section, and the timing items that refer to heartbeats.
-- `docs/framework/summary.md`: its account of the leader and follower messages and of what
-  happens during a network partition.
-
-The messages they name -- `StatusQuery` in its old role, `Heartbeat`, `ArbitrationReport`,
-`ArbitrationDecision` -- are gone from `leader_follower.dsl`, replaced by `LeaseRequest`,
-`LeaseGrant` and `LeaseRefusal`.
-
-**What to do.** Rewrite those parts to describe what the code does now, pointing to
-`majority_leases.md` for the rules rather than restating them, so there is one account to keep
-current. Say nothing about what the sections used to describe.
 
 ---
 
@@ -811,7 +778,7 @@ Related: [BUG-0042](#bug_0042), closed, where a restarted primary matching engin
 and produced two leaders. Different mechanism, same underlying fact -- that two instances each
 believing themselves leader is not something the venue currently detects after the event.
 
-### BUG-0061: HA cannot actually be turned off, and the venue silently stops trading {#bug_0061}
+### BUG-0061: With high availability off, a secondary sequencer started alone leads but no gateway can reach it {#bug_0061}
 
 | | |
 |---|---|
@@ -819,118 +786,34 @@ believing themselves leader is not something the venue currently detects after t
 | Found | 2026-08-28 |
 | Recorded | 2026-08-28 |
 | How | Using `devenv.py --no-ha` to set up a matching-engine outage while building BUG-0009's step 1, and finding no orders moved |
-| Impact | A venue started with HA disabled accepts orders, acknowledges them, and forwards none. It looks healthy: every process is up and nothing is logged as wrong |
+| Impact | A venue run with high availability off on the secondary machine, for example after the primary machine has failed, accepts members' logons and trades nothing: the gateways send orders only to the primary sequencer, which is not running |
 
-**`devenv.py --no-ha` produces a venue that cannot trade**, and the way it fails is quiet.
+**What high availability off means, and is built.** One switch, `[ha] enabled` in the environment
+file, reaches every component's configuration. With it off:
 
-The flag decides *which components to launch* and nothing else. It skips everything marked
-`ha_only`, so the arbiters do not start -- and it never touches the deployed configuration, which
-still says `ha_enabled = true`. The sequencer therefore takes its HA path, arms a startup election
-timeout, and waits for an arbiter that will never exist. It never becomes leader, so every order
-returns on the `role_ != leader` branch and is never forwarded. The member is acknowledged
-regardless.
+- every primary starts and leads at once, with no peer and no arbiter;
+- a secondary started with high availability off also leads, because "secondary" then names only
+  which configuration file started it, and refusing would stop the venue being run on the surviving
+  machine after the primary machine has failed;
+- the arbiter and the witness refuse to start, saying why, and `devenv.py --no-ha` refuses when the
+  environment still says high availability is on;
+- each gateway sends orders to one sequencer, the primary, so the same order cannot enter two books.
 
-**There is no way to turn HA off properly either**, which is the part that makes this more than a
-flag bug. The mechanism exists and the sequencer was simply never wired to it:
+`ha_test.py` scenarios 43 to 47 check each of these.
 
-| | |
-|---|---|
-| Matching engine | `applications/matching_engine/matching_engine_primary.toml` has `enabled = ${matching_engine_ha_enabled}`, filled from `[matching_engine] ha_enabled` in the environment file |
-| Sequencer | `applications/sequencer/sequencer_primary.toml` has `ha_enabled = true`, hardcoded. There is no `[sequencer]` section in `environments/dev.toml` at all |
+**What is wrong.** A secondary sequencer started alone, with high availability off, leads, but the
+gateways send only to the primary, so no order reaches it. The gateway logs *"primary sequencer not
+connected"* for each order, and the order goes nowhere: accepted from the member, and never
+answered. Scenario 46 asserts this gap rather than hiding it.
 
-So an operator can turn HA off for the matching engine by editing the environment and redeploying,
-and cannot do the same for the sequencer by any means short of editing the installed file by hand.
+**What closing it needs: a decision.** A venue with high availability off has to be told which one
+sequencer the gateways use. Sending to both would put an order into two books whenever both are
+running, so the gateways cannot simply try both. Two obvious ways: a setting in the environment file
+naming the sequencer to use; or the gateways sending to whichever sequencer says it leads, which works
+when only one is running and needs a rule for when both are, since with high availability off both lead.
 
-**The sequencer already has the behaviour that is wanted.** `SequencerThread` reads
-`config_.ha_enabled` and, when it is false, logs *"ha_enabled=false -- starting as leader
-immediately"*. Nothing needs designing; the value simply never arrives. With no peer and no
-arbiter, a lone primary leading immediately is the obviously correct thing, and the code already
-says so.
-
-**Fix, in the order that makes each step useful:** give the sequencer template a
-`${sequencer_ha_enabled}` placeholder and the environment a `[sequencer]` section to fill it, so HA
-can be turned off deliberately. Then make `devenv.py --no-ha` consistent -- either by having it
-refuse to start a venue whose deployed configuration disagrees with it, or by removing the flag in
-favour of the environment file, which is the single source of truth everything else already uses.
-
-**Built 2026-08-28, and NOT the way this paragraph proposed.** A per-component `[sequencer]` section
-would have been a *third* place able to disagree, which is the shape of this bug rather than a fix
-for it. `[ha] enabled` already existed as the venue-wide switch and `devenv.py` already read it, so
-the sequencer templates and the matching engine's now expand `${ha_enabled}` from that one value,
-and `[matching_engine] ha_enabled` is gone. One switch, one meaning, everywhere.
-
-Verified end to end with `[ha] enabled = false`: no arbiter and no witness start, the sequencer logs
-*"ha_enabled=false -- starting as leader immediately"*, and a member's orders come back
-`OrdStatus=0`. That is the first time a venue with high availability off has traded.
-
-**And it was more than the sequencer.** The gateways, the binary gateways and the matching-engine
-publishers all carried a hardcoded `ha_enabled = true` of their own, so nine component configs in
-total now expand `${ha_enabled}` from the one venue switch. The gateway's was the consequential one:
-see the correction in [BUG-0062](#bug_0062), where it meant that two sequencers leading with high
-availability off would have been genuine split brain rather than the deferred trap that entry
-describes.
-
-**Also built:** `devenv.py --no-ha` now refuses when the environment still says `[ha] enabled = true`,
-naming the fix, rather than starting a venue whose configs expect components it will not launch. The
-arbiter and the witness refuse to start when the switch is false and say why -- not launching them
-is what `devenv.py` does, and refusing is what covers a hand-started process or a stale supervisor
-manifest.
-
-**Still open here:** a secondary started alone with high availability off leads but cannot be
-reached, because the gateway then talks only to its primary. Making it send to both would recreate
-the split brain corrected above, so what a non-HA venue needs is to be told *which* single sequencer
-to use -- a configuration decision this entry does not settle. Scenario 46 asserts the gap rather
-than hiding it.
-
-**Related in shape to several found this week:** two places that have to agree, only one of which
-is updated. See [BUG-0055](#bug_0055), where a member's sequence reset reached the gateway and not
-the sequencer.
-
-#### What "HA off" should mean, agreed 2026-08-28
-
-Settled while recording this, because the fix above is not worth building without knowing what it
-is aiming at. **None of it is built.**
-
-- **Every primary starts, sees that it is primary and that HA is off, and leads immediately.** The
-  sequencer already does exactly this; it is only the configuration that never reaches it.
-- **A secondary started with HA off also leads, and says loudly that it is doing so.** Role stops
-  meaning anything without a peer or an arbiter -- "secondary" then names only which file was used
-  to start it. Refusing would block the case someone actually reaches for HA off to do: run a venue
-  on the surviving machine after the primary's hardware has died.
-- **The arbiter and the witness refuse to start with HA off, and say why.** A running arbiter in a
-  venue that has disowned arbitration is something an operator will later trust.
-
-**Two instances leading at once is not split brain, and is still a trap.** With HA off the gateway
-reaches only one sequencer -- `forward_pdu_to_sequencers` sends to the secondary only inside
-`if (config_.ha_enabled)` -- so the same order cannot enter two books. But both instances advance
-state independently: each grows its own WAL, and each burns leadership epochs from the
-`epoch_state_file` that exists precisely so a restart cannot reuse a spent generation. Nothing is
-wrong while it lasts. The damage is deferred to the next time someone starts them together under
-HA, and **is recorded separately as [BUG-0062](#bug_0062) -- because fixing this entry is what
-makes that one reachable.**
-
-**And a secondary started while the gateway still points at the primary trades nothing at all.**
-The gateway logs *"primary sequencer not connected"* and the orders go nowhere -- accepted,
-acknowledged, forwarded to no one, which is [BUG-0009](#bug_0009) arriving by another road.
-
-#### Scenarios that should exist and do not
-
-`ha_test.py` has no HA-off coverage at all, which is why this survived. Wanted:
-
-- HA off: every primary starts, leads, and the venue trades end to end.
-- HA off: the arbiter refuses to start, with a message naming the reason.
-- HA off: the witness refuses likewise.
-- HA off: a secondary started alone leads and trades.
-- HA off: a secondary started while a primary is already leading -- both lead, and the venue says
-  so loudly enough that an operator would notice before the next HA start.
-
-**It gates more than itself, noted 2026-08-28.** With high availability off there is no arbiter, so
-[Knowing there is no matching engine](availability/matching_engine_presence.md) falls back on the
-45-second age threshold -- which is how a member would find out that the venue cannot process its
-orders. But deferral is counted inside the leader branch of the sequencer's forward path, so a
-sequencer that never adopts leadership never defers, never refuses, and tells nobody anything. Until
-this entry is fixed, a non-HA venue that loses its matching engine informs its members of nothing at
-all.
+Related: two instances that both led with high availability off and are later started together with
+it on are [BUG-0062](#bug_0062).
 
 ### BUG-0059: No defence against a member reconnecting in a loop with the wrong protocol {#bug_0059}
 
@@ -1463,102 +1346,44 @@ support, not from this profile.
 | Found | 2026-08-21 |
 | Recorded | 2026-08-21 (875259f) |
 | How | The trading-day run that proved the order-book stall cured -- the primary was OOM-killed and the venue stopped trading for 16 seconds |
-| Impact | 16 s outage against a design target of under 50 ms for this class of failure. ~280,000 orders lost across it |
+| Impact | A process that dies on a healthy machine is replaced by its peer taking the lead about two and a half seconds later, by the same path as a machine that has gone silent. The design's target for this kind of failure is under 50 milliseconds |
 
-`docs/availability/design_notes.md` separates two recovery paths and gives them very different targets:
+**What the design asks for.** `docs/availability/design_notes.md` separates two kinds of failure and
+gives them very different targets
+([section 7](availability/design_notes.md#ha_process_vs_machine)):
 
-| | Local (process) recovery | Network (machine) failover |
+| | Process death | Machine death |
 |---|---|---|
 | Recovery target | **under 50 ms** | 100 ms to seconds |
-| Trigger | the process died; hardware and kernel are healthy | total silence from a node |
+| What happened | the process died; the machine and its kernel are healthy | the whole machine has gone silent |
+| Recovery | restart the process in place, with its state still present | the peer on the other machine takes the lead |
 
-**What happened on 2026-08-21 was the first kind and was handled as the second.** The kernel
-killed one process on a healthy machine and closed its sockets; the follower saw the
-replication connection close within a second. It then took the outer loop:
+**What happens.** Only the second path exists. When a leading sequencer or matching engine dies, its
+peer takes the lead once the dead leader's lease has run out and a majority grants the peer one
+([majority_leases.md](availability/majority_leases.md)): a lease lasts three seconds and is renewed
+every second, and voters wait a further quarter of a second for differences between clocks, so the
+peer leads within about three and a quarter seconds of the death, and usually sooner. `ha_test.py` measured
+2.5 seconds for the sequencer pair (scenario 1) and 2.6 seconds for the matching engine pair
+(scenario 16) on 2026-10-04.
 
-```
-19:08:41  primary OOM-killed
-19:08:42  follower sees the socket close, arms a 15 s timer
-19:08:57  timer fires, asks the arbiter
-19:08:57  ArbitrationDecision received -- 3 ms later
-19:11     back to 1926 orders/s
-```
+**Why the wait cannot simply be shortened.** The kernel closes a dead process's connections at once,
+so the peer knows within a millisecond that the process has gone. But the lease is what stops two
+instances leading at once: no voter grants the peer a lease while it may still have promised its vote
+to the dead leader, so the peer cannot lead sooner than the lease period allows. Shortening the lease
+period shortens the outage, at the cost of more renewal traffic and of a leader losing its lease to a
+pause of the same length.
 
-Fifteen of the sixteen seconds are `ha_timing.heartbeat_timeout_seconds`, armed at
-`MatchingEngineThread.cpp:289` on connection loss. The arbitration it was waiting to perform
-took 3 ms.
+**What would meet the target.** Restarting the dead process in place, on the same machine, quickly
+enough that the lease never runs out and no change of leader happens at all. Measured 2026-08-21:
+rebuilding the matching engine's book by replaying entries costs 438 ms at 2^21 orders, 921 ms at 2^22
+and 2,034 ms at 2^23, with the storage already reserved and no decoding or disk reads, so those are
+lower bounds. Replaying a journal on restart therefore cannot reach 50 milliseconds at any realistic
+book size; only a book that lives in shared memory and is attached again, rather than rebuilt, can.
 
-**The wait bought nothing.** The arbiter decides from live connection state -- `peer_connected`
-at `ArbiterThread.cpp:553`, backed by a map erased on disconnect at line 102 -- not from
-heartbeat recency. Its own connection to the dead primary closed at the same instant the
-follower's did, so it would have returned the same decision at 19:08:42 as it did at 19:08:57.
-The follower detected the death immediately, discarded that signal, and waited for a timer
-sized for a node that has gone silent.
-
-**Why the timer is not simply wrong.** It is the correct trigger for the outer loop, where the
-question is whether a node that has stopped answering is dead or merely unreachable. What is
-missing is the distinction: a socket closed by the kernel because the peer process no longer
-exists is not silence, it is evidence. The design already draws that line and the code does
-not act on it.
-
-**What this does not depend on.** Promotion safety here rests on the arbiter, not on a race
-being avoided by waiting -- see `docs/availability/design_notes.md#ha_no_stonith`, which records that STONITH
-is not implemented and that arbiter-mediated leadership plus epoch fencing stands in its place.
-A follower asking sooner is refused just as surely if the peer is alive and still connected to
-the arbiter, because leadership goes to the lower instance id when both are connected, and the
-primary's id is always the lower one. Asking earlier changes when the answer arrives, not what
-it is.
-
-**PARKED 2026-08-21, pending a process-supervision design.** That design is
-`docs/availability/process_death.md`, started 2026-08-24: it records what `launch.py` already
-does, the measurement that rules out a shared-memory journal, and the four questions still open --
-of which the grace period is this entry's. Nothing here should be changed
-until that is settled -- see the correction below, which reverses this entry's first recommendation.
-
-**The 15 seconds is the local recovery grace period, and it is doing nothing only because
-nothing fills it.** `docs/availability/design_notes.md#ha_process_vs_machine` gives the outer-loop trigger as "the
-heartbeat timer expires and the primary fails to reconnect **after the local recovery grace
-period**". That period is this timer. Its purpose is to give a locally-restarted primary time
-to come back so the follower never has to promote at all. Today the venue has no supervisor --
-components are started ad hoc by `scripts/devenv.py` for testing, which is not how a real
-deployment would start them -- so nothing restarts a dead engine and the window is simply dead
-time before a promotion.
-
-That means **the outage is not fixed by shortening the wait; it is fixed by filling it.** How
-long the grace period should be is a consequence of how fast a supervised restart is, which
-cannot be answered before process supervision is designed. That design is the next piece of
-work, and this entry is blocked on it.
-
-**Possible fixes, and a correction.** These were recorded before the above was understood.
-
-1. **WITHDRAWN: treat a peer-initiated close as evidence and arbitrate at once.** This was
-   this entry's original first recommendation and it is wrong. Promoting the moment the socket
-   closes pre-empts the local restart, forcing a cross-machine failover for a failure that did
-   not need one -- the opposite of what the layered design intends. It would only be right for
-   a venue that has decided never to recover a process in place.
-2. **Still valid: give the promotion delay its own setting.** It currently borrows
-   `ha_timing.heartbeat_timeout_seconds`, which is a different quantity measured for a
-   different purpose. Even keeping the outer-loop behaviour, one number serving two meanings
-   cannot be tuned for either.
-3. **The real fix: build the inner loop the design describes.** Section 7 of `docs/availability/design_notes.md` calls
-   for local process recovery -- a shared-memory journal, restart in place -- with a sub-50 ms target, and
-   it does not exist. Fix 1 shortens the outage to about a second by promoting the peer
-   faster; this is what would meet the stated target, by not needing a promotion at all for a
-   process that can simply be restarted. Much the largest piece of work of the three, and the
-   only one that addresses the design gap rather than the symptom.
-
-   Measured 2026-08-21, and it bears on how this is built: rebuilding the book by replaying
-   entries costs 438 ms at 2^21, 921 ms at 2^22 and **2034 ms at 2^23** -- pre-reserved, no
-   migration, no decode, no I/O, so a lower bound. A shared-memory *journal* replayed on restart
-   therefore cannot reach section 8's sub-50 ms target at any realistic book size. Only the
-   book itself living in shared memory, re-attached rather than rebuilt, can. That is a much
-   larger change and it belongs after the supervision design, not before it.
-
-**Not investigated:** what a restarted primary does when it rejoins after the secondary has
-been promoted. `decide_and_broadcast` recomputes leadership rather than consulting
-`leadership_state_`, and the reconnect path at `ArbiterThread.cpp:509` looks the stored state
-up under the connecting instance's own key. Whether that yields a clean failback or a
-disagreement was not traced, and is a separate question from this entry.
+**What it waits on.** The design of process supervision, `docs/availability/process_death.md`, which
+records what `launch.py` does, the measurement above, and the questions still open, among them how
+long to wait for a restart before letting the peer take over. A component that keeps dying and being
+restarted is [BUG-0066](#bug_0066).
 
 ### BUG-0030: Restart coverage: what ha_test.py exercises, and what it does not {#bug_0030}
 
@@ -2564,6 +2389,44 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- documentation |
+| Found | 2026-09-27 |
+| Recorded | 2026-09-27 |
+| Fixed | 2026-10-03 -- both documents rewritten to describe leadership by majority lease, during the documentation audit (529dea9, 26115ba) |
+| How | Checking, after leadership moved to majority leases, where the documents still claim that the lowest instance id is preferred |
+| Impact | A reader of either document learns a mechanism the venue does not have: arbitration requests and decisions, peer heartbeats, promotion timeouts, a lowest-id rule, and self-promotion when no arbiter answers |
+
+**What is wrong.** Leadership is decided by a majority of three voters, each granting leases, as
+`docs/availability/majority_leases.md` and `docs/availability/design_notes.md` section 11f state.
+Two documents still describe the mechanism that replaced:
+
+- `docs/availability/wal_and_ha.md`: the table of which components have high availability, the
+  whole "Leader-Follower Protocol" section (the message summary, epoch semantics, startup
+  election, leader death and promotion, split-brain protection), the matching engine failover
+  steps, the "Arbiter" section, and the timing items that refer to heartbeats.
+- `docs/framework/summary.md`: its account of the leader and follower messages and of what
+  happens during a network partition.
+
+The messages they name -- `StatusQuery` in its old role, `Heartbeat`, `ArbitrationReport`,
+`ArbitrationDecision` -- are gone from `leader_follower.dsl`, replaced by `LeaseRequest`,
+`LeaseGrant` and `LeaseRefusal`.
+
+**What to do.** Rewrite those parts to describe what the code does now, pointing to
+`majority_leases.md` for the rules rather than restating them, so there is one account to keep
+current. Say nothing about what the sections used to describe.
+
+**Fixed (2026-10-03).** `wal_and_ha.md` describes leadership by majority lease throughout, and points to
+`majority_leases.md` for the rules (529dea9). `summary.md`'s table of leader and follower messages lists
+`StatusQuery`, `StatusResponse`, `RoleAnnouncement`, `LeaseRequest`, `LeaseGrant`, `LeaseRefusal` and
+`ArbiterStateRecord`, and refers to `majority_leases.md` (26115ba). Checked 2026-10-05: neither document
+mentions heartbeats as a means of choosing a leader, arbitration requests or decisions, promotion
+timeouts or a lowest-id rule. The entry was not closed when the documents were rewritten.
 
 ### BUG-0116: A new sequencer leader sends members every report of the last few seconds again {#bug_0116}
 
