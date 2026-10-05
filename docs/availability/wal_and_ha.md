@@ -137,7 +137,7 @@ execution reports must remain available to a member that asks for them again.
 | Situation | What happens |
 |---|---|
 | The last record is incomplete | Replay stops before it: it was never committed |
-| A record in the middle is damaged | Replay stops at it; nothing after it is applied |
+| A record in the middle is damaged | The reader refuses to read past it and names the file and the byte, so a sequencer opening the log stops rather than lose the records after the damage. A record that is damaged with nothing valid after it is the incomplete last record above ([BUG-0106](../bug_list.md#bug_0106), fixed) |
 | The disk is full | Segments are written out in full when created, so the failure comes when a new segment cannot be written: the writer raises an exception |
 
 ---
@@ -519,11 +519,11 @@ exchange. The venue relies on it being present and does not implement PTP itself
 | Situation | What happens |
 |---|---|
 | The leading sequencer dies before writing an order to its log | The order was never taken. The member receives no reply ([BUG-0103](../bug_list.md#bug_0103)) |
-| The leading sequencer dies after writing an order and replicating it | The follower holds it, takes over, and sends it to the matching engine as part of the engine's catch-up; the member is answered |
-| The leading sequencer dies after sending an order to the engine but before the report reached the member | The follower holds the order. The engine sends its report to both sequencers, but the follower discards reports while it is still following, and on taking the lead it does not ask for them again, so the member is not sent the report (read in the code, recorded with [BUG-0103](../bug_list.md#bug_0103)) |
+| The leading sequencer dies after writing an order and replicating it | The follower holds it and takes over. It asks the matching engine for the highest order it has acted on and sends it any order its log holds above that; the member is answered ([commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md), section 3.5) |
+| The leading sequencer dies after sending an order to the engine but before the report reached the member | The engine sends its report to both sequencers. The follower keeps every report, and on taking the lead forwards those its predecessor had not said it forwarded, marked as possible repeats ([change_of_sequencer_leader.md](change_of_sequencer_leader.md), section 4.4) |
 | A matching engine restarts | It reads its open orders back from its region and catches up with the sequencer from the last position its book reflects |
 | The log's last record is incomplete | It was never committed; replay stops before it |
-| A record in the middle of the log is damaged | Replay stops at it; nothing after it is applied |
+| A record in the middle of the log is damaged | The sequencer stops, naming the file and the byte, rather than read past it |
 | The disk holding the log is full | Writing a new segment fails and the writer raises an exception |
 | Every arbiter and the witness are unreachable | Each leader renews with its peer; no leader can be replaced until an arbiter returns |
 

@@ -4,6 +4,7 @@
 #include <pubsub_itc_fw/WalReader.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cinttypes>
 #include <cstring>
@@ -21,17 +22,17 @@
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
+#include <pubsub_itc_fw/WalEntryChecks.hpp>
+
 namespace pubsub_itc_fw {
+
+using wal_entry_checks::all_zero;
+using wal_entry_checks::next_valid_entry_after;
+using wal_entry_checks::valid_entry_size_at;
 
 namespace {
 
-struct WalEntryHeader {
-    uint32_t magic;
-    uint32_t payload_size;
-    int64_t record_id;
-    uint64_t filler;
-};
-static_assert(sizeof(WalEntryHeader) == 24, "WalEntryHeader must be 24 bytes");
+using WalEntryHeader = wal_entry_checks::EntryHeader;
 
 std::string segment_path(const std::string& directory, uint64_t seg_num) {
     return fmt::format("{}/wal_{:06}.log", directory, seg_num);
@@ -39,9 +40,10 @@ std::string segment_path(const std::string& directory, uint64_t seg_num) {
 
 } // un-named namespace
 
-// replay_segment() -- scan one segment file; returns bytes consumed
+// scan_segment() -- read one segment file, and say how the reading stopped
 
-size_t WalReader::replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
+WalReader::SegmentScan WalReader::scan_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
+    SegmentScan scan{start_offset, true};
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
         throw PubSubItcException("WalReader: open(" + path + "): " + std::strerror(errno));
@@ -56,7 +58,7 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset, c
 
     if (file_size == 0 || start_offset >= file_size) {
         ::close(fd);
-        return start_offset;
+        return scan;
     }
 
     void* ptr = ::mmap(nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
@@ -69,42 +71,52 @@ size_t WalReader::replay_segment(const std::string& path, size_t start_offset, c
 
     const auto* base = static_cast<const uint8_t*>(ptr);
     size_t offset = start_offset;
-    size_t bytes_consumed = start_offset;
 
-    while (offset + sizeof(WalEntryHeader) <= file_size) {
-        WalEntryHeader hdr{};
-        std::memcpy(&hdr, base + offset, sizeof(WalEntryHeader));
-
-        if (hdr.magic != WalWriter::entry_magic) {
-            break; // end of committed data
+    for (;;) {
+        const size_t entry_size = valid_entry_size_at(base, file_size, offset);
+        if (entry_size != 0) {
+            if (cb) {
+                WalEntryHeader hdr{};
+                std::memcpy(&hdr, base + offset, sizeof(WalEntryHeader));
+                cb(hdr.record_id, base + offset + sizeof(WalEntryHeader), static_cast<size_t>(hdr.payload_size));
+            }
+            offset += entry_size;
+            continue;
         }
-
-        const size_t entry_size = sizeof(WalEntryHeader) + hdr.payload_size + sizeof(uint32_t);
-        if (offset + entry_size > file_size) {
-            break; // truncated entry -- treat as uncommitted tail
+        // The reading stops here. Zeros to the end of the segment are space never written: the end of
+        // the data. Anything else is an entry that is damaged or not yet completely written.
+        if (all_zero(base, offset, file_size)) {
+            break;
         }
-
-        Crc32 crc;
-        crc.feed(base + offset, sizeof(WalEntryHeader) + hdr.payload_size);
-        const uint32_t computed = crc.finalize();
-
-        uint32_t stored{};
-        std::memcpy(&stored, base + offset + sizeof(WalEntryHeader) + hdr.payload_size, sizeof(uint32_t));
-
-        if (computed != stored) {
-            break; // corrupted entry -- stop replay
+        const size_t later = next_valid_entry_after(base, file_size, offset);
+        if (later == file_size) {
+            // Nothing valid follows in this segment. Whether this is damage or the unfinished entry a
+            // crash leaves, or one being written now, depends on whether anything valid follows in a
+            // later segment, which replay() decides.
+            scan.stopped_cleanly = false;
+            break;
         }
-
-        if (cb) {
-            cb(hdr.record_id, base + offset + sizeof(WalEntryHeader), static_cast<size_t>(hdr.payload_size));
+        // A valid entry follows. If the one here is still not valid, the log is damaged. The writer
+        // appends in order, so an entry being written when it was first looked at is complete by the
+        // time a later one exists: look again before deciding.
+        if (valid_entry_size_at(base, file_size, offset) != 0) {
+            continue;
         }
-
-        offset += entry_size;
-        bytes_consumed = offset;
+        ::munmap(ptr, file_size);
+        throw PubSubItcException(fmt::format("WalReader: the write-ahead log is damaged -- {} has an entry at byte {} that is not valid, followed by a "
+                                             "valid entry at byte {}. Records after the damage would be lost, so the log is not read past it",
+                                             path, offset, later));
     }
 
     ::munmap(ptr, file_size);
-    return bytes_consumed;
+    scan.consumed = offset;
+    return scan;
+}
+
+// replay_segment() -- scan one segment file; returns bytes consumed
+
+size_t WalReader::replay_segment(const std::string& path, size_t start_offset, const EntryCallback& cb) {
+    return scan_segment(path, start_offset, cb).consumed;
 }
 
 // replay() -- discover segments, replay from anchor, return end position
@@ -133,6 +145,11 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from, co
     }
 
     WalPosition end = from;
+    // A segment whose reading stopped at bytes that were neither a valid entry nor unwritten space. If
+    // a later segment holds a valid entry, those bytes are damage in the middle of the log, not the
+    // unfinished entry at its end (BUG-0106).
+    std::string unclean_path;
+    size_t unclean_offset = 0;
 
     for (uint64_t seg : seg_nums) {
         if (seg < from.segment)
@@ -140,7 +157,31 @@ WalPosition WalReader::replay(const std::string& directory, WalPosition from, co
 
         const size_t start = (seg == from.segment) ? static_cast<size_t>(from.offset) : 0;
         const std::string path = segment_path(directory, seg);
-        const size_t consumed = replay_segment(path, start, cb);
+        if (!unclean_path.empty()) {
+            // A writer that has moved on to this segment finished the entry it was writing in the last
+            // one, so read that again from where it stopped before deciding.
+            const SegmentScan again = scan_segment(unclean_path, unclean_offset, cb);
+            if (again.consumed > unclean_offset) {
+                end.segment = end.segment;
+                end.offset = again.consumed;
+            }
+            if (!again.stopped_cleanly) {
+                const SegmentScan here = scan_segment(path, start, nullptr);
+                if (here.consumed > start) {
+                    throw PubSubItcException(fmt::format("WalReader: the write-ahead log is damaged -- {} has an entry at byte {} that is not valid, and "
+                                                         "{} holds valid entries after it. Records after the damage would be lost, so the log is not "
+                                                         "read past it",
+                                                         unclean_path, again.consumed, path));
+                }
+            }
+            unclean_path.clear();
+        }
+        const SegmentScan scan = scan_segment(path, start, cb);
+        const size_t consumed = scan.consumed;
+        if (!scan.stopped_cleanly) {
+            unclean_path = path;
+            unclean_offset = consumed;
+        }
 
         // Only move the end position for a segment that actually held something. A segment
         // created ahead of the writer is zero-filled, so it yields nothing and must not be

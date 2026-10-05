@@ -357,9 +357,9 @@ Each entry is a decision. Where what it describes is not built, the entry says s
 - **Write-ahead log format.** Segmented, memory-mapped, one writer. Each entry is a 24-byte header
   (`magic`, `payload_size`, `record_id`, and eight reserved bytes), the payload, and a CRC32 of
   header and payload. Replay reads each segment from the start and stops at the first entry that
-  fails its checks, which after a crash is the unfinished last entry. A damaged entry in the middle
-  of the log is meant to stop the component; today replay skips the rest of that segment and goes
-  on, which is [BUG-0106](bug_list.md#bug_0106).
+  fails its checks. If nothing valid follows it, that is the unfinished last entry a crash leaves.
+  If a valid entry follows it, the log is damaged in the middle, and the reader refuses to go on,
+  naming the file and the byte, so the component stops ([BUG-0106](bug_list.md#bug_0106), fixed).
 
 - **No `fsync` on the write-ahead log.** Nothing in the venue calls `fsync` or `msync` on the log:
   the operating system writes the mapped pages back to disk in its own time. Durability across a
@@ -385,8 +385,8 @@ Each entry is a decision. Where what it describes is not built, the entry says s
 
 - **Halt rather than guess.** Where the venue cannot establish what it holds, it stops and says
   so rather than carry on with a guess. A matching engine that cannot account for its open-order
-  region halts, and no instance leads without a majority of voters. Mid-segment damage to the
-  write-ahead log is meant to halt too, and does not yet ([BUG-0106](bug_list.md#bug_0106)).
+  region halts, no instance leads without a majority of voters, and a sequencer whose write-ahead
+  log is damaged in the middle stops rather than read past the damage ([BUG-0106](bug_list.md#bug_0106)).
 
 - **PTP (IEEE 1588), not NTP** for cross-machine clock synchronisation. PTP keeps machines' clocks
   within microseconds of each other, which the leases' drift allowance (250 ms in the development

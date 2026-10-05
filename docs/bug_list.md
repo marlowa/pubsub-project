@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 116 |
-| Open | 41 (27 defects, 14 tasks) |
-| Closed | 75 |
+| Open | 40 (26 defects, 14 tasks) |
+| Closed | 76 |
 | Next id | BUG-0117 |
 
 ## Open bugs by severity
 
-13 high, 23 medium, 5 low.
+12 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,7 +24,6 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
-| [BUG-0106](#bug_0106) | high | defect | A damaged entry in the write-ahead log silently drops the rest of its segment |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -295,41 +294,6 @@ orders deferred in an earlier run, produced after the engine caught up while the
 connected nowhere ([BUG-0088](#bug_0088)), but that was not checked.
 
 ---
-
-### BUG-0106: A damaged entry in the write-ahead log silently drops the rest of its segment {#bug_0106}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Checking the roadmap's decision that the venue halts on mid-segment corruption of the write-ahead log, during the documentation audit |
-| Impact | A sequencer that restarts on a log with one damaged entry loses every record after it in the same segment, up to about 16,000 orders and reports, says nothing, and goes on numbering from the true last record, so the loss leaves no visible trace. A matching engine catching up from that log is sent an incomplete history |
-
-**What happens.** `WalReader::replay_segment` stops reading a segment at the first entry whose
-magic number, length or checksum is wrong, and treats everything after it as never written.
-That is right for the unfinished last entry a crash leaves at the end of the log. But
-`WalReader::replay` then goes on to the next segment, and the next, so a damaged entry in the middle
-of the log ends one segment early and replay carries on past it. Nothing is logged, and the end
-position returned is the same as for an undamaged log.
-
-**What was measured.** Three consecutive segments of the primary sequencer's log (`wal_000300.log`
-to `wal_000302.log`, 54,551 records) were copied, and one byte inside the payload of the 1,001st
-entry of the first segment was changed. Replaying the undamaged copy with the library's
-`WalReader::replay` gave 54,551 records with no jumps in numbering. Replaying the damaged copy gave
-38,022 records, one jump from 4892273 to 4908803, and the same last record and end position.
-
-**What it contradicts.** The roadmap's decision log and [BUG-0062](#bug_0062) both said the venue
-halts on mid-segment corruption rather than guess. Nothing implements that.
-
-**What closing it needs.** A damaged entry followed by valid entries, in the same segment or a later
-one, is corruption, not an unfinished tail, and the component must stop and say where the log is
-damaged rather than replay past it. Only a damaged entry with nothing valid after it in the whole log
-is the tail a crash leaves. A unit test must damage an entry in the middle of a log and require
-replay to refuse, and must still accept a log whose only damage is an unfinished last entry.
-
----
-
 
 ### BUG-0104: A connection whose reads were paused can stay stalled for seconds after they resume {#bug_0104}
 
@@ -766,8 +730,8 @@ ask whether the two candidates have been leading separately since Tuesday.
 venue should be able to tell, when instances come together, that they have diverged -- and halt
 rather than pick one. Halting is the venue's established answer to exactly this class of thing:
 an engine that cannot account for its open-order region halts rather than guess, and no instance
-leads without a majority. The same answer is intended for mid-segment damage to the write-ahead log,
-but is not built: see [BUG-0106](#bug_0106).
+leads without a majority, and a sequencer whose write-ahead log is damaged in the middle stops rather
+than read past it ([BUG-0106](#bug_0106)).
 
 Where to look first, none of it investigated: whether a WAL carries anything identifying the
 instance and generation that wrote it; whether the epoch state file records enough to spot a
@@ -2389,6 +2353,62 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0106: A damaged entry in the write-ahead log silently drops the rest of its segment {#bug_0106}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-05 -- both readers of the log refuse an entry that is not valid when a valid entry follows it, naming the file and the byte, and read an entry being written once it is complete |
+| How | Checking the roadmap's decision that the venue halts on mid-segment corruption of the write-ahead log, during the documentation audit |
+| Impact | A sequencer that restarts on a log with one damaged entry loses every record after it in the same segment, up to about 16,000 orders and reports, says nothing, and goes on numbering from the true last record, so the loss leaves no visible trace. A matching engine catching up from that log is sent an incomplete history |
+
+**What happens.** `WalReader::replay_segment` stops reading a segment at the first entry whose
+magic number, length or checksum is wrong, and treats everything after it as never written.
+That is right for the unfinished last entry a crash leaves at the end of the log. But
+`WalReader::replay` then goes on to the next segment, and the next, so a damaged entry in the middle
+of the log ends one segment early and replay carries on past it. Nothing is logged, and the end
+position returned is the same as for an undamaged log.
+
+**What was measured.** Three consecutive segments of the primary sequencer's log (`wal_000300.log`
+to `wal_000302.log`, 54,551 records) were copied, and one byte inside the payload of the 1,001st
+entry of the first segment was changed. Replaying the undamaged copy with the library's
+`WalReader::replay` gave 54,551 records with no jumps in numbering. Replaying the damaged copy gave
+38,022 records, one jump from 4892273 to 4908803, and the same last record and end position.
+
+**What it contradicts.** The roadmap's decision log and [BUG-0062](#bug_0062) both said the venue
+halts on mid-segment corruption rather than guess. Nothing implements that.
+
+**What closing it needs.** A damaged entry followed by valid entries, in the same segment or a later
+one, is corruption, not an unfinished tail, and the component must stop and say where the log is
+damaged rather than replay past it. Only a damaged entry with nothing valid after it in the whole log
+is the tail a crash leaves. A unit test must damage an entry in the middle of a log and require
+replay to refuse, and must still accept a log whose only damage is an unfinished last entry.
+
+**Fixed (2026-10-05).** Both readers of a log segment, `WalReader` (used to open a log and to replay
+it) and `WalCursor` (used by `TopicPublisher` to stream it to subscribers, and by the log's own
+truncation), now tell three cases apart where they stop reading:
+
+- zeros to the end of the segment: space never written, the end of the segment's data;
+- an entry that is not valid with nothing valid after it, in that segment or any later one: the
+  unfinished entry a crash leaves, or one being written now, which is read once it is complete;
+- an entry that is not valid followed by a valid one: damage. The reader throws
+  `PubSubItcException` naming the file and the byte. A sequencer that opens a damaged log logs that
+  as an Error and stops.
+
+Because the writer appends in order, an entry that was being written when first looked at is complete
+by the time a later one exists, so the reader looks at it again before deciding it is damaged; a log
+read while it is being written is not mistaken for a damaged one. The checks are shared, in
+`WalEntryChecks.hpp`. `WalCursor` had the same fault as `WalReader`, moving on to the next segment at
+any entry that was not valid, so it also skipped an entry still being written rather than waiting for it.
+
+Unit tests damage an entry in the middle of a segment, and the last entry of a segment followed by
+another, and require both readers to refuse; damage the last entry of the log and require it to be
+treated as the end; and leave unwritten space at the end of segments and require it to be read through.
+The refusing tests failed on the readers before the change. Every framework, application and
+integration test passes, and `ha_test.py` scenarios 1, 2, 16, 59, 61 to 63, 65, 66, 68 and 69.
 
 ### BUG-0098: Two design documents still describe leader election by arbitration and heartbeats {#bug_0098}
 

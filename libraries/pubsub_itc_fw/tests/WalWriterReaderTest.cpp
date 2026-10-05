@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
@@ -552,6 +554,82 @@ TEST_F(WalTest, ClosingWithAPreparedSegmentOutstandingLeaksNoDescriptors) {
         ASSERT_TRUE(w.wait_until_prepared(std::chrono::seconds{5}));
     }
     EXPECT_LE(open_descriptors(), before) << "the prepared segment's descriptor or its eventfd was not closed";
+}
+
+} // namespaces
+
+// Damage in the middle of the log is refused, not read past (BUG-0106).
+
+namespace pubsub_itc_fw::tests {
+
+namespace {
+
+// Changes one byte of a segment file, as damage to the disk would.
+void damage_byte(const std::string& path, off_t offset) {
+    const int fd = ::open(path.c_str(), O_RDWR);
+    ASSERT_GE(fd, 0);
+    uint8_t byte = 0;
+    ASSERT_EQ(::pread(fd, &byte, 1, offset), 1);
+    byte ^= 0xFF;
+    ASSERT_EQ(::pwrite(fd, &byte, 1, offset), 1);
+    ::close(fd);
+}
+
+// Each entry with a four-byte payload is 32 bytes: a 24-byte header, the payload, a 4-byte checksum.
+constexpr off_t entry_bytes = 32;
+constexpr off_t payload_offset_in_entry = 24;
+
+void write_records(const std::string& dir, size_t segment_bytes, int count) {
+    WalWriter writer;
+    writer.open(dir, segment_bytes, {0, 0});
+    for (int id = 1; id <= count; ++id) {
+        const uint32_t value = static_cast<uint32_t>(id);
+        writer.append(id, &value, sizeof(value));
+    }
+}
+
+} // namespaces
+
+TEST_F(WalTest, ADamagedEntryFollowedByValidOnesInTheSameSegmentIsRefused) {
+    write_records(dir_, segment_size, 10);
+    damage_byte(dir_ + "/wal_000000.log", 2 * entry_bytes + payload_offset_in_entry);
+    std::vector<Captured> entries;
+    EXPECT_THROW(static_cast<void>(WalReader::replay(dir_, {0, 0}, capture(entries))), PubSubItcException);
+}
+
+TEST_F(WalTest, ADamagedEntryAtTheEndOfASegmentFollowedByALaterSegmentIsRefused) {
+    // Four entries fill a 128-byte segment, so six records use two segments.
+    write_records(dir_, small_segment_size, 6);
+    damage_byte(dir_ + "/wal_000000.log", 3 * entry_bytes + payload_offset_in_entry);
+    std::vector<Captured> entries;
+    EXPECT_THROW(static_cast<void>(WalReader::replay(dir_, {0, 0}, capture(entries))), PubSubItcException);
+}
+
+TEST_F(WalTest, ADamagedLastEntryWithNothingAfterItIsTheEndOfTheLog) {
+    // The unfinished entry a crash leaves: everything before it is read, and nothing is refused.
+    write_records(dir_, segment_size, 5);
+    damage_byte(dir_ + "/wal_000000.log", 4 * entry_bytes + payload_offset_in_entry);
+    std::vector<Captured> entries;
+    const WalPosition end = WalReader::replay(dir_, {0, 0}, capture(entries));
+    ASSERT_EQ(entries.size(), 4U);
+    EXPECT_EQ(entries.back().id, 4);
+    EXPECT_EQ(end.offset, static_cast<uint64_t>(4 * entry_bytes));
+}
+
+TEST_F(WalTest, UnwrittenSpaceAtTheEndOfASegmentIsNotDamage) {
+    // Entries of 48 bytes leave 32 unwritten bytes at the end of each 128-byte segment.
+    {
+        WalWriter writer;
+        writer.open(dir_, small_segment_size, {0, 0});
+        const std::array<uint8_t, 20> payload{};
+        for (int id = 1; id <= 7; ++id) {
+            writer.append(id, payload.data(), payload.size());
+        }
+    }
+    std::vector<Captured> entries;
+    static_cast<void>(WalReader::replay(dir_, {0, 0}, capture(entries)));
+    ASSERT_EQ(entries.size(), 7U);
+    EXPECT_EQ(entries.back().id, 7);
 }
 
 } // namespaces

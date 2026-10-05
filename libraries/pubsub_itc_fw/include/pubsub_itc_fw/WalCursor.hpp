@@ -70,6 +70,8 @@ class WalCursor {
 
   private:
     bool map_current_segment();
+    // Whether a segment after the current one holds an entry, which means the writer has moved past the current one.
+    [[nodiscard]] bool later_segment_has_entries() const;
     void unmap_current();
 
     std::string directory_;

@@ -7,10 +7,12 @@
 #include <string>
 #include <vector>
 
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <gtest/gtest.h>
 
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
@@ -170,6 +172,58 @@ TEST_F(WalCursorTest, ResumeAcrossSegmentBoundary) {
     ASSERT_EQ(rest.size(), 4U); // records 7..10
     EXPECT_EQ(rest[0].id, 7);
     EXPECT_EQ(rest[3].id, 10);
+}
+
+// Damage in the middle of the log stops the cursor rather than being skipped (BUG-0106).
+
+namespace {
+
+// Changes one byte of a segment file, as damage to the disk would; changing it again undoes it.
+void flip_byte(const std::string& path, off_t offset) {
+    const int fd = ::open(path.c_str(), O_RDWR);
+    ASSERT_GE(fd, 0);
+    uint8_t byte = 0;
+    ASSERT_EQ(::pread(fd, &byte, 1, offset), 1);
+    byte ^= 0xFF;
+    ASSERT_EQ(::pwrite(fd, &byte, 1, offset), 1);
+    ::close(fd);
+}
+
+// Each entry with a four-byte payload is 32 bytes: a 24-byte header, the payload, a 4-byte checksum.
+constexpr off_t entry_bytes = 32;
+constexpr off_t payload_offset_in_entry = 24;
+
+} // namespaces
+
+TEST_F(WalCursorTest, ADamagedEntryFollowedByValidOnesIsRefused) {
+    write_records(segment_size, 10);
+    flip_byte(dir_ + "/wal_000000.log", 2 * entry_bytes + payload_offset_in_entry);
+    WalCursor cursor;
+    cursor.open(dir_, {0, 0});
+    EXPECT_THROW(static_cast<void>(drain(cursor)), PubSubItcException);
+}
+
+TEST_F(WalCursorTest, ADamagedEntryAtTheEndOfASegmentFollowedByALaterSegmentIsRefused) {
+    write_records(small_segment_size, 6);
+    flip_byte(dir_ + "/wal_000000.log", 3 * entry_bytes + payload_offset_in_entry);
+    WalCursor cursor;
+    cursor.open(dir_, {0, 0});
+    EXPECT_THROW(static_cast<void>(drain(cursor)), PubSubItcException);
+}
+
+// An invalid entry with nothing valid after it may be one still being written. The cursor stops there
+// and reads it once it is complete, rather than moving past it.
+TEST_F(WalCursorTest, AnIncompleteLastEntryIsReadOnceItIsComplete) {
+    write_records(segment_size, 5);
+    const std::string path = dir_ + "/wal_000000.log";
+    flip_byte(path, 4 * entry_bytes + payload_offset_in_entry);
+    WalCursor cursor;
+    cursor.open(dir_, {0, 0});
+    EXPECT_EQ(drain(cursor).size(), 4U);
+    flip_byte(path, 4 * entry_bytes + payload_offset_in_entry);
+    const std::vector<Record> rest = drain(cursor);
+    ASSERT_EQ(rest.size(), 1U);
+    EXPECT_EQ(rest[0].id, 5);
 }
 
 } // namespaces
