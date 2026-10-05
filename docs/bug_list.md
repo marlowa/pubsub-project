@@ -212,6 +212,15 @@ the leading sequencer for every order after its position, and `SequencerThread::
 also reads the log from its first record, on the sequencer thread, to find them. The log's own
 `scan_start_for` already finds the segment holding a given record, so that read could start there.
 
+**Interim fix (2026-10-05): both reads are bounded.** A resend now reads the log's segments from
+the newest backwards and stops as soon as it has the reports it was asked for, or reaches a segment
+that begins at or before the position the request starts from. A matching engine's catch-up starts at
+the segment holding the first record the engine lacks (`Wal::scan_start_for`), and takes the earliest
+record the log holds from the first segment's first entry (`Wal::first_seq_no`). Measured in
+`ha_test.py` scenarios 22 and 23: a resend after a reconnect read 2 of 215 segments in 7 milliseconds.
+A resend that asks for reports from far back still reads far back, so this entry stays open for the
+recovery service below.
+
 **The sequencer does not hold the log in memory.** It maps the segment it is writing, and a reader
 maps a file only while reading it. The problem is the amount read on each request and the thread it
 runs on, not memory.

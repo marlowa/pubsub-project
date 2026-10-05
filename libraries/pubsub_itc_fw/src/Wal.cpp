@@ -287,6 +287,27 @@ WalPosition Wal::scan_start_for(int64_t seq_no) const {
     return start;
 }
 
+int64_t Wal::first_seq_no() const {
+    for (const uint64_t segment : segment_numbers()) {
+        const int fd = ::open(segment_path_for_delete(segment).c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        // The first entry's header: magic (4 bytes), payload size (4), record id (8), reserved (8).
+        uint8_t header[24] = {};
+        const ssize_t got = ::pread(fd, header, sizeof(header), 0);
+        ::close(fd);
+        uint32_t magic = 0;
+        int64_t record_id = 0;
+        std::memcpy(&magic, header, sizeof(magic));
+        std::memcpy(&record_id, header + 8, sizeof(record_id));
+        if (got == static_cast<ssize_t>(sizeof(header)) && magic == WalWriter::entry_magic) {
+            return record_id;
+        }
+    }
+    return 0;
+}
+
 std::vector<uint64_t> Wal::segment_numbers() const {
     std::vector<uint64_t> numbers;
     DIR* dir = ::opendir(directory_.c_str());

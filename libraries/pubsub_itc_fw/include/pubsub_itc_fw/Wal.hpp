@@ -206,6 +206,25 @@ class Wal {
      */
     [[nodiscard]] WalPosition scan_start_for(int64_t seq_no) const;
 
+    /**
+     * @brief The numbers of the log's segment files, in ascending order.
+     *
+     * For a reader that reads one segment at a time with WalReader::replay_segment, such as one that
+     * works backwards from the newest. A segment created ahead of the writer is included, and holds
+     * nothing until the writer reaches it.
+     */
+    [[nodiscard]] std::vector<uint64_t> segments_on_disk() const {
+        return segment_numbers();
+    }
+
+    /// The path of segment file @p segment.
+    [[nodiscard]] std::string segment_path(uint64_t segment) const {
+        return segment_path_for_delete(segment);
+    }
+
+    /// The sequence number of the first record the log holds, or zero if it holds none.
+    [[nodiscard]] int64_t first_seq_no() const;
+
     [[nodiscard]] size_t record_count() const {
         return record_count_;
     }

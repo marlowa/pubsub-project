@@ -3045,12 +3045,13 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     // the session that originated it on its envelope. What the venue lacked was a way to ask
     // for one session's slice of that stream, and this is it.
     //
-    // The cost is a scan from the oldest retained segment on every request, because the WAL
-    // is an append-only log with no index -- deliberately, since indexing it would put work
-    // on the write path that every order pays for so that a rare reconnect can be quicker.
-    // A logon is rare and a resend rarer; if that ever stops being true the answer is a
-    // cursor or a per-session index, not a slower hot path. Measured, not assumed: see
-    // docs/availability/gateway_ha.md.
+    // The log has no index of each member's reports, so the segments are read from the newest
+    // backwards, and the reading stops as soon as the window below is full or the segment reached
+    // begins at or before from_seq_no. What a member has missed is the end of its stream, so an
+    // ordinary resend reads the last few segments, not the whole day. Reading the whole log from
+    // its first record on every request, on this thread, stopped the venue sequencing orders for
+    // as long as that took (docs/bug_list.md, BUG-0113). A request reaching far back still reads
+    // far back; serving resends from a separate recovery service is the longer-term answer.
     // The MOST RECENT max_records reports, not the first found.
     //
     // What a member has missed is by definition the tail of its stream, so streaming as the
@@ -3081,50 +3082,68 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     bool truncated = false;
     const int64_t started_ns = config_.wall_clock->now_ns();
 
-    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, {0, 0}, [&identity, from_seq_no, window_capacity, &window, &total_matched](int64_t record_id, const void* payload, size_t size) {
-            if (record_id <= from_seq_no) {
-                return;
-            }
-            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (size < header_size) {
-                return;
-            }
-            int64_t wall_time_ns{};
-            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-            const auto* record_payload = static_cast<const uint8_t*>(payload) + header_size;
-            const size_t record_size = size - header_size;
+    // The matches in one segment, in the order they were written; added to the front of the window,
+    // newest first, once the segment has been read.
+    std::vector<ReplayMatch> in_segment;
+    size_t segments_read = 0;
+    const std::vector<uint64_t> segments = wal_.segments_on_disk();
+    for (auto segment = segments.rbegin(); segment != segments.rend() && window.size() < window_capacity; ++segment) {
+        in_segment.clear();
+        int64_t first_in_segment = 0;
+        static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
+            wal_.segment_path(*segment), 0,
+            [&identity, from_seq_no, &in_segment, &total_matched, &first_in_segment](int64_t record_id, const void* payload, size_t size) {
+                if (first_in_segment == 0) {
+                    first_in_segment = record_id;
+                }
+                if (record_id <= from_seq_no) {
+                    return;
+                }
+                constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+                if (size < header_size) {
+                    return;
+                }
+                int64_t wall_time_ns{};
+                std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
+                const auto* record_payload = static_cast<const uint8_t*>(payload) + header_size;
+                const size_t record_size = size - header_size;
 
-            // Every stored record is a WalRecord envelope; decode it to read who it belonged
-            // to and what it was. A separate arena from the caller's: this runs inside the
-            // decode of the request itself, whose view is still in use above.
-            std::array<uint8_t, 64 * 1024> replay_arena_buffer{};
-            pubsub_itc_fw::BumpAllocator replay_arena(replay_arena_buffer.data(), replay_arena_buffer.size());
-            size_t replay_consumed = 0;
-            size_t replay_needed = 0;
-            pubsub_itc_fw_app::WalRecordView stored{};
-            if (!pubsub_itc_fw_app::decode(stored, record_payload, record_size, replay_consumed, replay_arena, replay_needed)) {
-                return;
-            }
-            if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
-                return; // orders are not replayed to a member; it already knows what it sent
-            }
-            if (!stored.has_sender_comp_id ||
-                fix_common::SessionIdentity::make(stored.sender_comp_id,
-                                                  stored.has_origin_gateway_id ? stored.origin_gateway_id : gateway_ids::default_when_absent) != identity) {
-                return;
-            }
+                // Every stored record is a WalRecord envelope; decode it to read who it belonged
+                // to and what it was. A separate arena from the caller's: this runs inside the
+                // decode of the request itself, whose view is still in use above.
+                std::array<uint8_t, 64 * 1024> replay_arena_buffer{};
+                pubsub_itc_fw::BumpAllocator replay_arena(replay_arena_buffer.data(), replay_arena_buffer.size());
+                size_t replay_consumed = 0;
+                size_t replay_needed = 0;
+                pubsub_itc_fw_app::WalRecordView stored{};
+                if (!pubsub_itc_fw_app::decode(stored, record_payload, record_size, replay_consumed, replay_arena, replay_needed)) {
+                    return;
+                }
+                if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport)) {
+                    return; // orders are not replayed to a member; it already knows what it sent
+                }
+                if (!stored.has_sender_comp_id ||
+                    fix_common::SessionIdentity::make(stored.sender_comp_id,
+                                                      stored.has_origin_gateway_id ? stored.origin_gateway_id : gateway_ids::default_when_absent) != identity) {
+                    return;
+                }
 
-            ++total_matched;
-            ReplayMatch match;
-            match.record_id = record_id;
-            match.wall_time_ns = wall_time_ns;
-            match.payload.assign(stored.payload.data, stored.payload.data + stored.payload.size);
-            window.push_back(std::move(match));
-            if (window.size() > window_capacity) {
-                window.pop_front();
-            }
-        });
+                ++total_matched;
+                ReplayMatch match;
+                match.record_id = record_id;
+                match.wall_time_ns = wall_time_ns;
+                match.payload.assign(stored.payload.data, stored.payload.data + stored.payload.size);
+                in_segment.push_back(std::move(match));
+            }));
+        ++segments_read;
+        for (auto match = in_segment.rbegin(); match != in_segment.rend() && window.size() < window_capacity; ++match) {
+            window.push_front(std::move(*match));
+        }
+        // Every older segment holds only records at or before from_seq_no.
+        if (first_in_segment != 0 && first_in_segment <= from_seq_no + 1) {
+            break;
+        }
+    }
 
     // Drop the newest skip_most_recent, leaving the ones the caller actually named. The window
     // held them only so that the ones behind them could be found: a scan that discarded them as
@@ -3163,8 +3182,8 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
 
     const int64_t elapsed_ns = config_.wall_clock->now_ns() - started_ns;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} scanned_in_ms={}", view.request_id,
-               identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1000000);
+               "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} scanned_in_ms={} segments_read={} of {}",
+               view.request_id, identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1000000, segments_read, segments.size());
 }
 
 void SequencerThread::forward_pending_er(const PendingEr& pending) {
@@ -3451,30 +3470,31 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // zero starts wherever truncation left off rather than at the start of the day. An engine
     // that has lost its own record of what it held falls back to this one and has to be able
     // to tell those apart: see R-0123.
-    int64_t earliest_retained = 0;
-    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, {0, 0},
-        [this, &conn_id, last_seq_no, wal_head, &streamed, &earliest_retained](int64_t record_id, const void* payload, size_t size) {
-            if (earliest_retained == 0) {
-                earliest_retained = record_id;
-            }
-            if (record_id <= last_seq_no || record_id > wal_head) {
-                return;
-            }
-            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (size < header_size) {
-                return;
-            }
-            int64_t wall_time_ns{};
-            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-            int16_t pdu_id{};
-            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
-            const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
-            const size_t pdu_size = size - header_size;
-            if (stream_wal_record_to_me(conn_id, record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns)) {
-                ++streamed;
-            }
-        });
+    // The earliest record the log holds, which the engine needs to know whether the log reaches back
+    // to the first record of the day (R-0123). Reading starts at the segment holding the first record
+    // the engine lacks, not at the start of the log: reading the whole log on this thread stopped the
+    // venue sequencing orders for as long as it took (docs/bug_list.md, BUG-0113).
+    const int64_t earliest_retained = wal_.first_seq_no();
+    [[maybe_unused]] auto end_pos =
+        pubsub_itc_fw::WalReader::replay(config_.wal_directory, wal_.scan_start_for(last_seq_no + 1),
+                                         [this, &conn_id, last_seq_no, wal_head, &streamed](int64_t record_id, const void* payload, size_t size) {
+                                             if (record_id <= last_seq_no || record_id > wal_head) {
+                                                 return;
+                                             }
+                                             constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+                                             if (size < header_size) {
+                                                 return;
+                                             }
+                                             int64_t wall_time_ns{};
+                                             std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
+                                             int16_t pdu_id{};
+                                             std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
+                                             const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
+                                             const size_t pdu_size = size - header_size;
+                                             if (stream_wal_record_to_me(conn_id, record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns)) {
+                                                 ++streamed;
+                                             }
+                                         });
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed,
                conn_id.get_value());
