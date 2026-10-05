@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 116 |
-| Open | 40 (26 defects, 14 tasks) |
+| Bugs recorded | 117 |
+| Open | 41 (27 defects, 14 tasks) |
 | Closed | 76 |
-| Next id | BUG-0117 |
+| Next id | BUG-0118 |
 
 ## Open bugs by severity
 
-12 high, 23 medium, 5 low.
+12 high, 24 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,6 +48,7 @@
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
 | [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
+| [BUG-0117](#bug_0117) | medium | defect | Scenario 1 fails now and then: after a change of leader the member's client loses its place in the message numbering |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -152,6 +153,40 @@ went looking.
 
 
 
+
+### BUG-0117: Scenario 1 fails now and then: after a change of leader the member's client loses its place in the message numbering {#bug_0117}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-05 |
+| How | `ha_test.py` scenario 1 failing in two of the seven runs of it on 2026-10-04 and 2026-10-05 |
+| Impact | Not established whether the venue or the test client is at fault. If the venue: a member can be sent a gap in its message numbering during a burst of reports, ask for a resend, and disconnect |
+
+**What happens.** Scenario 1 sends 20,000 orders in a burst just before the leading sequencer is killed.
+The venue processes them in about 50 milliseconds. On taking the lead, the new sequencer forwards the
+reports it kept, marked as possible repeats: because every one of them falls within the last
+100 milliseconds before the old leader died, it forwards all 21,000 again (the design of
+[BUG-0116](#bug_0116), whose delay keeps the last 100 milliseconds). The gateway sends them to the
+member within about 50 milliseconds. In the failing runs, the member's FIX client then sent a
+ResendRequest from a message number well below the gateway's count, 36504 when the gateway had sent
+42,000 in the run of 2026-10-05, and closed its connection in the same moment. The scenario writes its
+recovery orders to that client, so they never reach the venue, and the scenario fails. In the passing
+runs, the same 21,000 repeats were sent and the client coped.
+
+**Not established.** Why the client saw a gap. The gateway logged no failed or dropped send: a send that
+cannot be completed at once waits rather than being dropped, and a failed connection is torn down and
+logged. The client's own log is not kept by the scenario, so what it received cannot be checked. The
+resend itself is not the problem: it was answered from the log (bounded since
+[BUG-0113](#bug_0113)'s interim fix).
+
+**What would settle it.** Keeping the client's log, or a capture of what the gateway sent, from a
+failing run, and comparing the message numbers received with those sent. If the gateway sent a gap,
+it is a venue defect and serious. If not, it is the test client, and scenario 1 needs a client that
+copes with a burst of repeats. Separately, 21,000 repeats at once is the price of BUG-0116's
+100-millisecond delay at this burst rate, about ten times the highest rate measured in production-like
+runs.
 
 ### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
 
