@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 124 |
-| Open | 43 (27 defects, 16 tasks) |
-| Closed | 81 |
+| Open | 42 (26 defects, 16 tasks) |
+| Closed | 82 |
 | Next id | BUG-0125 |
 
 ## Open bugs by severity
 
-13 high, 25 medium, 5 low.
+12 high, 25 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,7 +24,6 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
-| [BUG-0120](#bug_0120) | high | defect | The matching engine drops orders the sequencer has logged when its connections for reports are not yet up |
 | [BUG-0124](#bug_0124) | high | task | Locks are taken on the order path, in a design meant to be free of them |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -285,38 +284,6 @@ background leaves the reading, which grows through the day and would exceed the 
 hour or so of a real trading day. The decision is to keep the table of epochs in a small file written
 when the epoch changes, and to check for gaps only after the last snapshot of the log, so that startup
 no longer reads every record. A design is to be written for review before any code changes.
-
-### BUG-0120: The matching engine drops orders the sequencer has logged when its connections for reports are not yet up {#bug_0120}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-06 |
-| Recorded | 2026-10-06 |
-| How | `ha_test.py` scenario 47 failing during a run on a loaded machine; the engine's log held 1,000 lines saying it was dropping a new order |
-| Impact | An order the sequencer has written to its log and sent to the engine is neither matched nor answered. The member is told nothing, and the log and the engine's book disagree about what was ordered |
-
-**What happens.** The matching engine receives orders on a connection the sequencer opens to it, and
-sends its reports back on connections it opens to each sequencer. When an order arrives and neither
-connection for reports is established, `MatchingEngineThread` logs *"no sequencer ER connections
-established -- dropping NOS"* and returns without acting on the order. Cancels are dropped the same
-way, with *"dropping OCR"*.
-
-**How it was reached.** At startup the engine's first attempt to connect to the sequencers' report
-listeners came before they were listening, and the next attempt is two seconds later. The sequencer's
-connection for orders was up meanwhile, and the scenario's 1,000 orders arrived in those two seconds.
-Every one was dropped. The same gap opens whenever the engine's connections for reports are lost
-while its connection for orders survives.
-
-**Why it matters.** Every other part of the venue treats the log as the record of what was ordered:
-a restarted engine catches up from it, a new leader acts on it, and a member's resend is answered
-from it. An order dropped here is in the log and nowhere else, so recovery would not find anything
-missing.
-
-**What closing it needs.** An engine that cannot send reports should not act as though it had taken
-the order. Either it does not take orders until it can report on them, telling the sequencer so, or
-it acts on them and keeps the reports until a connection for reports exists. Which is right has to
-be decided.
 
 ### BUG-0119: An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor {#bug_0119}
 
@@ -2487,6 +2454,54 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0120: The matching engine dropped orders the sequencer had logged when its connections for reports were not yet up {#bug_0120}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| Fixed | 2026-10-06 -- the engine acts on such orders and holds their reports, and sends each held report on each connection for reports as it is established |
+| How | `ha_test.py` scenario 47 failing during a run on a loaded machine; the engine's log held 1,000 lines saying it was dropping a new order |
+| Impact | An order the sequencer has written to its log and sent to the engine is neither matched nor answered. The member is told nothing, and the log and the engine's book disagree about what was ordered |
+
+**What happens.** The matching engine receives orders on a connection the sequencer opens to it, and
+sends its reports back on connections it opens to each sequencer. When an order arrives and neither
+connection for reports is established, `MatchingEngineThread` logs *"no sequencer ER connections
+established -- dropping NOS"* and returns without acting on the order. Cancels are dropped the same
+way, with *"dropping OCR"*.
+
+**How it was reached.** At startup the engine's first attempt to connect to the sequencers' report
+listeners came before they were listening, and the next attempt is two seconds later. The sequencer's
+connection for orders was up meanwhile, and the scenario's 1,000 orders arrived in those two seconds.
+Every one was dropped. The same gap opens whenever the engine's connections for reports are lost
+while its connection for orders survives.
+
+**Why it matters.** Every other part of the venue treats the log as the record of what was ordered:
+a restarted engine catches up from it, a new leader acts on it, and a member's resend is answered
+from it. An order dropped here is in the log and nowhere else, so recovery would not find anything
+missing.
+
+**The fix.** The engine acts on an order or a cancel whether or not a connection for reports is up,
+so its book agrees with the log. A report it cannot send is held, in the store it already uses for
+reports held while it is becoming current, bounded at 50,000; past that, later reports are lost and an
+Error says so. Each held report is sent on each connection for reports as that connection is
+established, and kept until it has been sent on every connection there is (both sequencers with high
+availability on), with the number it was given when first sent, so that both sequencers see the same
+number. Reports held while the engine waits to be told whether it may serve still wait for that.
+
+The first version released the held reports on the first connection to come up. In scenario 72 that
+was the follower's, 0.02 milliseconds before the leader's, so every report went to the follower, which
+does not tell members, and none was received. Sending each report on each connection fixed it, and
+also fixed the release on taking the lead, which sent only on the connections up at that moment.
+
+**Evidence.** `ha_test.py` scenario 72 sends the engine's connections for reports through a relay
+that refuses them at first. A member sends 50 orders; the engine must say it is holding their reports,
+and none may reach the member; then the relay lets the connections through, and every order must be
+reported accepted exactly once. With the old drop put back the scenario failed: the engine dropped all
+50 orders. With the fix it passed three runs of three, and scenarios 10 to 13, 50 to 53 and 55, which
+exercise the engine's held reports, passed.
 
 ### BUG-0123: A follower's write-ahead log was found with one entry's bytes blank and the next record written twice {#bug_0123}
 

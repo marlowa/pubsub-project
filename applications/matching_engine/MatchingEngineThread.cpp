@@ -308,11 +308,13 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         sequencer_er_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: primary sequencer ER connection {} established", id.get_value());
         announce_role();
+        release_reports_held_for_a_connection();
         act_on_pending_halt();
     } else if (svc == "sequencer_er_secondary") {
         sequencer_er_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: secondary sequencer ER connection {} established", id.get_value());
         announce_role();
+        release_reports_held_for_a_connection();
     } else if (svc == "me_peer_replication") {
         // Our dial to the peer's replication listener. Used to send book updates while this
         // instance leads, and simply held open while it follows.
@@ -664,10 +666,9 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
         return;
     }
 
-    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: no sequencer ER connections established -- dropping NOS");
-        return;
-    }
+    // An order arriving while no connection for reports is up is acted on all the same: it is in the
+    // sequencer's log, and the book must agree with the log. Its reports are held until a connection
+    // is established (send_er_to_sequencer, docs/bug_list.md BUG-0120).
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     if (sequence_goes_backwards(sequence_number)) {
@@ -958,10 +959,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
         return;
     }
 
-    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: no sequencer ER connections established -- dropping OCR");
-        return;
-    }
+    // Acted on even with no connection for reports up, as an order is; see handle_new_order_single.
 
     const int64_t now_ns = sequenced_at_ns != 0 ? sequenced_at_ns : config_.wall_clock->now_ns();
     if (sequence_goes_backwards(sequence_number)) {
@@ -1229,21 +1227,31 @@ bool MatchingEngineThread::holding_reports_until_entitled() const {
 void MatchingEngineThread::release_held_reports() {
     if (held_reports_.empty()) {
         held_reports_overflowed_ = false;
+        waiting_for_report_connection_ = false;
         return;
     }
-
-    // Taken by move first, so that send_er_to_sequencer -- which is what sends these -- cannot
-    // see the container it is iterating, whatever it decides about holding.
-    const std::vector<HeldReport> to_send = std::move(held_reports_);
-    held_reports_.clear();
-    held_reports_overflowed_ = false;
-
+    // With no connection to a sequencer the reports would go nowhere, so they stay held until one is
+    // established, when this is called again.
+    const bool to_primary = sequencer_er_conn_id_.is_valid();
+    const bool to_secondary = sequencer_er_secondary_conn_id_.is_valid();
+    if (!to_primary && !to_secondary) {
+        return;
+    }
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: releasing {} report(s) held while this instance was becoming current -- it now serves, so the members who placed "
                "those orders are told",
-               to_send.size());
+               held_reports_.size());
+    send_held_reports(to_primary, to_secondary);
+}
 
-    for (const HeldReport& held : to_send) {
+void MatchingEngineThread::send_held_reports(bool to_primary, bool to_secondary) {
+    // Each report goes to each sequencer, as a report sent at once does, but a connection may come up
+    // after the others: so each held report records which connections it has been sent on, is sent on
+    // each as it becomes available, and is kept until it has been sent on every connection there is.
+    // It keeps the number it was given when first sent, so that both sequencers see the same number
+    // for it (docs/bug_list.md, BUG-0120).
+    for (HeldReport& held : held_reports_) {
         pubsub_itc_fw_app::WalRecord envelope{};
         envelope.seq_no = held.seq_no;
         envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
@@ -1254,15 +1262,49 @@ void MatchingEngineThread::release_held_reports() {
         envelope.has_origin_gateway_id = !held.session.empty();
         envelope.origin_gateway_id = held.session.protocol;
         envelope.poss_resend = held.poss_resend;
-        number_report(envelope);
-
-        if (sequencer_er_conn_id_.is_valid()) {
-            send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
+        if (held.numbered) {
+            envelope.has_report_engine_epoch = true;
+            envelope.report_engine_epoch = held.report_engine_epoch;
+            envelope.has_report_number = true;
+            envelope.report_number = held.report_number;
+        } else {
+            number_report(envelope);
+            held.numbered = true;
+            held.report_engine_epoch = envelope.report_engine_epoch;
+            held.report_number = envelope.report_number;
         }
-        if (sequencer_er_secondary_conn_id_.is_valid()) {
+        if (to_primary && !held.sent_to_primary) {
+            send_pdu(sequencer_er_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
+            held.sent_to_primary = true;
+        }
+        if (to_secondary && !held.sent_to_secondary) {
             send_pdu(sequencer_er_secondary_conn_id_, pubsub_itc_fw_app::WalRecord::message_pdu_id, held.seq_no, envelope);
+            held.sent_to_secondary = true;
         }
     }
+    // Without high availability there is only the one sequencer to tell.
+    const bool secondary_expected = ha_enabled_;
+    held_reports_.erase(
+        std::remove_if(held_reports_.begin(), held_reports_.end(),
+                       [secondary_expected](const HeldReport& held) { return held.sent_to_primary && (held.sent_to_secondary || !secondary_expected); }),
+        held_reports_.end());
+    if (held_reports_.empty()) {
+        held_reports_overflowed_ = false;
+        waiting_for_report_connection_ = false;
+    }
+}
+
+void MatchingEngineThread::release_reports_held_for_a_connection() {
+    // Reports held while this instance waits to be told whether it may serve stay held until it is
+    // told. Any others go now: those held for want of a connection, and those an instance was told it
+    // may serve while it had no connection to send them on.
+    if (held_reports_.empty() || holding_reports_until_entitled()) {
+        return;
+    }
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MatchingEngineThread: a connection to a sequencer for reports is established -- sending {} report(s) held without one", held_reports_.size());
+    send_held_reports(sequencer_er_conn_id_.is_valid(), sequencer_er_secondary_conn_id_.is_valid());
 }
 
 void MatchingEngineThread::number_report(pubsub_itc_fw_app::WalRecord& envelope) {
@@ -1339,6 +1381,32 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
                        "repeat and can be discarded, which is the lesser harm",
                        held_reports_.size());
         }
+    }
+
+    // Held, too, while there is no connection to a sequencer to send it on: the order it reports is in
+    // the sequencer's log and on this book, so the member must be told once a connection exists.
+    if (!sequencer_er_conn_id_.is_valid() && !sequencer_er_secondary_conn_id_.is_valid()) {
+        if (!waiting_for_report_connection_) {
+            waiting_for_report_connection_ = true;
+            PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                           "MatchingEngineThread: no connection to a sequencer for reports -- acting on orders and holding their reports until one is "
+                           "established");
+        }
+        if (held_reports_.size() < max_held_reports_) {
+            HeldReport held;
+            held.payload.assign(er_encode_buffer_.begin(), er_encode_buffer_.begin() + static_cast<std::ptrdiff_t>(bytes_written));
+            held.seq_no = seq_no;
+            held.session = session;
+            held.poss_resend = repeat == ReportIsRepeat::yes;
+            held_reports_.push_back(std::move(held));
+        } else if (!held_reports_overflowed_) {
+            held_reports_overflowed_ = true;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                       "MatchingEngineThread: {} reports held with no connection to a sequencer, which is as many as are kept -- later reports are "
+                       "lost until a connection is established",
+                       held_reports_.size());
+        }
+        return;
     }
 
     pubsub_itc_fw_app::WalRecord envelope{};

@@ -199,12 +199,14 @@ import hmac as _hmac
 import os
 import re
 import secrets
+import selectors
 import signal
 import socket
 import struct
 import urllib.request
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -879,6 +881,11 @@ class Scenario(NamedTuple):
     # order must be accepted exactly once after the sequencer runs again. See run_scenario's
     # "commands sent again after a reconnection" block, and BUG-0118.
     assert_commands_resent_after_reconnection: bool = False
+    # When True, the matching engine's connections for reports go through a relay this script runs,
+    # which refuses them at first, so that orders reach the engine while it has no route for their
+    # reports. Every order must be accepted once the relay lets the connections through. See
+    # run_scenario's "reports held without a connection" block, and BUG-0120.
+    assert_engine_holds_reports_without_connection: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3763,6 +3770,27 @@ _SCENARIOS: list[Scenario] = [
         assert_commands_resent_after_reconnection=True,
         steps=[],
     ),
+
+    # 72 -- orders reaching an engine with no route for their reports are acted on, and reported later.
+    #
+    # The matching engine sends its reports on connections it opens to the sequencers. Here those go
+    # through a relay this script runs, which at first accepts nothing, so the engine has no connection
+    # for reports while the sequencer's connection to it for orders is up. A member sends orders. Once
+    # the relay lets the connections through, every order must be reported accepted.
+    Scenario(
+        number=72,
+        short_name="engine_holds_reports_without_connection",
+        description="Orders reaching an engine with no connection for reports are acted on and reported once one is established",
+        expected_outcome=(
+            "the engine acts on each order and holds its report while it has no connection for reports, and sends every held "
+            "report once a connection is established; every order is accepted exactly once"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        skip_baseline_orders=True,
+        assert_engine_holds_reports_without_connection=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4697,6 +4725,88 @@ def config_with_small_send_queue(config: Path) -> Path:
     copy = config.with_name(config.stem + "_small_send_queue.toml")
     copy.write_text(text)
     return copy
+
+
+# Scenario 72: the relay port for each of the matching engine's connections for reports, and the
+# sequencer's report listener it passes traffic to.
+_REPORT_RELAY_PORTS = {11921: 11021, 11922: 11022}
+
+
+def config_with_report_relay(config: Path) -> Path:
+    """A copy of the matching engine's configuration whose connections for reports go to the relay ports."""
+    text = config.read_text()
+    for relay_port, sequencer_port in _REPORT_RELAY_PORTS.items():
+        if f"port = {sequencer_port}\n" not in text:
+            die(f"config_with_report_relay: {config} has no 'port = {sequencer_port}' to send through the relay")
+        text = text.replace(f"port = {sequencer_port}\n", f"port = {relay_port}\n", 1)
+    copy = config.with_name(config.stem + "_report_relay.toml")
+    copy.write_text(text)
+    return copy
+
+
+class PortRelay:
+    """Accepts connections on local ports and passes bytes both ways to other local ports.
+
+    Nothing listens on the relay ports until start(), so a connection attempted before then is
+    refused, as it would be by a process that is not running. Runs on one thread of its own, which
+    stop() ends."""
+
+    def __init__(self, mapping: dict[int, int]) -> None:
+        self.mapping = mapping
+        self.selector = selectors.DefaultSelector()
+        self.stopping = False
+        self.thread: threading.Thread | None = None
+        self.accepted = 0
+
+    def start(self) -> None:
+        for relay_port, target_port in self.mapping.items():
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(("127.0.0.1", relay_port))
+            listener.listen(8)
+            listener.setblocking(False)
+            self.selector.register(listener, selectors.EVENT_READ, ("listen", target_port))
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self) -> None:
+        while not self.stopping:
+            for key, _ in self.selector.select(timeout=0.1):
+                kind, other = key.data
+                if kind == "listen":
+                    accepted, _ = key.fileobj.accept()
+                    target = socket.create_connection(("127.0.0.1", other))
+                    accepted.setblocking(False)
+                    target.setblocking(False)
+                    self.selector.register(accepted, selectors.EVENT_READ, ("pipe", target))
+                    self.selector.register(target, selectors.EVENT_READ, ("pipe", accepted))
+                    self.accepted += 1
+                    continue
+                try:
+                    data = key.fileobj.recv(65536)
+                except (BlockingIOError, InterruptedError):
+                    continue
+                except OSError:
+                    data = b""
+                if not data:
+                    for sock in (key.fileobj, other):
+                        try:
+                            self.selector.unregister(sock)
+                        except (KeyError, ValueError):
+                            pass
+                        sock.close()
+                    continue
+                other.setblocking(True)
+                other.sendall(data)
+                other.setblocking(False)
+
+    def stop(self) -> None:
+        self.stopping = True
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+        for key in list(self.selector.get_map().values()):
+            key.fileobj.close()
+        self.selector.close()
 
 
 def process_is_stopped(pid: int) -> bool:
@@ -5975,6 +6085,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 extra_environment = blocked_gateway_environment(prefix, block_flag)
             if scenario.assert_logged_commands_reach_engine and name == "sequencer_secondary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
+            if scenario.assert_engine_holds_reports_without_connection and name == "matching_engine":
+                config = config_with_report_relay(config)
+                log(f"  {name} sends its reports through a relay on ports {sorted(_REPORT_RELAY_PORTS)}, which accepts nothing yet")
             if scenario.assert_commands_resent_after_reconnection and name == "fix_order_gateway_a":
                 config = config_with_small_send_queue(config)
                 log(f"  {name} allows only {_SMALL_SEND_QUEUE} sends to wait on a connection, with a {_SMALL_SEND_BUFFER}-byte socket send buffer")
@@ -8686,6 +8799,76 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("reconnection: sequencer_secondary took the lead, so the orders may have been sent again for the change of "
                     "leader rather than for the reconnection, which is what this scenario tests.")
             log(f"  all {len(sent)} orders accepted exactly once, none refused, and sequencer_primary kept the lead -- OK")
+
+        # ── Reports held without a connection ─────────────────────────────────
+        if scenario.assert_engine_holds_reports_without_connection:
+            log("=== Orders reaching an engine with no connection for reports are acted on and reported later ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("held reports: sequencer_primary is not leading.")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("held reports: the raw client could not log on.")
+
+            engine_from = file_end(me_log)
+            run_tag = datetime.now().strftime("%H%M%S")
+            sent = [f"held-{run_tag}-{number}" for number in range(1, 51)]
+            for cl_ord_id in sent:
+                member.new_order_single(cl_ord_id)
+            if poll_log_for(me_log, "dropping NOS", timeout=3.0, from_byte=engine_from)[0]:
+                member.close()
+                die("held reports: the matching engine dropped orders because it had no connection for reports. They are in the "
+                    "sequencer's log, so the engine must act on them and report them later (BUG-0120).")
+            if not poll_log_for(me_log, "no connection to a sequencer for reports -- acting on orders and holding their reports",
+                                timeout=5.0, from_byte=engine_from)[0]:
+                member.close()
+                die("held reports: the matching engine never said it was holding reports, so it is not known to have had no "
+                    "connection for reports, and nothing here was tested.")
+            early = [m for m in member.receive(timeout=1.0) if m.get(35) == "8"]
+            if early:
+                member.close()
+                die(f"held reports: {len(early)} report(s) reached the member while the engine had no connection for reports, so "
+                    "the relay did not keep the connections away and nothing here was tested.")
+            log(f"  {len(sent)} orders sent; the engine is acting on them and holding their reports")
+
+            relay = PortRelay(_REPORT_RELAY_PORTS)
+            relay.start()
+            try:
+                if not poll_log_for(me_log, "a connection to a sequencer for reports is established -- sending", timeout=15.0,
+                                    from_byte=engine_from)[0]:
+                    member.close()
+                    die("held reports: once its connections for reports were let through, the engine did not send the reports it held.")
+                log("  the relay let the engine's connections through, and it sent the reports it held")
+                accepted: dict[str, int] = {}
+                deadline = time.monotonic() + 20.0
+                while len(accepted) < len(sent) and time.monotonic() < deadline:
+                    for report in member.receive(timeout=0.5):
+                        if report.get(35) == "8" and report.get(39) == "0":
+                            accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                for report in member.receive(timeout=1.0):
+                    if report.get(35) == "8" and report.get(39) == "0":
+                        accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                member.close()
+            finally:
+                relay.stop()
+            missing = [c for c in sent if c not in accepted]
+            twice = [c for c, n in accepted.items() if n > 1]
+            if missing:
+                die(f"held reports: {len(missing)} of {len(sent)} orders were never reported accepted, for example {missing[:3]}.")
+            if twice:
+                die(f"held reports: {len(twice)} orders were reported accepted more than once, for example {twice[:3]}.")
+            log(f"  all {len(sent)} orders reported accepted exactly once -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

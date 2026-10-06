@@ -427,6 +427,13 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
         int64_t seq_no{0};            ///< echoed in the transport header, as a live report's is
         fix_common::SessionIdentity session;
         bool poss_resend{false};
+        /// The number the report was given when first sent, kept so that each sequencer sees the same.
+        bool numbered{false};
+        int32_t report_engine_epoch{0};
+        int64_t report_number{0};
+        /// Which connections the report has been sent on; it is kept until it has been sent on each.
+        bool sent_to_primary{false};
+        bool sent_to_secondary{false};
     };
     std::vector<HeldReport> held_reports_;
 
@@ -438,9 +445,18 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // same ordering BUG-0009 settled.
     static constexpr size_t max_held_reports_ = 50000;
     bool held_reports_overflowed_{false};
+    // Whether reports are being held because there is no connection to a sequencer to send them on
+    // (docs/bug_list.md, BUG-0120). Logged when it starts, and cleared when they are sent.
+    bool waiting_for_report_connection_{false};
+    // Sends the reports held when a connection for reports is established, unless this instance is
+    // still waiting to be told whether it may serve.
+    void release_reports_held_for_a_connection();
 
     [[nodiscard]] bool holding_reports_until_entitled() const;
     void release_held_reports();
+    // Sends each held report on each of the named connections it has not yet been sent on, and drops
+    // those sent on every connection there is.
+    void send_held_reports(bool to_primary, bool to_secondary);
     void discard_held_reports(const char* reason);
 
     // Establishes that the catch-up was complete before this instance acts on it (R-0101).
