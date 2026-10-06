@@ -7,10 +7,12 @@ migration flushes the thread's working set from cache. More significantly, each 
 wakeup carries 50–200µs of scheduler jitter on a normal desktop or server kernel — the time
 between an event being ready and the thread actually running to process it.
 
-The framework pins every `ApplicationThread` to a dedicated CPU at startup. With pinning:
+At startup the framework pins each hot-path thread — the reactor thread and each registered
+`ApplicationThread` of a component the layout admits — to a CPU of its own. With pinning:
 
 - The thread's working set stays warm in L1/L2 cache between wakeups
-- No other thread competes for that CPU
+- No other pinned thread is given that CPU. Unpinned threads are kept off it by the background
+  mask described below, but only `isolcpus` stops the kernel scheduling other work there
 - Combined with `SCHED_FIFO` and `isolcpus`, wakeup jitter falls from 50–200µs to 5–20µs
 
 CPU pinning is the primary mechanism for achieving predictable, low-latency event processing.
@@ -72,8 +74,8 @@ free to be scheduled onto the very cores this design reserves.
 
 It is therefore placed explicitly, by `apply_background_affinity()`, onto a background core that
 `deploy.py` allocated it. `deploy.py` hands out one per component round-robin, because there are
-thirteen C++ components on the development box and putting all thirteen backends on one core would
-simply move the contention rather than remove it.
+fifteen C++ components in the development environment and putting all fifteen backends on one core
+would simply move the contention rather than remove it.
 
 Placing it there rather than in the Reactor is deliberate: the Reactor returns early for a component
 the layout demoted, so a backend handled there would be left unmasked on exactly those components.
@@ -107,14 +109,15 @@ CPU pinning is configured per-environment in the TOML files.
 
 ### `cpu_pinning_enabled` and the layout settings
 
-`cpu_pinning_enabled` now means **take part in the machine's declared CPU layout**, and should be
+`cpu_pinning_enabled` means **take part in the machine's declared CPU layout**, and should be
 true for *every* component on a machine that has one — not only those expecting dedicated cores. A
 component that pins nothing still needs the background mask; without one it is free to be scheduled
 onto the cores other components depend on. Such a component simply finds itself unadmitted in the
 layout and stays in the background tier.
 
-Four settings are mandatory whenever it is true, with no C++ defaults — startup fails rather than
-running unpinned if any is absent:
+Four settings are mandatory whenever it is true, with no C++ defaults. The component's
+configuration loader refuses to load a file that lacks any of them, and the reactor refuses to
+start if `cpu_layout_file` or `cpu_layout_component` is empty, rather than running unpinned:
 
 | Setting | Meaning |
 |---|---|
@@ -128,7 +131,7 @@ run the same binary and are ranked and placed separately. `deploy.py` expands it
 it expands the config templates, so it is not maintained by hand.
 
 
-### `cpu_pinning_reserve_cpu0`
+### Reserving CPU 0
 
 ```toml
 [shared]
@@ -136,18 +139,24 @@ reactor_cpu_pinning_reserve_cpu0 = true   # dev / test
 # reactor_cpu_pinning_reserve_cpu0 = false  # prod / preprod
 ```
 
-When `true`, CPU 0 is excluded from the pinning candidates and left for the OS, interrupt
-handlers, and other system activity. Set `true` on development and test machines. Set `false`
-on production machines where CPUs are isolated with `isolcpus`.
+This setting is read by `deploy.py` from the `[shared]` section of the environment file, and
+defaults to `true` when absent. When `true`, `deploy.py` leaves the whole physical core that
+CPU 0 belongs to out of the layout: it is in neither the hot-path tier nor the background tier,
+and is left to the OS, interrupt handlers and other system activity. The whole physical core is
+reserved, not just CPU 0, because a hot-path thread on CPU 0's sibling would share execution
+units with whatever the OS runs on CPU 0. Set `true` on development and test machines. Set
+`false` on production machines where CPUs are isolated with `isolcpus`.
 
-### Environment defaults
-
-| Environment | `cpu_pinning_reserve_cpu0` |
+| Environment | `reactor_cpu_pinning_reserve_cpu0` |
 |-------------|---------------------------|
 | `dev.toml` | `true` |
-| `test-*.toml` | `true` |
+| `test-1.toml` | `true` |
 | `preprod.toml` | `false` |
 | `prod.toml` | `false` |
+
+Several components' configuration files also carry `reactor.cpu_pinning_reserve_cpu0`, and
+their loaders require it, but nothing acts on it: the layout file has already decided which
+cores are used.
 
 ### Hybrid CPUs (P-cores and E-cores)
 
@@ -156,25 +165,30 @@ Intel 12th generation (Alder Lake) and later CPUs have two core types:
 - **P-cores** — high single-thread performance, lower wakeup latency
 - **E-cores** — lower performance, higher wakeup latency; misleading in latency measurements
 
-If the machine has a hybrid CPU, check whether CPUs are P-cores or E-cores:
+`deploy.py` gives hot-path threads P-cores only. It classifies each core from
+`/sys/devices/system/cpu/cpu<N>/cpu_capacity` where the kernel provides it (1024 is a P-core,
+anything lower an E-core), and otherwise from `acpi_cppc/highest_perf` (a core below 80 per
+cent of the highest value on the machine is an E-core). On a machine where neither file exists
+every core counts as a P-core. If there are not enough P-cores left for a group of components,
+that group, and every group ranked below it, stays in the background tier. No configuration
+change is needed.
+
+To see the values `deploy.py` is reading:
 
 ```bash
-# Compare performance values — higher = P-core, lower = E-core
-cat /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference 2>/dev/null
-# or
+cat /sys/devices/system/cpu/cpu*/cpu_capacity 2>/dev/null
 cat /sys/devices/system/cpu/cpu*/acpi_cppc/highest_perf 2>/dev/null | sort -u
 ```
-
-If two distinct values appear, the higher is a P-core. Restrict the available CPU range
-in the TOML to P-cores only. This is a configuration change, not a code change.
 
 ---
 
 ## SCHED_FIFO
 
 CPU pinning alone reduces cache misses but does not prevent the kernel from preempting a
-pinned thread to handle an interrupt or run a higher-priority task. For lowest jitter,
-`ApplicationThread` should run at `SCHED_FIFO` priority.
+pinned thread to handle an interrupt or run a higher-priority task. For lowest jitter, the
+hot-path threads should run at `SCHED_FIFO` priority. The framework does not set a scheduling
+policy itself; a thread runs under `SCHED_FIFO` only if it is started that way, for example
+with `chrt`.
 
 ### Check whether RT scheduling is available
 
@@ -293,7 +307,8 @@ grep -E "^\s*<n>:" /proc/interrupts
 ### Steer them away
 
 ```bash
-# Confine an IRQ to the background tier (cores 15-31 on the dev workstation).
+# Confine an IRQ to the background tier. The cores are this machine's background tier,
+# as listed in run/cpu_layout.toml; 15-31 is only an example.
 echo 15-31 | sudo tee /proc/irq/<n>/smp_affinity_list
 ```
 
@@ -315,7 +330,7 @@ All five steps are independent and cumulative. Steps 1–3 require no reboot.
 | Step | Requires reboot | Benefit |
 |------|-----------------|-----------------|
 | 1. Set CPU governor to `performance`, and disable the deep idle states | No | **Measured: worth five to seven times on round-trip latency.** Do this before anything else, and after every reboot |
-| 2. Pin hot-path threads to P-cores only (hybrid CPUs) | No | Avoids E-core latency inconsistency |
+| 2. Hot-path threads on P-cores only (hybrid CPUs) | No | Avoids E-core latency inconsistency. `deploy.py` already does this when it writes the layout |
 | 3. Grant `rtprio`; set `SCHED_FIFO`; disable RT throttle for benchmarking | No | Prevents userspace preemption |
 | 4. Install `linux-lowlatency` or `PREEMPT_RT` kernel | Yes | Reduces IRQ preemption; 5–20µs jitter range |
 | 5. Add `isolcpus` + `nohz_full` + `rcu_nocbs` to boot params | Yes | **Measured on this workstation and rejected: it costs about a fifth of the inter-thread hop and changes the round trip not at all.** Stops unrelated work being scheduled on the hot-path cores, which is real but not what limits this venue |
@@ -366,10 +381,13 @@ Refusing to start is the right response: a latency-critical component running un
 computed for different hardware is worse than one that does not run. The remedy is to re-run
 `deploy.py`, which recomputes against the machine as it now is.
 
-The stale-*registry* problem that used to appear here — every process pinned to the same CPUs
-because a leftover file confused the availability scan — cannot happen any more. Nothing is
-inferred from the registry's contents; the layout file says which cores belong to which component,
-and a restarted component gets the same ones it had before because the file did not change.
+A leftover registry file cannot cause wrong pinning. Nothing is decided from the registry's
+contents: the layout file says which cores belong to which component, and a restarted component
+gets the same cores it had before because the file has not changed. The registry is only a
+record, used to report a core that a process from another installation on the same machine
+also holds. Such a collision is logged as an error but does not stop the component, because
+the component is pinned correctly to what it was allocated and stopping it would not free the
+core.
 
 ## See Also
 
