@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 123 |
-| Open | 42 (27 defects, 15 tasks) |
+| Bugs recorded | 124 |
+| Open | 43 (27 defects, 16 tasks) |
 | Closed | 81 |
-| Next id | BUG-0124 |
+| Next id | BUG-0125 |
 
 ## Open bugs by severity
 
-12 high, 25 medium, 5 low.
+13 high, 25 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0120](#bug_0120) | high | defect | The matching engine drops orders the sequencer has logged when its connections for reports are not yet up |
+| [BUG-0124](#bug_0124) | high | task | Locks are taken on the order path, in a design meant to be free of them |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -154,6 +155,43 @@ went looking.
 
 
 
+
+### BUG-0124: Locks are taken on the order path, in a design meant to be free of them {#bug_0124}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task -- a change to the design, to restore what it was built on |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| How | Explaining the fix for [BUG-0123](#bug_0123), which added a lock |
+| Impact | Every order takes a lock on the leading sequencer and two on the follower. Uncontended they cost tens of nanoseconds each, but the framework is built without locks on the order path, and each lock added makes the next easier to add |
+
+**Where the locks are.**
+
+- `SequencerThread::log_epochs_mutex_`, added with the repair of a rejoining follower's log on
+  2026-10-04. It is taken in `append_to_wal` on every append, on the leader as well as the follower,
+  so that the table of epochs can be read and truncated from the sequencer's thread while the
+  reactor's thread extends it on the follower.
+- `ReplicatedRecordWriter`, added for BUG-0123. On the follower it is taken around the writing of
+  every record the leader sends, so that the reactor's thread and the sequencer's thread cannot both
+  write the log at once. The leader does not send an order to the matching engine until the follower
+  has written and acknowledged it, so this lock is on every order's round trip.
+
+**Why they are there.** A follower's log, and its table of epochs, are written from two threads: the
+reactor's thread writes the leader's records as they arrive, and the sequencer's thread writes the
+records passed to it and changes the log when it repairs it. The locks make that safe. Writing was
+meant to be handed between the two threads by a counter of records passed on, without locks, but that
+scheme had a gap, which BUG-0123 found.
+
+**What is wanted.** One thread owns the log and its table of epochs, and is the only one that ever
+writes them, so that neither lock is needed. That is the rule the rest of the framework follows. Which
+thread, and how the other learns what has been written, is to be designed as part of the clean-up of
+the design that is to come soon.
+
+**Decided (2026-10-06).** Both locks stay until then; they are correct, and uncontended in normal
+running. What they cost on the order path is to be measured, by the method in
+`docs/operations/latency_findings.md`, before the redesign.
 
 ### BUG-0122: Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism {#bug_0122}
 
