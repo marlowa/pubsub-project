@@ -15,8 +15,9 @@ The framework uses four distinct allocation strategies, each matched to its use 
 | Bump | `BumpAllocator` | No | `reset()` only |
 | Variable-size slab | `ExpandableSlabAllocator` | Alloc: owning thread only; Dealloc: any thread | Demand-driven; owning thread only |
 
-A fifth class, `GrowthReportingAllocator<T>`, is not an allocation strategy of its own. It is for
-long-lived state that grows, and is described [at the end of this document](#allocators_growth_reporting).
+Two further classes are for long-lived state that grows, rather than for messages:
+`GrowthReportingAllocator<T>` and `IncrementalRehashMap`. Both are described
+[at the end of this document](#allocators_growth_reporting).
 
 ---
 
@@ -434,6 +435,32 @@ calls a `Reporter`'s `on_large_allocation` callback for any single allocation at
 `report_threshold_bytes`. A growing container allocates its whole storage in one call and
 reallocates when it grows, so the callback fires once each time the container grows, not once
 per element. The cost is one comparison on an allocation that was already going to the heap.
+
+## IncrementalRehashMap
+
+A hash map for such state that never rehashes the whole table in one operation. A conventional
+hash map doubles by moving every entry inside whichever insert crosses the threshold, so one
+message pays for the whole table while every message behind it waits; on a reactor callback
+thread that is a stall proportional to the size of the map.
+
+When an `IncrementalRehashMap` must grow, it allocates a second, larger table and moves the
+entries across a few at a time: each insert or erase moves at most
+`MigrationSlotsPerOperation` slots, 8 by default. Lookups search both tables while a migration
+is in progress. So the worst case for one operation is a probe plus eight moves, whatever the
+size of the map. Allocating the new table still clears one byte of state per slot, which is a
+`memset` and not a rehash.
+
+It uses open addressing with linear probing, and an erased slot becomes a tombstone. Tombstones
+count towards the load factor, so a map that inserts and erases in equal measure eventually
+migrates to a table of the same size, which clears them.
+
+Any insert or erase may move entries, so any insert or erase invalidates every iterator — a
+stricter rule than `std::unordered_map`'s. Iterators give const access; `find_value()` returns a
+pointer to a stored value for changing it.
+
+It is confined to one thread, like the maps it replaces. In debug, ASan and coverage builds
+(`PUBSUB_ITC_FW_THREAD_CHECKS`) it remembers the first thread to use it and throws
+`PreconditionAssertion` if another does. The matching engine's order book uses it.
 
 ---
 
