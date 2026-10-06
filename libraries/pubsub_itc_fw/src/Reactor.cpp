@@ -56,6 +56,15 @@
 
 namespace pubsub_itc_fw {
 
+namespace {
+
+// The most commands taken from the command queue before the reactor looks at its sockets and timers
+// again. The same as the number of epoll events taken in one go, so that the queue gets no more
+// attention in one pass than the sockets do. See Reactor::process_control_commands.
+constexpr size_t commands_per_pass = 64;
+
+} // un-named namespace
+
 Reactor::~Reactor() {
     if (epoll_fd_ != -1) {
         ::close(epoll_fd_);
@@ -1037,9 +1046,10 @@ void Reactor::stop_polling_for_work() {
     polling_for_work_.store(false, std::memory_order_seq_cst);
 
     // A sender that saw "polling" a moment ago sent no wakeup, so nothing but this look will
-    // find its command.
+    // find its command. A bounded share, as everywhere: the event loop takes the rest, without
+    // waiting, on its next pass.
     if (!command_queue_.empty()) {
-        process_control_commands();
+        process_control_commands(commands_per_pass);
     }
 }
 
@@ -1051,13 +1061,6 @@ int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns,
     const int64_t deadline_ns = HighResolutionClock::now().time_since_epoch().count() + spin_ns;
 
     polling_for_work_.store(true, std::memory_order_seq_cst);
-
-    // True when a command could not be dealt with because a socket would not accept the bytes.
-    // The command stays on the queue until the connection reports itself writable again, so the
-    // queue being non-empty stops meaning "there is work to do here and now". Without this the
-    // loop below would see a queue that never empties and ask the kernel as fast as it could,
-    // which is the one thing the quiet spins exist to avoid.
-    bool send_is_blocked = false;
 
     while (lifecycle_.load(std::memory_order_acquire) == ReactorLifecycleState::Running) {
         // Commands first, and directly rather than through the wakeup descriptor. An application
@@ -1071,14 +1074,7 @@ int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns,
             // the queue no more attention than it gives the sockets.
             //
             // Whatever is left over is still there on the next pass, which is microseconds away.
-            const size_t dealt_with = process_control_commands(events.size());
-
-            // Nothing dealt with, yet the queue is not empty: a socket would not accept the
-            // bytes, and the command waits for that connection to say it is writable again.
-            // Anything else means progress was made and the rest can wait for the next pass.
-            send_is_blocked = (dealt_with == 0) && !command_queue_.empty();
-        } else {
-            send_is_blocked = false;
+            static_cast<void>(process_control_commands(commands_per_pass));
         }
 
         record_look_for_work();
@@ -1099,7 +1095,7 @@ int Reactor::poll_for_work(std::array<epoll_event, 64>& events, int64_t spin_ns,
         // down to the length of one spin.
         for (int32_t spin = 0; spin < quiet_spins; ++spin) {
             cpu_relax();
-            if (!send_is_blocked && !command_queue_.empty()) {
+            if (!command_queue_.empty()) {
                 break;
             }
         }
@@ -1132,8 +1128,17 @@ void Reactor::event_loop() {
             nfds = poll_for_work(events, spin_ns, quiet_spins);
         }
         if (nfds == 0) {
+            // Commands left over from a bounded share are work still to do, so the sockets and
+            // timers are looked at without waiting, and the next share is taken if they have
+            // nothing. Waiting here would leave those commands until something else woke the
+            // reactor: the wakeup that announced them has already been read.
+            const bool commands_left = !command_queue_.empty();
             record_look_for_work();
-            nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), spin_ns > 0 ? 0 : -1);
+            nfds = ::epoll_wait(epoll_fd_, events.data(), static_cast<int>(events.size()), (spin_ns > 0 || commands_left) ? 0 : -1);
+            if (nfds == 0 && commands_left) {
+                static_cast<void>(process_control_commands(commands_per_pass));
+                continue;
+            }
         }
         if (nfds == 0 && spin_ns > 0) {
             // Nothing after all that looking, and the lifecycle may have changed underneath.
@@ -1189,24 +1194,12 @@ void Reactor::register_command_latency_metrics() {
 }
 
 size_t Reactor::process_control_commands(size_t max_commands) {
-    // Drain any blocked SendPdu commands from both managers before touching
-    // the command queue. Each manager owns its own pending_send_ slot.
-    if (!inbound_manager_.drain_pending_send()) {
-        return 0;
-    }
-    if (!outbound_manager_.drain_pending_send()) {
-        return 0;
-    }
-
+    // A send for a connection that is still writing an earlier one waits in that connection's own
+    // queue (WaitingSendQueue), so nothing here has to stop for it: the commands for every other
+    // connection go on being taken.
     size_t dealt_with = 0;
     for (;;) {
         if (max_commands != 0 && dealt_with >= max_commands) {
-            break;
-        }
-        // A send that could not be written at once has just been kept in its manager's waiting slot.
-        // Taking another command now could keep a second send in the same slot and lose the first, so
-        // the rest stay queued, in order, until the slot drains (docs/bug_list.md, BUG-0117).
-        if (inbound_manager_.is_send_blocked() || outbound_manager_.is_send_blocked()) {
             break;
         }
         auto maybe_command = command_queue_.dequeue();
@@ -1279,37 +1272,34 @@ size_t Reactor::process_control_commands(size_t max_commands) {
             }
 
             case ReactorControlCommand::SendPdu: {
-                if (!outbound_manager_.process_send_pdu_command(command)) {
-                    if (!inbound_manager_.process_send_pdu_command(command)) {
-                        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for SendPdu",
-                                   command.connection_id_.get_value());
-                        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-                    }
+                SendDisposition disposition = outbound_manager_.process_send_pdu_command(command);
+                if (disposition == SendDisposition::NoSuchConnection) {
+                    disposition = inbound_manager_.process_send_pdu_command(command);
                 }
-                // If the command was stashed due to TCP backpressure, stop draining
-                // the command queue. The remaining commands stay in the queue and
-                // will be processed when EPOLLOUT fires (via process_control_commands
-                // called from dispatch_events after on_write_ready succeeds).
-                // Without this guard every subsequent SendPdu would overwrite the
-                // single pending_send_ slot, silently dropping all but the last PDU.
-                if (outbound_manager_.is_send_blocked() || inbound_manager_.is_send_blocked()) {
-                    // Not recorded: the bytes were stashed rather than written, and they go out
-                    // when the connection next reports itself writable.
-                    return dealt_with;
+                if (disposition == SendDisposition::NoSuchConnection) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for SendPdu",
+                               command.connection_id_.get_value());
+                    command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
                 }
-                observe_send_path(picked_up_ns, command.on_order_path_);
+                // Not recorded when the send waits: its bytes go out when the sends before it on the
+                // same connection are written, and the time it waits is the peer's, not the reactor's.
+                if (disposition == SendDisposition::Started) {
+                    observe_send_path(picked_up_ns, command.on_order_path_);
+                }
                 break;
             }
 
             case ReactorControlCommand::SendRaw: {
-                if (!outbound_manager_.process_send_raw_command(command)) {
-                    if (!inbound_manager_.process_send_raw_command(command)) {
-                        PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for SendRaw",
-                                   command.connection_id_.get_value());
-                        command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
-                    }
+                SendDisposition disposition = outbound_manager_.process_send_raw_command(command);
+                if (disposition == SendDisposition::NoSuchConnection) {
+                    disposition = inbound_manager_.process_send_raw_command(command);
                 }
-                if (!outbound_manager_.is_send_blocked() && !inbound_manager_.is_send_blocked()) {
+                if (disposition == SendDisposition::NoSuchConnection) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Warning, "Reactor::process_control_commands: unknown connection id {} for SendRaw",
+                               command.connection_id_.get_value());
+                    command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
+                }
+                if (disposition == SendDisposition::Started) {
                     observe_send_path(picked_up_ns, command.on_order_path_);
                 }
                 break;
@@ -1392,7 +1382,8 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                 // drain the wake_fd
             }
 
-            process_control_commands();
+            // A bounded share; the event loop takes whatever is left without waiting.
+            static_cast<void>(process_control_commands(commands_per_pass));
             continue;
         }
 
@@ -1463,12 +1454,6 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         if (outbound_manager_.find_by_fd(fd) == nullptr) {
                             continue; // LCOV_EXCL_LINE
                         }
-                        // TCP write space has opened up. Resume draining any commands
-                        // still queued by the application thread. Without this call the
-                        // reactor would sit idle waiting for the next wake_fd wakeup
-                        // (which never comes if the app thread has already enqueued all
-                        // its SendPdu commands and is now waiting for replies).
-                        process_control_commands();
                     }
                     if (ev & EPOLLIN) {
                         const int64_t readable_at_ns = HighResolutionClock::now().time_since_epoch().count();
@@ -1502,8 +1487,6 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
                         if (inbound_manager_.find_by_fd(fd) == nullptr) {
                             continue;
                         }
-                        // TCP write space opened; resume draining the command queue.
-                        process_control_commands();
                     }
                     if (ev & EPOLLIN) {
                         const int64_t readable_at_ns = HighResolutionClock::now().time_since_epoch().count();

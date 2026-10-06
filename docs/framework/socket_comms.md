@@ -222,12 +222,13 @@ is full. `PduFramer` handles this:
 3. `EPOLLOUT` fires → `on_write_ready()` → `continue_send()` resumes writing.
 4. On completion: `release_pending_send()` deallocates the slab chunk.
 
-Each connection manager owns one `std::optional<ReactorControlCommand> pending_send_`.
-`drain_pending_send()` is called at the start of `process_control_commands()` each tick to
-retry any stashed send that could not proceed. While a send waits there, the reactor takes no
-further command, so later sends stay queued in order and the waiting send is never replaced
-([BUG-0117](../bug_list.md#bug_0117)). A peer that stops reading therefore holds up every send the
-reactor makes, on every connection, until it reads again ([BUG-0112](../bug_list.md#bug_0112)).
+A send that arrives while its connection is still writing an earlier one waits in that
+connection's own queue (`WaitingSendQueue`), and is started, in order, when the send before it
+completes in `on_write_ready()`. Other connections are not held up. A connection whose queue
+reaches `connection_waiting_sends_maximum` sends or `connection_waiting_bytes_maximum` bytes is
+closed, with a Warning, and its application thread is told the connection was lost: a peer that
+has stopped reading would otherwise hold the sending thread's slab memory without limit. See
+`docs/framework/reactor.md` for the defaults.
 
 ### Idle Connection Timeout
 

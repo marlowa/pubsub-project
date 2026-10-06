@@ -198,7 +198,7 @@ The gateway listens for FIX connections on port 9879. The matching engine log at
 - `fast_path_threads_` written only during init/shutdown, read-only during running
 - Connect timeout checked by `on_housekeeping_tick()` via backstop timer, which calls `OutboundConnectionManager::check_for_timed_out_connections()`
 - Idle socket timeout checked by `on_housekeeping_tick()` — delegated to `InboundConnectionManager::check_for_inactive_connections()`
-- `pending_send_` — each manager owns its own `std::optional<ReactorControlCommand>` for blocked `SendPdu` commands
+- Each connection has its own queue of sends that arrived while it was still writing an earlier one (`WaitingSendQueue`); a connection whose queue is full is closed
 - ConnectionID space is shared between inbound and outbound: the Reactor allocates the ID and passes it into both managers as a parameter, avoiding coupling
 
 ### 5. OutboundConnection
@@ -228,7 +228,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 - `connections_` — `ConnectionID → unique_ptr<OutboundConnection>` (owns)
 - `connections_by_fd_` — `int fd → OutboundConnection*` (non-owning, for epoll dispatch)
 
-**`pending_send_` pattern:** `OutboundConnectionManager::drain_pending_send()` is called by the Reactor at the start of `process_control_commands()`. If a `SendPdu` cannot proceed (partial write in flight or connection not yet established), it is stashed in the manager's `pending_send_`. Cleared when `on_write_ready()` completes the send. While a send waits there the reactor takes no further command, so the waiting send is never replaced (BUG-0117), and one waiting send holds up every connection (BUG-0112).
+**Sends that have to wait:** a send that arrives while the connection is still writing an earlier one, or before the connection is established, waits in the connection's own `WaitingSendQueue`. `on_write_ready()` starts the waiting sends, in order, once the send in progress completes, and an outbound connection starts them when it becomes established. Other connections are not held up. A connection whose queue reaches its limit is closed, the application is told the connection was lost, and a reconnection is scheduled.
 
 ---
 

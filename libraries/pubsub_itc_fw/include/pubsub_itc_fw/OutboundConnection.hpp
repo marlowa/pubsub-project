@@ -20,6 +20,7 @@
 #include <pubsub_itc_fw/TcpSocket.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TlsContext.hpp>
+#include <pubsub_itc_fw/WaitingSendQueue.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -411,6 +412,30 @@ class OutboundConnection {
         return reading_paused_by_application_;
     }
 
+    /**
+     * @brief The sends asked for on this connection while it was still writing an earlier one, or
+     * before it was established.
+     */
+    [[nodiscard]] WaitingSendQueue& waiting_sends() {
+        return waiting_sends_;
+    }
+
+    /**
+     * @brief Records that the application asked to be told when this connection can take another
+     * send, at a moment when it could not: it was still writing, or had sends waiting. The connection
+     * manager tells the application once everything waiting has been written.
+     */
+    void want_writable_notification() {
+        writable_notification_wanted_ = true;
+    }
+
+    /// Whether a writable notification is owed, clearing the record of it.
+    [[nodiscard]] bool take_writable_notification_wanted() {
+        const bool wanted = writable_notification_wanted_;
+        writable_notification_wanted_ = false;
+        return wanted;
+    }
+
   private:
     // --- Identity ---
     ConnectionID id_;
@@ -458,6 +483,8 @@ class OutboundConnection {
     ApplicationThread& target_thread_;
     QuillLogger& logger_;
     bool reading_paused_by_application_{false};
+    WaitingSendQueue waiting_sends_;
+    bool writable_notification_wanted_{false};
 };
 
 } // namespaces

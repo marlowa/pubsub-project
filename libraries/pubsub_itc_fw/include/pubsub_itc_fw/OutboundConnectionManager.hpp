@@ -5,7 +5,6 @@
 
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,12 +13,12 @@
 #include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/OutboundConnection.hpp>
-#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
+#include <pubsub_itc_fw/WaitingSendQueue.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -120,13 +119,17 @@ class OutboundConnectionManager {
     void on_write_ready(OutboundConnection& conn);
 
     /**
-     * @brief Attempts to dispatch a SendPdu command to an outbound connection.
+     * @brief Sends a framed message on an outbound connection, or queues it behind the sends the
+     * connection is still writing, or until the connection is established.
+     *
+     * A connection whose queue of waiting sends is full is closed, the application is told the
+     * connection was lost, and a reconnection is scheduled: its peer is not reading what is sent to
+     * it. See WaitingSendQueue.
      *
      * @param[in] command The SendPdu command to process.
-     * @return true if the ConnectionID belongs to an outbound connection
-     *         (command was processed or stashed), false if not found here.
+     * @return What became of the send. NoSuchConnection if no outbound connection has the id.
      */
-    [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
+    [[nodiscard]] SendDisposition process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
      * @brief Attempts to satisfy a RequestWritableNotification for an outbound connection.
@@ -141,16 +144,16 @@ class OutboundConnectionManager {
     [[nodiscard]] bool process_writable_notification_command(const ReactorControlCommand& command);
 
     /**
-     * @brief Attempts to dispatch a SendRaw command to an outbound connection.
+     * @brief Sends raw bytes on an outbound TLS connection, or queues them, exactly as
+     * process_send_pdu_command() does for a framed message.
      *
-     * OutboundConnection uses PduProtocolHandler and does not support raw-bytes
-     * connections in the current implementation. This method returns false for
-     * all connection IDs so the Reactor can try the inbound manager.
+     * A plain TCP outbound connection carries framed messages only, so raw bytes for one are not
+     * accepted here.
      *
      * @param[in] command The SendRaw command to process.
-     * @return false always, since outbound connections do not support SendRaw.
+     * @return What became of the send. NoSuchConnection if no outbound TLS connection has the id.
      */
-    [[nodiscard]] bool process_send_raw_command(const ReactorControlCommand& command);
+    [[nodiscard]] SendDisposition process_send_raw_command(const ReactorControlCommand& command);
 
     /**
      * @brief Stop watching a connection for incoming data, at the application's request.
@@ -185,29 +188,6 @@ class OutboundConnectionManager {
      * @return true if the ConnectionID belongs to an outbound connection, false otherwise.
      */
     [[nodiscard]] bool process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed);
-
-    /**
-     * @brief Drains the pending_send_ slot if one is waiting.
-     *
-     * Called by the Reactor at the start of process_control_commands() before
-     * draining the command queue.
-     *
-     * @return true if pending_send_ was empty or successfully processed,
-     *         false if it is still blocked.
-     */
-    [[nodiscard]] bool drain_pending_send();
-
-    /**
-     * @brief Returns true if a command is currently stashed in pending_send_
-     *        waiting for TCP write space to free up.
-     *
-     * Used by the Reactor to stop draining the command queue when backpressure
-     * has set in, preventing commands from overwriting one another in the
-     * single pending_send_ slot.
-     */
-    [[nodiscard]] bool is_send_blocked() const {
-        return pending_send_.has_value();
-    }
 
     /**
      * @brief Attempts to tear down an outbound connection by application request.
@@ -342,18 +322,18 @@ class OutboundConnectionManager {
     // -> Warning).
     std::unordered_set<std::string> ever_established_services_;
 
-    std::optional<ReactorControlCommand> pending_send_;
-
-    // Keeps a send that cannot be written at once until its connection drains. There is one slot, and
-    // the reactor takes no further command while it is full; finding it full here would mean a send
-    // already waiting was about to be lost, so that is refused rather than done (BUG-0117).
-    void keep_waiting_send(const ReactorControlCommand& command) {
-        if (pending_send_.has_value()) {
-            throw PreconditionAssertion("OutboundConnectionManager::keep_waiting_send: a send is already waiting, and keeping another would lose it", __FILE__,
-                                        __LINE__);
-        }
-        pending_send_ = command;
-    }
+    // Starts the send at once if the connection is established and writing nothing else, and otherwise
+    // adds it to the connection's queue, closing the connection if the queue is full.
+    SendDisposition send_or_wait(OutboundConnection& conn, const WaitingSend& send);
+    // Hands a send to the connection's framer or TLS handler. Returns false if that failed and the
+    // connection was closed, in which case conn no longer exists.
+    [[nodiscard]] bool start_send(OutboundConnection& conn, const WaitingSend& send);
+    // Starts the waiting sends, oldest first, until one cannot be written at once or none is left.
+    // Returns false if the connection was closed, in which case conn no longer exists.
+    [[nodiscard]] bool start_waiting_sends(OutboundConnection& conn);
+    // Tells the application the connection can take another send, if it asked to be told and the
+    // connection is established and now has nothing left to write.
+    void deliver_owed_writable_notification(OutboundConnection& conn);
 };
 
 } // namespaces

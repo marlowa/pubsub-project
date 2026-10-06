@@ -34,11 +34,10 @@
  *   DoubleSendThenTeardown
  *     The connector sends two 2 MB DataQuerys back-to-back in
  *     on_connection_established with a small send buffer, guaranteeing the
- *     reactor stashes the second into pending_send_ while the first is still
- *     blocked. The listener closes immediately, triggering teardown_connection
- *     while both conn.has_pending_send() and pending_send_.has_value() are
- *     true. This covers the pending-send cleanup branches in
- *     teardown_connection and the drain_pending_send body.
+ *     second waits in the connection's queue while the first is still being
+ *     written. The listener closes immediately, triggering teardown_connection
+ *     while conn.has_pending_send() is true and the second send is waiting.
+ *     This covers teardown_connection's cleanup of both.
  */
 
 #include <atomic>
@@ -756,8 +755,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, ListenerClosesConnection) {
 //   1. The reactor processes the first SendPdu, finds has_pending_data()
 //      true, and calls set_pending_send -- conn.has_pending_send() is true.
 //   2. The reactor processes the second SendPdu while the first is still
-//      blocked, and stashes it into pending_send_ -- pending_send_.has_value()
-//      is true.
+//      being written, and the second waits in the connection's queue.
 // Used by DoubleSendThenTeardown.
 class DoubleSendConnectorThread : public ApplicationThread {
   public:
@@ -834,11 +832,10 @@ class DoubleSendConnectorThread : public ApplicationThread {
 // Test: connector sends two large PDUs back-to-back with a small send
 // buffer, then the listener closes immediately on receiving the first.
 // This covers:
-//   - OutboundConnectionManager: conn.has_pending_send() branch in
-//     teardown_connection (lines 451-452)
-//   - OutboundConnectionManager: pending_send_.has_value() branch in
-//     teardown_connection (lines 457-459)
-//   - OutboundConnectionManager: drain_pending_send body (lines 364-375)
+//   - OutboundConnectionManager: the conn.has_pending_send() branch in
+//     teardown_connection
+//   - OutboundConnectionManager: teardown_connection returning the chunk of
+//     a send still waiting in the connection's queue
 TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
     // Listener closes the connection immediately on receiving any PDU.
     const ServiceRegistry listener_registry;
@@ -858,7 +855,7 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
 
     // Small send buffer on the connector forces the first PDU to block,
     // guaranteeing set_pending_send is called before the second SendPdu
-    // command is processed -- which then stashes it into pending_send_.
+    // command is processed -- which then waits in the connection's queue.
     ServiceRegistry connector_registry;
     connector_registry.add("listener", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
 
@@ -879,8 +876,8 @@ TEST_F(PduProtocolHandlerIntegrationTest, DoubleSendThenTeardown) {
 
     // The listener closes after receiving the first PDU (or any fragment of it).
     // The connector's teardown_connection fires while:
-    //   conn.has_pending_send() is true  (first PDU still blocked), and
-    //   pending_send_.has_value() is true (second PDU stashed).
+    //   conn.has_pending_send() is true (first PDU still being written), and
+    //   the second PDU is waiting in the connection's queue.
     EXPECT_TRUE(wait_for([&]() { return connector_thread->connection_lost.load(std::memory_order_acquire); }, 15000))
         << "Connector: ConnectionLost not received after listener teardown";
 

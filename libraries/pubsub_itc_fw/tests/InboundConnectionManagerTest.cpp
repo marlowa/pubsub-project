@@ -3,21 +3,19 @@
 
 /**
  * @file InboundConnectionManagerTest.cpp
- * @brief Tests for inbound connection teardown while a send is stashed.
+ * @brief Tests for inbound connection teardown while a send is waiting.
  *
  * Tests in this file:
  *
  *   TeardownFreesAStashedRawSendRatherThanANullPduPointer
  *     Accepts a real loopback connection on a RawBytes listener, blocks its
- *     socket so a first raw send cannot complete, sends a second so that the
- *     command is stashed in pending_send_, and then tears the connection down
- *     as a peer reset would. This is the sequence that stopped the FIX order
- *     gateway on 2026-09-06 (BUG-0079): pending_send_ holds a whole
- *     ReactorControlCommand, whose SendPdu and SendRaw tags carry the chunk in
- *     different fields and leave the other null, and teardown_connection read
- *     the PDU field whatever the tag said. Every FIX byte to a member is sent
- *     raw, so the pointer was always null and the deallocate precondition
- *     always fired.
+ *     socket so a raw send cannot complete, sends again so that the second
+ *     send waits in the connection's queue, and then tears the connection down
+ *     as a peer reset would. Teardown must return the waiting send's chunk to
+ *     its allocator, and must use the raw chunk pointer: a SendRaw command
+ *     carries its chunk in raw_chunk_ptr_ and leaves pdu_chunk_ptr_ null, and
+ *     the allocator refuses a null pointer with an exception that would stop
+ *     the process (BUG-0079). Every FIX byte to a member is sent raw.
  *
  *   PausingAndResumingReadingSetTheConnectionsFlag,
  *   PausingOrResumingAConnectionThisManagerDoesNotHoldReportsFalse,
@@ -197,28 +195,29 @@ TEST_F(InboundConnectionManagerTest, TeardownFreesAStashedRawSendRatherThanANull
     ASSERT_TRUE(accept_one_connection(conn_id)) << "Failed to accept a loopback connection";
 
     InboundConnectionManager& manager = reactor_->inbound_manager();
+    InboundConnection* conn = manager.find_by_id(conn_id);
+    ASSERT_NE(conn, nullptr);
 
     // Fill the socket until a send cannot complete, then send once more. The
-    // second command is stashed in pending_send_ rather than written.
+    // second send waits in the connection's queue rather than being written.
     constexpr uint32_t chunk_bytes = 256 * 1024;
-    for (int attempt = 0; attempt < 8 && !manager.is_send_blocked(); ++attempt) {
+    for (int attempt = 0; attempt < 8 && conn->waiting_sends().empty(); ++attempt) {
         const ReactorControlCommand command = make_raw_send(conn_id, chunk_bytes);
-        ASSERT_TRUE(manager.process_send_raw_command(command)) << "process_send_raw_command did not find connection " << conn_id.get_value();
+        ASSERT_NE(manager.process_send_raw_command(command), SendDisposition::NoSuchConnection)
+            << "process_send_raw_command did not find connection " << conn_id.get_value();
     }
 
-    if (!manager.is_send_blocked()) {
-        // The kernel took everything offered. Nothing is stashed, so the
+    if (conn->waiting_sends().empty()) {
+        // The kernel took everything offered. Nothing waits, so the
         // condition this test is about does not exist on this machine.
         manager.teardown_connection(conn_id, "cleanup", DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent});
-        GTEST_SKIP() << "Socket buffers absorbed every send -- no command was stashed";
+        GTEST_SKIP() << "Socket buffers absorbed every send -- no send had to wait";
     }
 
     const int slabs_before = allocator_->slab_count();
 
-    // The peer resets the connection while the send is stashed. Teardown must
-    // free the chunk the stashed command actually carries. Reading the PDU
-    // field of a SendRaw command yields nullptr, and deallocate refuses that:
-    // the exception escapes the reactor's event loop and stops the process.
+    // The peer resets the connection while the send is waiting. Teardown must
+    // free the chunk the waiting send actually carries.
     EXPECT_NO_THROW(manager.teardown_connection(conn_id, "socket error on inbound connection: Connection reset by peer",
                                                 DeliverLostEventFlag{DeliverLostEventFlag::SuppressLostEvent}));
 
@@ -226,7 +225,7 @@ TEST_F(InboundConnectionManagerTest, TeardownFreesAStashedRawSendRatherThanANull
     // not need a new slab.
     auto [slab_id, chunk] = allocator_->allocate(chunk_bytes);
     EXPECT_NE(chunk, nullptr);
-    EXPECT_LE(allocator_->slab_count(), slabs_before) << "Slab count grew after teardown -- the stashed chunk was not freed";
+    EXPECT_LE(allocator_->slab_count(), slabs_before) << "Slab count grew after teardown -- the waiting chunk was not freed";
     allocator_->deallocate(slab_id, chunk);
 }
 

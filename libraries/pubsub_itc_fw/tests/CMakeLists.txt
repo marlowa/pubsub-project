@@ -52,6 +52,7 @@ add_executable(pubsub_itc_fw_tests
     CatchUpTallyTest.cpp
     FileSystemUtilsTest.cpp
     FixedCapacityRingBufferTest.cpp
+    WaitingSendQueueTest.cpp
     WalWriterReaderTest.cpp
     WallClockTest.cpp
 )

@@ -504,13 +504,16 @@ class Reactor : public ThreadLookupInterface {
      * returns to the caller with commands still queued, and the caller goes back to the other
      * sources before coming here again.
      *
-     * Draining without a bound is right where this is reached from the wakeup descriptor,
-     * because that is already one event among the batch that epoll returned, and the rest of
-     * the batch is dealt with immediately afterwards.
+     * Every call in the event loop passes a bound, including the one made when the wakeup
+     * descriptor fires. A send to a connection that is still writing an earlier one costs almost
+     * nothing, because it only joins that connection's queue of waiting sends, so an application
+     * thread sending to a peer that has stopped reading can keep the queue full indefinitely.
+     * Unbounded, this function would then never return, and the reactor would neither write to
+     * the connections whose sockets have room nor fire its timers. The event loop takes what is
+     * left over on its next pass, without waiting.
      *
-     * @return How many commands were dealt with. Zero alongside a queue that is not empty means
-     *         a socket would not accept the bytes and the command is waiting for the connection
-     *         to report itself writable again; there is no point coming straight back.
+     * @return How many commands were dealt with. Every command taken is dealt with: a send that
+     *         cannot be written at once waits in its connection's own queue.
      */
     size_t process_control_commands(size_t max_commands = 0);
 

@@ -22,6 +22,7 @@
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/StringUtils.hpp>
 #include <pubsub_itc_fw/TcpConnector.hpp>
+#include <pubsub_itc_fw/WaitingSendQueue.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -230,6 +231,11 @@ void OutboundConnectionManager::on_connect_ready(OutboundConnection& conn) {
         if (thread != nullptr) {
             thread->enqueue(EventMessage::create_connection_established_event(ConnectionID{conn.id().get_value(), conn.service_name()}));
         }
+
+        // Sends asked for before the connection was established waited for it, and go now, in order.
+        if (start_waiting_sends(conn)) {
+            deliver_owed_writable_notification(conn);
+        }
     }
 }
 
@@ -275,6 +281,12 @@ void OutboundConnectionManager::on_data_ready(OutboundConnection& conn) {
             if (thread != nullptr) {
                 thread->enqueue(EventMessage::create_connection_established_event(ConnectionID{id.get_value(), service_name}));
             }
+
+            // Sends asked for during the handshake waited for it, and go now, in order.
+            if (!start_waiting_sends(conn)) {
+                return;
+            }
+            deliver_owed_writable_notification(conn);
         }
 
         const bool needs_epoll_mod = pause_reads || conn.protocol_handler()->has_pending_send();
@@ -342,7 +354,18 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
             return;
         }
 
+        if (conn.protocol_handler()->has_pending_send()) {
+            return;
+        }
+        // The send in progress is written; the sends that waited behind it are started next, in order.
+        // Before the handshake completes there is nothing of the application's to start.
+        if (conn.is_established() && !start_waiting_sends(conn)) {
+            return;
+        }
         if (!conn.protocol_handler()->has_pending_send()) {
+            // Stop watching for room to write. Set here rather than through rearm(), which leaves a
+            // connection still in its handshake alone: a connection left watched for room to write
+            // with nothing to write would wake the reactor continuously.
             const int fd = conn.get_fd();
             epoll_event ev{};
             ev.events = EPOLLERR;
@@ -351,6 +374,7 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
             }
             ev.data.fd = fd;
             ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+            deliver_owed_writable_notification(conn);
         }
         return;
     }
@@ -368,18 +392,19 @@ void OutboundConnectionManager::on_write_ready(OutboundConnection& conn) {
         return;
     }
 
-    if (!conn.framer()->has_pending_data()) {
-        conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
-        conn.clear_pending_send();
+    if (conn.framer()->has_pending_data()) {
+        return;
+    }
+    conn.current_allocator()->deallocate(conn.current_slab_id(), conn.current_chunk_ptr());
+    conn.clear_pending_send();
 
-        const int fd = conn.get_fd();
-        epoll_event ev{};
-        ev.events = EPOLLERR;
-        if (wants_reads(conn)) {
-            ev.events |= EPOLLIN;
-        }
-        ev.data.fd = fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+    // The send in progress is written; the sends that waited behind it are started next, in order.
+    if (!start_waiting_sends(conn)) {
+        return;
+    }
+    if (!conn.has_pending_send()) {
+        rearm(conn);
+        deliver_owed_writable_notification(conn);
     }
 }
 
@@ -392,119 +417,117 @@ bool OutboundConnectionManager::process_writable_notification_command(const Reac
     }
 
     OutboundConnection& conn = *it->second;
+    conn.want_writable_notification();
+    deliver_owed_writable_notification(conn);
+    return true;
+}
+
+void OutboundConnectionManager::deliver_owed_writable_notification(OutboundConnection& conn) {
+    // Not before the connection is established, nor while anything is left to write: the application
+    // asked so as to be paced by its peer, and telling it now would let it build a queue the peer is
+    // not reading.
+    if (!conn.is_established() || conn.has_pending_send() || !conn.waiting_sends().empty() || !conn.take_writable_notification_wanted()) {
+        return;
+    }
     auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
     if (thread != nullptr) {
-        thread->enqueue(EventMessage::create_connection_writable_event(cid));
+        thread->enqueue(EventMessage::create_connection_writable_event(ConnectionID{conn.id().get_value(), conn.service_name()}));
     }
-    return true;
 }
 
-bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCommand& command) {
-    const ConnectionID cid = command.connection_id_;
-
-    auto it = connections_.find(cid);
+SendDisposition OutboundConnectionManager::process_send_pdu_command(const ReactorControlCommand& command) {
+    auto it = connections_.find(command.connection_id_);
     if (it == connections_.end()) {
-        return false;
+        return SendDisposition::NoSuchConnection;
+    }
+    const WaitingSend send{command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_};
+    return send_or_wait(*it->second, send);
+}
+
+SendDisposition OutboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command) {
+    auto it = connections_.find(command.connection_id_);
+    if (it == connections_.end() || !it->second->is_tls()) {
+        // A plain TCP outbound connection carries framed messages, not raw bytes.
+        return SendDisposition::NoSuchConnection;
+    }
+    const WaitingSend send{command.allocator_, command.slab_id_, command.raw_chunk_ptr_, command.raw_byte_count_};
+    return send_or_wait(*it->second, send);
+}
+
+SendDisposition OutboundConnectionManager::send_or_wait(OutboundConnection& conn, const WaitingSend& send) {
+    // A send waits if the connection is not yet established, if it is still writing an earlier send,
+    // or if others are already waiting, so that they are written in the order asked.
+    if (conn.is_established() && !conn.has_pending_send() && conn.waiting_sends().empty()) {
+        static_cast<void>(start_send(conn, send));
+        return SendDisposition::Started;
+    }
+    if (conn.waiting_sends().add(send, config_.connection_waiting_sends_maximum, config_.connection_waiting_bytes_maximum)) {
+        return SendDisposition::Waiting;
     }
 
-    OutboundConnection& conn = *it->second;
+    // The peer is not reading what is sent to it, or the connection has not been established in all
+    // the time these sends took to be asked for. It is closed rather than allowed to hold memory
+    // without limit, the application is told it was lost, and a reconnection is scheduled.
+    send.allocator->deallocate(send.slab_id, send.chunk);
+    const std::string service_name = conn.service_name();
+    const ThreadID requesting_thread_id = conn.requesting_thread_id();
+    const std::string reason = fmt::format("connection {} to service '{}' closed: it is not reading what is sent to it -- {} sends of {} bytes in all "
+                                           "are waiting to be written, the most allowed",
+                                           conn.id().get_value(), service_name, conn.waiting_sends().size(), conn.waiting_sends().bytes());
+    PUBSUB_LOG(logger_, FwLogLevel::Warning, "OutboundConnectionManager::send_or_wait: {}", reason);
+    teardown_connection(conn.id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+    schedule_retry(service_name, requesting_thread_id);
+    return SendDisposition::Waiting;
+}
 
-    if (!conn.is_established()) {
-        PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                   "OutboundConnectionManager::process_send_pdu_command: outbound connection {} "
-                   "not yet established",
-                   cid.get_value());
-        keep_waiting_send(command);
+bool OutboundConnectionManager::start_send(OutboundConnection& conn, const WaitingSend& send) {
+    const std::string service_name = conn.service_name();
+    const ThreadID requesting_thread_id = conn.requesting_thread_id();
+    const ConnectionID conn_id = conn.id();
+
+    if (conn.is_tls()) {
+        // The TLS handler encrypts the bytes into its own buffer and returns the chunk at once.
+        auto [ok, send_error] = conn.protocol_handler()->send_prebuilt(send.allocator, send.slab_id, send.chunk, send.byte_count);
+        if (!ok) {
+            PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::start_send: TLS send error on service '{}': {}", service_name, send_error);
+            teardown_connection(conn_id, send_error, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+            schedule_retry(service_name, requesting_thread_id);
+            return false;
+        }
+        if (conn.protocol_handler()->has_pending_send()) {
+            rearm(conn);
+        }
         return true;
     }
 
-    if (conn.has_pending_send()) {
-        keep_waiting_send(command);
-        return true;
-    }
-
-    const uint32_t total_bytes = static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_;
-    const uint8_t* frame_ptr = static_cast<const uint8_t*>(command.pdu_chunk_ptr_);
-    auto [ok, send_error] = conn.framer()->send_prebuilt(frame_ptr, total_bytes);
-
+    auto [ok, send_error] = conn.framer()->send_prebuilt(static_cast<const uint8_t*>(send.chunk), send.byte_count);
     if (!ok) {
-        const std::string service_name = conn.service_name();
-        const ThreadID requesting_thread_id = conn.requesting_thread_id();
-        const ConnectionID conn_id = conn.id();
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_send_pdu_command: send error to '{}': {}", service_name, send_error);
-        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::start_send: send error to '{}': {}", service_name, send_error);
+        send.allocator->deallocate(send.slab_id, send.chunk);
         teardown_connection(conn_id, send_error, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
         schedule_retry(service_name, requesting_thread_id);
-        return true;
+        return false;
     }
-
     if (conn.framer()->has_pending_data()) {
-        conn.set_pending_send(command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
-        const int conn_fd = conn.get_fd();
-        epoll_event ev{};
-        ev.events = EPOLLOUT | EPOLLERR;
-        if (wants_reads(conn)) {
-            ev.events |= EPOLLIN;
-        }
-        ev.data.fd = conn_fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
+        // Not all of it could be written. The connection keeps the chunk until the rest is, and is
+        // watched for room to write it.
+        conn.set_pending_send(send.allocator, send.slab_id, send.chunk, send.byte_count);
+        rearm(conn);
     } else {
-        command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
+        send.allocator->deallocate(send.slab_id, send.chunk);
     }
-
     return true;
 }
 
-bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command) {
-    const ConnectionID cid = command.connection_id_;
-
-    auto it = connections_.find(cid);
-    if (it == connections_.end()) {
-        return false;
-    }
-
-    const OutboundConnection& conn = *it->second;
-    if (!conn.is_tls()) {
-        // Plain-TCP outbound connections use PDU framing, not raw bytes.
-        return false;
-    }
-
-    if (!conn.is_established()) {
-        // TLS handshake still in progress -- stash until established.
-        keep_waiting_send(command);
-        return true;
-    }
-
-    if (conn.protocol_handler()->has_pending_send()) {
-        keep_waiting_send(command);
-        return true;
-    }
-
-    auto [ok, send_error] = conn.protocol_handler()->send_prebuilt(command.allocator_, command.slab_id_, command.raw_chunk_ptr_, command.raw_byte_count_);
-    if (!ok) {
-        // send_prebuilt() already deallocated the slab chunk for TLS.
-        const std::string service_name = conn.service_name();
-        const ThreadID requesting_thread_id = conn.requesting_thread_id();
-        const ConnectionID conn_id = conn.id();
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "OutboundConnectionManager::process_send_raw_command: TLS send error on service '{}': {}", service_name,
-                   send_error);
-        teardown_connection(conn_id, send_error, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
-        schedule_retry(service_name, requesting_thread_id);
-        return true;
-    }
-
-    if (conn.protocol_handler()->has_pending_send()) {
-        const int conn_fd = conn.get_fd();
-        epoll_event ev{};
-        ev.events = EPOLLERR;
-        if (wants_reads(conn)) {
-            ev.events |= EPOLLIN;
+bool OutboundConnectionManager::start_waiting_sends(OutboundConnection& conn) {
+    WaitingSendQueue& waiting = conn.waiting_sends();
+    while (!waiting.empty() && !conn.has_pending_send()) {
+        const WaitingSend next = waiting.front();
+        waiting.pop_front();
+        if (!start_send(conn, next)) {
+            return false;
         }
-        ev.events |= EPOLLOUT;
-        ev.data.fd = conn_fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
     }
-
     return true;
 }
 
@@ -532,31 +555,6 @@ bool OutboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_
         ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
     }
     return true;
-}
-
-bool OutboundConnectionManager::drain_pending_send() {
-    if (!pending_send_.has_value()) {
-        return true;
-    }
-
-    const ReactorControlCommand command = *pending_send_;
-    pending_send_.reset();
-
-    if (command.as_tag() == ReactorControlCommand::SendRaw) {
-        const bool processed = process_send_raw_command(command);
-        if (!processed) {
-            // Connection vanished while the command was stashed -- deallocate.
-            command.allocator_->deallocate(command.slab_id_, command.raw_chunk_ptr_);
-        }
-    } else {
-        const bool processed = process_send_pdu_command(command);
-        if (!processed) {
-            command.allocator_->deallocate(command.slab_id_, command.pdu_chunk_ptr_);
-        }
-    }
-
-    // If still blocked, the processing method will have re-stashed the command.
-    return !pending_send_.has_value();
 }
 
 bool OutboundConnectionManager::process_disconnect_command(ConnectionID id) {
@@ -709,13 +707,9 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
         }
     }
 
-    // Clear pending_send_ if it refers to this connection.
-    if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
-        // The slab in the stashed command has not yet been passed to send_prebuilt
-        // for either PDU or TLS sends, so it must be deallocated here.
-        pending_send_->allocator_->deallocate(pending_send_->slab_id_, pending_send_->chunk_ptr());
-        pending_send_.reset();
-    }
+    // Return the chunks of the sends still waiting for this connection; they will never be written.
+    // None of them has been handed to the framer or the TLS handler yet.
+    conn.waiting_sends().release_all();
 
     // Deregister from epoll and remove from fd map.
     const int fd = conn.get_fd();

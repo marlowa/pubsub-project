@@ -140,8 +140,8 @@ but the client never received the Logon response.
 the TLS handshake. If the flush returned `EAGAIN` (TCP send buffer full), `has_pending_send()`
 became true. The `pause_reads` branch checked `has_pending_send()` and armed `EPOLLOUT`
 correctly, but the non-pause path had no such check — `EPOLLOUT` was never registered.
-Any subsequent `SendRaw` stashed itself in `pending_send_` and was never retried because
-`EPOLLOUT` never fired.
+Any later send waited behind the unsent ciphertext and was never started, because `EPOLLOUT`
+never fired.
 
 **Fix:** Added `else if (conn.handler()->has_pending_send())` to `on_data_ready()` that
 registers `EPOLLIN | EPOLLOUT | EPOLLERR` whenever there is pending outbound ciphertext,

@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -19,13 +18,13 @@
 #include <pubsub_itc_fw/InboundConnection.hpp>
 #include <pubsub_itc_fw/InboundListener.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
-#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
+#include <pubsub_itc_fw/WaitingSendQueue.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -180,20 +179,26 @@ class InboundConnectionManager {
     void check_for_inactive_connections();
 
     /**
-     * @brief Attempts to dispatch a SendPdu command to an inbound connection.
+     * @brief Sends a framed message on an inbound connection, or queues it behind the sends the
+     * connection is still writing.
+     *
+     * A connection whose queue of waiting sends is full is closed, and the application is told the
+     * connection was lost: its peer is not reading what is sent to it. See WaitingSendQueue.
      *
      * @param[in] command The SendPdu command to process.
-     * @return true if the ConnectionID belongs to an inbound connection
-     *         (command was processed or stashed), false if not found here.
+     * @return What became of the send. NoSuchConnection if no inbound connection has the id.
      */
-    [[nodiscard]] bool process_send_pdu_command(const ReactorControlCommand& command);
+    [[nodiscard]] SendDisposition process_send_pdu_command(const ReactorControlCommand& command);
 
     /**
      * @brief Attempts to satisfy a RequestWritableNotification for an inbound connection.
      *
      * If the ConnectionID belongs to an inbound connection, enqueues a
-     * ConnectionWritable event to its owning ApplicationThread. Reached (per the
-     * reactor's command loop) only when the connection can accept another frame.
+     * ConnectionWritable event to its owning ApplicationThread once the connection
+     * has nothing left to write: at once if it is idle, and otherwise when the send
+     * in progress and every send waiting behind it have been written. An application
+     * that sends one message and then asks to be told before sending the next is so
+     * paced by its peer, and builds no queue of waiting sends.
      *
      * @param[in] command The RequestWritableNotification command.
      * @return true if the ConnectionID belongs to an inbound connection, false if not.
@@ -201,13 +206,13 @@ class InboundConnectionManager {
     [[nodiscard]] bool process_writable_notification_command(const ReactorControlCommand& command);
 
     /**
-     * @brief Attempts to dispatch a SendRaw command to an inbound connection.
+     * @brief Sends raw bytes on an inbound connection, or queues them behind the sends the connection
+     * is still writing, exactly as process_send_pdu_command() does for a framed message.
      *
      * @param[in] command The SendRaw command to process.
-     * @return true if the ConnectionID belongs to an inbound connection
-     *         (command was processed or stashed), false if not found here.
+     * @return What became of the send. NoSuchConnection if no inbound connection has the id.
      */
-    [[nodiscard]] bool process_send_raw_command(const ReactorControlCommand& command);
+    [[nodiscard]] SendDisposition process_send_raw_command(const ReactorControlCommand& command);
 
     /**
      * @brief Stop watching a connection for incoming data, at the application's request.
@@ -242,29 +247,6 @@ class InboundConnectionManager {
      * @return true if the ConnectionID belongs to an inbound connection, false otherwise.
      */
     [[nodiscard]] bool process_commit_raw_bytes(ConnectionID id, int64_t bytes_consumed);
-
-    /**
-     * @brief Drains the pending_send_ slot if one is waiting.
-     *
-     * Called by the Reactor at the start of process_control_commands() before
-     * draining the command queue.
-     *
-     * @return true if pending_send_ was empty or successfully processed,
-     *         false if it is still blocked.
-     */
-    [[nodiscard]] bool drain_pending_send();
-
-    /**
-     * @brief Returns true if a command is currently stashed in pending_send_
-     *        waiting for TCP write space to free up.
-     *
-     * Used by the Reactor to stop draining the command queue when backpressure
-     * has set in, preventing commands from overwriting one another in the
-     * single pending_send_ slot.
-     */
-    [[nodiscard]] bool is_send_blocked() const {
-        return pending_send_.has_value();
-    }
 
     /**
      * @brief Attempts to tear down an inbound connection by application request.
@@ -315,6 +297,19 @@ class InboundConnectionManager {
     // Re-register a connection with epoll for what it now wants: incoming data, a send in flight, errors.
     void rearm(InboundConnection& conn);
 
+    // Starts the send at once if the connection is writing nothing else, and otherwise adds it to the
+    // connection's queue, closing the connection if the queue is full.
+    SendDisposition send_or_wait(InboundConnection& conn, const WaitingSend& send);
+    // Hands a send to the connection's protocol handler. Returns false if that failed and the
+    // connection was closed, in which case conn no longer exists.
+    [[nodiscard]] bool start_send(InboundConnection& conn, const WaitingSend& send);
+    // Starts the waiting sends, oldest first, until one cannot be written at once or none is left.
+    // Returns false if the connection was closed, in which case conn no longer exists.
+    [[nodiscard]] bool start_waiting_sends(InboundConnection& conn);
+    // Tells the application the connection can take another send, if it asked to be told and the
+    // connection now has nothing left to write.
+    void deliver_owed_writable_notification(InboundConnection& conn);
+
     int epoll_fd_;
     const ReactorConfiguration& config_;
     ExpandableSlabAllocator& inbound_allocator_;
@@ -330,19 +325,6 @@ class InboundConnectionManager {
     std::vector<int> listener_fds_in_registration_order_;
     std::unordered_map<ConnectionID, std::unique_ptr<InboundConnection>> connections_;
     std::unordered_map<int, InboundConnection*> connections_by_fd_;
-
-    std::optional<ReactorControlCommand> pending_send_;
-
-    // Keeps a send that cannot be written at once until its connection drains. There is one slot, and
-    // the reactor takes no further command while it is full; finding it full here would mean a send
-    // already waiting was about to be lost, so that is refused rather than done (BUG-0117).
-    void keep_waiting_send(const ReactorControlCommand& command) {
-        if (pending_send_.has_value()) {
-            throw PreconditionAssertion("InboundConnectionManager::keep_waiting_send: a send is already waiting, and keeping another would lose it", __FILE__,
-                                        __LINE__);
-        }
-        pending_send_ = command;
-    }
 };
 
 } // namespaces

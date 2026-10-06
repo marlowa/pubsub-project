@@ -45,11 +45,14 @@ The reactor's main loop calls `epoll_wait` and dispatches each ready event:
 3. **Established connection fds** — dispatched by fd to the owning manager
    (`InboundConnectionManager` or `OutboundConnectionManager`) via the `connections_by_fd_`
    maps.
-4. **Control command queue** — `process_control_commands()` drains the `ReactorControlCommand`
-   queue from application threads, calling the appropriate manager method for each command.
-
-`process_control_commands()` calls `OutboundConnectionManager::drain_pending_send()` at its
-start to retry any `SendPdu` that was stashed because a partial write was in flight.
+4. **Control command queue** — `process_control_commands()` takes commands from the
+   `ReactorControlCommand` queue that application threads fill, calling the appropriate manager
+   method for each command. It takes at most 64 at a time, the same as the number of epoll events
+   taken in one go, and the loop then looks at the sockets and timers again, without waiting, before
+   taking the next 64. Without that bound, an application thread sending faster than the reactor can
+   carry out its sends would keep the reactor in this queue, and its timers and sockets would go
+   unserved: measured, a timer went 3.8 seconds without firing while a thread sent to a peer that had
+   stopped reading.
 
 ---
 
@@ -168,14 +171,25 @@ Each `OutboundConnection` has two lifecycle phases:
    `continue_send()` → deallocate slab when complete.
 7. `Disconnect` or peer close → `teardown_connection()` → deliver `ConnectionLost`.
 
-**`pending_send_` pattern:** if a `SendPdu` cannot proceed (partial write in flight or
-connection not yet established), the command is stashed in the manager's
-`std::optional<ReactorControlCommand> pending_send_`. `drain_pending_send()` is called at
-the start of `process_control_commands()` each tick to retry it. While a send waits there, the
-reactor takes no further command: the rest stay queued, in order, and the waiting send is never
-replaced by another, which would lose it ([BUG-0117](../bug_list.md#bug_0117)). The consequence is
-that one waiting send holds up every send the reactor would otherwise make, on any connection
-([BUG-0112](../bug_list.md#bug_0112)).
+**Sends that have to wait:** a connection writes one send at a time. If a send arrives while the
+connection is still writing an earlier one, or before an outbound connection is established, it
+waits in that connection's own queue (`WaitingSendQueue`), and is started, in order, as soon as the
+sends before it are written. The reactor goes on taking commands for every other connection, so a
+peer that reads slowly holds up only the sends to itself.
+
+A connection's queue holds at most `connection_waiting_sends_maximum` sends (65,536 by default) and
+`connection_waiting_bytes_maximum` bytes (32 MiB by default). When a send would take it past either,
+the connection is closed, a Warning is logged saying the peer is not reading what is sent to it, and
+the application thread is told the connection was lost. For an outbound connection a reconnection is
+scheduled, as for any other loss. The queue takes no memory until a send first has to wait, and
+returns it when it empties.
+
+An application thread can ask to be told when a connection can take another send
+(`request_writable_notification`). It is told only once the connection has nothing left to write:
+at once if the connection is idle, and otherwise when the send in progress and every send waiting
+behind it have been written. A thread that sends one message and then asks before sending the next
+is therefore paced by its peer and never builds a queue. The topic publisher paces itself to each
+subscriber this way, so that a slow subscriber's backlog stays in the log rather than in memory.
 
 ---
 
@@ -229,8 +243,9 @@ filling (docs/availability/a_follower_behind_does_not_lead.md).
   pausing because its own storage is filling must leave room for them.
 - Epoll is level-triggered, so data that arrived during the pause is reported, and read, as soon as
   reading resumes.
-- A peer whose sends cannot complete can stop sending on its other connections too
-  ([BUG-0112](../bug_list.md#bug_0112)), so a pause should be short.
+- The peer's sends to a paused connection wait, once the kernel's buffers are full, in the peer's
+  queue for that connection, and if the pause lasts until that queue reaches its limit the peer closes
+  the connection ([BUG-0112](../bug_list.md#bug_0112)). So a pause should be short.
 
 `integration_tests/PauseReadingIntegrationTest.cpp` tests it with real reactors and sockets: a paused
 inbound or outbound connection delivers nothing more while paused and everything, once and in order,

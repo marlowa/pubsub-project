@@ -143,10 +143,13 @@ arrives, the leader sends the held commands to the matching engine and then read
 log, in order, as the engine's own catch-up does. Nothing is lost or reordered, memory stays bounded, and
 nothing is acted on before the confirmation.
 
-A long stop has a cost beyond the sequencer. A gateway whose sends to the sequencer cannot complete stops
-sending anything at all, to members as well as to both sequencers, once the kernel's buffers for that
-connection are full ([BUG-0112](../bug_list.md#bug_0112)). A stop of a few milliseconds is absorbed by
-those buffers; a long one freezes every gateway.
+A long stop has a cost beyond the sequencer. Once the kernel's buffers for a gateway's connection to the
+sequencer are full, the gateway's further sends to that sequencer wait in the connection's own queue,
+and its sends to members and to the other sequencer go on as before. If the stop lasts until that queue
+reaches its limit, 65,536 sends or 32 MiB by default, the gateway closes the connection and connects
+again, and the commands that were waiting are lost from that connection
+([BUG-0112](../bug_list.md#bug_0112)). A stop of a few milliseconds is absorbed by the kernel's buffers;
+a long one costs each gateway its connection to the stopped sequencer.
 
 **Every leadership starts with "no".** A leader does not know, when it takes the lead, whether its
 follower holds every record it holds: its own log may hold records it wrote in an earlier leadership

@@ -14,6 +14,7 @@ add_executable(pubsub_itc_fw_integration_tests
     PduProtocolHandlerIntegrationTest.cpp
     RawBytesBackPressureIntegrationTest.cpp
     RawBytesProtocolHandlerIntegrationTest.cpp
+    SlowReaderIntegrationTest.cpp
     StatusQueryResponseTest.cpp
     TlsOutboundIntegrationTest.cpp
     TlsProtocolHandlerIntegrationTest.cpp
@@ -58,6 +59,7 @@ message(STATUS "  Added integration test: TlsProtocolHandlerIntegrationTest")
 message(STATUS "  Added integration test: WalExternalSubscriberIntegrationTest")
 message(STATUS "  Added integration test: TopicPubSubIntegrationTest")
 message(STATUS "  Added integration test: WritableNotificationIntegrationTest")
+message(STATUS "  Added integration test: SlowReaderIntegrationTest")
 
 # Install integration test executable -> bin
 install(TARGETS pubsub_itc_fw_integration_tests

@@ -62,14 +62,13 @@
  *     freed, covering the conn.has_pending_send() branch in
  *     OutboundConnectionManager::teardown_connection (lines 451-452).
  *
- *   DrainPendingSendDispatchesStashedCommand
+ *   ASendThatWaitsIsStartedWhenTheOneBeforeItIsWritten
  *     Establishes a real outbound connection, sends a large PDU to fill the
  *     kernel send buffer so has_pending_data() is true, then calls
  *     process_send_pdu_command() with a second PDU while the first is still
- *     blocked -- this stashes the second into pending_send_. Drains the peer
- *     socket, drives on_write_ready() to complete the first send, then calls
- *     drain_pending_send() directly. Covers the drain_pending_send body
- *     (lines 364-375).
+ *     being written -- the second waits in the connection's queue. Drains the
+ *     peer socket and drives on_write_ready(); once the first send is written,
+ *     on_write_ready() must start the second, leaving the queue empty.
  *
  *   OnWriteReadySendErrorTeardownsConnection
  *     Establishes a real outbound connection, shrinks both ends' socket buffers
@@ -623,20 +622,17 @@ TEST_F(OutboundConnectionManagerTest, TeardownWithPendingSendFreesChunk) {
     outbound_allocator_->deallocate(slab_id2, chunk2);
 }
 
-// Test: drain_pending_send dispatches the stashed command (covers
-// lines 364-375 in OutboundConnectionManager::drain_pending_send).
+// Test: a send that waits behind one still being written is started as soon as that one is written.
 //
 // Strategy:
 //   1. Establish connection. Set a tiny SO_SNDBUF to guarantee blocking.
 //   2. Send a large PDU -- has_pending_data() stays true, set_pending_send
 //      is called by process_send_pdu_command.
-//   3. Send a second PDU while the first is still blocked -- it gets stashed
-//      into pending_send_ by process_send_pdu_command.
-//   4. Drain the peer socket and call on_write_ready() until the first send
-//      completes and conn.has_pending_send() becomes false.
-//   5. Call drain_pending_send() -- it must process the stashed second command,
-//      covering the body of drain_pending_send (lines 364-375).
-TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) {
+//   3. Send a second PDU while the first is still being written -- it waits
+//      in the connection's queue.
+//   4. Drain the peer socket and call on_write_ready() until nothing is left
+//      to write. on_write_ready() must have started the second send itself.
+TEST_F(OutboundConnectionManagerTest, ASendThatWaitsIsStartedWhenTheOneBeforeItIsWritten) {
     const uint16_t port = start_listener_and_accept();
     ASSERT_NE(port, 0u) << "Failed to start listener";
 
@@ -665,10 +661,10 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     cmd1.slab_id_ = slab_id1;
     cmd1.pdu_chunk_ptr_ = chunk1;
     cmd1.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd1)) << "process_send_pdu_command rejected cmd1 -- connection not found in manager";
+    ASSERT_EQ(mgr.process_send_pdu_command(cmd1), SendDisposition::Started) << "process_send_pdu_command did not start cmd1";
 
     if (!conn->has_pending_send()) {
-        // Kernel absorbed the full frame -- can't test drain_pending_send here.
+        // Kernel absorbed the full frame -- nothing has to wait, so nothing here can be tested.
         if (peer_fd_ != -1) {
             ::close(peer_fd_);
             peer_fd_ = -1;
@@ -677,9 +673,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
         GTEST_SKIP() << "Kernel send buffer absorbed the full frame -- skipping";
     }
 
-    // Send a second PDU while the first is still blocked.
-    // process_send_pdu_command sees conn.has_pending_send() == true and
-    // stashes it into pending_send_.
+    // Send a second PDU while the first is still being written. It waits in the connection's queue.
     auto [slab_id2, chunk2, total2] = make_frame(128);
 
     ReactorControlCommand cmd2(ReactorControlCommand::CommandTag::SendPdu);
@@ -688,7 +682,8 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
     cmd2.slab_id_ = slab_id2;
     cmd2.pdu_chunk_ptr_ = chunk2;
     cmd2.pdu_byte_count_ = 128;
-    ASSERT_TRUE(mgr.process_send_pdu_command(cmd2)) << "process_send_pdu_command rejected cmd2 -- connection not found in manager";
+    ASSERT_EQ(mgr.process_send_pdu_command(cmd2), SendDisposition::Waiting) << "cmd2 did not wait behind cmd1";
+    ASSERT_EQ(conn->waiting_sends().size(), 1U);
 
     // Drain the peer socket and drive on_write_ready until the first send
     // completes.
@@ -697,7 +692,7 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
         ::fcntl(peer_fd_, F_SETFL, flags | O_NONBLOCK);
 
         std::vector<uint8_t> buf(65536);
-        for (int i = 0; i < 100000 && conn->has_pending_send(); ++i) {
+        for (int i = 0; i < 100000 && (conn->has_pending_send() || !conn->waiting_sends().empty()); ++i) {
             const ssize_t n = ::read(peer_fd_, buf.data(), buf.size());
             if (n == -1) {
                 // EAGAIN/EWOULDBLOCK is normal in non-blocking mode: the kernel
@@ -710,12 +705,8 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
         }
     }
 
-    ASSERT_FALSE(conn->has_pending_send()) << "First send did not complete after draining peer";
-
-    // drain_pending_send must now process the stashed second command,
-    // covering the drain_pending_send body (lines 364-375).
-    const bool drained = mgr.drain_pending_send();
-    EXPECT_TRUE(drained);
+    EXPECT_FALSE(conn->has_pending_send()) << "the sends were not written after draining the peer";
+    EXPECT_TRUE(conn->waiting_sends().empty()) << "the waiting send was not started when the one before it was written";
 
     // Clean up.
     if (peer_fd_ != -1) {
@@ -731,7 +722,8 @@ TEST_F(OutboundConnectionManagerTest, DrainPendingSendDispatchesStashedCommand) 
 //   retry_failed_connections() with no pending retries is a no-op.
 //
 // ProcessSendRawCommandReturnsFalse
-//   OutboundConnectionManager always returns false for SendRaw commands.
+//   A SendRaw command for a connection the outbound manager does not hold is reported as no such
+//   connection, so the reactor tries the inbound manager.
 //
 // ProcessCommitRawBytesReturnsTrueForKnownId
 //   process_commit_raw_bytes returns true when the ConnectionID belongs to a
@@ -765,7 +757,7 @@ TEST_F(OutboundConnectionManagerTest, RetryFailedConnectionsNoOpWhenEmpty) {
 TEST_F(OutboundConnectionManagerTest, ProcessSendRawCommandReturnsFalse) {
     ReactorControlCommand cmd(ReactorControlCommand::CommandTag::SendRaw);
     cmd.connection_id_ = ConnectionID{99};
-    EXPECT_FALSE(reactor_->outbound_manager().process_send_raw_command(cmd));
+    EXPECT_EQ(reactor_->outbound_manager().process_send_raw_command(cmd), SendDisposition::NoSuchConnection);
 }
 
 TEST_F(OutboundConnectionManagerTest, ProcessCommitRawBytesReturnsFalseForUnknownId) {
@@ -879,7 +871,7 @@ TEST_F(OutboundConnectionManagerTest, OnWriteReadySendErrorTeardownsConnection) 
     ASSERT_NE(peer_fd_, -1);
 
     // Squeeze BOTH ends so the frame cannot possibly go out in one write: our send buffer
-    // and the peer's receive buffer. DrainPendingSendDispatchesStashedCommand shrinks only
+    // and the peer's receive buffer. ASendThatWaitsIsStartedWhenTheOneBeforeItIsWritten shrinks only
     // the sender's and then has to GTEST_SKIP() when the kernel absorbs the lot -- a skip
     // would put this test's coverage back at the mercy of the machine, which is the exact
     // problem it was written to remove.
@@ -900,7 +892,7 @@ TEST_F(OutboundConnectionManagerTest, OnWriteReadySendErrorTeardownsConnection) 
     send_command.slab_id_ = slab_id;
     send_command.pdu_chunk_ptr_ = chunk;
     send_command.pdu_byte_count_ = static_cast<uint32_t>(large_payload);
-    ASSERT_TRUE(mgr.process_send_pdu_command(send_command)) << "connection not found in manager";
+    ASSERT_EQ(mgr.process_send_pdu_command(send_command), SendDisposition::Started) << "the send was not started";
 
     // Asserted, not skipped: if the frame went out whole there is nothing left for
     // continue_send() to fail at, and the rest of this test would pass while exercising

@@ -235,6 +235,34 @@ struct ReactorConfiguration {
     int socket_receive_buffer_size{0};
 
     /**
+     * @brief The most sends that may wait for one connection while it is still writing an earlier
+     * send.
+     *
+     * When a connection's socket cannot take a send at once, the rest of that send is written when the
+     * socket has room, and any further send for the same connection waits in that connection's own
+     * queue. Other connections are not held up. A connection whose queue reaches this many sends, or
+     * connection_waiting_bytes_maximum bytes, is closed and its application told the connection was
+     * lost, because a peer that has stopped reading would otherwise hold memory without limit.
+     *
+     * The queue takes no memory until a send first has to wait, and gives its memory back when it is
+     * empty again. So the limit costs nothing for a connection that keeps up.
+     *
+     * Default: 65,536 sends.
+     */
+    size_t connection_waiting_sends_maximum{65536};
+
+    /**
+     * @brief The most bytes the sends waiting for one connection may add up to. See
+     * connection_waiting_sends_maximum.
+     *
+     * The bytes are held in the slab chunks of the application thread that asked for each send, so
+     * this also bounds how much of that thread's slab memory one slow peer can hold.
+     *
+     * Default: 32 MiB.
+     */
+    size_t connection_waiting_bytes_maximum{32 * 1024 * 1024};
+
+    /**
      * @brief Queue configuration for the reactor's internal command queue.
      *
      * ApplicationThreads enqueue ReactorControlCommands here. The defaults

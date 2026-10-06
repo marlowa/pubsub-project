@@ -32,6 +32,7 @@
 #include <pubsub_itc_fw/TlsContext.hpp>
 #include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
 #include <pubsub_itc_fw/TlsRawBytesProtocolHandler.hpp>
+#include <pubsub_itc_fw/WaitingSendQueue.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -230,8 +231,8 @@ void InboundConnectionManager::on_data_ready(InboundConnection& conn) {
     } else if (conn.handler()->has_pending_send()) {
         // flush_wbio() left unsent ciphertext (e.g. EAGAIN during TLS handshake).
         // Arm EPOLLOUT so continue_send() is triggered when the socket drains.
-        // Without this, any subsequent SendRaw command stashes itself in pending_send_
-        // and is never retried because EPOLLOUT never fires.
+        // Without this, any later send waits in the connection's queue and is never
+        // started, because EPOLLOUT never fires.
         const int fd = conn.get_fd();
         epoll_event ev{};
         ev.events = EPOLLOUT | EPOLLERR;
@@ -261,18 +262,18 @@ void InboundConnectionManager::on_write_ready(InboundConnection& conn) {
         return;
     }
 
+    if (conn.handler()->has_pending_send()) {
+        return;
+    }
+    // The send in progress is written. The sends that waited behind it are started next, in order.
+    if (!start_waiting_sends(conn)) {
+        return;
+    }
     if (!conn.handler()->has_pending_send()) {
-        const int fd = conn.get_fd();
-        epoll_event ev{};
-        // Re-add EPOLLIN only if reads are not currently paused for
-        // backpressure. The pause state is restored once the buffer drains
-        // below the low-water mark via process_commit_raw_bytes().
-        ev.events = EPOLLERR;
-        if (wants_reads(conn)) {
-            ev.events |= EPOLLIN;
-        }
-        ev.data.fd = fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+        // Nothing left to write: stop watching for room to write. Incoming data is watched for only
+        // if reads are not paused, by the handler for a full buffer or by the application.
+        rearm(conn);
+        deliver_owed_writable_notification(conn);
     }
 }
 
@@ -293,13 +294,8 @@ void InboundConnectionManager::teardown_connection(ConnectionID id, const std::s
         conn.handler()->deallocate_pending_send();
     }
 
-    // Clear pending_send_ if it refers to this connection. The stashed command
-    // may be a SendPdu or a SendRaw and they carry the chunk in different
-    // fields, so ask the command which of them it owns.
-    if (pending_send_.has_value() && pending_send_->connection_id_ == id) {
-        pending_send_->allocator_->deallocate(pending_send_->slab_id_, pending_send_->chunk_ptr());
-        pending_send_.reset();
-    }
+    // Return the chunks of the sends still waiting for this connection; they will never be written.
+    conn.waiting_sends().release_all();
 
     // Deregister from epoll and fd map.
     const int fd = conn.get_fd();
@@ -360,93 +356,91 @@ bool InboundConnectionManager::process_writable_notification_command(const React
     }
 
     InboundConnection& conn = *it->second;
+    conn.want_writable_notification();
+    deliver_owed_writable_notification(conn);
+    return true;
+}
+
+void InboundConnectionManager::deliver_owed_writable_notification(InboundConnection& conn) {
+    // Not while anything is left to write: the application asked so as to be paced by its peer, and
+    // telling it now would let it build a queue the peer is not reading.
+    if (conn.handler()->has_pending_send() || !conn.waiting_sends().empty() || !conn.take_writable_notification_wanted()) {
+        return;
+    }
     auto* thread = thread_lookup_.get_fast_path_thread(conn.target_thread_id());
     if (thread != nullptr) {
-        thread->enqueue(EventMessage::create_connection_writable_event(cid));
+        thread->enqueue(EventMessage::create_connection_writable_event(conn.id()));
     }
-    return true;
 }
 
-bool InboundConnectionManager::process_send_pdu_command(const ReactorControlCommand& command) {
-    const ConnectionID cid = command.connection_id_;
-
-    auto it = connections_.find(cid);
+SendDisposition InboundConnectionManager::process_send_pdu_command(const ReactorControlCommand& command) {
+    auto it = connections_.find(command.connection_id_);
     if (it == connections_.end()) {
-        return false;
+        return SendDisposition::NoSuchConnection;
     }
-
-    InboundConnection& conn = *it->second;
-
-    if (conn.handler()->has_pending_send()) {
-        keep_waiting_send(command);
-        return true;
-    }
-
-    const uint32_t total_bytes = static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_;
-
-    // The handler takes ownership of the slab bookkeeping from this point.
-    // It stores allocator, slab_id, and chunk_ptr internally and will
-    // deallocate on completion or teardown.
-    auto [ok, error] = conn.handler()->send_prebuilt(command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, total_bytes);
-    if (!ok) {
-        const std::string reason = fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
-        PUBSUB_LOG(logger_, FwLogLevel::Error, "InboundConnectionManager::process_send_pdu_command: {}", reason);
-        teardown_connection(cid, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
-        return true;
-    }
-
-    if (conn.handler()->has_pending_send()) {
-        const int conn_fd = conn.get_fd();
-        epoll_event ev{};
-        // Add EPOLLIN only if reads are not currently paused for backpressure.
-        ev.events = EPOLLOUT | EPOLLERR;
-        if (wants_reads(conn)) {
-            ev.events |= EPOLLIN;
-        }
-        ev.data.fd = conn_fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
-    }
-
-    return true;
+    const WaitingSend send{command.allocator_, command.slab_id_, command.pdu_chunk_ptr_, static_cast<uint32_t>(sizeof(PduHeader)) + command.pdu_byte_count_};
+    return send_or_wait(*it->second, send);
 }
 
-bool InboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command) {
-    const ConnectionID cid = command.connection_id_;
-
-    auto it = connections_.find(cid);
+SendDisposition InboundConnectionManager::process_send_raw_command(const ReactorControlCommand& command) {
+    auto it = connections_.find(command.connection_id_);
     if (it == connections_.end()) {
-        return false;
+        return SendDisposition::NoSuchConnection;
+    }
+    const WaitingSend send{command.allocator_, command.slab_id_, command.raw_chunk_ptr_, command.raw_byte_count_};
+    return send_or_wait(*it->second, send);
+}
+
+SendDisposition InboundConnectionManager::send_or_wait(InboundConnection& conn, const WaitingSend& send) {
+    // A send asked for while the connection is still writing an earlier one waits behind it, and so
+    // does one asked for while others are already waiting, so that they are written in the order asked.
+    if (!conn.handler()->has_pending_send() && conn.waiting_sends().empty()) {
+        static_cast<void>(start_send(conn, send));
+        return SendDisposition::Started;
+    }
+    if (conn.waiting_sends().add(send, config_.connection_waiting_sends_maximum, config_.connection_waiting_bytes_maximum)) {
+        return SendDisposition::Waiting;
     }
 
-    InboundConnection& conn = *it->second;
+    // The peer is not reading what is sent to it. Its connection is closed rather than allowed to hold
+    // memory without limit; the application is told it was lost, and its peer can connect again.
+    send.allocator->deallocate(send.slab_id, send.chunk);
+    const std::string reason = fmt::format("connection from '{}' closed: it is not reading what is sent to it -- {} sends of {} bytes in all are "
+                                           "waiting to be written, the most allowed",
+                                           conn.peer_description(), conn.waiting_sends().size(), conn.waiting_sends().bytes());
+    PUBSUB_LOG(logger_, FwLogLevel::Warning, "InboundConnectionManager::send_or_wait: {}", reason);
+    teardown_connection(conn.id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+    return SendDisposition::Waiting;
+}
 
-    if (conn.handler()->has_pending_send()) {
-        keep_waiting_send(command);
-        return true;
-    }
-
-    auto [ok, error] = conn.handler()->send_prebuilt(command.allocator_, command.slab_id_, command.raw_chunk_ptr_, command.raw_byte_count_);
+bool InboundConnectionManager::start_send(InboundConnection& conn, const WaitingSend& send) {
+    // The handler takes the chunk from here, and returns it to its allocator once the bytes are
+    // written or the connection is closed.
+    auto [ok, error] = conn.handler()->send_prebuilt(send.allocator, send.slab_id, send.chunk, send.byte_count);
     if (!ok) {
         const std::string reason = error.empty() ? fmt::format("peer '{}' closed connection", conn.peer_description())
                                                  : fmt::format("send error on connection from '{}': {}", conn.peer_description(), error);
         const FwLogLevel log_level = error.empty() ? FwLogLevel::Info : FwLogLevel::Error;
-        PUBSUB_LOG(logger_, log_level, "InboundConnectionManager::process_send_raw_command: {}", reason);
-        teardown_connection(cid, reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
-        return true;
+        PUBSUB_LOG(logger_, log_level, "InboundConnectionManager::start_send: {}", reason);
+        teardown_connection(conn.id(), reason, DeliverLostEventFlag{DeliverLostEventFlag::DeliverLostEvent});
+        return false;
     }
-
     if (conn.handler()->has_pending_send()) {
-        const int conn_fd = conn.get_fd();
-        epoll_event ev{};
-        // Add EPOLLIN only if reads are not currently paused for backpressure.
-        ev.events = EPOLLOUT | EPOLLERR;
-        if (wants_reads(conn)) {
-            ev.events |= EPOLLIN;
-        }
-        ev.data.fd = conn_fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, conn_fd, &ev);
+        // Not all of it could be written: watch for room to write the rest.
+        rearm(conn);
     }
+    return true;
+}
 
+bool InboundConnectionManager::start_waiting_sends(InboundConnection& conn) {
+    WaitingSendQueue& waiting = conn.waiting_sends();
+    while (!waiting.empty() && !conn.handler()->has_pending_send()) {
+        const WaitingSend next = waiting.front();
+        waiting.pop_front();
+        if (!start_send(conn, next)) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -487,34 +481,6 @@ bool InboundConnectionManager::process_commit_raw_bytes(ConnectionID id, int64_t
         }
     }
     return true;
-}
-
-bool InboundConnectionManager::drain_pending_send() {
-    if (!pending_send_.has_value()) {
-        return true;
-    }
-
-    const ReactorControlCommand command = *pending_send_;
-    pending_send_.reset();
-
-    bool processed = false;
-    if (command.as_tag() == ReactorControlCommand::SendRaw) {
-        processed = process_send_raw_command(command);
-        if (!processed) {
-            command.allocator_->deallocate(command.slab_id_, command.chunk_ptr());
-            return true;
-        }
-    } else {
-        processed = process_send_pdu_command(command);
-        if (!processed) {
-            // Connection vanished while the command was stashed -- deallocate.
-            command.allocator_->deallocate(command.slab_id_, command.chunk_ptr());
-            return true;
-        }
-    }
-
-    // If still blocked, the relevant process_send_*_command will have re-stashed it.
-    return !pending_send_.has_value();
 }
 
 bool InboundConnectionManager::process_disconnect_command(ConnectionID id) {
