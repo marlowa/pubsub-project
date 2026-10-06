@@ -4,8 +4,8 @@ The protocol itself: FIX 5.0 SP2 over FIXT.1.1 transport. Every message the venu
 
 - [codec.md](codec.md) — The parser and serialiser, and the performance guard on the hot path
 - [pdu_generation.md](pdu_generation.md) — Generating PDUs from the data dictionary
-- [inbound_sequence_checking.md](inbound_sequence_checking.md) — designed, not built: checking what the member sends, and why its resume bias is the opposite of the outbound one
-- [sequence_numbers_and_gaps.md](sequence_numbers_and_gaps.md) — The session layer: numbering, resends, gap fill, and where this venue departs from it
+- [inbound_sequence_checking.md](inbound_sequence_checking.md) — Checking what the member sends, and why its resume bias is the opposite of the outbound one
+- [sequence_numbers_and_gaps.md](sequence_numbers_and_gaps.md) — The session layer: numbering, resends, gap fill, what this venue does, and what is tested
 - [load_client.md](load_client.md) — The load client, and why driving FIX under load needs one we own
 
 ---

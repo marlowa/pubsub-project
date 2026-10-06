@@ -195,9 +195,9 @@ exactly the case that matters. The WAL has every report stamped with the session
 so the gateway asks the sequencer for that session's slice and replays it.
 
 **Real reports are resent, not gap-filled.** This is the important half of the worked example
-above, and it is done: application messages go back with `PossDupFlag=Y` and `OrigSendingTime`.
-An earlier version answered every request with one blanket gap-fill; the comment in the code
-explains why that was abandoned.
+above: application messages go back with `PossDupFlag=Y` and `OrigSendingTime`. Answering every
+request with one blanket gap-fill would keep the session in step while the member never learned
+its orders had filled.
 
 **The venue knows which numbers held reports, and gap-fills the rest where they stand.** The WAL
 holds execution reports and nothing else, so every number in a range that held a Logon, a heartbeat
@@ -206,10 +206,10 @@ each report goes out on, and that record travels through the sequencer's session
 survives the gateway that made it. During a replay, a run of numbers the record does not cover is
 skipped with one `SequenceReset-GapFill` before the next report is placed — not only at the end.
 
-Until 2026-08-27 the venue did not know this and filled every number in the range with a report,
-which sent some numbers out twice carrying two different messages and left the member's expected
-number ahead of the venue's. See [Resend provenance](../availability/resend_provenance.md), and
-[Session binding](../availability/session_binding.md) for the protocol that carries the record.
+Without that record, the only choice would be to fill every number in the range with a report,
+which would send some numbers out twice carrying two different messages and leave the member's
+expected number ahead of the venue's. See [Resend provenance](../availability/resend_provenance.md),
+and [Session binding](../availability/session_binding.md) for the protocol that carries the record.
 
 **`PossDupFlag` is scoped to the gap the member asked about.** A WAL slice can run past the
 requested range, and reports beyond it were never sent — marking those as possible duplicates
@@ -257,62 +257,57 @@ responsibility and not something the session layer can rescue.
 
 ---
 
-## Where it departs from the specification
+## The three places it is easiest to get wrong
 
-Three, in order of seriousness.
+The venue follows the specification on each of these. They are listed because each is easy to get
+wrong, and because getting one wrong leaves a session that looks healthy.
 
-### 1. Inbound sequence numbers — **closed 2026-08-28**
+### 1. Inbound sequence numbers
 
-`MsgSeqNum` on an inbound message used to be compared against nothing. There was no
-expected-inbound counter, no gap detection, and the gateway never sent a `ResendRequest` — the only
-such code was the handler for receiving one. A member could lose an order with neither side
-noticing, which is what the numbering exists to prevent.
+The venue keeps an expected-inbound number per session, checks every inbound message against it,
+and acts: above, it asks for the missing range once and processes nothing past the gap; below and
+marked as a possible duplicate, it discards the message; below and unmarked, it ends the session; a
+message with no sequence number at all is rejected without moving the counter. The number survives
+a gateway failover, resumed deliberately **low** — the opposite of the outbound one, because
+expecting too high a number from a member disconnects one that has done nothing wrong.
 
-The venue now keeps an expected-inbound number per session, checks every message against it on both
-inbound paths, and acts: above, it asks and processes nothing past the gap; below and marked, it
-discards; below and unmarked, it ends the session. The number survives a gateway failover, resumed
-deliberately **low** — the opposite of the outbound one, because expecting too high a number from a
-member disconnects one that has done nothing wrong.
+Without this a member could lose an order with neither side noticing, which is what the numbering
+exists to prevent. See [Inbound sequence checking](inbound_sequence_checking.md) and BUG-0038.
 
-See [Inbound sequence checking](../availability/../fix/inbound_sequence_checking.md) and BUG-0038.
+### 2. `PossDupFlag` on inbound messages
 
-### 2. `PossDupFlag` on inbound messages — **closed 2026-08-28**
+A number below what the venue expects, marked `PossDupFlag=Y`, is a retransmission of something
+already processed and is discarded silently. The same number **unmarked** is the serious error the
+specification calls it. And a marked message whose number *equals* what the venue expects is
+processed, because it is filling a genuine gap and is new to the venue.
 
-It used to be written on the outbound resend path and never read, so a member's legitimate
-retransmission was forwarded as a new order and the matching engine's duplicate-`ClOrdID` rejection
-was the only thing stopping it — the application layer catching a session-layer failure, and under
-load it produced 132,000 warnings in one run.
+Not reading the flag would forward a member's legitimate retransmission as a new order, leaving the
+matching engine's duplicate-`ClOrdID` rejection as the only thing stopping it — the application
+layer catching a session-layer failure. Measured under load, that produced 132,000 warnings in one
+run.
 
-It is now read. A number below what the venue expects, marked `PossDupFlag=Y`, is a retransmission
-of something already processed and is discarded silently. The same number **unmarked** is the
-serious error the specification calls it. And a marked message whose number *equals* what the venue
-expects is processed, because it is filling a genuine gap and is new to the venue.
+### 3. `EndSeqNo` on a ResendRequest
 
-### 3. `EndSeqNo` on a ResendRequest — **closed 2026-08-27**
+A non-zero bound falling inside what the session has sent is honoured: it limits both the reports
+asked of the sequencer and the numbers replayed into. `EndSeqNo=0` runs to the head of the stream.
 
-The handler used to parse `BeginSeqNo` and nothing else, so every request was treated as though
-`EndSeqNo=0` and ran to the head of the stream. A non-zero bound falling inside what the session has
-sent is now honoured: it limits both the reports asked of the sequencer and the numbers replayed
-into. `ha_test.py` scenario 40 asserts that a bounded request returns nothing outside its bounds.
+Honouring the bound is not enough on its own. The reports that come back inside it must be the
+ones the member was originally sent under those numbers, not merely the right count of reports.
+Asking the sequencer for "the most recent N reports" is right when the member is asking about the
+tail of its stream and wrong for any other range: a member asking for numbers 100 to 149 would
+receive the fifty most recent reports wearing those numbers, with the count, the bounds, the
+numbering and `PossDupFlag` all correct. So the gateway names which reports it wants rather than
+asking for a count (BUG-0053). See [Resend provenance](../availability/resend_provenance.md).
 
-Honouring it exposed a second fault behind it, which is worth knowing because it is the shape of
-several in this area. The bound was respected and **the wrong reports came back inside it** — the
-sequencer returned the most recent reports for the session, which is right when the member is
-asking about the tail of its stream, and wrong for any other range. A member asking for numbers
-100 to 149 received the fifty most recent reports wearing those numbers, with the count, the
-bounds, the numbering and `PossDupFlag` all correct. That was BUG-0053, and it is fixed: the
-gateway now names which reports it wants rather than asking for a count. See
-[Resend provenance](../availability/resend_provenance.md).
-
-The remaining departures are BUG-0038 and BUG-0039's sibling entries in `docs/bug_list.md`; the
-inbound half — items 1 and 2 above — is untouched.
+BUG-0038 (inbound checking) and BUG-0039 (`EndSeqNo`) are both recorded as fixed in
+`docs/bug_list.md`.
 
 ---
 
 ## What is tested, and what is not
 
-**Tested as of 2026-08-27.** `ha_test.py` scenarios 22, 23 and 40 between them assert, on the
-member's own received bytes rather than on a venue log line:
+**Tested.** `ha_test.py` scenarios 22, 23 and 40 between them assert, on the member's own
+received bytes rather than on a venue log line:
 
 - that the venue continues the session's numbering across a reconnect rather than restarting it;
 - that the member notices the gap and asks for the right range;
@@ -328,18 +323,24 @@ member's own received bytes rather than on a venue log line:
 - that a resend **spanning a gateway failover** is answered with real reports by an instance that
   never sent them.
 
-The last was called out here as "the case the WAL-backed design was chosen for and the one with no
-coverage at all". It now has coverage, and building it is what turned up BUG-0051.
+The last is the case the WAL-backed design was chosen for. Building that test is what turned up
+BUG-0051.
+
+Scenario 41 covers the inbound direction, driving the gateway with `scripts/fix_raw_client.py`
+so that it can send numbers a well-behaved client never would. It asserts that a gap is asked
+about once and nothing past it is processed, that a further message while the gap is open
+provokes no second request, that filling the gap processes the orders, that a marked
+retransmission is discarded with the session kept, that an unmarked low number ends the session,
+and that a message with no sequence number is rejected without moving the counter.
 
 **Still untested:**
 
 - **A duplicate ResendRequest mid-replay**, which the code handles deliberately and nothing checks.
 - **`BeginSeqNo` beyond the current outbound number**, i.e. a member asking for messages that do
   not exist.
-- **Anything about the inbound direction**, because none of it is implemented — BUG-0038.
-- **A second engine.** Every assertion above is made against `f8test`, whose own session-layer
-  behaviour shaped the diagnosis of BUG-0051 more than once. Nothing cross-checks that the venue's
-  bytes satisfy a different implementation.
+- **A second engine.** The resend assertions in scenarios 22, 23 and 40 are made against
+  `f8test`, whose own session-layer behaviour shaped the diagnosis of BUG-0051 more than once.
+  Nothing cross-checks that the venue's bytes satisfy a different FIX engine.
 
 ---
 

@@ -1,43 +1,36 @@
 # Inbound sequence checking {#fix_inbound_sequence_checking}
 
-**Status: built, 2026-08-28. All four steps.** The venue checks what a member sends, bounds how
-long it waits, and has scenarios that fail without the checks. One piece of observability is
-tracked separately as [BUG-0058](../bug_list.md#bug_0058). See
-[Implementation order](#fix_inbound_seq_steps) for what is done and what is not. It addresses
-[BUG-0038](../bug_list.md#bug_0038), and items 1 and 2 of the departures in
-[FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md), which are one piece of
-work and cannot be split.
+The venue checks the `MsgSeqNum` of every message a member sends, asks for what is missing, and
+bounds how long it waits for an answer. This document describes the rules, why each is as it is,
+and where the state lives. The protocol it implements is described in
+[FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md). It is the fix for
+[BUG-0038](../bug_list.md#bug_0038). One piece of observability is still to do:
+[BUG-0058](../bug_list.md#bug_0058), below.
 
-## The problem
+## Why it matters
 
-`MsgSeqNum` on an inbound message is never compared against anything. The gateway keeps no
-expected-inbound counter, never detects a gap in what a member sends, and never sends a
-`ResendRequest` — the only `ResendRequest` code in the gateway is the handler for receiving one.
-
-What that costs, in the case it is for:
+Without the check, this is what happens:
 
 > A member sends an order. The connection drops before it arrives. The member reconnects and
 > carries on numbering from the next value. The venue was expecting the missing number, receives
 > the one after it, processes it, and carries on. **The member believes it has an order resting
 > that the venue has never heard of, and neither side has any reason to think otherwise.**
 
-Noticing exactly that is what the numbering is for. It is the only open defect where the venue can
-lose a member's order without either side noticing.
+Noticing exactly that is what the numbering is for.
 
 ## The rule
 
 One gate, before the branch on message type, so no message can reach a handler without passing it.
 
-**It has to sit on two paths, not one.** The parser has separate callbacks for a message that
-parses and one that is well framed but fails FIX validation, and the second currently sends a
-Reject (35=3) without the counter ever seeing the message. **A rejected message has still consumed
-its sequence number** — that part is the specification — so leaving that path alone would make the
-next valid message look like a gap and produce a `ResendRequest` for a number the member had
-already sent, on every validation failure.
+**It sits on two paths, not one.** The parser has separate callbacks for a message that parses and
+for one that is well framed but fails FIX validation, and the second sends a Reject (35=3). **A
+rejected message has still consumed its sequence number** — that part is the specification — so if
+that path were not checked, the next valid message would look like a gap and produce a
+`ResendRequest` for a number the member had already sent, on every validation failure.
 
 Sequence position is therefore decided first on both paths, because a message whose place in the
 stream is unknown cannot be trusted whatever else is wrong with it. Three cases, and **only the
-first is settled by the specification; the other two were chosen** and can be revisited:
+first is settled by the specification; the other two are choices** and can be revisited:
 
 | The message | What happens | Why |
 |---|---|---|
@@ -62,8 +55,7 @@ definition wrong by one is the whole game, so it is stated rather than implied.
 
 **Higher means lost, not late.** TCP already orders a single connection, so a gap on a live
 connection means the member genuinely skipped those numbers — the messages are not in flight
-behind. That settles a question that would otherwise need answering: no reordering buffer is
-required, because there is nothing to reorder.
+behind. No reordering buffer is required, because there is nothing to reorder.
 
 ### A message that arrives while a gap is open is discarded
 
@@ -71,10 +63,10 @@ Not buffered. The `ResendRequest` names `EndSeqNo=0`, so the member resends ever
 gap onward including the message just discarded, and it arrives in order with the rest.
 
 The alternative — hold it and process it once the gap fills — is what QuickFIX does and is not
-wrong, but it buys little here and costs a buffer whose exhaustion behaviour would need designing.
+wrong, but it buys little here and costs a buffer whose behaviour when full would need designing.
 Asking the member to send it again is cheaper than deciding what to do when the buffer is full.
 
-### While a gap is open, that member's later APPLICATION messages wait
+### While a gap is open, that member's later application messages wait
 
 **Session-level messages are still acted on** — Heartbeat, TestRequest, ResendRequest and
 SequenceReset. None of them is an order or a cancel, so none carries the ordering risk the wait
@@ -82,15 +74,15 @@ exists to prevent, and holding them back breaks the very recovery the gap is wai
 deliberately not among them: it ends a session, so a badly numbered one should be questioned like
 anything else.
 
-Both halves of that were measured rather than reasoned, and both were wrong first:
+Both narrower choices have been measured and fail:
 
-- With **everything** blocked, a member recovering a gap saw silence, sent a `TestRequest`, got no
-  answer, and aborted the session. The venue had stopped answering the layer that keeps the
+- With **everything** blocked, a member recovering a gap sees silence, sends a `TestRequest`, gets
+  no answer, and aborts the session. The venue has stopped answering the layer that keeps the
   connection alive.
-- With only **Heartbeat and TestRequest** let through, it deadlocked instead. A member's own
-  `ResendRequest` is sent at *its* current number, which during a venue-side gap is by definition
-  above what the venue expects — so it was discarded as part of the gap. The venue then waited for
-  messages the member could not send until the venue answered a request it had thrown away.
+- With only **Heartbeat and TestRequest** let through, the session deadlocks instead. A member's
+  own `ResendRequest` is sent at *its* current number, which during a venue-side gap is by
+  definition above what the venue expects — so it is discarded as part of the gap. The venue then
+  waits for messages the member cannot send until the venue answers a request it has thrown away.
 
 The second is the one worth remembering: the rule "nothing from that member may be processed"
 sounds safe and is not, because the messages that end a gap arrive numbered inside it.
@@ -100,31 +92,73 @@ sounds safe and is not, because the messages that end a gap arrive numbered insi
 No application message from that member is processed while the gap is open, not merely the one that
 revealed it.
 
-This is not the venue imposing anything. It cannot process message 101 because it does not have
-100, and the ordering matters: a member sending `NewOrderSingle(100)` then `Cancel(101)`, with 100
-lost, would have the cancel applied to an order the venue never received. It rejects the cancel as
-unknown, then the resend delivers 100 and the order rests — leaving the member holding an order it
-believes it cancelled. Every conforming engine waits for the same reason.
+The venue cannot process message 101 because it does not have 100, and the order matters: a member
+sending `NewOrderSingle(100)` then `Cancel(101)`, with 100 lost, would have the cancel applied to an
+order the venue never received. It would reject the cancel as unknown, then the resend would
+deliver 100 and the order would rest — leaving the member holding an order it believes it
+cancelled. Every conforming engine waits for the same reason.
 
 The member stays connected throughout. Its resting orders are untouched, its execution reports
 keep flowing outbound, and the wait is one round trip.
 
-**The decision is what to do when that round trip does not come back.** A member whose engine is
-faulty, or which has lost its own store, may never answer the `ResendRequest` — and then its order
-flow really does stop, with the venue sitting silent and nothing saying why. The venue re-asks twice
-and then disconnects — see [An unanswered ResendRequest](#fix_inbound_seq_unanswered).
+**The gap stays open until the counter passes the number that revealed it**
+(`FixSession::inbound_gap_through`), not merely until the first in-sequence message. A member
+answering a `ResendRequest` sends the missing messages in order, so the first of them is in
+sequence; if that closed the gap, a further gap inside the same resend would provoke a second
+request while the first was still being answered, and a member that receives one mid-resend
+ignores it. So filling one number of a ninety-six-number gap leaves it open.
 
 ### Lower without `PossDupFlag` ends the session
 
 FIXT.1.1 calls it a serious error, and the reasoning is that once the far side has gone backwards
-its state cannot be trusted. The venue sends a Logout and disconnects. The member reconnects and
-resynchronises, which is safer than continuing to accept orders through a session whose numbering
-the venue does not believe.
+its state cannot be trusted. The venue sends a Logout naming both numbers and disconnects. The
+member reconnects and resynchronises, which is safer than continuing to accept orders through a
+session whose numbering the venue does not believe.
+
+## An unanswered ResendRequest: re-ask twice, then Logout {#fix_inbound_seq_unanswered}
+
+A member whose engine is faulty, or which has lost its own store, may never answer the
+`ResendRequest`, and its order flow then stops for as long as it stays connected. That is the
+failure most likely to reach the venue as "you have stopped taking my orders", so the wait is
+bounded.
+
+**The `ResendRequest` is sent at most three times, five seconds apart, and if the gap is still open
+five seconds after the third, the venue sends a Logout and disconnects.** So a member has about
+fifteen seconds to answer. Measured against a running venue, with a member that opens a gap and
+then says nothing:
+
+```
+ResendRequests at t+0.0s, t+5.0s, t+10.0s, all BeginSeqNo=3
+Logout at t+15.0s -- "ResendRequest from 3 unanswered after 3 attempts"
+connection closed by the venue
+```
+
+With a member that answers, the missing numbers are processed, no further request goes out, and
+the session keeps trading.
+
+Repeating costs nothing and covers the ordinary case: a request lost in flight, or a member that
+was slow rather than broken. Only a member genuinely not answering reaches the Logout — and a
+disconnect there is recoverable rather than destructive, because the venue still holds the
+session's numbering, so the member reconnects and resynchronises from it.
+
+Waiting indefinitely is rejected because it leaves a stopped session looking healthy to anyone not
+reading the log. That is the shape of [BUG-0009](../bug_list.md#bug_0009), where the sequencer
+knew for seven minutes that it had no matching engine, logged it a million times at Info, and told
+the gateway nothing.
+
+The interval and the count are constants in `FixOrderGatewayThread.cpp`
+(`resend_request_retry_interval`, `max_resend_requests`), beside the logon and SCRAM timeouts,
+rather than configuration: nothing suggests members need different values. If one ever does, the
+gateway configuration is where it goes.
+
+**Not built: the gap's age as a metric**, so that a member halted by a gap is visible without
+reading a log ([BUG-0058](../bug_list.md#bug_0058)). Each repeat is logged at Warning, and the
+Logout at Error, naming the member and the number awaited.
 
 ## Resuming after an unclean death: the direction is the opposite of the outbound one
 
-**This is the part of the design most likely to be got wrong**, because the two counters will sit
-beside each other on the same three PDUs and the natural instinct is to treat them alike.
+**This is the part of the design most likely to be got wrong**, because the two counters sit beside
+each other on the same three PDUs and the natural instinct is to treat them alike.
 
 The sequencer resumes the *outbound* number deliberately **high**
 ([Session binding](../availability/session_binding.md)), because the two errors are not
@@ -143,71 +177,85 @@ That figure is already a lower bound — a member can only have sent *more* sinc
 which is exactly the safe side. Adding an allowance, by symmetry with the outbound field, would
 disconnect members who had done nothing wrong.
 
+When `SessionBoundAck` returns the remembered number, the gateway takes the higher of it and its
+own counter rather than assigning it. The member's Logon has already been seen by then — it is what
+caused the bind — so the counter has already moved past it, while the sequencer's figure predates
+it; assigning would wind the counter back over a message the venue has consumed.
+
 **"A member can only have sent more" holds only because a reset is handled separately, and that
 is the one thing this rests on.** A member may restart its numbering at any Logon with
 `ResetSeqNumFlag=Y`, and clients make it easy — the venue's own Java test client offers it, and it
 is the default in the stock fix8 configuration. On that path the member's next number is *lower*
 than the venue remembers, by design. So the reset is carried on `SessionBound` (120) and the
-sequencer discards everything it remembers for the session, which is what keeps the lower-bound
-argument true for every other path. See [BUG-0055](../bug_list.md#bug_0055), which is what happens
-when it is not: the venue's memory sticks on a numbering the member has abandoned, and a returning
-member is judged to have gone backwards on every reconnect.
+sequencer discards everything it remembers for the session, which keeps the lower-bound argument
+true for every other path. See [BUG-0055](../bug_list.md#bug_0055) for what happens otherwise: the
+venue's memory sticks on a numbering the member has abandoned, and a returning member is judged to
+have gone backwards on every reconnect.
 
 **The price, stated plainly.** After an unclean death the venue may re-receive messages it already
 processed, and the session layer cannot recognise them: they arrive with `PossDupFlag=Y` and a
 number at or above what the venue now expects, which is indistinguishable from a legitimate
 retransmission filling a real gap. The matching engine's duplicate-`ClOrdID` rejection is what
-catches them.
-
-That backstop exists today and BUG-0038 rightly complains about it — a run produced 132,000
-duplicate-`ClOrdID` warnings. **This design does not remove the backstop; it moves when it fires.**
-Today it fires on the ordinary path, because nothing checks anything. After this it fires only
-after an unclean gateway death, where the ambiguity is genuine and the alternative is disconnecting
-innocent members.
+catches them. On the ordinary path the session layer discards a retransmission before it gets that
+far; only after an unclean gateway death, where the ambiguity is genuine and the alternative is
+disconnecting innocent members, does the application layer have to catch it.
 
 ## Where the state lives
 
-Beside `outbound_seq_num`, on `SessionUnbound` (121), `SessionBoundAck` (122) and
-`SessionSequenceUpdate` (126). The DSL comment at that field anticipated it:
+`inbound_seq_num` sits beside `outbound_seq_num` on `SessionUnbound` (121), `SessionBoundAck` (122)
+and `SessionSequenceUpdate` (126). In the gateway it is `FixSession::expected_inbound_seq_num`; in
+the sequencer, `SequencerThread::SessionSequenceState::inbound_seq_num`. The sequencer hands it
+back untouched, and the no-allowance rule is implemented at the same site as the outbound
+allowance, with the reason beside it, so the two are read together.
 
-> Only the outbound number is carried. The gateway does not track what the member sends it --
-> there is no inbound gap detection to hold a number for -- so a field for it would be one
-> nothing populates. When that is built, it belongs here beside this one.
+Same mechanism as the outbound number, and for the same reason: the sequence series belongs to the
+session and not to the connection, so it has to survive a member moving between gateway instances.
+See [Session binding](../availability/session_binding.md). Scenario 23 shows it surviving the
+death of the gateway that observed it:
 
-Same mechanism, unchanged, and the reason is the same: the sequence series belongs to the session
-and not to the connection, so it has to survive a member moving between gateway instances. See
-[Session binding](../availability/session_binding.md).
+```
+resuming the venue's sequence state -- outbound=4140 inbound=1002
+```
+
+`outbound` biased high by its allowance, `inbound` exactly as reported.
 
 ## The Logon is a special case, and the ordering is awkward
 
 A member's Logon carries a `MsgSeqNum` like any other message, and the specification is explicit
 that a too-high one is **not** grounds for refusing the logon: complete it, then send the
-`ResendRequest`. (The opposite behaviour is what `f8test` does by default, and configuring around
-it — `ignore_logon_sequence_check` — was needed to test the outbound side at all.)
+`ResendRequest`. (`f8test` does the opposite by default, and configuring around it —
+`ignore_logon_sequence_check` — is needed to test the outbound side at all.)
 
-**But the venue does not yet know what to expect when the Logon arrives.** The expected-inbound
-number comes back on `SessionBoundAck`, which is asynchronous and arrives after the Logon has been
+**But the venue does not know what to expect when the Logon arrives.** The expected-inbound number
+comes back on `SessionBoundAck`, which is asynchronous and arrives after the Logon has been
 received and the session bound.
 
-The existing structure already answers this. A session is `awaiting_sequence_state` between
-binding and the ack, and nothing may be sent to the member in that window because the Logon reply
-is itself a numbered message. So the Logon's number is stashed and checked at the same moment the
-outbound number is restored:
+A session is `awaiting_sequence_state` between binding and the acknowledgement, and nothing may be
+sent to the member in that window because the Logon reply is itself a numbered message. So the
+Logon's number is kept (`FixSession::logon_seq_num`, `logon_poss_dup`) and judged at the moment the
+outbound number is restored (`judge_logon_sequence`, called from
+`establish_session_after_logon_sequence`):
 
-- **equal or lower with `PossDupFlag`** — proceed normally.
+- **equal, or lower with `PossDupFlag`** — proceed normally.
 - **higher** — complete the logon first, send the Logon reply, then send the `ResendRequest`.
-- **lower without `PossDupFlag`** — Logout and disconnect, as for any other message.
+- **lower without `PossDupFlag`** — Logout with the reason, and the session never opens.
 
 `ResetSeqNumFlag=Y` resets both directions, so the expected inbound becomes 2 once the Logon
-numbered 1 has been processed. The venue already honours the flag for the outbound side; the
-inbound side follows it for the same reason, and the two must reset together or the session is
-half-reset.
+numbered 1 has been processed. The two must reset together or the session is half-reset.
 
-## Measured, before and after
+## Where it is implemented
 
-### After step 2, 2026-08-28
+In `FixOrderGatewayThread.cpp`: `classify_inbound_sequence` decides a message's place with no side
+effects, so both inbound paths ask the same question and then act on the answer differently;
+`request_missing_messages` asks once per gap rather than once per message; `send_resend_request`
+arms the five-second timer every time it asks, and `retry_or_abandon_resend_request` runs on it and
+either asks again or ends the session; `end_session_on_sequence_error` sends the Logout and
+disconnects. The timer is cancelled wherever the gap is declared closed, and on connection loss
+beside the other per-session timers.
 
-Six cases, each driven with `scripts/fix_raw_client.py` against a running venue:
+## Measured behaviour
+
+Driven with `scripts/fix_raw_client.py` against a running venue:
 
 | The member does | The venue does |
 |---|---|
@@ -220,188 +268,27 @@ Six cases, each driven with `scripts/fix_raw_client.py` against a running venue:
 | Logon numbered 25, expecting 5 | Logon **completed first**, then `ResendRequest BeginSeqNo=5` |
 | Logon numbered 2, expecting 5, unmarked | `Logout` with the reason, and the session never opens |
 
-### Before, 2026-08-27
-
-```
-in-sequence order  -> ExecutionReport ClOrdID=base1   (venue expects 3 next)
-
-1. GAP: order numbered 50 when the venue expects 3
-   -> ACCEPTED, ClOrdID=gap1
-   -> ResendRequest from venue? NO
-
-2. TOO LOW: order numbered 2, no PossDupFlag
-   -> ACCEPTED, ClOrdID=low1
-   -> Logout from venue? NO
-
-3. NO MsgSeqNum AT ALL
-   -> venue replied with: ['3']        (a Reject -- this path already behaves)
-```
-
-The first is BUG-0038 in one line: forty-seven numbers were skipped, the order was accepted anyway,
-and neither side has any reason to think something is missing. The third is the encouraging one --
-`MsgSeqNum` is a required header field, so a message without it already fails validation and gets a
-Reject. Step 2's work there was only to make sure the counter is **not** advanced for it.
-
 ## Testing {#fix_inbound_seq_testing}
 
 **Two clients, for two jobs.**
 
-`f8test -S` sets the client's next **send** sequence number, the exact mirror of the `-R` used to
-manufacture the outbound gaps in `ha_test.py` scenarios 22 and 40. That covers the conforming
-cases: a member that continues its numbering, or restarts it, or genuinely misses messages.
+`f8test` is a FIX engine and is trying to be correct: it always writes a valid `MsgSeqNum` and will
+not send below its own expected without marking it. Its `-S` option sets its next **send** sequence
+number, the mirror of the `-R` used to make the outbound gaps in `ha_test.py` scenarios 22 and 40,
+so it can produce the conforming cases: a member that continues its numbering, restarts it, or
+genuinely misses messages.
 
-**`scripts/fix_raw_client.py` covers what a conforming engine will not do.** f8test is an engine
-and is trying to be correct: it always writes a valid `MsgSeqNum` and will not send below its own
-expected without marking it. At least two of the rules above can only be exercised by a client
-that misbehaves on purpose — a message with no readable number, and a number below expected with
-no `PossDupFlag`. The raw client has no session layer at all: it sends the bytes it is told to,
-computes the framing unless asked to get it wrong, and never forms an opinion about what comes
-back.
+**`scripts/fix_raw_client.py` covers what a conforming engine will not do.** At least two of the
+rules above can only be exercised by a client that misbehaves on purpose — a message with no
+readable number, and a number below expected with no `PossDupFlag`. The raw client has no session
+layer at all: it sends the bytes it is told to, computes the framing unless asked to get it wrong,
+and never forms an opinion about what comes back. It needs no cryptography: the member's side of
+authentication is a plaintext password on tag 554 of the Logon — an empty one is simply absent —
+because the SCRAM exchange happens between the gateway and the authentication service, not between
+the member and the gateway.
 
-It needs no cryptography, which is what made it small. The member's side of authentication is a
-plaintext password on tag 554 of the Logon — an empty one is simply absent — because the SCRAM
-exchange happens between the gateway and the authentication service, not between the member and
-the gateway.
-
-Scenarios worth having, and each should be seen to fail before the code exists:
-
-- **A gap is detected and closed.** Client starts with `-S` ahead of where the venue expects. The
-  venue must send a `ResendRequest` naming the right number, the member resends, and the orders in
-  the gap must reach the matching engine — assert on `ME-ORD` counts, not merely on the request
-  going out.
-- **Nothing after the gap is processed until it is filled.** The order that revealed the gap must
-  not reach the matching engine before the orders that preceded it.
-- **A retransmission is not a new order.** A message with `PossDupFlag=Y` below the expected number
-  produces no order and no duplicate-`ClOrdID` rejection.
-- **Too low without `PossDupFlag` ends the session**, with a Logout the member can see.
-- **The counter survives a gateway failover**, in the shape of scenario 23: the member's inbound
-  numbering must continue across the instance change, and must not be resumed high.
-- **A member that continues its own send numbering across a reconnect**, which no scenario does
-  today — every client uses a memory persister and restarts at 1, so the venue has never been
-  tested against a member whose Logon lands at or above where the venue expects. `f8test -S`
-  supplies it, but `send_burst` needs to set it per client rather than for the whole run.
-- **A member that asks for a sequence reset while the provenance record holds ranges**, which is
-  the shape of [BUG-0055](../bug_list.md#bug_0055): the common case in this project's own testing
-  was the one that was wrong, and nothing yet asserts on it.
-
-## An unanswered ResendRequest: re-ask twice, then Logout {#fix_inbound_seq_unanswered}
-
-A member that never answers has its flow stopped for as long as it stays connected, which is the
-failure mode most likely to reach the venue as "you have stopped taking my orders". So the wait is
-bounded and the venue acts at the end of it.
-
-**On a timer, the `ResendRequest` is repeated, up to twice. If the gap is still open after that,
-the venue sends a Logout and disconnects.**
-
-Repeating costs nothing and covers the ordinary case: a request lost in flight, or a member that
-was slow rather than broken. Only a member genuinely not answering reaches the Logout — and a
-disconnect there is recoverable rather than destructive, because the venue still holds the
-session's numbering, so the member reconnects and resynchronises from it. That is the same
-property the outbound side relies on.
-
-Waiting indefinitely was rejected for a reason with a precedent in this venue: it leaves a stopped
-session looking healthy to anyone not reading the log. That is the shape of
-[BUG-0009](../bug_list.md#bug_0009), where the sequencer knew for seven minutes that it had no
-matching engine, logged it a million times at INFO, and told the gateway nothing.
-
-**Five seconds between attempts, two attempts, then the Logout** — so a member has about fifteen
-seconds to answer before it loses the session. A named constant beside the existing logon and
-SCRAM timeouts, not configuration: nothing yet suggests members need different values, and a
-figure in a TOML that no operator has a reason to change is a field to keep in step for nothing.
-If one ever does, the gateway configuration is where it goes, and the per-comp-id route that
-cancel-on-disconnect takes is the step beyond that.
-
-Three things this needs, and none is new machinery: a per-session timer of the kind already armed
-for logon and for the SCRAM exchange; a WARNING when the retries are exhausted that names the
-member and the gap; and the gap's age exposed as a metric, so a member sitting in this state is
-visible without reading logs.
-
-## What this does not solve
-
-- **Duplicate suppression after an unclean death**, as above. The application layer remains the
-  backstop, and doing better needs the venue to record the inbound number durably per order rather
-  than per session — a field on the WAL envelope, which is a hot-path cost and was not taken.
-- **BUG-0006**, `ResendRequest` under load, which is about the outbound path and stays open.
-
-## Implementation order {#fix_inbound_seq_steps}
-
-Each step leaves the venue working.
-
-### Step 1 — the field, carried but not acted on. **Done 2026-08-27.**
-
-`inbound_seq_num` is on `SessionUnbound` (121), `SessionBoundAck` (122) and
-`SessionSequenceUpdate` (126); `FixSession::expected_inbound_seq_num` holds it in the gateway and
-`SequencerThread::SessionSequenceState::inbound_seq_num` in the sequencer.
-`FixOrderGatewayThread::note_inbound_seq_num` observes it from **both** inbound callbacks, and the
-sequencer hands it back untouched — the no-allowance rule is implemented at the same site as the
-outbound allowance, with the reason beside it, because that is where the two will be read
-together.
-
-**No behaviour changed**, which was the point: nothing compares an arriving number against it, so
-a member that skips numbers is still processed as though nothing were missing. What the venue has
-gained is that it now *knows* where a member's numbering stands and keeps that across a gateway
-change.
-
-Verified end to end by `ha_test.py` scenario 23, which kills the gateway holding a session and
-brings the member back on the surviving instance:
-
-```
-resuming the venue's sequence state -- outbound=4140 inbound=1002
-```
-
-The member's inbound position survived the death of the gateway that observed it, and the
-asymmetry is legible in that one line: `outbound` biased high by its allowance, `inbound` exactly
-as reported.
-
-**One correction to step 1, made the same day.** `SessionBoundAck` assigned the remembered number
-over the counter; it now takes the higher of the two. The member's Logon has already been seen by
-the time the reply arrives — it is what caused the bind — so the counter has advanced past it while
-the sequencer's figure predates it, and assigning would wind it back over a message the venue had
-consumed. **Reasoned from the ordering, not observed**, and it is worth knowing why it could not
-be: reaching it needs a member whose Logon number is at or above what the venue remembers, and
-every client in the harness uses a memory persister, so each reconnects with its own numbering
-restarted at 1. That case is in step 4's list.
-
-### Step 2 — the counter and the checks. **Done 2026-08-28.**
-
-`classify_inbound_sequence` decides a message's place with no side effects, so both inbound paths
-ask the same question and then do different things about the answer; `request_missing_messages`
-asks once per gap rather than once per message; `end_session_on_sequence_error` sends the Logout
-and disconnects. The Logon is judged in `judge_logon_sequence`, called from
-`establish_session_after_logon_sequence`, which enforces the order the specification requires:
-judge, then reply, then ask — or end the session without opening it.
-
-`FixSession` gained `inbound_gap_open`, and `logon_seq_num`/`logon_poss_dup` for the retrospective
-check. Measured results above.
-
-### Step 3 — the retry timer and the Logout. **Done 2026-08-28.**
-
-`send_resend_request` arms a five-second timer every time it asks;
-`retry_or_abandon_resend_request` runs on it and either asks again or ends the session.
-`max_resend_requests` is 3, so a member has about fifteen seconds. The timer is cancelled wherever
-the gap is declared closed, and on connection loss beside the other per-session timers.
-
-Measured against a running venue with a member that opens a gap and then says nothing:
-
-```
-ResendRequests at t+0.0s, t+5.0s, t+10.0s, all BeginSeqNo=3
-Logout at t+15.0s -- "ResendRequest from 3 unanswered after 3 attempts"
-connection closed by the venue
-```
-
-And with a member that answers: the missing numbers are processed, no further request goes out,
-no Logout, and the session keeps trading. **Note the gap closes only when the counter passes the
-number that revealed it** -- filling one number of a ninety-six-number gap leaves it open, and the
-retries correctly run out. That is the design, and it caught out an ad-hoc test before it caught
-out anything real.
-
-The gap-age metric is **not** built. `GatewayMetrics` is where it goes.
-
-### Step 4 — the scenarios. **Done 2026-08-28.**
-
-`ha_test.py` scenario 41, `inbound_sequence_checking`, driven by
-`scripts/fix_raw_client.py` because f8test will not misbehave to order. Six rules, each asserted
-on what the member is handed:
+**`ha_test.py` scenario 41, `inbound_sequence_checking`**, drives the raw client and asserts each
+of these on what the member is handed:
 
 - a number above expected — asked about **from the right number**, and the message is not processed;
 - a further message while the gap is open — no second request;
@@ -411,32 +298,34 @@ on what the member is handed:
 - no `MsgSeqNum` — Reject, and **the counter does not move**, checked by sending an ordinary order
   afterwards and requiring no resend request.
 
-**Seen to fail first.** With `classify_inbound_sequence` stubbed to return `InSequence`, the
-scenario fails on its first assertion: *"an order numbered 43 arrived when the venue expected 3 and
-it asked for nothing"*. That is BUG-0038 restated by the test that catches it.
+With `classify_inbound_sequence` stubbed to return `InSequence`, the scenario fails on its first
+assertion: *"an order numbered 43 arrived when the venue expected 3 and it asked for nothing"*.
 
-**A defect in the test client was found and fixed on the way**, and it had been costing time:
-`receive_until` did `self.pending.extend(self.receive(...))`, which binds `extend` to the list
-`self.pending` names *before* evaluating the argument — and `receive()` rebinds `self.pending` to a
-fresh list. Every message it returned was appended to the orphaned old list and silently dropped.
-That is why the client intermittently reported no Logon for sessions that had demonstrably
-established, and why some venue behaviour looked wrong when it was not. There is now a regression
-test for it that fails on the old code.
+**Not covered by any scenario's assertions:**
 
-**Still outstanding, and tracked rather than done:** the gap-age metric, so a member halted by a
-gap is visible without reading a log — [BUG-0058](../bug_list.md#bug_0058). It needs a gauge
-registered through the reactor's metrics registry, which is a larger change than the checking it
-would observe.
+- **The inbound counter surviving a gateway failover.** Scenario 23 logs it, as above, but asserts
+  only that the outbound number was resumed.
+- **A member that continues its own send numbering across a reconnect, landing at or above where
+  the venue expects.** `f8test -S` could supply it, but `send_burst` would need to set it per
+  client rather than for the whole run.
+- **A member that asks for a sequence reset while the provenance record holds ranges**, the shape
+  of [BUG-0055](../bug_list.md#bug_0055).
+- **A member that goes silent instead of answering a `ResendRequest`.** It has been measured by
+  hand, as above, but no scenario asserts the Logout.
 
-Driven by `f8test -S`, per [Testing](#fix_inbound_seq_testing). Including the member that goes silent instead of
-answering, which is the one whose absence would not otherwise be noticed.
+## What this does not solve
+
+- **Duplicate suppression after an unclean death**, as above. The application layer remains the
+  backstop, and doing better needs the venue to record the inbound number durably per order rather
+  than per session — a field on the WAL envelope, which is a hot-path cost and has not been taken.
+- **BUG-0006**, `ResendRequest` under load, which is about the outbound path and stays open.
 
 ## An adjacent behaviour this does not change
 
 A member that sends anything before the venue's Logon reply — pipelining an order straight after
-its own Logon — is disconnected today by the `!session_established` branch in the inbound dispatch.
-That window is where `SessionBoundAck` is awaited, so it widens slightly as a session's state grows,
-and step 2 stashes the Logon's number across it.
+its own Logon — is disconnected by the `!session_established` branch in the inbound dispatch. That
+window is where `SessionBoundAck` is awaited, so it widens slightly as a session's state grows, and
+the Logon's number is kept across it.
 
 **Left alone deliberately.** A member is entitled to expect a Logon response before sending, so
 the behaviour is defensible, and changing it is a separate question from this one. Recorded here
@@ -447,7 +336,7 @@ there on purpose.
 
 - [FIX sequence numbers, gaps and gap fill](sequence_numbers_and_gaps.md) — what the protocol requires, and the worked example
 - [Session binding](../availability/session_binding.md) — how session state survives a gateway change, and the outbound counter's opposite bias
-- [Resend provenance](../availability/resend_provenance.md) — the outbound half, built 2026-08-27
+- [Resend provenance](../availability/resend_provenance.md) — the outbound half
 
 ---
 
