@@ -37,8 +37,9 @@ population from a median of another is not valid arithmetic. Three instruments h
 a fourth will not help. What would is measuring one order rather than averaging many, as
 `order_path_elapsed_nanoseconds` already does for the stages.
 
-**What is worth doing next is probably not more measurement.** The round trip has come down from
-193.8 microseconds to 98 through the work recorded below, and what remains is dominated by a cost
+**What is worth doing next is probably not more measurement.** With every reactor sleeping the
+round trip measures 193.8 microseconds; with the settings and changes recorded below it measures
+98, and what remains is dominated by a cost
 that measurement can describe but not remove: four processes passing messages over loopback
 sockets. The levers that would move it are architectural -- fewer process hops on the order path,
 or a transport between components on one host that is not a socket. That is a design question and
@@ -50,8 +51,8 @@ it is not answered here.
 
 | Metric | What it measures | Where to read it |
 |---|---|---|
-| `itc_queue_latency_nanoseconds` | A message arriving at an application thread: enqueue to dispatch | Every component |
-| `reactor_command_latency_nanoseconds` | A command leaving an application thread for its reactor | Every component |
+| `itc_queue_latency_nanoseconds` | A message arriving at an application thread: enqueue to dispatch | Every component whose application thread names a metrics scope: the sequencer, the matching engine and both order gateways |
+| `reactor_command_latency_nanoseconds` | A command leaving an application thread for its reactor | Every component with metrics enabled |
 | `order_round_trip_nanoseconds` | Order off the connection to the first byte of its report | The gateway that received it |
 | `order_path_elapsed_nanoseconds` | How far through the venue an order was when it reached a given point | Every component on the path |
 
@@ -202,9 +203,9 @@ to wake, and every hop in this venue hands work to a thread that may be asleep.
 | 90th percentile at 740 orders/s | 899.5 us | 235.2 us |
 
 **This also accounts for latency being worse when traffic is sparse**, which is backwards for
-queueing and was for a time attributed to the thread wakeup alone. Before the settings were
-corrected the median at 50 orders per second was more than twice the median at 740; afterwards the
-two are within 30 microseconds of each other. A quiet period gives a core time to fall into a deep
+queueing and is not explained by thread wakeup alone. With the default settings the median at 50
+orders per second is more than twice the median at 740; with the settings above the two are within
+30 microseconds of each other. A quiet period gives a core time to fall into a deep
 idle state, and the first order after the quiet period pays for waking it.
 
 **Neither setting survives a reboot.** Both must be re-applied before anything is measured.
@@ -390,8 +391,8 @@ different means on different days.
 
 ### Kernel core isolation
 
-`isolcpus=2-15 nohz_full=2-15 rcu_nocbs=2-15 irqaffinity=0,1,16-31` was applied, measured and
-removed. The boot command line is stock.
+`isolcpus=2-15 nohz_full=2-15 rcu_nocbs=2-15 irqaffinity=0,1,16-31` has been measured and is not
+applied. The boot command line is stock.
 
 The reasoning for it is sound and remains true: pinning a thread to a processor reserves that
 processor for the thread, not from anything else, and only `isolcpus` stops unrelated work being
@@ -511,7 +512,7 @@ With the crossing measured, a leg should be five measured parts and nothing left
 | sequencer to gateway | 28.79 us | 12.26 | 3.84 | 5.74 | 2.79 | 3.52 | **0.62 us** |
 | sequencer to matching engine | 15.29 us | 12.26 | 3.84 | 7.66 | 5.20 | 3.64 | **-17.31 us** |
 
-Those crossing figures came from the send time described above, which the venue no longer carries.
+Those crossing figures come from the send time described above, which the venue does not carry.
 The rest of the columns are measured continuously.
 
 The second is impossible, and it is impossible in a way that rules out a missing instrument
@@ -594,12 +595,13 @@ them changed the shape.
 It appeared fixed at 175 to 180 microseconds under every machine configuration tried. Two
 things were behind that, and neither was the venue being insensitive to change.
 
-**Its bucket boundaries could not resolve anything in the range where the orders were.** Of
-12,000 orders, 11,597 fell into a single bucket 150 microseconds wide, between 100 and 250.
-A median drawn from that is not a measurement: it is linear interpolation across one bucket,
-which comes out at 176.9 and stays there for almost any distribution inside it. Boundaries
-between 100 and 250 microseconds have since been added, and the same venue then reads 185 --
-so every round-trip figure recorded before that was understating by roughly 8 microseconds.
+**With no bucket boundaries between 100 and 250 microseconds, the histogram cannot resolve
+anything in the range where the orders are.** Of 12,000 orders, 11,597 fall into that single
+bucket 150 microseconds wide. A median drawn from that is not a measurement: it is linear
+interpolation across one bucket, which comes out at 176.9 and stays there for almost any
+distribution inside it. The configured bounds include boundaries between 100 and 250
+microseconds, and with them the same venue reads 185, so a round-trip figure taken with only the
+wide bucket understates by roughly 8 microseconds.
 
 **What was left was mostly the idleness charge**, which is the same whatever the boot
 parameters are, so changing them could not move it.
@@ -623,11 +625,10 @@ the two protocols share -- the sequencer, the matching engine, the log, and the 
 and the decode is a small part of it. The clearer gain is at the tail, 13.8 microseconds at the
 90th percentile and 11.6 at the 99th, which is an argument about consistency rather than speed.
 
-**This reverses an earlier finding and the earlier one should not be quoted.** It said binary
-was *slower* end to end at the median, by 69 microseconds, despite decoding far faster. That
-was measured at 155 orders a second, which is well inside the range where a core waking from
-idle dominated every figure, so it compared which gateway happened to wake more slowly rather
-than the protocols themselves.
+**A comparison at 155 orders a second should not be quoted.** At that rate binary measures
+*slower* end to end at the median, by 69 microseconds, despite decoding far faster. That rate is
+well inside the range where a core waking from idle dominates every figure, so it compares which
+gateway happens to wake more slowly rather than the protocols themselves.
 
 ### What it would cost to stop the venue's threads sleeping
 
@@ -681,11 +682,12 @@ ranked for a hot-path core: taking the binary gateway, the publishers and the st
 off the hot path was worth another 22 microseconds, because fourteen threads on eight cores
 costs the three that matter.
 
-**This is now a setting rather than an experiment.** `reactor.spin_before_block` in a
-component's configuration says how long its reactor keeps looking for work before it sleeps, and
-the four components of the order round trip are switched on in the development environment. The
-other environments are left off, because whether a deployment spends cores on waiting is a
-decision about that deployment.
+**This is a setting.** `reactor.spin_before_block` in a component's configuration says how long
+its reactor keeps looking for work before it sleeps. In the development environment it is 50
+milliseconds for the components on the order path — both sequencers, the primary matching engine,
+and the `_a` instance of each gateway — and zero for the rest. The other environments set it to
+zero throughout, because whether a deployment spends cores on waiting is a decision about that
+deployment.
 
 Measured as deployed, with nothing edited by hand:
 
@@ -699,8 +701,8 @@ That is 52 per cent, for four cores of the seven the hot path has.
 **Two details decide most of it.** The first is that the loop mostly spins quietly and asks the
 kernel only now and then -- a quiet spin costs about 30 nanoseconds and keeps the core just as
 awake as a system call does, while a system call costs a thousand times that and disturbs
-whatever shares the physical core. An earlier attempt that asked the kernel every iteration made
-its own application thread nearly three times slower.
+whatever shares the physical core. A loop that asks the kernel on every iteration makes its own
+application thread nearly three times slower, as measured.
 
 The second is that **the standby sequencer has to be looking too**. The primary holds each
 report until the standby acknowledges the log record, so a sleeping standby puts its wake-up

@@ -3,11 +3,13 @@
 How this project exposes measurements, and the decisions behind the shape of it.
 
 > **Status: in use.** `MetricKey`, the metric interfaces, their no-op and prometheus-cpp
-> implementations, the `Exposer` and the configuration below are all built. Three metrics
-> are instrumented -- `framework_pdu_messages_total`, `orders_processed_total` and
-> `order_round_trip_nanoseconds` -- and the matching engine and both order gateways name a
-> `metrics_scope`, so they expose series. Every other component still leaves the scope
-> empty and therefore registers nothing. Sections marked **open** are undecided.
+> implementations, the `Exposer` and the configuration below are all built. Metrics are
+> enabled in `dev.toml` and disabled in `test-1.toml`, `preprod.toml` and `prod.toml`. Every
+> component with metrics enabled exposes the reactor's own series. The sequencer, the matching
+> engine and both order gateways also name a `metrics_scope`, so their application threads
+> expose per-thread series and the metrics specific to each; the other components leave the
+> scope empty. "Instrumentation" below describes each metric. Items under **Open** are
+> undecided.
 
 ---
 
@@ -18,8 +20,11 @@ that renders its current metrics on demand. This suits every component here, bec
 are all long-running processes that can be scraped in place.
 
 The alternative in the same library is the *pushgateway* client, which exists for jobs too
-short-lived to be scraped before they exit. Nothing here is like that, so the push library
-is deliberately not linked -- it would only pull in libcurl for a path never taken.
+short-lived to be scraped before they exit. Nothing here is like that, so the push library is
+deliberately not linked: the framework links only prometheus-cpp's `core` and `pull`
+libraries. `scripts/build_prometheus_cpp.sh` does build the push library, with the same options as
+the installation on the development host, because those options are recorded in the installed
+package configuration and every platform must match it.
 
 The client library is **prometheus-cpp 1.3.0**, wired in as an ordinary third-party
 dependency (`PROMETHEUS_VERSION`); see the top-level `CMakeLists.txt`. Not to be confused
@@ -81,7 +86,8 @@ name is stricter than the other tokens.
 
 Three interfaces -- `CounterInterface`, `GaugeInterface`, `HistogramInterface` -- each with
 a prometheus-cpp implementation and a no-op one. `PrometheusEndpoint::register_*` returns a
-reference to the interface, so **no call site knows which it got**.
+handle that refers to one or the other (see "Recording handles" below), so **no call site knows
+which it got**.
 
 That is what makes metrics switchable at one point. When metrics are disabled the endpoint
 returns references to shared no-op instances; the no-ops are stateless, so one instance of
@@ -107,12 +113,17 @@ A `[metrics]` section per component:
 ```toml
 [metrics]
 enabled     = ${shared_metrics_enabled}
+application = "${shared_metrics_application}"
+component   = "${component_name}"
 listen_host = "${<component>_metrics_listen_host}"
 listen_port = ${<component>_metrics_listen_port}
 ```
 
 `enabled` comes from a shared placeholder so metrics can be turned on or off venue-wide in
-one edit, exactly as `reactor_cpu_pinning_reserve_cpu0` already is. The endpoint is
+one edit, exactly as `reactor_cpu_pinning_reserve_cpu0` already is. It is `true` in
+`dev.toml` and `false` in the other environment files. `component` is the component
+*instance*, such as `fix_order_gateway_a`, which `deploy.py` fills in for each file. A
+component with no `[metrics]` section at all runs with metrics off. The endpoint is
 per-process, so **host and port are per component**: roughly fifteen processes run on one
 host in dev and they cannot share a port.
 
@@ -135,9 +146,9 @@ either direction:
   expose an unauthenticated port to the local network, and right anywhere the scrape is done
   by a local agent or sidecar.
 
-**The endpoint is unauthenticated and unencrypted.** civetweb is built here with
-`PROMETHEUS_CPP_THIRDPARTY_CIVETWEB_WITH_SSL OFF`, so whatever can reach the port gets the
-whole metric set -- order counts, per-component latencies, error rates, session counts. That
+**The endpoint is unauthenticated and unencrypted.** civetweb is built without SSL —
+prometheus-cpp's default, which `build_prometheus_cpp.sh` does not change — so whatever can
+reach the port gets the whole metric set -- order counts, per-component latencies, error rates, session counts. That
 is commercially meaningful for a venue, not merely operational. Which interfaces it is
 exposed on is therefore a security decision per environment, and it belongs with the wider
 open question about encrypting internal traffic in
@@ -153,20 +164,19 @@ open question about encrypting internal traffic in
 cores.
 
 They inherit the affinity of whichever thread creates them, and **ordering alone does not
-place them correctly** -- which was established by measurement, after an earlier version of
-this document claimed otherwise.
+place them correctly**, as measurement shows.
 
 `CpuLayout` masks the whole process to the background cores and *then* pins individual
 hot-path threads to their own cores. `Reactor::run()` starts the listener after that, by
-which point the calling thread is itself pinned to a hot-path core -- so the listener
-threads inherited it. All three civetweb threads of `fix_order_gateway_a` were found on core
-3, shared with that gateway's reactor thread: precisely the core the layout exists to keep
-clear.
+which point the calling thread is itself pinned to a hot-path core, so listener threads
+created from it would inherit that core. Measured without the step below, all three civetweb
+threads of `fix_order_gateway_a` were on core 3, shared with that gateway's reactor thread:
+precisely the core the layout exists to keep clear.
 
 `Reactor::start_metrics_endpoint()` therefore widens its own affinity to the background
-cores for the duration of the call and restores it immediately afterwards. Verified on a
-running venue: the civetweb threads now report `15-31` while the reactor thread stays on
-core 3 and the application thread on core 4.
+cores for the duration of the call and restores it immediately afterwards. Checked on a
+running venue: the civetweb threads report `15-31` while the reactor thread stays on core 3
+and the application thread on core 4.
 
 This is also the reason **construction is separate from starting**. The caller needs a point
 at which it can arrange the affinity, and the background core list is not known until the
@@ -213,8 +223,8 @@ hierarchy; it holds a pointer to one. `PrometheusCounter` and `NoOpCounter` rema
 implementations and the virtual call still happens. The handle exists purely so callers have
 something they can hold by value.
 
-Returning a reference was the obvious first shape, and it was wrong for reasons that all bite
-at the call site:
+Returning a reference to the interface would be the obvious shape, and it is wrong for
+reasons that all bite at the call site:
 
 - A reference member must be initialised in the constructor's initialiser list, which runs in
   member *declaration* order. A metric whose scope is built from another member then depends
@@ -245,9 +255,12 @@ case, not an error:
 One family, two children, distinguished by their labels. That is what the labels are for.
 
 Prometheus allows one help string per family, so a second registration of the same name with
-*different* help silently keeps the first. Help text comes from code rather than
-configuration, so that is a programming error and should raise `PreconditionAssertion`
-naming both strings, rather than being ignored.
+*different* help would silently keep the first. Help text comes from code rather than
+configuration, so that is a programming error, and `PrometheusEndpoint` throws
+`PreconditionAssertion` naming both strings. Registering the same full key twice throws
+too. Either exception stops the component, at startup or, for a registration made on the
+reactor thread, out of the event loop, which is why two registrations of one name from
+different places must use identical help text.
 
 ---
 
@@ -398,9 +411,9 @@ reasoning as the round trip.
 
 **Both gateways are instrumented identically** — one shared metric name, one shared help
 string, one shared set of bucket bounds from a single placeholder, and the observation made
-at the same point in each: immediately before the envelope is handed to the sequencers. The
-warning under Open below is what this answers to; instrumenting them differently would have
-produced a comparison of the instrumentation.
+at the same point in each: immediately before the envelope is handed to the sequencers.
+Instrumenting them differently would produce a comparison of the instrumentation rather than of
+the protocols.
 
 Its bucket bounds are much lower than the round trip's and must be, since it measures a part
 of what the round trip measures. Bounds chosen for the whole would put every observation in
@@ -468,8 +481,8 @@ the total stay exact. What degrades is quantile resolution, since `histogram_qua
 cannot interpolate within an unbounded bucket. That is the reason the top bound belongs well
 above the working range, not a reason to try to cap it.
 
-The dev bounds run from 10µs to 5s, with the boundaries between 100µs and 250µs set by
-measurement rather than guessed. Over 12,000 orders at 100 per second, 11,597 of them landed
+The dev bounds run from 10µs to 250 seconds, with the boundaries between 100µs and 250µs set
+by measurement rather than guessed. Over 12,000 orders at 100 per second, 11,597 of them landed
 between those two figures. With nothing in between, a median could only be arrived at by
 assuming the orders were spread evenly across a gap 150 microseconds wide, which they are
 not: the figure that came out barely moved whatever happened inside the gap, which reads as a
@@ -537,6 +550,30 @@ The count is taken as the message leaves the queue, so it is how many are still 
 Reading it costs one relaxed atomic load of a count the queue already maintains for its
 watermark handlers.
 
+### Other metrics
+
+The remaining metrics, with the help text each is registered with. Each scope given here is
+the `scope` label.
+
+| Metric | Type | Registered by, and scope | Measures |
+|---|---|---|---|
+| `itc_queue_latency_nanoseconds` | histogram | `ApplicationThread`, the thread's `metrics_scope` | Nanoseconds a message spent between being enqueued and being dispatched |
+| `itc_queue_latency_unstamped_total` | counter | `ApplicationThread`, the thread's `metrics_scope` | Messages dispatched with no enqueue stamp, so excluded from the latency histogram |
+| `reactor_command_latency_nanoseconds` | histogram | The reactor; scope `order_path` or `other` | Nanoseconds a command spent between an application thread enqueueing it and the reactor picking it up. `order_path` holds commands a member was waiting on |
+| `reactor_command_latency_unstamped_total` | counter | The reactor; scope `reactor` | Commands picked up with no enqueue stamp |
+| `reactor_send_path_nanoseconds` | histogram | The reactor; scope `order_path` or `other` | Nanoseconds the reactor took to turn a send request into bytes on a socket |
+| `reactor_receive_path_nanoseconds` | histogram | The reactor; scope `reactor` | Nanoseconds the reactor took to turn readable bytes into a message on an application thread's queue |
+| `reactor_lap_nanoseconds` | histogram | The reactor; scope `reactor` | Nanoseconds between one look for work and the next, during which nothing is noticed |
+| `wal_append_nanoseconds` | histogram | The sequencer; scope `sequencer_thread` | Nanoseconds spent committing one record to the write-ahead log, on the reactor thread |
+| `throttled_new_orders_total`, `throttled_amends_total`, `throttled_cancels_total` | counter | Both order gateways; scope `gateway_thread` | Orders, amends and cancels refused because the session had reached its limit per second |
+| `order_book_entries`, `order_book_slots`, `order_book_migrating`, `order_book_largest_allocation_bytes` | gauge | The matching engine, through `OrderBookMetricsReporter` | Orders resting in the book; hash slots claimed to hold them; 1 while the book is being moved into a larger table; the largest single table allocation the book has made |
+| `pool_objects_allocated`, `pool_objects_available`, `pool_bytes_in_use`, `pool_bytes_reserved`, `pool_allocations`, `pool_expansion_events`, `pool_allocation_failures` and six more `pool_*` gauges | gauge | Both order gateways, through `PoolMetricsReporter`, for the pool of open orders; scope names the pool | One pool allocator's statistics, sampled by its owner: occupancy, bytes, allocations by path, and expansions |
+
+The reactor registers its metrics for every component whose metrics are enabled, whether or not
+any of its threads names a scope. Its histograms use the same bucket bounds as
+`itc_queue_latency_nanoseconds`, so that the two halves of one hand-off between threads can be
+added together or compared.
+
 ---
 
 ## What a scrape returns
@@ -585,9 +622,9 @@ that seam if it turns out to be wanted.
 
 ## Open
 
-- **Several components still set no `metrics_scope`.** Both order gateways, the matching
-  engine and the sequencer are opted in; the arbiter, witness, authentication services,
-  matching engine publisher and topic probe are not, so they expose no per-thread series.
+- **Several components set no `metrics_scope`.** Both order gateways, the matching engine and
+  the sequencer are opted in; the arbiter, witness, authentication services, matching engine
+  publisher and topic probe are not, so they expose only the reactor's series.
 - **Bucket boundaries beyond the gateway histogram**, for any later latency metric.
 - **Scrape interval and retention**, and whether a Prometheus server is deployed alongside
   the venue or scrapes from outside it.
