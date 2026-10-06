@@ -50,7 +50,7 @@ The witness logs when the arbiter it grants to changes, not at every renewal.
 
 | Port | Usage |
 |------|-------|
-| 7100 | Inbound connections from arbiters (lease requests) |
+| 11100 | Inbound connections from arbiters (lease requests), in every environment file |
 
 ---
 
@@ -58,7 +58,8 @@ The witness logs when the arbiter it grants to changes, not at every renewal.
 
 | Key | Purpose |
 |-----|---------|
-| `[network] listen_port` | Inbound arbiter connections (default 7100) |
+| `[network] listen_port` | Inbound arbiter connections. Required; the environment files set 11100 |
+| `[ha] enabled` | Must be true. With high availability off there are no arbiters to vote on, so the witness logs an error and refuses to start rather than run idle |
 | `[lease] period_milliseconds` | How long a grant lasts, and how long the witness grants nothing after starting |
 | `[lease] drift_allowance_milliseconds`, `renewal_interval_milliseconds` | Read so the configuration can be checked for consistency; the witness holds no lease itself |
 

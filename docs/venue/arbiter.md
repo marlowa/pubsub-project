@@ -22,11 +22,21 @@ requests from component instances, which a leader sends about once a second.
 
 ## What the arbiter holds
 
-On disk, one small file: the promise of its vote in deciding which arbiter is active, or that it
-is the active arbiter (`[lease] promise_file`). An arbiter restarted by its supervisor
-reads it back and carries on, so a quick restart of the active arbiter does not make the other one
-active. The file is written with the machine's boot id and ignored after a reboot. See
-[Deciding leadership by majority, with leases](../availability/majority_leases.md), rule 6.
+On disk, two small files:
+
+- **The promise of its vote** in deciding which arbiter is active, or that it is the active arbiter
+  (`[lease] promise_file`). An arbiter restarted by its supervisor reads it back and carries on, so
+  a quick restart of the active arbiter does not make the other one active. The file is written
+  with the machine's boot id and ignored after a reboot. See
+  [Deciding leadership by majority, with leases](../availability/majority_leases.md), rule 6.
+- **The newest statement it holds from each component pair's leader** about whether that leader's
+  peer may lead (`<promise_file>.component_statements`, `ComponentStatementStore.hpp`). A sequencer
+  leader says its peer may not lead while the matching engine has acted on commands the peer does
+  not hold, and the arbiter refuses a lease to an instance such a statement rules out. Unlike a
+  promise, a statement must survive the arbiter restarting, or a restarted arbiter could elect an
+  instance that lacks those commands. The file is replaced by writing a temporary file, flushing
+  it and renaming it over the old one, so a reader sees the old record or the new one whenever
+  the process dies.
 
 In memory it holds:
 
@@ -34,7 +44,8 @@ In memory it holds:
 - while active, one voter per component group: the promise it has made in that group, if any, and
   the highest epoch it has granted. See `applications/arbiter/ComponentLeaseVoters.hpp`;
 - the highest epoch granted in each group, whether by this arbiter or, as its peer reports, by the
-  other one.
+  other one;
+- the newest leader statement for each group, as above.
 
 An arbiter that becomes active does not know what the previously active arbiter promised, so it
 grants no component a lease for one lease period. During that period each component leader renews
@@ -64,7 +75,7 @@ The arbiter answers as voter 3. The instances of a pair are 1 and 2.
 | PDU | ID | Direction | Purpose |
 |-----|----|-----------|---------|
 | `LeaseRequest` / `LeaseGrant` / `LeaseRefusal` | 130-132 | Arbiter ↔ arbiter | Deciding which arbiter is active, in group `arbiter` |
-| `ArbiterStateRecord` | 400 | Arbiter → peer arbiter | The highest epoch granted in one component group, sent when it rises and for every group when the link comes up |
+| `ArbiterStateRecord` | 400 | Arbiter → peer arbiter | The highest epoch granted in one component group, and the newest statement held from that group's leader about whether its peer may lead. Sent when either changes, and for every group when the link comes up |
 
 ### Arbiter and witness
 
@@ -105,12 +116,15 @@ second defence. This system does **not** do power fencing (STONITH).
 
 ## Port Allocation
 
+The same in every environment file:
+
 | Port | Usage |
 |------|-------|
-| 7200 | Inbound component connections (lease requests) |
-| 7203 | Arbiter primary peer listener (arbiter-to-arbiter PDUs) |
-| 7204 | Arbiter secondary peer listener |
-| 7100 | Witness inbound (arbiter → witness lease requests) |
+| 11200 | Arbiter primary: inbound component connections (lease requests) |
+| 11201 | Arbiter secondary: inbound component connections |
+| 11203 | Arbiter primary peer listener (arbiter-to-arbiter PDUs) |
+| 11204 | Arbiter secondary peer listener |
+| 11100 | Witness inbound (arbiter → witness lease requests) |
 
 ---
 
@@ -120,7 +134,8 @@ Key `arbiter_primary.toml` / `arbiter_secondary.toml` sections:
 
 | Key | Purpose |
 |-----|---------|
-| `[network] listen_port` | Component connection listener (default 7200) |
+| `[network] listen_port` | Component connection listener |
+| `[ha] enabled` | Must be true; an arbiter refuses to start when high availability is off |
 | `[ha] instance_id` | 1 for the primary, 2 for the secondary; the primary is preferred when both start together |
 | `[peer] instance_id` | The peer arbiter's `instance_id`, which identifies its vote |
 | `[peer] listen_port` | Arbiter-to-arbiter listener port |
@@ -129,7 +144,7 @@ Key `arbiter_primary.toml` / `arbiter_secondary.toml` sections:
 | `[lease] period_milliseconds` | How long a grant lasts, and how long a voter that has just started grants nothing |
 | `[lease] drift_allowance_milliseconds` | How much shorter than the period an instance takes a lease it holds to be |
 | `[lease] renewal_interval_milliseconds` | How often a leader renews |
-| `[lease] promise_file` | Where this arbiter records its promise in deciding which arbiter is active; see above |
+| `[lease] promise_file` | Where this arbiter records its promise in deciding which arbiter is active; the component statements are kept beside it, in the same name with `.component_statements` added. See above |
 
 The three `[lease]` values are expanded from the environment's `[shared]` section, because every
 voter and every instance holding a lease must use the same values.

@@ -8,7 +8,8 @@ PostgreSQL directly. It provides:
 
 - Full CRUD for firms, comp_ids, and gateway permissions.
 - Password management: derives SCRAM-SHA-256 credentials, writes them to the database, and
-  pushes them live to the authentication service via PDU 510/512/514 over TLS.
+  pushes each change live to **both** authentication service instances via PDU 510/512/514 over
+  TLS (`AuthServiceClient`), so that neither instance's in-memory copy goes stale.
 - A read-only credential export path (`db/export_credentials.py`) that snapshots current
   credentials to `credentials.toml` for the authentication service to load at startup.
 
@@ -22,11 +23,10 @@ stylesheet, `src/main/resources/static/desktop.css`, bundled in the JAR and serv
 `/static/desktop.css` — no CDN dependency, so it works in air-gapped environments. The look
 matches the fix-test-client: monospace, grey chrome, dense tables, bevelled buttons.
 
-Pico.css was removed on 2026-07-29; it was sized for touch screens and wrong for a dense
-desktop administration tool. The templates were left in their classless shape, so
-`desktop.css` styles bare `<main>`, `<article>`, `<hgroup>` and `<mark>`, the
-`header > nav > ul` menu bar, `a[role=button]`, `.grid`, and forms written as
-`<label>Caption <input></label>`.
+No CSS framework is used: one sized for touch screens is wrong for a dense desktop
+administration tool. The templates are written without classes, so `desktop.css` styles bare
+`<main>`, `<article>`, `<hgroup>` and `<mark>`, the `header > nav > ul` menu bar,
+`a[role=button]`, `.grid`, and forms written as `<label>Caption <input></label>`.
 
 Branding: the stylesheet declares its recolourable values as custom properties in a `:root`
 block, and `brand.css-file` is inlined *after* the stylesheet link, so a site override wins.
@@ -44,8 +44,9 @@ See the README for the list.
   first logon after the credentials are next exported, in practice the next trading day: no admin
   message carries it to a running authentication service.
 - **Gateway Permissions** — list, inline add form.
-- **Set Password** — per-comp-id page; derives SCRAM → writes DB → sends PDU 510 to the
-  authentication service.
+- **Set Password** — per-comp-id page; derives SCRAM → writes DB → sends PDU 510, carrying the
+  password, to both authentication service instances, each of which derives its own credential
+  from it with a salt of its own.
 
 **Admin UI authentication:** Jenkins-style login system backed by `admin_users.toml` (no
 database dependency). BCrypt-hashed passwords (jbcrypt 0.4, cost 12). Two roles:
@@ -75,7 +76,7 @@ service via PDU:
 
 | PDU | ID | Trigger |
 |-----|----|---------|
-| `SetCredentialRequest` | 510 | Password set — admin derives SCRAM, pushes to auth service |
+| `SetCredentialRequest` | 510 | Password set — carries the plaintext password, protected by TLS; the auth service derives the SCRAM credential |
 | `SetCredentialResult` | 511 | Auth service confirms credential installed |
 | `RemoveCredentialRequest` | 512 | Firm or comp_id disabled, locked, or deleted |
 | `RemoveCredentialResult` | 513 | Auth service confirms credential removed |
@@ -99,7 +100,8 @@ cd java/admin-service && mvn package
 java -jar target/admin-service-*.jar
 ```
 
-Service listens on port 8080.
+The service listens on `server.port` from `application.properties`, which `deploy.py` fills in
+from `[admin_service] server_port` (8082 in every environment file; 8082 is also the default).
 
 **Maven plugins:** Checkstyle, SpotBugs (with DI false-positive exclude filter), JaCoCo
 (80% line coverage threshold), OWASP Dependency Check (run manually with

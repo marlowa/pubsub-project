@@ -291,7 +291,9 @@ are loaded at startup from `credentials.toml` into an `unordered_map<string, Scr
 held in `AuthenticationThread`. After that they change only through the admin PDUs —
 `SetCredentialRequest`, `RemoveCredentialRequest` and `RestoreCredentialRequest` — which the
 admin service sends to both instances, and which update the in-memory copy without restarting
-the service. Nothing re-reads the file while the service runs.
+the service. After each change the service writes the whole set back to `credentials.toml`, by
+writing a temporary file and renaming it over the old one, so a restart loads the current set.
+Nothing re-reads the file while the service runs.
 
 ---
 

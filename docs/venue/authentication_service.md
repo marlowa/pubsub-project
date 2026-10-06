@@ -2,12 +2,12 @@
 
 ## Role
 
-The authentication service (`applications/authentication_service/`) validates FIX client
-logons on behalf of the FIX order gateway. When a FIX client sends a Logon, the gateway does not
-check the password itself — it runs a SCRAM exchange against the authentication service and
-admits the session only on a `Granted` result.
+The authentication service (`applications/authentication_service/`) validates member logons on
+behalf of both order gateways, FIX and binary. When a member logs on, the gateway does not check
+the password itself — it runs a SCRAM exchange against the authentication service and admits the
+session only on a `Granted` result.
 
-It is a small, single-threaded C++ reactor application. It holds one piece of state: an
+It is a small C++ reactor application with one application thread. It holds one piece of state: an
 in-memory map of `comp_id → SCRAM credential`, loaded at startup and mutated at runtime by the
 admin service (see the **Credential Management** section below).
 
@@ -98,15 +98,15 @@ for the full model. In short:
 
 ## Port Allocation
 
-Two listeners per instance (example ports; see the environment TOML for actual values):
+Two listeners per instance, with the same ports in every environment file:
 
 | Listener | Instance `a` | Instance `b` | Peer |
 |----------|:------------:|:------------:|------|
-| `[network]` — FIX-logon authentication | 7070 | 7071 | Order gateway |
-| `[admin]` — credential management (TLS) | 7072 | 7073 | Admin service |
+| `[network]` — logon authentication (plain TCP) | 11070 | 11071 | Order gateways |
+| `[admin]` — credential management (TLS) | 11072 | 11073 | Admin service |
 
 The admin channel is TLS (the service presents `admin.crt`; client-certificate verification is
-off by default). The network channel carries the SCRAM exchange only.
+off by default). The network channel carries the SCRAM exchange only, and is not encrypted.
 
 ## Configuration
 
@@ -118,7 +118,7 @@ off by default). The network channel carries the SCRAM exchange only.
 | `[network] listen_host / listen_port` | Gateway-facing SCRAM listener |
 | `[admin] listen_port` | Admin-service credential-management listener |
 | `[admin] tls_certificate_path / tls_private_key_path / tls_ca_path` | Admin-channel TLS; `tls_require_client_certificate` gates mTLS |
-| `[logging]`, `[reactor]`, `[event_queue_pool]`, `[command_queue_pool]` | Standard framework sections |
+| `[logging]`, `[metrics]`, `[reactor]`, `[event_queue_pool]`, `[command_queue_pool]` | Standard framework sections |
 
 Config placeholders use the `auth_service_a_*` / `auth_service_b_*` namespace, expanded from
 the `[auth_service_a]` / `[auth_service_b]` sections of the environment TOML by `deploy.py`.
