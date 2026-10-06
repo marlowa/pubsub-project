@@ -1,10 +1,19 @@
 # FIX Load Client
 
-**Status: DRAFT, 2026-08-09. Nothing built. Not before 0.3.0.**
+**Status: a Python FIX load client exists; the C++ client designed here is not built.**
 
-A load generator that speaks FIX, so the trading-day profile can drive the FIX order gateway as
-well as the binary one, and the cost of FIX parsing can be measured on a normal day rather than
-inferred from a profiler.
+`scripts/fix_load_client.py` drives the FIX order gateway at a chosen rate, with the same order
+shape, options and summary as `binary_load_client`, so that the two gateways can be compared. It
+is deliberately minimal: no resend handling, sequence numbers reset at every logon, no TLS, and
+almost no parsing of what comes back (its own header lists what it leaves out and why).
+`dashboard_load.py --mode compare` runs it and `binary_load_client` in lockstep at identical
+rates, and the comparison in [Latency findings](../operations/latency_findings.md) was made that
+way. The latency it reports is the venue's own, from `order_round_trip_nanoseconds` and
+`order_ingress_to_forward_nanoseconds` measured inside the gateways, so a pause in the Python
+client does not appear as venue latency.
+
+What remains missing is FIX in the trading-day profile, and the C++ client this document designs
+for it.
 
 ## The gap
 
@@ -12,28 +21,29 @@ inferred from a profiler.
 consequences follow that are easy to miss.
 
 **The trading-day profile is binary-only.** `perf_run.py`'s `run_profile_phase()` invokes
-`binary_load_client` unconditionally. Every scenario in
+`binary_load_client` unconditionally, and `fix_load_client.py` is not used by `perf_run.py`. Every scenario in
 [Compressed Trading Day Load Profile](../operations/trading_day_load.md) — the phases, the cancels, the
 sustained hour, the memory findings — is unavailable over FIX.
 
-**`--gateway fix` drives `f8test`, which is not ours.** It is external to this repository, and
+**`perf_run.py --gateway fix` drives `f8test`, which is not ours.** It is external to this repository, and
 it dies on a Logon-level gap, which is why the gateway's resend path has no end-to-end test. Owning the client removes an external
 dependency that is known to fail on the case a load run is most likely to produce.
 
 ## Why this is worth building
 
-**The comparison was designed for and cannot be run.** `environments/dev.toml` ranks only the
+**The comparison can be run, but not on a trading day.** `environments/dev.toml` ranks only the
 `_a` instance of each protocol for a dedicated core, and says why: the two measured gateways are
 one rank group so they "can never be split across core types… what makes the FIX-versus-binary
-comparison valid by construction rather than by arithmetic accident." The core-layout machinery
-exists to make a comparison that has no FIX-side load generator.
+comparison valid by construction rather than by arithmetic accident." `dashboard_load.py --mode
+compare` makes that comparison at matched steady rates. What it cannot do is put the FIX gateway
+through the trading-day profile's phases, cancels and sustained hour.
 
-**The charting end is already done.** `pubsub_metrics.py` synthesises
+**The charting end is done.** `pubsub_metrics.py` synthesises
 `compare:order_round_trip_nanoseconds` for any histogram exposed by more than one component, and
-`--overlay` draws them on one axes. Only the load client is missing.
+`--overlay` draws them on one axes.
 
-**What exists is not the measurement wanted.** A FIX-versus-binary comparison was run on
-2026-08-04, 20,000 orders per gateway:
+**A saturating comparison is not the measurement wanted.** A FIX-versus-binary comparison was run
+on 2026-08-04 with `perf_run.py`, 20,000 orders per gateway:
 
 | | p50 | p99 | mean |
 |---|---|---|---|
@@ -104,7 +114,8 @@ Throughput is not the argument — a managed runtime would reach this profile's 
 difficulty. The argument is that this entire body of work lives in the tail: a 2.5 ms ceiling,
 p99.9 figures, multi-second stalls that turned out to be real defects. A client that can inject
 its own pauses into that measurement makes every tail reading arguable. `binary_load_client` is
-C++ for this reason and its counterpart should be.
+C++ for this reason and its counterpart should be. `fix_load_client.py` avoids the problem a
+different way: it reports no latency of its own, and the measurement is taken inside the venue.
 
 ## Build on `fix_codec`
 
@@ -126,7 +137,7 @@ loop.
 
 ## Sizing
 
-`BinaryLoadClientMain.cpp` is 840 lines in one file, linking `pubsub_itc_fw`. The FIX equivalent
+`BinaryLoadClientMain.cpp` is about 860 lines in one file, linking `pubsub_itc_fw`. The FIX equivalent
 is larger — session layer, TLS, SCRAM logon, dictionary-driven encoding — but the estimate is
 **1,200–1,800 lines, of which roughly 300 already exists** and would move into the shared harness.
 
