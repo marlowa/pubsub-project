@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 117 |
-| Open | 41 (27 defects, 14 tasks) |
-| Closed | 76 |
+| Open | 40 (26 defects, 14 tasks) |
+| Closed | 77 |
 | Next id | BUG-0118 |
 
 ## Open bugs by severity
 
-12 high, 24 medium, 5 low.
+12 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -48,7 +48,6 @@
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
 | [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
 | [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
-| [BUG-0117](#bug_0117) | medium | defect | Scenario 1 fails now and then: after a change of leader the member's client loses its place in the message numbering |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -153,40 +152,6 @@ went looking.
 
 
 
-
-### BUG-0117: Scenario 1 fails now and then: after a change of leader the member's client loses its place in the message numbering {#bug_0117}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-04 |
-| Recorded | 2026-10-05 |
-| How | `ha_test.py` scenario 1 failing in two of the seven runs of it on 2026-10-04 and 2026-10-05 |
-| Impact | Not established whether the venue or the test client is at fault. If the venue: a member can be sent a gap in its message numbering during a burst of reports, ask for a resend, and disconnect |
-
-**What happens.** Scenario 1 sends 20,000 orders in a burst just before the leading sequencer is killed.
-The venue processes them in about 50 milliseconds. On taking the lead, the new sequencer forwards the
-reports it kept, marked as possible repeats: because every one of them falls within the last
-100 milliseconds before the old leader died, it forwards all 21,000 again (the design of
-[BUG-0116](#bug_0116), whose delay keeps the last 100 milliseconds). The gateway sends them to the
-member within about 50 milliseconds. In the failing runs, the member's FIX client then sent a
-ResendRequest from a message number well below the gateway's count, 36504 when the gateway had sent
-42,000 in the run of 2026-10-05, and closed its connection in the same moment. The scenario writes its
-recovery orders to that client, so they never reach the venue, and the scenario fails. In the passing
-runs, the same 21,000 repeats were sent and the client coped.
-
-**Not established.** Why the client saw a gap. The gateway logged no failed or dropped send: a send that
-cannot be completed at once waits rather than being dropped, and a failed connection is torn down and
-logged. The client's own log is not kept by the scenario, so what it received cannot be checked. The
-resend itself is not the problem: it was answered from the log (bounded since
-[BUG-0113](#bug_0113)'s interim fix).
-
-**What would settle it.** Keeping the client's log, or a capture of what the gateway sent, from a
-failing run, and comparing the message numbers received with those sent. If the gateway sent a gap,
-it is a venue defect and serious. If not, it is the test client, and scenario 1 needs a client that
-copes with a burst of repeats. Separately, 21,000 repeats at once is the price of BUG-0116's
-100-millisecond delay at this burst rate, about ten times the highest rate measured in production-like
-runs.
 
 ### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
 
@@ -310,6 +275,10 @@ from its gateways, which the design in
 [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md) uses as a rare
 fallback. One slow member could stop a gateway serving every other member on it.
 [BUG-0104](#bug_0104) is about the same machinery from the reading side.
+
+The same slot was also losing messages: while a send waited in it, the reactor went on taking
+commands and kept each further waiting send in the slot, replacing the one there. That is fixed under
+[BUG-0117](#bug_0117); what remains here is that one waiting send holds up every connection.
 
 **What closing it needs.** A blocked send holds up only its own connection: a waiting slot, or a
 queue of fixed size, for each connection, with the reactor going on to serve the others. What a
@@ -2397,6 +2366,47 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0117: A burst of sends to a connection whose socket was full lost the sends that had to wait {#bug_0117}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-04 |
+| Recorded | 2026-10-05 |
+| Fixed | 2026-10-06 -- the reactor takes no further command while a send waits in its slot, and a manager refuses to overwrite a waiting send |
+| How | `ha_test.py` scenario 1 failing in two of the seven runs of it on 2026-10-04 and 2026-10-05 |
+| Impact | Any component sending a burst to a peer that did not read fast enough lost messages silently. A FIX member lost 3,271 consecutive execution reports in one burst, found a jump in its message numbering, and disconnected |
+
+**What was seen.** `ha_test.py` scenario 1 failed in two of seven runs. After a change of sequencer
+leader the new leader forwarded 21,000 kept reports again, marked as possible repeats, and the gateway
+sent them to the member within about 50 milliseconds. The member's FIX client then logged *"Invalid
+Sequence number, received: 39776 expected: 36505 - will logoff"*. Its protocol log showed every message
+from 1 to 36503 arriving in order and then 39775: the 3,271 messages numbered 36504 to 39774 never
+arrived, although the gateway had numbered them and counted them sent.
+
+**Why.** When a send cannot be written to its socket at once, the connection manager keeps it in a
+waiting slot, one per manager, until the socket drains. `Reactor::process_control_commands` checked
+that the slots were empty only once, before its loop. Inside the loop it went on taking commands, and
+each further send that found its connection still busy was kept in the same slot, replacing the send
+already there. Every send but the last of the burst after the socket filled was lost, and nothing was
+logged.
+
+**The fix.** The loop now stops taking commands as soon as either manager has a send waiting, leaving
+the rest queued in order until the slot drains. Each manager keeps a waiting send through
+`keep_waiting_send`, which refuses, with `PreconditionAssertion`, to replace a send already waiting,
+so a future change that breaks the guard fails loudly instead of losing messages.
+
+**Evidence.** A new integration test, `EverySendOfABurstToAFullSocketIsDeliveredInOrder`, sends 5,000
+numbered messages from an application thread to a socket with a 4 KiB send buffer whose reader waits
+200 milliseconds before reading. Before the fix it failed every time, with messages 0 to 24 arriving and
+then 4999, 4,974 lost; after it, it passed five runs of five. Every framework unit test (896) and
+integration test (57) passes. Scenario 1 passed six runs of six, and the test client's session logs from
+those runs record no sequence error.
+
+The one waiting slot per manager, which holds up every connection behind one slow one, remains
+[BUG-0112](#bug_0112). The size of the burst of repeats, 21,000 at this rate, follows from
+[BUG-0116](#bug_0116)'s 100-millisecond delay.
 
 ### BUG-0106: A damaged entry in the write-ahead log silently drops the rest of its segment {#bug_0106}
 

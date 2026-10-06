@@ -171,7 +171,11 @@ Each `OutboundConnection` has two lifecycle phases:
 **`pending_send_` pattern:** if a `SendPdu` cannot proceed (partial write in flight or
 connection not yet established), the command is stashed in the manager's
 `std::optional<ReactorControlCommand> pending_send_`. `drain_pending_send()` is called at
-the start of `process_control_commands()` each tick to retry it.
+the start of `process_control_commands()` each tick to retry it. While a send waits there, the
+reactor takes no further command: the rest stay queued, in order, and the waiting send is never
+replaced by another, which would lose it ([BUG-0117](../bug_list.md#bug_0117)). The consequence is
+that one waiting send holds up every send the reactor would otherwise make, on any connection
+([BUG-0112](../bug_list.md#bug_0112)).
 
 ---
 

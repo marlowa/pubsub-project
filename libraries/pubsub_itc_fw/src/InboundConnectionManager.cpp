@@ -378,7 +378,7 @@ bool InboundConnectionManager::process_send_pdu_command(const ReactorControlComm
     InboundConnection& conn = *it->second;
 
     if (conn.handler()->has_pending_send()) {
-        pending_send_ = command;
+        keep_waiting_send(command);
         return true;
     }
 
@@ -421,7 +421,7 @@ bool InboundConnectionManager::process_send_raw_command(const ReactorControlComm
     InboundConnection& conn = *it->second;
 
     if (conn.handler()->has_pending_send()) {
-        pending_send_ = command;
+        keep_waiting_send(command);
         return true;
     }
 

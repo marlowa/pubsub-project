@@ -414,12 +414,12 @@ bool OutboundConnectionManager::process_send_pdu_command(const ReactorControlCom
                    "OutboundConnectionManager::process_send_pdu_command: outbound connection {} "
                    "not yet established",
                    cid.get_value());
-        pending_send_ = command;
+        keep_waiting_send(command);
         return true;
     }
 
     if (conn.has_pending_send()) {
-        pending_send_ = command;
+        keep_waiting_send(command);
         return true;
     }
 
@@ -471,12 +471,12 @@ bool OutboundConnectionManager::process_send_raw_command(const ReactorControlCom
 
     if (!conn.is_established()) {
         // TLS handshake still in progress -- stash until established.
-        pending_send_ = command;
+        keep_waiting_send(command);
         return true;
     }
 
     if (conn.protocol_handler()->has_pending_send()) {
-        pending_send_ = command;
+        keep_waiting_send(command);
         return true;
     }
 

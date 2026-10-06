@@ -224,8 +224,10 @@ is full. `PduFramer` handles this:
 
 Each connection manager owns one `std::optional<ReactorControlCommand> pending_send_`.
 `drain_pending_send()` is called at the start of `process_control_commands()` each tick to
-retry any stashed `SendPdu` that could not proceed. A stalled peer stalls only its own
-connection's pending send; other connections are unaffected.
+retry any stashed send that could not proceed. While a send waits there, the reactor takes no
+further command, so later sends stay queued in order and the waiting send is never replaced
+([BUG-0117](../bug_list.md#bug_0117)). A peer that stops reading therefore holds up every send the
+reactor makes, on every connection, until it reads again ([BUG-0112](../bug_list.md#bug_0112)).
 
 ### Idle Connection Timeout
 

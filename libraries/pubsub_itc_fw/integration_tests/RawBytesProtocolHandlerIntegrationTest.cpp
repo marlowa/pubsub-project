@@ -94,10 +94,12 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -928,6 +930,115 @@ TEST_F(RawBytesProtocolHandlerIntegrationTest, TeardownWhilePendingSendFreesChun
         << "Listener: ConnectionLost not received after peer closed: " << last_wait_failure_description();
 
     shutdown_and_join(*listener_reactor, listener_reactor_thread);
+}
+
+// A burst of sends to a connection whose socket is full must all be delivered, in order. When a send
+// cannot be written at once, the reactor keeps it in a waiting slot until the socket drains. It must
+// not then take a further send for that connection and keep that one in the same slot, which would
+// lose the send already waiting there. This is how a FIX member lost 3,271 consecutive execution
+// reports in a burst of 21,000, seen as a jump in its message numbering (docs/bug_list.md, BUG-0117).
+class NumberedBurstListenerThread : public ApplicationThread {
+  public:
+    static constexpr int message_count = 5000;
+    static constexpr size_t message_size = 100;
+
+    NumberedBurstListenerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "NumberedBurstListenerThread", ThreadID{2}, make_queue_config(),
+                            make_allocator_config("NumberedBurstListenerPool"), make_thread_config()) {}
+
+    std::atomic<bool> connection_established{false};
+    std::atomic<bool> burst_sent{false};
+    ConnectionID conn_id{};
+
+  private:
+    static ApplicationThreadConfiguration make_thread_config() {
+        ApplicationThreadConfiguration cfg{};
+        cfg.outbound_slab_size = 2 * 1024 * 1024;
+        return cfg;
+    }
+
+  protected:
+    void on_connection_established(ConnectionID id) override {
+        conn_id = id;
+        connection_established.store(true, std::memory_order_release);
+    }
+
+    void on_connection_lost(const ConnectionID&, const std::string&) override {
+        shutdown("peer disconnected");
+    }
+
+    void on_raw_socket_message(const EventMessage& message) override {
+        commit_raw_bytes(conn_id, message.payload_size());
+        if (burst_sent.load(std::memory_order_acquire)) {
+            return;
+        }
+        // Each message starts with its number, so the receiver can tell which, if any, are missing.
+        std::array<uint8_t, message_size> buffer{};
+        for (int64_t number = 0; number < message_count; ++number) {
+            buffer.fill(static_cast<uint8_t>(number));
+            std::memcpy(buffer.data(), &number, sizeof(number));
+            send_raw(conn_id, buffer.data(), static_cast<uint32_t>(buffer.size()));
+        }
+        burst_sent.store(true, std::memory_order_release);
+    }
+
+    void on_itc_message([[maybe_unused]] const EventMessage& msg) override {}
+};
+
+TEST_F(RawBytesProtocolHandlerIntegrationTest, EverySendOfABurstToAFullSocketIsDeliveredInOrder) {
+    const ServiceRegistry listener_registry;
+    // A small send buffer on the accepted socket, so the burst fills it almost at once.
+    ReactorConfiguration listener_cfg = make_reactor_config();
+    listener_cfg.socket_send_buffer_size = tiny_rcvbuf_size;
+    auto listener_reactor = std::make_unique<Reactor>(listener_cfg, listener_registry, logger_->logger);
+    set_current_reactor(*listener_reactor);
+    listener_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2}, ProtocolType{ProtocolType::RawBytes},
+                                                raw_buffer_capacity);
+    auto listener_thread = ApplicationThread::create<NumberedBurstListenerThread>(logger_->logger, *listener_reactor);
+    listener_reactor->register_thread(listener_thread);
+    std::thread listener_reactor_thread([&]() { listener_reactor->run(); });
+    const uint16_t listen_port = start_listener_reactor(*listener_reactor);
+
+    const int sock_fd = connect_raw_socket(listen_port);
+    ASSERT_NE(sock_fd, -1) << "Failed to connect raw socket";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->connection_established.load(std::memory_order_acquire); }))
+        << "Listener: ConnectionEstablished not received: " << last_wait_failure_description();
+
+    const std::string trigger = make_framed(request_payload);
+    ASSERT_TRUE(send_all(sock_fd, trigger.data(), trigger.size())) << "Failed to send trigger message";
+    EXPECT_TRUE(wait_for([&]() { return listener_thread->burst_sent.load(std::memory_order_acquire); }))
+        << "Listener: burst not sent: " << last_wait_failure_description();
+    // Not reading for a while, so the reactor meets many sends while the socket is full.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Read until every byte has arrived, or nothing has arrived for two seconds.
+    constexpr size_t expected_bytes = NumberedBurstListenerThread::message_count * NumberedBurstListenerThread::message_size;
+    std::vector<uint8_t> received;
+    received.reserve(expected_bytes);
+    std::vector<uint8_t> chunk(65536);
+    while (received.size() < expected_bytes) {
+        pollfd waiting{sock_fd, POLLIN, 0};
+        if (::poll(&waiting, 1, 2000) <= 0) {
+            break;
+        }
+        const ssize_t n = ::recv(sock_fd, chunk.data(), chunk.size(), 0);
+        if (n <= 0) {
+            break;
+        }
+        received.insert(received.end(), chunk.begin(), chunk.begin() + n);
+    }
+    ::close(sock_fd);
+    shutdown_and_join(*listener_reactor, listener_reactor_thread);
+
+    EXPECT_EQ(received.size(), expected_bytes) << "sends were lost: " << (expected_bytes - received.size()) / NumberedBurstListenerThread::message_size
+                                               << " message(s) missing";
+    // Each message, in order, carries the next number.
+    for (size_t index = 0; index + NumberedBurstListenerThread::message_size <= received.size(); index += NumberedBurstListenerThread::message_size) {
+        int64_t number = 0;
+        std::memcpy(&number, received.data() + index, sizeof(number));
+        ASSERT_EQ(number, static_cast<int64_t>(index / NumberedBurstListenerThread::message_size))
+            << "message " << index / NumberedBurstListenerThread::message_size << " carries number " << number << ": the ones between are missing";
+    }
 }
 
 } // namespaces

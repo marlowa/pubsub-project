@@ -1203,6 +1203,12 @@ size_t Reactor::process_control_commands(size_t max_commands) {
         if (max_commands != 0 && dealt_with >= max_commands) {
             break;
         }
+        // A send that could not be written at once has just been kept in its manager's waiting slot.
+        // Taking another command now could keep a second send in the same slot and lose the first, so
+        // the rest stay queued, in order, until the slot drains (docs/bug_list.md, BUG-0117).
+        if (inbound_manager_.is_send_blocked() || outbound_manager_.is_send_blocked()) {
+            break;
+        }
         auto maybe_command = command_queue_.dequeue();
         if (!maybe_command.has_value()) {
             break;

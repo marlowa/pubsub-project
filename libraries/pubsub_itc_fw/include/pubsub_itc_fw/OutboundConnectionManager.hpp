@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/DeliverLostEventFlag.hpp>
 #include <pubsub_itc_fw/ExpandableSlabAllocator.hpp>
 #include <pubsub_itc_fw/OutboundConnection.hpp>
+#include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
@@ -342,6 +343,17 @@ class OutboundConnectionManager {
     std::unordered_set<std::string> ever_established_services_;
 
     std::optional<ReactorControlCommand> pending_send_;
+
+    // Keeps a send that cannot be written at once until its connection drains. There is one slot, and
+    // the reactor takes no further command while it is full; finding it full here would mean a send
+    // already waiting was about to be lost, so that is refused rather than done (BUG-0117).
+    void keep_waiting_send(const ReactorControlCommand& command) {
+        if (pending_send_.has_value()) {
+            throw PreconditionAssertion("OutboundConnectionManager::keep_waiting_send: a send is already waiting, and keeping another would lose it", __FILE__,
+                                        __LINE__);
+        }
+        pending_send_ = command;
+    }
 };
 
 } // namespaces

@@ -228,7 +228,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 - `connections_` — `ConnectionID → unique_ptr<OutboundConnection>` (owns)
 - `connections_by_fd_` — `int fd → OutboundConnection*` (non-owning, for epoll dispatch)
 
-**`pending_send_` pattern:** `OutboundConnectionManager::drain_pending_send()` is called by the Reactor at the start of `process_control_commands()`. If a `SendPdu` cannot proceed (partial write in flight or connection not yet established), it is stashed in the manager's `pending_send_`. Cleared when `on_write_ready()` completes the send.
+**`pending_send_` pattern:** `OutboundConnectionManager::drain_pending_send()` is called by the Reactor at the start of `process_control_commands()`. If a `SendPdu` cannot proceed (partial write in flight or connection not yet established), it is stashed in the manager's `pending_send_`. Cleared when `on_write_ready()` completes the send. While a send waits there the reactor takes no further command, so the waiting send is never replaced (BUG-0117), and one waiting send holds up every connection (BUG-0112).
 
 ---
 
