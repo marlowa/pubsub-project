@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 121 |
-| Open | 41 (27 defects, 14 tasks) |
+| Bugs recorded | 122 |
+| Open | 42 (27 defects, 15 tasks) |
 | Closed | 80 |
-| Next id | BUG-0122 |
+| Next id | BUG-0123 |
 
 ## Open bugs by severity
 
-12 high, 24 medium, 5 low.
+12 high, 25 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -49,6 +49,7 @@
 | [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
+| [BUG-0122](#bug_0122) | medium | task | Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -153,6 +154,56 @@ went looking.
 
 
 
+
+### BUG-0122: Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism {#bug_0122}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task -- a simplification of the design, not a defect that loses or doubles orders today |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| How | Looking back over the fixes for [BUG-0112](#bug_0112) and [BUG-0118](#bug_0118), which between them added two more ways for a gateway to send commands again and a special rule at the sequencer to stop the extra copies being sequenced twice |
+| Impact | The rule that an order is never sequenced twice is not stated once and enforced in one place. It holds only because of several separate mechanisms, each reasoned about on its own, and every new way for a command to arrive twice has needed another. That is where the next defect of this kind is most likely to be |
+
+**The rule as it stands.** The leading sequencer checks a command against its log only when the
+command is marked as sent again (part 4.3, decision 2 in
+[commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md)). Every
+other command is sequenced without a check. That narrow rule is safe only as long as an unmarked
+command can never arrive after its marked copy, so each path by which a command can be sent again has
+needed its own argument, and sometimes its own mechanism:
+
+- **After a change of leader.** A gateway seeing a higher leader epoch sends its unanswered commands
+  again, marked (part 4.3).
+- **After a connection to a sequencer is established again.** Added for [BUG-0118](#bug_0118), because
+  a connection closed for a full queue ([BUG-0112](#bug_0112)) discards the commands waiting on it.
+- **While a gateway has two connections open to the leader.** Also added for BUG-0118. Unmarked
+  originals still unread on the old connection could be read after their marked copies on the new
+  one, and would be sequenced again, so the leader checks every command from that gateway until the
+  old connection ends. This rule exists only because the general rule is narrow.
+
+**The wider rule.** The leader sequences a command at most once, judged by its identity -- the
+member's comp id, the protocol and the `ClOrdID` -- whatever path it arrived by, and checks every
+command against its record of identifiers. A gateway then sends its unanswered commands again
+whenever its connection to the leader is established or the leader changes, for whatever reason,
+without anything depending on which copy arrives first. The two-connection rule above would no longer
+be needed, and neither would the reasoning about the order in which copies arrive.
+
+The mark `sent_again` would still be needed, but only to decide the reply, not whether to sequence.
+A command already in the log that is marked as sent again is answered by the routes in section 3.6 of
+the design. One that is not marked is a member reusing an identifier, which R-0119 forbids, and is
+refused. That second half is [BUG-0114](#bug_0114): the same check on every command, used to refuse.
+The two should be designed together.
+
+**What it costs.** A lookup in the record of identifiers for every command on the order path. The
+record is a hash set of 64-bit numbers; for a command not in the log, which is nearly every command,
+the lookup answers on its own, in the order of 100 nanoseconds. That figure is not yet measured on
+the order path; measuring it, by the method in `docs/operations/latency_findings.md`, is part of this
+task. A command the record may hold is checked exactly against the end of the log, as now.
+
+**Not proposed yet.** This is recorded so that the simplification is not lost, not as work to start
+now. Whether to make it, and when, is to be decided; it fits naturally with BUG-0114 and with any
+consolidated statement of the venue's end-to-end rules for commands.
 
 ### BUG-0121: A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader {#bug_0121}
 
@@ -280,6 +331,10 @@ which today only the matching engine produces; and, because the record holds 64-
 than the identifiers themselves, an exact check of each match against the log before refusing, as
 part 4.3 does for a command sent again. A scenario that reuses the identifier of a cancelled order,
 which R-0119's coverage note says does not exist.
+
+The same check on every command would also let the sequencer stop relying on which commands are
+marked as sent again to avoid sequencing a command twice, which is [BUG-0122](#bug_0122). The two
+should be designed together.
 
 ### BUG-0113: Every resend request reads the whole day's log on the thread that sequences orders {#bug_0113}
 
