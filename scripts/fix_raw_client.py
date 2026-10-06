@@ -18,9 +18,14 @@ Half the rules in docs/fix/inbound_sequence_checking.md are about members behavi
 
 None of those can be produced by a client that refuses to misbehave. So this one has no session
 layer at all: it builds the bytes it is asked for, computes BodyLength and CheckSum unless told to
-get them wrong, and reads whatever comes back. It keeps no expected-receive number and will never
-send a ResendRequest of its own accord, because a test that has to negotiate with its own client's
-opinions is a test of the client.
+get them wrong, and reads whatever comes back. It never sends a ResendRequest or a Logout of its own
+accord, because a test that has to negotiate with its own client's opinions is a test of the client.
+
+It does watch the MsgSeqNum on each message the venue sends, and records any number that skips
+ahead or goes backwards without PossDupFlag, in receive_numbering_faults. It takes no action on
+one. A venue that numbers a message and then fails to deliver it leaves exactly this mark, and a
+member running a real session layer would log off at it, so a test that ignored it would pass
+while a real member was disconnected.
 
 **It is not a replacement for f8test**, which stays for anything that needs volume, a real session
 layer, or a second implementation's view of the venue's bytes.
@@ -55,6 +60,9 @@ TARGET_COMP_ID = 56
 MSG_SEQ_NUM = 34
 SENDING_TIME = 52
 POSS_DUP_FLAG = 43
+GAP_FILL_FLAG = 123
+NEW_SEQ_NO = 36
+RESET_SEQ_NUM_FLAG = 141
 ORIG_SENDING_TIME = 122
 CHECK_SUM = 10
 
@@ -124,6 +132,11 @@ def parse_messages(buffer: bytes) -> tuple[list[dict[int, str]], bytes]:
 class FixRawClient:
     """A socket that speaks FIX only as far as it is told to."""
 
+    # Every numbering fault seen by any client in this process, each described in a sentence. Kept
+    # on the class as well as on each client so that ha_test.py can check, once at the end of a
+    # scenario, every client the scenario made, without each scenario having to remember to.
+    all_receive_numbering_faults: list[str] = []
+
     def __init__(self, host: str, port: int, sender_comp_id: str, target_comp_id: str,
                  password: str = "") -> None:
         self.host = host
@@ -137,9 +150,13 @@ class FixRawClient:
         # looking for: a test waiting for a Logon that never comes would otherwise swallow the
         # Logout explaining why, and report the venue as silent when it had answered.
         self.pending: list[dict[int, str]] = []
-        # What this client will put on the next message unless told otherwise. It is NOT an
-        # expected-receive counter: nothing here reacts to what the venue sends.
+        # What this client will put on the next message unless told otherwise.
         self.next_send_seq_num = 1
+        # The MsgSeqNum the venue's next message should carry on this connection, or None before
+        # the first message arrives: a connection can start at any number, so the first one sets it.
+        self.expected_receive_seq_num: int | None = None
+        # Each number that skipped ahead or went backwards on a connection of this client.
+        self.receive_numbering_faults: list[str] = []
 
     # -- connection ------------------------------------------------------------------------
 
@@ -147,6 +164,8 @@ class FixRawClient:
         """Open the TCP connection. No FIX is sent until logon() or send() is called."""
         self.sock = socket.create_connection((self.host, self.port), timeout=timeout)
         self.sock.settimeout(timeout)
+        self.buffer = b""
+        self.expected_receive_seq_num = None
 
     def close(self) -> None:
         """Close the connection, abruptly: no Logout is sent unless a test sent one itself."""
@@ -266,9 +285,53 @@ class FixRawClient:
             return list(self.pending) if self.pending else []
         self.buffer += chunk
         messages, self.buffer = parse_messages(self.buffer)
+        for message in messages:
+            self._check_received_numbering(message)
         claimed = self.pending + messages
         self.pending = []
         return claimed
+
+    def _check_received_numbering(self, message: dict[int, str]) -> None:
+        """Compare a message's MsgSeqNum with the number expected next, and record a fault if it
+        skipped ahead or went backwards.
+
+        A message resent with PossDupFlag=Y may carry an earlier number and is not a fault. A
+        SequenceReset moves the expected number to its NewSeqNo, and a Logon carrying
+        ResetSeqNumFlag=Y starts the numbering again from its own number."""
+        try:
+            seq_num = int(message.get(MSG_SEQ_NUM, ""))
+        except ValueError:
+            return
+        msg_type = message.get(MSG_TYPE)
+        expected = self.expected_receive_seq_num
+        possible_duplicate = message.get(POSS_DUP_FLAG) == "Y"
+
+        if msg_type == "4":
+            # A gap fill is itself numbered, so it must arrive in its place; a reset need not.
+            if message.get(GAP_FILL_FLAG) == "Y" and expected is not None and seq_num > expected:
+                self._record_numbering_fault(f"a SequenceReset-GapFill carried MsgSeqNum {seq_num} when {expected} was expected")
+            try:
+                self.expected_receive_seq_num = int(message.get(NEW_SEQ_NO, ""))
+            except ValueError:
+                pass
+            return
+        if expected is None or (msg_type == "A" and message.get(RESET_SEQ_NUM_FLAG) == "Y"):
+            self.expected_receive_seq_num = seq_num + 1
+            return
+        if seq_num == expected:
+            self.expected_receive_seq_num = seq_num + 1
+        elif seq_num > expected:
+            self._record_numbering_fault(f"MsgSeqNum {seq_num} arrived when {expected} was expected: "
+                                         f"{seq_num - expected} message(s) the venue numbered never arrived")
+            self.expected_receive_seq_num = seq_num + 1
+        elif not possible_duplicate:
+            self._record_numbering_fault(f"MsgSeqNum {seq_num} arrived when {expected} was expected, "
+                                         "lower and without PossDupFlag")
+
+    def _record_numbering_fault(self, description: str) -> None:
+        fault = f"{self.sender_comp_id}: {description}"
+        self.receive_numbering_faults.append(fault)
+        FixRawClient.all_receive_numbering_faults.append(fault)
 
     def receive_until(self, *msg_types: str, timeout: float = 5.0) -> dict[int, str] | None:
         """Read until a message of one of these types arrives, or the timeout expires.

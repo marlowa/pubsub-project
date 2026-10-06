@@ -5602,6 +5602,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
     Run one scenario end-to-end.  Returns True on PASS, False on FAIL.
     Always prints a RESULT: PASS / RESULT: FAIL summary block.
     """
+    # Numbering faults recorded by a test FIX client in an earlier scenario belong to that scenario.
+    raw_client_module = sys.modules.get("fix_raw_client")
+    if raw_client_module is not None:
+        raw_client_module.FixRawClient.all_receive_numbering_faults.clear()
     project_root = Path(__file__).resolve().parent.parent
     raw_prefix = args.prefix
     prefix = resolve_prefix(
@@ -9385,6 +9389,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         if scenario.assert_new_leader_numbers_forward and not scenario.assert_engine_holds_only_logged_orders:
             check_new_leader_numbers_forward(secondary_wal_dir, secondary_wal_start)
+
+        # Every FIX client this scenario drove itself watched the venue's message numbers. A number
+        # that skipped ahead means the venue numbered messages for the member and never delivered
+        # them, which a member with a real session layer would log off at, whatever the scenario
+        # was checking.
+        raw_client_module = sys.modules.get("fix_raw_client")
+        if raw_client_module is not None and raw_client_module.FixRawClient.all_receive_numbering_faults:
+            faults = raw_client_module.FixRawClient.all_receive_numbering_faults
+            die("the venue's message numbering to a member was broken: " + "; ".join(faults[:5]) +
+                (f"; and {len(faults) - 5} more" if len(faults) > 5 else ""))
 
         result_pass = True
         log("")
