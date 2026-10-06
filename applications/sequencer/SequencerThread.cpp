@@ -608,6 +608,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         release_pdu_payload(message);
         return;
     }
+    if (message.pdu_id() == pubsub_itc_fw_app::UndeliveredReportsRequest::message_pdu_id) {
+        handle_undelivered_reports_request(message);
+        release_pdu_payload(message);
+        return;
+    }
     if (message.pdu_id() == pubsub_itc_fw_app::SessionReplayRequest::message_pdu_id) {
         handle_session_replay_request(conn_id, message);
         release_pdu_payload(message);
@@ -1127,6 +1132,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
             pending.is_new_order_ack = is_new_order_ack;
             pending.erase_routing_entry = erase_routing_entry;
             pending.position = position;
+            pending.log_seq_no = er_wal_seq;
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: ER seq={} buffered -- awaiting WalAck seq={} from follower", er_seq_no,
                        gate_seq_no);
             pending_er_.emplace(gate_seq_no, std::move(pending));
@@ -2863,6 +2869,11 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         SessionSequenceState& stored = session_sequence_state_[identity];
         stored.outbound_seq_num = resume_seq_num;
         stored.ers_since_report = 0;
+        // Reports logged from here on are forwarded live to the new binding; those logged before,
+        // after the last one the member was delivered, are what its gateway asks for once the
+        // session is established.
+        stored.bound_at_log_seq_no = next_sequence_number_ - 1;
+        stored.delivered_figure_may_be_behind = previous_session_died;
     }
 
     if (known && previous_session_died) {
@@ -2947,11 +2958,120 @@ void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& 
     fix_common::seq_num_ranges::merge(state.report_seq_nums, to_seq_num_ranges(view.report_seq_nums));
     fix_common::seq_num_ranges::trim(state.report_seq_nums, fix_common::seq_num_ranges::max_remembered);
 
+    // How far the member was served, exactly: the reports logged for it after this one, while it is
+    // away, are delivered when it binds again.
+    if (view.has_last_report_delivered && view.last_report_delivered > state.last_report_delivered) {
+        state.last_report_delivered = view.last_report_delivered;
+    }
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: session comp_id='{}' protocol={} unbound from instance={} connection={} -- "
                "remembered outbound={} and {} report range(s); its reports have nowhere to go until it binds again",
                identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id, state.outbound_seq_num,
                state.report_seq_nums.size());
+}
+
+void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::EventMessage& message) {
+    if (role_ != pubsub_itc_fw_app::Role::leader) {
+        return;
+    }
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::UndeliveredReportsRequestView view{};
+    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode UndeliveredReportsRequest -- dropping");
+        return;
+    }
+    const fix_common::SessionIdentity identity = fix_common::SessionIdentity::make(view.comp_id, view.gateway_protocol_id);
+    const auto state_it = session_sequence_state_.find(identity);
+    const fix_common::SessionDestination* destination = session_destination(identity);
+    if (state_it == session_sequence_state_.end() || destination == nullptr || state_it->second.bound_at_log_seq_no == 0) {
+        return;
+    }
+    SessionSequenceState& state = state_it->second;
+    const int64_t after = state.last_report_delivered;
+    const int64_t through = state.bound_at_log_seq_no;
+    const bool possible_repeat = state.delivered_figure_may_be_behind;
+    // Answered once for each binding.
+    state.bound_at_log_seq_no = 0;
+    if (through <= after) {
+        return;
+    }
+
+    // The member's reports logged after the last it was delivered and up to when it bound again,
+    // read from the newest segment backwards, stopping at the first segment that begins at or before
+    // the last delivered, and sent oldest first. A member away for a long time on a busy day reaches
+    // further back, and so is read further back.
+    struct Undelivered {
+        int64_t log_seq_no{};
+        bool poss_resend{false};
+        std::vector<uint8_t> payload;
+    };
+    std::vector<Undelivered> found;
+    std::vector<Undelivered> in_segment;
+    const std::vector<uint64_t> segments = wal_.segments_on_disk();
+    for (auto segment = segments.rbegin(); segment != segments.rend(); ++segment) {
+        in_segment.clear();
+        int64_t first_in_segment = 0;
+        static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
+            wal_.segment_path(*segment), 0, [&identity, after, through, &in_segment, &first_in_segment](int64_t record_id, const void* payload, size_t size) {
+                if (first_in_segment == 0) {
+                    first_in_segment = record_id;
+                }
+                constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
+                if (record_id <= after || record_id > through || size <= header_size) {
+                    return;
+                }
+                std::array<uint8_t, 64 * 1024> record_arena_buffer{};
+                pubsub_itc_fw::BumpAllocator record_arena(record_arena_buffer.data(), record_arena_buffer.size());
+                size_t record_consumed = 0;
+                size_t record_needed = 0;
+                pubsub_itc_fw_app::WalRecordView stored{};
+                if (!pubsub_itc_fw_app::decode(stored, static_cast<const uint8_t*>(payload) + header_size, size - header_size, record_consumed, record_arena,
+                                               record_needed)) {
+                    return;
+                }
+                if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) || !stored.has_sender_comp_id ||
+                    fix_common::SessionIdentity::make(stored.sender_comp_id,
+                                                      stored.has_origin_gateway_id ? stored.origin_gateway_id : gateway_ids::default_when_absent) != identity) {
+                    return;
+                }
+                in_segment.push_back(
+                    Undelivered{record_id, stored.poss_resend, std::vector<uint8_t>(stored.payload.data, stored.payload.data + stored.payload.size)});
+            }));
+        found.insert(found.begin(), std::make_move_iterator(in_segment.begin()), std::make_move_iterator(in_segment.end()));
+        if (first_in_segment != 0 && first_in_segment <= after + 1) {
+            break;
+        }
+    }
+
+    for (const Undelivered& report : found) {
+        pubsub_itc_fw_app::WalRecord envelope{};
+        envelope.seq_no = report.log_seq_no;
+        envelope.pdu_id = static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport);
+        envelope.payload = pubsub_itc_fw_app::BytesView{report.payload.data(), report.payload.size()};
+        envelope.has_gateway_session_conn_id = true;
+        envelope.gateway_session_conn_id = destination->conn_id;
+        envelope.has_origin_gateway_id = true;
+        envelope.origin_gateway_id = identity.protocol;
+        envelope.has_gateway_instance_id = true;
+        envelope.gateway_instance_id = destination->instance;
+        envelope.has_sender_comp_id = true;
+        envelope.sender_comp_id = identity.comp_id_view();
+        // Repeats only if the gateway that last served the member died without saying how far.
+        envelope.poss_resend = report.poss_resend || possible_repeat;
+        // Not timed: a report waiting while its member was away says nothing about how long the path takes.
+        const bool is_new_order_ack = false;
+        send_er_to_origin_gateway(identity.protocol, destination->instance, 0, envelope, is_new_order_ack);
+    }
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: session comp_id='{}' protocol={} bound again -- sent it {} report(s) produced while it had no connection (log records {} to "
+               "{}){}",
+               identity.comp_id_view(), identity.protocol, found.size(), after + 1, through, possible_repeat ? ", marked as possible repeats" : "");
 }
 
 void SequencerThread::note_report_forwarded(const fix_common::SessionIdentity& identity) {
@@ -2991,6 +3111,10 @@ void SequencerThread::handle_session_sequence_update(const pubsub_itc_fw::EventM
         // The reported figure now accounts for everything sent so far, so the running count of
         // reports forwarded since the last one starts again.
         state.ers_since_report = 0;
+    }
+    // Never lowered, for the same reason.
+    if (view.has_last_report_delivered && view.last_report_delivered > state.last_report_delivered) {
+        state.last_report_delivered = view.last_report_delivered;
     }
 
     // Tracked independently of the number above, because the two move for different reasons: a
@@ -3201,7 +3325,7 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     }
 
     pubsub_itc_fw_app::WalRecord envelope{};
-    envelope.seq_no = pending.seq_no;
+    envelope.seq_no = pending.log_seq_no;
     envelope.pdu_id = pending.pdu_id;
     envelope.payload.data = pending.payload.data();
     envelope.payload.size = pending.payload.size();

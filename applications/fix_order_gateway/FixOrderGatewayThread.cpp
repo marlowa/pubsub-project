@@ -769,7 +769,8 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
     // the member would see the numbering jump. Held here and delivered in order once the
     // replay completes -- the window is one round trip to the sequencer.
     if (session.replay_in_progress) {
-        session.deferred_execution_reports.emplace_back(envelope.payload.data, envelope.payload.data + envelope.payload.size);
+        session.deferred_execution_reports.push_back(FixSession::DeferredReport{
+            std::vector<uint8_t>(envelope.payload.data, envelope.payload.data + envelope.payload.size), envelope.seq_no, envelope.poss_resend});
         release_pdu_payload(message);
         return;
     }
@@ -803,6 +804,7 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         release_pdu_payload(message);
         return;
     }
+    session.last_report_delivered = std::max(session.last_report_delivered, envelope.seq_no);
 
     // The round trip closes here: the ER is encoded and about to be handed to the reactor
     // for sending. What happens to it afterwards -- kernel, wire, client -- this process
@@ -1249,6 +1251,16 @@ void FixOrderGatewayThread::complete_session_establishment(FixSession& session) 
     send_fix_to_session(session, reply);
 
     session.session_established = true;
+
+    // Now that the numbering is settled, ask for the reports produced for this member while it had no
+    // connection. The leading sequencer sends any there are as ordinary reports, which this gateway
+    // numbers on from here (R-0005, docs/bug_list.md BUG-0088).
+    pubsub_itc_fw_app::UndeliveredReportsRequest undelivered{};
+    undelivered.comp_id = session.client_comp_id;
+    undelivered.gateway_protocol_id = gateway_ids::fix_order_gateway;
+    undelivered.gateway_instance_id = config_.instance_id;
+    undelivered.gateway_session_conn_id = session.conn_id.get_value();
+    forward_pdu_to_sequencers(pubsub_itc_fw_app::UndeliveredReportsRequest::message_pdu_id, undelivered);
 
     // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -1716,18 +1728,21 @@ void FixOrderGatewayThread::handle_session_replay_complete(const pubsub_itc_fw::
     session.replay_request_id = 0;
 
     // Live reports that arrived mid-resend, now delivered in order behind it.
-    std::vector<std::vector<uint8_t>> deferred;
+    std::vector<FixSession::DeferredReport> deferred;
     deferred.swap(session.deferred_execution_reports);
-    for (const std::vector<uint8_t>& payload : deferred) {
+    for (const FixSession::DeferredReport& held : deferred) {
         pubsub_itc_fw::BumpAllocator deferred_arena(arena_buffer.data(), arena_buffer.size());
         deferred_arena.reset();
         size_t deferred_consumed = 0;
         size_t deferred_needed = 0;
         pubsub_itc_fw_app::ExecutionReportView report{};
-        if (!pubsub_itc_fw_app::decode(report, payload.data(), payload.size(), deferred_consumed, deferred_arena, deferred_needed)) {
+        if (!pubsub_itc_fw_app::decode(report, held.payload.data(), held.payload.size(), deferred_consumed, deferred_arena, deferred_needed)) {
             continue;
         }
-        send_execution_report_to_session(session, report, /*poss_dup=*/false, 0);
+        // The possible-repeat mark travels with a held report, as it does with one sent at once.
+        if (send_execution_report_to_session(session, report, /*poss_dup=*/false, 0, held.possible_repeat)) {
+            session.last_report_delivered = std::max(session.last_report_delivered, held.log_seq_no);
+        }
     }
     if (!deferred.empty()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} delivered {} report(s) held during the resend",
@@ -2623,6 +2638,8 @@ void FixOrderGatewayThread::report_session_sequence_numbers() {
         update.inbound_seq_num = session.expected_inbound_seq_num;
         std::vector<pubsub_itc_fw_app::SeqNumRange> wire_ranges = unreported_report_seq_nums(session);
         update.report_seq_nums = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::SeqNumRange>{wire_ranges.data(), wire_ranges.size()};
+        update.has_last_report_delivered = true;
+        update.last_report_delivered = session.last_report_delivered;
         forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionSequenceUpdate::message_pdu_id, update);
         shipped.emplace_back(conn_id, session.outbound_seq_num - 1);
     }
@@ -2890,6 +2907,8 @@ void FixOrderGatewayThread::announce_session_unbound(const FixSession& session) 
     // gateway to hold this session answers its resends from this.
     std::vector<pubsub_itc_fw_app::SeqNumRange> wire_ranges = unreported_report_seq_nums(session);
     unbound.report_seq_nums = pubsub_itc_fw_app::ListView<pubsub_itc_fw_app::SeqNumRange>{wire_ranges.data(), wire_ranges.size()};
+    unbound.has_last_report_delivered = true;
+    unbound.last_report_delivered = session.last_report_delivered;
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionUnbound::message_pdu_id, unbound);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: announced session comp_id='{}' unbound from instance {} connection {}",
                session.client_comp_id, config_.instance_id, session.conn_id.get_value());

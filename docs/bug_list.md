@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 117 |
-| Open | 40 (26 defects, 14 tasks) |
-| Closed | 77 |
+| Open | 39 (25 defects, 14 tasks) |
+| Closed | 78 |
 | Next id | BUG-0118 |
 
 ## Open bugs by severity
 
-12 high, 23 medium, 5 low.
+11 high, 23 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -22,7 +22,6 @@
 | [BUG-0065](#bug_0065) | high | task | The venue has no way to declare a trading halt |
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
-| [BUG-0088](#bug_0088) | high | defect | An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
@@ -1657,6 +1656,11 @@ than assumed, which was right, and it has stayed open since.
 Until it is answered, a binary member and a FIX member get materially different guarantees from
 the same venue across the same failure.
 
+The same is true of a report produced while a member had no connection (R-0005). The FIX gateway asks
+the leading sequencer for such reports with `UndeliveredReportsRequest` once a session is established,
+and is sent them ([BUG-0088](#bug_0088)). The binary order gateway does not ask, and records no
+`last_report_delivered` for a session, so a binary member is not sent them.
+
 **Design it with [Resend provenance](availability/resend_provenance.md), added 2026-08-27.** That
 design changes the sequencer's replay contract, and this task will consume the same contract, so
 specifying them separately means specifying it twice. The note also records why a binary mechanism
@@ -2023,56 +2027,6 @@ rather than gating a build.
 Related: [BUG-0048](#bug_0048) for the memory figures that came out of the same profiling work,
 and BUG-0030 for the precedent of a tracked task rather than a defect.
 
-### BUG-0088: An execution report produced while a session is unbound is dropped, and nothing delivers it on reconnection {#bug_0088}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-09-10 |
-| Recorded | 2026-09-10 |
-| How | Working through an old debugging note about order loss under load, which observed that when a client disconnected mid-run every report for that client's orders was discarded. The load figures were an artefact of a harness no longer used; this was not |
-| Impact | A member that disconnects between placing an order and its report being produced is never told what became of it. The order is matched, the report exists in the log, and the member learns nothing -- not on reconnection, and not if it asks |
-
-**What the specification requires.** R-0005 in `docs/book`: *an execution report produced while
-the session had no connection shall be delivered when that session next binds to a gateway,
-without the member having to ask for it.*
-
-**What happens.** The report is dropped twice over, at whichever end reaches it first.
-
-- `SequencerThread.cpp:706` -- routing resolves the session to a destination, finds none, and
-  drops the report with a Debug line: *"session not bound to any instance, dropping"*. The code
-  says as much: *"Its reports are dropped, as they always were."*
-- `FixOrderGatewayThread.cpp:681` -- a report that was already in flight arrives for a
-  connection that has gone, finds no session, and is discarded with `++execution_reports_dropped_`.
-
-**The report is not lost, only undelivered.** It is sequenced into the write-ahead log stamped
-with the session it belongs to, exactly as a delivered one is, so everything needed to send it
-exists. What is missing is anything that replays it when the session binds again.
-
-**The rebinding path already carries the harder half.** `handle_session_unbound` keeps the
-session's outbound sequence number and which of its numbers held reports, so a reconnecting
-member continues its numbering rather than resetting it. The state survives; the reports do not.
-
-**The member cannot detect it, and this is what makes it high rather than medium.** No outbound
-sequence number was allocated for an undelivered report, so it leaves no gap in the member's
-numbering. There is nothing to notice and nothing to ask for, and a FIX resend cannot reach it
-because the member does not know a message is missing. The venue simply stops mentioning the
-order, which is the outcome R-0020 exists to prevent, reached by a different route.
-
-**Nor is it visible to an operator.** `execution_reports_dropped_` is an ordinary counter used
-in log lines and in the gateway's order accounting. It is not published as a metric, so a
-deployment loses reports without anything to alert on.
-
-**What closing this needs.** Something that delivers a session's undelivered reports when it
-binds again. The reports are in the log and the session's position is remembered across the
-unbind, so the material is present; what is missing is the trigger and a record of how far the
-member has actually been served. Publishing the dropped-report count is worth doing in its own
-right and does not close this.
-
-Related: R-0005, R-0020 and R-0028 in `docs/book`, and the gap recorded beneath R-0005, which
-now cites this entry. [BUG-0068](#bug_0068) for the general problem of specified behaviour that
-nothing tests.
-
 ### BUG-0089: A member cannot ask the venue what it is holding {#bug_0089}
 
 | | |
@@ -2095,14 +2049,14 @@ a message the venue already understands. The messages are absent from the dictio
 
 **Why it matters more than a missing feature usually would.** Recovery in this venue is one-way.
 The venue sends what it decides to send, and the member reconciles against that. Where anything
-goes wrong with the sending -- [BUG-0088](#bug_0088) drops reports for an unbound session, and
-nothing replays them -- the member has no second route to the answer. The two entries compound:
-one loses the report, the other removes the means of noticing.
+goes wrong with the sending, the member has no second route to the answer. A FIX member that
+reconnects is now sent the reports produced while it was away ([BUG-0088](#bug_0088)), but a binary
+member is not ([BUG-0046](#bug_0046)), and a member that doubts what it holds for any other reason
+cannot ask.
 
 **It is filed as a task rather than a defect** because what is missing is a capability that was
 never built, in the same shape as [BUG-0045](#bug_0045) and [BUG-0046](#bug_0046). A case can be
-made for high severity on the grounds that it makes other losses undetectable, and it is worth
-revisiting if [BUG-0088](#bug_0088) is not closed first.
+made for high severity on the grounds that it makes other losses undetectable.
 
 **What closing this needs.** Both messages in the data dictionary, a handler that answers them
 from whatever holds the orders, and a decision about who that is -- the matching engine holds the
@@ -2366,6 +2320,61 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0088: An execution report produced while a session was unbound was dropped, and nothing delivered it on reconnection {#bug_0088}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-09-10 |
+| Recorded | 2026-09-10 |
+| Fixed | 2026-10-06 -- the FIX gateway records the last report it delivered to each member and asks, when the member's session is established again, for the reports logged for it after that one; the leading sequencer reads them from its log and sends them |
+| How | Working through an old debugging note about order loss under load, which observed that when a client disconnected mid-run every report for that client's orders was discarded |
+| Impact | A member that disconnected between placing an order and its report being produced was never told what became of it: not on reconnection, and not if it asked, because the report had no outbound sequence number and so left no gap in the member's numbering |
+
+**What the specification requires.** R-0005 in `docs/book`: *an execution report produced while
+the session had no connection shall be delivered when that session next binds to a gateway,
+without the member having to ask for it.*
+
+**What happened.** The leading sequencer found that the session was bound to no gateway and dropped
+the report with a Debug line. A report already on its way when the member disconnected reached the
+gateway, found no session, and was counted in `execution_reports_dropped_`. In both cases the report
+was in the sequencer's write-ahead log, stamped with the member's session; nothing sent it from there.
+
+**The fix.**
+
+- The FIX gateway records, for each session, the log sequence number of the last execution report it
+  delivered to the member. Each report the sequencer forwards now carries its log sequence number in
+  the envelope (`forward_pending_er` used to put a different number there). The gateway sends the figure
+  to both sequencers in `SessionUnbound` and in every `SessionSequenceUpdate`, in the new optional field
+  `last_report_delivered`. A sequencer never lowers it.
+- When a session binds, the sequencer records the last log sequence number it had written at that
+  moment. Reports logged after that are forwarded live to the new binding in the usual way.
+- Once the session is established and its numbering settled, the gateway sends the new message
+  `UndeliveredReportsRequest` (PDU 128). The leading sequencer answers it once for each binding: it
+  reads its log from the newest segment backwards, stopping at the first segment that starts at or
+  before the last report delivered, and sends, oldest first, every execution report for that session
+  logged after the last one delivered and up to the moment of binding. The gateway numbers them on
+  from the member's current sequence number, as it does any report. The sequencer logs *"bound again --
+  sent it N report(s) produced while it had no connection"*.
+- If the gateway that last served the member died, it could not send `SessionUnbound`, so the
+  figure the sequencer holds may be behind by the reports delivered since the last sequence update.
+  Those reports are then sent again marked as possible repeats (PossResend), so the member can
+  recognise any it already has.
+- A report held by the gateway while a resend was running used to be delivered without its
+  possible-repeat mark. It now keeps the mark, and counts towards `last_report_delivered` once sent.
+
+**Evidence.** `ha_test.py` scenario 70: a member places an order and disconnects, the order is
+cancelled in its name while it is away, and the member logs on again, continuing its numbering. It
+must be sent the cancel report without asking, and the sequencer must log sending exactly one report.
+With the gateway's `UndeliveredReportsRequest` switched off, the scenario failed: the member was never
+sent the cancel report. With it on, scenario 70 passed, as did scenarios 1, 16, 21, 22, 23, 65, 68 and
+69 in the same run.
+
+The binary order gateway does not ask for these reports, so a binary member is still not sent them;
+that remains with [BUG-0046](#bug_0046). Publishing `execution_reports_dropped_` as a metric is not
+done here either; a report dropped at the gateway is now sent again on reconnection, but the count is
+still not visible to an operator.
 
 ### BUG-0117: A burst of sends to a connection whose socket was full lost the sends that had to wait {#bug_0117}
 

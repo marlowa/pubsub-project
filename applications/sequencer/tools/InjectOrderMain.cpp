@@ -60,6 +60,7 @@ struct Options {
     std::string symbol{"AAPL"};
     int count{1};
     bool sent_again{false};
+    int16_t protocol{gateway_ids::binary_order_gateway};
 };
 
 bool parse_options(int argc, char** argv, Options& options) {
@@ -82,12 +83,16 @@ bool parse_options(int argc, char** argv, Options& options) {
             options.count = std::stoi(argv[++index]);
         } else if (argument == "--sent-again") {
             options.sent_again = true;
+        } else if (argument == "--protocol" && has_value) {
+            options.protocol = static_cast<int16_t>(std::stoi(argv[++index]));
         } else {
-            fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] --cl-ord-id ID [--cancel ORIG-CL-ORD-ID] [--symbol SYM] [--count N] [--sent-again]\n",
+            fmt::print("usage: {} [--host H] [--port P] [--comp-id ID] --cl-ord-id ID [--cancel ORIG-CL-ORD-ID] [--symbol SYM] [--count N] [--sent-again] "
+                       "[--protocol N]\n",
                        argv[0]);
             fmt::print("\n  Sends one NewOrderSingle, or with --cancel one OrderCancelRequest, straight to the sequencer's\n");
             fmt::print("  order listener, bypassing every gateway check. For testing the matching engine only.\n");
             fmt::print("  --sent-again marks it as a command a gateway sends again after a change of sequencer leader.\n");
+            fmt::print("  --protocol names the gateway protocol of the session it belongs to: 1 for FIX, 2 (the default) for binary.\n");
             return false;
         }
     }
@@ -206,7 +211,7 @@ std::vector<uint8_t> encode_command(const Options& options, const std::string& c
     envelope.has_gateway_session_conn_id = true;
     envelope.gateway_session_conn_id = 999999;
     envelope.has_origin_gateway_id = true;
-    envelope.origin_gateway_id = gateway_ids::binary_order_gateway;
+    envelope.origin_gateway_id = options.protocol;
     envelope.has_sender_comp_id = true;
     envelope.sender_comp_id = options.comp_id;
     // As a gateway stamps them: the ClOrdID, for the sequencer's record of identifiers, and the time

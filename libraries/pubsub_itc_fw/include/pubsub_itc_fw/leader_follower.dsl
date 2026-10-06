@@ -581,6 +581,10 @@ message SessionUnbound (id=121, version=1)
     # covered by these -- and by what earlier updates carried -- held something the venue
     # cannot replay, and a resend gap-fills it. See SeqNumRange above.
     list<SeqNumRange> report_seq_nums
+    # The log sequence number of the last execution report this gateway delivered to the member, so
+    # that the reports produced after it, while the member was away, can be delivered when it binds
+    # again (R-0005, docs/bug_list.md BUG-0088).
+    optional i64 last_report_delivered
 end
 
 # ------------------------------------------------------------
@@ -728,6 +732,33 @@ message SessionSequenceUpdate (id=126, version=1)
     # case it exists for. Incremental rather than the whole history, so an update stays small
     # however long the session has been up.
     list<SeqNumRange> report_seq_nums
+    # As on SessionUnbound: the log sequence number of the last execution report delivered to the
+    # member. Sent periodically, so the sequencer still knows roughly how far the member was served if
+    # the gateway dies without unbinding the session.
+    optional i64 last_report_delivered
+end
+
+# ------------------------------------------------------------
+#  128 -- UndeliveredReportsRequest
+#  Sent by a gateway to the sequencers once a member's session is
+#  established, asking for the execution reports produced for that
+#  session while it had no connection. The leading sequencer sends
+#  each such report from its log, as an ordinary report, to wherever
+#  the session is now bound. R-0005: a report produced while the
+#  session was unbound is delivered when it binds again, without the
+#  member having to ask. See docs/bug_list.md, BUG-0088.
+#
+#  Asked for by the gateway, once the session's numbering has been
+#  restored, rather than sent by the sequencer when the session binds:
+#  the reports travel on a different connection from the reply that
+#  restores the numbering, so sent unasked they could reach the
+#  gateway first and be numbered wrongly.
+# ------------------------------------------------------------
+message UndeliveredReportsRequest (id=128, version=1)
+    string comp_id
+    i16    gateway_protocol_id
+    i16    gateway_instance_id
+    i32    gateway_session_conn_id
 end
 
 # ------------------------------------------------------------

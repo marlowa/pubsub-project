@@ -257,14 +257,14 @@ reach the member leaves a gap in the member's numbering.
   \rationale{The venue allocated no outbound sequence number for such a report, so it leaves
   no gap in the member's numbering. The member has nothing to notice and nothing to
   request, and a resend cannot reach it.}
-  \uncovered{no scenario restarts a gateway}
+  \covers{ha_test:70}
 \end{requirement}
 
-\begin{gap}{BUG-0088}
-  Recovery is driven entirely by the member noticing a gap and asking. A report
-  produced while the session had no connection was never numbered, so it leaves
-  no gap, and nothing pushes it. The report is written to the log stamped with
-  its session, so what is missing is the delivery rather than the record.
+\begin{gap}{BUG-0046}
+  The FIX gateway asks for these reports once a session is established, and the
+  leading sequencer sends them. The binary order gateway does not ask, so a
+  member using the binary protocol is not sent the reports produced while it had
+  no connection.
 \end{gap}
 
 \begin{requirement}{R-0009}{A gap that cannot be filled is reported as such}

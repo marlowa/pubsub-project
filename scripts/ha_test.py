@@ -870,6 +870,10 @@ class Scenario(NamedTuple):
     # is killed, and the new leader must send the member again only the few reports the old leader
     # had not said it forwarded. See run_scenario's "few repeats" block, and BUG-0116.
     assert_few_repeats_after_change: bool = False
+    # When True, a member places an order and disconnects, the order is cancelled while it is away,
+    # and the member must be sent the cancel report when it reconnects. See run_scenario's "reports
+    # produced while unbound" block, R-0005, and BUG-0088.
+    assert_unbound_reports_delivered: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3710,6 +3714,26 @@ _SCENARIOS: list[Scenario] = [
         orders_during_override=0,
         orders_after_override=0,
         assert_few_repeats_after_change=True,
+        steps=[],
+    ),
+
+    # 70 -- a report produced while a member is disconnected is delivered when it reconnects.
+    #
+    # A member places an order and disconnects. While it is away, the order is cancelled, by a
+    # cancel inject_order hands the leading sequencer in the member's name, so the engine produces a
+    # cancel report for a session that has no connection. The member reconnects, continuing its
+    # numbering, and must be sent the report without asking for it (R-0005).
+    Scenario(
+        number=70,
+        short_name="unbound_reports_delivered",
+        description="A report produced while a member is disconnected is delivered when it reconnects",
+        expected_outcome=(
+            "after the member reconnects it receives the report cancelling its order, produced while it was away, and the "
+            "sequencer logs that it sent a report produced while the session had no connection"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_unbound_reports_delivered=True,
         steps=[],
     ),
 ]
@@ -8392,6 +8416,86 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"few repeats: the new leader forwarded {forwarded} kept report(s) and the member received {len(marked)} repeats. The old "
                     "leader's records said how far it had forwarded, so only the reports it had not forwarded should be sent again (BUG-0116).")
             log("  only the few reports the old leader had not said it forwarded were sent again -- OK")
+
+        # ── Reports produced while unbound ────────────────────────────────────
+        if scenario.assert_unbound_reports_delivered:
+            log("=== A report produced while a member is disconnected is delivered when it reconnects ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("unbound reports: sequencer_primary is not leading.")
+            primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+            order_port = installed_toml_section_value(primary_config, "network", "listen_port")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            run_tag = datetime.now().strftime("%H%M%S")
+            resting = f"unbound-{run_tag}-order"
+            cancel = f"unbound-{run_tag}-cancel"
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("unbound reports: the raw client could not log on.")
+            member.new_order_single(resting)
+            accepted = None
+            deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+            while accepted is None and time.monotonic() < deadline:
+                report = member.receive_until("8", timeout=1.0)
+                if report is not None and report.get(11) == resting and report.get(39) == "0":
+                    accepted = report
+            if accepted is None:
+                member.close()
+                die("unbound reports: the order was not accepted.")
+            next_send = member.next_send_seq_num
+            unbound_from = file_end(primary_log)
+            member.close()
+            if not poll_log_for(primary_log, "comp_id='" + FIX8_COMP_ID + "'", "unbound from instance", timeout=_RAW_REPLY_TIMEOUT,
+                                from_byte=unbound_from)[0]:
+                die("unbound reports: the sequencer never recorded the member's session as unbound.")
+            log("  the member placed an order and disconnected, and its session is unbound")
+
+            # The order is cancelled while the member is away: the engine's report has no connection to go to.
+            cancelled_from = file_end(me_log)
+            result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_port, "--comp-id", FIX8_COMP_ID, "--protocol", "1",
+                                     "--cl-ord-id", cancel, "--cancel", resting, "--symbol", "BHP"],
+                                    capture_output=True, text=True, check=False, timeout=30)
+            if result.returncode != 0:
+                die(f"unbound reports: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+            if not poll_log_for(me_log, "sent cancel ER", f"ClOrdID={cancel} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=cancelled_from)[0]:
+                die("unbound reports: the matching engine did not cancel the order, so there is no report to deliver.")
+            log("  the order was cancelled while the member was away")
+
+            # The member comes back, continuing its numbering, and must be told without asking.
+            delivered_from = file_end(primary_log)
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.next_send_seq_num = next_send
+            member.connect()
+            member.logon(reset_seq_num=False)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("unbound reports: the raw client could not log on again.")
+            cancelled = None
+            deadline = time.monotonic() + _RAW_REPLY_TIMEOUT
+            while cancelled is None and time.monotonic() < deadline:
+                report = member.receive_until("8", "9", timeout=1.0)
+                if report is not None and report.get(11) == cancel:
+                    cancelled = report
+            member.close()
+            if cancelled is None:
+                die("unbound reports: the member reconnected and was never sent the report cancelling its order, produced while it "
+                    "was away. R-0005 requires it to be delivered when the session binds again (BUG-0088).")
+            log(f"  on reconnecting the member was sent the cancel report: OrdStatus={cancelled.get(39)} OrigClOrdID={cancelled.get(41)}")
+            if not poll_log_for(primary_log, "bound again -- sent it 1 report(s) produced while it had no connection", timeout=2.0,
+                                from_byte=delivered_from)[0]:
+                die("unbound reports: the sequencer did not log sending the one report produced while the session had no connection.")
+            log("  the sequencer sent exactly the one report produced while the member was away -- OK")
 
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:

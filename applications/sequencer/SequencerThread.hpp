@@ -283,6 +283,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         std::vector<uint8_t> payload; // copy of the raw encoded ER from ME
         // The ClOrdID of the command the report answers, copied onto the envelope for the gateway.
         std::string cl_ord_id;
+        // The report's own sequence number in the log, carried on the envelope as a report sent at
+        // once carries it, so that a gateway knows how far a member has been served.
+        int64_t log_seq_no{0};
         // Where the report stands in the engine's reports. While it waits here, the leader has not
         // forwarded every report up to it, which is what reports_forwarded_through() says.
         std::optional<EngineReportPosition> position;
@@ -779,6 +782,24 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
          * exactly the case it exists for. See docs/availability/resend_provenance.md.
          */
         std::vector<fix_common::SeqNumRange> report_seq_nums;
+
+        /**
+         * @brief The log sequence number of the last execution report the member was delivered,
+         * as its gateway last reported it: exactly, when the session unbound, or as of the last
+         * sequence update, when the gateway died without unbinding it. Never lowered.
+         */
+        int64_t last_report_delivered{0};
+
+        /**
+         * @brief The last record in the log when the session bound again: reports logged after it
+         * were forwarded live, so only those up to it can have been missed. Zero until the session
+         * binds again after an unbind, and zero again once the missed reports have been sent.
+         */
+        int64_t bound_at_log_seq_no{0};
+
+        /// Whether the member's previous gateway died without unbinding it, so last_report_delivered
+        /// may be behind and the reports sent from the log must be marked as possible repeats.
+        bool delivered_figure_may_be_behind{false};
     };
 
     /// Added when resuming a session whose gateway died without reporting.
@@ -877,6 +898,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_session_bound(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_session_unbound(const pubsub_itc_fw::EventMessage& message);
     void handle_session_replay_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    // Sends a member, from the log, the execution reports produced for it while its session had no
+    // connection (R-0005, docs/bug_list.md BUG-0088).
+    void handle_undelivered_reports_request(const pubsub_itc_fw::EventMessage& message);
     void handle_session_sequence_update(const pubsub_itc_fw::EventMessage& message);
 
     /// Records that one execution report was sent to this session, so a resume after an

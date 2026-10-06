@@ -323,8 +323,21 @@ struct FixSession {
     std::vector<fix_common::SeqNumRange> report_seq_nums;
     /// Highest number already reported to the sequencer; where the next update starts.
     int report_seq_nums_shipped_to{0};
-    /// Encoded ExecutionReports that arrived live while the resend was running.
-    std::vector<std::vector<uint8_t>> deferred_execution_reports;
+    /// An ExecutionReport that arrived live while a resend was running, delivered once it ends.
+    struct DeferredReport {
+        std::vector<uint8_t> payload; ///< The encoded report.
+        int64_t log_seq_no{0};        ///< Its sequence number in the sequencer's log.
+        bool possible_repeat{false};  ///< Written as PossResend.
+    };
+    std::vector<DeferredReport> deferred_execution_reports;
+
+    /**
+     * @brief The sequencer log sequence number of the last execution report delivered to this
+     * member. Reported to the sequencers when the session unbinds and in each sequence update, so
+     * that the reports produced after it, while the member is away, are delivered when it binds again
+     * (R-0005, docs/bug_list.md BUG-0088).
+     */
+    int64_t last_report_delivered{0};
 
     /**
      * @brief Counter for generating unique OrderID values for this session.
