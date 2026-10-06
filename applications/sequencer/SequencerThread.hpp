@@ -41,6 +41,7 @@
 #include "LogEpochTable.hpp"
 #include "LogTailIndex.hpp"
 #include "LoggedCommandIdentifiers.hpp"
+#include "LoggedCommandIdentifiersBuilder.hpp"
 #include "PairLeaseAgent.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
@@ -547,22 +548,34 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // The identifiers of the commands this instance's log holds, so that a command a gateway sends
     // again after a change of leader is not sequenced twice (LoggedCommandIdentifiers, and
-    // docs/availability/commands_during_a_change_of_leader.md, section 3.4). Reserved at startup when
-    // HA is on; touched only by this thread. While leading, each command is noted as it is written;
-    // while following, the records the reactor thread wrote are read from the log once a second, and
-    // the rest on taking the lead.
+    // docs/availability/commands_during_a_change_of_leader.md, section 3.4). Built in the background
+    // when HA is on, by identifiers_builder_, and touched only by this thread once taken from it. While
+    // leading, each command is noted as it is written; while following, the records the reactor thread
+    // wrote are read from the log once a second, and the rest on taking the lead.
     std::optional<LoggedCommandIdentifiers> logged_identifiers_;
-    pubsub_itc_fw::AllocationGrowthReporter identifiers_growth_reporter_;
-    size_t identifiers_table_bytes_{0};
     bool identifiers_full_reported_{false};
+    // While the record is being built: the identifiers of the commands noted meanwhile, added to the
+    // record when it is taken; and every command that must be checked is checked against the log itself
+    // (docs/bug_list.md, BUG-0121).
+    bool identifiers_building_{false};
+    std::vector<uint64_t> identifiers_noted_while_building_;
+    LoggedCommandIdentifiersBuilder identifiers_builder_;
     // Where the next read of the log for identifiers starts: just after the last record read.
     pubsub_itc_fw::WalPosition identifiers_read_position_{};
     std::chrono::steady_clock::time_point identifiers_read_at_{};
     static constexpr std::chrono::milliseconds identifiers_read_interval{1000};
 
-    void reserve_record_of_identifiers();
+    // Starts building the record of identifiers in the background from the segments of the log as it
+    // stands once opened.
+    void start_building_record_of_identifiers();
+    // Takes the record from the builder if it has finished, and adds what was noted meanwhile.
+    void take_record_of_identifiers_if_built();
     void note_logged_command(const pubsub_itc_fw_app::WalRecordView& view);
     void note_logged_command(std::string_view comp_id, int16_t protocol, int16_t inner_pdu_id, std::string_view cl_ord_id);
+    // Notes an identifier: added to the record, or kept until the record is built.
+    void note_logged_identifier(uint64_t id);
+    // Adds an identifier to the record, reporting once if it is full.
+    void record_identifier(uint64_t id);
     void read_identifiers_from_log();
 
     // An exact index of the end of the log, built when the first command is sent again after a

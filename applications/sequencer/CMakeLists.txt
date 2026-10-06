@@ -88,6 +88,7 @@ add_executable(sequencer_tests
         tests/KeptReportStoreTest.cpp
         tests/LogEpochTableTest.cpp
         tests/LoggedCommandIdentifiersTest.cpp
+        tests/LoggedCommandIdentifiersBuilderTest.cpp
         tests/LogTailIndexTest.cpp
         tests/WalRecordEncodingTest.cpp
         SequencerConfigurationLoader.cpp

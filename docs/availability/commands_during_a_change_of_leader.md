@@ -261,12 +261,20 @@ identifiers.** The venue plans for 50 million orders a day and tests with 100 mi
 doubles that. Each identifier is a 64-bit number derived from the session's comp id, its gateway
 protocol and the `ClOrdID`.
 
-- *Memory.* The table is reserved at startup and never grows during the day, so it never pauses to
-  rehash. Its size is a power of two and each slot is 16 bytes, the number and the library's
+- *Memory.* The table is reserved when the sequencer starts and never grows during the day, so it
+  never pauses to rehash. Its size is a power of two and each slot is 16 bytes, the number and the library's
   bookkeeping, so 200 million identifiers at a maximum fill of 0.9 take 2^28 slots, 4 GiB. Reserving it
   writes to all of it at startup, so inserting during the day never waits for the kernel to supply a
   page. Before each insert the sequencer compares the number held with the reserved size and treats
-  reaching it as full, rather than letting the table grow. The table uses the standard allocator, so it
+  reaching it as full, rather than letting the table grow.
+- *Built in the background.* Reserving the table takes about a second, and filling it means reading
+  every command in the log, which grows through the day. Done before the sequencer started work, that
+  made a restarted sequencer slower to start than its peer's lease ([BUG-0121](../bug_list.md#bug_0121)).
+  So one background thread reserves and fills the table from the log's segments as they stand when the
+  sequencer has opened its log, while the sequencer starts work at once. Until the table is complete,
+  every command that must be checked is checked against the log itself, as it is when the table is
+  full; the commands the sequencer writes or reads meanwhile are kept in a short list and added to the
+  table when the sequencer takes it over. The table uses the standard allocator, so it
   is given `GrowthReportingAllocator`, as other containers whose storage is not the venue's own are.
 - *Why a match is checked.* An identifier is a string of up to dozens of characters, and a 64-bit
   number cannot give each one a different value, so two different identifiers can, rarely, give the

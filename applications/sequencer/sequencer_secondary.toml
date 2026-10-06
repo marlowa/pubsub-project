@@ -83,8 +83,8 @@ renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 
 # How many command identifiers the record of the commands in the log reserves room for: the most
 # orders and cancels in one trading day. 200 million is the figure a MiFID test uses, twice the 100
-# million the venue is tested with. The table is reserved when the sequencer starts, 4 GiB at this
-# size, and never grows. Read only when [ha] ha_enabled is true.
+# million the venue is tested with. The table, 4 GiB at this size, is reserved and filled from the log
+# in the background when the sequencer starts, and never grows. Read only when [ha] ha_enabled is true.
 [commands]
 identifiers_reserved = 200000000
 

@@ -141,8 +141,8 @@ void SequencerThread::on_initial_event() {
     // never erased, causing unbounded heap growth under high throughput.
     // ERs for unroutable seq_nos are handled gracefully by the "not in
     // routing map" fallback in on_framework_pdu_message().
-    reserve_record_of_identifiers();
     open_wal_trusting_it_up_to_any_gap();
+    start_building_record_of_identifiers();
     const int64_t recovered_seq = wal_.last_seq_no();
     if (recovered_seq > 0) {
         next_sequence_number_ = recovered_seq + 1;
@@ -321,7 +321,6 @@ void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
                     if (view.has_leader_epoch) {
                         epoch = view.leader_epoch;
                     }
-                    note_logged_command(view);
                 }
             }
             log_epochs_.note_record(seq_no, epoch);
@@ -339,13 +338,9 @@ void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
         wal_.truncate_after(last_before_gap);
     }
     highest_replicated_seq_no_.store(wal_.last_seq_no(), std::memory_order_release);
-    // Everything the log holds has been read; a follower reads on from where the log now ends.
+    // Everything the log holds has been read, and its commands are recorded by the builder started next;
+    // a follower reads on from where the log now ends.
     identifiers_read_position_ = wal_.scan_start_for(wal_.last_seq_no() + 1);
-    if (logged_identifiers_.has_value()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: the record of command identifiers holds {} identifier(s) from the log, of {} reserved", logged_identifiers_->size(),
-                   logged_identifiers_->capacity());
-    }
 }
 
 void SequencerThread::on_app_ready_event() {
@@ -1276,6 +1271,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         if (role_ != pubsub_itc_fw_app::Role::leader && now - identifiers_read_at_ >= identifiers_read_interval) {
             read_identifiers_from_log();
         }
+        take_record_of_identifiers_if_built();
         if (log_tail_index_.has_value() && now - log_tail_index_used_at_ >= log_tail_index_idle_limit) {
             discard_log_tail_index("no command has been sent again for a minute");
         }
@@ -2211,37 +2207,69 @@ void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
                first, through);
 }
 
-void SequencerThread::reserve_record_of_identifiers() {
+void SequencerThread::start_building_record_of_identifiers() {
     if (!config_.ha_enabled) {
         return;
     }
-    identifiers_growth_reporter_.report_threshold_bytes = 1;
-    identifiers_growth_reporter_.on_large_allocation = [this](size_t bytes, size_t /*largest*/) { identifiers_table_bytes_ = bytes; };
-    const auto started = std::chrono::steady_clock::now();
-    logged_identifiers_.emplace(config_.identifiers_reserved, &identifiers_growth_reporter_);
-    const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+    std::vector<std::string> segment_paths;
+    for (const uint64_t segment : wal_.segments_on_disk()) {
+        segment_paths.push_back(wal_.segment_path(segment));
+    }
+    identifiers_building_ = true;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: building the record of command identifiers in the background, for {} identifier(s), from {} log segment(s) -- "
+               "until it is complete, a command sent again is checked against the log itself",
+               config_.identifiers_reserved, segment_paths.size());
+    identifiers_builder_.start(config_.identifiers_reserved, std::move(segment_paths));
+}
+
+void SequencerThread::take_record_of_identifiers_if_built() {
+    if (!identifiers_building_ || !identifiers_builder_.finished()) {
+        return;
+    }
+    logged_identifiers_.emplace(identifiers_builder_.take());
+    identifiers_building_ = false;
+    const size_t noted = identifiers_noted_while_building_.size();
+    for (const uint64_t id : identifiers_noted_while_building_) {
+        record_identifier(id);
+    }
+    identifiers_noted_while_building_.clear();
+    identifiers_noted_while_building_.shrink_to_fit();
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: reserved the record of command identifiers for {} identifier(s): {} slots, {} MiB, in {} ms", config_.identifiers_reserved,
-               logged_identifiers_->slot_count(), identifiers_table_bytes_ / (1024 * 1024), took.count());
+               "SequencerThread: the record of command identifiers is complete -- {} MiB reserved in {} ms and {} log record(s) read in {} ms in "
+               "the background, holding {} identifier(s) of {} reserved, {} of them noted while it was built",
+               identifiers_builder_.table_bytes() / (1024 * 1024), identifiers_builder_.reserve_time().count(), identifiers_builder_.records_read(),
+               identifiers_builder_.read_time().count(), logged_identifiers_->size(), logged_identifiers_->capacity(), noted);
 }
 
 void SequencerThread::note_logged_command(const pubsub_itc_fw_app::WalRecordView& view) {
-    note_logged_command(view.has_sender_comp_id ? view.sender_comp_id : std::string_view{},
-                        view.has_origin_gateway_id ? view.origin_gateway_id : gateway_ids::default_when_absent, view.pdu_id,
-                        view.has_cl_ord_id ? view.cl_ord_id : std::string_view{});
+    const std::optional<uint64_t> id = command_identifier(view);
+    if (id.has_value()) {
+        note_logged_identifier(*id);
+    }
 }
 
 void SequencerThread::note_logged_command(std::string_view comp_id, int16_t protocol, int16_t inner_pdu_id, std::string_view cl_ord_id) {
-    if (!logged_identifiers_.has_value() || cl_ord_id.empty() || comp_id.empty()) {
+    const std::optional<uint64_t> id = command_identifier(comp_id, protocol, inner_pdu_id, cl_ord_id);
+    if (id.has_value()) {
+        note_logged_identifier(*id);
+    }
+}
+
+void SequencerThread::note_logged_identifier(uint64_t id) {
+    if (identifiers_building_) {
+        identifiers_noted_while_building_.push_back(id);
         return;
     }
-    if (inner_pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
-        inner_pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+    record_identifier(id);
+}
+
+void SequencerThread::record_identifier(uint64_t id) {
+    if (!logged_identifiers_.has_value()) {
         return;
     }
-    if (logged_identifiers_->add(LoggedCommandIdentifiers::identifier(comp_id, protocol, cl_ord_id)) == LoggedCommandIdentifiers::Added::full &&
-        !identifiers_full_reported_) {
+    if (logged_identifiers_->add(id) == LoggedCommandIdentifiers::Added::full && !identifiers_full_reported_) {
         identifiers_full_reported_ = true;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "SequencerThread: the record of command identifiers is full at {} -- later commands are not recorded, so every command a gateway "
@@ -2251,21 +2279,23 @@ void SequencerThread::note_logged_command(std::string_view comp_id, int16_t prot
 }
 
 bool SequencerThread::command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound) {
-    if (!logged_identifiers_.has_value() || !inbound.has_cl_ord_id || inbound.cl_ord_id.empty() || !inbound.has_sender_comp_id ||
-        inbound.sender_comp_id.empty()) {
+    if (!config_.ha_enabled || !inbound.has_cl_ord_id || inbound.cl_ord_id.empty() || !inbound.has_sender_comp_id || inbound.sender_comp_id.empty()) {
         // Without HA there is no change of leader, and so nothing is ever sent again; a command that
         // does not say whose it is cannot be looked for.
         return false;
     }
+    take_record_of_identifiers_if_built();
     const int16_t protocol = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
     const uint64_t id = LoggedCommandIdentifiers::identifier(inbound.sender_comp_id, protocol, inbound.cl_ord_id);
     // Not in the record means certainly not in the log -- unless the record is full, when a command
-    // logged after it filled would not be in it either.
-    if (!logged_identifiers_->full() && !logged_identifiers_->may_hold(id)) {
+    // logged after it filled would not be in it either, or is still being built, when the command may
+    // be in the part of the log not yet read into it. In both cases the log itself is checked.
+    if (logged_identifiers_.has_value() && !logged_identifiers_->full() && !logged_identifiers_->may_hold(id)) {
         return false;
     }
     if (!log_tail_index_.has_value()) {
         log_tail_index_.emplace(config_.wal_directory);
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: commands that may already be in the log are arriving -- reading the end of the log to check them exactly");
     }
@@ -2331,7 +2361,7 @@ void SequencerThread::discard_log_tail_index(const char* reason) {
 
 void SequencerThread::read_identifiers_from_log() {
     identifiers_read_at_ = std::chrono::steady_clock::now();
-    if (!logged_identifiers_.has_value()) {
+    if (!config_.ha_enabled) {
         return;
     }
     // Only records whose checksum is complete are read, so a record the reactor thread is part way
