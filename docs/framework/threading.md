@@ -1,30 +1,34 @@
 # Threading
 
 ## Design Goals
-One thread per concern — no two subsystems share a thread. Threads communicate exclusively
-through lock-free MPSC queues; there are no mutexes on any hot path. Shutdown is deterministic:
-every thread drains its queue, acknowledges the shutdown signal, and joins within a configurable
-timeout.
+One thread per concern — no two subsystems share a thread. Threads communicate through
+lock-free MPSC queues; there are no mutexes on any hot path. Shutdown is bounded in time: each
+thread's queue stops accepting messages, the thread is woken and leaves its run loop, and the
+reactor joins every thread within `shutdown_timeout_`.
 
 ## ApplicationThread
 `ApplicationThread` (abstract base class) is the unit of concurrency in the framework. Each
 concrete subclass represents one concern — order routing, matching, sequencing, authentication,
 etc. It owns:
-- A `LockFreeMessageQueue` (its ITC inbox)
+- A `LockFreeMessageQueue<EventMessage>` (its ITC inbox)
 - A `std::thread` (via `ThreadWithJoinTimeout`)
 - A non-blocking `eventfd` (`notify_fd_`) used to wake the thread when work arrives
+- An `ExpandableSlabAllocator` for the PDUs and raw bytes it sends (see [Allocators](allocators.md))
 
-The thread's run loop drains the queue in a tight loop. When the queue is empty it blocks on
-`epoll_wait(notify_fd_, timeout=1s)`. Normal wakeup is sub-microsecond (kernel delivers the
-eventfd write immediately); the 1-second timeout is a safety net only.
+The thread's run loop takes every message off the queue and processes it. When the queue is
+empty it can poll the queue for a short, configured time (see *Polling before blocking*
+below), and then blocks in `epoll_wait` on `notify_fd_` with a one-second timeout. Normally the
+thread is woken as soon as a producer writes to the eventfd; the one-second timeout is only a
+safety net.
 
 ### Key Supporting Classes
 | Class | Description |
 |-------|-------------|
 | `ApplicationThread` | Abstract base; owns queue and thread; timer APIs enforced from owning thread; `connect_to_service()` for outbound TCP; pure virtual `on_itc_message()` |
+| `ApplicationThreadConfiguration` | Per-thread settings: the outbound slab size, the decode arena size, the metrics scope, and `spin_before_block` |
 | `ThreadWithJoinTimeout` | Wraps `std::thread`; `join_with_timeout()` |
 | `ThreadID` | Strongly-typed thread identifier |
-| `ThreadLifecycleState` | `NotCreated`, `Started`, `InitialProcessed`, `Operational`, `ShuttingDown`, `Terminated` |
+| `ThreadLifecycleState` | `NotCreated`, `Created`, `Started`, `InitialProcessed`, `Operational`, `ShuttingDown`, `Terminated` |
 
 ### Virtual Callbacks
 Subclasses override these to implement their behaviour:
@@ -33,37 +37,59 @@ Subclasses override these to implement their behaviour:
 |----------|-------------|
 | `on_initial_event()` | Thread has started; perform one-time initialisation |
 | `on_app_ready_event()` | All threads are operational; start sending traffic |
-| `on_termination_event(reason)` | Shutdown in progress; release resources |
+| `on_termination_event(reason)` | A `Termination` event arrived, for example because the process received SIGTERM or SIGINT; release resources |
 | `on_itc_message(msg)` | ITC message delivered from another thread — **pure virtual** |
 | `on_timer_event(id)` | A timer fired; `id` is the `TimerID` returned by `start_one_off_timer`/`start_recurring_timer` (compare against retained ids to identify it) |
 | `on_pubsub_message(msg)` | Pub/sub delivery |
 | `on_raw_socket_message(msg)` | Raw byte stream delivery (see [Socket Comms](socket_comms.md)) |
-| `on_framework_pdu_message(msg)` | Inbound PDU delivered — **caller must call `allocator.deallocate(msg.slab_id(), msg.payload())` after processing** |
-| `on_connection_established(id)` | Outbound TCP connect succeeded |
+| `on_framework_pdu_message(msg)` | Inbound PDU delivered — **the thread must call `release_pdu_payload(msg)` once it has finished with the payload**, which returns the chunk to the reactor's inbound slab allocator |
+| `on_connection_established(id)` | A connection is ready: an outbound connect has succeeded, or an inbound connection has been accepted |
 | `on_connection_failed(reason)` | Outbound TCP connect failed |
 | `on_connection_lost(id, reason)` | Connection dropped after establishment |
+| `on_connection_writable(id)` | A connection can accept another outbound frame. Delivered once for each call to `request_writable_notification()` |
 
-### Idle Blocking: eventfd-Based Wake (replaced BackoffWithYield)
-Earlier versions used a `BackoffWithYield` spin strategy that degraded through busy-spin,
-`sched_yield`, and finally `sleep_for(microseconds(10))`. On a `CONFIG_HZ=1000` kernel, the
-sleep tier actually slept ~65 µs. With five `ApplicationThread` hops on the order pipeline
-(order gateway → sequencer → matching engine → sequencer → order gateway), each potentially in
-the sleep tier, the avoidable overhead was ~325 µs per round-trip. Measured ITC latency from
-heartbeat timer pairs confirmed ~140 µs average wakeup per hop.
+One further virtual changes the order of delivery rather than receiving an event.
+`prioritise_data_over_timers()` returns `false` by default. A thread that overrides it to return
+`true` has `Timer` events held back during each pass over its queue and processed after the
+other messages taken in the same pass, so that a heartbeat or snapshot timer does not delay a
+data message that arrived at the same moment.
 
-The fix replaced `BackoffWithYield` entirely:
+### Idle Blocking: eventfd-Based Wake
+A thread with an empty queue blocks rather than spin-sleeping, because sleeping is slow to
+wake. A `sleep_for(microseconds(10))` on a `CONFIG_HZ=1000` kernel actually sleeps about
+65 µs, and an order passes through five `ApplicationThread` hops on its way through the venue
+(order gateway → sequencer → matching engine → sequencer → order gateway), so a sleep at each
+hop would add about 325 µs to a round trip.
+
+So:
 - Each `ApplicationThread` owns a non-blocking `eventfd` (`notify_fd_`).
-- A new public `enqueue(EventMessage)` method enqueues to the MPSC queue and then writes `1`
-  to `notify_fd_`.
-- The run loop calls `epoll_wait(notify_fd_, timeout=1s)` when the queue is empty rather than
-  spin-sleeping.
+- `ApplicationThread::enqueue(EventMessage)` puts the message on the MPSC queue and then writes
+  `1` to `notify_fd_`. Every producer uses it. Calling `get_queue().enqueue()` directly would
+  skip the eventfd write, and the thread would not wake until the one-second timeout.
+- The run loop calls `epoll_wait` on `notify_fd_`, with a one-second timeout, when the queue is
+  empty.
 - `shutdown()` also writes to `notify_fd_`, so the thread exits immediately rather than
-  waiting for the 1-second timeout.
+  waiting for the timeout.
 
-All producer call sites in `Reactor.cpp`, `InboundConnectionManager.cpp`,
-`OutboundConnectionManager.cpp`, `PduParser.cpp`, `RawBytesProtocolHandler.cpp`, and
-`TlsRawBytesProtocolHandler.cpp` were updated from `thing->get_queue().enqueue(msg)` to
-`thing->enqueue(std::move(msg))`.
+### Polling before blocking
+Blocking has its own cost. A blocked thread is descheduled, and on a pinned hot-path core
+nothing else is runnable, so the core goes idle; waking it costs whatever its idle state costs
+to leave, which with the usual machine defaults can be around a millisecond.
+
+`ApplicationThreadConfiguration::spin_before_block` sets how long the thread polls its empty
+queue before it blocks. The default is zero, meaning block immediately. When it is set, and a
+pass over the queue found nothing, the thread loops checking `empty()` and calling
+`cpu_relax()` (a `PAUSE` instruction) until either a message arrives or the time runs out.
+A message found this way is taken by the ordinary path on the next pass, and the thread reads
+`notify_fd_` once to clear the producer's signal so that its next `epoll_wait` does not return
+at once for work already done. `spins_entered()` and `spins_caught()` count how many polls
+were started and how many found a message. The poll is compiled out of Valgrind and TSan
+builds.
+
+Polling only helps when messages arrive closer together than the polling time, and it holds
+the core for that whole time, so it should be chosen from the traffic a thread actually
+receives and left at zero for threads off the latency-critical path. The next section explains
+why it uses `PAUSE`.
 
 ## Waiting for work: spinning, PAUSE, and who shares your core
 
@@ -142,8 +168,9 @@ This project pins a component's two hot-path threads onto the two hardware threa
 physical core deliberately, because they exchange messages constantly and sharing level-one
 cache makes the handoff nearly free -- see
 [cpu_pinning_anti_affinity.md](cpu_pinning_anti_affinity.md). That decision puts any spinning
-thread in the second case, next to a neighbour that matters a great deal. `BackoffWithYield`'s
-`cpu_relax()` uses `_mm_pause()` accordingly.
+thread in the second case, next to a neighbour that matters a great deal. `cpu_relax()`,
+declared in `BackoffWithYield.hpp` and used by the polling described above, calls
+`_mm_pause()` accordingly.
 
 ### The thing that matters more than either
 
@@ -172,14 +199,13 @@ other's queues directly.
 
 ### LockFreeMessageQueue — Vyukov MPSC Algorithm
 `LockFreeMessageQueue<T>` implements Dmitry Vyukov's intrusive MPSC queue. It is a
-singly-linked list of `Node` objects with two pointers:
-- `head_` (cache-line-aligned `atomic<Node*>`) — producers append here.
-- `tail_` (non-atomic `Node*`) — the consumer reads from here.
+singly-linked list of `Node` objects with two pointers, each on its own cache line:
+- `head_` (`atomic<Node*>`) — producers append here.
+- `tail_` (plain `Node*`) — the consumer reads from here.
 
-**Stub node:** the queue is never structurally empty. A permanent `stub_` node (stack-
-allocated inside the queue object) anchors the list from construction to destruction.
-`head_` and `tail_` both start pointing at `stub_`. The stub is never put into the node
-allocator pool; its address is stable for the lifetime of the queue.
+**Stub node:** the queue is never structurally empty. A permanent `stub_` node, a member of the
+queue object, anchors the list. `head_` and `tail_` both start pointing at `stub_`. The stub
+never comes from the node allocator, so its address is stable for the lifetime of the queue.
 
 Initially: head_ ──► stub_ ──► nullptr
               tail_ ──────────────► stub_
@@ -189,28 +215,29 @@ After one enqueue(A):
               tail_ ──► stub_ ──► A
 
 **Enqueue (any producer thread):**
-1. Allocate a `Node` from `ExpandablePoolAllocator<Node>`.
-2. Construct `T` in-place inside the node (`data_storage_`).
-3. `node->next_.store(nullptr, relaxed)`.
-4. `prev = head_.exchange(node, acq_rel)` — atomically swings `head_` to the new node and
+1. If the queue has been shut down, return without doing anything.
+2. Allocate a `Node` from `ExpandablePoolAllocator<Node>`.
+3. Construct `T` in-place inside the node (`data_storage_`).
+4. `node->next_.store(nullptr, relaxed)`.
+5. `prev = head_.exchange(node, acq_rel)` — atomically swings `head_` to the new node and
    returns the previous head. This is the only synchronisation point between producers; the
    exchange serialises them.
-5. `prev->next_.store(node, release)` — links the new node into the list. A consumer
+6. `prev->next_.store(node, release)` — links the new node into the list. A consumer
    watching `tail_->next_` will see this once the store becomes visible.
 
 **Dequeue (consumer thread only):**
 1. Read `tail_` and `tail->next_` (acquire).
-2. If `tail_ == &stub_` and `next == nullptr`: queue is empty, return `nullopt`.
-3. If `tail_ == &stub_` and `next != nullptr`: advance `tail_` past the stub; retry with the
-   new tail.
-4. If `next != nullptr`: move data out of `tail`, advance `tail_` to `next`, return node to
-   pool.
-5. If `next == nullptr` but `head_ != tail_`: a producer is mid-enqueue (completed step 4
-   but not yet step 5 above). Re-enqueue the stub to break the ABA condition and retry.
-
-The stub re-enqueue in step 5 is the key correctness mechanism: it ensures that once the
-producer's `prev->next_.store(release)` becomes visible, the consumer will find the node
-on the next drain, without busy-spinning or blocking.
+2. If `tail_` is the stub: if `next` is `nullptr` the queue is empty, so return `nullopt`;
+   otherwise move `tail_` past the stub and continue with the node after it.
+3. If `next != nullptr`: move the data out of `tail`, advance `tail_` to `next`, return the
+   node to the pool, and return the data.
+4. If `next == nullptr` and `head_ != tail_`: a producer has done step 5 of the enqueue but not
+   yet step 6, so the node after `tail` is not yet reachable. Return `nullopt`. The producer
+   writes to the thread's eventfd after it finishes, so the thread will look again.
+5. If `next == nullptr` and `head_ == tail_`: `tail` is the last node in the queue. Taking it
+   would leave nothing for `head_` and `tail_` to point at, so the stub is enqueued behind it
+   first. The stub is then `tail->next_`, and `tail` can be taken as in step 3, leaving the
+   stub as the anchor again.
 
 **Valgrind / TSan fallback:** when built with `USING_VALGRIND`, the lock-free algorithm is
 replaced by a `std::mutex`-protected `std::deque`. This lets Helgrind and DRD analyse the
@@ -244,7 +271,13 @@ Queue Depth
 - No further callbacks fire while the queue stays above the low watermark.
 - Only when the queue drains **below the low watermark** does the low-water callback fire, resetting the state.
 
-**Usage for TCP read backpressure:** when a connection's ITC queue fills past the high-water mark, the gateway deregisters `EPOLLIN` on the FIX listener, stopping new inbound reads. When the queue drains back below the low-water mark, `EPOLLIN` is re-registered. The hysteresis band prevents rapid toggling of socket events under fluctuating load.
+**Use in the venue:** every venue component sets the two thresholds on its application
+thread's queue, but none sets either callback, so in practice nothing is called. The backpressure
+that does stop the venue reading from a TCP connection is a different mechanism, driven by how
+full a raw-bytes connection's receive buffer is rather than by the depth of an ITC queue: when
+the buffer reaches its high-water mark the handler stops watching the socket for `EPOLLIN`, and
+when the application has consumed enough to bring it below the low-water mark it starts again.
+See `RawBytesProtocolHandler.hpp`.
 
 ### Shutdown Semantics
 `LockFreeMessageQueue::shutdown()` sets `shutting_down_` atomically (CAS from false to
@@ -260,53 +293,75 @@ sequence, and also by the queue's destructor.
 | `enqueue()` | Any thread (MPSC — multiple producers) |
 | `dequeue()` | Consumer thread only (the owning `ApplicationThread`) |
 | `empty()` | Consumer thread only (reads `tail_` without lock) |
+| `size()` | Any thread. The count can be out of date by the time it is used, so it is for measurement, not for deciding whether a dequeue will succeed |
 | `shutdown()` | Any thread (atomic CAS) |
 
 `ExpandablePoolAllocator` supplies queue nodes from a lock-free pool so node allocation
 itself involves no heap calls on the hot path.
 
 ## Thread Lifecycle
-Each `ApplicationThread` transitions through a fixed state machine:
+Each `ApplicationThread` moves through these states:
 
-NotCreated → Started → InitialProcessed → Operational → ShuttingDown → Terminated
+NotCreated → Created → Started → InitialProcessed → Operational → ShuttingDown → Terminated
 
 | State | Meaning |
 |-------|---------|
-| `NotCreated` | `std::thread` not yet constructed |
-| `Started` | Thread has entered its run loop |
+| `NotCreated` | The object's constructor has not finished |
+| `Created` | The constructor has finished: the queue, the eventfd and the allocators exist |
+| `Started` | The thread has entered its run loop |
 | `InitialProcessed` | `on_initial_event()` has returned |
 | `Operational` | `on_app_ready_event()` has returned; thread is processing work |
-| `ShuttingDown` | `shutdown()` called; `is_running()` returns false; queue draining |
-| `Terminated` | Thread has exited its run loop; safe to join |
+| `ShuttingDown` | `shutdown()` has been called, or the run loop has exited; `is_running()` returns false |
+| `Terminated` | `on_termination_event()` has returned, or an exception escaped the run loop |
 
-`ApplicationThread::shutdown()` sets the lifecycle state to `ShuttingDown` atomically and
-writes to `notify_fd_` to wake the thread from `epoll_wait` immediately.
+The order is not strict at the end. A thread that processes a `Termination` event moves to
+`Terminated`, leaves its run loop as a result, and is then set to `ShuttingDown` on the way
+out. A thread asked to stop by `shutdown()` leaves its run loop in `ShuttingDown` and never
+reaches `Terminated`. Neither state on its own says the thread has finished executing;
+`has_exited()` does, and it is set as the very last action of the thread on every path.
+
+`ApplicationThread::shutdown()` sets the lifecycle state to `ShuttingDown`, shuts the queue
+down so that it accepts no more messages, and writes to `notify_fd_` to wake the thread from
+`epoll_wait` immediately. The run loop checks `is_running()` before each pass, so the thread
+leaves the loop without processing what remains in its queue. A message dequeued while the
+thread is shutting down is dropped, with a Debug log line, unless it is one of the four
+events the reactor itself sends: `Initial`, `AppReady`, `Timer` and `Termination`.
+
+An exception that escapes the run loop is caught in `ApplicationThread::run()`, logged, and
+followed by a request to the reactor to shut down the whole process.
 
 The reactor calls `shutdown()` on every registered thread inside
-`finalize_threads_after_shutdown()`, before the join-with-timeout loop.
+`finalize_threads_after_shutdown()`, before it joins each one with `shutdown_timeout_`.
 
 ## Stuck-Thread Detection
-The reactor runs a periodic housekeeping tick (`on_housekeeping_tick()`). Part of that tick
-calls `check_for_stuck_threads()`, which compares two timestamps maintained per thread:
+The reactor runs a periodic housekeeping tick (`on_housekeeping_tick()`, every
+`inactivity_check_interval_`, default one second). Part of that tick calls
+`check_for_stuck_threads()`, which compares two timestamps maintained per thread:
 
 | Field | Set when |
 |-------|----------|
-| `time_event_started_` | Entry to `process_message()` |
-| `time_event_finished_` | Exit from `process_message()` |
+| `time_event_started_` | In `process_message()`, after the checks on the thread's state and before the callback is called |
+| `time_event_finished_` | At the end of `process_message()`, after the callback returns |
 
-If `time_event_started_ > time_event_finished_` and the elapsed wall time exceeds
-`itc_maximum_inactivity_interval_` (default 60 s), the thread is considered stuck and
-`shutdown()` is called on it.
+For a thread in `Operational`:
+- If `time_event_started_ > time_event_finished_`, a callback is running now. If it has been
+  running for longer than `itc_maximum_inactivity_interval_` (default 60 s), the reactor shuts
+  down the whole process with the reason "callback appears to be stuck". Below that limit it
+  logs, at Info, how long the callback has taken so far.
+- Otherwise the most recent callback has finished. If it took longer than
+  `itc_maximum_inactivity_interval_`, the reactor shuts down the process with the reason
+  "callback took too long".
 
-An idle thread (queue empty, blocked in `epoll_wait`) is always safe: it sits between
-messages with `time_event_started_ <= time_event_finished_` and is never falsely detected
-as stuck.
+For a thread still in `Started`, the reactor shuts down the process if more than
+`init_phase_timeout_` (default 10 s) has passed since `time_event_started_`.
 
-**Outstanding Risk:** If any exit path from `process_message()` — including exception paths or early returns —
-fails to update `time_event_finished_`, an idle thread could be falsely detected as stuck
-60 s after the last message. The correct-path case updates `time_event_finished_` at the
-bottom of `process_message()` (ApplicationThread.cpp:488). An audit of all exit paths has
-not yet been completed.
+An idle thread (queue empty, blocked in `epoll_wait`) is never mistaken for a stuck one: it
+sits between messages with `time_event_started_ <= time_event_finished_`, and the gap between
+messages is not measured. That depends on every way out of `process_message()` either setting
+`time_event_finished_` or ending the thread. There are only three: the early return for a
+message that arrives during shutdown, which happens before `time_event_started_` is set; a
+thrown exception, which ends the thread and shuts the process down; and the normal return,
+which sets `time_event_finished_`.
 
 ## See Also
 - [CPU Pinning](cpu_pinning.md) — how each thread claims a dedicated CPU
