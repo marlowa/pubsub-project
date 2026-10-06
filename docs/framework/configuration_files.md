@@ -22,6 +22,9 @@ Sections that several components share are read by shared loaders, such as
 `TomlConfiguration` object to each of them, so every key in the file is read through that one
 object.
 
+A component that reads a second file uses a second object for it. The authentication service
+is the one that does: its credentials file is loaded into a `TomlConfiguration` of its own.
+
 All reading happens while the configuration is loaded. Each loader returns a filled structure, and
 nothing reads the file afterwards.
 

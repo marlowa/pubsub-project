@@ -5,7 +5,7 @@ the primitive rather than the venue: a component here is a building block, not a
 
 - [reactor.md](reactor.md) — The event loop: edge-triggered epoll, non-blocking sockets, the callback contract
 - [threading.md](threading.md) — ApplicationThread, the ITC message system, and the idle-blocking wake strategy
-- [application_thread_itc.md](application_thread_itc.md) — The ITC message system in full, from the original design overview
+- [application_thread_itc.md](application_thread_itc.md) — EventMessage, who owns each payload, and sending a message from one thread to another
 - [allocators.md](allocators.md) — Pool, slab and bump allocators, chaining on exhaustion, and the tripwire
 - [cpu_pinning.md](cpu_pinning.md) — Pinning threads to cores, and the registry that records what is pinned
 - [cpu_pinning_anti_affinity.md](cpu_pinning_anti_affinity.md) — Declared core allocation, and background-by-default for everything undeclared

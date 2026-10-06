@@ -30,7 +30,7 @@ safety net.
 | `ThreadID` | Strongly-typed thread identifier |
 | `ThreadLifecycleState` | `NotCreated`, `Created`, `Started`, `InitialProcessed`, `Operational`, `ShuttingDown`, `Terminated` |
 
-### Virtual Callbacks
+### Virtual Callbacks {#threading_callbacks}
 Subclasses override these to implement their behaviour:
 
 | Callback | When called |

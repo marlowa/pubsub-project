@@ -1,353 +1,128 @@
 
-# ApplicationThread ITC Message System — Complete Design Overview
+# Messages Between Threads
 
-## 1. Architectural Goal
-
-Each `ApplicationThread` is a **CPU‑pinned, busy‑wait, message‑driven active object**.
-
-- It owns a **lock‑free MPSC queue** (`LockFreeMessageQueue<EventMessage>`).
-- It runs a **busy‑wait loop** in `run_internal()` that:
-  - repeatedly tries to dequeue messages
-  - dispatches them via `process_message(EventMessage&)`
-  - exits when `is_running_` becomes false
-- It is designed for:
-  - ultra‑low latency
-  - no blocking
-  - no syscalls in the hot path
-  - predictable behavior under load
-
-The system must support:
-
-- Pool‑allocated ITC payloads via `ExpandablePoolAllocator<T>`
-- Kafka‑allocated payloads via librdkafka
-- Per‑thread message type systems
-- Clean shutdown via TERM messages
-- No `std::variant`, no `std::visit`, no RTTI, no virtual dispatch
+Every event an `ApplicationThread` receives arrives as an `EventMessage` on its
+`LockFreeMessageQueue<EventMessage>`: messages from other threads, timers, inbound PDUs and raw
+bytes, connection events, and the start-up and shutdown events. This document describes that
+envelope, which event types it carries and who owns each payload, and how one thread sends a
+message to another. The queue itself, and how the thread waits for work, are in
+[Threading](threading.md).
 
 ---
 
-## 2. EventMessage — Pointer‑Based Envelope
+## 1. EventMessage
 
-`EventMessage` is a **tiny, non‑owning envelope** around event metadata and a raw payload pointer.
+`EventMessage` is a non-owning envelope: it carries metadata and a raw pointer to a payload,
+never the payload itself. All messages are made by static factory methods
+(`create_itc_message`, `create_timer_event`, `create_termination_event`,
+`create_framework_pdu_message` and so on), so that each type is always constructed with the
+fields it needs.
 
-Key fields:
+Its header holds:
 
-- `EventType type` — coarse category (e.g. `InterthreadCommunication`, `Timer`, `Termination`, etc.)
-- `int payload_size` — size in bytes of the payload (if any)
-- `TimerID timer_id` — used for timer events
-- `std::string reason` — used for termination events
-- `ThreadID originating_thread_id` — used for ITC messages
-- `const uint8_t* payload_` — raw pointer to payload bytes (may be `nullptr`)
-- `int itc_message_type_` — **thread‑local ITC subtype**, meaningful only for `EventType::InterthreadCommunication`
+- `EventType type` — which kind of event this is (see the table below)
+- `int payload_size` — size in bytes of the payload, if there is one
+- `int64_t tail_position` — for `RawSocketCommunication`
+- `TimerID timer_id` — for `Timer`
+- `std::string reason` — for `Termination`, `ConnectionFailed` and `ConnectionLost`
+- `ThreadID originating_thread_id` — for `InterthreadCommunication`
+- `ConnectionID connection_id` — for the connection events
 
-Design properties:
+and alongside the header:
 
-- **No inline payload storage** — keeps `EventMessage` small and cache‑friendly.
-- **Non‑owning pointer** — the receiving thread is responsible for freeing the payload.
-- **Factory methods** (`create_itc_message`, `create_timer_event`, `create_termination_event`, etc.) ensure consistent construction.
-- `get_as<T>()` is a low‑level, unsafe reinterpret cast, to be used only after checking type and subtype.
+- `const uint8_t* payload_` — the payload, or `nullptr`
+- `SlabHandle slab_id_` — for `FrameworkPdu`, the handle of the inbound slab chunk holding the
+  payload; `invalid_slab_handle` otherwise
+- `int16_t pdu_id_` and `int64_t seq_no_` — for `PubSubCommunication`
+- `std::shared_ptr<MirroredBuffer> raw_buffer_owner_` — for `RawSocketCommunication`, keeps the
+  receive buffer alive while the message refers into it, even if the connection's handler has
+  been destroyed; empty for every other type
+- `int64_t enqueued_ns_` — the monotonic time at which the message was put on the receiving
+  thread's queue, used for the queue-latency histogram
+- `int itc_message_type_` — see section 4
 
-Payload memory can come from:
+Because of the `std::string` and the `shared_ptr`, an `EventMessage` is not a small plain
+structure, and it is moved, not copied, into the queue.
 
-- `ExpandablePoolAllocator<T>` (normal ITC case)
-- librdkafka (Kafka case)
-- no payload at all (TERM, INIT, etc.)
+`get_as<T>()` reinterprets the payload pointer as a `const T&`. It checks nothing, so it must
+only be used once the event type has been checked.
 
----
+### Event types and who owns the payload
 
-## 3. Why No Global ITC Enum
+| `EventType` | Payload | Who frees it |
+|---|---|---|
+| `Initial`, `AppReady`, `Termination`, `Timer` | None | — |
+| `InterthreadCommunication` | Whatever the sender points at, or nothing | Agreed between sender and receiver; the framework does not free it |
+| `FrameworkPdu` | A chunk of the reactor's inbound slab allocator | The receiving thread, by calling `release_pdu_payload(msg)` once it has finished. Not doing so leaks the chunk |
+| `PubSubCommunication` | A view into the slab chunk of the page being delivered | The framework. The view is valid only during the `on_pubsub_message()` call, so the receiver copies anything it needs to keep |
+| `RawSocketCommunication` | A view into the connection's `MirroredBuffer` | Released by the application telling the reactor how many bytes it has consumed (see [Socket Comms](socket_comms.md)) |
+| `ConnectionEstablished`, `ConnectionFailed`, `ConnectionLost`, `ConnectionWritable` | None | — |
 
-A single global enum for all ITC message types would be:
-
-- Huge and ever‑growing
-- Cross‑team coupled
-- Hard to maintain
-- A merge‑conflict magnet
-- Full of unrelated message types
-- A design smell in a modular system
-
-This approach was **rejected**.
-
----
-
-## 4. Per‑Thread ITC Message Registries
-
-Instead of a global enum, **each `ApplicationThread` subclass defines its own ITC message universe**.
-
-For each thread:
-
-1. It defines a **local enum** of ITC message types.
-2. It defines a **traits registry** mapping each message type to:
-   - payload C++ type
-   - allocation source (pool / Kafka / none)
-   - destroy function
-   - (optionally) expected payload size
-3. It defines how to **decode and dispatch** messages in `process_message(EventMessage&)`.
-4. It defines how to **destroy** payloads after processing.
-
-This keeps message semantics **local to the receiving thread** and avoids a global “monster enum”.
+`ApplicationThread::process_message()` calls the matching `on_...` callback for each type; the
+list of callbacks is in [Threading](threading.md#threading_callbacks).
 
 ---
 
-## 5. ITC Message Flow — End‑to‑End
+## 2. Sending a Message to Another Thread
 
-### 5.1 Sender Side (Thread A → Thread B)
+A thread sends a message to another with `post_message(target_thread_id, message)`, having
+built it with `EventMessage::create_itc_message(originating_thread_id, data, size)`.
 
-1. **Allocate payload memory**:
-   - Normal ITC:
-     - Use `ExpandablePoolAllocator<PayloadType>` owned by the sender or receiver (depending on design).
-   - Kafka:
-     - librdkafka allocates a buffer on the heap and returns a pointer.
+- If the target is the sending thread itself, the message goes straight onto its own queue.
+- Otherwise `post_message()` calls `Reactor::route_message()`, which finds the target thread by
+  its `ThreadID` and calls its `enqueue()`. `enqueue()` stamps `enqueued_ns_`, puts the
+  message on the queue, and writes to the target's eventfd to wake it.
 
-2. **Construct or serialize payload** into that memory:
-   - For pool‑allocated payloads, construct a C++ object in place.
-   - For Kafka, the payload is already in the buffer provided by librdkafka.
+`route_message()` does not always deliver. It silently drops the message if the target
+`ThreadID` is not registered, if the target is not running, if the target is shutting down or
+has terminated, or if the originating thread is not registered or not running. It throws
+`PubSubItcException` if the target is running but not yet `Operational`, and
+`PreconditionAssertion` if any message other than the four events the reactor itself sends
+(`Initial`, `AppReady`, `Timer` and `Termination`) is posted before the reactor has finished
+initialising. Looking up the originating thread takes the reactor's thread-registry mutex.
 
-3. **Create an `EventMessage`** using `EventMessage::create_itc_message(...)`:
-   - `EventType::InterthreadCommunication`
-   - `originating_thread_id` set to the sender’s `ThreadID`
-   - `payload_` set to the payload pointer
-   - `payload_size` set appropriately
-   - `itc_message_type_` set to an integer representing the **receiver’s local ITC message type** (e.g. cast from the receiver’s enum).
-
-4. **Enqueue the message** into the receiver’s queue:
-   - Use `post_message(target_thread_id, EventMessage msg)` on the sender side.
-   - The Reactor or some routing mechanism maps `target_thread_id` to the correct `ApplicationThread` instance and enqueues into its `LockFreeMessageQueue<EventMessage>`.
+On the receiving side the message is delivered to the pure virtual `on_itc_message()`.
 
 ---
 
-### 5.2 Queue Behavior
+## 3. How the Venue Uses It
 
-- The queue is **MPSC**:
-  - Multiple producers (Reactor, other threads)
-  - Single consumer (the owning `ApplicationThread`)
-- It is **lock‑free** for dequeue and **wait‑free** for enqueue.
-- It supports **watermarks**:
-  - High watermark: producer‑side handler when queue grows too large.
-  - Low watermark: consumer‑side handler when queue drains below a threshold.
-- It supports **shutdown**:
-  - After shutdown, enqueue attempts are ignored (messages dropped).
-  - During shutdown, remaining messages are drained and discarded.
+Every venue component implements `on_itc_message()` with an empty body, and no component calls
+`post_message()` or `create_itc_message()`. A component's application thread exchanges its
+work with other processes as PDUs over TCP, and receives everything else as reactor events.
+Thread-to-thread messages are used today only by the framework's own tests.
 
 ---
 
-### 5.3 Receiver Side (ApplicationThread)
+## 4. Message Subtypes: Designed, Not Implemented
 
-The receiver is an `ApplicationThread` subclass.
+`EventMessage` has an `int itc_message_type_` field, read by `itc_message_type()`, which is
+meant to say which kind of `InterthreadCommunication` message this is. **Nothing can set it**:
+no factory method takes a subtype and there is no setter, so it is always `-1`. A receiver
+that needs to tell message kinds apart has to do it from the payload.
 
-#### 5.3.1 Busy‑Wait Loop in `run_internal()`
+The intended design, which is not built, is this.
 
-Conceptually:
+**No global enum of message types.** A single enum listing every message any thread can
+receive would keep growing, would couple unrelated components to each other, and would be
+edited by everybody. Instead, each `ApplicationThread` subclass would define its own enum of
+the messages it can receive, and the sender would set `itc_message_type_` to a value of the
+*receiver's* enum.
 
-- Log “starting thread”
-- While `is_running_` is true:
-  - Try to dequeue an `EventMessage` from `message_queue_`
-  - If a message is available:
-    - Call `process_message(EventMessage&)`
-- Log “thread shutting down”
+**A table of traits per receiving thread.** For each value of its enum, the receiving thread
+would record the C++ type the payload points to, where the memory came from, and how to free
+it. Its `on_itc_message()` would look the subtype up, cast the payload to the recorded type,
+call the handler for that type, and then free the payload as the traits say. This gives typed
+handling without `std::variant`, `std::visit`, RTTI or virtual dispatch on the message.
 
-This loop:
-
-- Is **single‑consumer** of the queue.
-- Is **busy‑wait** (no blocking, no syscalls).
-- Is intended to run on a **pinned CPU core** for predictable latency.
-
-#### 5.3.2 `run()` Wrapper
-
-- Calls `run_internal()` inside a `try/catch`.
-- On normal exit:
-  - Sets `is_running_ = false`.
-  - Logs normal termination.
-- On exception:
-  - Logs abnormal termination.
-  - Notifies the Reactor (e.g. `reactor_.shutdown(...)`).
-  - Ensures `is_running_` is cleared.
+The design also allowed for payloads allocated outside the framework, such as a message buffer
+owned by a client library that must be freed through that library's own call. Under the
+per-thread traits, only the thread that receives such messages would need to know how to free
+them. The project does not use any such library.
 
 ---
 
-## 6. Per‑Thread ITC Registry — Conceptual Shape
+## See Also
 
-Each `ApplicationThread` subclass defines:
-
-### 6.1 A Local Enum
-
-Example shape (conceptual):
-
-- `enum class MyThreadMsg { Terminate, PriceUpdate, KafkaMessage, ... };`
-
-This enum is **local to the thread** and describes only the messages that this thread can receive.
-
-### 6.2 Traits for Each Message Type
-
-For each enum value, the thread defines traits that specify:
-
-- **Payload type** — the C++ type the payload pointer actually points to.
-- **Allocation source** — where the memory came from:
-  - Pool (via `ExpandablePoolAllocator<T>`)
-  - Kafka heap (via librdkafka)
-  - None (for TERM, INIT, etc.)
-- **Destroy function** — how to free the payload:
-  - Return to pool
-  - Call librdkafka’s free function
-  - Do nothing
-- **Optional metadata** — e.g. expected payload size for debugging.
-
-This forms the **per‑thread ITC message registry**.
-
-### 6.3 Mapping `itc_message_type_` to Traits
-
-`EventMessage` stores `itc_message_type_` as an `int`.
-
-- The sender sets this to a value that the **receiver’s enum** understands.
-- The receiver interprets this integer as its own enum (e.g. via cast or lookup).
-- The receiver uses that enum value to select the correct traits.
-
-This keeps `EventMessage` generic and small, while allowing each thread to have a rich, type‑safe message system.
-
----
-
-## 7. Decode + Dispatch + Destroy on Receiver
-
-Inside the receiver’s `process_message(EventMessage& msg)`:
-
-1. **Check the coarse event type**:
-   - If `msg.type() != EventType::InterthreadCommunication`, handle other event categories (timers, termination, etc.) separately.
-
-2. **Interpret the ITC subtype**:
-   - Read `msg.itc_message_type()`.
-   - Map this integer to the thread’s local enum (e.g. `MyThreadMsg`).
-   - Use the enum value to select the correct traits.
-
-3. **Decode the payload pointer**:
-   - Use the traits’ payload type to reinterpret `msg.payload()` as the correct C++ type.
-   - This is where `get_as<T>()` or an equivalent cast is used, but only after the subtype has been validated.
-
-4. **Call the appropriate handler**:
-   - Dispatch to a handler function or method that takes the strongly‑typed payload.
-   - For example: `handle_price_update(const PriceUpdate&)`, `handle_kafka_message(const KafkaPayload&)`, etc.
-
-5. **Destroy the payload**:
-   - After the handler returns, use the traits’ destroy function to free the payload:
-     - If pool‑allocated: return to `ExpandablePoolAllocator<T>`.
-     - If Kafka‑allocated: call librdkafka’s free function.
-     - If no payload: do nothing.
-
-This sequence ensures:
-
-- Type‑safe decoding (by construction).
-- Correct memory ownership and destruction.
-- No `std::variant`, no `std::visit`, no RTTI, no virtual dispatch.
-
----
-
-## 8. Kafka Special Case
-
-Kafka messages are special because:
-
-- librdkafka allocates the buffer on the heap.
-- The payload is an Avro binary blob or similar.
-- The memory must be freed using librdkafka’s API.
-- It cannot be moved into your pool.
-
-Only the **Kafka ingestion thread** defines a message type for these.
-
-In that thread’s registry:
-
-- The payload type is something like `KafkaPayload` (a struct wrapping the librdkafka pointer and metadata).
-- The allocation source is `KafkaHeap`.
-- The destroy function calls the appropriate librdkafka free function.
-
-Other threads:
-
-- Never see this message type.
-- Never need to know how to free Kafka memory.
-- Never include librdkafka headers.
-
-This keeps Kafka concerns **isolated** to the thread that actually deals with Kafka.
-
----
-
-## 9. TERM Messages and Clean Shutdown
-
-TERM is just another ITC message type in the thread’s local enum.
-
-Traits for TERM:
-
-- No payload.
-- No allocation source.
-- No destroy function.
-
-In `process_message(EventMessage& msg)`:
-
-- When the subtype is TERM:
-  - The thread sets `is_running_ = false`.
-  - The busy‑wait loop in `run_internal()` eventually sees `is_running_ == false` and exits.
-  - `run()` then logs termination and returns.
-
-This allows:
-
-- Clean shutdown of a thread via an ITC message.
-- Unit tests to stop a thread by sending a TERM message.
-
----
-
-## 10. Unit Test Concept — Sending TERM to Stop a Thread
-
-Conceptual flow for a unit test that stops a thread via TERM:
-
-1. **Construct a logger** suitable for tests (e.g. console‑only or silent).
-2. **Construct a Reactor** (or a minimal stub, depending on test scope).
-3. **Construct a concrete `ApplicationThread` subclass** (e.g. `TestThread`) that:
-   - Implements `run()` (or uses the existing `run_internal()` pattern).
-   - Implements `process_message(EventMessage&)`.
-   - Defines a local ITC enum including `Terminate`.
-   - Defines a registry/traits for its ITC messages.
-4. **Start the thread**:
-   - Call `start()` on the `ApplicationThread`, which creates the underlying `std::thread` and runs `run()`.
-5. **Create a TERM `EventMessage`**:
-   - Use `EventMessage::create_itc_message(...)` with:
-     - `EventType::InterthreadCommunication`
-     - `itc_message_type_` set to the integer corresponding to the thread’s local `Terminate` enum value.
-     - `payload_ = nullptr`
-     - `payload_size = 0`
-     - `originating_thread_id` set appropriately.
-6. **Post the TERM message**:
-   - Use `post_message(target_thread_id, std::move(term_msg))`.
-   - The message is enqueued into the thread’s `LockFreeMessageQueue<EventMessage>`.
-7. **Thread processes TERM**:
-   - The busy‑wait loop in `run_internal()` dequeues the TERM message.
-   - `process_message()` sees the subtype `Terminate`.
-   - It sets `is_running_ = false`.
-8. **Thread exits**:
-   - The loop in `run_internal()` exits.
-   - `run()` logs termination and returns.
-9. **Test joins the thread**:
-   - The test calls `join_with_timeout(...)` or similar.
-   - Asserts that the thread terminated cleanly.
-
-This test validates:
-
-- ITC message routing.
-- TERM handling.
-- Clean shutdown behavior.
-- Correct integration of `EventMessage`, queue, and `ApplicationThread`.
-
----
-
-## 11. Why This Design Is a Good Fit
-
-This design satisfies all the original constraints and goals:
-
-- **No global monster enum** — each thread defines its own ITC message types.
-- **No `std::variant` / `std::visit`** — decoding is done via traits and explicit casts.
-- **No RTTI or virtual dispatch** — everything is resolved via enums and traits.
-- **Tiny `EventMessage`** — only metadata + pointer, no inline payload.
-- **Fast lock‑free queue** — small messages, pointer‑based, ideal for MPSC.
-- **Clear ownership model** — receiver frees payload using traits.
-- **Supports pool‑allocated payloads** — via `ExpandablePoolAllocator<T>`.
-- **Supports Kafka heap payloads** — via librdkafka’s allocation and free functions.
-- **Supports TERM and other system events** — via `EventType` and local ITC enums.
-- **Keeps concerns local** — each thread owns its own message universe and registry.
-- **Matches the busy‑wait, CPU‑pinned model** — no blocking, no syscalls in the hot path.
-
-This is the complete, coherent design for your `ApplicationThread` ITC message system.
+- [Threading](threading.md) — the queue, the run loop, the lifecycle and the callbacks
+- [Allocators](allocators.md) — the pools behind the queue nodes and the slabs behind PDU payloads
