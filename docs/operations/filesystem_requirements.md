@@ -65,50 +65,49 @@ stale on recovery. File **contents** are unaffected — `lazytime` changes nothi
 integrity, only about when the clock fields reach the disk. For a trading log whose records carry
 their own timestamps inside them, the file's mtime is of no consequence.
 
-## How it was arrived at
+## How the cause is established
 
-Not by guesswork, and not first. The order matters, because three earlier ideas were wrong or
-unnecessary.
+Each step below is evidence that rules something in or out.
 
-**1. The stall was located before it was explained.** `scripts/thread_offcpu.py` samples
-`/proc/<pid>/task/<tid>/stat`, `schedstat` and `wchan` a few hundred times a second. It showed the
-sequencer's thread in state **D** — uninterruptible sleep — with no time on the run queue. That
-alone ruled out lock contention and cpu starvation: a contended mutex produces state S, and a
-thread waiting for a cpu accumulates run-queue time. Neither was happening.
+**1. The thread is in uninterruptible sleep, not waiting for a lock or a processor.**
+`scripts/thread_offcpu.py` samples `/proc/<pid>/task/<tid>/stat`, `schedstat` and `wchan` a few
+hundred times a second. During a stall it shows the sequencer's thread in state **D** —
+uninterruptible sleep — with no time on the run queue. That rules out lock contention and
+processor starvation: a contended mutex produces state S, and a thread waiting for a processor
+accumulates run-queue time.
 
-**2. `wchan` named the mechanism.** For a thread in state D that file gives the kernel function
-it is sleeping in. The answers were `do_get_write_access` and `wait_transaction_locked` — asking
-the ext4 journal for permission to modify a metadata block, and waiting for a journal transaction
-to commit. So the stall was the journal, established rather than suspected.
+**2. The kernel function it sleeps in is the ext4 journal.** For a thread in state D, `wchan`
+gives the kernel function it is sleeping in. The answers are `do_get_write_access` and
+`wait_transaction_locked` — asking the ext4 journal for permission to modify a metadata block,
+and waiting for a journal transaction to commit.
 
-**3. The first explanation was right but incomplete.** Segments were created with `ftruncate`,
-which leaves a file **sparse**: its size is set and not one block is allocated. The first write
-to each page then has to allocate a block, and allocation is a metadata change. That is a real
-cause, it was fixed (see [BUG-0070](../bug_list.md#bug_0070)), and the common tail improved by
-more than ten times — but the large stalls remained. **Block allocation was the suspected cause
-and it was not the whole answer.**
+**3. Block allocation is not the remaining cause.** A segment whose size was set with
+`ftruncate` would be **sparse**: no block allocated, so the first write to each page would
+allocate one, and allocation is a metadata change. The writer therefore writes every segment out
+in full before it is used — on a helper thread, ahead of time — so no block is allocated while
+appending ([BUG-0070](../bug_list.md#bug_0070)). That reduced the common tail more than tenfold
+but left the large stalls.
 
-**4. What was left had to be metadata that was not block allocation.** With the blocks already
-allocated, the remaining journal traffic could only come from something else the writes were
-still changing. The inode's timestamps are the obvious remaining candidate: appending is a
-`memcpy` into a mapping, so every writeback of a dirty page updates `mtime`, and each such update
-is a metadata change. `lazytime` is the option that stops exactly that.
+**4. What remains is timestamps.** With the blocks already allocated, the remaining journal
+traffic has to come from some other metadata the appends still change. Appending is a `memcpy`
+into a mapping, so each writeback of a dirty page updates the file's `mtime`, and each such
+update is a metadata change. `lazytime` is the option that stops exactly that.
 
-**5. It was tested against the alternative, one change at a time.** The log was first moved to
-its own device, changing nothing else — that isolated block-layer contention and accounted for
-249 samples. Then `lazytime` was added, changing nothing else. `wait_transaction_locked` went to
-zero and `do_get_write_access` fell eighteen-fold, which is the confirmation: the remaining
-journal traffic really was timestamps.
+**5. Each change was measured on its own.** The log was first moved to its own device, changing
+nothing else, which removed the block-layer waits (the 249 samples in the table under "A second,
+smaller finding" below). Then `lazytime` was added, changing nothing else:
+`wait_transaction_locked` went to zero and `do_get_write_access` fell eighteen-fold. Changing
+one thing at a time is what allows each number in this document to be attributed to one cause.
 
-A fourth idea, calling `sync_file_range()` from a helper thread to control when writeback
-happened, was planned as the next experiment and became unnecessary — there was nothing left for
-it to fix. It was never built.
+Calling `sync_file_range()` from a helper thread, to control when writeback happens, is not
+needed: with `lazytime` there is no remaining journal wait for it to remove.
 
 ## Why it makes that much difference
 
-Appending to the log is a `memcpy` into a memory-mapped file. There is no `write`, no `fsync`
-and no `msync` anywhere on that path, so nothing about the source code suggests a disk is
-involved at all.
+Appending to the log is a `memcpy` into a memory-mapped file. There is no `fsync` and no
+`msync` anywhere on that path, and no `write` apart from one eventfd write per segment, at
+roll-over, to wake the helper thread that prepares the next segment. Nothing about the source code
+suggests a disk is involved at all.
 
 What happens underneath:
 
@@ -130,8 +129,7 @@ thread is waiting in:
 | `do_get_write_access` (asking the journal for permission to change metadata) | 364 | **20** |
 | `wait_transaction_locked` (waiting for a journal transaction to commit) | 165 | **0** |
 
-The journal traffic was almost entirely timestamps. That was not the expected answer — block
-allocation was the suspected cause, and it was not.
+The journal traffic that remains once blocks are preallocated is almost entirely timestamps.
 
 ## What to do
 
@@ -180,9 +178,10 @@ open-order regions in the install directory, on a different filesystem
 PUBSUB_WAL_ROOT is set: write-ahead logs and the venue's small state files go under /mnt/sda2/mystuff2; open-order regions do not
 ```
 
-The name says WAL because the write-ahead log came first. A file that an earlier deployment put in
-the other place is moved to where it now belongs, and `deploy.py` names each one it moves, so
-changing where these files live loses no open orders and no epochs.
+The variable is named for the write-ahead logs, but also covers the small state files. If one of
+these files is found in the other location, from a deployment made with `PUBSUB_WAL_ROOT` set
+differently, `deploy.py` moves it to where it belongs and names each file it moves, so changing
+where these files live loses no open orders and no epochs.
 
 Unset, everything goes under the install directory, which works anywhere. If it is set to
 something that is not a directory, the deploy stops rather than carrying on.
@@ -196,30 +195,19 @@ the machine says where its disk is.
 
 ## A second, smaller finding: give the log its own device
 
-Before the `lazytime` run, moving the log off the shared device was measured on its own. It is
+Moving the log off a shared device was measured on its own, before `lazytime` was added. It is
 worth doing but it is not the main effect.
 
-Everything had been sharing one disk: the log, the matching engine's 496 MB open-order region,
-the application logs, and gigabytes of `perf` captures. The sequencer's commits were queueing
-behind writes that had nothing to do with trading.
+With everything on one disk — the log, the matching engine's 496 MB open-order region, the
+application logs, and gigabytes of `perf` captures — the sequencer's commits queue behind writes
+that have nothing to do with trading.
 
 | | shared device | own device |
 |---|---|---|
 | `rq_qos_wait` (block layer making the thread wait) | 249 | **4** |
 
-That change removed the block-layer contention and left the journal waits untouched, which is
-what made the `lazytime` result readable when it came.
-
-## How this was established, and why it took two runs
-
-Each run changed **one thing**. Run A moved the log to its own device and changed nothing else;
-run B added `lazytime` and changed nothing else. That is what allows each number above to be
-attributed to a specific cause.
-
-Had both been changed at once, the result would have been a single good figure and no way to
-tell which change earned it — and no way to know that `sync_file_range`, which was the next
-planned experiment, had become unnecessary. It had: with `lazytime` there was nothing left for
-it to fix, so it was never built.
+That change removes the block-layer contention and leaves the journal waits untouched, which is
+what makes the `lazytime` result attributable to `lazytime`.
 
 ## On another filesystem the names are different
 

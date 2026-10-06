@@ -7,10 +7,14 @@ The framework provides two complementary security mechanisms:
 - **TLS** — transport-layer confidentiality and integrity for byte-stream connections
 - **SCRAM-SHA-256** — mutual password-based authentication for FIX gateway clients
 
-These are independent layers. TLS protects the channel; SCRAM proves the client knows the
-correct password. In the full production design the FIX gateway listener uses `TlsRawBytes`
-so that SCRAM exchanges and FIX messages are both protected in transit. Until TLS is wired
-to the gateway listener they are complementary but not combined.
+These are independent layers. TLS protects a channel; SCRAM proves the client knows the
+correct password. Which links use TLS:
+
+| Link | TLS |
+|------|-----|
+| FIX member → FIX order gateway | Yes, on the gateway's TLS listener (`tls_listen_port`), which runs alongside its plain listener |
+| Admin service → authentication service | Yes, on the authentication service's admin listener |
+| FIX order gateway → authentication service (the SCRAM exchange) | **No.** The authentication service's gateway-facing listener is plain TCP, and the gateway has no TLS client configuration for it, in any environment |
 
 ---
 
@@ -19,12 +23,18 @@ to the gateway listener they are complementary but not combined.
 ### Status
 
 Implemented with OpenSSL and in use. The FIX order gateway registers an encrypted FIX listener
-(`TlsRawBytes`) *alongside* its plain listener, gated by the `[fix_tls]` config (`enabled`,
-`cert`, `key`, and `tls_listen_port`); it has been live-verified with a QuickFIX client
-speaking TLS. The authentication service listener is likewise TLS-secured
-(`tls_certificate_path` / `tls_private_key_path`, an optional CA path, and
-`tls_require_client_certificate` for mutual TLS), so the gateway-to-auth link is encrypted.
-The plain (non-TLS) listeners remain available for local and test deployments.
+(`TlsRawBytes`) *alongside* its plain listener, on `[network] tls_listen_port` and enabled by
+`[fix_tls]` (`enabled`, `cert`, `key`); `dev.toml` enables it for both FIX gateways, and it has been
+checked with a QuickFIX client speaking TLS. `prod.toml`, `preprod.toml` and `test-1.toml` do not
+yet define the `fix_tls_*` and `network_tls_listen_port` values the gateway's configuration
+template needs. The authentication service's **admin** listener, which the
+admin service connects to, is TLS-secured (`[admin] tls_certificate_path` /
+`tls_private_key_path`, an optional `tls_ca_path`, and `tls_require_client_certificate` for
+mutual TLS). Its gateway-facing listener is not. `deploy.py` generates a self-signed
+certificate and key for each `[tls.<name>]` section of the environment file.
+
+The framework also supports outbound TLS connections (`TlsClientConfiguration`, below), but no
+venue component uses one.
 
 ### Design Principle: Memory BIOs
 
@@ -48,8 +58,7 @@ All contexts enforce **TLS 1.2 only** (`SSL_CTX_set_min_proto_version(TLS1_2_VER
 The cap exists because QuickFIX/J's MINA `SslFilter` does not handle TLS 1.3
 `NewSessionTicket` records correctly: it deadlocks waiting for a response that it never
 sends, causing the FIX client (`fix-test-client`) to time out on logon. Until the FIX test
-client is upgraded to a TLS-1.3-capable version, TLS 1.3 is disabled at the framework
-level.
+client handles TLS 1.3, TLS 1.3 is disabled at the framework level.
 
 The cap is applied in `TlsContext::apply_common_tls_options()` for both server and client
 contexts. When the cap is lifted, removing those two `set_*_proto_version` calls and adding
@@ -121,9 +130,10 @@ as `std::optional<TlsClientConfiguration>` inside `ServiceEndpoints`. When prese
 `OutboundConnectionManager` creates a `TlsContext` and a `TlsRawBytesProtocolHandler`
 for the connection instead of a `PduProtocolHandler`.
 
-### ProtocolHandlerInterface Additions for TLS
+### ProtocolHandlerInterface Methods for TLS
 
-Three virtual methods were added to `ProtocolHandlerInterface` to support TLS:
+Three virtual methods of `ProtocolHandlerInterface` exist for TLS, with defaults that every
+other handler uses:
 
 | Method | TLS handler | Non-TLS default |
 |--------|-------------|-----------------|
@@ -131,21 +141,15 @@ Three virtual methods were added to `ProtocolHandlerInterface` to support TLS:
 | `is_handshake_complete()` | Returns true once `HandshakePhase::Complete` | `true` always |
 | `is_reads_paused()` | True when backpressure is active | `false` always |
 
-### Known Bug: EPOLLOUT After Handshake Flush (Fixed 2026-06-15)
+### Unsent Ciphertext Keeps EPOLLOUT Armed
 
-**Symptom:** FIX logon stuck — the gateway logged "authentication succeeded" and "FIX OUT"
-but the client never received the Logon response.
-
-**Root cause:** `InboundConnectionManager::on_data_ready()` called `flush_wbio()` during
-the TLS handshake. If the flush returned `EAGAIN` (TCP send buffer full), `has_pending_send()`
-became true. The `pause_reads` branch checked `has_pending_send()` and armed `EPOLLOUT`
-correctly, but the non-pause path had no such check — `EPOLLOUT` was never registered.
-Any later send waited behind the unsent ciphertext and was never started, because `EPOLLOUT`
-never fired.
-
-**Fix:** Added `else if (conn.handler()->has_pending_send())` to `on_data_ready()` that
-registers `EPOLLIN | EPOLLOUT | EPOLLERR` whenever there is pending outbound ciphertext,
-regardless of backpressure state.
+During and after the handshake, flushing the write BIO can return `EAGAIN` because the TCP send
+buffer is full, leaving ciphertext in `pending_outbound`. Any later send then waits behind it,
+and nothing moves it unless the socket is being watched for `EPOLLOUT`.
+`InboundConnectionManager::on_data_ready()` therefore registers
+`EPOLLIN | EPOLLOUT | EPOLLERR` whenever the handler has a pending send, whether or not reads are
+paused for backpressure. If it did not, a FIX logon could stall with the gateway having sent the
+Logon response into a buffer that is never flushed.
 
 ### Integration Tests
 
@@ -163,6 +167,9 @@ All certificates are generated programmatically in tests via the OpenSSL C API
 | `OutboundMutualTls` | Outbound: server requires client certificate; `TlsClientConfiguration` carries cert/key paths |
 | `OutboundTlsServerDisconnect` | Outbound: server closes after handshake; `ConnectionEstablished` delivered before `ConnectionLost` |
 | `OutboundTlsHandshakeFailureNoConnectionEstablished` | Outbound: wrong trust anchor; cert verification fails; `ConnectionEstablished` never delivered; reactor stays alive |
+| `OutboundTlsLargeSendCompletesAcrossWriteReadyEvents` | Outbound: a write larger than the socket send buffer completes across `EPOLLOUT` wakeups, and the bytes arrive intact and in order |
+| `TlsTeardownDuringUnfinishedSendReleasesPendingCiphertext` | Outbound: the connection is reset while a send is unfinished; the pending ciphertext is released |
+| `TlsBackpressureHighAndLowWatermark` | Inbound: reads pause when the plaintext buffer passes 75% full and resume once the application has consumed it below 50% |
 
 ---
 
@@ -180,9 +187,9 @@ service is genuine.
 ### Architecture
 
 A standalone application (`applications/authentication_service/`) handles all
-authentication. Two instances run **active/active** for HA — `a` (port 7070) and `b`
-(port 7071); both serve the gateway, and the gateway falls over to the other instance if one
-dies. Each SCRAM *exchange* is stateless and self-contained within four PDU messages — but
+authentication. Two instances run **active/active** for HA — `a` and `b`, listening for gateways
+on ports 11070 and 11071 and for the admin service on 11072 and 11073 in every environment file;
+both serve the gateway, and the gateway falls over to the other instance if one dies. Each SCRAM *exchange* is stateless and self-contained within four PDU messages — but
 the credential set the instances validate against **is** mutable shared state. The admin
 service is its single writer: it updates the database and fans every credential change out to
 both instances (`SetCredential`/`RemoveCredential` PDUs) so their in-memory copies stay in
@@ -213,7 +220,7 @@ FIX client sends Logon
     ▼
 Order Gateway
     sends AuthenticationRequest(request_id=conn_id, comp_id, client_nonce)
-    │  PDU 500 (port 7070)
+    │  PDU 500 (plain TCP, port 11070 or 11071)
     ▼
 Authentication Service
     looks up comp_id credential
@@ -280,9 +287,11 @@ the Java admin service (`java/admin-service/`) via plain JDBC. The
 authentication service to load at startup.
 
 The authentication hot path (SCRAM exchange) never queries the database. All credentials
-are pre-loaded at startup into an `unordered_map<string, ScramCredential>` held in
-`AuthenticationThread`. On SIGHUP or an admin PDU, credentials are reloaded without
-restarting the service.
+are loaded at startup from `credentials.toml` into an `unordered_map<string, ScramCredential>`
+held in `AuthenticationThread`. After that they change only through the admin PDUs —
+`SetCredentialRequest`, `RemoveCredentialRequest` and `RestoreCredentialRequest` — which the
+admin service sends to both instances, and which update the in-memory copy without restarting
+the service. Nothing re-reads the file while the service runs.
 
 ---
 
@@ -294,11 +303,12 @@ restarting the service.
 | Client identity proof (knows the password) | SCRAM `ClientProof` |
 | Server identity proof (genuine service) | SCRAM `ServerSignature` verified by gateway |
 
-TLS prevents a network eavesdropper from observing or tampering with the SCRAM exchange.
-SCRAM prevents an impostor authentication service from fooling the gateway (the gateway
-checks `ServerSignature`). In a production deployment both are required. During internal
-development the SCRAM exchange travels over a plaintext TCP connection, which is acceptable
-for localhost but not for any externally-exposed endpoint.
+TLS on a link prevents a network eavesdropper from observing or tampering with what crosses
+it. SCRAM prevents an impostor authentication service from fooling the gateway (the gateway
+checks `ServerSignature`). The SCRAM exchange between gateway and authentication service
+crosses a plain TCP connection in every environment, including production. SCRAM is designed
+so that what crosses that link does not reveal the password or let an observer log on, but the
+link is not encrypted, so it should not cross an untrusted network.
 
 ---
 
