@@ -13,8 +13,13 @@ The design competes with SBE (Simple Binary Encoding), prioritising:
 - Allocator-friendly decoding via a `BumpAllocator` arena
 - Sub-100 ns encode/decode on the hot path
 
-Heap allocation is banned from all generated code. The generated headers depend only on
-the standard library and `BumpAllocator.hpp`.
+Heap allocation is banned from the generated encode and decode code. The one generated
+function that allocates is `to_string()` on a decoded view, which builds a `std::string` for
+logging and diagnostics and is not for the hot path. The generated headers depend only on the
+standard library and `BumpAllocator.hpp`.
+
+The same DSL files also generate Java classes, used by the Java components, and the topic
+registry described below.
 
 ---
 
@@ -34,9 +39,10 @@ the standard library and `BumpAllocator.hpp`.
 | `string` | `std::string_view` | 4-byte byte-count + UTF-8 bytes |
 | `bytes` | `BytesView` | 4-byte byte-count + raw bytes; zero-copy decode |
 
-All integers are signed. There are no unsigned integer types in the DSL — the only unsigned
-value in the system is the `0xC0FFEE00` canary in the PDU framing header, which is outside
-the DSL.
+All integers are signed. There are no unsigned integer types in the DSL. The one unsigned
+value on the wire is the `0xC0FFEE00` canary in the PDU framing header, which is part of the
+framing rather than of any message; a `framing` block (below) can declare it as a constant for
+the generated Java code.
 
 `char` is used for FIX protocol single-character fields (e.g. `OrdStatus`, `Side`). It
 accepts character literals (`'A'`, `'1'`) in enum entry values and generates `char` in C++.
@@ -74,7 +80,23 @@ namespace.
 
 Each message has a mandatory numeric `id` in its metadata, which maps to `pdu_id` in the
 PDU framing header. An optional `version` field may also appear. Fields are listed in
-declaration order, which determines wire order.
+declaration order, which determines wire order. A message with `id=0` is an inner type: it is
+only ever carried inside another message, and is never sent as a PDU of its own (for example
+`TopicRecord` inside `TopicPage`).
+
+### Other Declarations
+
+- **`include "file.dsl"`** brings in the declarations of another DSL file. The loader replaces
+  the directive with those declarations before validation. `--include-dir` adds directories to
+  search, which is how a source DSL file includes one generated into the build tree.
+- **`framing { name = value ... }`** declares wire-level constants such as the PDU header size
+  and canary. The Java generator emits them as constants for the Java side's framing code.
+- **`topic name { Message, ... }`** declares a pub/sub topic and the messages that belong to it.
+  It is read only when the topic registry is generated (see below). A message may belong to
+  more than one topic.
+- **The pdu-id enum.** With `--pdu-id-enum`, the file must contain an enum named `PduId`, and
+  every message's id must be written as a member of it (`id=PduId.NewOrderSingle`) rather than
+  as a number. `fix_orders.dsl` is generated this way.
 
 ### Example DSL
 
@@ -110,33 +132,48 @@ a single `.hpp` header.
 ### Generated Functions
 
 ```cpp
-// Wire size of msg.
-std::size_t encoded_size(const Foo& msg);
+// Wire size of message.
+std::size_t encoded_size(const Foo& message);
 
-// Encode msg into out_buffer. Returns false if buffer too small.
-// encode_arena is scratch only (not part of the wire output).
-bool encode(const Foo& msg, uint8_t* out_buffer, std::size_t out_size,
+// Encode message into out_buffer. bytes_needed is always set, even when out_buffer is too
+// small, in which case nothing is written and false is returned.
+bool encode(const Foo& message, uint8_t* out_buffer, std::size_t out_size,
             std::size_t& bytes_written, std::size_t& bytes_needed);
 
-// Fixed-size messages only: no arena, no size check.
-// Use on the hot path when buffer size is already known sufficient.
-bool encode_fast(const Foo& msg, uint8_t* out_buffer);
+// Fixed-size messages only: no size check. For the hot path, when the buffer is already
+// known to be large enough.
+void encode_fast(const Foo& message, uint8_t* out_buffer);
+std::size_t fixed_encoded_size(const Foo& message);   // fixed-size messages only
 
-// Decode from wire buffer into a FooView.
-// arena_bytes_needed is always set (snprintf contract) even when
-// the buffer is too small, allowing two-pass sizing.
-bool decode(FooView& out, const uint8_t* buffer, std::size_t bytes_available,
-            std::size_t& bytes_consumed,
-            pubsub_itc_fw::BumpAllocator& decode_arena,
-            std::size_t& arena_bytes_needed);
+// Decode one Foo starting at read_cursor, advancing read_cursor and reducing
+// bytes_remaining by the bytes consumed. arena_bytes_needed is always set (the snprintf
+// contract), even when decode_arena is too small, allowing two-pass sizing.
+bool decode_Foo(FooView& out, const uint8_t*& read_cursor, std::size_t& bytes_remaining,
+                pubsub_itc_fw::BumpAllocator& decode_arena, std::size_t& arena_bytes_needed);
 
 // Skip over a Foo in a wire buffer without decoding it.
 bool skip_Foo(const uint8_t*& read_cursor, std::size_t& bytes_remaining);
 
-// Compile-time upper bound on arena bytes needed to decode Foo,
-// for a given maximum list element count.
-constexpr std::size_t max_decode_arena_bytes_Foo(std::size_t max_elements = 256);
+// Upper bounds on the arena bytes needed to decode, or to build for encoding, a Foo whose
+// lists have at most max_elements_per_list elements each.
+constexpr std::size_t max_decode_arena_bytes_Foo(std::size_t max_elements_per_list = 256);
+constexpr std::size_t max_encode_arena_bytes_Foo(std::size_t max_elements_per_list = 256);
+
+// The first field of a decoded message whose value the definition does not allow -- an
+// enumerated field holding a value the enum does not have, or an empty required string --
+// or an empty string_view if there is none. The decoder itself only checks that each
+// field's bytes are present; a component taking messages from outside calls this to refuse
+// a message the definition does not allow.
+std::string_view first_invalid_field(const FooView& message);
+
+// A readable rendering of a decoded message, for logs and diagnostics. Allocates.
+std::string to_string(const FooView& view);
 ```
+
+Enums get the same `encoded_size`, `encode`, `decode_` and `skip_` functions, as well as
+`to_string()` and `validate()`.
+
+An optional field appears in both structs as the field itself plus a `bool has_<name>` flag.
 
 ### Decode Arena
 
@@ -150,24 +187,16 @@ target) the generator emits a byte-swap loop and does use the arena.
 `max_decode_arena_bytes_Foo()` gives a compile-time upper bound, letting the application
 pre-size the arena without runtime measurement.
 
-### BumpAllocator Two-Pass Pattern for Variable-Length Encode
+### Encode Arena and Sizing the Output
 
-When the encode buffer is not pre-sized, use the BumpAllocator's measuring mode:
+`encode()` writes directly into the caller's buffer and needs no arena of its own. A caller
+that has to build `ListView` arrays to fill in a message before encoding it can take that
+scratch space from a `BumpAllocator`, sized with `max_encode_arena_bytes_Foo()`.
 
-```cpp
-// Pass 1: measure required wire size
-BumpAllocator measuring(nullptr, 0);
-encode(msg, wire_buf, measuring);
-std::size_t needed = measuring.bytes_used();
-
-// Pass 2: allocate real storage and encode
-auto [slab_id, ptr] = allocator.allocate(needed);
-BumpAllocator real(static_cast<uint8_t*>(ptr), needed);
-encode(msg, wire_buf, real);
-```
-
-For fixed-size messages, use `encode_fast()` directly with a pre-allocated slab chunk —
-no measuring pass needed.
+To size the output buffer, call `encoded_size(message)`, or call `encode()` once with a buffer
+that may be too small: it sets `bytes_needed` either way. For fixed-size messages,
+`fixed_encoded_size()` is known in advance and `encode_fast()` can write straight into a
+pre-allocated slab chunk.
 
 ---
 
@@ -202,29 +231,56 @@ Lives under `python/`:
 | `dsl/lexer.py` | Tokeniser |
 | `dsl/parser.py` | Recursive-descent parser producing an AST |
 | `dsl/ast.py` | AST node dataclasses |
-| `dsl/validator.py` | Semantic validation: unknown types, duplicate IDs, cycles |
+| `dsl/loader.py` | Reads a DSL file and resolves its `include` directives |
+| `dsl/validator.py` | Semantic validation: unknown types, duplicate IDs, cycles, the pdu-id enum rules |
+| `dsl/errors.py` | The error type every stage raises |
 | `dsl/generator_cpp.py` | C++17 code emitter |
+| `dsl/generator_java.py` | Java code emitter |
+| `dsl/generator_topics.py` | Topic registry and topic catalog emitter |
+| `dsl/generator_pybind11.py` | Python bindings over the generated C++, used by the round-trip tests |
 | `tools/generate_cpp_from_dsl.py` | Command-line entry point |
+
+`fix_orders.dsl` is not a source file. It is generated at build time from the FIX data
+dictionary `applications/fix_orders.dd.xml` by `tools/generate_dd_to_dsl.py` (the
+`dd_to_dsl` package); see [PDU generation](../fix/pdu_generation.md).
 
 ### Command-Line Interface
 
 ```
-generate_cpp_from_dsl.py <input.dsl> <output.hpp> [--namespace NS] [--topics]
+generate_cpp_from_dsl.py <input.dsl>
+    [--cpp OUTPUT.hpp --namespace NS [--pdu-id-enum]]
+    [--java OUTPUT.java [--package PKG]]
+    [--topics-registry OUTPUT.hpp --namespace NS] [--topics-catalog OUTPUT.md]
+    [--include-dir DIR ...]
 ```
 
-- Input is a `.dsl` file path; output is a `.hpp` **file path** (not a directory).
-- `--namespace NS` sets the C++ namespace for the generated code.
-- `--topics` enables generation of additional topic-registry glue code.
+- At least one output is required. Each output is a **file path**, not a directory.
+- `--cpp` writes the C++ header and requires `--namespace`. `--pdu-id-enum` turns on the
+  pdu-id enum rules described above.
+- `--java` writes a Java source file, in package `--package` if given.
+- `--topics-registry` writes a C++ header with a `Topic` enum and the table of which pdu ids
+  belong to which topic; `--topics-catalog` writes a readable Markdown catalog of the same.
+- `--include-dir` adds a directory to search when resolving `include` (may be repeated).
 
 ### CMake Integration
 
-DSL files are discovered automatically via `file(GLOB_RECURSE *.dsl)`. Generated headers
-are placed in `build/libraries/pubsub_itc_fw/dsl/` (framework-internal DSL) and
-`build/generated_dsl/` (application-level DSL). All codegen targets are marked `ALL` so
-they run at the very start of the build, before any C++ compilation begins.
+There are two kinds of rule.
 
-Pylint runs on `python/dsl/` before CMake during every build. Pytest (133 Python roundtrip
-tests) runs by default and can be suppressed with `--no-pytest`.
+- `libraries/pubsub_itc_fw/CMakeLists.txt` finds every `.dsl` file under the framework library
+  with `file(GLOB_RECURSE ...)` and generates each into
+  `build/libraries/pubsub_itc_fw/dsl/`, in namespace `pubsub_itc_fw`.
+- The top-level `CMakeLists.txt` has an explicit rule for each application protocol, writing
+  into `build/generated_dsl/` in namespace `pubsub_itc_fw_app`. It also generates
+  `fix_orders.dsl` from the data dictionary first, and the topic registry and catalog from
+  `applications/pubsub.dsl`.
+
+Every generation target is marked `ALL`, and each rule depends on the generator's own source as
+well as on the `.dsl` file, so a change to the generator regenerates the headers.
+
+`build.py` runs pylint on `python/dsl` and `python/fix_dictionary` (failing on errors) before
+the build, and runs the Python test suite in `python/` after it. `--no-pytest` skips the
+Python tests only. The round-trip tests compile each generated header into a Python extension
+with pybind11, so they need pybind11 available to CMake.
 
 ---
 
@@ -232,32 +288,32 @@ tests) runs by default and can be suppressed with `--no-pytest`.
 
 | File | Namespace | Contents |
 |------|-----------|---------|
-| `libraries/pubsub_itc_fw/…/*.dsl` | `pubsub_itc_fw` | Framework-internal PDUs: command queue, events, internal protocols |
-| `applications/fix_orders.dsl` | `pubsub_itc_fw_app` | `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002); prices/quantities as `string`; `TransactTime` as `datetime_ns`; conditionally-required fields as `optional` |
+| `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl` | `pubsub_itc_fw_app` (and `pubsub_itc_fw` through the framework glob) | The messages between instances of a pair and their voters: `StatusQuery` (100), `StatusResponse` (101), `LeaseRequest` (130), `LeaseGrant` (131), `LeaseRefusal` (132), `ArbiterStateRecord` (400); the log's `WalRecord` (103), `WalAck` (104), `WalSubscribeRequest` (105), `WalSubscribeAck` (106), `LogPositionRequest` (107) and `LogPositionReply` (108); the matching engine's catch-up (`MePositionRequest` 115, `MePositionAck` 116), `RoleAnnouncement` (117) and `EnginePositionQuery`/`EnginePosition` (118/119); the session messages (120-126), `OrderAcceptance` (127) and `UndeliveredReportsRequest` (128) |
+| `fix_orders.dsl`, generated in `build/generated_dsl/` | `pubsub_itc_fw_app` | `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002), `OrderCancelReject` (1003), with ids from the `PduId` enum |
 | `applications/authentication.dsl` | `pubsub_itc_fw_app` | SCRAM PDUs 500–503 (`AuthenticationRequest`, `AuthenticationChallenge`, `AuthenticationProof`, `AuthenticationResult`); plus `SetCredentialRequest/Result` (510/511), `RemoveCredentialRequest/Result` (512/513), `RestoreCredentialRequest/Result` (514/515) |
-| `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl` | `pubsub_itc_fw_app` | The messages between instances of a pair and their voters: `StatusQuery` (100), `StatusResponse` (101), `LeaseRequest` (130), `LeaseGrant` (131), `LeaseRefusal` (132), `ArbiterStateRecord` (400); the log's `WalRecord` (103) and `WalAck` (104); the matching engine's catch-up (`MePositionRequest`, `MePositionAck`) and `RoleAnnouncement`; the session messages (120-126) and `OrderAcceptance` (127) |
-| `applications/topics.dsl` | `pubsub_itc_fw_app` | Topic pub/sub protocol: `TopicSubscribeRequest` (107), `TopicSubscribeAck` (108), `TopicPage` (109), `TopicAck` (110), inner type `TopicRecord` |
+| `applications/binary_session.dsl` | `pubsub_itc_fw_app` | The binary gateway's session messages: `Logon` (700), `LogonAck` (701) |
+| `applications/matching_engine/matching_engine_replication.dsl` | `pubsub_itc_fw_app` | `BookUpdate` (600), from the matching engine primary to its secondary |
+| `applications/topics.dsl` | `pubsub_itc_fw_app` | Topic pub/sub protocol: `TopicSubscribeRequest` (107), `TopicSubscribeAck` (108), `TopicPage` (109), `TopicAck` (110), `TopicNotLeader` (111), `TopicLagged` (112), inner type `TopicRecord` |
+| `applications/pubsub.dsl` | — | The topic catalog: includes `fix_orders.dsl` and declares the topics `orders` and `execution_reports`. Generates the topic registry and catalog, not message code |
+| `libraries/pubsub_itc_fw/integration_tests/variable_length_test_protocol.dsl`, `libraries/pubsub_itc_fw/performance/DslBenchProtocol.dsl` | `pubsub_itc_fw` | Test and benchmark messages only |
+
+Pdu ids are not unique across files: 107 and 108 are both `LogPositionRequest`/`LogPositionReply`
+in `leader_follower.dsl` and `TopicSubscribeRequest`/`TopicSubscribeAck` in `topics.dsl`. A
+receiver interprets a pdu id according to the protocol it expects on that connection; the
+sequencer handles the first pair and the topic publisher and subscriber classes the second.
 
 ---
 
 ## Benchmarks
 
-Measured on the primary development machine. Encode/decode times per message in nanoseconds
-(encode / decode):
+Measured on the primary development machine with `DslBenchProtocol.dsl`. Encode/decode times
+per message in nanoseconds:
 
 | Message | Encode | Decode |
 |---------|--------|--------|
 | `SmallMessage` | 17 ns | 15 ns |
 | `MediumMessage` | 40 ns | 56 ns |
 | `LargeMessage` | 51 ns | 44 ns |
-
----
-
-## Test Status
-
-- 133 Python roundtrip tests passing (pytest)
-- Coverage: 90 %
-- Pylint: 10/10
 
 ---
 

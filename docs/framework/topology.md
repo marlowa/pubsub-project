@@ -5,54 +5,59 @@ the way it is, and what the diagram is and is not trying to convey. Read this
 alongside the diagram. The diagram is meant to be rendered with PlantUML
 (`plantuml pubsub_itc_fw_topology.puml`) to produce a PNG or SVG.
 
-For the architectural reasoning behind the design, see
-[WAL and High Availability](../availability/wal_and_ha.md). This file is descriptive; that file
-explains why.
+For the reasoning behind the high availability design, see
+[WAL and High Availability](../availability/wal_and_ha.md). This file is
+descriptive; that file explains why.
 
 ## What the diagram represents
 
-A single-site, single-instrument deployment of the WAL+HA design described in
-the project summary. Every component drawn is a separate machine. Each machine
-is failure-independent from every other machine in the topology — different
-power supplies, different network switches, ideally different network
-segments. The PSA+witness arbiter pool is especially sensitive to this; see
-the project summary's "Arbiter PSA topology" section for why.
+A single-site, single-instrument deployment of the order path and the
+processes that decide leadership: one gateway protocol's two instances, the
+sequencer pair, the matching engine pair, and the arbiter pool. Every
+component drawn is a separate machine, and each machine is meant to fail
+independently of every other — different power supplies, different network
+switches, ideally different network segments. The witness is especially
+sensitive to this; see [Witness](../venue/witness.md).
 
-The diagram shows TCP connections at the application level, not the underlying
-network infrastructure (no switches, no firewalls, no load balancers). It is a
-logical-deployment view, not a physical-network view.
+The diagram shows TCP connections at the application level, not the
+underlying network infrastructure (no switches, no firewalls, no load
+balancers). It is a logical-deployment view, not a physical-network view.
+
+Not every component is drawn; see "What the diagram does NOT show" below.
 
 ## Why machines are drawn as rectangles
 
-One application instance per machine. The HA design relies on machine-level
-failure independence: when a sequencer machine dies, its sequencer process
-dies with it, but no other component is directly affected. Drawing machines as
-rectangles makes this explicit. Two rectangles drawn separately mean two
-distinct physical (or virtualised-but-independently-failing) hosts.
+One application instance per machine. The high availability design relies on
+machines failing independently: when a sequencer machine dies, its sequencer
+process dies with it, but no other component is directly affected. Drawing
+machines as rectangles makes this explicit. Two rectangles drawn separately
+mean two distinct physical (or virtualised-but-independently-failing) hosts.
+
+The environment files follow this, with one exception: `prod.toml`,
+`preprod.toml` and `test-1.toml` place the `_a` instances of the FIX gateway
+and the binary gateway on one host. The development environment runs every
+component on one machine.
 
 ## Vocabulary on the diagram
 
 The diagram uses **configured identity** labels (PRIMARY, SECONDARY) for the
 components, because configured identity is set at deploy time and is fixed for
-the life of an instance. Configured identity is what the toml says.
+the life of an instance. Configured identity is what the TOML says.
 
 The diagram does **not** label runtime role (LEADER, FOLLOWER) on the boxes,
 because runtime role changes during failover and the diagram is a static
-snapshot. The arrows are labelled in terms of what flows when a component is
-acting as leader (e.g. "order PDUs (only when leader)").
+snapshot.
 
-The two pairs of terms are not interchangeable. See the project summary's
-"Glossary" section for the discipline.
+The two pairs of terms are not interchangeable. See the glossary in
+[WAL and High Availability](../availability/wal_and_ha.md).
 
 ## Components shown
 
 ### FIX clients (representative; external)
 
 `fix8-client-1` and `fix8-client-2` are drawn as representative external FIX
-clients. Real deployments have many such clients. Each client pins to one
-gateway (its FIX session is a TCP connection with that gateway). On gateway
-failure, the client reconnects to a different gateway in the pool, with
-FIX-level resend covering any gap.
+clients. Real deployments have many such clients. Each client is logged on to
+one gateway instance at a time.
 
 The fix8 clients are part of the system's environment, not part of the
 framework's deployment. They are drawn so that the entry-point of the FIX wire
@@ -67,7 +72,7 @@ but no other. Each gateway:
 - Terminates the sessions of the members connected to it.
 - Checks each order and cancel, wraps it in a `WalRecord` envelope that names the member's session,
   and sends it to both sequencers. Only the leading sequencer acts on it.
-- Receives execution reports from the leading sequencer and sends each to the member's session.
+- Receives execution reports from the sequencers and sends each to the member's session.
 - Holds open connections to both sequencers, so that whichever leads can be reached without setting
   up a connection on failover.
 
@@ -79,50 +84,51 @@ arbiter pairs; see [Gateway High Availability](../availability/gateway_ha.md).
 ### Sequencer pair
 
 `sequencer-primary` and `sequencer-secondary` are two machines, each running
-one sequencer instance. They are the central authority for ordering — every
-order PDU receives a seqNo and is durably written to the leader's WAL before
-any downstream effect happens.
+one sequencer instance. The leading sequencer is the central authority for
+ordering: every command receives a sequence number and is written to the
+leader's write-ahead log before anything downstream acts on it.
 
-Each sequencer machine has its own local-disk WAL (mmap'd, segmented), shown
-as a database symbol inside the machine box. The sequencer leader writes its
-WAL; the sequencer follower receives WAL records via the replication channel
-and writes its own copy.
+Each sequencer machine has its own local-disk write-ahead log (memory-mapped,
+in segments), shown as a database symbol inside the machine box. The leader
+writes its log; the follower receives the leader's records over the
+replication connection and writes its own copy.
 
-### ME pair
+### Matching engine pair
 
 `ME-primary` and `ME-secondary` are two machines, each running one matching
-engine instance. Each ME maintains an order book in memory.
+engine instance. Each holds an order book in memory.
 
-The ME-primary's book is the authoritative book for the current trading
-session. The ME-secondary maintains a replicated copy of the book so that on
-ME-primary failure the secondary knows about all in-flight orders. The
-specific intent for the framework is that on ME failover, the secondary uses
-its replicated book to issue cancellation messages for outstanding orders, so
-that gateways can deliver appropriate cancel notifications to FIX clients
-("your order has been cancelled because the matching engine failed over").
+The configured primary sends book updates to the configured secondary, so the
+secondary holds a copy of the book and can take over knowing which orders
+were resting. What a promoted engine then does with those orders is a stated
+policy, `order_book.open_orders_on_promotion`: `cancel`, which every
+environment uses, cancels each one and reports the cancel to its member;
+`keep` leaves them on the book. See "What happens to resting orders on
+promotion" in [WAL and High Availability](../availability/wal_and_ha.md).
 
-This is more than the halt-on-failure baseline noted in the project summary,
-and matches the architectural intent for this framework as discussed.
-
-The order book is shown as a database symbol inside each ME machine box. The
+The order book is shown as a database symbol inside each machine box. The
 secondary's book is annotated as "replicated".
 
-### Arbiter pool (PSA + witness)
+### Arbiter pool (two arbiters and a witness)
 
 Three machines: `arbiter-primary`, `arbiter-secondary`, `witness`.
 
-The two arbiter instances each hold a copy of the leadership-state map
-(`(component_id, leader_instance_id, epoch, lease_expiry)` records, one per
-component pair). The witness holds no state. It exists solely to vote in
-elections of which of the two arbiters is currently the active one.
+An instance of a component pair leads only while a majority of three voters —
+itself, its peer and the arbiter pool — has granted it a lease that has not
+run out. The arbiter pool is that third voter, and it votes through whichever
+of its two arbiters is **active**. Which arbiter is active is decided the same
+way, among three voters: the two arbiters and the witness.
 
-Three votes total, majority is two: the design tolerates any single-machine
-failure without losing the ability to make leadership decisions. The witness's
-value depends entirely on its placement in a failure-independent location;
-this is annotated on the witness's machine box and is critical.
+Each arbiter keeps, on disk, the promise of its own vote in deciding which
+arbiter is active; in memory, it keeps the highest epoch granted in each
+component group. The witness keeps nothing on disk and is never a candidate:
+it only answers the arbiters' lease requests.
 
-See the project summary's "Arbiter PSA topology" section for the full
-reasoning.
+Three votes in each decision, majority two: the design tolerates the loss of
+any one voter. The witness's value depends entirely on its placement in a
+failure-independent location; this is annotated on the witness's machine box.
+See [Arbiter](../venue/arbiter.md), [Witness](../venue/witness.md) and
+[Deciding leadership by majority, with leases](../availability/majority_leases.md).
 
 ## Connection types
 
@@ -131,102 +137,105 @@ control-plane connections.
 
 ### Data-plane connections (solid black arrows)
 
-These carry order flow, ER flow, FIX traffic, and replication of state that is
-part of the order-processing semantics:
+These carry order flow, execution report flow, FIX traffic, and replication of
+state that is part of processing orders:
 
 1. **FIX wire** — `fix8-client-N` ↔ `gateway-N`. Bidirectional FIX text
    protocol. The gateway terminates the FIX session, encodes orders, decodes
-   ERs.
+   execution reports.
 
-2. **Order PDUs** — `gateway-N` → `sequencer-X`. Each gateway holds open
-   connections to both sequencer machines and sends order PDUs on whichever is
-   currently the leader. The non-leader rejects sends at the application
-   layer, so connections to it stay open but inert until promotion.
+2. **Commands** — `gateway-N` → `sequencer-X`. Each gateway holds open
+   connections to both sequencers and sends every command to both. Only the
+   leading sequencer acts on it. A gateway learns that a new sequencer leads
+   from the higher leader epoch on the `OrderAcceptance` messages it receives,
+   and then sends again every command still unanswered.
 
-3. **ER PDUs** — `sequencer-X` → `gateway-N`. Symmetrically, each sequencer
-   has connections to both gateways for ER routing. Note that the framework's
-   current implementation has the sequencer initiating these outbound
-   connections (to the gateway's ER inbound listener); this is shown in the
-   diagram by the arrow direction. ERs flow only from the current sequencer
-   leader.
+3. **Execution reports** — `sequencer-X` → `gateway-N`. Each sequencer opens a
+   connection to every gateway process's execution report listener, which is
+   why the arrows point from sequencer to gateway. The same connections carry
+   `OrderAcceptance`.
 
-4. **Sequenced order PDUs** — `sequencer-X` → `ME-Y`. The leader sequencer
-   sends to both ME machines so that both can build the order book. Only the
-   leader sends.
+4. **Sequenced commands** — `sequencer-X` → `ME-Y`. Each sequencer holds
+   connections to both matching engines.
 
-5. **ME ER PDUs** — `ME-Y` → `sequencer-X`. The leader ME sends ERs back to
-   whichever sequencer is currently leader. The secondary ME's ER emissions
-   are discarded by the receiving sequencer until the secondary ME is itself
-   promoted to leader.
+5. **Execution reports from the matching engine** — `ME-Y` → `sequencer-X`.
+   Each matching engine connects to both sequencers' report listeners and
+   sends each report to both.
 
-6. **WAL replication (sequencer pair)** — `sequencer-primary` ↔
-   `sequencer-secondary`. Two separate arrows: leader pushes WAL records to
-   follower; follower sends acks back. The leader does not send an ER to a
-   gateway until the follower has acked the underlying order's WAL record, so
-   the ack channel is on the critical path for ER emission.
+6. **Write-ahead log replication (sequencer pair)** — `sequencer-primary` ↔
+   `sequencer-secondary`. Two separate arrows: the leader pushes log records
+   to the follower; the follower sends acknowledgements back. The leader does
+   not release an execution report to a gateway until the follower has
+   acknowledged the record it depends on, so the acknowledgement is on the
+   critical path.
 
-7. **Book replication (ME pair)** — `ME-primary` ↔ `ME-secondary`. Two
-   separate arrows: leader pushes book updates to follower; follower sends
-   acks back. The follower's book is kept current so it can take over with
-   knowledge of in-flight orders.
+7. **Book replication (matching engine pair)** — `ME-primary` → `ME-secondary`.
+   One arrow: the configured primary sends book updates and nothing is
+   acknowledged. The secondary's book is kept current so it can take over
+   knowing which orders were resting.
+
+The connections between the two instances of a pair, in items 6 and 7, also
+carry each instance's lease requests to its peer and the peer's answers.
 
 ### Control-plane connections (dotted blue arrows)
 
-These carry leadership-management traffic and never carry order data:
+These carry the decisions about who leads and never carry order data:
 
 8. **Component ↔ arbiter pair** — Each of `sequencer-primary`,
    `sequencer-secondary`, `ME-primary`, `ME-secondary` opens connections to
-   both arbiter machines. Heartbeats and lease-renewal requests flow from the
-   component to the arbiter; lease grants and active-arbiter-pointer
-   information flow back. The component sends heartbeats to whichever arbiter
-   is the currently-active one; the passive arbiter accepts the connection
-   but redirects requests to the active arbiter.
+   both arbiter machines and sends each lease request to both, because which
+   arbiter is active can change. The active arbiter answers with a grant or a
+   refusal; the passive one stays silent.
 
-   Note: the gateway has no connection to the arbiter pool. Gateways learn
-   leader-status implicitly (by which sequencer accepts their order PDUs as
-   leader); they never query the arbiter directly. This is a deliberate
-   simplification — gateways are not in primary/secondary HA pairs and do not
-   need their own leadership decisions.
+   The gateways have no connection to the arbiter pool. They send every
+   command to both sequencers, so they do not need to know which one leads.
 
-9. **Arbiter pair internal** — `arbiter-primary` ↔ `arbiter-secondary`. The
-   active arbiter replicates the leadership-state map to the passive arbiter;
-   passive sends acks. Bidirectional, two separate arrows.
+9. **Arbiter pair internal** — `arbiter-primary` ↔ `arbiter-secondary`. Each
+   asks the other for a lease when deciding which of them is active, and the
+   active one tells the passive one the highest epoch granted in each
+   component group (`ArbiterStateRecord`).
 
-10. **Arbiter ↔ witness** — Each arbiter heartbeats to the witness for
-    liveness. The witness can be queried for its vote when one of the
-    arbiters is contemplating promotion. Bidirectional, two separate arrows
-    on each pair (arbiter-primary ↔ witness, arbiter-secondary ↔ witness).
+10. **Arbiter ↔ witness** — Each arbiter sends lease requests to the witness
+    when it wants to become, or stay, the active arbiter. The witness answers
+    with a grant or a refusal.
 
 ## Why bidirectional connections are drawn as two arrows
 
 Where two endpoints exchange messages in both directions and the directions
-mean different things — like "leader pushes WAL records" vs "follower acks
-WAL records" — drawing two separate arrows lets each direction be labelled
-with what flows in that direction. A single double-headed arrow would lose
-that information.
+mean different things — like "leader pushes log records" vs "follower
+acknowledges them" — drawing two separate arrows lets each direction be
+labelled with what flows in that direction. A single double-headed arrow would
+lose that information.
 
 ## What the diagram does NOT show
 
 These are deliberately out of scope for this view:
 
-- **DR site.** The current design is main-site only (this is documented as an
-  open question in the project summary). When DR is added, the diagram will
-  need extension — likely a second copy of most of this topology at a remote
-  site, with cross-site replication channels.
+- **Other venue components.** The matching engine publisher pair, which reads
+  the sequencer's log and publishes it as topics, and which also leads by
+  lease; the authentication service pair, which the gateways ask to check
+  logons; the admin service; and the Prometheus server. They are off the path
+  that orders take through the venue.
 
-- **Multiple instruments.** A real exchange runs many instruments. The
-  scaling story (sharded sequencer, instrument groups, sequencer per
-  instrument) is open in the project summary. This diagram shows the
-  single-instrument case.
+- **The second gateway protocol.** The venue runs a FIX gateway and a binary
+  gateway, each with instances `a` and `b`. The diagram shows one protocol's
+  two instances; the other is connected in the same way.
+
+- **DR site.** The design is for one site only. A disaster recovery site
+  would need a second copy of most of this topology at a remote site, with
+  replication between the sites.
+
+- **Multiple instruments.** A real exchange runs many instruments. This
+  diagram shows the single-instrument case.
 
 - **Internal framework structure.** The diagram does not show the reactor,
   the slab allocator, the PDU framing layer, the FIX parser, or any other
   framework-internal mechanism. The boxes are processes; their internal
   structure is invisible at this level.
 
-- **Operational infrastructure.** PTP grandmasters, monitoring agents (e.g.
-  Nagios), log aggregators, configuration management. These exist but are
-  not part of the system architecture being depicted.
+- **Operational infrastructure.** PTP grandmasters, monitoring agents, log
+  aggregators, configuration management. These exist but are not part of the
+  system architecture being depicted.
 
 - **Network plumbing.** Switches, firewalls, load balancers, VLANs. The
   diagram is logical-deployment, not physical-network. The failure-
@@ -248,17 +257,15 @@ Graphviz with different settings) may be necessary to get a clean visual
 result. The text content of the diagram is correct regardless of how
 PlantUML chooses to lay it out.
 
-## Cross-references to the project summary
+## Where the design is described
 
-- "Glossary -- terms that must not be confused": vocabulary of primary /
-  secondary / leader / follower used here.
-- "Architecture: per-component HA with shared primitives": the structural
-  pattern this diagram visualises.
-- "Gateway pool": why the gateways are drawn as a pool rather than a pair.
-- "Arbiter PSA topology": detailed protocol mechanics for the arbiter pool
-  and witness.
-- "Failover speed targets": the runtime-role transitions this diagram does
-  not show explicitly but which the topology supports.
-- "Implementation staging": which slices of the design will activate which
-  parts of this topology. The diagram shows the topology at completion of
-  all slices; earlier slices have parts of it.
+- [WAL and High Availability](../availability/wal_and_ha.md): the glossary of
+  primary, secondary, leader and follower; why high availability is specific
+  to each component; the write-ahead log; how long a failover takes; and what
+  happens at each point of failure.
+- [Deciding leadership by majority, with leases](../availability/majority_leases.md):
+  the lease rules every voter follows.
+- [Gateway High Availability](../availability/gateway_ha.md): why the gateways
+  are two independent instances rather than a leader and a follower.
+- [Arbiter](../venue/arbiter.md) and [Witness](../venue/witness.md): the
+  arbiter pool's protocol in detail.
