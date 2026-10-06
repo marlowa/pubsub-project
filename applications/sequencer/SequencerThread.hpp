@@ -43,6 +43,7 @@
 #include "LoggedCommandIdentifiers.hpp"
 #include "LoggedCommandIdentifiersBuilder.hpp"
 #include "PairLeaseAgent.hpp"
+#include "ReplicatedRecordWriter.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
@@ -395,7 +396,12 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void forget_log_agreement();
     /// As a follower: whether a replicated record is the next one this log needs. A record already held is not; one that would leave
     /// a gap is not either, and the logs are then no longer taken to agree. Called on either thread that writes replicated records.
-    [[nodiscard]] bool replicated_record_is_next(int64_t seq_no);
+    // Writes a record the leader sent if it is the next one this log needs, from whichever thread
+    // delivers it; on finding one missing, stops writing until the logs are found to agree again.
+    ReplicatedRecordWriter::Outcome write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
+    // Every write of a replicated record, and every change to the log while they may arrive, goes
+    // through this, under one lock (docs/bug_list.md, BUG-0123).
+    ReplicatedRecordWriter replicated_record_writer_;
 
     // ---- Sending an order to the matching engine only once the follower holds it -------------
     //

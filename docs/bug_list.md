@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 123 |
-| Open | 43 (28 defects, 15 tasks) |
-| Closed | 80 |
+| Open | 42 (27 defects, 15 tasks) |
+| Closed | 81 |
 | Next id | BUG-0124 |
 
 ## Open bugs by severity
 
-13 high, 25 medium, 5 low.
+12 high, 25 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,7 +25,6 @@
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0120](#bug_0120) | high | defect | The matching engine drops orders the sequencer has logged when its connections for reports are not yet up |
-| [BUG-0123](#bug_0123) | high | defect | A follower's write-ahead log was found with one entry's bytes blank and the next record written twice |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -155,53 +154,6 @@ went looking.
 
 
 
-
-### BUG-0123: A follower's write-ahead log was found with one entry's bytes blank and the next record written twice {#bug_0123}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-06 |
-| Recorded | 2026-10-06 |
-| How | Every scenario after three runs of `ha_test.py` scenario 27 failing because the secondary sequencer refused to start, its log being damaged ([BUG-0106](#bug_0106) refuses a damaged entry followed by a valid one) |
-| Impact | A sequencer whose log is damaged in this way refuses to start, so the venue loses its standby; and the log no longer holds every record exactly once |
-
-**What was found.** The secondary sequencer's segment `wal_000306.log`, in a test installation whose
-log held 4.6 million records, read correctly up to record 4,587,607, which ends at byte 3,507,493.
-The next 220 bytes, the length of one entry, were zero. Then came record 4,587,608, then record
-4,587,608 again, then records 4,587,609 to 4,587,611, which were the last. The file was last written
-during the first or second of three runs of scenario 27 at about 21:33. The third run's secondary
-refused the log at startup, and so did the secondary of every scenario after it. The damaged
-directory is kept as `sequencer_secondary_wal.damaged-20261006`, beside the live one.
-
-**Not reproduced.** With both sequencers' logs moved aside and started fresh, scenario 27 passed
-eleven runs of eleven and scenarios 1, 65, 66, 67, 68, 69 and 71 passed once each, and no log was
-damaged. The logs of the runs in which the damage arose had been overwritten by the next run before
-it was noticed.
-
-**Why it was reachable only now.** Scenario 27 kills the leading sequencer and has its launcher
-restart it at once. Before the record of identifiers was built in the background
-([BUG-0121](#bug_0121)), the restarted process was never back within its peer's lease, and the peer
-always took the lead. Now the restarted process keeps the lead, so the follower meets its leader again
-on a new connection, without itself changing role. The damage arose in the first runs that took that
-path.
-
-**A way it could happen, not established.** A follower writes the records its leader sends from two
-threads: the reactor's thread, through a handler installed on the connection to the peer, writes them
-while the logs are known to agree and no record passed to the sequencer's thread is still waiting
-there; the sequencer's thread writes the ones passed to it. A counter of records passed on is what
-keeps the two from writing at once. Records that arrive on a new connection before the handler is
-installed reach the sequencer's thread without being counted
-(`SequencerThread::handle_wal_record` says so). If the logs are found to agree while such records are
-still waiting on the sequencer's thread, it writes them while the handler, seeing a count of zero,
-writes later ones on the reactor's thread. Two threads appending at once to a writer that is not built
-for it could leave a blank entry and a record written twice, which is what was found. This fits the
-evidence but has not been shown to happen.
-
-**What closing it needs.** A reproduction, or a demonstration by reasoning about the code, that this
-path, or another, writes the log from two threads at once; then a fix that makes it impossible, such
-as counting every record that reaches the sequencer's thread, whether or not the handler was installed
-when it arrived. A test that makes two writers meet on purpose, made to fail before the fix.
 
 ### BUG-0122: Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism {#bug_0122}
 
@@ -2497,6 +2449,69 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0123: A follower's write-ahead log was found with one entry's bytes blank and the next record written twice {#bug_0123}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| Fixed | 2026-10-06 -- every write of a replicated record, and every change to a follower's log while records may arrive, goes through one lock that decides whether the record is the next one and writes it in one step |
+| How | Every scenario after three runs of `ha_test.py` scenario 27 failing because the secondary sequencer refused to start, its log being damaged ([BUG-0106](#bug_0106) refuses a damaged entry followed by a valid one) |
+| Impact | A sequencer whose log is damaged in this way refuses to start, so the venue loses its standby; and the log no longer holds every record exactly once |
+
+**What was found.** The secondary sequencer's segment `wal_000306.log`, in a test installation whose
+log held 4.6 million records, read correctly up to record 4,587,607, which ends at byte 3,507,493.
+The next 220 bytes, the length of one entry, were zero. Then came record 4,587,608, then record
+4,587,608 again, then records 4,587,609 to 4,587,611, which were the last. The file was last written
+during the first or second of three runs of scenario 27 at about 21:33. The third run's secondary
+refused the log at startup, and so did the secondary of every scenario after it. The damaged
+directory is kept as `sequencer_secondary_wal.damaged-20261006`, beside the live one.
+
+**Not reproduced.** With both sequencers' logs moved aside and started fresh, scenario 27 passed
+eleven runs of eleven and scenarios 1, 65, 66, 67, 68, 69 and 71 passed once each, and no log was
+damaged. The logs of the runs in which the damage arose had been overwritten by the next run before
+it was noticed.
+
+**Why it was reachable only now.** Scenario 27 kills the leading sequencer and has its launcher
+restart it at once. Before the record of identifiers was built in the background
+([BUG-0121](#bug_0121)), the restarted process was never back within its peer's lease, and the peer
+always took the lead. Now the restarted process keeps the lead, so the follower meets its leader again
+on a new connection, without itself changing role. The damage arose in the first runs that took that
+path.
+
+**A way it could happen, not established.** A follower writes the records its leader sends from two
+threads: the reactor's thread, through a handler installed on the connection to the peer, writes them
+while the logs are known to agree and no record passed to the sequencer's thread is still waiting
+there; the sequencer's thread writes the ones passed to it. A counter of records passed on is what
+keeps the two from writing at once. Records that arrive on a new connection before the handler is
+installed reach the sequencer's thread without being counted
+(`SequencerThread::handle_wal_record` says so). If the logs are found to agree while such records are
+still waiting on the sequencer's thread, it writes them while the handler, seeing a count of zero,
+writes later ones on the reactor's thread. Two threads appending at once to a writer that is not built
+for it could leave a blank entry and a record written twice, which is what was found. This fits the
+evidence but has not been shown to happen.
+
+**The fix.** `ReplicatedRecordWriter` holds one lock. Every replicated record is written through
+`write_if_next()`, which reads the number of the last record in the log and writes the record only if
+it is the next one, all under that lock; the discarding of records the leader does not hold runs under
+the same lock, through `change_log()`, taken before the lock on the table of epochs as the writing
+takes it. So whichever thread delivers a record, and whatever the counter of records passed on says,
+two records can never be written at once, a record already held is never written again, and nothing
+is written past a missing one. This closes the whole class of fault, not only the path described
+above.
+
+**Evidence.** `ReplicatedRecordWriterTest`: two threads each offer the same 20,000 records to the
+writer as fast as they can, into a real log with 16 KiB segments, so that they meet on nearly every
+record and at segment boundaries. The log then holds each record once and in order and reads back
+without damage, in three runs of three. With the lock taken out, the test program crashed with a
+segmentation fault in three runs of three: two threads appending at once wreck the log's writer.
+Scenarios 1, 27 (three times), 65, 66, 68, 69 and 71 passed on the fixed code.
+
+**What is still not known.** Whether two threads writing at once is what damaged the log on
+2026-10-06. It fits the evidence, and the fix makes it impossible, but the runs in which the damage
+arose were not kept, and it has not been reproduced.
 
 ### BUG-0118: A gateway's commands waiting for a sequencer that stopped reading were not sent again after the connection was closed {#bug_0118}
 

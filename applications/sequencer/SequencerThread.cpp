@@ -1763,18 +1763,16 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
                    "SequencerThread: WalRecord seq={} discarded -- this log and the leader's are not yet known to agree", view.seq_no);
         return;
     }
-    // A record this log already holds, sent again after the logs were found to agree, is acknowledged
-    // and not written twice; one that would leave a gap is not written at all.
-    if (!replicated_record_is_next(view.seq_no)) {
+    // A record this log already holds, sent again after the logs were found to agree, is not written
+    // twice; one that would leave a gap is not written at all.
+    //
+    // Option B: the received WalRecord bytes are stored verbatim under the WalRecord pdu, so the follower
+    // WAL is byte-identical to the leader's. (view is decoded only to read seq_no + wall_time_ns for the
+    // append header and the WalAck.)
+    if (write_replicated_record(view.seq_no, message.payload(), message.payload_size(), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0) !=
+        ReplicatedRecordWriter::Outcome::written) {
         return;
     }
-
-    // Option B: store the received WalRecord bytes verbatim under the WalRecord pdu
-    // so the follower WAL is byte-identical to the leader's. (view is decoded only to
-    // read seq_no + wall_time_ns for the append header and the WalAck.)
-    append_to_wal(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, message.payload(), message.payload_size(), view.wall_time_ns,
-                  view.has_leader_epoch ? view.leader_epoch : 0);
-    note_replicated_record(view.seq_no);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: WalRecord seq={} inner_pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
                wal_.record_count());
@@ -1797,16 +1795,21 @@ void SequencerThread::forget_log_agreement() {
     }
 }
 
-bool SequencerThread::replicated_record_is_next(int64_t seq_no) {
+ReplicatedRecordWriter::Outcome SequencerThread::write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns,
+                                                                         int32_t leader_epoch) {
     int64_t last = 0;
-    {
-        const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
-        last = log_epochs_.last_seq_no();
-    }
-    if (seq_no == last + 1) {
-        return true;
-    }
-    if (seq_no > last + 1) {
+    const ReplicatedRecordWriter::Outcome outcome = replicated_record_writer_.write_if_next(
+        seq_no,
+        [this, &last] {
+            const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
+            last = log_epochs_.last_seq_no();
+            return last;
+        },
+        [&] {
+            append_to_wal(seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, size, wall_time_ns, leader_epoch);
+            note_replicated_record(seq_no);
+        });
+    if (outcome == ReplicatedRecordWriter::Outcome::gap) {
         // A record is missing. Writing this one would leave a gap, so nothing more is written until
         // the leader has been asked again where the logs agree, which the lease timer does.
         follower_log_agreed_.store(false, std::memory_order_release);
@@ -1815,7 +1818,7 @@ bool SequencerThread::replicated_record_is_next(int64_t seq_no) {
                    "known to agree; asking again",
                    seq_no, last);
     }
-    return false;
+    return outcome;
 }
 
 void SequencerThread::send_log_position_request() {
@@ -1914,12 +1917,15 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
         return;
     }
 
-    // The inline handler is passing every record on while the logs are not known to agree, so this
-    // thread is the only one touching the log here.
+    // The inline handler passes every record on while the logs are not known to agree, but a record it
+    // had begun to write before they stopped being known to agree may still be being written, so the
+    // log is changed only under the writer's lock.
     int64_t last_before = 0;
     int64_t keep_through = 0;
     bool agreed = false;
-    {
+    // Under the lock every replicated record is written under, taken before the lock on the table of
+    // epochs as the writing does, so that no record is being written while records are discarded.
+    replicated_record_writer_.change_log([&] {
         const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
         last_before = log_epochs_.last_seq_no();
         const LogEpochTable::FollowerStep step = log_epochs_.follower_step(LogEpochTable::PositionAnswer{reply.seq_no, reply.epoch});
@@ -1934,7 +1940,7 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
             // against the log exactly, and not found, so it is sequenced as new.
             identifiers_read_position_ = wal_.scan_start_for(keep_through + 1);
         }
-    }
+    });
     if (keep_through < last_before) {
         highest_replicated_seq_no_.store(keep_through, std::memory_order_release);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -2031,16 +2037,14 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
 
             // A record already held is not written twice; one that would leave a gap is passed to the
             // sequencer thread, which discards it, the logs no longer being known to agree.
-            if (!replicated_record_is_next(view.seq_no)) {
+            //
+            // Option B: the received WalRecord bytes are persisted verbatim (record pdu_id = WalRecord)
+            // so leader and follower WALs stay byte-identical.
+            if (write_replicated_record(view.seq_no, payload, static_cast<int>(size), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0) !=
+                ReplicatedRecordWriter::Outcome::written) {
                 replicated_records_queued_.fetch_add(1, std::memory_order_acq_rel);
                 return false;
             }
-
-            // Option B: persist the received WalRecord bytes verbatim (record pdu_id =
-            // WalRecord) so leader and follower WALs stay byte-identical.
-            append_to_wal(view.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, static_cast<int>(size), view.wall_time_ns,
-                          view.has_leader_epoch ? view.leader_epoch : 0);
-            note_replicated_record(view.seq_no);
 
             pubsub_itc_fw_app::WalAck wal_ack{};
             wal_ack.seq_no = view.seq_no;
