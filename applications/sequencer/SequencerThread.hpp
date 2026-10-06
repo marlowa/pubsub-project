@@ -578,6 +578,35 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     [[nodiscard]] bool command_already_logged(const pubsub_itc_fw_app::WalRecordView& inbound);
     void discard_log_tail_index(const char* reason);
 
+    /**
+     * @brief The connections carrying commands from each gateway instance.
+     *
+     * A gateway opens its own connection to each sequencer to send commands on. When that connection's
+     * queue of waiting sends fills, because this sequencer stopped reading from it, the gateway closes
+     * it and opens another, and sends again, marked as sent again, every command still unanswered.
+     * Commands the gateway had already written to the old connection may still be unread in this
+     * machine's buffers for it, and may be read after their copies on the new connection. Those
+     * originals are not marked, so they would not be checked against the log, and a command could be
+     * sequenced twice (docs/bug_list.md, BUG-0118).
+     *
+     * So while a gateway instance has more than one connection open here, every command from it is
+     * checked against the log, marked or not, until the older connection has been read to its end.
+     * The gateway instance is learned from the first command on each connection, which says which
+     * gateway sent it.
+     */
+    struct CommandConnections {
+        int open{0};
+        int64_t already_logged{0};
+    };
+    std::unordered_map<int, GatewayKey> command_connection_gateway_;
+    std::unordered_map<GatewayKey, CommandConnections> command_connections_;
+
+    // Records which gateway instance a connection carries commands from, and returns whether that
+    // instance has more than one such connection open, in which case every command from it is checked.
+    [[nodiscard]] bool note_command_connection(const pubsub_itc_fw::ConnectionID& id, const pubsub_itc_fw_app::WalRecordView& inbound);
+    // Forgets a connection that carried commands, once it has been read to its end.
+    void forget_command_connection(const pubsub_itc_fw::ConnectionID& id);
+
     // The latest report from the engine this instance has handled while leading: forwarded, waiting
     // for an acknowledgement, or dropped because its session was not connected.
     std::optional<EngineReportPosition> latest_report_seen_;

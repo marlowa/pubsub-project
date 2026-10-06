@@ -2,6 +2,7 @@
 # unit tests. They are a program of their own because one of them replaces the global operator new
 # to count allocations, and that replacement would apply to every test linked with it.
 add_executable(fix_common_tests
+        tests/PacedResendTest.cpp
         tests/RollingWindowThrottleTest.cpp
         tests/SessionThrottlesTest.cpp
         tests/ThrottleHeapUseTest.cpp

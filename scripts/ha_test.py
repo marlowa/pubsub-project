@@ -874,6 +874,11 @@ class Scenario(NamedTuple):
     # and the member must be sent the cancel report when it reconnects. See run_scenario's "reports
     # produced while unbound" block, R-0005, and BUG-0088.
     assert_unbound_reports_delivered: bool = False
+    # When True, gateway a is started with a small queue of waiting sends, the leading sequencer is
+    # stopped while a member sends orders until the gateway closes its connection to it, and every
+    # order must be accepted exactly once after the sequencer runs again. See run_scenario's
+    # "commands sent again after a reconnection" block, and BUG-0118.
+    assert_commands_resent_after_reconnection: bool = False
     # When True, exercise session provisioning (step 4): prove the gateway admits a comp id
     # provisioned for the instance it is, naming the numbers it was given, and then refuses
     # the same comp id once it is provisioned elsewhere. See run_scenario's "provisioning"
@@ -3736,6 +3741,28 @@ _SCENARIOS: list[Scenario] = [
         assert_unbound_reports_delivered=True,
         steps=[],
     ),
+
+    # 71 -- commands discarded with a closed connection to the leader are sent again when it reconnects.
+    #
+    # Gateway a is started allowing only 100 sends to wait on a connection, with a 16 KiB socket send
+    # buffer. The leading sequencer is stopped, as a debugger or a long pause of the machine would stop
+    # it, for less than its lease, so that it still leads when it runs again. A member sends orders until
+    # the gateway's queue for the sequencer is full and the gateway closes the connection, discarding the
+    # orders waiting in it. The gateway connects again and sends again every order still unanswered, and
+    # the sequencer, running again, must accept each order exactly once.
+    Scenario(
+        number=71,
+        short_name="commands_resent_after_reconnection",
+        description="Commands discarded with a closed connection to the leading sequencer are sent again when it reconnects",
+        expected_outcome=(
+            "the gateway closes its connection to the stopped leader when the queue is full, connects again and sends the "
+            "unanswered orders again; every order is accepted exactly once, none is refused, and the leader keeps the lead"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_commands_resent_after_reconnection=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4644,6 +4671,42 @@ def check_me_seq_monotonic(me_log: Path) -> tuple[bool, list[tuple[int, int, int
         if seq_numbers[i] <= seq_numbers[i - 1]
     ]
     return len(violations) == 0, violations
+
+
+# How many sends gateway a may hold waiting on one connection in scenario 71, and its socket send buffer:
+# small enough that a member's orders fill the queue for a stopped sequencer within a second. The
+# smallest limit a gateway accepts, because it must hold several batches of a resend.
+_SMALL_SEND_QUEUE  = 1024
+_SMALL_SEND_BUFFER = 16384
+# What gateway a logs when it closes its connection to the primary sequencer because its queue is full.
+_SEQUENCER_CONNECTION_CLOSED = "to service 'sequencer_primary' closed: it is not reading what is sent to it"
+
+
+def config_with_small_send_queue(config: Path) -> Path:
+    """A copy of a gateway's configuration that allows only _SMALL_SEND_QUEUE sends to wait on a connection.
+
+    Written beside the original, so that paths in it relative to its directory still resolve, and used
+    instead of it for one scenario. The original is not touched, so nothing has to be put back if the
+    scenario fails part-way."""
+    text = config.read_text()
+    if "\n[reactor]\n" not in text:
+        die(f"config_with_small_send_queue: {config} has no [reactor] section to add the limits to")
+    text = text.replace("\n[reactor]\n", "\n[reactor]\n"
+                        f"connection_waiting_sends_maximum = {_SMALL_SEND_QUEUE}\n"
+                        f"socket_send_buffer_size = {_SMALL_SEND_BUFFER}\n", 1)
+    copy = config.with_name(config.stem + "_small_send_queue.toml")
+    copy.write_text(text)
+    return copy
+
+
+def process_is_stopped(pid: int) -> bool:
+    """Whether a process is stopped by a signal, read from its state in /proc rather than assumed."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    # The state is the field after the command name, which is in brackets and may contain spaces.
+    return stat[stat.rindex(")") + 2] in ("T", "t")
 
 
 def launch_app(name: str, bin_name: str, config: Path,
@@ -5912,6 +5975,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 extra_environment = blocked_gateway_environment(prefix, block_flag)
             if scenario.assert_logged_commands_reach_engine and name == "sequencer_secondary":
                 extra_environment = blocked_peer_environment(prefix, block_flag)
+            if scenario.assert_commands_resent_after_reconnection and name == "fix_order_gateway_a":
+                config = config_with_small_send_queue(config)
+                log(f"  {name} allows only {_SMALL_SEND_QUEUE} sends to wait on a connection, with a {_SMALL_SEND_BUFFER}-byte socket send buffer")
             if extra_environment is not None:
                 log(f"  {name} has libblock_sends_to_ports.so preloaded, blocking ports "
                     f"{extra_environment['PUBSUB_TEST_BLOCK_PORTS']} once {block_flag.name} exists")
@@ -6374,6 +6440,20 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "within 10s after ME restart"
                 )
             log(f"  sequencer_primary: ME connection restored ({elapsed:.1f}s)")
+
+            # Connected is not leading. A restarted engine asks to lead only after it has connected,
+            # and if its first request is not granted -- scenario 11 kills the primary arbiter as well,
+            # so a lease takes a second request -- it leads half a second or more later. Orders sent in
+            # that half second are not lost: the engine takes them from the log as it catches up. But it
+            # does not log a catch-up record as an accepted order, so the count below would never reach
+            # its target. Waiting for the engine to lead makes the orders arrive one at a time, as the
+            # count expects.
+            for restart_step in (s for s in effective_steps if isinstance(s, RestartStep) and s.resets_me_counter):
+                restarted_log = log_dir / restart_step.ready_log_name
+                found, elapsed, _ = poll_log_for(restarted_log, "MatchingEngineThread:", "adopting LEADER role", timeout=15.0, from_byte=0)
+                if not found:
+                    die(f"the restarted {restart_step.proc_name} did not take the lead within 15s")
+                log(f"  {restart_step.proc_name}: leading ({elapsed:.1f}s)")
         log("")
 
         # ── Phase 5: recovery orders ──────────────────────────────────────────
@@ -8501,6 +8581,112 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("unbound reports: the sequencer did not log sending the one report produced while the session had no connection.")
             log("  the sequencer sent exactly the one report produced while the member was away -- OK")
 
+        # ── Commands sent again after a reconnection ──────────────────────────
+        if scenario.assert_commands_resent_after_reconnection:
+            log("=== Commands discarded with a closed connection to the leader are sent again when it reconnects ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("reconnection: sequencer_primary is not leading.")
+            if f8proc is not None:
+                stop_f8test(f8proc)
+                f8proc = None
+                time.sleep(_RAW_CLIENT_SETTLE)
+
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from fix_raw_client import FixRawClient  # pylint: disable=import-outside-toplevel
+
+            member = FixRawClient("127.0.0.1", gateway_listen_port(prefix, "a"), FIX8_COMP_ID, "GATEWAY", FIX8_PASSWORD)
+            member.connect()
+            member.logon(reset_seq_num=True)
+            if member.receive_until("A", timeout=_RAW_LOGON_TIMEOUT) is None:
+                member.close()
+                die("reconnection: the raw client could not log on.")
+
+            sequencer = proc_by_name["sequencer_primary"]
+            gateway_from = file_end(gw_log)
+            secondary_from = file_end(secondary_log)
+            run_tag = datetime.now().strftime("%H%M%S")
+            sent: list[str] = []
+            os.kill(sequencer.pid, signal.SIGSTOP)
+            stopped_at = time.monotonic()
+            if not process_is_stopped(sequencer.pid):
+                os.kill(sequencer.pid, signal.SIGCONT)
+                die("reconnection: sequencer_primary did not stop after SIGSTOP.")
+            log(f"  sequencer_primary (PID {sequencer.pid}) stopped")
+
+            # Orders until the gateway closes its connection to the stopped sequencer, checking now and then.
+            closed = False
+            while len(sent) < 40000 and time.monotonic() - stopped_at < 1.0:
+                for _ in range(250):
+                    cl_ord_id = f"recon-{run_tag}-{len(sent) + 1}"
+                    member.new_order_single(cl_ord_id)
+                    sent.append(cl_ord_id)
+                if count_log_marker(gw_log, _SEQUENCER_CONNECTION_CLOSED, from_byte=gateway_from) > 0:
+                    closed = True
+                    break
+            if not closed:
+                closed = poll_log_for(gw_log, _SEQUENCER_CONNECTION_CLOSED, timeout=0.3, from_byte=gateway_from)[0]
+            # Running again well inside its lease, so that it still leads.
+            os.kill(sequencer.pid, signal.SIGCONT)
+            stopped_for = time.monotonic() - stopped_at
+            if process_is_stopped(sequencer.pid):
+                die("reconnection: sequencer_primary did not run again after SIGCONT.")
+            log(f"  sequencer_primary running again after {stopped_for:.2f}s; {len(sent)} order(s) sent while it was stopped")
+            if not closed:
+                member.close()
+                die(f"reconnection: {len(sent)} orders did not fill gateway a's queue for the stopped sequencer, so the connection "
+                    "was never closed and nothing here was tested.")
+            log("  gateway a closed its connection to the stopped sequencer when the queue was full -- OK")
+
+            # Read the member's reports all the while from here, because gateway a's small limit on
+            # waiting sends applies to the member's connection too: a member that stopped reading while
+            # the reports for the first orders arrived would have its own connection closed.
+            accepted: dict[str, int] = {}
+            refused: list[str] = []
+
+            def take_reports(timeout: float) -> None:
+                for report in member.receive(timeout=timeout):
+                    if report.get(35) == "8" and report.get(39) == "0":
+                        accepted[report.get(11)] = accepted.get(report.get(11), 0) + 1
+                    elif report.get(35) == "8" and report.get(39) == "8":
+                        refused.append(report.get(11))
+
+            deadline = time.monotonic() + 15.0
+            resent = False
+            while not resent and time.monotonic() < deadline:
+                take_reports(0.1)
+                resent = count_log_marker(gw_log, "established again -- sending again on it", from_byte=gateway_from) > 0
+            if not resent:
+                member.close()
+                die("reconnection: gateway a did not connect to the primary sequencer again and send its unanswered commands again.")
+            log("  gateway a connected again and sent its unanswered orders again")
+
+            # Every order accepted, and none twice or refused; and a little longer, for a second
+            # acceptance or a refusal of a duplicate arriving after the last acceptance.
+            deadline = time.monotonic() + 60.0
+            while len(accepted) < len(sent) and time.monotonic() < deadline:
+                take_reports(0.5)
+            settle_until = time.monotonic() + 2.0
+            while time.monotonic() < settle_until:
+                take_reports(0.2)
+            member.close()
+            if count_log_marker(gw_log, "InboundConnectionManager::send_or_wait: connection from", from_byte=gateway_from) > 0:
+                die("reconnection: gateway a closed the member's own connection during the test, so the reports had nowhere to go "
+                    "and the test cannot tell whether the orders were sent again.")
+            missing = [c for c in sent if c not in accepted]
+            twice = [c for c, n in accepted.items() if n > 1]
+            if missing:
+                die(f"reconnection: {len(missing)} of {len(sent)} orders were never accepted, for example {missing[:3]}. They were "
+                    "discarded with the closed connection and not sent again (BUG-0118).")
+            if twice or refused:
+                die(f"reconnection: orders were acted on twice: {len(twice)} accepted twice, {len(refused)} refused, for example "
+                    f"{(twice + refused)[:3]}. A command sent again must be sequenced only if the log does not already hold it.")
+            if poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=0.1, from_byte=secondary_from)[0]:
+                die("reconnection: sequencer_secondary took the lead, so the orders may have been sent again for the change of "
+                    "leader rather than for the reconnection, which is what this scenario tests.")
+            log(f"  all {len(sent)} orders accepted exactly once, none refused, and sequencer_primary kept the lead -- OK")
+
         # ── Binary checks ─────────────────────────────────────────────────────
         if scenario.assert_binary_checks:
             log("=== Binary gateway checks ===")
@@ -9058,12 +9244,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  resend: the gap-fill over {gap_from}..{gap_to} left the member expecting "
                     f"{resume_at}, the venue's next number -- OK")
             else:
+                # The range can also be closed by a gap-fill from inside the resend rather than the
+                # terminating one: when a heartbeat falls due as the member's request arrives, the
+                # numbers after the last report are all administrative, and the gateway gap-fills
+                # them as it reaches them. So what the member expects next is the higher of one past
+                # the highest number it received and the highest NewSeqNo any gap-fill gave it.
                 highest = _client_highest_seq_num(client_output)
-                if highest is None or highest < resume_at - 1:
-                    die(f"resend: the venue reported no gap left, so the resent reports should "
-                        f"have run to {resume_at - 1}. The member's highest MsgSeqNum is "
-                        f"{highest}, so the range was not closed and the member is still short.")
-                log(f"  resend: the resent reports closed the range at {highest}, leaving the "
+                expects = max([highest + 1 if highest is not None else 0] + [int(msg["NewSeqNo"]) for msg in gap_fills])
+                if expects < resume_at:
+                    die(f"resend: the venue reported no gap left, so the member should be expecting "
+                        f"{resume_at}. Its highest MsgSeqNum is {highest} and the gap-fills it received "
+                        f"took it to {[msg['NewSeqNo'] for msg in gap_fills]}, so it expects {expects}: "
+                        "the range was not closed and the member is still short.")
+                log(f"  resend: the resent reports and gap-fills closed the range, leaving the "
                     f"member expecting {resume_at} -- OK")
 
             # 7. The session is still there afterwards. This is the assertion the others

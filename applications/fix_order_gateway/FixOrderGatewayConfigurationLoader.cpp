@@ -15,6 +15,7 @@
 #include "FixSession.hpp"
 #include "GatewayMetrics.hpp"
 #include "OrderPathMetrics.hpp"
+#include "PacedResend.hpp"
 
 namespace fix_order_gateway {
 
@@ -185,6 +186,39 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
                 throw pubsub_itc_fw::ConfigurationException("reactor.quiet_spins_between_polls must not be negative");
             }
             config.reactor_quiet_spins_between_polls = quiet_spins_from_file;
+        }
+
+        // How many sends may wait for one connection, and how many bytes they may add up to, before the
+        // connection is closed because its peer is not reading; and the size of each socket's send buffer.
+        // All three are optional: absent means the framework's defaults. A test sets them low, so that a
+        // peer that stops reading fills a connection's queue quickly.
+        int64_t waiting_sends_from_file{0};
+        const auto [has_waiting_sends, waiting_sends_error] = toml.get_required("reactor.connection_waiting_sends_maximum", waiting_sends_from_file);
+        if (has_waiting_sends) {
+            // A resend of unanswered commands puts a batch at a time on a connection, so the queue must hold
+            // several batches, or the first batch of a resend would fill it and close the connection again.
+            if (waiting_sends_from_file < 4 * static_cast<int64_t>(fix_common::PacedResend::batch_size)) {
+                throw pubsub_itc_fw::ConfigurationException("reactor.connection_waiting_sends_maximum must be at least " +
+                                                            std::to_string(4 * fix_common::PacedResend::batch_size) +
+                                                            ", four batches of a resend of unanswered commands");
+            }
+            config.reactor_connection_waiting_sends_maximum = waiting_sends_from_file;
+        }
+        int64_t waiting_bytes_from_file{0};
+        const auto [has_waiting_bytes, waiting_bytes_error] = toml.get_required("reactor.connection_waiting_bytes_maximum", waiting_bytes_from_file);
+        if (has_waiting_bytes) {
+            if (waiting_bytes_from_file < 1) {
+                throw pubsub_itc_fw::ConfigurationException("reactor.connection_waiting_bytes_maximum must be at least 1");
+            }
+            config.reactor_connection_waiting_bytes_maximum = waiting_bytes_from_file;
+        }
+        int32_t send_buffer_from_file{0};
+        const auto [has_send_buffer, send_buffer_error] = toml.get_required("reactor.socket_send_buffer_size", send_buffer_from_file);
+        if (has_send_buffer) {
+            if (send_buffer_from_file < 0) {
+                throw pubsub_itc_fw::ConfigurationException("reactor.socket_send_buffer_size must not be negative");
+            }
+            config.reactor_socket_send_buffer_size = send_buffer_from_file;
         }
 
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);

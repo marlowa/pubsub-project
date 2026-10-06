@@ -471,6 +471,7 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
 }
 
 void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+    forget_command_connection(id);
     const auto lost_gateway = std::find_if(gateway_conn_ids_.begin(), gateway_conn_ids_.end(), [&id](const auto& entry) { return entry.second == id; });
     if (lost_gateway != gateway_conn_ids_.end()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway id {} connection {} lost: {}", lost_gateway->first,
@@ -651,6 +652,10 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
+        // Noted whatever this instance's role, because a follower can be promoted while a gateway still
+        // has two connections open here.
+        const bool gateway_has_two_connections = note_command_connection(message.connection_id(), inbound);
+
         // A follower writes its log only from its leader's records, so that the two logs stay
         // identical, and numbers nothing itself. It discards the gateway's copy here, before a
         // number is taken: counting these copies in next_sequence_number_ is what left a newly
@@ -664,15 +669,24 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             return;
         }
 
-        // A command a gateway sends again after a change of leader, because nothing had answered it.
-        // If this log already holds it, it must not be sequenced twice: its answer comes from the
-        // engine, by one of the routes in docs/availability/commands_during_a_change_of_leader.md,
-        // section 3.6. If not, nothing ever acted on it, and it is sequenced as a new command.
-        if (role_ == pubsub_itc_fw_app::Role::leader && inbound.has_sent_again && inbound.sent_again && command_already_logged(inbound)) {
-            ++sent_again_already_logged_;
+        // A command a gateway sends again after a change of leader, or after its connection to this
+        // sequencer was closed and opened again, because nothing had answered it. If this log already
+        // holds it, it must not be sequenced twice: its answer comes from the engine, by one of the
+        // routes in docs/availability/commands_during_a_change_of_leader.md, section 3.6. If not,
+        // nothing ever acted on it, and it is sequenced as a new command.
+        //
+        // An unmarked command is checked too while its gateway has two connections open here: it may
+        // be an original read from the old connection after its marked copy came in on the new one.
+        const bool sent_again = inbound.has_sent_again && inbound.sent_again;
+        if (role_ == pubsub_itc_fw_app::Role::leader && (sent_again || gateway_has_two_connections) && command_already_logged(inbound)) {
+            if (sent_again) {
+                ++sent_again_already_logged_;
+            } else {
+                ++command_connections_[command_connection_gateway_[message.connection_id().get_value()]].already_logged;
+            }
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                       "SequencerThread: command ClOrdID={} from comp_id='{}' sent again -- this log already holds it, not sequencing it twice",
-                       inbound.cl_ord_id, inbound.sender_comp_id);
+                       "SequencerThread: command ClOrdID={} from comp_id='{}' {} -- this log already holds it, not sequencing it twice", inbound.cl_ord_id,
+                       inbound.sender_comp_id, sent_again ? "sent again" : "arrived while its gateway had two connections open");
             release_pdu_payload(message);
             return;
         }
@@ -2253,11 +2267,55 @@ bool SequencerThread::command_already_logged(const pubsub_itc_fw_app::WalRecordV
     if (!log_tail_index_.has_value()) {
         log_tail_index_.emplace(config_.wal_directory);
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: commands are being sent again after the change of leader -- reading the end of the log to check them exactly");
+                       "SequencerThread: commands that may already be in the log are arriving -- reading the end of the log to check them exactly");
     }
     log_tail_index_used_at_ = std::chrono::steady_clock::now();
     const int64_t first_sent_no_earlier_than = inbound.has_gateway_ingress_ns ? inbound.gateway_ingress_ns : std::numeric_limits<int64_t>::min();
     return log_tail_index_->holds(inbound.sender_comp_id, protocol, inbound.cl_ord_id, first_sent_no_earlier_than);
+}
+
+bool SequencerThread::note_command_connection(const pubsub_itc_fw::ConnectionID& id, const pubsub_itc_fw_app::WalRecordView& inbound) {
+    auto known = command_connection_gateway_.find(id.get_value());
+    if (known == command_connection_gateway_.end()) {
+        if (!inbound.has_gateway_instance_id) {
+            // A command that does not say which gateway instance sent it cannot be matched with others.
+            return false;
+        }
+        const int16_t protocol = inbound.has_origin_gateway_id ? inbound.origin_gateway_id : gateway_ids::default_when_absent;
+        const GatewayKey gateway = gateway_key(protocol, inbound.gateway_instance_id);
+        known = command_connection_gateway_.emplace(id.get_value(), gateway).first;
+        CommandConnections& connections = command_connections_[gateway];
+        ++connections.open;
+        if (connections.open == 2) {
+            connections.already_logged = 0;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: gateway protocol={} instance={} is sending commands on a second connection, {}, while its earlier one is still "
+                       "open -- checking every command from it against the log until the earlier one ends",
+                       protocol, inbound.gateway_instance_id, id.get_value());
+        }
+    }
+    return command_connections_[known->second].open > 1;
+}
+
+void SequencerThread::forget_command_connection(const pubsub_itc_fw::ConnectionID& id) {
+    const auto known = command_connection_gateway_.find(id.get_value());
+    if (known == command_connection_gateway_.end()) {
+        return;
+    }
+    const GatewayKey gateway = known->second;
+    command_connection_gateway_.erase(known);
+    CommandConnections& connections = command_connections_[gateway];
+    --connections.open;
+    if (connections.open == 1) {
+        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: gateway protocol={} instance={} has one connection open again -- {} command(s) that arrived while it had two "
+                   "were already in this log and were not sequenced twice; checking only commands marked as sent again from now on",
+                   gateway >> 16, static_cast<int16_t>(gateway & 0xFFFF), connections.already_logged);
+    }
+    if (connections.open == 0) {
+        command_connections_.erase(gateway);
+    }
 }
 
 void SequencerThread::discard_log_tail_index(const char* reason) {

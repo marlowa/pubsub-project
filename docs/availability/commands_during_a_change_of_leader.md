@@ -94,6 +94,27 @@ that has just started holds nothing.
 
 Both gateways, FIX and binary, do this the same way.
 
+**A connection to a sequencer established again.** A gateway also sends again every command it still
+holds, marked `sent_again`, on a connection to a sequencer that has been established again, not for
+the first time. A gateway closes its connection to a sequencer whose queue of waiting sends reaches
+its limit, because the sequencer has stopped reading ([BUG-0112](../bug_list.md#bug_0112)), and the
+commands waiting in that queue are discarded. If that sequencer is still leading when the gateway
+connects again, no new epoch arrives to make the gateway send them, so it sends them on reconnecting
+([BUG-0118](../bug_list.md#bug_0118)).
+
+**Sent a batch at a time.** A gateway can hold hundreds of thousands of commands. Sent all at once,
+they would fill the connection's queue faster than the sequencer reads them, and the connection would
+be closed again. So the gateway copies the commands it holds when it starts sending them again, and
+sends 256 at a time on each connection, each batch after the connection has reported that everything
+before it has been written. A connection lost during this abandons its resend; the next one starts
+again from a fresh copy.
+
+**Two connections from one gateway.** When a gateway closes a connection, commands it had already
+written may still be unread at the sequencer, and may be read after their marked copies arrive on the
+new connection. Those originals are not marked, so the leader would not check them. While a gateway
+instance has more than one connection open to it, the leader therefore checks every command from that
+instance against its log, marked or not, until the older connection has been read to its end.
+
 ### 3.3 The new leader forwards kept reports before it says it leads
 
 On taking the lead, the new leader forwards the reports it kept (part 4.4) **before** it sends
@@ -226,7 +247,8 @@ Each test was shown to fail before the change it tests was made.
 | Scenario 66 | The follower's acknowledgements to the leader are blocked with `libblock_sends_to_ports.so`, so the follower writes and acknowledges orders the leader never sends to the engine; the leader is stopped and killed. Every order is applied once and answered. Section 3.5, [BUG-0115](../bug_list.md#bug_0115) |
 | Scenario 67 | An order, then the same order marked as sent again, then an order marked as sent again that was never sent before. The first is applied once and never refused as a duplicate; the last is applied once. Section 3.4 |
 | Scenario 68 | A member sends orders at 100 a second from a second before the leader is killed until two seconds after the follower takes the lead. Every order is answered, and none is applied twice. Before the gateways kept commands, 266 of 598 orders were never answered |
-| Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `LoggedCommandIdentifiers`; `LogTailIndex`, against a real log |
+| Scenario 71 | Gateway a allows only 1,024 waiting sends on a connection. The leading sequencer is stopped with SIGSTOP while a member sends orders, until the gateway closes its connection to it; the sequencer is resumed well within its lease. Every order is accepted once and none refused, and the leader keeps the lead. With the resend on reconnection switched off, 1,889 orders were still unanswered 15 seconds later. [BUG-0118](../bug_list.md#bug_0118) |
+| Unit tests | `UnansweredCommandStore`, including a test against a simple model and a test that counts heap allocations; `LoggedCommandIdentifiers`; `LogTailIndex`, against a real log; `PacedResend` and `UnansweredSnapshot` |
 
 Scenario 1 sends a burst of 20,000 orders just before the leader is killed. They all reach the venue
 before the kill, so scenario 1 does not test orders sent during the change of leader, and its

@@ -238,6 +238,22 @@ struct FixOrderGatewayConfiguration {
      */
     int32_t reactor_quiet_spins_between_polls{-1};
 
+    /**
+     * @brief The most sends that may wait for one connection, and the most bytes they may add up to,
+     *        before the connection is closed. See ReactorConfiguration::connection_waiting_sends_maximum.
+     *
+     * Zero means the deployed file did not say, and the framework's defaults are used, for the same
+     * reason the field above is not initialised to the default itself.
+     */
+    int64_t reactor_connection_waiting_sends_maximum{0};
+    int64_t reactor_connection_waiting_bytes_maximum{0};
+
+    /**
+     * @brief The size of each connection's socket send buffer, in bytes. Zero means the operating
+     *        system's default. See ReactorConfiguration::socket_send_buffer_size.
+     */
+    int32_t reactor_socket_send_buffer_size{0};
+
     // Event queue pool  (ApplicationThread inbound EventMessage queue)
 
     /** @brief Number of objects in each fixed-size memory pool slab.

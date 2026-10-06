@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 117 |
-| Open | 39 (25 defects, 14 tasks) |
-| Closed | 78 |
-| Next id | BUG-0118 |
+| Bugs recorded | 121 |
+| Open | 41 (27 defects, 14 tasks) |
+| Closed | 80 |
+| Next id | BUG-0122 |
 
 ## Open bugs by severity
 
-11 high, 23 medium, 5 low.
+12 high, 24 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,6 +24,7 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
+| [BUG-0120](#bug_0120) | high | defect | The matching engine drops orders the sequencer has logged when its connections for reports are not yet up |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -45,8 +46,9 @@
 | [BUG-0092](#bug_0092) | medium | defect | A refused cancel is answered with an execution report rather than an order cancel reject |
 | [BUG-0095](#bug_0095) | medium | defect | Checking the format of a FIX price or quantity overflows a signed integer on long values |
 | [BUG-0096](#bug_0096) | medium | defect | The binary order gateway passes on prices and quantities without checking their format |
-| [BUG-0112](#bug_0112) | medium | defect | One send that cannot complete stops a process sending anything on any connection |
 | [BUG-0114](#bug_0114) | medium | task | An order identifier used earlier in the day is accepted again once its first order has ended |
+| [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
+| [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -152,6 +154,105 @@ went looking.
 
 
 
+### BUG-0121: A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader {#bug_0121}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| How | `ha_test.py` scenario 27 failing in every run on 2026-10-06, the first full run since part 4.3 was committed on 2026-10-04 |
+| Impact | When the leading sequencer's process dies and its supervisor restarts it at once, the restarted process is not back before its peer's lease runs out, so its peer takes the lead. A death that the design meant to cost a short pause costs a change of leader instead, and later in a trading day the restart leaves the venue with one sequencer for tens of seconds |
+
+**What the design expects.** A supervisor restarts a sequencer that dies. If the restarted process
+is running again within the lease, 3 seconds, the leader does not change. Scenario 27 checks this.
+
+**What was measured.** In scenario 27 the restarted primary took 3.1 seconds from starting to taking
+part, and its peer was granted the lead first:
+
+- 1.0 second reserving the record of command identifiers, a table of 4 GiB for 200 million
+  identifiers (part 4.3 of [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md)).
+- About 2 seconds reading the whole write-ahead log, 4.3 million records in the test installation,
+  whose log is never cleared between test runs. The sequencer reads every record at startup to build
+  its table of epochs and to check that the record numbers run without a gap, and adds each command's
+  identifier to the record as it goes. With high availability off, in scenario 47, there is no record
+  of identifiers and reading a log of 4.4 million records took 1.96 seconds, so nearly all of this
+  time is the reading, not the identifiers.
+
+At about half a microsecond a record, a log of 50 million records would take about 23 seconds to
+read. That is worked out from the measurements above, not measured.
+
+**Decided (2026-10-06): fill the record of identifiers in the background.** The sequencer reserves
+and fills the record on a background thread after it starts, and until the record is complete it
+checks a command marked as sent again against the end of the log itself, as it already does when the
+record is full. That removes the reservation and the identifiers from the startup time.
+
+**Not yet decided: the reading of the whole log.** Filling the record in the background leaves the
+reading, which grows through the day and would exceed the lease within the first hour or so of a
+real trading day. Two ways have been put forward and wait for a decision: keep the table of epochs
+in a small file written when the epoch changes, and check for gaps only after the last snapshot of
+the log, so that startup no longer reads every record; or accept that a restarted leader always hands
+over the lead, and change scenario 27 to expect that.
+
+### BUG-0120: The matching engine drops orders the sequencer has logged when its connections for reports are not yet up {#bug_0120}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| How | `ha_test.py` scenario 47 failing during a run on a loaded machine; the engine's log held 1,000 lines saying it was dropping a new order |
+| Impact | An order the sequencer has written to its log and sent to the engine is neither matched nor answered. The member is told nothing, and the log and the engine's book disagree about what was ordered |
+
+**What happens.** The matching engine receives orders on a connection the sequencer opens to it, and
+sends its reports back on connections it opens to each sequencer. When an order arrives and neither
+connection for reports is established, `MatchingEngineThread` logs *"no sequencer ER connections
+established -- dropping NOS"* and returns without acting on the order. Cancels are dropped the same
+way, with *"dropping OCR"*.
+
+**How it was reached.** At startup the engine's first attempt to connect to the sequencers' report
+listeners came before they were listening, and the next attempt is two seconds later. The sequencer's
+connection for orders was up meanwhile, and the scenario's 1,000 orders arrived in those two seconds.
+Every one was dropped. The same gap opens whenever the engine's connections for reports are lost
+while its connection for orders survives.
+
+**Why it matters.** Every other part of the venue treats the log as the record of what was ordered:
+a restarted engine catches up from it, a new leader acts on it, and a member's resend is answered
+from it. An order dropped here is in the log and nowhere else, so recovery would not find anything
+missing.
+
+**What closing it needs.** An engine that cannot send reports should not act as though it had taken
+the order. Either it does not take orders until it can report on them, telling the sequencer so, or
+it acts on them and keeps the reports until a connection for reports exists. Which is right has to
+be decided.
+
+### BUG-0119: An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor {#bug_0119}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| How | `PauseReadingIntegrationTest.OtherConnectionsAndTimersAreServedWhileOneIsPaused` crashing with a segmentation fault, with and without the change for BUG-0112, while the machine was busy with a run of `ha_test.py` |
+| Impact | A component whose application thread is busy in a long handler when it shuts down can crash during shutdown. In the tests it crashes the test program |
+
+**What happens.** When a reactor shuts down it tells its application threads to stop and waits for
+them, for `shutdown_timeout_`, one second by default. A thread that is in the middle of a long handler
+does not see the request until the handler returns. After the wait the reactor logs *"is shutting
+down state, will promote to Terminated"* and carries on as though the thread had stopped. Once the
+reactor and its command queue are destroyed, the still running thread enqueues a command into the
+destroyed queue, and the process crashes in `LockFreeMessageQueue::enqueue`.
+
+**How it was seen.** In the test, a sending thread sends 200,000 messages from inside one handler. On
+a busy machine the test's own three-second limit expired first, the test ended, and teardown began
+while the sender was still in its loop. The core file shows the crash in the sending thread, writing
+to the command queue's memory.
+
+**Two things to settle.** Whether a reactor should ever be destroyed while one of its threads may
+still be running, which is a question for the framework; and whether that test's three-second limit
+for the second connection's 50,000 messages is too tight on a busy machine, since it failed there with
+and without the change for BUG-0112.
+
 ### BUG-0114: An order identifier used earlier in the day is accepted again once its first order has ended {#bug_0114}
 
 | | |
@@ -245,46 +346,6 @@ reader finds the segment holding any moment or any record in one step, and every
 time can be removed by deleting whole segments. Files covering a period such as two hours were
 considered: they would reach about 25 GB each on a busy day, and the writer prepares each file at its
 full size and maps it into memory, which is not built for files that large.
-
-### BUG-0112: One send that cannot complete stops a process sending anything on any connection {#bug_0112}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-03 |
-| Recorded | 2026-10-03 |
-| How | Reading the reactor while checking whether the sequencer could stop reading from its gateway connections, for [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md) |
-| Impact | A peer that stops reading, once the kernel's buffers for that connection are full, stops its sender from sending on every other connection too. In a gateway that means no reports to any member and no orders to either sequencer, until the slow peer reads again |
-
-**What happens.** When a send cannot be written to its socket in full, the reactor keeps it in a
-waiting slot until the socket can take more. Each connection manager has one such slot for all its
-connections, not one per connection. At the start of `Reactor::process_control_commands`, if either
-manager's slot is still full, the reactor returns without taking any command from its queue
-(`src/Reactor.cpp`, the calls to `drain_pending_send` and `is_send_blocked`). Every send the
-application threads ask for is a command on that queue, so every send to every connection waits behind
-the one blocked send.
-
-**Not established.** This is read in the code and has not been measured. How long a peer must stop
-reading before its sender freezes depends on how much the kernel buffers for the connection, which
-for small messages is many thousands of them.
-
-**Why it matters.** Any slow or stalled peer can trigger it: a member's client that stops reading, a
-sequencer stopped by a debugger or by a long pause, or a sequencer that deliberately stops reading
-from its gateways, which the design in
-[a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md) uses as a rare
-fallback. One slow member could stop a gateway serving every other member on it.
-[BUG-0104](#bug_0104) is about the same machinery from the reading side.
-
-The same slot was also losing messages: while a send waited in it, the reactor went on taking
-commands and kept each further waiting send in the slot, replacing the one there. That is fixed under
-[BUG-0117](#bug_0117); what remains here is that one waiting send holds up every connection.
-
-**What closing it needs.** A blocked send holds up only its own connection: a waiting slot, or a
-queue of fixed size, for each connection, with the reactor going on to serve the others. What a
-connection does when its own waiting space is full, close it or refuse further sends to it, has to
-be decided, and a test must show a gateway still serving one member while another stops reading.
-
----
 
 ### BUG-0109: The FIX gateway's health line counts cancel reports as answered orders {#bug_0109}
 
@@ -749,6 +810,16 @@ Where to look first, none of it investigated: whether a WAL carries anything ide
 instance and generation that wrote it; whether the epoch state file records enough to spot a
 sequence that has advanced without this instance's involvement; and what a component should do on
 finding it -- refuse to join, most likely, and say so in terms an operator can act on.
+
+**What it costs at the time, not only later.** `ha_test.py` scenario 47 starts the two sequencers
+together with high availability off. The gateway sends orders only to the primary, but the matching
+engine catches up with whichever sequencer reaches it first. In the runs of 2026-10-06 the
+secondary reached it first, because the primary's first attempt came before the engine was
+listening. The primary then held its orders for an engine that never asked it for them: the engine
+had already caught up with the secondary and did not catch up with the primary when its connection
+arrived. None of the 1,000 orders was matched, and nothing told the member. Which sequencer reaches
+the engine first depends on how long each takes to start, so the scenario passes or fails with the
+timing.
 
 Related: [BUG-0042](#bug_0042), closed, where a restarted primary matching engine promoted itself
 and produced two leaders. Different mechanism, same underlying fact -- that two instances each
@@ -2320,6 +2391,142 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0118: A gateway's commands waiting for a sequencer that stopped reading were not sent again after the connection was closed {#bug_0118}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-06 |
+| Recorded | 2026-10-06 |
+| Fixed | 2026-10-06 -- a gateway sends its unanswered commands again on a sequencer connection established again, in batches paced by the connection; while a gateway instance has two connections open to the leader, the leader checks every command from it against its log |
+| How | Checking what follows from closing a connection whose queue of waiting sends is full, while fixing [BUG-0112](#bug_0112) |
+| Impact | If a leading sequencer stopped reading from a gateway for long enough, the gateway closed its connection to it, and the commands waiting to be sent on it were never sent. Members were not told; each such order was neither accepted nor refused |
+
+**What happened.** A gateway sends every command to both sequencers. If one stops reading, the
+gateway's further sends to it wait in that connection's queue, and when the queue reaches its limit
+the gateway closes the connection and discards them ([BUG-0112](#bug_0112)). The gateway keeps every
+command until it is answered, but sent the unanswered ones again only on seeing a higher leader epoch,
+so if the sequencer that stopped was leading and still led, the discarded commands were never sent.
+
+**The fix.**
+
+- **Sent again on reconnection.** When a gateway's connection to a sequencer is established again,
+  not for the first time, the gateway sends on it every command still unanswered, marked as sent
+  again. Both gateways do this.
+- **Sent in batches.** There can be hundreds of thousands of unanswered commands. Sent all at once
+  they would fill the new connection's queue faster than the sequencer reads them, the connection
+  would be closed again, and the gateway would send them all again. So the gateway copies them when
+  the resend starts (`fix_common::UnansweredSnapshot`) and sends 256 at a time, each batch after the
+  connection has reported that everything before it is written (`fix_common::PacedResend`). The
+  resend after a change of leader is sent the same way. A gateway refuses a configured limit on
+  waiting sends below 1,024, four batches.
+- **No command sequenced twice.** When the gateway closes the old connection, commands it had
+  already written may still be unread in the sequencer's buffers for it, and the sequencer may read
+  them after their marked copies on the new connection. Those originals are not marked. So while a
+  gateway instance has more than one connection open, the leader checks every command from it against
+  its log, marked or not, and goes back to checking only marked commands when the older connection has
+  been read to its end. The leader learns which gateway instance a connection belongs to from the
+  commands on it.
+- **Configurable limits.** Both gateways can set `[reactor] connection_waiting_sends_maximum`,
+  `connection_waiting_bytes_maximum` and `socket_send_buffer_size`. Absent, the framework's defaults
+  apply.
+
+**Evidence.**
+
+- `ha_test.py` scenario 71. Gateway a allows 1,024 waiting sends and has a 16 KiB send buffer. The
+  leading sequencer is stopped with SIGSTOP, a member sends orders until the gateway closes its
+  connection to the sequencer, and the sequencer is resumed well within its lease. Every order must
+  be accepted exactly once, none refused, and the secondary must not take the lead. With the resend
+  on reconnection switched off, the scenario failed: the gateway connected again but sent nothing,
+  and 15 seconds later 1,889 orders were still unanswered. With it on, it passed twice:
+  2,000 orders each time, one closed connection, one reconnection, about 1,850 commands sent again,
+  and every order accepted once.
+- `PacedResendTest`, six unit tests of the copy and the batches.
+
+**Not exercised.** In scenario 71 the sequencer had read the old connection to its end before the
+gateway connected again, two seconds later, so the leader's checking of unmarked commands while a
+gateway has two connections open did not come into play.
+
+### BUG-0112: One send that could not complete stopped a process sending anything on any connection {#bug_0112}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-03 |
+| Recorded | 2026-10-03 |
+| Fixed | 2026-10-06 -- each connection has its own queue of waiting sends, and a connection whose queue reaches its limit is closed; the reactor takes a bounded share of its command queue on every path; and a writable notification is given only once a connection has nothing left to write |
+| How | Reading the reactor while checking whether the sequencer could stop reading from its gateway connections, for [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md) |
+| Impact | A peer that stopped reading, once the kernel's buffers for its connection were full, stopped its sender sending on every other connection too. In a gateway that meant no reports to any member and no orders to either sequencer until the slow peer read again |
+
+**What happened.** When a send could not be written to its socket at once, the reactor kept the next
+send for that connection in a waiting slot, one per connection manager, and took no further command
+from its queue until the slot was empty. Every send an application thread asks for is a command on
+that queue, so every send to every connection waited behind the one blocked connection.
+
+**The fix.**
+
+- **A queue of waiting sends for each connection** (`WaitingSendQueue`). A send that arrives while its
+  connection is still writing an earlier one, or before an outbound connection is established, joins
+  that queue and is started, in order, as soon as the sends before it are written. The reactor goes
+  on taking commands for every other connection.
+- **A limit.** A queue holds at most `ReactorConfiguration::connection_waiting_sends_maximum` sends
+  (65,536 by default) and `connection_waiting_bytes_maximum` bytes (32 MiB by default). A send that
+  would take it past either closes the connection: a Warning says the peer is not reading what is
+  sent to it, the application thread is told the connection was lost, and an outbound connection is
+  reconnected as after any other loss. A queue takes no memory until a send first has to wait, and
+  gives its memory back when it is empty.
+- **A bounded share of the command queue on every path.** The wakeup that announces commands used to
+  make the reactor take every command on the queue, and a blocked send stopped that as a side effect.
+  With queues for each connection, a send to a peer that has stopped reading costs almost nothing, so
+  a thread sending to such a peer could keep the reactor taking commands indefinitely: measured, a
+  timer on that reactor went 3.8 seconds without firing. The reactor now takes at most 64 commands,
+  the number of epoll events it takes in one go, then looks at its sockets and timers without waiting
+  before taking more.
+- **Writable notifications wait for the queue to empty.** An application that asks to be told when a
+  connection can take another send is told only once the send in progress and every send waiting
+  behind it are written. The topic publisher paces itself to each subscriber this way, so that a slow
+  subscriber's backlog stays in the log rather than in memory. Told at once, as the first version of
+  this change did, it would have filled a slow subscriber's queue with pages of up to 32 KiB and had
+  the subscriber disconnected after about a thousand of them.
+
+**Evidence.**
+
+- `SlowReaderIntegrationTest`, six tests with real reactors, threads and sockets, in which one sender
+  thread sends numbered PDUs to receivers on their own reactors and a receiver stops reading by
+  pausing its connection:
+  - a receiver that stops holds up only its own connection, for connections the sender accepted and
+    for connections it opened: the other receives all 20,000 PDUs while the first is stopped, and the
+    first receives all of them, in order, once it reads again;
+  - a connection whose queue reaches its limit, set to 1,000 for the test, is closed, the sender is
+    told, and the receiver still reading receives everything;
+  - fairness: with one receiver stopped, three that read each receive all 20,000 PDUs, finishing
+    within 250 milliseconds of each other, and a timer on the sender's reactor never goes 50
+    milliseconds without firing; measured, the longest gap was 8 milliseconds;
+  - a sender paced by writable notifications never has more than one send waiting, so with the limit
+    set to two its connection survives a receiver that stops for two seconds, and every PDU arrives;
+  - soak: five receivers stop for 150 to 450 milliseconds and read for 400, over and over, and a sixth
+    stops for good, while 20,000 PDUs of about a kilobyte go to each. Every receiver that reads
+    receives every PDU once and in order, and only the connection to the one that stopped for good is
+    closed. A temporary log line showed sends waiting in the queues of four of the five pausing
+    receivers 41 to 63 times each.
+- Each was made to fail on purpose. With the reactor made to take no command while any connection had
+  a send waiting, as before, the five tests then written all failed. With the limits removed, the two
+  that expect a connection to be closed failed. With the unbounded drain on wakeup put back, the
+  fairness test failed with a timer gap of 3.8 seconds, twice. With writable notifications given at
+  once, the paced sender's connection was closed and the test failed.
+- `WaitingSendQueueTest`, nine unit tests: order, the two limits, the growth and release of memory,
+  and the return of every chunk to its allocator when a connection is closed. The last failed when
+  the return was removed: 16 slabs were needed where 9 is the most allowed.
+- Every framework unit test (905) and integration test passes, apart from the crash in
+  `PauseReadingIntegrationTest` on a busy machine, which happens without this change too
+  ([BUG-0119](#bug_0119)).
+- A full run of `ha_test.py` passed 66 of 70 scenarios. Of the four that failed, scenario 11 sent
+  its recovery orders before the restarted engine led, and scenario 22's last check ignored gap-fills;
+  both checks are corrected and each scenario then passed three runs of three. Scenario 27 is
+  [BUG-0121](#bug_0121), and scenario 47 is a race at startup recorded under
+  [BUG-0062](#bug_0062) and [BUG-0120](#bug_0120). Scenarios 1, 12, 13, 55, 68 and 70 passed again
+  on the final code.
 
 ### BUG-0088: An execution report produced while a session was unbound was dropped, and nothing delivered it on reconnection {#bug_0088}
 

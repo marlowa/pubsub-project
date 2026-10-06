@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,6 +29,7 @@
 #include "FixSerialiser.hpp"
 #include "FixSession.hpp"
 #include "GatewayIds.hpp"
+#include "PacedResend.hpp"
 #include "PoolMetricsReporter.hpp"
 #include "SentAgainEnvelope.hpp"
 #include "ThrottleRefusalMetrics.hpp"
@@ -423,6 +425,26 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     bool keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id);
     // Sends again, marked as sent again, every command still unanswered: a new sequencer leads.
     void send_unanswered_commands_again(int32_t new_epoch);
+    // Sends again, marked as sent again, every command still unanswered, on one sequencer connection
+    // that has been established again. Commands that were waiting to be sent on the connection it
+    // replaces were discarded when that connection was closed (docs/bug_list.md, BUG-0118).
+    void send_unanswered_commands_on(const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer);
+    // Takes a fresh copy of the unanswered commands and starts sending it, from the beginning, on each
+    // connection named, and on any connection whose resend of an earlier copy had not finished.
+    void start_resends(bool to_primary, bool to_secondary);
+    // Sends the next batch of a resend on its connection, and asks to be told when the connection has
+    // written it, if more remain.
+    void continue_resend(fix_common::PacedResend& resend, const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer);
+    // A connection to a sequencer has written everything waiting on it: the next batch of a resend goes.
+    void on_connection_writable(pubsub_itc_fw::ConnectionID id) override;
+    // The commands being sent again, and how far each sequencer connection has got through them.
+    fix_common::UnansweredSnapshot resend_snapshot_;
+    fix_common::PacedResend resend_to_primary_;
+    fix_common::PacedResend resend_to_secondary_;
+    // Whether each sequencer connection has been established before, so that one established again
+    // can be told from the first.
+    bool sequencer_primary_connected_before_{false};
+    bool sequencer_secondary_connected_before_{false};
 
     // The commands sent to the sequencers and not yet answered. Present only with high availability
     // on, because only a change of sequencer leader makes a command need sending again.

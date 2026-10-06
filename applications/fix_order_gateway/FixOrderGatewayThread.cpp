@@ -288,10 +288,18 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: primary sequencer connection {} ({}) established", id.get_value(),
                    id.service_name());
         retry_pending_session_binds(id);
+        if (sequencer_primary_connected_before_) {
+            send_unanswered_commands_on(id, "primary");
+        }
+        sequencer_primary_connected_before_ = true;
     } else if (id.service_name() == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: secondary sequencer connection {} established", id.get_value());
         retry_pending_session_binds(id);
+        if (sequencer_secondary_connected_before_) {
+            send_unanswered_commands_on(id, "secondary");
+        }
+        sequencer_secondary_connected_before_ = true;
     } else if (id.service_name() == er_inbound_svc_) {
         // Inbound FrameworkPdu connection from a sequencer on the ER listener.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: sequencer ER inbound connection {} established", id.get_value());
@@ -328,9 +336,11 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
                    id.get_value(), reason);
     } else if (id == sequencer_primary_conn_id_) {
         sequencer_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        resend_to_primary_.abandon();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: primary sequencer connection {} lost: {}", id.get_value(), reason);
     } else if (id == sequencer_secondary_conn_id_) {
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        resend_to_secondary_.abandon();
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "FixOrderGatewayThread: secondary sequencer connection {} lost: {}", id.get_value(),
                    reason);
     } else if (id.service_name() == er_inbound_svc_) {
@@ -2476,8 +2486,52 @@ void FixOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {
     if (!unanswered_commands_.has_value()) {
         return;
     }
-    size_t sent = 0;
-    unanswered_commands_->for_each_unanswered([this, &sent](const uint8_t* bytes, size_t size) {
+    // To both sequencers: the new leader may be either, and only it acts on them.
+    const bool to_primary = true;
+    const bool to_secondary = true;
+    start_resends(to_primary, to_secondary);
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(
+        get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+        "FixOrderGatewayThread: a new sequencer leader at epoch {} -- sending again {} command(s) still unanswered, each marked as sent again, {} at a time",
+        new_epoch, resend_snapshot_.count(), fix_common::PacedResend::batch_size);
+}
+
+void FixOrderGatewayThread::send_unanswered_commands_on(const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer) {
+    if (!unanswered_commands_.has_value()) {
+        return;
+    }
+    const bool primary = id == sequencer_primary_conn_id_;
+    start_resends(primary, !primary);
+    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "FixOrderGatewayThread: {} sequencer connection {} established again -- sending again on it {} command(s) still unanswered, each marked as sent "
+               "again, {} at a time",
+               sequencer, id.get_value(), resend_snapshot_.count(), fix_common::PacedResend::batch_size);
+}
+
+void FixOrderGatewayThread::start_resends(bool to_primary, bool to_secondary) {
+    // A resend still going is restarted on the new copy, because its place in the old copy means
+    // nothing in the new one. Commands it had already sent are sent again; the leader finds each in its
+    // log and does not sequence it twice.
+    const bool primary = (to_primary || resend_to_primary_.active()) && sequencer_primary_conn_id_.get_value() != 0;
+    const bool secondary = (to_secondary || resend_to_secondary_.active()) && config_.ha_enabled && sequencer_secondary_conn_id_.get_value() != 0;
+    resend_snapshot_.take(*unanswered_commands_);
+    resend_to_primary_.abandon();
+    resend_to_secondary_.abandon();
+    if (primary) {
+        resend_to_primary_.start(resend_snapshot_.count());
+        continue_resend(resend_to_primary_, sequencer_primary_conn_id_, "primary");
+    }
+    if (secondary) {
+        resend_to_secondary_.start(resend_snapshot_.count());
+        continue_resend(resend_to_secondary_, sequencer_secondary_conn_id_, "secondary");
+    }
+}
+
+void FixOrderGatewayThread::continue_resend(fix_common::PacedResend& resend, const pubsub_itc_fw::ConnectionID& id, std::string_view sequencer) {
+    const bool more = resend.send_next_batch([this, &id](size_t index) {
+        const auto [bytes, size] = resend_snapshot_.command(index);
         pubsub_itc_fw::BumpAllocator arena(resend_arena_buffer_.data(), resend_arena_buffer_.size());
         size_t bytes_consumed = 0;
         size_t arena_bytes_needed = 0;
@@ -2487,13 +2541,23 @@ void FixOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {
             return;
         }
         const pubsub_itc_fw_app::WalRecord again = fix_common::envelope_to_send_again(kept);
-        forward_pdu_to_sequencers(pubsub_itc_fw_app::WalRecord::message_pdu_id, again);
-        ++sent;
+        send_pdu(id, pubsub_itc_fw_app::WalRecord::message_pdu_id, 0, again,
+                 pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
     });
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "FixOrderGatewayThread: a new sequencer leader at epoch {} -- sent again {} command(s) still unanswered, each marked as sent again", new_epoch,
-               sent);
+    if (more) {
+        request_writable_notification(id);
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: finished sending again {} unanswered command(s) to the {} sequencer",
+               resend.sent(), sequencer);
+}
+
+void FixOrderGatewayThread::on_connection_writable(pubsub_itc_fw::ConnectionID id) {
+    if (id == sequencer_primary_conn_id_ && resend_to_primary_.active()) {
+        continue_resend(resend_to_primary_, id, "primary");
+    } else if (id == sequencer_secondary_conn_id_ && resend_to_secondary_.active()) {
+        continue_resend(resend_to_secondary_, id, "secondary");
+    }
 }
 
 void FixOrderGatewayThread::expire_grace_sessions() {

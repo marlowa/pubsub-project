@@ -41,6 +41,13 @@ BinaryOrderGateway::BinaryOrderGateway(const BinaryOrderGatewayConfiguration& co
     if (config_.reactor_quiet_spins_between_polls >= 0) {
         reactor_configuration_.quiet_spins_between_polls = config_.reactor_quiet_spins_between_polls;
     }
+    if (config_.reactor_connection_waiting_sends_maximum > 0) {
+        reactor_configuration_.connection_waiting_sends_maximum = static_cast<size_t>(config_.reactor_connection_waiting_sends_maximum);
+    }
+    if (config_.reactor_connection_waiting_bytes_maximum > 0) {
+        reactor_configuration_.connection_waiting_bytes_maximum = static_cast<size_t>(config_.reactor_connection_waiting_bytes_maximum);
+    }
+    reactor_configuration_.socket_send_buffer_size = config_.reactor_socket_send_buffer_size;
     reactor_configuration_.command_allocator_configuration_.pool_name = "BinaryOrderGatewayCommandPool";
     reactor_configuration_.command_allocator_configuration_.objects_per_pool = config_.command_queue_pool_objects_per_slab;
     reactor_configuration_.command_allocator_configuration_.initial_pools = config_.command_queue_pool_initial_slabs;
