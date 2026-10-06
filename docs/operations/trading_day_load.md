@@ -1,6 +1,24 @@
 # Compressed Trading Day Load Profile
 
-**Status: DRAFT, decisions taken 2026-08-08. Nothing built.**
+**Status: the runner is built; parts of the design are not.**
+
+Built, in `perf_run.py`: `--profile PATH` reads a profile, checks it (a ceiling is given, compression
+is at least 1, every phase is long enough after compression, every `cancel_ratio` is between 0 and
+1), runs the binary load client once per phase at that phase's rate and cancel ratio, writes
+`trading_day_manifest.json` after every phase, and samples every component's memory into
+`resource_usage.csv`. At the end it reports PASS or FAIL according to whether the matching engine
+accepted every order.
+
+Not built: the probe mode that would measure the ceiling (it is written into the profile by hand),
+micro-bursts (`micro_burst` is read from the profile and not used), cancel sweeps, the recovery,
+breach and accumulation reports described under "Assertions", and recording in the manifest whether
+the run was profiled.
+
+Two things in the venue differ from when the runs reported below were made, and both change what
+such a run would now show. The matching engine's order book grows without a stall
+(`IncrementalRehashMap`; [BUG-0008](../bug_list.md#bug_0008) is fixed). And the number of open
+orders is bounded by `order_book.region_capacity`, 2,000,000 in `dev.toml`: an order arriving when
+every record is taken is refused, so the book cannot grow to the sizes those runs reached.
 
 A load run shaped like a trading day — quiet periods, steady activity, short bursts of varying
 intensity, sustained elevated periods and cancels — paired with the latency band chart so the run
@@ -311,8 +329,8 @@ include cancels, up to and including cancelling **50–100 outstanding orders fo
 
 `OrderMassCancelRequest` (msgtype `q`) and `OrderMassCancelReport` (`r`) exist in the stock
 `FIX50SP2.xml` dictionary, but **not** in `applications/fix_orders.dd.xml`, which generates only
-NewOrderSingle, OrderCancelRequest and ExecutionReport. The binary client offers `--cancel` with
-`--cl-ord-id`, which cancels one order.
+NewOrderSingle, OrderCancelRequest, ExecutionReport and OrderCancelReject. The binary client's
+`--cancel ORIG-CL-ORD-ID` cancels one order.
 
 So "cancel everything for this comp id" means **50–100 individual cancel requests**, not one
 message. That is worth being explicit about, because it is a different test:
@@ -421,20 +439,19 @@ across runs to 0.5, 0.75 and 1.0.
 
 ### The harness must track its own outstanding orders
 
-Mechanically new, and easy to miss. You can only cancel what is resting, and the binary client
-cancels by `--cl-ord-id`, so the runner has to maintain **its own book of outstanding ClOrdIDs per
-comp id** — which orders it sent, and which are still open. `perf_run.py` today fires and forgets.
+You can only cancel what is resting. The cancel stream is driven by the binary load client
+itself: with `--cancel-ratio`, it cancels its own resting orders at that fraction of its order
+rate, so it keeps its own record of which orders it sent and which are still open. The matching
+engine never fills, so everything sent stays open until cancelled and that record is simple.
 
-Two things the implementation must establish first: whether the ME ever fills a resting order in
-this configuration (if it does not, everything sent stays outstanding and the bookkeeping is
-trivial), and that a cancel-heavy phase is preceded by enough order flow to have 50–100 resting
-orders to sweep.
+A cancel sweep, which is not built, would need the same record kept per comp id, and a phase
+before it with enough order flow to leave 50–100 resting orders to sweep.
 
 ---
 
 ## Rate control is binary-only, and that is the first decision
 
-`perf_run.py:881` rejects `--rate` for the FIX gateway, because f8test has no rate control. So:
+`perf_run.py` rejects `--rate` for the FIX gateway, because f8test has no rate control. So:
 
 1. **Binary gateway first.** Full shaping immediately, no new client. Recommended for the first
    version — it makes every pattern above reachable today.
@@ -667,8 +684,8 @@ Seven phases, 82 minutes, 9.56M orders offered through the binary gateway at up 
 
 The matching engine's order book is a `tsl::robin_map`. It grows by doubling, and each doubling
 rehashes the whole table **on the matching engine's callback thread**. The framework's own reactor
-watchdog caught it (`Reactor.cpp:913`, "callback not finished yet"), which is what made it
-diagnosable at all — it fired 281 times over the run.
+watchdog caught it (`Reactor::check_for_stuck_threads`, "callback not finished yet"), which is what
+made it diagnosable at all — it fired 281 times over the run.
 
 The stalls land on exact powers of two, and roughly double each time:
 
@@ -786,7 +803,7 @@ by daily volume.
 ### What that does NOT excuse
 
 Three findings survive a passing run, and they are recorded in [Bug List](../bug_list.md) as
-BUG-0009, BUG-0010 and BUG-0008:
+BUG-0009, BUG-0010 and BUG-0008. BUG-0009 and BUG-0008 are fixed; BUG-0010 is open:
 
 - **The venue accepts orders indefinitely with no matching engine**, at INFO, once per
   order, telling nobody. Run 4 accepted and acknowledged 924,000 orders that nothing could
@@ -840,8 +857,10 @@ grow a container on a reactor callback thread and will eventually stall it. The 
 offer a growable structure that rehashes incrementally, or in the background, or at least a way to
 be told the growth is coming.
 
-Recorded in the roadmap. `reserve()` in the matching engine would be a workaround for the stub,
-not the answer.
+`reserve()` in the matching engine would be a workaround for the stub, not the answer. The framework
+now provides `IncrementalRehashMap`, which moves its entries into a larger table a few at a time
+rather than all at once, and the matching engine's order book uses it
+([BUG-0008](../bug_list.md#bug_0008)).
 
 ---
 
@@ -1028,7 +1047,9 @@ phase scheduler, the profile file, the manifest and the assertions.
   everything cancelled.
 - **Cancel load is a ratio, not an absolute**, bounded above by the order rate. Stream and sweeps
   are separate parameters.
-- **Every phase rate is a fraction of a probed ceiling**, so the profile transfers between machines.
+- **Every phase rate is a fraction of a ceiling**, so the profile transfers between machines. The
+  ceiling is meant to come from a probe run; until that is built it is written into the profile by
+  hand.
 
 ## First run
 
