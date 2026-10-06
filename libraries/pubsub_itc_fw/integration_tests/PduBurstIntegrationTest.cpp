@@ -61,7 +61,9 @@
  */
 
 #include <arpa/inet.h>
+#include <endian.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -88,6 +90,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
+#include <pubsub_itc_fw/PduHeader.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
@@ -1523,6 +1526,93 @@ TEST_F(FrameworkPduBurstIntegrationTest, PollingReactorServesSeveralClientsEvenl
             << "the first client to finish took " << first_finished << "ms and the last took " << last_finished
             << "ms, for identical amounts of data sent from the same moment over five connections to one reactor. "
             << "A reactor coming back to every connection evenly finishes them at about the same time:" << finishing_times;
+    }
+}
+
+// A burst of PDUs on a connection this process opened, to a peer that is not reading, must all be
+// delivered, in order. When a send cannot be written at once, the reactor keeps it in a waiting slot
+// until the socket drains, and must take no further command meanwhile: keeping a second waiting send
+// in the same slot loses the first (docs/bug_list.md, BUG-0117). RawBytesProtocolHandlerIntegrationTest
+// checks the same on a connection the process accepted.
+//
+// The peer is a plain socket owned by the test, not a reactor: a reactor starts reading the moment a
+// connection is accepted, before its application thread could ask it to pause, and would take the whole
+// burst into its own buffers so that the sender's socket never fills.
+TEST_F(FrameworkPduBurstIntegrationTest, ABurstToAPeerThatIsNotReadingIsDeliveredWhole) {
+    constexpr int paused_burst_size = 20000;
+
+    // The peer: a listening socket with a small receive buffer, set before listening so that the
+    // accepted connection has it too.
+    const int listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_NE(listen_fd, -1);
+    const int small_buffer = 4096;
+    ::setsockopt(listen_fd, SOL_SOCKET, SO_RCVBUF, &small_buffer, sizeof(small_buffer));
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    ASSERT_EQ(::bind(listen_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(listen_fd, 1), 0);
+    socklen_t address_length = sizeof(address);
+    ASSERT_EQ(::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&address), &address_length), 0);
+    const uint16_t peer_port = ntohs(address.sin_port);
+
+    ServiceRegistry sender_registry;
+    sender_registry.add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", peer_port}, NetworkEndpointConfiguration{});
+    // A small send buffer as well, so the burst fills the connection almost at once.
+    ReactorConfiguration sender_config = make_reactor_config();
+    sender_config.socket_send_buffer_size = 4096;
+    auto sender_reactor = std::make_unique<Reactor>(sender_config, sender_registry, logger_->logger);
+    auto sender_thread = ApplicationThread::create<SenderThread>(logger_->logger, *sender_reactor, paused_burst_size);
+    sender_reactor->register_thread(sender_thread);
+    std::thread sender_reactor_thread([&]() { sender_reactor->run(); });
+    set_watched_reactors(*sender_reactor, *sender_reactor);
+
+    pollfd accepting{listen_fd, POLLIN, 0};
+    ASSERT_EQ(::poll(&accepting, 1, 5000), 1) << "the sender never connected";
+    const int peer_fd = ::accept(listen_fd, nullptr, nullptr);
+    ASSERT_NE(peer_fd, -1);
+
+    // Not reading until the whole burst has been handed to the reactor, and a little longer, so the
+    // reactor meets many sends while the connection is full.
+    EXPECT_TRUE(wait_for([&]() { return sender_thread->burst_sent.load(std::memory_order_acquire); }))
+        << "Sender: burst not sent: " << last_wait_failure_description();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // Read everything, until nothing more arrives for two seconds, then split it into frames.
+    std::vector<uint8_t> received;
+    std::vector<uint8_t> chunk(65536);
+    for (;;) {
+        pollfd reading{peer_fd, POLLIN, 0};
+        if (::poll(&reading, 1, 2000) <= 0) {
+            break;
+        }
+        const ssize_t n = ::recv(peer_fd, chunk.data(), chunk.size(), 0);
+        if (n <= 0) {
+            break;
+        }
+        received.insert(received.end(), chunk.begin(), chunk.begin() + n);
+    }
+    ::close(peer_fd);
+    ::close(listen_fd);
+    shutdown_and_join(*sender_reactor, sender_reactor_thread);
+
+    std::vector<int64_t> sequence_numbers;
+    size_t offset = 0;
+    while (offset + sizeof(PduHeader) <= received.size()) {
+        PduHeader header{};
+        std::memcpy(&header, received.data() + offset, sizeof(header));
+        const size_t payload_bytes = ntohl(header.byte_count);
+        if (offset + sizeof(PduHeader) + payload_bytes > received.size()) {
+            break;
+        }
+        sequence_numbers.push_back(static_cast<int64_t>(be64toh(static_cast<uint64_t>(header.seq_no))));
+        offset += sizeof(PduHeader) + payload_bytes;
+    }
+    EXPECT_EQ(static_cast<int>(sequence_numbers.size()), paused_burst_size) << "sends were lost while the peer was not reading";
+    for (size_t index = 0; index < sequence_numbers.size(); ++index) {
+        ASSERT_EQ(sequence_numbers[index], static_cast<int64_t>(index + 1))
+            << "frame " << index << " carries sequence number " << sequence_numbers[index] << ": the ones between are missing";
     }
 }
 
