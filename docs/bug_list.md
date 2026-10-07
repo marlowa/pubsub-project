@@ -270,8 +270,8 @@ method and how the count was checked first.
 
 **What is wanted.** A histogram of the framework's own in place of `prometheus::Histogram`, which
 the one thread that records into it updates with ordinary stores and no lock, and which the scrape
-reads without stopping that thread. Counters and gauges can stay as they are. The design, awaiting
-review, is [A histogram that never makes the recording thread wait](framework/single_writer_histogram.md).
+reads without stopping that thread. Counters and gauges can stay as they are. The design, agreed
+and not yet built, is [A histogram that never makes the recording thread wait](framework/single_writer_histogram.md).
 See also `lock-audit-report.txt`.
 
 ### BUG-0124: Locks are taken on the order path, in a design meant to be free of them {#bug_0124}

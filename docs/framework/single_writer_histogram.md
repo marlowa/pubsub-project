@@ -1,7 +1,7 @@
 # A histogram that never makes the recording thread wait {#single_writer_histogram}
 
-**Status: proposed, not built.** This is the design for [BUG-0125](../bug_list.md#bug_0125). No code
-has been changed. Section 9 lists what has to be decided before any is written.
+**Status: agreed, not built.** This is the design for [BUG-0125](../bug_list.md#bug_0125). No code
+has been changed. Section 9 records the two decisions it needed.
 
 ## 1. What this document covers
 
@@ -272,7 +272,7 @@ Two ways to resolve it:
   mutex for correctness. It stops being correct when BUG-0124 removes that mutex, and nothing would
   report it.
 
-**Recommendation: (a).**
+**Decided: (a).**
 
 ## 7. Tests
 
@@ -319,15 +319,14 @@ rather than a lock, so it never sleeps and never makes a system call, and a scra
 not make the writer wait. It could be made cheaper by the same technique, but that is a separate
 change with a separate measurement, and it is not part of BUG-0125.
 
-## 9. Decisions wanted
+## 9. Decisions
 
-1. **Is the design in section 4 agreed?** In particular, that a scrape reads the counts one at a time
-   and is not one instantaneous picture (section 4.3), in exchange for nothing at all on the writer's
-   side.
-2. **The follower's two writers (section 6): (a), two children of `wal_append_nanoseconds`, or (b)?**
-   Recommendation (a).
+1. **The design in section 4 is agreed**, including that a scrape reads the counts one at a time and
+   is not one instantaneous picture (section 4.3), in exchange for nothing at all on the writer's side.
+2. **The follower's two writers are resolved by (a)** in section 6: `wal_append_nanoseconds` has two
+   children, scope `sequencer_thread` and scope `reactor_thread`.
 
-## 10. Order of the work, once agreed
+## 10. Order of the work
 
 1. `SingleWriterHistogram` with tests 1, 4 and 5.
 2. The endpoint's `Collectable` and registration, with tests 2 and 3. Delete `PrometheusHistogram.hpp`.
