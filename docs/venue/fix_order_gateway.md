@@ -88,7 +88,7 @@ Two layers of checks, in this order:
 
 | Layer | Checks | Answer |
 |---|---|---|
-| `FixMessageValidator`, before dispatch | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13) | A FIX **Reject (35=3)**: `373` the reason, `371` the tag, `372` the message type, `45` the message's sequence number, `58` a description. The session stays up and the message is not acted on. A Logon that fails, or any message that fails before the session is established, is answered by disconnecting instead |
+| `FixMessageValidator`, before dispatch | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13), IncorrectNumInGroupCount (16) | A FIX **Reject (35=3)**: `373` the reason, `371` the tag, `372` the message type, `45` the message's sequence number, `58` a description. The session stays up and the message is not acted on. A Logon that fails, or any message that fails before the session is established, is answered by disconnecting instead |
 | The order and cancel handlers | That the required fields have values; the length of `ClOrdID` (and of `OrigClOrdID` on a cancel); whether a sequencer is connected; whether the venue is accepting orders; the session's throttles | An order is answered with an `ExecutionReport` with OrdStatus Rejected; a cancel with an `OrderCancelReject` that says the order is still open. The text names what was wrong |
 | The order handler | The lengths of `Symbol` and `OrderQty` on an order | A **BusinessMessageReject (35=j)** with BusinessRejectReason 0 (Other), whose text gives the limit |
 

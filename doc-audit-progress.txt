@@ -20,24 +20,15 @@ framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configura
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
 `socket_comms.md`, `summary.md`, `threading.md`, `topology.md`
 
-operations: `filesystem_requirements.md`, `latency_findings.md`, `metrics.md`, `secure_comms.md`,
+operations: `README.md`, `filesystem_requirements.md`, `latency_findings.md`, `metrics.md`, `secure_comms.md`,
 `trading_day_load.md`
 
-fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generation.md`,
+fix: `README.md`, `codec.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generation.md`,
 `sequence_numbers_and_gaps.md`
 
 venue: `README.md`, `admin_service.md`, `arbiter.md`, `authentication_service.md`,
 `binary_order_gateway.md`, `fix_order_gateway.md`, `fix_test_client.md`, `gateway_throttles.md`,
 `matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`, `witness.md`
-
-## Not confirmed
-
-These were edited on 3 and 6 October 2026 alongside code changes, but no commit records them as
-checked by the audit. Check them before marking them done.
-
-operations: `README.md`
-
-fix: `codec.md`
 
 ## Not started
 

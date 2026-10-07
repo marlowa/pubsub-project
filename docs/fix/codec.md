@@ -13,9 +13,9 @@ The library has two halves that meet at a single generated header:
 - A **pure-Python generator** that reads the QuickFIX-style FIX XML data
   dictionaries and emits a C++17 header of tag numbers, message types,
   enumerated values, and lookup tables.
-- A **hand-written, header-only, zero-copy runtime** — a reader, a writer, a
-  field accessor, and a checksum helper — that parses and builds FIX messages
-  without allocating on any path.
+- A **hand-written, header-only, zero-copy runtime** — a reader, a validator, a
+  writer, a field accessor, a repeating-group walker and a checksum helper — that
+  parses, checks and builds FIX messages without allocating on any path.
 
 The binary order gateway's protocol is built on the framework's own PDU framing and
 message definitions, not on this library.
@@ -107,6 +107,14 @@ The emitter produces a single `#pragma once` header in the requested namespace
 | `namespace enum_values` | nested namespace per enumerated field | Field values grouped by field; emitted as `char` when every value is a single character, otherwise `std::string_view` |
 | `namespace detail` | two sorted `std::array` tables | `field_name_table` (tag → name) and `data_length_pairs` (length tag → data tag) |
 | free functions | `constexpr` | `tag_name(int)`, `data_field_for_length_tag(int)`, `is_data_length_tag(int)` — binary search over the tables |
+| perfect hash | `constexpr` tables | Maps a tag to its position in the sorted field list in constant time (`field_index`); the lookups below go through it |
+| field formats | enum and table | `field_format_of(tag)`: each field's FIX data type, so a validator can tell that an INT field's value is not an integer |
+| required tags | array per message | `required_tags(msg_type)`: the tags a conforming message must carry, header and trailer included, with required components expanded |
+| enumerated values | table | `has_enum_values(tag)` and `is_defined_enum_value(tag, value)` |
+| permitted tags | bitset per message | Whether a tag may appear in a given message type, in one bit test |
+| repeating groups | catalogue keyed by counter tag | Each group's delimiter tag and members in FIX order, and any member that is itself a group |
+
+The last five sections exist for `FixMessageValidator`.
 
 Every identifier is run through a sanitiser (non-alphanumeric characters become
 `_`, a leading digit is prefixed with `_`) and a disambiguator (a name already
@@ -140,7 +148,7 @@ spurious diffs.
 
 ## Part 2 — The zero-copy runtime (C++, header-only)
 
-Four headers under `libraries/fix_codec/`, all in namespace `fix_codec`. None
+Seven headers under `libraries/fix_codec/`, all in namespace `fix_codec`. None
 allocates on any path; all conversions go through `std::from_chars` /
 `std::to_chars` with no locale and no exceptions.
 
@@ -191,6 +199,34 @@ by exact byte count, so a DATA value may contain SOH.
 Stream framing above one message — skipping leading garbage, resynchronising
 after a corrupt message — is the caller's responsibility; the reader assumes the
 window starts on a message boundary.
+
+### `FixMessageValidator.hpp` and `FixReject.hpp`
+
+`FixMessageValidator` is the layer above the reader. The reader frames a message and exposes its
+fields without judging them; the validator answers whether the message conforms to the dictionary,
+using the generated tables above. It walks the message once, aware of repeating groups, holds no
+state between calls, and allocates nothing. It enforces seven rules, each a FIX SessionRejectReason:
+
+| Reason | Code | Fails when |
+|---|---|---|
+| InvalidTagNumber | 0 | the dictionary does not define the tag at all |
+| RequiredTagMissing | 1 | a tag the message type requires is absent |
+| TagNotDefinedForThisMessage | 2 | a defined tag is not permitted in this message type |
+| ValueIsIncorrect | 5 | an enumerated field carries a value the dictionary does not define |
+| IncorrectDataFormat | 6 | a value's text is not its field's FIX type |
+| TagAppearsMoreThanOnce | 13 | a tag is repeated where it may appear only once |
+| IncorrectNumInGroupCount | 16 | a group's counter does not match the number of instances present |
+
+`validate()` returns a `FixReject`, which carries the reason code, the tag concerned, the message
+type and the offending value, and whose `describe()` writes a description into a caller's buffer
+without allocating. Those are what a FIX Reject (35=3) carries in tags 373, 371, 372 and 58, so a
+caller can build one from it directly.
+
+### `FixGroupWalker.hpp`
+
+The one place that understands the mechanics of a FIX repeating group: an instance begins with the
+group's delimiter tag, and a member may itself be a group. It walks a group from the generated
+catalogue, so a new consumer of repeating groups does not write that logic again.
 
 ### `FixMessageWriter.hpp`
 
@@ -311,7 +347,9 @@ if (reader.msg_type() == msg_type::NewOrderSingle) {
 ```
 
 That last line is the payoff: every FIX 5.0 SP2 tag is already in the generated
-dictionary, so widening field coverage costs a `find()`, not a table entry.
+dictionary, so reading another field costs a `find()`, not a table entry. For the field to reach
+the matching engine, the order message must also carry it, which means it must be listed under
+NewOrderSingle in `applications/fix_orders.dd.xml`; see [PDU generation](pdu_generation.md).
 
 ---
 
@@ -370,12 +408,15 @@ change *what* is generated, edit the emitter and add a pytest case in
 ## Testing
 
 - **C++** (`libraries/fix_codec/tests/`): `FixChecksumTest`, `FixFieldTest`,
-  `FixMessageReaderTest`, `FixMessageWriterTest` — 21 cases covering framing
-  statuses, the data-length SOH-in-DATA case, decimal/timestamp parsing, and the
-  writer's backward-header construction and overflow handling.
-- **Python** (`python/tests/test_fix_dictionary.py`): 6 cases covering the merge
+  `FixMessageReaderTest`, `FixMessageReaderAdversarialTest`, `FixMessageValidatorTest`,
+  `FixMessageWriterTest` and `FixRejectTest` — 51 cases covering framing statuses, malformed and
+  hostile input, the data-length SOH-in-DATA case, decimal/timestamp parsing, each validation rule,
+  and the writer's backward-header construction and overflow handling.
+- **Python** (`python/tests/test_fix_dictionary.py`): 9 cases covering the merge
   rules (conflict detection, enum union), the DATA/LENGTH-by-name pairing, and
   identifier sanitisation/disambiguation.
+- **Performance** (`libraries/fix_codec/performance/`): a benchmark of the codec
+  (`FixCodecBenchMain.cpp`) and a performance test.
 
 ---
 
