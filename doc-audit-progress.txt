@@ -26,9 +26,9 @@ operations: `filesystem_requirements.md`, `latency_findings.md`, `metrics.md`, `
 fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generation.md`,
 `sequence_numbers_and_gaps.md`
 
-venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `binary_order_gateway.md`,
-`fix_order_gateway.md`, `gateway_throttles.md`, `matching_engine.md`, `sequencer.md`,
-`fix_test_client.md`, `sequencer_app.md`, `trading_phases.md`, `witness.md`
+venue: `README.md`, `admin_service.md`, `arbiter.md`, `authentication_service.md`,
+`binary_order_gateway.md`, `fix_order_gateway.md`, `fix_test_client.md`, `gateway_throttles.md`,
+`matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`, `witness.md`
 
 ## Not confirmed
 
@@ -42,8 +42,6 @@ operations: `README.md`
 fix: `codec.md`
 
 ## Not started
-
-venue: `README.md`
 
 availability: all 14 documents, starting with `README.md`
 
