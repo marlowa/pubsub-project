@@ -2,120 +2,92 @@
 
 ## Role
 
-The sequencer is the **sole writer** to the matching engine's input stream, imposing total
-order on all messages (the Aeron sequencer pattern). It:
+This document is about running the sequencer: its instances, its connections, its configuration and
+its ports. What it does with orders, cancels and reports is in [Sequencer Design](sequencer.md).
 
-- Accepts order PDUs from all gateways.
-- Assigns a monotonically increasing sequence number to each order.
-- Appends the order to its Write-Ahead Log.
-- Stamps `sequenced_at` (wall-clock nanoseconds) on each forwarded PDU so the ME can use
-  it as `TransactTime` on ERs for replay determinism.
-- Forwards the sequenced PDU to the matching engine.
-- Receives execution report PDUs from the ME and routes them to the correct gateway by
-  `(SenderCompID, TargetCompID)`.
-- Replicates WAL records to its peer (follower) over a dedicated TCP channel.
-- Gates ER emission on receiving a WalAck from the follower (two-machine durability).
+Two instances run from one binary, `bin/sequencer`: `sequencer_primary` (instance 1) and
+`sequencer_secondary` (instance 2), configured by `sequencer_primary.toml` and
+`sequencer_secondary.toml`, which differ only in the instance number and the values the environment
+file supplies.
 
-## Startup and Configuration
+```
+sequencer <logfile> <config.toml> [--replay]
+```
+
+## Startup
+
+**Startup order does not matter.** At start each sequencer connects out to:
 
 <!-- verify: present applications/sequencer/SequencerThread.cpp "connect_to_service(endpoint.service_name())" -->
-**Startup order does not matter.** The sequencer dials each configured gateway's ER inbound
-listener (port 7010 by default) and retries every two seconds until it answers, without limit.
-Starting the sequencer first costs at most one retry interval before reports can flow, and
-loses nothing, there being no orders yet to report on. `perf_run.py` starts the sequencers
-before the gateways.
+- the report listener of every gateway instance that has an enabled `[[gateway]]` entry;
+- the primary matching engine's order listener, and with high availability on, the secondary's;
+- with high availability on, both arbiters and its peer sequencer.
 
-This was written as a requirement that the gateway start first, which the retry described in
-the same sentence had already made untrue.
+Each connection is retried every two seconds until it answers, without limit. Starting the
+sequencers before the gateways costs at most one retry interval before reports can flow, and loses
+nothing, because there are no orders yet to report on.
 
-**`ha_enabled = false`** (default for single-instance dev runs): the sequencer immediately
-adopts `Role::leader` in `on_initial_event`, skips the arbiter and peer connections, and
-skips WAL replication. ERs are emitted immediately without waiting for a WalAck.
+Both instances make all of these connections, whichever of them leads, so a follower that takes the
+lead already holds every connection it needs.
 
-**`ha_enabled = true`**: the sequencer connects to its peer and to both arbiters, and leads
-only while a majority of three voters -- itself, its peer and the arbiter pool -- has granted
-it a lease that has not run out. It asks both other voters, and while leading renews every
-renewal interval. When its lease runs out it stops leading at once. See
-[Deciding leadership by majority, with leases](../availability/majority_leases.md). The
-leader replicates the WAL to the follower on the peer connection.
+**With high availability off** (`[ha] ha_enabled = false`), the sequencer takes the next leadership
+epoch and leads at once. It connects to no arbiter, no peer and no secondary matching engine, and
+nothing waits for a follower.
 
-**`--replay` flag:** when passed on the command line, the sequencer loads its most recent
-snapshot and replays the WAL tail before joining the cluster. Used for cold restart and for
-testing WAL recovery.
+**With high availability on**, it leads only while a majority of three voters (itself, its peer and
+the arbiter pool) has granted it a lease that has not run out. It asks both other voters, and renews
+its lease every renewal interval while it leads. When its lease runs out it stops leading at once.
+See [Deciding leadership by majority, with leases](../availability/majority_leases.md). The value of
+`ha_enabled` comes from the environment file's `[ha] enabled`, the one switch for the whole venue.
 
-## HA Pair Operation
+**On every start**, the sequencer opens its log, finds the last sequence number in it so that
+numbering carries on from there, and starts writing a snapshot of the log's position every 30
+seconds. With high availability on, it also fills its table of the command identifiers in the log,
+in the background (see [Sequencer Design](sequencer.md)).
 
-Two sequencer instances form a primary/secondary pair. At any moment exactly one is leader
-and the other is follower. The arbiter pool mediates transitions.
+## Replay mode
 
-**Leader responsibilities:**
-- Assign seqNo and append to WAL.
-- Forward sequenced order PDUs to ME.
-- Stream WAL records (`WalRecord`, pdu_id=103) to the follower.
-- Buffer ERs from ME in `pending_er_` (keyed by seq_no) until the follower acks.
-- Emit buffered ERs to the gateway after receiving `WalAck` (pdu_id=104).
+`--replay` is an offline tool, run against a copy of a log. The sequencer reads every record in the
+log, ignoring the snapshot, becomes leader without recording a new epoch (so it cannot overwrite the
+epoch of a live instance sharing the directory), connects only to the matching engine, and once both
+its connections to the engine are up sends it every order and cancel in the log with its original
+time of sequencing. The engine then produces the same reports, with the same times, as the original
+run.
 
-**Follower responsibilities:**
-- Tail the leader's WAL records over the replication channel.
-- Append records to its own local WAL.
-- Send `WalAck` per record.
-- Maintain pre-warmed connections to gateway and ME (no data flows while passive).
-- On promotion: replay any unapplied WAL tail, adopt leader role, begin forwarding.
+## Ports
 
-**WAL replication via inline handler:** the sequencer installs an `InlinePduHandler` on
-the replication channel. `WalRecord` PDUs (pdu_id=103) are handled directly on the reactor
-thread — decoded into the local WAL and a `WalAck` sent back — without an ITC queue
-round-trip. This eliminates a wakeup-latency hop on the critical path. If the framer has
-pending data (backpressure), the PDU falls through to the normal ITC path.
+In the development environment. The preprod, prod and test-1 environment files use the same numbers for the sequencers' own listeners.
 
-**Degraded mode:** if the follower disconnects entirely, the leader flushes all ERs
-buffered in `pending_er_` immediately and continues as single-machine-durable until a new
-follower is paired in by the arbiter.
-
-## Implemented Slices
-
-| Slice | Description | Status |
-|-------|-------------|--------|
-| 1 | seqNo on wire and in `EventMessage`; `PduHeader.seq_no` field | Done |
-| 2 | In-memory WAL (`SequencerWal`) | Done |
-| 3 | mmap'd WAL on disk, segmented files, CRC32, no fsync | Done |
-| 4 | Snapshot (single; not yet rolling dual-snapshot) | Done |
-| 5 | `(SenderCompID, TargetCompID)` routing map stamped on every forwarded ER | Done |
-| 6 | Leader-follower state machine (`Role::unknown/leader/follower`, epoch, arbiter contact) | Done |
-| 7 | Network WAL replication; `pending_er_` buffer; WalAck-gated ER emission | Done |
-| 8 | Arbiter PSA+witness topology | Done |
-
-## Port Allocation
-
-| Port | Usage |
-|------|-------|
-| 7001 | Inbound order PDUs — gateway → sequencer primary |
-| 7002 | Inbound order PDUs — gateway → sequencer secondary |
-| 7003/7004 | Peer-to-peer WAL replication channel |
-| 7010 | Outbound ER forwarding — sequencer → gateway ER listener |
-| 7020 | Outbound order PDUs — sequencer → ME |
-| 7021 | Inbound ER PDUs — ME → sequencer primary |
-| 7022 | Inbound ER PDUs — ME → sequencer secondary (reserved) |
-| 7100 | Sequencer → arbiter |
+| Port | Instance | What listens or connects |
+|------|----------|--------------------------|
+| 11001, 11002 | primary, secondary | Each sequencer's order listener: the gateways connect here |
+| 11021, 11022 | primary, secondary | Each sequencer's report listener: the matching engines connect here |
+| 11003, 11004 | primary, secondary | Each sequencer's peer listener; each connects to the other's |
+| 11030, 11031 | primary, secondary | Each sequencer's listener for downstream subscribers, such as the matching engine publishers |
+| 11010, 11011 | gateways | The FIX gateway instances' report listeners, which the sequencers connect to |
+| 11110, 11111 | gateways | The binary gateway instances' report listeners |
+| 11020, 11023 | engines | The primary and secondary matching engines' order listeners |
+| 11200, 11201 | arbiters | The two arbiters |
 
 ## Configuration
 
-Key `sequencer.toml` sections:
-
-| Key | Purpose |
-|-----|---------|
-| `[network] order_listener_port` | Inbound order PDU port (default 7001) |
-| `[network] er_listener_port` | Inbound ER PDU port from ME (default 7021) |
-| `[network] gateway_er_host / er_port` | Gateway ER inbound endpoint (default port 7010) |
-| `[network] me_host / me_port` | ME order listener (default port 7020) |
-| `[network] peer_*` | Peer sequencer for HA (used when `ha_enabled=true`) |
-| `[network] arbiter_*` | Arbiter endpoint |
-| `[wal] directory` | WAL segment storage path |
-| `[wal] segment_size` | Segment file size in bytes |
-| `ha_enabled` | Enables peer and arbiter connections, WAL replication, ER gating |
-| `[lease] period_milliseconds`, `drift_allowance_milliseconds`, `renewal_interval_milliseconds` | The lease timings, expanded from the environment's `[shared]` section so that every voter agrees |
+| Section and key | Purpose |
+|---|---|
+| `[network] listen_port`, `er_listen_port` | This sequencer's order listener and report listener |
+| `[[gateway]] protocol`, `instance`, `enabled`, `host`, `port` | One entry for each gateway instance: its protocol (1 for FIX, 2 for binary), its instance number, and its report listener. An entry with `enabled = false` is skipped, and a sequencer with no enabled entry refuses to start |
+| `[matching_engine]`, `[matching_engine_secondary]` | The two matching engines' order listeners |
+| `[ha] ha_enabled`, `instance_id` | The venue-wide high availability switch, and this instance's number |
+| `[ha] arbiter_primary_*`, `arbiter_secondary_*` | The two arbiters |
+| `[peer] listen_port`, `host`, `port` | The connection to the peer sequencer: this instance listens on one port and connects to the other's |
+| `[lease]` | The lease period, the allowance for clock drift and the renewal interval, from the environment's shared values so that every voter agrees |
+| `[commands] identifiers_reserved` | How many command identifiers the table that stops a command being sequenced twice is reserved for: 200 million. Read only with high availability on |
+| `[wal_subscriber] listen_port` | The listener for downstream subscribers |
+| `[wal] directory`, `segment_size`, `snapshot_interval_seconds` | Where the log is kept, the size of each segment file (4 MiB), and how often the snapshot is written (30 seconds) |
+| `[metrics]` | The Prometheus endpoint, and the bucket bounds for the log write time and the order path histograms |
+| `[reactor]`, `[logging]`, `[event_queue_pool]`, `[command_queue_pool]` | CPU pinning and waiting, log levels, and the pools the reactor's queues take their entries from |
 
 ## See Also
 
-- [WAL and High Availability](../availability/wal_and_ha.md) — WAL format, two-tier commit, replication channel, failover
-- [Architecture](../orientation/architecture.md) — full order flow and component topology
+- [Sequencer Design](sequencer.md) — what the sequencer does with commands and reports
+- [WAL and High Availability](../availability/wal_and_ha.md) — the commit and replication rules, and failover
+- [Architecture](../orientation/architecture.md) — the order flow and the components
