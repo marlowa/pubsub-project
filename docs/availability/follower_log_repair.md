@@ -46,7 +46,7 @@ closer fit, because, like this venue, it numbers records itself and keeps the le
 
 ### 4.1 Each record says which leadership wrote it
 
-`WalRecord` gains a field, `leader_epoch`: the epoch in which the leader that sequenced the record held
+`WalRecord` carries a field, `leader_epoch`: the epoch in which the leader that sequenced the record held
 the lead. The follower stores records exactly as it receives them, so the field is in both logs.
 Records written before the field existed read it as zero: the field is optional and last, and the
 generated decoder reads a message that ends where an optional field would begin as lacking it
@@ -114,20 +114,25 @@ known to agree, and asks again.
 **Which thread writes.** A follower's replicated records are written by the handler on the reactor
 thread when it can, and otherwise passed to the sequencer thread. The handler counts every record it
 passes on, the sequencer thread counts each one back when it has written or discarded it, and the
-handler writes a record itself only while that count is zero. So records are written in the order they
-arrived, and never by both threads at once, however often writing moves between them.
+handler writes a record itself only while that count is zero, so records are written in the order
+they arrived. The count alone did not stop the two threads writing at the same moment: a follower's
+log was found with one entry blank and the next record written twice
+([BUG-0123](../bug_list.md#bug_0123)). So every write of a replicated record goes through
+`ReplicatedRecordWriter::write_if_next`, which decides whether the record is the next one the log
+needs and writes it in one step under a lock, and every other change to the log while records may be
+arriving, such as discarding records (4.4), goes through `change_log` under the same lock.
 
 ### 4.4 The follower discards the records after that point
 
-This needs a new operation in the framework's write-ahead log, `Wal::truncate_after(seq_no)`. It finds
+This uses an operation of the framework's write-ahead log, `Wal::truncate_after(seq_no)`. It finds
 where record `seq_no` ends, reading from the segment that holds it rather than from the start of the
 log; overwrites everything after it in that segment with zeros, so that a reader stops there and no
 older entry beyond it can be read again once new records are appended; deletes every later segment and
 the snapshot, which may point beyond the new end; and reopens the writer at that point. The sequencer
 trims its table of epochs to match.
 Only a follower calls it, and only before it writes anything the leader sends it. It runs on the
-sequencer thread while the reactor thread's handler is declining every record (4.3), so the two never
-write the log at the same time.
+sequencer thread, inside `ReplicatedRecordWriter::change_log`, while the reactor thread's handler is
+declining every record (4.3), so the two never write the log at the same time.
 
 Discarding is safe. A record the follower holds that its leader does not was written by an old leader
 and never reached a majority. Under part 4.2's option A the matching engine never acted on it, and no
@@ -154,9 +159,9 @@ saying that the follower may not lead.
 ### 4.6 Taking the lead
 
 A follower that takes the lead numbers new records from its highest record plus one, as part 4.1 already
-does. With its log repaired, that is the leader's latest record that reached it. The step in which an
-instance moves its next sequence number up to its peer's (`handle_peer_status_response`) is removed: it
-is what creates the gap, and the repair makes it unnecessary.
+does. With its log repaired, that is the leader's latest record that reached it. An instance does not
+move its next sequence number up to its peer's: doing so is what would create a gap, and the repair
+makes it unnecessary.
 
 ## 5. Where this does not apply
 
@@ -205,7 +210,7 @@ sends it unchanged, so the same record carries the same checksum in both logs.
 
 ## 9. Order of the work
 
-Steps 1 to 5 are done.
+All six steps are done.
 
 1. `leader_epoch` on `WalRecord`, and the table of epochs.
 2. `Wal::truncate_after`, with its unit tests.
@@ -213,7 +218,7 @@ Steps 1 to 5 are done.
 4. `LogPositionRequest` and `LogPositionReply`, the follower's discarding, the leader's sending, and the
    removal of the step that moves the next sequence number up.
 5. The comparison of logs and the scenarios.
-6. Then step 4 of [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8,
+6. Step 4 of [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) section 8,
    which switches rule 11 on.
 
 Related: [change_of_sequencer_leader.md](change_of_sequencer_leader.md),
