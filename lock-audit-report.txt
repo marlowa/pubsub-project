@@ -1,0 +1,209 @@
+# Locks and mutexes in the venue's code
+
+Checked on 7 October 2026, against `main` at commit `a9f0268`.
+
+## Summary
+
+The venue is meant to take no lock on any hot path during the trading day. It takes five, and four
+of them are on the path every order takes:
+
+1. **Every histogram observation takes a mutex inside prometheus-cpp.** Each order passes through
+   several histograms in the gateway, the sequencer and the matching engine, so each order takes the
+   mutex several times in each process. The scrape of the metrics endpoint takes the same mutex,
+   so this one can be contended. Recorded as BUG-0125.
+2. **`SequencerThread::log_epochs_mutex_`**, taken on every write to the sequencer's log, on the
+   leader and the follower. Recorded as BUG-0124.
+3. **`ReplicatedRecordWriter`**, taken on the follower for every record the leader sends. The leader
+   sends an order to the matching engine only once the follower has written and acknowledged it, so
+   this is on every order's round trip. Recorded as BUG-0124.
+4. **`BackgroundPromiseRecorder`**, taken on the sequencer's and the matching engine's own thread,
+   the thread that handles orders, at every lease tick (every 100 milliseconds). Usually brief, but
+   it can wait on a condition variable for a disk write to finish. Recorded as BUG-0126.
+5. **`ExpandablePoolAllocator`'s expansion mutex**, taken on the slow path of allocating a node for
+   any queue between the reactor and an application thread, and an entry in the gateways' open-order
+   pools. It is not taken in steady running with one pool, but it is taken, with a new pool mapped
+   from the operating system while it is held, whenever a pool runs out during the day. Recorded as
+   BUG-0127.
+
+Four more locks are taken during the trading day off the order path, and the rest are excluded
+because they are compiled only for Valgrind and ThreadSanitizer builds, or run only at start-up or
+shutdown.
+
+## What was searched, and what was left out
+
+Every C++ source and header under `applications/` and `libraries/`, for `std::mutex` and its
+relatives (`recursive_mutex`, `timed_mutex`, `shared_mutex`), `lock_guard`, `unique_lock`,
+`scoped_lock`, `shared_lock`, `condition_variable`, `call_once`, the `pthread_` mutex, read-write
+lock, spin lock and condition functions, `flock`, `lockf`, `fcntl` record locks, the project's
+`FileLock`, semaphores, and hand-written spin locks (`atomic_flag`, `test_and_set`). The search found
+75 lines in 13 files. Each was then traced to the function that takes it and to when that function
+runs.
+
+Left out, as asked or because they are not the venue's running code:
+
+- Tests, integration tests, performance tests, benchmarks and the command-line tools.
+- Code compiled only for Valgrind or ThreadSanitizer. Both builds define `USING_VALGRIND`
+  (`CMakeLists.txt`, lines 50 and 101); the AddressSanitizer build does not.
+- Code that runs only while a process starts up or shuts down.
+- Third-party libraries, except prometheus-cpp, whose source for the version the project builds
+  (1.3.0) was read to settle item 1. Quill, OpenSSL, civetweb and `tsl::robin_set` were not read.
+- The C library's `malloc`, which takes locks of its own; the venue avoids the heap on its hot paths
+  by design, and that was not re-checked here.
+- The Java administration service and test client, which are not on the order path.
+
+## On the order path during the trading day
+
+### 1. Histogram observations: a mutex inside prometheus-cpp
+
+- **Where:** `PrometheusHistogram::observe` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`)
+  calls `prometheus::Histogram::Observe`. In prometheus-cpp 1.3.0, `Observe` takes
+  `std::lock_guard<std::mutex> lock(mutex_)` (`core/src/histogram.cc`, line 46), and `Collect`, which
+  the scrape calls, takes the same mutex. Counters and gauges do not lock: they use atomics.
+- **When:** on every observation, whenever metrics are enabled, which they are in every environment
+  (`[shared] metrics_enabled = true`). On the order path:
+  - the FIX and binary gateways record the round trip and the arrival of each order's
+    acknowledgement (`order_round_trip_histogram_`, `er_in_elapsed_histogram_`);
+  - the sequencer records each write to its log (`wal_append_histogram_`, in `append_to_wal`) and
+    the order's arrival and departure in each direction (`order_path_metrics::observe_checkpoint`);
+  - the matching engine records the order's arrival and its acknowledgement leaving.
+- **Contended?** Usually not, because one thread records into each histogram. But when Prometheus
+  scrapes the endpoint, the scrape thread holds the same mutex while it copies the buckets, and an
+  order arriving at that moment waits for it.
+- **Recorded?** BUG-0125. BUG-0124 covers only the two sequencer locks.
+
+### 2. `SequencerThread::log_epochs_mutex_`
+
+- **Where:** `applications/sequencer/SequencerThread.cpp`, in `append_to_wal` (line 283),
+  `write_replicated_record` (1804), `send_log_position_request` (1831),
+  `handle_log_position_request` (1858) and `handle_log_position_reply` (1929).
+- **When:** `append_to_wal` takes it on every record the sequencer writes, on the leader for every
+  order, cancel and execution report, and on the follower for every replicated record. The other
+  four run when a follower rejoins.
+- **Contended?** On the follower, the reactor thread and the sequencer thread can both take it. On
+  the leader only the sequencer thread does, so it is uncontended there.
+- **Recorded?** Yes, BUG-0124, decided on 6 October to stay until the log has one owning thread.
+
+### 3. `ReplicatedRecordWriter::mutex_`
+
+- **Where:** `applications/sequencer/ReplicatedRecordWriter.hpp`, lines 53 (`write_if_next`) and 67
+  (`change_log`).
+- **When:** on the follower, for every record the leader sends, whichever thread writes it, and
+  around repairs of the follower's log.
+- **Why it is on the order path:** with a follower keeping up, the leader holds each order until the
+  follower has written and acknowledged it, so the follower's write, and this lock, are inside every
+  order's round trip.
+- **Recorded?** Yes, BUG-0124.
+
+### 4. `BackgroundPromiseRecorder::mutex_` and its two condition variables
+
+- **Where:** `applications/fix_common/BackgroundPromiseRecorder.hpp`. The sequencer, the matching
+  engine and the arbiter each own one; the matching engine publisher keeps no promise record.
+- **When:**
+  - `background_result()` takes the mutex on every lease tick, every 100 milliseconds, through
+    `PairLeaseAgent::on_tick` and `adopt_background_record`. It is held only to read a flag.
+  - `record_in_background()` takes it to hand a write to the writer thread.
+  - `record()` takes it and **waits on a condition variable until any background write has
+    finished**, and then writes and syncs the record itself on the calling thread. `PairLeaseAgent`
+    calls it only when the record held does not cover the promise about to be made: when an
+    instance first promises its vote to another, or when a background write has not finished within
+    five seconds.
+- **Why it matters:** the lease agent runs on the component's own application thread, which in the
+  sequencer and the matching engine is the thread that handles orders. The brief lock every 100
+  milliseconds is contended only if the writer thread is updating its flags at the same moment. The
+  wait in `record()` is the one place found where an order-handling thread can block on another
+  thread, and it lasts as long as a disk sync.
+- **Recorded?** BUG-0126. BUG-0107 records why the writes were moved to a background thread.
+
+### 5. `ExpandablePoolAllocator::expansion_mutex_`
+
+- **Where:** `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp`, line 418,
+  in `allocate()`.
+- **Who uses the allocator:** every `LockFreeMessageQueue` allocates its nodes from one, so every
+  event the reactor queues for an application thread and every command an application thread
+  queues for the reactor allocates from it. The gateways' open-order pools are one too.
+- **When:** the fast path allocates from the current pool without a lock. When the current pool has
+  no free slot, `allocate()` takes the mutex, walks the chain of pools looking for one with a free
+  slot, and, if none has one, maps a new pool from the operating system and adds it to the chain,
+  still holding the mutex.
+- **How often:** with one pool that never fills, never. But a pool can run out during the trading
+  day, and the queue pools have been enlarged more than once for that reason (the comments in
+  `fix_order_gateway_a.toml` record it). Once there is more than one pool, the slow path can be taken
+  again every time the current pool fills while an earlier one has free slots, because freed slots
+  return to the pool they came from.
+- **Recorded?** BUG-0127.
+
+## During the trading day, off the order path
+
+### 6. `Reactor::timer_registry_mutex_`
+
+- **Where:** `libraries/pubsub_itc_fw/src/Reactor.cpp`, in `allocate_timer_id` (line 818),
+  `create_timer_fd` (825) and `cancel_timer_fd` (842).
+- **When:** whenever an application thread starts or cancels a timer (`allocate_timer_id` runs on
+  the application thread, the other two on the reactor thread). Recurring timers are started at
+  start-up. During the day, the FIX gateway starts and cancels one-off timers for session events:
+  logon, authentication, the sequence-state wait, resend requests and the cancel-on-disconnect grace
+  period. Both gateways start a one-millisecond timer for each batch of 500 cancels while cancelling
+  a departed session's orders.
+- **Contended?** Rarely: an application thread and the reactor thread can meet on it.
+
+### 7. `Reactor::thread_registry_mutex_`
+
+- **Where:** `Reactor.cpp`, in `route_message` (197), `check_for_exited_threads` (939),
+  `check_for_stuck_threads` (960), `get_thread_name_from_id` (1521) and
+  `handle_sigterm_and_singint` (1535); the other uses are at start-up and shutdown.
+- **When:** the housekeeping tick, once a second on the reactor thread, takes it once in each of its
+  two thread checks. `route_message` takes it only for a message sent from one application
+  thread to another (`ApplicationThread::post_message`), and no application sends one: network
+  data and timer events reach a thread without it. `get_thread_name_from_id` has no caller.
+- **Contended?** No: during the day only the reactor thread takes it.
+
+### 8. `PrometheusEndpoint::mutex_`
+
+- **Where:** `libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp`: the three `register_*` functions
+  and `exposition_text` (line 109).
+- **When:** registration happens at start-up. `exposition_text` runs on the endpoint's own thread
+  when Prometheus scrapes it. No order-path thread takes this mutex; the order path meets the scrape
+  only through the histogram mutex in item 1.
+
+### 9. `ExpandablePoolAllocator::callback_mutex_`
+
+- **Where:** `ExpandablePoolAllocator.hpp`, lines 480, 508, 520 and 589.
+- **When:** only when an invalid free is detected, and in the destructor. An error path, not
+  normal running.
+
+## Excluded
+
+| Lock | Where | Why excluded |
+|---|---|---|
+| `LockFreeMessageQueue::mutex_` | `LockFreeMessageQueue.hpp` | Inside `#ifdef USING_VALGRIND`: Valgrind and ThreadSanitizer builds only |
+| `FixedSizeMemoryPool::mutex_` | `FixedSizeMemoryPool.hpp` | Inside `#ifdef USING_VALGRIND` |
+| `Reactor::thread_registry_mutex_` in `register_thread`, `initialize_threads`, `wait_for_all_threads`, `broadcast_reactor_event`, `finalize_threads_after_shutdown` | `Reactor.cpp` | Start-up and shutdown only |
+| `Reactor::timer_registry_mutex_` in `cancel_all_timer_fds_for_thread` | `Reactor.cpp`, line 439 | Shutdown only |
+| `FileLock` (`flock`) | `CpuRegistry.cpp`, `record_assignment` and `release_cpus` | Taken when threads are pinned at start-up and when the registry is released at shutdown |
+| `std::call_once` | `QuillLogger.cpp`, line 83 | Starts Quill's backend once, when the first logger is created |
+| `PrometheusEndpoint::mutex_` in `register_counter`, `register_gauge`, `register_histogram` | `PrometheusEndpoint.cpp` | Start-up only |
+
+## What the order path is left with, by process
+
+| Process | Locks taken for every order |
+|---|---|
+| FIX and binary gateways | Histogram mutexes (item 1). The allocator's expansion mutex only if a pool runs out (item 5) |
+| Leading sequencer | `log_epochs_mutex_` on each write to its log (item 2), histogram mutexes (item 1); the promise recorder's mutex every 100 ms on the same thread (item 4) |
+| Following sequencer | `log_epochs_mutex_` and `ReplicatedRecordWriter` on each record (items 2 and 3) |
+| Leading matching engine | Histogram mutexes (item 1); the promise recorder's mutex every 100 ms on the same thread (item 4) |
+
+## Possible remedies, for discussion
+
+These are not decided, and no code has been changed. Each is repeated in the bug entry named above.
+
+- **Item 1:** record histograms with a lock-free histogram of the project's own, one writer per
+  histogram with atomic bucket counts, and have the endpoint read it when scraped, rather than
+  `prometheus::Histogram`. Counters and gauges can stay as they are.
+- **Items 2 and 3:** the redesign BUG-0124 already calls for: one thread owns the sequencer's log and
+  its table of epochs.
+- **Item 4:** replace the mutex and condition variables with a single-writer, single-reader exchange
+  of the request and its result through atomics, so the lease thread never takes a lock; and decide
+  whether the order-handling thread should ever write and sync a record itself, or whether that is
+  always the background thread's job.
+- **Item 5:** size the pools so they never run out during a trading day and treat running out as an
+  incident; or make expansion lock-free, with the new pool mapped in advance by another thread.

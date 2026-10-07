@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 124 |
-| Open | 42 (26 defects, 16 tasks) |
+| Bugs recorded | 127 |
+| Open | 45 (29 defects, 16 tasks) |
 | Closed | 82 |
-| Next id | BUG-0125 |
+| Next id | BUG-0128 |
 
 ## Open bugs by severity
 
-12 high, 25 medium, 5 low.
+12 high, 28 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -50,6 +50,9 @@
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0122](#bug_0122) | medium | task | Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism |
+| [BUG-0125](#bug_0125) | medium | defect | Every histogram observation takes a mutex inside prometheus-cpp, on the order path |
+| [BUG-0126](#bug_0126) | medium | defect | The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync |
+| [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -152,8 +155,94 @@ went looking.
 
 ## Open
 
+### BUG-0127: A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it {#bug_0127}
 
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-07 |
+| Recorded | 2026-10-07 |
+| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day |
+| Impact | When a pool runs out during the trading day, the thread that needed an entry takes a mutex and waits while a new pool is mapped from the operating system. Every queue between the reactor and an application thread allocates its nodes this way, so the wait falls on whatever message is being queued at the time, an order included |
 
+**Where.** `ExpandablePoolAllocator::allocate()`
+(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp`) allocates from the
+current pool without a lock. When the current pool has no free slot, it takes `expansion_mutex_`,
+walks the chain of pools looking for one with a free slot, and, if none has one, maps a new pool and
+adds it to the chain, still holding the mutex.
+
+**Who uses it.** Every `LockFreeMessageQueue` allocates its nodes from one, so every event the
+reactor queues for an application thread and every command an application thread queues for the
+reactor go through it. The gateways' open-order pools are one too.
+
+**How often.** With one pool that never fills, never. But pools have run out during load runs, which
+is why the queue pools in `fix_order_gateway_a.toml` have been enlarged more than once. And once a
+pool has been added, the slow path can be taken again each time the current pool fills while an
+earlier one has free slots, because a freed slot returns to the pool it came from.
+
+**What is wanted.** No lock on the allocation path. Either the pools are sized so that running out
+during a trading day does not happen and is treated as an incident when it does, or expansion is made
+lock-free, with the next pool mapped in advance by another thread. See `lock-audit-report.txt`.
+
+### BUG-0126: The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync {#bug_0126}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-07 |
+| Recorded | 2026-10-07 |
+| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day |
+| Impact | The sequencer's and the matching engine's own thread, which handles every order, takes a mutex every 100 milliseconds, and occasionally waits on a condition variable until a background disk write has finished, then writes and syncs a record itself. While it waits, no order is handled |
+
+**Where.** `BackgroundPromiseRecorder` (`applications/fix_common/BackgroundPromiseRecorder.hpp`),
+owned by the sequencer, the matching engine and the arbiter, and driven by `PairLeaseAgent` on the
+component's application thread:
+
+- `background_result()` takes `mutex_` on every lease tick, every 100 milliseconds, through
+  `PairLeaseAgent::on_tick` and `adopt_background_record`, to read whether a background write has
+  finished.
+- `record_in_background()` takes it to hand a write to the writer thread.
+- `record()` takes it and waits on the condition variable `idle_` until any background write has
+  finished, and then writes and syncs the record on the calling thread. `PairLeaseAgent` calls it
+  when the record held does not cover the promise about to be made: when an instance first promises
+  its vote to another, or when a background write has not finished within five seconds.
+
+The tick's lock is held only to read a flag, and is contended only when the writer thread is
+updating its flags at the same moment. The wait in `record()` is the one place found where a thread
+that handles orders can block on another thread, and it lasts as long as a disk sync.
+[BUG-0107](#bug_0107) moved the writes off the lease thread so that a slow sync would not stop
+lease requests being answered; it left this lock and this wait behind.
+
+**What is wanted.** The request and its result passed between the two threads through atomics, one
+writer and one reader on each side, so that the thread handling orders never takes a lock; and a
+decision whether that thread should ever write and sync a record itself. See
+`lock-audit-report.txt`.
+
+### BUG-0125: Every histogram observation takes a mutex inside prometheus-cpp, on the order path {#bug_0125}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-07 |
+| Recorded | 2026-10-07 |
+| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day, and then reading prometheus-cpp 1.3.0's `core/src/histogram.cc` |
+| Impact | Every order takes a mutex several times in each of the gateway, the sequencer and the matching engine, once for each histogram it is recorded in. When Prometheus scrapes a process, its scrape thread holds the same mutex while it copies each histogram, and an order recorded at that moment waits for it |
+
+**Where.** `PrometheusHistogram::observe`
+(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`) calls
+`prometheus::Histogram::Observe`. In prometheus-cpp 1.3.0, the version
+`scripts/build_prometheus_cpp.sh` builds, `Observe` takes `std::lock_guard<std::mutex>` on the
+histogram's `mutex_`, and `Collect`, which the scrape calls, takes the same one. Counters and gauges
+use atomics and take no lock.
+
+**On the order path,** with metrics enabled, as they are in every environment: the gateways' round
+trip and acknowledgement histograms, the sequencer's log write time (`wal_append_histogram_`, in
+`append_to_wal`) and its checkpoints in each direction, and the matching engine's checkpoints for an
+order arriving and its acknowledgement leaving.
+
+**What is wanted.** A lock-free histogram of the project's own for the order path, with one writer
+and atomic bucket counts, read by the endpoint when it is scraped, in place of
+`prometheus::Histogram`. Counters and gauges can stay as they are. See `lock-audit-report.txt`.
 
 ### BUG-0124: Locks are taken on the order path, in a design meant to be free of them {#bug_0124}
 
