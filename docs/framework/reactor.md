@@ -84,6 +84,7 @@ On expiry (`EPOLLIN` on the timerfd), `TimerHandler::handle_event()`:
 The reactor registers a recurring backstop timerfd (owner `ThreadID == 0`) that fires
 periodically. Each tick calls `on_housekeeping_tick()`, which:
 
+- Calls `check_for_exited_threads()`, which notices an application thread that has stopped running.
 - Calls `OutboundConnectionManager::check_for_timed_out_connections()` — any outbound
   connection that has been in the connecting phase longer than `connect_timeout` is torn
   down and a `ConnectionFailed` event is delivered to the owning thread.
@@ -91,8 +92,12 @@ periodically. Each tick calls `on_housekeeping_tick()`, which:
   connection with no activity for longer than `socket_maximum_inactivity_interval_` is torn
   down and a `ConnectionLost` event is delivered.
 - Calls `check_for_stuck_threads()` — see [Threading](threading.md) for details.
-- Calls `OutboundConnectionManager::retry_failed_connections()` — reconnection attempts for
-  connections configured with auto-retry.
+- Calls `OutboundConnectionManager::retry_failed_connections()` — every outbound connection that
+  failed or was lost is tried again, with a fresh `ConnectionID`, once `connect_retry_interval_`
+  (two seconds by default) has passed, for as long as it takes. An application never has to retry a
+  connection itself.
+
+Nothing is done on the tick once the reactor has been asked to shut down.
 
 ---
 
@@ -127,7 +132,9 @@ calls `teardown_connection()` directly — the handler never destroys the connec
 1. epoll signals `EPOLLIN` on accepted fd.
 2. `InboundConnectionManager::on_data_ready()` → `InboundConnection::handle_read()` →
    `PduProtocolHandler::on_data_ready()` → `PduParser::receive()`.
-3. `PduParser` reads the 16-byte `PduHeader` (validates canary `0xC0FFEE00`).
+3. `PduParser` reads the 24-byte `PduHeader` (validates canary `0xC0FFEE00`). A payload of zero
+   bytes, or one larger than an inbound slab (`ReactorConfiguration::inbound_slab_size`), is refused
+   and the connection is torn down; the reactor and every other connection carry on.
 4. `PduParser` allocates a slab chunk: `auto [slab_id, chunk] = inbound_slab_allocator_.allocate(byte_count)`.
 5. `PduParser` reads the payload **directly from the socket into the slab chunk** — zero copy.
 6. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to the
@@ -151,14 +158,16 @@ Each `OutboundConnection` has two lifecycle phases:
 | Phase | Indicator | Active members |
 |-------|-----------|----------------|
 | Connecting | `is_connecting()` | `connector_`, `connect_started_at_`, `trying_secondary_` |
-| Established | `is_established()` | `socket_`, `framer_`, `parser_` |
+| Established | `is_established()` | `socket_`, and either `framer_` and `parser_` (framework PDUs) or `protocol_handler_` (TLS) |
 
 **Connection flow:**
 1. `Connect` command → `process_connect_command()` → `TcpConnector::connect(primary)` →
    register fd for `EPOLLOUT`.
 2. `EPOLLOUT` fires → `on_connect_ready()` → `finish_connect()`:
    - Success → create `PduFramer` + `PduParser` → re-register for `EPOLLIN` → deliver
-     `ConnectionEstablished`.
+     `ConnectionEstablished`. When the service's endpoint is configured for TLS, a
+     `TlsRawBytesProtocolHandler` is created instead, as the client side, and
+     `ConnectionEstablished` is delivered once the TLS handshake completes.
    - Failure + secondary configured → `retry_with_secondary()` → repeat from step 1.
    - Both fail → `teardown_connection()` → deliver `ConnectionFailed`.
 3. Connect timeout detected by housekeeping tick → `teardown_connection()` → deliver
@@ -208,7 +217,7 @@ its own message framing.
 | Head | Advanced by the reactor thread only, on each `recv()` |
 | Tail | Advanced by the reactor thread only, in response to `CommitRawBytes` |
 | Exposed to app | `read_ptr()`, `bytes_available()`, `tail()` |
-| Backpressure | If `space_remaining() == 0` on `EPOLLIN`, the connection is torn down |
+| Backpressure | When the unprocessed bytes reach three quarters of the buffer, the reactor stops reading the socket, so TCP slows the peer; it reads again once the application's commits bring them down to half. A connection whose buffer is nevertheless completely full when data arrives is torn down |
 
 **Inbound raw path:**
 1. `RawBytesProtocolHandler::on_data_ready()` → `recv()` into buffer, advancing head.
@@ -254,9 +263,10 @@ resumes during a long burst lose, duplicate and reorder nothing.
 
 ## Outbound PDU Ownership
 
-Application thread allocates slab from `outbound_slab_allocator()` → writes `PduHeader` +
-encoded payload → enqueues `SendPdu` → reactor sends via `PduFramer::send_prebuilt()` →
-reactor deallocates slab on send completion (or teardown).
+`ApplicationThread::send_pdu()`, on the application thread, takes a chunk from the outbound slab
+allocator, writes the `PduHeader` and the encoded payload into it, and enqueues a `SendPdu` command.
+The reactor sends the chunk as it stands (`send_prebuilt()`), and frees it when the send completes
+or the connection is torn down.
 
 ---
 
@@ -267,15 +277,15 @@ reactor deallocates slab on send completion (or teardown).
    a. Cancels all timerfd handlers (removes from epoll, closes fds).
    b. Calls `thread->shutdown(reason)` on every registered `ApplicationThread` — sets
       lifecycle state to `ShuttingDown` and writes to `notify_fd_` for immediate wakeup.
-   c. Waits for all threads to reach `Terminated` state (polling with timeout).
-   d. Calls `join_with_timeout()` on each thread.
+   c. Waits for each thread to stop running, for up to `shutdown_timeout_` (one second by default).
+   d. Calls `join_with_timeout()` on each thread, with the same limit.
 3. Managers tear down remaining connections.
 
-There is an **outstanding timing issue**: after the SIGSEGV fix that added the `shutdown()`
-call in step 2b, "did not stop within shutdown_timeout" and "failed to join within
-shutdown_timeout" log entries still appear. Despite `is_running()` returning false
-immediately, threads take the full 200 ms timeout before exiting. Root cause not yet
-identified.
+A thread that will not join in time is still running and cannot safely be destroyed. The reactor
+logs it at Error and records it, and `abort_if_thread_abandoned()` then aborts the process, so the
+core holds the stuck thread's stack, rather than letting the process return from `main` and fail
+later on some static object the thread touches. The only threads that do this in the unit tests are
+ones the tests create to misbehave on purpose ([BUG-0001](../bug_list.md#bug_0001)).
 
 ---
 
