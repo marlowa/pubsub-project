@@ -15,7 +15,6 @@
 
 #include <prometheus/counter.h>
 #include <prometheus/gauge.h>
-#include <prometheus/histogram.h>
 #include <prometheus/registry.h>
 
 #include <pubsub_itc_fw/CounterHandle.hpp>
@@ -28,7 +27,7 @@
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/PrometheusCounter.hpp>
 #include <pubsub_itc_fw/PrometheusGauge.hpp>
-#include <pubsub_itc_fw/PrometheusHistogram.hpp>
+#include <pubsub_itc_fw/SingleWriterHistogramRegistry.hpp>
 
 namespace prometheus {
 class Exposer;
@@ -75,9 +74,12 @@ namespace pubsub_itc_fw {
  * **Threading**
  *
  * Registration is mutex-guarded and is expected at startup rather than on a hot path.
- * Recording is not guarded here: Counter and Gauge are atomic, and Histogram takes its own
- * lock, which is needed regardless of how the application divides metrics between threads
- * because the scrape thread reads the same objects.
+ * Recording takes no lock. Counter and Gauge are prometheus-cpp's, which update an atomic.
+ * Histograms are SingleWriterHistogram, which one thread records into with ordinary stores
+ * and the scrape reads without stopping it; prometheus::Histogram is not used, because it
+ * locks a mutex on every observation that the scrape thread also locks. The mutex here is
+ * taken only by registration and by a scrape reading the histograms, never by recording.
+ * See docs/framework/single_writer_histogram.md.
  */
 class PrometheusEndpoint {
   public:
@@ -164,6 +166,11 @@ class PrometheusEndpoint {
 
     /**
      * @brief As register_counter, for a histogram.
+     *
+     * The histogram is a SingleWriterHistogram: exactly one thread may record into it. In
+     * builds with PUBSUB_ITC_FW_THREAD_CHECKS a second thread recording raises
+     * PreconditionAssertion.
+     *
      * @param[in] metric_key Identifies the metric and supplies its labels.
      * @param[in] help       Help text for the family; see register_counter.
      * @param[in] buckets    Upper bounds, ascending. Per child, so two scopes of one metric
@@ -222,14 +229,16 @@ class PrometheusEndpoint {
 
     std::map<std::string, prometheus::Family<prometheus::Counter>*> counter_families_;
     std::map<std::string, prometheus::Family<prometheus::Gauge>*> gauge_families_;
-    std::map<std::string, prometheus::Family<prometheus::Histogram>*> histogram_families_;
 
     // std::map is used rather than unordered_map because references to elements must stay
     // valid as more are inserted: register_* hands those references to callers that keep
     // them for the life of the process.
     std::map<std::string, PrometheusCounter> counters_;
     std::map<std::string, PrometheusGauge> gauges_;
-    std::map<std::string, PrometheusHistogram> histograms_;
+
+    // Null when metrics are disabled. Holds every histogram, and is the second collectable the
+    // listener reads. A shared_ptr because the Exposer keeps a weak_ptr to each collectable.
+    std::shared_ptr<SingleWriterHistogramRegistry> histogram_registry_;
 
     // Declared last so it is destroyed FIRST. The listener collects from the registry, so
     // a scrape in flight while the registry is being torn down would read freed memory.

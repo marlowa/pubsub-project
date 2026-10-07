@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 127 |
-| Open | 45 (29 defects, 16 tasks) |
-| Closed | 82 |
+| Open | 44 (28 defects, 16 tasks) |
+| Closed | 83 |
 | Next id | BUG-0128 |
 
 ## Open bugs by severity
 
-12 high, 28 medium, 5 low.
+12 high, 27 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -50,7 +50,6 @@
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0122](#bug_0122) | medium | task | Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism |
-| [BUG-0125](#bug_0125) | medium | defect | Every histogram observation takes a mutex inside prometheus-cpp, on the order path |
 | [BUG-0126](#bug_0126) | medium | defect | The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
@@ -217,62 +216,6 @@ lease requests being answered; it left this lock and this wait behind.
 writer and one reader on each side, so that the thread handling orders never takes a lock; and a
 decision whether that thread should ever write and sync a record itself. See
 `lock-audit-report.txt`.
-
-### BUG-0125: Every histogram observation takes a mutex inside prometheus-cpp, on the order path {#bug_0125}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-07 |
-| Recorded | 2026-10-07 |
-| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day, and then reading prometheus-cpp 1.3.0's `core/src/histogram.cc` |
-| Impact | Every order takes a mutex several times in each of the gateway, the sequencer and the matching engine, once for each histogram it is recorded in. When Prometheus scrapes a process, its scrape thread holds the same mutex while it copies each histogram, and an order recorded at that moment waits for it |
-
-**Where.** The lock is inside the prometheus-cpp library, not in the venue's code: no call site
-holds a lock. `HistogramHandle::observe`
-(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramHandle.hpp`, line 27) calls
-`PrometheusHistogram::observe`
-(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`, line 17), which calls
-`prometheus::Histogram::Observe`. In prometheus-cpp 1.3.0, the version
-`scripts/build_prometheus_cpp.sh` builds, `Observe` takes `std::lock_guard<std::mutex>` on the
-histogram's `mutex_` (`core/src/histogram.cc`, line 46), and `Collect`, which the scrape calls, takes
-the same one (line 76). Counters and gauges use atomics and take no lock.
-
-**Measured cost.** On the development machine, one thread, 50 million calls: `Observe` takes 12.6
-nanoseconds with no other thread touching the histogram, against 2.9 nanoseconds for a histogram
-owned by one thread with the same 16 buckets and plain increments. Uncontended, it makes no system
-call. With a second thread calling `Collect` once a millisecond, the two collided and a `futex`
-system call was made about three thousand times in 20 million observations, counted under `strace`; a `futex` wait puts the
-waiting thread to sleep.
-
-**On the order path,** with metrics enabled, as they are in every environment: the gateways' round
-trip and acknowledgement histograms, the sequencer's log write time (`wal_append_histogram_`, in
-`append_to_wal`) and its checkpoints in each direction, and the matching engine's checkpoints for an
-order arriving and its acknowledgement leaving.
-
-**In the framework, in every process,** the following sequencer included: the reactor's lap
-histogram (`libraries/pubsub_itc_fw/src/Reactor.cpp`, line 1018), recorded on every pass of the
-reactor's loop and on every turn while it spins waiting for work; the reactor's receive path, send
-path and command latency histograms (`Reactor.cpp`, lines 1027, 1037, 1039, 1226 and 1228); and each
-application thread's queue depth and queue latency histograms
-(`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`, lines 478 and 571).
-
-**Measured in the venue.** Under load from `perf_run.py` (binary gateway, 4 sessions at 500 orders a
-second each), every context switch in each sequencer, matching engine and binary gateway process
-was recorded with its stack, and those that were a wait for a contended mutex inside
-`prometheus::Histogram::Observe` were counted. With no Prometheus running, for 40 seconds: none.
-With Prometheus scraping every process every 5 seconds, for 40 seconds: two, both on the primary
-matching engine's reactor thread, recording into the lap histogram from
-`Reactor::record_look_for_work`, 15 seconds apart. Each time the thread went to sleep in the kernel
-until the scrape released the mutex. The lap histogram is the one recorded most often, which is why
-it is the one that collided; the others take the same mutex. See `lock-audit-report.txt` for the
-method and how the count was checked first.
-
-**What is wanted.** A histogram of the framework's own in place of `prometheus::Histogram`, which
-the one thread that records into it updates with ordinary stores and no lock, and which the scrape
-reads without stopping that thread. Counters and gauges can stay as they are. The design, agreed
-and not yet built, is [A histogram that never makes the recording thread wait](framework/single_writer_histogram.md).
-See also `lock-audit-report.txt`.
 
 ### BUG-0124: Locks are taken on the order path, in a design meant to be free of them {#bug_0124}
 
@@ -2573,6 +2516,72 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0125: Every histogram observation takes a mutex inside prometheus-cpp, on the order path {#bug_0125}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-07 |
+| Recorded | 2026-10-07 |
+| Fixed | 2026-10-07 -- histograms are recorded by `SingleWriterHistogram`, which one thread updates with ordinary stores and no lock, and which the scrape reads without stopping that thread |
+| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day, and then reading prometheus-cpp 1.3.0's `core/src/histogram.cc` |
+| Impact | Every order takes a mutex several times in each of the gateway, the sequencer and the matching engine, once for each histogram it is recorded in. When Prometheus scrapes a process, its scrape thread holds the same mutex while it copies each histogram, and an order recorded at that moment waits for it |
+
+**Where.** The lock is inside the prometheus-cpp library, not in the venue's code: no call site
+holds a lock. `HistogramHandle::observe`
+(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramHandle.hpp`, line 27) calls
+`PrometheusHistogram::observe`
+(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`, line 17), which calls
+`prometheus::Histogram::Observe`. In prometheus-cpp 1.3.0, the version
+`scripts/build_prometheus_cpp.sh` builds, `Observe` takes `std::lock_guard<std::mutex>` on the
+histogram's `mutex_` (`core/src/histogram.cc`, line 46), and `Collect`, which the scrape calls, takes
+the same one (line 76). Counters and gauges use atomics and take no lock.
+
+**Measured cost.** On the development machine, one thread, 50 million calls: `Observe` takes 12.6
+nanoseconds with no other thread touching the histogram, against 2.9 nanoseconds for a histogram
+owned by one thread with the same 16 buckets and plain increments. Uncontended, it makes no system
+call. With a second thread calling `Collect` once a millisecond, the two collided and a `futex`
+system call was made about three thousand times in 20 million observations, counted under `strace`; a `futex` wait puts the
+waiting thread to sleep.
+
+**On the order path,** with metrics enabled, as they are in every environment: the gateways' round
+trip and acknowledgement histograms, the sequencer's log write time (`wal_append_histogram_`, in
+`append_to_wal`) and its checkpoints in each direction, and the matching engine's checkpoints for an
+order arriving and its acknowledgement leaving.
+
+**In the framework, in every process,** the following sequencer included: the reactor's lap
+histogram (`libraries/pubsub_itc_fw/src/Reactor.cpp`, line 1018), recorded on every pass of the
+reactor's loop and on every turn while it spins waiting for work; the reactor's receive path, send
+path and command latency histograms (`Reactor.cpp`, lines 1027, 1037, 1039, 1226 and 1228); and each
+application thread's queue depth and queue latency histograms
+(`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`, lines 478 and 571).
+
+**Measured in the venue.** Under load from `perf_run.py` (binary gateway, 4 sessions at 500 orders a
+second each), every context switch in each sequencer, matching engine and binary gateway process
+was recorded with its stack, and those that were a wait for a contended mutex inside
+`prometheus::Histogram::Observe` were counted. With no Prometheus running, for 40 seconds: none.
+With Prometheus scraping every process every 5 seconds, for 40 seconds: two, both on the primary
+matching engine's reactor thread, recording into the lap histogram from
+`Reactor::record_look_for_work`, 15 seconds apart. Each time the thread went to sleep in the kernel
+until the scrape released the mutex. The lap histogram is the one recorded most often, which is why
+it is the one that collided; the others take the same mutex. See `lock-audit-report.txt` for the
+method and how the count was checked first.
+
+**What was done.** `SingleWriterHistogram` replaces `prometheus::Histogram` behind
+`HistogramInterface`, so no call site changed. `SingleWriterHistogramRegistry` holds every histogram
+and is the second collectable the endpoint's `Exposer` reads; prometheus-cpp's own serialiser renders
+it, so a scrape returns the same text. `PrometheusHistogram.hpp` is deleted. The follower's
+`wal_append_nanoseconds`, the one histogram with two writing threads, now has two children: scope
+`sequencer_thread` and scope `reactor_thread`. The design is
+[A histogram that never makes the recording thread wait](framework/single_writer_histogram.md).
+
+**How it was checked.** Recording a value costs 3.3 ns, against 12.6 ns before, and is unchanged by a
+reader once a millisecond. The unit tests compare the scrape's text byte for byte with
+prometheus-cpp's for the same values, and each was made to fail on purpose. In the venue under load,
+with every context switch in each sequencer, matching engine and binary gateway recorded with its
+stack, no thread waited on a mutex at all, with or without Prometheus scraping. Before the change the
+primary matching engine's reactor thread waited twice in 40 seconds while Prometheus scraped.
 
 ### BUG-0120: The matching engine dropped orders the sequencer had logged when its connections for reports were not yet up {#bug_0120}
 

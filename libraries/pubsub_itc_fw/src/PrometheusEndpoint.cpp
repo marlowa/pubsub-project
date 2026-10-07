@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include <exception>
-
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -14,6 +14,7 @@
 #include <fmt/format.h>
 
 #include <prometheus/exposer.h>
+#include <prometheus/metric_family.h>
 #include <prometheus/registry.h>
 #include <prometheus/text_serializer.h>
 
@@ -24,6 +25,8 @@
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PrometheusEndpoint.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
+#include <pubsub_itc_fw/SingleWriterHistogram.hpp>
+#include <pubsub_itc_fw/SingleWriterHistogramRegistry.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -58,6 +61,7 @@ PrometheusEndpoint::PrometheusEndpoint(const MetricsConfiguration& configuration
     // Registration still validates; see note_registration.
     if (configuration_.enabled) {
         registry_ = std::make_shared<prometheus::Registry>();
+        histogram_registry_ = std::make_shared<SingleWriterHistogramRegistry>(mutex_);
     }
 }
 
@@ -87,6 +91,7 @@ void PrometheusEndpoint::start() {
     }
 
     exposer_->RegisterCollectable(registry_);
+    exposer_->RegisterCollectable(histogram_registry_);
 }
 
 uint16_t PrometheusEndpoint::listening_port() const {
@@ -106,10 +111,21 @@ std::string PrometheusEndpoint::exposition_text() const {
     if (registry_ == nullptr) {
         return {};
     }
-    const std::lock_guard<std::mutex> lock(mutex_);
+    // The registry's families first and the histograms after them, which is the order a scrape
+    // returns: the Exposer reads its collectables in the order start() registered them, and the
+    // registry holds no histograms. The histogram registry's Collect takes mutex_ itself, so it is
+    // called after the lock below has been released; std::mutex cannot be taken twice.
+    std::vector<prometheus::MetricFamily> families;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        families = registry_->Collect();
+    }
+    std::vector<prometheus::MetricFamily> histogram_families = histogram_registry_->Collect();
+    families.insert(families.end(), std::make_move_iterator(histogram_families.begin()), std::make_move_iterator(histogram_families.end()));
+
     std::ostringstream stream;
     const prometheus::TextSerializer serializer;
-    serializer.Serialize(stream, registry_->Collect());
+    serializer.Serialize(stream, families);
     return stream.str();
 }
 
@@ -212,15 +228,8 @@ HistogramHandle PrometheusEndpoint::register_histogram(const MetricKey& metric_k
         return HistogramHandle(&shared_no_op_histogram());
     }
 
-    const std::string& name = metric_key.metric_name();
-    auto family = histogram_families_.find(name);
-    if (family == histogram_families_.end()) {
-        auto& built = prometheus::BuildHistogram().Name(name).Help(help != nullptr ? help : "").Register(*registry_);
-        family = histogram_families_.emplace(name, &built).first;
-    }
-
-    prometheus::Histogram& histogram = family->second->Add(labels, buckets);
-    return HistogramHandle(&histograms_.emplace(metric_key.full_name(), PrometheusHistogram(&histogram)).first->second);
+    SingleWriterHistogram& histogram = histogram_registry_->add(metric_key.metric_name(), help != nullptr ? help : "", labels, buckets);
+    return HistogramHandle(&histogram);
 }
 
 } // namespaces

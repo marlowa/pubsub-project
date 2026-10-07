@@ -152,18 +152,25 @@ ReactorConfiguration make_reactor_config(std::chrono::microseconds spin_before_b
 
 /** @brief How many observations a histogram family holds, read from a real scrape. */
 int64_t observation_count(const std::string& exposition, const std::string& family) {
+    // Every child of the family is added up. A family can have several children, told apart by
+    // scope -- the reactor's send path has one for sends on the order path and one for the rest --
+    // and the order a scrape lists them in says nothing about which of them a test's traffic went
+    // to, so reading only the first would depend on that order.
     std::istringstream stream(exposition);
     std::string line;
+    bool family_found = false;
+    int64_t total = 0;
     while (std::getline(stream, line)) {
         if (line.rfind(family + "_count", 0) != 0) {
             continue;
         }
         const auto value_at = line.rfind(' ');
         if (value_at != std::string::npos) {
-            return static_cast<int64_t>(std::stod(line.substr(value_at + 1)));
+            family_found = true;
+            total += static_cast<int64_t>(std::stod(line.substr(value_at + 1)));
         }
     }
-    return -1;
+    return family_found ? total : -1;
 }
 
 // How long a polling reactor keeps looking before it would give up and sleep. Long enough that

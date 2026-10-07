@@ -56,6 +56,8 @@ set(PUBSUB_ITC_FW_SRC
         src/PduParser.cpp
         src/PrometheusEndpoint.cpp
         src/QuillLogger.cpp
+        src/SingleWriterHistogram.cpp
+        src/SingleWriterHistogramRegistry.cpp
         src/Reactor.cpp
         src/SlabAllocator.cpp
         src/StringUtils.cpp

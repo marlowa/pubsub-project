@@ -193,10 +193,14 @@ void SequencerThread::on_initial_event() {
 
     // Registered here rather than at ready, matching the gateways. The handle is a no-op when
     // metrics are disabled, and the application and component tokens come from configuration.
+    // Two children, told apart by scope, which names the thread that made the write: see the
+    // members' declaration. The help text is shared by both, so it does not name a thread.
     if (!config_.wal_append_buckets.empty()) {
-        wal_append_histogram_ = get_reactor().metrics().register_histogram(
-            "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log, on the reactor thread",
-            config_.wal_append_buckets);
+        const char* const wal_append_help = "Nanoseconds spent committing one record to the write-ahead log; the scope names the thread that wrote it";
+        wal_append_histogram_ =
+            get_reactor().metrics().register_histogram("sequencer_thread", "wal_append_nanoseconds", wal_append_help, config_.wal_append_buckets);
+        wal_append_reactor_thread_histogram_ =
+            get_reactor().metrics().register_histogram("reactor_thread", "wal_append_nanoseconds", wal_append_help, config_.wal_append_buckets);
     }
 
     // One family, four children, told apart by scope. Registered together so that a
@@ -266,7 +270,8 @@ void SequencerThread::on_initial_event() {
         "was full. Expected to be 0");
 }
 
-void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch) {
+void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch,
+                                    pubsub_itc_fw::HistogramHandle& wal_append_histogram) {
     // Every append goes through here so there is one place that knows what a commit costs.
     //
     // It is worth measuring because it is the one thing on the order path that touches a
@@ -278,7 +283,7 @@ void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_
     const auto started = std::chrono::steady_clock::now();
     wal_.append(seq_no, pdu_id, payload, size, wall_time_ns);
     const auto elapsed = std::chrono::steady_clock::now() - started;
-    wal_append_histogram_.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+    wal_append_histogram.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
 
     const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
     if (seq_no != log_epochs_.last_seq_no() + 1) {
@@ -1721,7 +1726,7 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
         return;
     }
     append_to_wal(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), static_cast<int>(bytes_written),
-                  envelope.wall_time_ns, envelope.has_leader_epoch ? envelope.leader_epoch : 0);
+                  envelope.wall_time_ns, envelope.has_leader_epoch ? envelope.leader_epoch : 0, wal_append_histogram_);
 }
 
 void SequencerThread::send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope) {
@@ -1769,8 +1774,8 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
     // Option B: the received WalRecord bytes are stored verbatim under the WalRecord pdu, so the follower
     // WAL is byte-identical to the leader's. (view is decoded only to read seq_no + wall_time_ns for the
     // append header and the WalAck.)
-    if (write_replicated_record(view.seq_no, message.payload(), message.payload_size(), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0) !=
-        ReplicatedRecordWriter::Outcome::written) {
+    if (write_replicated_record(view.seq_no, message.payload(), message.payload_size(), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0,
+                                wal_append_histogram_) != ReplicatedRecordWriter::Outcome::written) {
         return;
     }
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
@@ -1796,7 +1801,7 @@ void SequencerThread::forget_log_agreement() {
 }
 
 ReplicatedRecordWriter::Outcome SequencerThread::write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns,
-                                                                         int32_t leader_epoch) {
+                                                                         int32_t leader_epoch, pubsub_itc_fw::HistogramHandle& wal_append_histogram) {
     int64_t last = 0;
     const ReplicatedRecordWriter::Outcome outcome = replicated_record_writer_.write_if_next(
         seq_no,
@@ -1806,7 +1811,7 @@ ReplicatedRecordWriter::Outcome SequencerThread::write_replicated_record(int64_t
             return last;
         },
         [&] {
-            append_to_wal(seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, size, wall_time_ns, leader_epoch);
+            append_to_wal(seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, size, wall_time_ns, leader_epoch, wal_append_histogram);
             note_replicated_record(seq_no);
         });
     if (outcome == ReplicatedRecordWriter::Outcome::gap) {
@@ -2040,8 +2045,9 @@ void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::Conne
             //
             // Option B: the received WalRecord bytes are persisted verbatim (record pdu_id = WalRecord)
             // so leader and follower WALs stay byte-identical.
-            if (write_replicated_record(view.seq_no, payload, static_cast<int>(size), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0) !=
-                ReplicatedRecordWriter::Outcome::written) {
+            // On the reactor's thread, so into the histogram that thread alone records into.
+            if (write_replicated_record(view.seq_no, payload, static_cast<int>(size), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0,
+                                        wal_append_reactor_thread_histogram_) != ReplicatedRecordWriter::Outcome::written) {
                 replicated_records_queued_.fetch_add(1, std::memory_order_acq_rel);
                 return false;
             }

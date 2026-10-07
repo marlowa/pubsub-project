@@ -1,7 +1,7 @@
 # A histogram that never makes the recording thread wait {#single_writer_histogram}
 
-**Status: agreed, not built.** This is the design for [BUG-0125](../bug_list.md#bug_0125). No code
-has been changed. Section 9 records the two decisions it needed.
+**Status: built.** This is the design for [BUG-0125](../bug_list.md#bug_0125), which it closed.
+Section 9 records the two decisions it needed, and section 11 how the result was checked.
 
 ## 1. What this document covers
 
@@ -332,6 +332,34 @@ change with a separate measurement, and it is not part of BUG-0125.
 2. The endpoint's `Collectable` and registration, with tests 2 and 3. Delete `PrometheusHistogram.hpp`.
 3. The sequencer's second child of `wal_append_nanoseconds`, if (a) is chosen.
 4. Through `scripts/devsetup.sh`, then tests 6 and 7 on the deployed venue.
-5. Update `docs/operations/metrics.md`. Its section "Metric objects and locking" describes the mutex as
-   current and says to remove it only once a measurement shows it matters. Also update the lock audit
-   and close BUG-0125.
+5. Update `docs/operations/metrics.md`, the lock audit and the bug list.
+
+## 11. How it was checked
+
+- **Tests 1 to 5.** `SingleWriterHistogramTest` in `libraries/pubsub_itc_fw/tests`. Each was made to
+  fail on purpose: `std::upper_bound` in place of `std::lower_bound` failed the bucket test; leaving
+  out the infinite bucket failed six tests, including both comparisons with prometheus-cpp's text; a
+  second writer thread, with the thread check compiled out, lost 771,540 of 4,000,000 counts and was
+  seen to make counts fall; and removing the thread check failed the second-writer test in the
+  coverage build. The existing `PrometheusEndpointTest` tests pass unchanged. They would not have
+  caught a missing infinite bucket on their own, because prometheus-cpp's serialiser writes a `+Inf`
+  line itself when the last bucket it is given is not infinite.
+- **ThreadSanitizer.** The project's ThreadSanitizer build does not compile at present: GCC refuses
+  the `std::atomic_thread_fence` in `Reactor::enqueue_control_command` under `-fsanitize=thread` with
+  warnings as errors. The two new classes and a writer running against a continuous scrape were
+  therefore compiled on their own under ThreadSanitizer, which reported nothing. ThreadSanitizer
+  cannot catch a second writer, because two threads making relaxed atomic loads and stores is not a
+  data race in C++; it loses counts without undefined behaviour, which is why the thread check
+  exists.
+- **Test 6.** `perf_run.py` with the binary gateway, 4 sessions at 500 orders a second each, on a
+  venue started with an empty book and empty logs. All 200,000 orders were processed and acknowledged
+  as new. Every context switch in each sequencer, matching engine and binary gateway process was
+  recorded with its stack for 30 seconds without Prometheus and 30 seconds with it scraping every
+  process every 5 seconds. No thread in any of them waited on a mutex, in either period.
+- **Test 7.** The scrape returns the same metric names, labels and buckets. Every checkpoint of
+  `order_path_elapsed_nanoseconds` recorded 200,000 observations. The two children of
+  `wal_append_nanoseconds` recorded 400,000 writes each: on the leader all on the sequencer's thread,
+  on the follower all on the reactor's thread, written by the inline handler. With Prometheus
+  scraping, the round trip's 99th percentile, taken every 5 seconds over 20-second windows, was
+  between 127 and 145 microseconds. That run was made with the machine's power-saving settings on,
+  so the figure is not comparable with measurements made with them off.

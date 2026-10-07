@@ -85,7 +85,9 @@ name is stricter than the other tokens.
 ## Metric types and the on/off switch
 
 Three interfaces -- `CounterInterface`, `GaugeInterface`, `HistogramInterface` -- each with
-a prometheus-cpp implementation and a no-op one. `PrometheusEndpoint::register_*` returns a
+a recording implementation and a no-op one. Counters and gauges are recorded by prometheus-cpp's
+own types. Histograms are recorded by `SingleWriterHistogram`, the framework's own, for the reason
+given under "Metric objects and locking" below. `PrometheusEndpoint::register_*` returns a
 handle that refers to one or the other (see "Recording handles" below), so **no call site knows
 which it got**.
 
@@ -187,15 +189,29 @@ sharing the background tier. `Exposer` takes a thread count; one may well be eno
 
 ### Metric objects and locking
 
-- `Counter` and `Gauge` use `std::atomic<double>`.
-- **`Histogram::Observe` takes a mutex.** This is not removable by giving each thread its own
-  metric, because the *scrape thread reads the same object*: the lock protects recorder
-  against collector, not recorder against recorder.
+- prometheus-cpp's `Counter` and `Gauge` hold a `std::atomic<double>`. In the build of
+  prometheus-cpp 1.3.0 the project uses, each update is a `lock cmpxchg` loop. That is an atomic
+  instruction, not a lock: it never sleeps and never makes a system call. `Counter::Increment`
+  measured 7.9 ns on the development machine.
+- **Histograms take no lock.** prometheus-cpp's `Histogram::Observe` locks a mutex, and the
+  scrape thread locks the same mutex while it reads, so a thread recording a value during a
+  scrape went to sleep in the kernel until the scrape let go. That was measured on the venue:
+  under load, with Prometheus scraping every 5 seconds, the matching engine's reactor thread
+  waited on that mutex twice in 40 seconds. The project therefore records histograms with
+  `SingleWriterHistogram` instead.
 
-Uncontended that is tens of nanoseconds, and it contends only during a scrape. If a
-measurement ever shows it mattering on the order path, the established escape is
-thread-local accumulation merged at collection time -- but that is real work and should wait
-for evidence.
+A `SingleWriterHistogram` has exactly one thread that records into it. That thread increments a
+count by reading it and writing it back with relaxed atomic loads and stores, which compile to
+ordinary moves on x86-64, with no lock prefix and no fence. The scrape reads the counts with
+relaxed loads and never stops the writer. Recording a value measured 3.3 ns, against 12.6 ns for
+prometheus-cpp's histogram with nothing else touching it. Builds with
+`PUBSUB_ITC_FW_THREAD_CHECKS` (Debug, AddressSanitizer and coverage) raise `PreconditionAssertion`
+if a second thread records into one. The design, the measurements, and what a scrape can and
+cannot see are in [the framework's histogram design](../framework/single_writer_histogram.md).
+
+So **a histogram must be recorded into by one thread only**. Where two threads need to record the
+same quantity, register two children of one metric, told apart by scope. The sequencer's
+`wal_append_nanoseconds` does this for its two writing threads.
 
 ---
 
@@ -205,9 +221,11 @@ The Reactor owns the endpoint. Every handle handed out by `register_*` points in
 registry the endpoint owns, so **the endpoint must outlive every holder** -- constructed
 early, destroyed last.
 
-The registry owns the metric families and the families own their children, so the destructor
-needs no manual teardown. One ordering rule does matter: the `Exposer` must be destroyed
-before the registry it collects from, or a scrape in flight can touch freed memory.
+prometheus-cpp's registry owns the counter and gauge families, and the families own their
+children. A `SingleWriterHistogramRegistry` owns every histogram, grouped into families in the same
+way, and is the second collectable the `Exposer` reads. Neither needs manual teardown. One
+ordering rule does matter: the `Exposer` must be destroyed before both of the things it collects
+from, or a scrape in flight can touch freed memory.
 Declaring `exposer_` last achieves that, since members destruct in reverse declaration
 order. It looks like arbitrary field ordering otherwise, so it is worth a comment.
 
@@ -238,8 +256,9 @@ reasons that all bite at the call site:
 
 What handles do **not** provide is lifetime safety: the pointer dangles if the endpoint is
 destroyed first, exactly as a reference would. That is acceptable because the endpoint is a
-Reactor member and outlives every registrant by construction, and because registrations live
-in node-based `std::map`s whose elements do not move as further metrics are registered.
+Reactor member and outlives every registrant by construction, and because no registered metric
+moves as further metrics are registered: counters and gauges live in node-based `std::map`s, and
+each histogram is allocated on its own and held by a `std::unique_ptr`.
 `PrometheusEndpointTest.HandlesStayValidAsMoreMetricsAreRegistered` pins that down.
 
 ---
@@ -564,7 +583,7 @@ the `scope` label.
 | `reactor_send_path_nanoseconds` | histogram | The reactor; scope `order_path` or `other` | Nanoseconds the reactor took to turn a send request into bytes on a socket |
 | `reactor_receive_path_nanoseconds` | histogram | The reactor; scope `reactor` | Nanoseconds the reactor took to turn readable bytes into a message on an application thread's queue |
 | `reactor_lap_nanoseconds` | histogram | The reactor; scope `reactor` | Nanoseconds between one look for work and the next, during which nothing is noticed |
-| `wal_append_nanoseconds` | histogram | The sequencer; scope `sequencer_thread` | Nanoseconds spent committing one record to the write-ahead log, on the reactor thread |
+| `wal_append_nanoseconds` | histogram | The sequencer; scope `sequencer_thread` or `reactor_thread` | Nanoseconds spent committing one record to the write-ahead log. The scope names the thread that wrote it: `sequencer_thread` for every write on the leader and the records a follower's inline handler passes on, `reactor_thread` for the records a follower's inline handler writes itself |
 | `throttled_new_orders_total`, `throttled_amends_total`, `throttled_cancels_total` | counter | Both order gateways; scope `gateway_thread` | Orders, amends and cancels refused because the session had reached its limit per second |
 | `order_book_entries`, `order_book_slots`, `order_book_migrating`, `order_book_largest_allocation_bytes` | gauge | The matching engine, through `OrderBookMetricsReporter` | Orders resting in the book; hash slots claimed to hold them; 1 while the book is being moved into a larger table; the largest single table allocation the book has made |
 | `pool_objects_allocated`, `pool_objects_available`, `pool_bytes_in_use`, `pool_bytes_reserved`, `pool_allocations`, `pool_expansion_events`, `pool_allocation_failures` and six more `pool_*` gauges | gauge | Both order gateways, through `PoolMetricsReporter`, for the pool of open orders; scope names the pool | One pool allocator's statistics, sampled by its owner: occupancy, bytes, allocations by path, and expansions |

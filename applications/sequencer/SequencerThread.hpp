@@ -190,18 +190,29 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // before the sequencer begins accepting connections.
     /// Commits one record to the log and records how long it took. Every append goes through
     /// here, so there is one place that knows what a commit costs.
-    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
+    ///
+    /// The time is recorded into the histogram the caller names, which must be the one for the
+    /// thread the caller is running on: each histogram has exactly one thread that records into it.
+    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch,
+                       pubsub_itc_fw::HistogramHandle& wal_append_histogram);
 
     /// Opens the log, builds the table of epochs, and discards everything after the first gap, if there is one.
     void open_wal_trusting_it_up_to_any_gap();
 
     pubsub_itc_fw::Wal wal_;
 
-    // How long committing one record to the log takes. On the order path and on the reactor
-    // thread, which is why it is worth measuring: a commit that blocks is a sequencer that has
-    // stopped sequencing, and until this existed the only sign of it was the reactor's stall
-    // watchdog saying a callback had not finished -- a log line, correlated by hand.
+    // How long committing one record to the log takes. On the order path, which is why it is
+    // worth measuring: a commit that blocks is a sequencer that has stopped sequencing, and until
+    // this existed the only sign of it was the reactor's stall watchdog saying a callback had not
+    // finished -- a log line, correlated by hand.
+    //
+    // Two children of one metric, because a histogram has exactly one thread that records into
+    // it and two threads write to the log. This one is for every write made on the sequencer's
+    // own thread, which is every write on the leader and the records a follower's inline handler
+    // passes on. The other is for the records the inline handler writes itself, on the reactor's
+    // thread, which happens only on a follower.
     pubsub_itc_fw::HistogramHandle wal_append_histogram_;
+    pubsub_itc_fw::HistogramHandle wal_append_reactor_thread_histogram_;
     pubsub_itc_fw::GaugeHandle wal_segments_filled_inline_gauge_;
     pubsub_itc_fw::GaugeHandle wal_segments_waited_for_gauge_;
 
@@ -398,7 +409,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     /// a gap is not either, and the logs are then no longer taken to agree. Called on either thread that writes replicated records.
     // Writes a record the leader sent if it is the next one this log needs, from whichever thread
     // delivers it; on finding one missing, stops writing until the logs are found to agree again.
-    ReplicatedRecordWriter::Outcome write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
+    ReplicatedRecordWriter::Outcome write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch,
+                                                            pubsub_itc_fw::HistogramHandle& wal_append_histogram);
     // Every write of a replicated record, and every change to the log while they may arrive, goes
     // through this, under one lock (docs/bug_list.md, BUG-0123).
     ReplicatedRecordWriter replicated_record_writer_;
