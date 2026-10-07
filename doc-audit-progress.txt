@@ -27,7 +27,8 @@ fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generat
 `sequence_numbers_and_gaps.md`
 
 venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `binary_order_gateway.md`,
-`fix_order_gateway.md`, `gateway_throttles.md`, `matching_engine.md`, `witness.md`
+`fix_order_gateway.md`, `gateway_throttles.md`, `matching_engine.md`, `sequencer.md`,
+`witness.md`
 
 ## Not confirmed
 
@@ -42,7 +43,7 @@ fix: `codec.md`
 
 ## Not started
 
-venue: `README.md`, `fix_test_client.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`
+venue: `README.md`, `fix_test_client.md`, `sequencer_app.md`, `trading_phases.md`
 
 availability: all 14 documents, starting with `README.md`
 
