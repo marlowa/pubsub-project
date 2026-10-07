@@ -298,4 +298,7 @@ two instances acting as leader at once was not found in any of seven exhaustive 
 third voter and link failures, with between 4 and 85 million states each. Removing any one of rules 2, 5 and 6, or adding
 promotion without a majority, produces two leaders acting at once within a few steps. With the third voter down for good,
 the two instances always elect a leader between themselves, and they fail to without rule 9 or without the peer's vote.
-Every build reruns those counterexamples.
+The install step reruns those counterexamples with the TLC model checker
+(`scripts/tla_trace_pages.py`, the `tla_trace_pages` target), and fails if any of them no longer
+breaks the property it is listed against; without Java or `tla2tools.jar` the step is skipped with a
+message.
