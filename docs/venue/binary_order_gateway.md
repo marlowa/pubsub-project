@@ -46,7 +46,9 @@ rejected (R-0151).
 
 A session is: connect, `Logon`, SCRAM exchange with the authentication service, `LogonAck`,
 then orders. Any other PDU before the session is authenticated is refused and the connection
-closed, so nothing reaches the book from a session that has not proved who it is.
+closed, so nothing reaches the book from a session that has not proved who it is. The connection is
+also closed for a Logon that cannot be decoded, a second Logon on the same connection, a Logon with
+an empty comp id, and a Logon for a comp id already logged on through this gateway.
 
 ### Authentication
 
@@ -92,23 +94,33 @@ session's record of open orders.
    key), Symbol and OrderQty at most `[order_limits]` in the configuration.
 3. **Every quantity and price is a decimal number**, by the FIX codec's own rule
    (`fix_codec::FixField::as_decimal`).
-4. **A sequencer is connected, and the venue is accepting orders.** The leading sequencer says
-   whether the venue is accepting orders with an `OrderAcceptance` message, on the connection it
-   holds to the gateway, as it does to the FIX gateway.
+4. **A sequencer is connected, and the venue is accepting orders.** The primary sequencer counts,
+   and so does the secondary when `ha_enabled` is true. The leading sequencer says whether the
+   venue is accepting orders with an `OrderAcceptance` message, on the connection it holds to the
+   gateway, as it does to the FIX gateway.
 5. **The session is within its throttle limits** ([gateway_throttles.md](gateway_throttles.md)).
+6. **There is room to remember the command.** With high availability on, every command passed on
+   is kept until the sequencer answers it, so that it can be sent again to a new sequencer leader
+   (`[unanswered_commands]`). When that store is full the command is refused with the text "the
+   venue is busy: too many commands are waiting to be answered".
 
-Checks 1 to 3 are `BinaryCommandChecks.hpp`; 4 and 5 are the gateway thread's. The texts of the
+Checks 1 to 3 are `BinaryCommandChecks.hpp`; 4 to 6 are the gateway thread's. The texts of the
 refusals for check 4 are the FIX gateway's. A command whose ClOrdID is empty, or which cannot be
 decoded at all, cannot be named in a reply, so it is dropped and logged at Info.
 
 **Refusals** are answered by the gateway: a new order with a rejected `ExecutionReport` whose
 OrderID the gateway assigns (`GW-ORD-n`), and a cancel with an `OrderCancelReject` reporting the
-order still open (OrdStatus New). A refused command is never passed on.
+order still open (OrdStatus New), with CxlRejReason 99 (Other). That reject carries the order's
+OrderID when the session's record of open orders holds it, and FIX's "NONE" otherwise. A refused
+command is never passed on.
 
 **The matching engine's refusal of a cancel** arrives as a rejected `ExecutionReport` carrying the
 OrigClOrdID of the order named. The gateway decodes every report it relays, to keep the session's
-record of open orders, and sends this one to the member as an `OrderCancelReject` instead, with
-CxlRejReason 1, Unknown order. Every other report is relayed as the bytes that arrived.
+record of open orders, and sends this one to the member as an `OrderCancelReject` instead. The
+reject carries the order status from the engine's report, and CxlRejReason 1 (Unknown order) when
+the engine's report gives OrdRejReason Unknown order, or 99 (Other) when it does not
+(`applications/fix_common/CancelRejection.hpp`). Every other report is relayed as the bytes that
+arrived.
 
 ## Routing
 
@@ -134,8 +146,11 @@ protocol id. Instance 1 is `_a` and instance 2 is `_b`. Each member is provision
 a backup instance, as for the FIX gateway, and is refused at an instance it is not provisioned for
 with `LogonOutcome::NotProvisionedForInstance`.
 
-The binary gateway runs only in the development environment. The other environment files carry
-both instances with `enabled = false`, so it can be brought up without editing a template.
+Both instances run in the development environment. The preprod, prod and test-1 environment files
+carry the settings for instance `a` only, and set the sequencers' `[[gateway]]` entries for both
+binary instances to `enabled = false`, so the sequencers send no execution reports to a binary
+gateway there. Those three files still list `binary_order_gateway_a` among the components to
+deploy and start.
 
 ## Configuration
 
@@ -150,14 +165,20 @@ environment:
 | Sequencer secondary | 11002 | 11002 | Outbound, when `ha_enabled` |
 | Authentication service | 11070 / 11071 | 11070 / 11071 | Outbound, for the SCRAM exchange |
 
+`[order_limits] max_symbol_length` and `max_order_qty_length` are the longest Symbol and OrderQty
+accepted, 32 and 24 bytes in every environment, the same as the FIX gateway's `[fix_limits]`.
+`[timeouts] scram_auth_timeout` (10 seconds) is how long the authentication service has to finish
+the exchange before the logon is refused with `AuthenticationTimeout`. `[unanswered_commands]`
+sizes the store described under check 6: 262,144 commands in 64 MiB.
+
 `[binary_session] sender_comp_id` is this gateway's own name (`BINARY-GATEWAY`), checked
 against each client's `target_comp_id`. It names the venue, not the process, so both
 instances use it.
 
 The sequencer must be told about each instance: a `[[gateway]]` table with `protocol = 2`
 and the instance number, in `sequencer_primary.toml` and `sequencer_secondary.toml`.
-Setting `enabled = false` on all of them runs the venue with only the FIX gateway, which is
-what every environment except development does.
+Setting `enabled = false` on both binary entries stops the sequencers sending reports to the
+binary gateway, which is how every environment except development is configured.
 
 **Startup order** is as for the FIX order gateway: it does not matter. The sequencer dials this
 gateway's ER listener and retries every two seconds until it answers.

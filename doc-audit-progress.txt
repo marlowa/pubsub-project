@@ -26,8 +26,8 @@ operations: `filesystem_requirements.md`, `latency_findings.md`, `metrics.md`, `
 fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generation.md`,
 `sequence_numbers_and_gaps.md`
 
-venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `fix_order_gateway.md`,
-`witness.md`
+venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `binary_order_gateway.md`,
+`fix_order_gateway.md`, `witness.md`
 
 ## Not confirmed
 
@@ -42,7 +42,7 @@ fix: `codec.md`
 
 ## Not started
 
-venue: `README.md`, `binary_order_gateway.md`, `fix_test_client.md`, `gateway_throttles.md`,
+venue: `README.md`, `fix_test_client.md`, `gateway_throttles.md`,
 `matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`
 
 availability: all 14 documents, starting with `README.md`
@@ -83,3 +83,11 @@ Reported to Andrew, and not changed by the audit.
   a member's mistake that the venue handles correctly is Info.
 - `FixOrderGatewayThread.cpp`: the comment above the call to `announce_session_bound` describes an
   earlier design ("was the original mistake").
+- `BinaryOrderGatewayThread.cpp`: a PDU before Logon, a Logon that cannot be decoded, a second
+  Logon, a Logon with an empty comp id and a Logon for a comp id already logged on are each logged
+  at Warning. All are a member's mistake that the gateway handles correctly, so under the rules
+  they are Info.
+- `environments/preprod.toml`, `prod.toml` and `test-1.toml` set the sequencers' entries for the
+  binary gateway to `enabled = false`, but still list `binary_order_gateway_a` as a component and in
+  `[startup_order]`, so it is deployed and started. A member could log on to it and send orders,
+  and would get no execution reports back.
