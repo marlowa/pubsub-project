@@ -268,9 +268,11 @@ until the scrape released the mutex. The lap histogram is the one recorded most 
 it is the one that collided; the others take the same mutex. See `lock-audit-report.txt` for the
 method and how the count was checked first.
 
-**What is wanted.** A lock-free histogram of the project's own for the order path, with one writer
-and atomic bucket counts, read by the endpoint when it is scraped, in place of
-`prometheus::Histogram`. Counters and gauges can stay as they are. See `lock-audit-report.txt`.
+**What is wanted.** A histogram of the framework's own in place of `prometheus::Histogram`, which
+the one thread that records into it updates with ordinary stores and no lock, and which the scrape
+reads without stopping that thread. Counters and gauges can stay as they are. The design, awaiting
+review, is [A histogram that never makes the recording thread wait](framework/single_writer_histogram.md).
+See also `lock-audit-report.txt`.
 
 ### BUG-0124: Locks are taken on the order path, in a design meant to be free of them {#bug_0124}
 
