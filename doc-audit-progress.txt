@@ -27,7 +27,7 @@ fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generat
 `sequence_numbers_and_gaps.md`
 
 venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `binary_order_gateway.md`,
-`fix_order_gateway.md`, `witness.md`
+`fix_order_gateway.md`, `gateway_throttles.md`, `witness.md`
 
 ## Not confirmed
 
@@ -42,7 +42,7 @@ fix: `codec.md`
 
 ## Not started
 
-venue: `README.md`, `fix_test_client.md`, `gateway_throttles.md`,
+venue: `README.md`, `fix_test_client.md`,
 `matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`
 
 availability: all 14 documents, starting with `README.md`
@@ -91,3 +91,6 @@ Reported to Andrew, and not changed by the audit.
   binary gateway to `enabled = false`, but still list `binary_order_gateway_a` as a component and in
   `[startup_order]`, so it is deployed and started. A member could log on to it and send orders,
   and would get no execution reports back.
+- `FixOrderGatewayThread.cpp`: a message other than Logon arriving before the session is
+  established is logged at Warning before the disconnect. That is a member's mistake, so under the
+  rules it is Info. The binary gateway has the same fault (listed above).

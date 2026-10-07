@@ -2,7 +2,7 @@
 
 **Status: implemented in both gateways.** The requirements it meets are R-0148, R-0149, R-0150 and
 R-0151 in the functional specification (`docs/book`, the order gateways section of the applications
-chapter); `ha_test.py` scenario 56 verifies the first three. It has no open questions
+chapter); `ha_test.py` scenario 56 verifies all four through the FIX gateway. It has no open questions
 ([section 9](#gateway_throttles_open)).
 
 ---
@@ -222,9 +222,11 @@ microseconds rather than 8-byte times, which halves it. A more typical session, 
 - **A log line at every logon naming the limits applied**, including zeros, so an operator can see
   what a session was given and a value lost on the way shows up as a number.
 
-The functions that send a refusal log each reply at Debug. Each caller logs its reason at the level
-the reason deserves, so a line per reply at Info would only repeat it, once for every command a
-throttled member sends.
+In the FIX gateway, the functions that send a refusal (`send_reject_execution_report` and
+`send_order_cancel_reject`) log each reply at Debug. In the binary gateway, the functions that send
+a refusal (`refuse_new_order` and `refuse_cancel`) do not log the reply at all. In both gateways
+each caller logs its reason at the level the reason deserves, so a line per reply at Info would
+only repeat it, once for every command a throttled member sends.
 
 ---
 
@@ -258,13 +260,24 @@ own because the check that deciding about a command never uses the heap replaces
 - the three kinds of command are throttled independently, and so are two sessions;
 - checking a command does not use the heap.
 
-**An end-to-end test in `ha_test.py`, scenario 56,** run against the FIX gateway. It uses the comp id `THROTTLED`, a test fixture of its own, so its limits
-never throttle the comp ids other tests use: a comp id provisioned with a small limit sends more commands
-than the limit within a second, and the test requires the commands beyond the limit to be rejected
-with the throttle's text, and the others accepted. It checks the limit the gateway actually applied,
-not merely that something was rejected: a step on the route that dropped a value would leave the
-session unlimited, or on some other number, and only a test that checks the number can tell. A second comp
-id with a limit of zero sends the same burst, and nothing is rejected.
+**An end-to-end test in `ha_test.py`, scenario 56,** run against the FIX gateway. It uses the comp
+id `THROTTLED`, a test fixture of its own provisioned with limits of 5 new orders, 2 amends and 3
+cancels per second, so its limits never throttle the comp ids other tests use. In order, it checks:
+
+1. **The limits the gateway applied, by number**, from the log line written at logon. A step on the
+   route that dropped a value would leave the session unlimited, or on some other number, and only a
+   test that checks the number can tell.
+2. **A burst of new orders faster than the limit**: exactly the first 5 are accepted, and the rest
+   are rejected with the throttle's text.
+3. **Refused commands do not count**: more orders sent within the same second are refused, and an
+   order sent just over a second after the burst is accepted, which it would not be if the refused
+   orders had been counted. The gateway must have logged exactly once that the session started
+   being throttled, and exactly once that it stopped, with the number refused.
+4. **A burst of cancels** for the orders left open: exactly the first 3 are accepted, and the rest
+   are refused with an `OrderCancelReject` carrying OrdStatus 0 (the order is open),
+   `CxlRejResponseTo` 1, `CxlRejReason` 99 and the throttle's text.
+5. **A comp id with no limit**, the test client's ordinary comp id, sends the same burst, and nothing
+   is refused.
 
 ---
 
