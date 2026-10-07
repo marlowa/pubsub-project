@@ -29,6 +29,37 @@ The audit continues with the rest of the availability directory meanwhile; these
    requirement, the gap is reported and the requirement is left as it is; statements of fact in the
    book are corrected as in any other document. Is that how the book should be treated?
 
+## Building and testing on Rocky 8 in Docker (started, blocked)
+
+Asked for on 7 October 2026: build, release, deploy and test with `scripts/devsetup.sh` inside the
+Rocky Linux 8 image from the project's `Dockerfile`, then start the venue and run the smoke tests.
+Nothing has been built yet. What a cloud session found, so the next attempt starts further on:
+
+- **Blocked by the session's network policy:** the Rocky Linux package hosts
+  (`mirrors.rockylinux.org`, `dl.rockylinux.org`, `download.rockylinux.org`) and EPEL
+  (`mirrors.fedoraproject.org`, `dl.fedoraproject.org`). Without them the image installs nothing. They
+  are allowed in the cloud environment's settings: Network access, Allowed domains.
+- **GitHub source archives** (`https://github.com/<owner>/<repo>/archive/refs/tags/...`) answer 403,
+  and the third-party build scripts download from exactly those. GitHub release downloads work.
+- **Docker Hub** refused `rockylinux:8` with 429, its anonymous rate limit. The same official image
+  is available from `mirror.gcr.io/library/rockylinux:8`.
+- **The session's proxy re-signs HTTPS**, so a container must trust `/root/.ccr/ca-bundle.crt`. A local
+  image tagged `rockylinux:8`, built from the mirror image with that certificate added under
+  `/etc/pki/ca-trust/source/anchors/` and `update-ca-trust extract` run, lets the project's
+  `Dockerfile` build unchanged.
+- **The Docker daemon is not running in a fresh session**; `dockerd &` as root starts it.
+- **`docker-deps/liquibase`** (gitignored) needs Liquibase 5 and the PostgreSQL JDBC driver in its
+  `lib` directory: `https://github.com/liquibase/liquibase/releases/download/v5.0.1/liquibase-5.0.1.tar.gz`
+  and `https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.4/postgresql-42.7.4.jar` both
+  downloaded.
+- **The third-party tree** mounts at `/development/3rdparty`. The repository has scripts for fmt,
+  cpptrace, GoogleTest and prometheus-cpp; Quill 11.0.2, argparse 3.2, toml++ 3.4.0 and robin-map 1.4.1
+  have none here (versions from `scripts/devsetup.sh`, Rocky 8 branch), and Andrew has scripts for
+  them.
+
+Then: build the image, build the third-party tree, run `scripts/devsetup.sh` in the container, start
+the venue with `scripts/devenv.py` and run the smoke tests.
+
 ## Done
 
 availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_death.md`,
