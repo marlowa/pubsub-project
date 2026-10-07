@@ -63,7 +63,9 @@ So building the first does not solve the second.
 
 ## The messages
 
-Seven PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`.
+Eight PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`. The binary
+gateway sends only `SessionBound` and `SessionUnbound`; the others serve the FIX gateway's numbering
+and resend.
 
 | Id | Message | Direction | What it says |
 |---|---|---|---|
@@ -74,6 +76,7 @@ Seven PDUs, defined in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_fol
 | 123 | `SessionReplayRequest` | gateway → sequencer | give me this session's reports, so I can answer a resend |
 | 124 | `SessionReplayRecord` | sequencer → gateway | one report from that replay |
 | 125 | `SessionReplayComplete` | sequencer → gateway | that is all of them |
+| 128 | `UndeliveredReportsRequest` | gateway → sequencer | the session is established again; send me the reports produced for it while it had no connection |
 
 ### The ordinary life of a session
 
@@ -107,7 +110,7 @@ The identity and its orders outlive the connection — that is the whole point o
 identity — so the sequencer stops addressing reports at a connection that no longer exists, and
 keeps everything else.
 
-It carries three things beyond the identity, each for a reason:
+It carries these beyond the identity, each for a reason:
 
 - **The connection id.** So a late unbind cannot tear down a newer binding. A member that
   reconnects fast enough for its new `SessionBound` to overtake the old connection's
@@ -118,8 +121,15 @@ It carries three things beyond the identity, each for a reason:
 - **`outbound_seq_num`.** Where the member's numbering had reached, so the next gateway to hold
   the session carries on from there instead of restarting it at 1. A member whose numbers reset on
   every reconnect sees a break it cannot reconcile.
-- **`report_seq_nums`.** Which of those numbers held an execution report. This is the newest field
-  and the subject of [Resend provenance](resend_provenance.md); the short version is below.
+- **`inbound_seq_num`.** The next number the venue expects from the member, so the next gateway
+  goes on checking the member's numbering from where it was.
+- **`report_seq_nums`.** Which of those numbers held an execution report. This is the subject of
+  [Resend provenance](resend_provenance.md); the short version is below.
+- **`last_report_delivered`.** The log sequence number of the last execution report delivered to
+  the member, so the sequencer knows which reports the member has not been given (below).
+
+`SessionSequenceUpdate` carries the same fields, every two seconds, so that the sequencer still has
+them, two seconds stale at most, if the gateway dies without unbinding.
 
 ### The two ways a session ends, and why they differ
 
@@ -135,12 +145,25 @@ returning member at 1, and a member whose own store had also restarted would see
 at 1, the member silently resynchronised, and its orders live on the book without its having been
 told anything.
 
-So after an unclean death the sequencer resumes the member **deliberately high**: the last reported
-number, plus the reports it forwarded since, plus a fixed allowance for the admin traffic it cannot
-see. Too high and too low are not symmetrical errors. Too high leaves a **gap**, which the member
+So after an unclean death the sequencer resumes the member's outbound numbering **deliberately
+high**: the last reported number, plus the reports it forwarded since, plus a fixed allowance for
+the admin traffic it cannot see (`unclean_resume_admin_allowance`). The inbound number is handed back
+exactly as last reported, with no allowance. Too high and too low are not symmetrical errors. Too high leaves a **gap**, which the member
 closes with a `ResendRequest` and the venue answers. Too low sends the member a number below what it
 expects, which FIX requires it to treat as fatal — it drops the session, and no amount of replay
 helps.
+
+## Reports produced while the session had no connection
+
+A report produced while a session is bound nowhere cannot be delivered, and is dropped at the time.
+Once the session's numbering has been restored and the session is established again, the FIX gateway
+sends `UndeliveredReportsRequest`, and the leading sequencer sends each report for that session after
+its `last_report_delivered` from the log, as an ordinary report, to wherever the session is now
+bound. The member is told what became of its orders without having to ask
+([BUG-0088](../bug_list.md#bug_0088), fixed). The gateway asks, rather than the sequencer sending
+the reports when the session binds, because the reports travel on a different connection from the
+`SessionBoundAck` that restores the numbering, and sent unasked they could arrive first and be
+numbered wrongly.
 
 ## Answering a resend
 
@@ -168,7 +191,7 @@ that sent the messages. See [Resend provenance](resend_provenance.md).
 |---|---|
 | The identity | `applications/fix_common/SessionIdentity.hpp` |
 | Gateway side | `FixOrderGatewayThread::announce_session_bound`, `announce_session_unbound`, `report_session_sequence_numbers`, `handle_session_bound_ack` |
-| Sequencer side | `SequencerThread::handle_session_bound`, `handle_session_unbound`, `handle_session_sequence_update`, `handle_session_replay_request` |
+| Sequencer side | `SequencerThread::handle_session_bound`, `handle_session_unbound`, `handle_session_sequence_update`, `handle_session_replay_request`, `handle_undelivered_reports_request` |
 | The remembered state | `SequencerThread::SessionSequenceState` |
 | Tested by | `ha_test.py` scenarios 21, 22, 23 and 40 |
 
