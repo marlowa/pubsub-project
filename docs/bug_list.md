@@ -228,12 +228,22 @@ decision whether that thread should ever write and sync a record itself. See
 | How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day, and then reading prometheus-cpp 1.3.0's `core/src/histogram.cc` |
 | Impact | Every order takes a mutex several times in each of the gateway, the sequencer and the matching engine, once for each histogram it is recorded in. When Prometheus scrapes a process, its scrape thread holds the same mutex while it copies each histogram, and an order recorded at that moment waits for it |
 
-**Where.** `PrometheusHistogram::observe`
-(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`) calls
+**Where.** The lock is inside the prometheus-cpp library, not in the venue's code: no call site
+holds a lock. `HistogramHandle::observe`
+(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramHandle.hpp`, line 27) calls
+`PrometheusHistogram::observe`
+(`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`, line 17), which calls
 `prometheus::Histogram::Observe`. In prometheus-cpp 1.3.0, the version
 `scripts/build_prometheus_cpp.sh` builds, `Observe` takes `std::lock_guard<std::mutex>` on the
-histogram's `mutex_`, and `Collect`, which the scrape calls, takes the same one. Counters and gauges
-use atomics and take no lock.
+histogram's `mutex_` (`core/src/histogram.cc`, line 46), and `Collect`, which the scrape calls, takes
+the same one (line 76). Counters and gauges use atomics and take no lock.
+
+**Measured cost.** On the development machine, one thread, 50 million calls: `Observe` takes 12.6
+nanoseconds with no other thread touching the histogram, against 2.9 nanoseconds for a histogram
+owned by one thread with the same 16 buckets and plain increments. Uncontended, it makes no system
+call. With a second thread calling `Collect` once a millisecond, the two collided and a `futex`
+system call was made about three thousand times in 20 million observations, counted under `strace`; a `futex` wait puts the
+waiting thread to sleep.
 
 **On the order path,** with metrics enabled, as they are in every environment: the gateways' round
 trip and acknowledgement histograms, the sequencer's log write time (`wal_append_histogram_`, in

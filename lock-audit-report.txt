@@ -7,10 +7,15 @@ Checked on 7 October 2026, against `main` at commit `a9f0268`.
 The venue is meant to take no lock on any hot path during the trading day. It takes five, and four
 of them are on the path every order takes:
 
-1. **Every histogram observation takes a mutex inside prometheus-cpp.** Each order passes through
-   several histograms in the gateway, the sequencer and the matching engine, so each order takes the
-   mutex several times in each process. The scrape of the metrics endpoint takes the same mutex,
-   so this one can be contended. Recorded as BUG-0125.
+1. **Every histogram observation takes a mutex, and the mutex is inside the prometheus-cpp
+   library, not in the venue's own code.** A call such as `wal_append_histogram_.observe(...)` in
+   `SequencerThread::append_to_wal` takes no lock itself. It goes through `HistogramHandle` and
+   `PrometheusHistogram` to `prometheus::Histogram::Observe`, and that function locks a
+   `std::mutex` that belongs to the histogram (prometheus-cpp 1.3.0, `core/src/histogram.cc`,
+   line 46). Each order passes through several histograms in the gateway, the sequencer and the
+   matching engine, so each order takes such a mutex several times in each process. When Prometheus
+   scrapes the metrics endpoint, the scrape thread takes the same mutex in `Histogram::Collect`
+   (line 76), so this one can be contended. Recorded as BUG-0125.
 2. **`SequencerThread::log_epochs_mutex_`**, taken on every write to the sequencer's log, on the
    leader and the follower. Recorded as BUG-0124.
 3. **`ReplicatedRecordWriter`**, taken on the follower for every record the leader sends. The leader
@@ -55,10 +60,30 @@ Left out, as asked or because they are not the venue's running code:
 
 ### 1. Histogram observations: a mutex inside prometheus-cpp
 
-- **Where:** `PrometheusHistogram::observe` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`)
-  calls `prometheus::Histogram::Observe`. In prometheus-cpp 1.3.0, `Observe` takes
-  `std::lock_guard<std::mutex> lock(mutex_)` (`core/src/histogram.cc`, line 46), and `Collect`, which
-  the scrape calls, takes the same mutex. Counters and gauges do not lock: they use atomics.
+- **Where:** the lock is in the third-party library. The venue's code holds no lock at any of the
+  calls below. The chain from a call site to the lock is:
+  - the call site, for example `applications/sequencer/SequencerThread.cpp`, line 281:
+    `wal_append_histogram_.observe(...)`;
+  - `HistogramHandle::observe` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/HistogramHandle.hpp`,
+    line 27), which calls `HistogramInterface::observe`;
+  - `PrometheusHistogram::observe` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusHistogram.hpp`,
+    line 17), which calls `prometheus::Histogram::Observe`;
+  - in prometheus-cpp 1.3.0, `Histogram::Observe` takes `std::lock_guard<std::mutex> lock(mutex_)`
+    (`core/src/histogram.cc`, line 46). The mutex is declared in `include/prometheus/histogram.h`,
+    line 81.
+
+  `Histogram::Collect`, which the scrape calls, takes the same mutex (`core/src/histogram.cc`,
+  line 76), and allocates a vector while holding it. When metrics are disabled the handle is bound
+  to `NoOpHistogram` and no lock is taken. Counters and gauges do not lock: they use atomics.
+- **Cost, measured on the development machine with prometheus-cpp 1.3.0, one thread, 50 million
+  calls:** `Histogram::Observe` takes 12.6 nanoseconds when no other thread touches the histogram.
+  A histogram owned by one thread, with the same 16 buckets and plain increments, takes 2.9
+  nanoseconds. With no other thread, `Observe` makes no system call: under `strace` the only
+  `futex` call in the whole run was the one made when the program joined its idle second thread. With a second thread calling `Collect` once a millisecond, a `futex` system call
+  was made whenever the two collided, about three thousand in a run of 20 million observations
+  under `strace` (which itself slows each system call, so this count is higher than it would be
+  without it). A
+  `futex` wait puts the waiting thread to sleep.
 - **When:** on every observation, whenever metrics are enabled, which they are in every environment
   (`[shared] metrics_enabled = true`). On the order path:
   - the FIX and binary gateways record the round trip and the arrival of each order's
