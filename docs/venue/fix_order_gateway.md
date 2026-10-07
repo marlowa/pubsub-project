@@ -3,24 +3,35 @@
 ## Role
 
 The FIX order gateway is the venue's FIX 5.0 SP2 session layer. It accepts FIX connections from
-members, in plain TCP on port 9879 and with TLS on port 9880 for instance `a` (9881 and 9882 for
-instance `b`), authenticates each member with SCRAM-SHA-256, checks every order and cancel, and
+members, in plain TCP on port 9879 and with TLS on port 9880 for instance `a`. The development
+environment also runs instance `b`, on 9881 and 9882; the preprod, prod and test-1 environments run
+instance `a` only. It authenticates each member with SCRAM-SHA-256, checks every order and cancel, and
 sends those it accepts to the sequencers. It turns the execution reports the leading sequencer
 sends back into FIX ExecutionReports and OrderCancelRejects for the member's session.
 
 What the gateway holds is the state of the sessions connected to it: each session's message
 numbering, its open orders (for cancel-on-disconnect), and its throttles. It holds nothing the
-venue needs after the gateway dies. Where each session can be reached, and which session placed
-each order, are held by the sequencer, so a member that reconnects to the other instance of the
-gateway finds its orders and reports there; see [Gateway High Availability](../availability/gateway_ha.md).
+venue needs after the gateway dies. Where each session can be reached, how far each session's
+message numbering has got in each direction, and which session placed each order, are held by the
+sequencer. A member that reconnects to the other instance of the gateway therefore finds its
+orders, its reports and its message numbering there; see [Gateway High Availability](../availability/gateway_ha.md).
 
 ## FIX session management
 
 The FIX listener uses `RawBytesProtocolHandler` (`TlsRawBytesProtocolHandler` on the TLS port),
 because FIX is a text protocol whose message boundaries the framework does not know. The reactor
-hands the gateway's thread the raw bytes, and `FixParser` frames and checks them (below). Outbound
-messages are written by `FixErEncoder` and `FixSerialiser` straight into a fixed-size buffer, with
-no heap allocation.
+hands the gateway's thread the raw bytes, and `FixParser` frames and checks them (below).
+
+Execution reports and cancel rejects are written by `FixErEncoder` into one buffer that the
+gateway's thread keeps and reuses. It starts at 512 bytes. A report carries the member's party and
+underlying repeating groups back to it, so its length is not known in advance: when the encoder
+reports that a report did not fit, the gateway doubles the buffer and encodes the report again. The
+buffer keeps its larger size afterwards, so in steady running nothing is allocated. The doubling
+stops at 64 KiB (`max_execution_report_buffer_size` in `FixErEncoder.hpp`); a report that still
+does not fit is not sent, and an Error is logged. Session
+messages (Logon, Heartbeat, Logout, Reject, ResendRequest and the like) are written by
+`FixSerialiser`, which returns each one as a new `std::string`. They are rare enough that the
+allocation does not matter.
 
 Each session has 16 MiB of receive buffer (`raw_buffer_capacity`). When it is three quarters full
 the reactor stops reading the socket until the gateway has taken enough out, so a member sending
@@ -77,11 +88,22 @@ Two layers of checks, in this order:
 
 | Layer | Checks | Answer |
 |---|---|---|
-| `FixMessageValidator`, before dispatch | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13) | A FIX **Reject (35=3)**: `373` the reason, `371` the tag, `372` the message type, `45` the message's sequence number, `58` a description. The session stays up and the message is not acted on. A failed Logon disconnects instead |
-| The order and cancel handlers | The lengths of `ClOrdID`, `Symbol` and `OrderQty`; whether the venue is accepting orders; the session's throttles | An order is answered with an `ExecutionReport` with OrdStatus Rejected; a cancel with an `OrderCancelReject` that says the order is still open. The text names what was wrong |
+| `FixMessageValidator`, before dispatch | InvalidTagNumber (0), RequiredTagMissing (1), TagNotDefinedForThisMessage (2), ValueIsIncorrect (5), IncorrectDataFormat (6), TagAppearsMoreThanOnce (13) | A FIX **Reject (35=3)**: `373` the reason, `371` the tag, `372` the message type, `45` the message's sequence number, `58` a description. The session stays up and the message is not acted on. A Logon that fails, or any message that fails before the session is established, is answered by disconnecting instead |
+| The order and cancel handlers | That the required fields have values; the length of `ClOrdID` (and of `OrigClOrdID` on a cancel); whether a sequencer is connected; whether the venue is accepting orders; the session's throttles | An order is answered with an `ExecutionReport` with OrdStatus Rejected; a cancel with an `OrderCancelReject` that says the order is still open. The text names what was wrong |
+| The order handler | The lengths of `Symbol` and `OrderQty` on an order | A **BusinessMessageReject (35=j)** with BusinessRejectReason 0 (Other), whose text gives the limit |
 
 A message missing a field the dictionary requires is answered with a Reject, not dropped. A cancel
-does not need `OrderQty`. The refusals while the venue is not accepting orders are described in
+does not need `OrderQty`. An order or cancel with no `ClOrdID` at all cannot be answered, because
+every answer has to echo it; it is logged at Warning and not acted on.
+
+`ClOrdID` may be up to 64 bytes. That limit is compiled in (`fix_order_limits::max_cl_ord_id_length`
+in `applications/fix_common/FixOrderLimits.hpp`), because the same number sizes the gateway's
+open-order entry and the matching engine's key for an order. The limits on `Symbol` and `OrderQty`
+come from the configuration (`[fix_limits]`), and every environment sets them to 32 and 24 bytes.
+
+When neither sequencer is connected, the gateway refuses orders and cancels itself, with the text
+"Sequencer unavailable", and logs each refusal at Warning. The member's session stays up, so it can
+try again once a sequencer is back. The refusals while the venue is not accepting orders are described in
 [Order acceptance](../availability/order_acceptance.md), and the throttles in
 [Gateway throttles](gateway_throttles.md).
 
@@ -90,14 +112,19 @@ same way whichever gateway it arrives at.
 
 ### Which order fields flow end to end
 
-The generated dictionary covers every FIX 5.0 SP2 field, so reading another field of a
-NewOrderSingle is one call (`reader.find(fix_codec::tag::MinQty)`) and costs no copy. Whether a
-field reaches the matching engine is still decided in three places:
+The codec's tag tables are generated from the full FIX 5.0 SP2 and FIXT 1.1 data dictionaries
+(`libraries/fix_codec/data_dictionary/`), so reading any field of a NewOrderSingle is one call
+(`reader.find(fix_codec::tag::MinQty)`) and costs no copy. Whether a field reaches the matching
+engine is decided in three places:
 
-1. **The gateway** reads the field and puts it in the order message.
-2. **The order message** in `fix_orders.dsl` carries it. It already carries `price`, `stop_px`,
-   `time_in_force`, `account`, `ex_destination`, `exec_inst`, `min_qty`, `max_floor`,
-   `expire_time` and `text`, among others.
+1. **The order message** carries it. The messages the gateway sends to the sequencers are generated
+   at build time from `applications/fix_orders.dd.xml`, a subset of FIX 5.0 SP2 covering
+   NewOrderSingle, OrderCancelRequest, ExecutionReport and OrderCancelReject; see
+   [PDU generation](../fix/pdu_generation.md). A field is carried only if that file lists it under
+   the message. NewOrderSingle already lists `Price`, `StopPx`, `TimeInForce`, `Account`,
+   `ExDestination`, `ExecInst`, `MinQty`, `MaxFloor`, `ExpireTime`, `Text`, the security
+   identifiers, and the party and underlying repeating groups.
+2. **The gateway** reads the field and puts it in the order message.
 3. **Something sends it,** so that a test can exercise it. The
    [FIX Test Client](fix_test_client.md#ftc_advanced_nos) has an Advanced section on its order form
    for the optional fields, and raw FIX and Groovy scripting for anything else.
@@ -120,16 +147,26 @@ never holds it:
    service is genuine.
 6. It checks that the member is provisioned for this gateway instance, and applies the member's
    cancel-on-disconnect settings and throttles, all of which arrive in the `AuthenticationResult`.
-7. On success it completes the Logon and tells the sequencers where the session is
-   (`SessionBound`). On failure it sends a Logout, saying why, and disconnects.
+7. It tells the sequencers where the session is (`SessionBound`) and waits for the answer
+   (`SessionBoundAck`), which says how far the session's message numbering had got in each
+   direction, and which of its outbound messages carried execution reports. Only then does it send
+   the Logon reply, because the reply is itself a numbered message and its number is not known
+   until the answer arrives.
+
+At any failure (the authentication service refusing, a `ServerSignature` that does not verify, or
+a member not provisioned for this instance) the gateway sends a Logout, whose text says which, and
+disconnects.
 
 The `request_id` in the four messages is the gateway's connection id for the session, so the gateway
 can match each answer to the right logon when several are in progress at once.
 
 ## FIX capture
 
-`FixCapture` records raw FIX bytes to a file for later analysis, at three points: inbound messages
-after framing, outbound session messages, and outbound execution reports. With capture disabled,
+`FixCapture` records raw FIX bytes to a file for later analysis, at three points: inbound bytes,
+outbound session messages, and outbound execution reports. An inbound record holds all the bytes
+the parser consumed from one read of the socket. That can be several messages, and it includes any
+bytes skipped as malformed and any message discarded for a bad checksum, so an inbound record is
+not one message. An outbound record is one message. With capture disabled,
 which is the default, each point is one comparison of a null pointer.
 
 **No heap allocation and no blocking on the gateway's thread.** `capture()` copies each record into
@@ -164,12 +201,17 @@ file.
 | `[sequencer] primary_host/port`, `secondary_host/port`, `ha_enabled` | The two sequencers' order listeners (11001 and 11002); with `ha_enabled = false` only the primary is used |
 | `[authentication_service] host/port`, `secondary_host/port` | The two authentication service instances (11070 and 11071) |
 | `[gateway] instance_id` | Which instance of the FIX gateway this is, stamped on every order |
+| `[fix_session] sender_comp_id`, `default_target_comp_id` | The gateway's SenderCompID, and the TargetCompID `FixSerialiser` writes when a message is serialised without naming a member's comp id |
 | `[fix_tls] enabled`, `cert`, `key` | The TLS listener and its certificate |
 | `[cancel_on_disconnect] enabled`, `grace_period` | The defaults, which each comp id may override; see [Gateway High Availability](../availability/gateway_ha.md) |
-| `[fix_limits] max_symbol_length`, `max_order_qty_length` | The field lengths the gateway accepts |
+| `[fix_limits] max_symbol_length`, `max_order_qty_length` | The longest `Symbol` and `OrderQty` the gateway accepts, 32 and 24 bytes in every environment |
 | `[timeouts] logon_timeout`, `scram_auth_timeout` | How long a logon, and its authentication, may take |
 | `[fix_capture] enabled`, `file`, `ring_bytes` | FIX capture, off by default |
 | `[open_order_pool]` | The pool from which open-order entries are taken, so tracking an order allocates nothing |
+| `[unanswered_commands] commands`, `bytes` | The store of orders and cancels sent to the sequencers and not yet answered, kept so they can be sent again to a new sequencer leader: 262,144 commands in 64 MiB. When it is full, new commands are refused. Used only with high availability on; see [Commands during a change of leader](../availability/commands_during_a_change_of_leader.md) |
+| `[event_queue_pool]`, `[command_queue_pool]` | The pools the reactor's queues to and from the gateway's thread take their entries from |
+| `[reactor]` | CPU pinning, and how long the reactor looks for work before it sleeps (`spin_before_block`: 50 ms for instance `a` in the development environment, none elsewhere) |
+| `[logging]` | Log levels and files |
 | `[metrics]` | This process's Prometheus endpoint |
 
 ## See Also
