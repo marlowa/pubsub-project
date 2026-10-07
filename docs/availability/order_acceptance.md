@@ -74,7 +74,9 @@ The leading sequencer sends `OrderAcceptance` to every gateway it holds a connec
 acceptance changes in either direction, every five seconds while the venue is not accepting, and to
 a gateway at the moment it connects, so that a gateway connecting during an outage learns the state
 rather than assuming all is well. The message carries whether the venue is accepting, how many orders
-are deferred, and for how long.
+are deferred, and for how long, and the epoch of the leadership that sent it. A gateway that sees an
+epoch higher than any before knows a new instance leads, and sends it again every command still
+unanswered ([Commands during a change of leader](commands_during_a_change_of_leader.md)).
 
 **Only the leader sends it.** A gateway holds a connection to both sequencers and cannot tell which
 leads. A follower sends nothing to a matching engine, so it never defers, and if it answered it would
