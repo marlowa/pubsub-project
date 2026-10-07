@@ -14,6 +14,21 @@ Mark a document done in this file in the same commit that corrects it.
 Before committing, run `scripts/check_docs.py` (links resolve and every document is reachable) and
 `scripts/check_doc_claims.py` (the `<!-- verify: ... -->` comments in documents still hold).
 
+## Questions waiting for Andrew
+
+The audit continues with the rest of the availability directory meanwhile; these do not block it.
+
+1. `docs/availability/matching_engine_presence.md` is a design, not built, for refusing orders at once
+   when every arbiter says no matching engine exists. It assumes the arbiter tracks which instances
+   of a component have registered, which it no longer does now that leases decide leadership; an
+   arbiter knows only which instance it last granted a lease in each group. Should the design be
+   revised around what the arbiter does know, or withdrawn?
+2. Is `docs/bug_list.md` in the audit? Reading other documents has already turned up a stale entry:
+   BUG-0065 says the code has no notion of a trading halt, but the matching engine has one.
+3. The rule for the book, written under "Not started" below: where the code does not meet a
+   requirement, the gap is reported and the requirement is left as it is; statements of fact in the
+   book are corrected as in any other document. Is that how the book should be treated?
+
 ## Done
 
 availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_death.md`,
