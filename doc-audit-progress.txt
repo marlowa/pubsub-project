@@ -27,7 +27,7 @@ fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generat
 `sequence_numbers_and_gaps.md`
 
 venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `binary_order_gateway.md`,
-`fix_order_gateway.md`, `gateway_throttles.md`, `witness.md`
+`fix_order_gateway.md`, `gateway_throttles.md`, `matching_engine.md`, `witness.md`
 
 ## Not confirmed
 
@@ -42,8 +42,7 @@ fix: `codec.md`
 
 ## Not started
 
-venue: `README.md`, `fix_test_client.md`,
-`matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`
+venue: `README.md`, `fix_test_client.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`
 
 availability: all 14 documents, starting with `README.md`
 
@@ -78,7 +77,9 @@ Reported to Andrew, and not changed by the audit.
   size on a FIX message.
 - The FIX gateway accepts a Symbol of up to 32 bytes (`[fix_limits] max_symbol_length` in every
   environment), but `applications/matching_engine/OrderEntry.hpp` sets `max_symbol_length = 16`.
-  What the matching engine does with a symbol of 17 to 32 bytes has not been checked.
+  `OrderEntry::set_symbol` keeps only the first 16 bytes, without saying so, so an order with a
+  symbol of 17 to 32 bytes is accepted and rests on the book under a shortened symbol, and the
+  report of its cancel carries the shortened symbol.
 - `FixOrderGatewayThread.cpp`: a failed member authentication is logged at Warning. Under the rules
   a member's mistake that the venue handles correctly is Info.
 - `FixOrderGatewayThread.cpp`: the comment above the call to `announce_session_bound` describes an
@@ -94,3 +95,13 @@ Reported to Andrew, and not changed by the audit.
 - `FixOrderGatewayThread.cpp`: a message other than Logon arriving before the session is
   established is logged at Warning before the disconnect. That is a member's mistake, so under the
   rules it is Info. The binary gateway has the same fault (listed above).
+- `environments/preprod.toml`, `prod.toml` and `test-1.toml` define one matching engine,
+  `matching_engine`, with configuration file `etc/matching_engine/matching_engine.toml`. No template
+  of that name exists; the build installs only `matching_engine_primary.toml` and
+  `matching_engine_secondary.toml`. Those files also set `[ha] enabled = true` but define no
+  secondary engine and no book replication or arbiter ports for the engine.
+- `MatchingEngineThread.cpp`, the comment where the catch-up finishes (around line 2147), says
+  nothing establishes that the catch-up was complete. BUG-0074 is marked fixed: the sequencer says
+  how many records it sent and the engine checks it received them all.
+- `MatchingEngineThread.cpp`, the comment in `send_er_to_sequencer`, mentions "fills of orders that
+  have rested on the book for hours". The engine never fills an order.
