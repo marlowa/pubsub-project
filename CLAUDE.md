@@ -71,6 +71,12 @@ reading a number, confirm the thing producing it is the thing intended.
 
 When killing a process, check it actually died rather than trusting the command's exit status.
 
+## Documentation audit
+
+The documents under `docs/` are being checked against the code and corrected where they differ.
+`doc-audit-progress.md` says which documents are done, which are not, and how the work is done.
+Read it at the start of a session and keep it up to date as documents are finished.
+
 ## Working practice
 
 - Commit straight to `main`. Do not create a branch unless asked, and do not offer one.

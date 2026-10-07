@@ -1,0 +1,85 @@
+# Documentation audit: progress
+
+The documents under `docs/` are being checked, one at a time, against the code, the configuration
+files and the environment files. Where a document says something the code does not do, the
+document is corrected to describe the code. Where the code looks wrong against the project's rules,
+the document still describes what the code does, and the problem is reported to Andrew rather than
+fixed as part of the audit.
+
+Each document is committed on its own or with closely related ones, with a commit message listing
+what was corrected. `git log -- <document>` shows the audit commit for a document marked done.
+
+Mark a document done in this file in the same commit that corrects it.
+
+Before committing, run `scripts/check_docs.py` (links resolve and every document is reachable) and
+`scripts/check_doc_claims.py` (the `<!-- verify: ... -->` comments in documents still hold).
+
+## Done
+
+framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
+`cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `serialisation_dsl.md`, `threading.md`,
+`topology.md`
+
+operations: `filesystem_requirements.md`, `latency_findings.md`, `metrics.md`, `secure_comms.md`,
+`trading_day_load.md`
+
+fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generation.md`,
+`sequence_numbers_and_gaps.md`
+
+venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `fix_order_gateway.md`,
+`witness.md`
+
+## Not confirmed
+
+These were edited on 3 and 6 October 2026 alongside code changes, but no commit records them as
+checked by the audit. Check them before marking them done.
+
+framework: `reactor.md`, `socket_comms.md`, `summary.md`
+
+operations: `README.md`
+
+fix: `codec.md`
+
+## Not started
+
+venue: `README.md`, `binary_order_gateway.md`, `fix_test_client.md`, `gateway_throttles.md`,
+`matching_engine.md`, `sequencer.md`, `sequencer_app.md`, `trading_phases.md`
+
+availability: all 14 documents, starting with `README.md`
+
+durability: `README.md`, `open_order_checkpoint.md`, `replay.md`, `wal.md`
+
+pubsub: `README.md`, `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
+`oar_bus_deduplication.md`, `oar_external_stream.md`, `pubsub.md`
+
+orientation: `README.md`, `architecture.md`, `building.md`, `running.md`, `testing.md`
+
+top level of `docs/`: `README.md`, `project_status.md`, `roadmap.md`
+
+## Not yet decided whether they are in the audit
+
+- The Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_howto.dox`,
+  `dsl_design.dox`, `groups.dox`, `memory_management_design.dox`, `raw_socket_design.dox`.
+- The LaTeX book under `docs/book/`.
+- `docs/bug_list.md`, which records each bug and its state. It is checked by
+  `scripts/check_bug_list.py` rather than read against the code as a whole.
+
+## Left out of the audit
+
+`docs/history/` and `docs/superseded/` record earlier releases, sessions and designs on purpose,
+so they are not corrected to describe the current code.
+
+## Problems found in the code during the audit
+
+Reported to Andrew, and not changed by the audit.
+
+- `applications/fix_order_gateway/FixErEncoder.hpp`: an execution report larger than 64 KiB
+  (`max_execution_report_buffer_size`) is logged at Error and not sent. The rules forbid a maximum
+  size on a FIX message.
+- The FIX gateway accepts a Symbol of up to 32 bytes (`[fix_limits] max_symbol_length` in every
+  environment), but `applications/matching_engine/OrderEntry.hpp` sets `max_symbol_length = 16`.
+  What the matching engine does with a symbol of 17 to 32 bytes has not been checked.
+- `FixOrderGatewayThread.cpp`: a failed member authentication is logged at Warning. Under the rules
+  a member's mistake that the venue handles correctly is Info.
+- `FixOrderGatewayThread.cpp`: the comment above the call to `announce_session_bound` describes an
+  earlier design ("was the original mistake").
