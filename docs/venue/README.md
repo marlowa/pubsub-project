@@ -5,7 +5,7 @@ the order flow. The clickable [architecture map](../orientation/architecture.md)
 
 - [fix_order_gateway.md](fix_order_gateway.md) — The FIX session layer: logon, sequence numbers, execution reports
 - [binary_order_gateway.md](binary_order_gateway.md) — The binary protocol gateway and its open-order pool
-- [gateway_throttles.md](gateway_throttles.md) — Per-session limits on placing, amending and cancelling, configured per comp id
+- [gateway_throttles.md](gateway_throttles.md) — Per-session limits on placing and cancelling, configured per comp id. The amend limit is provisioned too, but neither gateway supports amends yet
 - [matching_engine.md](matching_engine.md) — The order book, replication to the peer, and the HA role machine
 - [sequencer.md](sequencer.md) — The sequencing design: ordering, the WAL commit, and fanout
 - [sequencer_app.md](sequencer_app.md) — The sequencer as a deployed component

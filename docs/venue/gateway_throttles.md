@@ -1,6 +1,8 @@
 # Gateway throttles {#gateway_throttles}
 
-**Status: implemented in both gateways.** The requirements it meets are R-0148, R-0149, R-0150 and
+**Status: implemented in both gateways for new orders and cancels.** Neither gateway supports
+amending an order yet, so no amend is ever throttled. The amend limit is provisioned, carried to the
+gateways and held by every session, ready for when amends are supported (section 1). The requirements it meets are R-0148, R-0149, R-0150 and
 R-0151 in the functional specification (`docs/book`, the order gateways section of the applications
 chapter); `ha_test.py` scenario 56 verifies all four through the FIX gateway. It has no open questions
 ([section 9](#gateway_throttles_open)).
@@ -15,7 +17,7 @@ throttles, one for each kind of command:
 | Throttle | Limits | FIX message | Binary PDU |
 |----------|--------|-------------|------------|
 | Place | Placing a new order | `NewOrderSingle` (35=D) | `NewOrderSingle` |
-| Amend | Amending an open order | `OrderCancelReplaceRequest` (35=G) | none yet |
+| Amend | Amending an open order | `OrderCancelReplaceRequest` (35=G), not yet supported | none yet |
 | Cancel | Cancelling an open order | `OrderCancelRequest` (35=F) | `OrderCancelRequest` |
 
 **Each limit is a maximum number of commands per second.** A limit of **zero means no limit**, and
