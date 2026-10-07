@@ -1,10 +1,15 @@
 # Trading phases and the technical event {#trading_phases}
 
+**Status: design. None of it is built.** The requirements it leads to are named, but not yet
+written, in the high availability chapter of the functional specification (`docs/book`, the section
+"The venue says what it is doing").
+
 ## What this is for
 
 The venue has no way to say what it is doing. It can say one thing about itself — whether it is
 accepting orders — and that is a single boolean broadcast to the gateways as `OrderAcceptance`
-(127). Everything else is private to the process that knows it. The clearest case: a matching
+(127), alongside how many orders are waiting, how long the venue has been unable to pass them on,
+and the epoch of the sequencer that sent it. Everything else is private to the process that knows it. The clearest case: a matching
 engine that cannot account for what it was holding sets a local `halted_` flag and logs
 
 ```
@@ -13,12 +18,15 @@ MatchingEngineThread: trading is halted -- the venue is not accepting orders and
 
 and **nothing in the sequencer or the gateways mentions a halt at all**. The gateway goes on
 admitting members' orders and the sequencer goes on sequencing them into a venue whose engine has
-stopped. "Trading is halted" is one process's private opinion.
+stopped. The engine refuses each of those orders, with OrdRejReason Exchange closed and the text
+"trading is halted", so a member that places an order learns of the halt from the reply. A member
+that is connected and not trading, or that connects during the halt, is told nothing until it tries.
+"Trading is halted" is one process's private opinion.
 
 That is [BUG-0065](../bug_list.md), and it is what R-0126 waits on: the venue cannot announce that
 it is unable to do a component's work, because it has no way to announce anything about itself.
 
-This note settles the shape before any of it is built.
+This note settles the shape of the mechanism.
 
 ---
 
@@ -40,9 +48,9 @@ The venue is always in exactly one phase, and the phases form a cycle:
 
 **SOD and EOD are phases and not moments.** Work happens during them — end of day is when the
 venue receives the instrument prices it will need tomorrow — and a period with duration and its own
-permitted activity is a phase, whatever else it is. This was got wrong once in discussion and is
-recorded here so it is not got wrong again: modelling them as instants forces an event for
-"we have left SOD and are now trading", which is a transition of a state machine nobody has named.
+permitted activity is a phase, whatever else it is. Modelling them as instants instead would force
+an event for "we have left SOD and are now trading", which is a transition of a state machine
+nobody has named.
 
 ### Halted is not a phase
 
@@ -87,8 +95,9 @@ Carrying the resulting phase costs one field and removes the whole class. A comp
 any technical event is correct regardless of what it missed, and no component needs a state machine
 to be right.
 
-This is not a new idea in this venue — it is what `OrderAcceptance` already does. The sequencer
-re-broadcasts it on an interval while the venue is degraded, so that a gateway which missed the
+This is not a new idea in this venue — it is what `OrderAcceptance` already does. The leading
+sequencer sends it to each gateway when the gateway connects and whenever it changes, and repeats it
+on an interval while the venue is not accepting orders, so that a gateway which missed the
 transition, or connected after it, *"converges on the truth rather than sitting on a stale fine"*.
 The technical event should be repeated on the same principle, and a component that has just started
 must be able to ask rather than wait.
@@ -205,24 +214,24 @@ settled by naming the phases.
 
 ## Order of work
 
-1. This note.
+1. This note. Done.
 2. Requirements in the specification's high availability chapter, including the refusal rule for a
-   stale trading day and the announcement R-0126 needs.
+   stale trading day and the announcement R-0126 needs. The section exists and names the
+   requirements; they are not yet written.
 3. The DSL message and the enum.
 4. The per-phase table above, settled rather than guessed.
 5. Implementation, and scenarios.
 
-The steps are in that order because the arbiter work of 2026-09-06 went the other way round once
-and produced a rule that was necessary and not sufficient; writing the reasoning down first is what
-caught it.
+The reasoning and the requirements come before the code because writing the reasoning down is what
+shows whether a rule is sufficient as well as necessary.
 
 ---
 
 ## See also
 
-- [Sequencer](sequencer_app.md) — holds the venue's view of whether it is accepting orders, and
-  broadcasts `OrderAcceptance`
-- [Matching engine](matching_engine.md) — where `halted_` lives today, privately
+- [Sequencer Design](sequencer.md) — holds the venue's view of whether it is accepting orders, and
+  broadcasts `OrderAcceptance`; see also [Order acceptance](../availability/order_acceptance.md)
+- [Matching engine](matching_engine.md) — where `halted_` lives today, and the ways the engine comes to halt
 - [Bug list](../bug_list.md) — BUG-0065, the venue having no way to declare a trading halt
 - [Process death](../availability/process_death.md) — R-0126, which cannot be built until the venue
   can announce something about itself

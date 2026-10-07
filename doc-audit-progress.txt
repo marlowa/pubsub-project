@@ -28,7 +28,7 @@ fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generat
 
 venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `binary_order_gateway.md`,
 `fix_order_gateway.md`, `gateway_throttles.md`, `matching_engine.md`, `sequencer.md`,
-`sequencer_app.md`, `witness.md`
+`sequencer_app.md`, `trading_phases.md`, `witness.md`
 
 ## Not confirmed
 
@@ -43,7 +43,7 @@ fix: `codec.md`
 
 ## Not started
 
-venue: `README.md`, `fix_test_client.md`, `trading_phases.md`
+venue: `README.md`, `fix_test_client.md`
 
 availability: all 14 documents, starting with `README.md`
 
@@ -63,6 +63,9 @@ top level of `docs/`: `README.md`, `project_status.md`, `roadmap.md`
 - The LaTeX book under `docs/book/`.
 - `docs/bug_list.md`, which records each bug and its state. It is checked by
   `scripts/check_bug_list.py` rather than read against the code as a whole.
+  Found while auditing other documents: BUG-0065 says there is no notion of a trading halt anywhere
+  in the code, but the matching engine has one (`halted_`) and refuses orders with OrdRejReason
+  Exchange closed while halted.
 
 ## Left out of the audit
 
