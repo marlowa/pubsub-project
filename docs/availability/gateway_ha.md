@@ -77,9 +77,11 @@ not heard of it. Its reports are in the sequencer's log, tagged with the member'
 report the sequencer forwards while the member is connected somewhere is recoverable with a
 ResendRequest, because it was given a number in the member's sequence. A report produced while
 the member was connected nowhere is not given a number, so the member sees no gap and has nothing
-to ask for, and nothing sends it the report when it returns. That is
-[BUG-0088](../bug_list.md#bug_0088), and requirement R-0005 in the functional specification says
-what must happen instead.
+to ask for. Instead, when the member's FIX session is established again, the gateway asks the
+sequencer for the reports produced while it had no connection, and they are delivered as ordinary
+reports ([Session binding](session_binding.md), requirement R-0005,
+[BUG-0088](../bug_list.md#bug_0088), fixed). A binary member is not sent them
+([BUG-0046](../bug_list.md#bug_0046)).
 
 **Cases 1 and 2 are not recoverable, and cannot be made so.** Nothing distinguishes an order that
 died in a socket from one that was never sent; that is what "in flight" means. The FIX answer is
@@ -96,8 +98,6 @@ Each of these is a real limit, and each is recorded:
 
 - **No order status enquiry.** A member cannot ask what the venue holds for it
   ([BUG-0089](../bug_list.md#bug_0089)).
-- **A report produced while a member is connected nowhere is not delivered when it returns**
-  ([BUG-0088](../bug_list.md#bug_0088)).
 - **Only execution reports can be sent again.** They are the only messages to a member that are in
   the sequencer's log; administrative messages are gap-filled, which FIX permits. There is no
   separate store of what was sent to each member.
@@ -178,9 +178,10 @@ configuration is loaded. The sequencer opens a connection to every enabled entry
 execution report to the instance where the member's session is now bound.
 
 The development environment runs all four: `fix_order_gateway_a` and `_b`, and
-`binary_order_gateway_a` and `_b`. The other environment files enable only `fix_order_gateway_a`;
-the other three are present with `enabled = false`, so adding an instance is a configuration change
-rather than a template edit.
+`binary_order_gateway_a` and `_b`. In the other environment files the sequencers' entries enable
+only `fix_order_gateway_a`; the other three are present with `enabled = false`, so adding an instance
+is a configuration change rather than a template edit. Those files still list
+`binary_order_gateway_a` among the components to deploy and start.
 
 Instances are named `a` and `b`, not primary and secondary, because nothing elects a gateway: a
 member chooses which instance to connect to. The suffix is on the component name and its
@@ -304,8 +305,10 @@ of such numbers is covered by one gap fill. That is the split FIX prescribes.
   each request, sets off a loop of requests that freezes the session.
 - **The reports come from a scan of the sequencer's log.** Every report is already there, tagged
   with its session, so nothing is stored twice. Measured: 18 ms to scan a 4 MB log and return 3,223
-  records for one session. The log has no index, deliberately: an index would put work on the path
-  every order takes so that a rare reconnect could be quicker.
+  records for one session. The replay uses no index, deliberately: an index would put work on the
+  path every order takes so that a rare reconnect could be quicker. (`LogTailIndex`, built on demand
+  after a change of leader, serves a different purpose: checking whether a command a gateway sends
+  again is already in the log.)
 
 The `PossDupFlag` is not decoration. A report sent again carries a lower number than the member
 expects, and FIX requires a member to treat that as fatal unless the flag is set.
@@ -347,7 +350,7 @@ connection.
 | Scenario | What it requires |
 |---|---|
 | 16, `primary_me_death` | After a matching engine failover, the gateway sends at least one report per order and one per cancel, so the cancel-on-failover reports reach the member |
-| 18, `fix_gateway_a_death` | FIX instance `a` is killed and the matching engine then cancels the orders `a`'s members placed. Nothing is elected, instance `b` keeps running, and, with no member reconnected, the sequencer drops every cancel report. That is today's behaviour for a session bound nowhere, [BUG-0088](../bug_list.md#bug_0088), and the assertion must change when that is fixed |
+| 18, `fix_gateway_a_death` | FIX instance `a` is killed and the matching engine then cancels the orders `a`'s members placed. Nothing is elected, instance `b` keeps running, and, with no member reconnected, the sequencer drops every cancel report at the time. A member that reconnected would be sent them ([BUG-0088](../bug_list.md#bug_0088), fixed); this scenario does not reconnect one |
 | 19, `cancel_on_disconnect_grace` | With the gateway running, a dropped member's orders are held for the provisioned grace period, the number itself and not the gateway's default, and a reconnect inside it cancels nothing. It fails if the grace period is zero |
 | 20, `session_provisioning` | The gateway admits a comp id provisioned for its instance, naming both numbers, and refuses it once it is provisioned elsewhere, through the database and a real credentials export |
 | 21, `reconnect_inherits_reports` | 1,000 orders rest, the member reconnects on a new connection, the leading matching engine is killed, and all 1,000 cancel reports reach the new connection |
