@@ -28,7 +28,7 @@ fix: `README.md`, `inbound_sequence_checking.md`, `load_client.md`, `pdu_generat
 
 venue: `admin_service.md`, `arbiter.md`, `authentication_service.md`, `binary_order_gateway.md`,
 `fix_order_gateway.md`, `gateway_throttles.md`, `matching_engine.md`, `sequencer.md`,
-`sequencer_app.md`, `trading_phases.md`, `witness.md`
+`fix_test_client.md`, `sequencer_app.md`, `trading_phases.md`, `witness.md`
 
 ## Not confirmed
 
@@ -43,7 +43,7 @@ fix: `codec.md`
 
 ## Not started
 
-venue: `README.md`, `fix_test_client.md`
+venue: `README.md`
 
 availability: all 14 documents, starting with `README.md`
 
@@ -109,3 +109,6 @@ Reported to Andrew, and not changed by the audit.
   how many records it sent and the engine checks it received them all.
 - `MatchingEngineThread.cpp`, the comment in `send_er_to_sequencer`, mentions "fills of orders that
   have rested on the book for hours". The engine never fills an order.
+- `java/fix-test-client/.../fix/MaskingLog.java` hides only `Password` (554). In proprietary logon
+  mode the password is sent in `EncryptedPassword` (1402), not yet encrypted, so it is written to
+  the client's FIX log files in plain text.

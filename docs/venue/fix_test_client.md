@@ -2,9 +2,9 @@
 
 ## Role
 
-A FIX 5.0 SP2 gateway test client for interactive and scripted testing. It replaces the
-`fix8` command-line tool as the primary way to exercise the order pipeline end-to-end.
-Single-user, single-session web application.
+A web application for driving the venue by hand or by script, through either gateway: FIX 5.0 SP2
+to the FIX order gateway, or the binary protocol to the binary order gateway. It holds one session
+at a time, for one user.
 
 **Technology stack:** Java 17, QuickFIX/J 2.3.1, Javalin 6.3.0, Groovy 4.0.21, toml4j,
 Logback 1.5.x. Fat JAR via maven-shade. No Spring, and no CSS framework -- the UI is styled
@@ -19,8 +19,11 @@ by `web/style.css` alone.
 | `BlotterStore` | Thread-safe; accumulates all outbound NOS and inbound ER messages for the session; parses ER fields into `BlotterRow` records |
 | `MessageCapture` | Writer thread drains `LinkedBlockingQueue<Message>` to a timestamped log file in `output/`; active while a script is running |
 | `LogBuffer` | Logback `AppenderBase`; copies every `ILoggingEvent` into a 1000-line ring buffer; pushes new entries to SSE subscriber queues |
-| `ScriptRunner` | Executes Groovy scripts in a dedicated thread via `GroovyShell`; binds `session`, `fix`, and `sleep` |
-| `WebServer` (Main) | Javalin with five page sets of routes; manual DI; centralised exception handling; static files from classpath `/web/` |
+| `MaskingLog` | Wraps QuickFIX/J's log and replaces the value of `Password` (554) with `***` before a message is written |
+| `BinaryEngine` | The session with the binary gateway: a socket, the binary `Logon`, and a thread reading reports. There are no sequence numbers or heartbeats to manage |
+| `GatewaySelector` | Which gateway the one live session uses, so the order form, cancel and blotter follow it |
+| `ScriptRunner` | Executes Groovy scripts in a dedicated thread via `GroovyShell`; binds `session`, `fix`, `out` and `sleep` |
+| `Main` | Reads `app.toml`, builds the objects above, and starts Javalin with the routes for the six pages and their API, serving static files from the classpath `/web/` |
 
 ## Session Management
 
@@ -37,8 +40,9 @@ records correctly and deadlocks waiting for a response it never sends. The gatew
 
 Each FIX endpoint in the configuration has a logon mode. **Standard** is the default and is what
 this venue's FIX gateways expect. **Proprietary** is for connecting the client to a FIX gateway
-whose logon departs from the standard in the ways below. Nothing in this venue listens for it;
-it is kept so that the client can be pointed at such a gateway.
+whose logon departs from the standard in the ways below. The development configuration has one such
+endpoint, `fix-proprietary`, on port 30994 of the FIX gateway's host, and nothing in this venue
+listens on that port; it is kept so that the client can be pointed at such a gateway.
 
 With `logon_mode = "proprietary"` on an endpoint, the client:
 
@@ -57,24 +61,24 @@ With `logon_mode = "proprietary"` on an endpoint, the client:
 
 `TargetCompID` can be set on the logon form for either mode, and defaults to `GATEWAY`.
 
-## UI (Five Pages)
+## UI (Six Pages)
 
 All pages display a persistent nav bar and a live session status strip.
 
 | Page | Purpose |
 |------|---------|
-| **Session** | Logon form with optional seq-num override; live post-logon detail (ticking duration, live seq counters); last-session summary shown after logout |
+| **Session** | Logon form, with the choice of gateway endpoint (FIX or binary, instance `a` or `b`) and an optional starting sequence number; live post-logon detail (ticking duration, live sequence counters); last-session summary shown after logout |
 | **Script** | Groovy editor with Load/Save/New; state badge (IDLE / RUNNING / COMPLETED / FAILED); live output; capture status |
-| **Messages** | New Order Single send form; blotter table with row colouring by `OrdStatus` (filled=green, partial=amber, rejected/cancelled=red); Cancel button on each NOS row pre-fills the cancel form |
+| **Messages** | New Order Single send form; blotter table with row colouring by `OrdStatus` (filled=green, partial=amber, rejected/cancelled=red); Cancel button on each NOS row pre-fills the cancel form. Works with either gateway |
+| **Raw** | Sends a FIX message typed by hand. FIX sessions only: there is no hand-typed binary message |
 | **Config** | Read-only display of `app.toml` |
 | **Logs** | SSE log stream with Pause/Resume; last 1000 lines shown on load |
 
 ## Advanced NOS Fields {#ftc_advanced_nos}
 
-The New Order Single form on the Messages page began with six fields --- ClOrdID, Symbol,
-Side, OrdType, Qty, Price --- while the DSL `NewOrderSingle` topic carried many more optional
-ones that no control could set. It now carries them, in a collapsed `<details>` block beneath
-the six-field row, so the common order is unchanged and the rest is one click away.
+The New Order Single form on the Messages page has a row of six fields --- ClOrdID, Symbol,
+Side, OrdType, Qty, Price --- and, in a collapsed `<details>` block beneath it, the optional fields
+below, so the common order needs only the first row and the rest is one click away.
 
 | FIX tag | Label | Control | DSL field | Conditional rule |
 |---|---|---|---|---|
@@ -96,7 +100,7 @@ The element ids are `f-tif`, `f-expiretime`, `f-stoppx`, `f-account`, `f-exdest`
 <!-- verify: present java/fix-test-client/src/main/resources/web/messages.html "f-maxfloor" -->
 <!-- verify: present java/fix-test-client/src/main/resources/web/messages.html "f-exdest" -->
 
-**How it threads through**, mirroring the original six:
+**How an optional field reaches the wire**, in the same way as the six:
 
 1. The inputs live in `web/messages.html` inside the `<details>` block.
 2. `doSend()` collects them and adds them to the POST body **only when non-empty**, so an
@@ -111,21 +115,21 @@ The element ids are `f-tif`, `f-expiretime`, `f-stoppx`, `f-account`, `f-exdest`
 
 <!-- verify: present java/fix-test-client/src/main/java/com/pubsub/fixtestclient/web/MessagesHandler.java "NoUnderlyings" -->
 <!-- verify: present java/fix-test-client/src/main/java/com/pubsub/fixtestclient/web/MessagesHandler.java "NoPartyIDs" -->
-**Repeating groups are surfaced too**, which was not the original intention. `NoUnderlyings`
-and `NoPartyIDs` have rows that can be added and removed, posted as parallel lists paired by
-index, and `MessagesHandler` builds a QuickFIX group per non-empty row. The reasoning for
-leaving them out --- that a control per tag would end in rebuilding the FIX dictionary as a
-web form --- still holds for everything beyond these two, and rarely-used fields remain the
-business of the **raw-FIX** escape hatch and Groovy scripting.
+**Two repeating groups have controls too.** `NoUnderlyings` and `NoPartyIDs` have rows that can be
+added and removed, posted as parallel lists paired by index, and `MessagesHandler` builds a QuickFIX
+group per non-empty row. Nothing beyond these two has a control, because a control for every tag
+would end in rebuilding the FIX dictionary as a web form; any other field is sent from the Raw page
+or from a Groovy script.
 
 ## Scripting (Groovy)
 
-Scripts run in `ScriptRunner` via `GroovyShell` with three bindings:
+Scripts run in `ScriptRunner` via `GroovyShell` with four bindings. Scripts drive FIX sessions only.
 
 | Binding | Type | Purpose |
 |---------|------|---------|
-| `session` | `FixSessionBinding` | `logon(...)` to the first standard FIX endpoint, `logonTo(key, ...)` to a named endpoint, `logonProprietary(compId[, targetCompId], password)` to the first proprietary endpoint, `logout()`, `disconnect()`, `setNextOutgoingSeqNum(n)`, `send(Message)` |
-| `fix` | `FixHelper` | Message factory: `newOrderSingle()`, `orderCancelRequest()` |
+| `session` | `FixSessionBinding` | `logon(...)` to the first standard FIX endpoint, `logonTo(key, ...)` to a named endpoint, `logonProprietary(compId[, targetCompId], password)` to the first proprietary endpoint, `logout()`, `disconnect()`, `setNextOutgoingSeqNum(n)`, `isLoggedOn()`, `send(Message)` |
+| `fix` | `FixHelper` | Message factory: `newOrderSingle()`, `orderCancelRequest()`, and `uniqueId()` for a fresh ClOrdID |
+| `out` | `PrintWriter` | Writes to the script's output, shown live on the Script page |
 | `sleep` | `groovy.lang.Closure` | `sleep(ms)` — pauses script without blocking the JVM |
 
 Example script:
@@ -161,7 +165,7 @@ cd java/fix-test-client && mvn package
 java -jar target/fix-test-client-*.jar
 ```
 
-Opens on `http://localhost:8081`.
+Opens on the port in `[server] port`, 8081 in the development environment.
 
 ## Configuration
 
@@ -176,6 +180,7 @@ come from the environment file when the venue is deployed.
 | `[[gateway]]` | One entry per endpoint the logon page offers, in order: `key`, `label`, `protocol` (`fix` or `binary`), `host`, `port`, `tls_port` (omitted where there is no TLS listener) and `logon_mode` (`proprietary`, or omitted for standard) |
 | `[capture] output_dir` | Where message captures are written |
 | `[scripts] scripts_dir` | Where scripts are loaded from and saved to |
+| `[web] logo_path` | A PNG to show as the logo in the corner of every page; when it is empty or cannot be read, the bundled `web/logo.png` is shown |
 
 The development configuration lists both instances of each gateway, deliberately including
 instances a comp id may not be provisioned for, so that a gateway's refusal can be shown. A member is
