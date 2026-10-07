@@ -14,27 +14,26 @@ A "command" here is a new order (`NewOrderSingle`) or a request to cancel (`Orde
 guarantee is G1 of the parent document: every command a gateway accepted is answered, placed and
 reported or refused with a reply, never left unanswered and never placed twice.
 
-## 2. What happens today
+## 2. The problem
 
 - A gateway sends each command to both sequencers, wrapped in a `WalRecord` envelope that names the
-  member's session, and keeps no copy (`FixOrderGatewayThread::forward_order_in_envelope`,
+  member's session (`FixOrderGatewayThread::forward_order_in_envelope`,
   `BinaryOrderGatewayThread::forward_envelope_to_sequencers`).
 - The leader writes the command to its log, sends the record to the follower, and sends the command
   to the matching engine when the follower acknowledges the record (part 4.2).
 - The follower discards the copy it receives from the gateway, because it writes its log only from
   its leader's records.
-- Between the leader's death and the follower taking the lead, every command a gateway sends reaches
-  only the follower, which discards it. Nothing else holds it. `ha_test.py` scenario 1 measures this:
-  20,000 orders sent while the leader was killed, none of them answered
-  ([BUG-0103](../bug_list.md#bug_0103)).
+- So between the leader's death and the follower taking the lead, every command a gateway sends
+  reaches only the follower, which discards it. If the gateway kept no copy, nothing would hold it:
+  that was [BUG-0103](../bug_list.md#bug_0103), fixed by the design below.
 
-Reading the code shows a second gap, not yet shown by a test. **A command can be in the new leader's
-log without the matching engine ever receiving it.** The follower writes a record and acknowledges it;
-if the leader dies after the follower wrote the record and before the acknowledgement reached the
-leader, the leader never sent the command to the engine. The new leader holds it, and nothing sends it
-to the engine: an engine asks a sequencer to catch it up only when the engine itself starts or takes
-the lead (`MePositionRequest`), not when the sequencers change leader. The member is never answered.
-Section 3.5 covers this, and section 6 describes the scenario that must show it first.
+There is a second gap. **A command can be in the new leader's log without the matching engine ever
+receiving it.** The follower writes a record and acknowledges it; if the leader dies after the
+follower wrote the record and before the acknowledgement reached the leader, the leader never sent
+the command to the engine. An engine asks a sequencer to catch it up only when the engine itself
+starts or takes the lead (`MePositionRequest`), not when the sequencers change leader, so without
+section 3.5 nothing would send the command to the engine and the member would never be answered
+([BUG-0115](../bug_list.md#bug_0115), fixed).
 
 ## 3. The design
 
@@ -120,8 +119,8 @@ instance against its log, marked or not, until the older connection has been rea
 On taking the lead, the new leader forwards the reports it kept (part 4.4) **before** it sends
 `OrderAcceptance`. Both go to each gateway on the same connection, in the order sent, so a gateway
 receives the answers to commands it is holding before it is told to send them again, and sends again
-only commands that are still unanswered. Today `adopt_role` sends `OrderAcceptance` first; the order
-is swapped. Sending a command again that has in fact been answered is harmless, because section 3.4
+only commands that are still unanswered: `adopt_role` forwards the kept reports and then sends
+`OrderAcceptance`. Sending a command again that has in fact been answered is harmless, because section 3.4
 recognises it, so this is to avoid needless work, not to make the design correct.
 
 ### 3.4 The new leader recognises a command it already holds
@@ -147,20 +146,17 @@ have been written to any log, and treating it as held would lose it.
 - While leading, the sequencer thread writes every record itself, and adds each command's identifier
   as it writes it.
 - While following, most records are written by the reactor thread, as they arrive from the leader.
-  The sequencer thread reads the records written since it last looked, once a second, and adds their
-  identifiers. It reads only up to `highest_replicated_seq_no_`, which the writing thread raises only
-  after a record is completely written. Whether the log's reader may safely read a segment while the
-  reactor thread appends to it, and while a repair cuts the log back, is to be confirmed in the code
-  before this is built. If it may not, the reactor thread instead passes each record's sequence number
-  and identifier to the sequencer thread through a fixed-size queue with one writer and one reader, and
-  the table is still touched by one thread only. On taking the lead it reads the rest before it handles any command sent again, so the
-  record is complete before it is used. That read is at most about a second of records.
+  The sequencer thread reads the records written since it last looked, once a second, from the log
+  itself (`read_identifiers_from_log`), and adds their identifiers. It reads only records whose
+  checksum is complete, so a record the reactor thread is part way through writing is read the next
+  time, and a record already noted is noted again harmlessly. On taking the lead it reads the rest
+  before it handles any command sent again, so the record is complete before it is used. That read is
+  at most about a second of records.
 - At startup, the sequencer already reads its whole log, to build the table of epochs and to find a
   gap. The identifiers are added during the same read.
 - Each command's `ClOrdID` is copied onto its envelope by the gateway, and the leader logs it, so that
   the record can be built and kept up to date from the log without decoding each command. The leader
-  also logs the member's gateway protocol and instance from the envelope, which it did not before, so
-  that a command is identified by the whole of its session.
+  also logs the member's gateway protocol and instance from the envelope, so that a command is identified by the whole of its session.
 
 ### 3.5 A command the new leader holds and the engine never received
 
@@ -235,8 +231,8 @@ answer today ([BUG-0089](../bug_list.md#bug_0089)). It is outside this design.
 | Record of identifiers | A hash and an insert per command in the sequencer, on the sequencer thread | Memory: see section 7, decision 1. A read once a second while following |
 | Engine position on a change of sequencer leader | None | A round trip between sequencer and engine at each change of leader, before new commands are sent |
 
-The cost on the ordinary path is to be measured by the method in
-`docs/operations/latency_findings.md` once built, as part 4.2's was.
+The cost on the ordinary path has not yet been measured by the method in
+[latency_findings.md](../operations/latency_findings.md), as part 4.2's was.
 
 ## 6. Tests
 
@@ -340,9 +336,11 @@ All six steps are built.
 5. The gateway store and sending again, in the FIX gateway and the binary gateway.
 6. Scenario 68 in place of strengthening scenario 1, for the reason in section 6.
 
-One consequence found while testing is recorded as [BUG-0116](../bug_list.md#bug_0116): the reports a
-new leader forwards from part 4.4 include almost every report of the last few seconds, which the old
-leader had already forwarded, so a member can receive tens of thousands of repeats at once.
+Testing found that the reports a new leader forwarded from part 4.4 included almost every report of
+the last few seconds, which the old leader had already forwarded, so a member could receive tens of
+thousands of repeats at once. That is fixed ([BUG-0116](../bug_list.md#bug_0116)): every record the
+leader writes says how far through the engine's reports it has forwarded, and a new leader forwards
+only the kept reports beyond that.
 
 Related: [change_of_sequencer_leader.md](change_of_sequencer_leader.md),
 [majority_leases.md](majority_leases.md), [order_acceptance.md](order_acceptance.md), and the
