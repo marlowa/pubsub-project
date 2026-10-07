@@ -37,8 +37,9 @@ When an inbound connection is accepted, `InboundConnectionManager` creates an
 | `RawBytes` | 1 | `RawBytesProtocolHandler` | Alien-protocol byte streams (e.g. ASCII FIX) |
 | `TlsRawBytes` | 2 | `TlsRawBytesProtocolHandler` | TLS-wrapped byte streams (see [Secure Comms](../operations/secure_comms.md)) |
 
-`ProtocolType` is set per listener at `register_inbound_listener()` call time. Outbound
-connections always use `PduProtocolHandler`.
+`ProtocolType` is set per listener at `register_inbound_listener()` call time. An outbound
+connection carries framework PDUs with its own `PduFramer` and `PduParser`, or, when the service's
+endpoint is configured for TLS, uses a `TlsRawBytesProtocolHandler` as the client side.
 
 All handler methods return `[[nodiscard]] tuple<bool, std::string>`. On `!ok` the owning
 manager calls `teardown_connection()` directly; the handler never destroys the connection
@@ -50,16 +51,17 @@ itself.
 
 ### Wire Format
 
-Every framework PDU begins with a fixed 16-byte header:
+Every framework PDU begins with a fixed 24-byte header (`PduHeader`):
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `byte_count` | u32 | Total length of this PDU including header; network byte order |
-| `pdu_id` | i16 | Application-defined PDU type identifier; network byte order |
-| `version` | i8 | Protocol version |
-| `filler_a` | u8 | Padding |
+| `byte_count` | u32 | Length of the payload, not counting this header; network byte order |
+| `pdu_id` | i16 | The message's id in its DSL file; network byte order |
+| `version` | i8 | Message version |
+| `filler_a` | u8 | Reserved, zero |
+| `seq_no` | i64 | Sequence number stamped by the sequencer; 0 when not stamped; network byte order |
 | `canary` | u32 | Fixed value `0xC0FFEE00`; validated on receive; network byte order |
-| `filler_b` | u32 | Padding / reserved |
+| `filler_b` | u32 | Reserved, zero |
 
 All multi-byte fields are in network byte order. The canary is validated immediately on
 receive; a mismatch causes the connection to be torn down.
@@ -70,7 +72,7 @@ receive; a mismatch causes the connection to be torn down.
 
 | Mode | Method | When to use |
 |------|--------|-------------|
-| Built internally | `send()` | Small fixed PDUs; max 256-byte payload; header + payload assembled by the framer |
+| Built internally | `send()` | Small fixed PDUs; at most 256 bytes of payload (`PduFramer::max_payload_size`); header + payload assembled by the framer |
 | Zero-copy from slab | `send_prebuilt()` | Large PDUs; caller writes `PduHeader` + encoded payload into a slab chunk and passes the pointer |
 
 Both modes share `continue_send()` and `has_pending_data()` for partial-send handling.
@@ -79,7 +81,9 @@ Both modes share `continue_send()` and `has_pending_data()` for partial-send han
 
 `PduParser` receives PDUs in two phases:
 
-1. **Header phase:** reads 16 bytes into `header_buffer_`; validates the canary.
+1. **Header phase:** reads 24 bytes into `header_buffer_`; validates the canary. A payload of zero
+   bytes, or one larger than an inbound slab (`ReactorConfiguration::inbound_slab_size`), is refused
+   and the connection torn down.
 2. **Payload phase:** allocates a slab chunk (`auto [slab_id, chunk] = inbound_slab_allocator_.allocate(byte_count)`), then reads the payload **directly from the socket into the slab chunk** — zero copy.
 
 On completion, dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to the target thread's ITC queue.
@@ -106,9 +110,9 @@ application thread calls `install_inline_pdu_handler(connection_id, installer_fn
 The installer function receives both the `PduParser*` and the `PduFramer*`, giving access
 to the outbound channel on the same connection (e.g. to send acks in-line).
 
-**Use in sequencer:** the WAL replication path uses an inline handler to write incoming
-`WalRecord` PDUs directly to the local WAL and send a `WalAck` reply without the round-trip
-through the sequencer thread's ITC queue. This is the principal motivation for the feature.
+**Use in sequencer:** a follower sequencer installs an inline handler on its connection to the
+leader, which writes each incoming `WalRecord` to the local log and sends the `WalAck` straight back,
+without a turn of the sequencer thread. See [Sequencer Design](../venue/sequencer.md).
 
 ### PDU Ownership
 
@@ -116,9 +120,10 @@ through the sequencer thread's ITC queue. This is the principal motivation for t
 `ptr + slab_id` → application thread **must** call
 `inbound_slab_allocator().deallocate(msg.slab_id(), msg.payload())` after processing.
 
-**Outbound:** application thread allocates slab from `outbound_slab_allocator()` → writes
-`PduHeader` + encoded payload → enqueues `SendPdu` reactor control command → reactor sends
-via `send_prebuilt()` → reactor deallocates slab when send is complete.
+**Outbound:** `ApplicationThread::send_pdu()`, on the application thread, takes a chunk from the
+outbound slab allocator, writes the `PduHeader` and the encoded payload into it, and enqueues a
+`SendPdu` reactor control command; the reactor sends it via `send_prebuilt()` and frees the chunk
+when the send is complete.
 
 ---
 
@@ -138,7 +143,7 @@ A stream-oriented ring buffer backed by virtual-memory mirroring.
 | Head | Advanced by the reactor thread only, on each `recv()` |
 | Tail | Advanced by the reactor thread only, in response to `CommitRawBytes` |
 | API exposed to app | `read_ptr()`, `bytes_available()`, `tail()` |
-| Backpressure | If `space_remaining() == 0` when `on_data_ready()` fires, the connection is torn down — a rogue or slow peer is disconnected without affecting other connections |
+| Backpressure | Reading pauses at three quarters full and resumes at half; see *Backpressure* below |
 
 ### RawBytesProtocolHandler
 
@@ -150,8 +155,8 @@ Inbound path:
    - `payload_size()` — ALL currently unprocessed bytes (not just newly arrived ones)
    - `tail_position()` — buffer tail value at enqueue time
 
-Outbound path: identical to `PduProtocolHandler` — `PduFramer` handles partial sends and
-slab chunk lifetime.
+Outbound path: the bytes to send are in a slab chunk, which the handler writes with its own
+`send_prebuilt()`, finishing a partial write in `continue_send()` and freeing the chunk when done.
 
 ### Reactor Control Commands for Raw Bytes
 
@@ -169,7 +174,8 @@ The application thread implements `on_raw_socket_message()`. Each call receives 
 currently unprocessed bytes from the tail, not just the newly arrived bytes. Tail advance
 only happens when the reactor processes a `CommitRawBytes` command.
 
-Recommended application pattern (as used in `BurstListenerThread`):
+Recommended application pattern (as used by `BurstListenerThread` in
+`integration_tests/RawBytesProtocolHandlerIntegrationTest.cpp`):
 - Track `bytes_decoded_` (decoded since last tail advance) and `last_tail_` (tail position
   from last delivery).
 - On each call: if `message.tail_position() != last_tail_`, the tail has advanced — reset
@@ -189,27 +195,20 @@ makes tail-advance detection exact and unambiguous.
 
 ## Backpressure
 
-### Read Backpressure (EPOLLIN Deregistration)
+### Read Backpressure
 
-When the inbound slab allocator cannot satisfy an allocation (all slab chunks are
-outstanding with application threads), `PduParser` cannot receive the next PDU payload. The
-reactor deregisters `EPOLLIN` on that connection's fd until a slab chunk is freed and
-returned via `deallocate()`. When the last chunk from a slab is freed, `EmptySlabQueue`
-notifies the reactor, which can then chain a new slab and re-register `EPOLLIN`.
+**Raw-bytes connections** pause reading when the application falls behind. When the unprocessed
+bytes in a connection's `MirroredBuffer` reach three quarters of its capacity, the reactor stops
+watching the socket for incoming data, so the kernel's receive buffer fills and TCP slows the peer.
+When the application's `CommitRawBytes` commands bring the unprocessed bytes down to half, the
+reactor reads again. Only that connection is affected. A connection whose buffer is nevertheless
+completely full when data arrives is torn down; with the pause in place that should not happen. The
+FIX gateway gives each session 16 MiB, so a burst that fits in 12 MiB never slows the member.
 
-This provides natural flow control: a slow application thread that holds slab chunks causes
-the reactor to stop reading from that connection's socket, filling the peer's TCP send buffer
-and signalling the peer to slow down. Only the relevant connection is affected; all others
-continue normally.
-
-This mechanism was observed in production under a 20-client burst load: all 20 FIX
-connections had `EPOLLIN` deregistered in three rounds (78 engagements total), each
-released ~125 ms apart as slab-commit rate allowed. Confirmed intentional and correct.
-
-For `RawBytesProtocolHandler`, the equivalent is the `MirroredBuffer` filling: when
-`space_remaining() == 0`, the connection is torn down rather than deregistering `EPOLLIN`,
-because there is no slab-reclaim notification path to signal when space becomes available
-again.
+**PDU connections** do not pause on their own. The inbound slab allocator adds a new slab when the
+current one is full, so `PduParser` always has somewhere to put the next payload. An application
+thread that needs to slow a peer asks the reactor to stop reading that connection, with
+`pause_reading()` and `resume_reading()`; see [Reactor](reactor.md).
 
 ### Write Backpressure (EPOLLOUT / Partial Sends)
 
@@ -237,8 +236,8 @@ tick) uses the two-phase identify-then-process pattern. Any inbound connection t
 no read activity for longer than `socket_maximum_inactivity_interval_` (default 60 s from
 `ReactorConfiguration`) is torn down.
 
-Individual connections or entire listeners can be exempted via the `idle_timeout_exempt`
-flag on `InboundConnection` and `register_inbound_listener()`. This is used for connections
+Individual connections or entire listeners can be exempted by passing
+`IdleTimeoutFlag::BypassIdleTimeout` to `InboundConnection` and `register_inbound_listener()`. This is used for connections
 such as the peer-to-peer HA link that have their own heartbeat-based liveness detection.
 
 ---
@@ -246,12 +245,10 @@ such as the peer-to-peer HA link that have their own heartbeat-based liveness de
 ## Failure Handling
 
 All handler methods return `[[nodiscard]] tuple<bool, std::string>`. Any `!ok` result
-causes the owning manager to call `teardown_connection(id, reason, true)` immediately.
-The handler does not destroy the connection synchronously, so no re-lookup of the connection
-in the map is needed after the handler call returns. (An earlier design used a synchronous
-disconnect-handler callback inside the handler, which was the source of a use-after-free
-SIGSEGV when the callback's closure captured a pointer that the handler itself had already
-invalidated.)
+causes the owning manager to call `teardown_connection()` immediately, telling the application
+thread the connection was lost.
+The handler never destroys the connection itself, so the connection is still valid when the
+handler returns, and the manager does not have to look it up again.
 
 On graceful peer close, `PduParser::receive()` returns `(false, "")` (empty reason string)
 to distinguish a clean close from a protocol error.
