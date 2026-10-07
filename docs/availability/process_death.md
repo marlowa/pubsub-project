@@ -41,8 +41,14 @@ Two rules it follows, and both are deliberate:
 - **It does not decide leadership.** Starting a process and assigning it a role are two jobs, and
   a supervisor that did both would become mandatory --
   [design_notes.md#ha_supervisor_role](design_notes.md#ha_supervisor_role).
-- **It never gives up by default.** `--max-consecutive-failures 0` means retry forever, because
-  abandoning a component guarantees there is none, whereas a slow retry keeps trying.
+- **It never gives up on a component that cannot start, by default.** `--max-consecutive-failures 0`
+  means retry forever, because abandoning a component guarantees there is none, whereas a slow retry
+  keeps trying.
+- **It gives up on a component that keeps dying, when told to.** `--max-interruptions N` makes it
+  give up at the Nth time the component dies and returns, however long it had been running, and
+  nothing but starting the launcher again resets the count. `devenv.py --supervised` passes
+  `--max-interruptions 2` (`MAX_INTERRUPTIONS_PER_SESSION`), which is the rule in the section below.
+  When it gives up, `launch.py` writes `gave up` to `<name>.launcher.state` and exits with status 1.
 
 **There is no systemd and there will not be.** The supervision design has to work without it.
 
@@ -68,7 +74,7 @@ journal, and it is the main thing this design has to decide.
 
 ## A slow flap is a loss of service, and the instance is judged for it
 
-**Settled 2026-09-06.** An instance that dies and returns repeatedly is not a component that keeps
+**Settled, and built in the supervisor; the halt for the last instance is not built.** An instance that dies and returns repeatedly is not a component that keeps
 recovering; it is a venue that keeps losing service. The question this answers is what the venue
 does about it.
 
@@ -84,8 +90,11 @@ never reaches because the clock restarts on every reconnect. So the member gets 
 windows in which it can neither place nor withdraw, and no signal that anything is wrong.
 
 **Two uncovered interruptions and the instance is fatal.** One is a fault; two is a pattern. The
-supervisor stops restarting it, which it can already do -- `launch.py` has `give_up()`, writes
-`gave up` to `<name>.launcher.state` and exits. The instance is then absent for longer than a lease
+supervisor stops restarting it: `launch.py --max-interruptions 2` gives up at the second
+interruption, writes `gave up` to `<name>.launcher.state` and exits. It counts every time the
+component dies and returns, because the supervisor cannot tell whether the peer covered a death;
+the rule as designed counts only the deaths the pair did not cover, which is the same thing for a
+leader restarted within its lease period. The instance is then absent for longer than a lease
 period by construction, so the follower takes over with the arbiter's vote and service resumes. The
 supervisor decides only whether to start a process; which instance leads remains a matter for the
 lease rules, exactly as [design_notes.md#ha_supervisor_role](design_notes.md#ha_supervisor_role)
@@ -111,15 +120,15 @@ instances share -- a poison order, a bad build, a configuration both read -- the
 and is judged in its turn. The venue then has no instance of that component and a supervisor that
 has stopped trying. That must be announced rather than discovered: a venue quietly running with
 nothing behind a component is the failure that looks like health. This is the same shape as
-BUG-0010, where high availability fails over into a condition both nodes share.
+BUG-0010, where high availability fails over into a condition both nodes share. **Nothing implements
+this announcement yet**: when the last instance's supervisor gives up, the venue is left without that
+component and only `<name>.launcher.state` says so. The announcement needs the means for the venue
+to say anything about itself, described in [Trading phases](../venue/trading_phases.md).
 
 **There is no window, and that is deliberate.** The obvious shape is a lookback -- two deaths
-within some period -- and it was rejected. Asked how often one interruption of this kind is
-acceptable, the answer was once: *"Members are bound to complain but the response has to be there
-was a failure and that many seconds is how long recovery took. Would they rather the venue had
-been halted?"*
-
-That answer does not admit a period. An instance gets **one interruption per trading session**;
+within some period -- and it is rejected. One interruption of this kind is acceptable: members will
+complain, and the venue's answer is that there was a failure and recovery took that many seconds,
+which is better for them than a halt. That rule does not admit a period. An instance gets **one interruption per trading session**;
 the second is fatal. The count resets at a session boundary or when an operator restarts the
 instance, and at no other time.
 
@@ -143,14 +152,18 @@ it, but how tolerable one interruption is does.
 
 ## What is still open
 
-- **Does the order book live in shared memory?** It is the only way to the stated target, and it
-  is a substantial change to the matching engine's storage. If the answer is no, the target has to
-  move instead -- and saying so is better than carrying a number nothing aims at.
+- **Is re-attaching the book fast enough?** The book now lives in a memory-mapped file of
+  fixed-size records that survives the process, and a restarted engine reads it back rather than
+  replaying a journal ([Open order checkpoint](../durability/open_order_checkpoint.md)). The read is
+  one pass over the whole file, so its cost is fixed by the file's size rather than by the number of
+  orders. The 3.5 seconds measured above includes it, alongside the catch-up and the lease. Whether
+  the restart can reach 50 ms, or the target has to move, is open -- and saying so is better than
+  carrying a number nothing aims at.
 - **How long is the lease period?** It sets two things at once: how quickly a follower takes over
   from a leader that has gone, and how long a supervised restart has to bring a leader back before
   its follower takes over instead. It is three seconds; whether one value suits both is open.
 - **What happens on a crash loop?** Partly settled above: the instance is judged after two
-  uncovered interruptions and the last one halts the venue loudly. What that does not answer is
+  uncovered interruptions, and the last one is meant to halt the venue loudly. What that does not answer is
   *why* it was dying. Section 7 proposes a poison-pill filter: recovery identifies the input that
   caused the crash and skips it. Nothing implements this, and skipping an order because it crashed
   the engine is a decision with its own consequences. Judging the instance bounds the damage; it

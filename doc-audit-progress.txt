@@ -16,7 +16,7 @@ Before committing, run `scripts/check_docs.py` (links resolve and every document
 
 ## Done
 
-availability: `matching_engine_presence.md`, `order_acceptance.md`
+availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_death.md`
 
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
@@ -36,7 +36,7 @@ venue: `README.md`, `admin_service.md`, `arbiter.md`, `authentication_service.md
 
 availability: `README.md`, `a_follower_behind_does_not_lead.md`, `change_of_sequencer_leader.md`,
 `commands_during_a_change_of_leader.md`, `design_notes.md`, `follower_log_repair.md`, `gateway_ha.md`,
-`majority_leases.md`, `process_death.md`, `resend_provenance.md`,
+`majority_leases.md`, `resend_provenance.md`,
 `session_binding.md`, `wal_and_ha.md`, `tla/findings.md`
 
 durability: `README.md`, `open_order_checkpoint.md`, `replay.md`, `wal.md`
