@@ -13,9 +13,14 @@ of them are on the path every order takes:
    `PrometheusHistogram` to `prometheus::Histogram::Observe`, and that function locks a
    `std::mutex` that belongs to the histogram (prometheus-cpp 1.3.0, `core/src/histogram.cc`,
    line 46). Each order passes through several histograms in the gateway, the sequencer and the
-   matching engine, so each order takes such a mutex several times in each process. When Prometheus
-   scrapes the metrics endpoint, the scrape thread takes the same mutex in `Histogram::Collect`
-   (line 76), so this one can be contended. Recorded as BUG-0125.
+   matching engine, so each order takes such a mutex several times in each process. The framework
+   also records histograms of its own in every process, and one of them, the reactor's lap
+   histogram, is recorded on every pass of the reactor's loop, including every turn while it spins
+   waiting for work. When Prometheus scrapes the metrics endpoint, the scrape thread takes the same
+   mutex in `Histogram::Collect` (line 76), so this one can be contended. Under load, with
+   Prometheus scraping every 5 seconds, the matching engine's reactor thread was measured going to
+   sleep twice in 40 seconds waiting for the scrape to release the lap histogram's mutex. Recorded
+   as BUG-0125.
 2. **`SequencerThread::log_epochs_mutex_`**, taken on every write to the sequencer's log, on the
    leader and the follower. Recorded as BUG-0124.
 3. **`ReplicatedRecordWriter`**, taken on the follower for every record the leader sends. The leader
@@ -79,11 +84,11 @@ Left out, as asked or because they are not the venue's running code:
   calls:** `Histogram::Observe` takes 12.6 nanoseconds when no other thread touches the histogram.
   A histogram owned by one thread, with the same 16 buckets and plain increments, takes 2.9
   nanoseconds. With no other thread, `Observe` makes no system call: under `strace` the only
-  `futex` call in the whole run was the one made when the program joined its idle second thread. With a second thread calling `Collect` once a millisecond, a `futex` system call
-  was made whenever the two collided, about three thousand in a run of 20 million observations
-  under `strace` (which itself slows each system call, so this count is higher than it would be
-  without it). A
-  `futex` wait puts the waiting thread to sleep.
+  `futex` call in the whole run was the one made when the program joined its idle second thread.
+  With a second thread calling `Collect` once a millisecond, a `futex` system call was made
+  whenever the two collided, about three thousand in a run of 20 million observations under
+  `strace` (which itself slows each system call, so this count is higher than it would be without
+  it). A `futex` wait puts the waiting thread to sleep.
 - **When:** on every observation, whenever metrics are enabled, which they are in every environment
   (`[shared] metrics_enabled = true`). On the order path:
   - the FIX and binary gateways record the round trip and the arrival of each order's
@@ -91,9 +96,43 @@ Left out, as asked or because they are not the venue's running code:
   - the sequencer records each write to its log (`wal_append_histogram_`, in `append_to_wal`) and
     the order's arrival and departure in each direction (`order_path_metrics::observe_checkpoint`);
   - the matching engine records the order's arrival and its acknowledgement leaving.
+
+  The framework records the following in every process, the following sequencer included. The
+  reactor's histograms are recorded on the reactor's thread, and the queue histograms on each
+  application thread as it takes a message from its queue:
+  - `reactor_lap_histogram_` (`libraries/pubsub_itc_fw/src/Reactor.cpp`, line 1018, called from
+    `Reactor::record_look_for_work`): the time between one look for work and the next. It is
+    recorded on every pass of the reactor's loop, and while the reactor spins waiting for work it
+    is recorded on every turn of the spin (`Reactor.cpp`, line 1136), so it is recorded far more
+    often than any histogram recorded once per order;
+  - `reactor_receive_path_histogram_` (`Reactor.cpp`, line 1027);
+  - `reactor_send_path_histogram_` and `reactor_other_send_path_histogram_` (`Reactor.cpp`,
+    lines 1037 and 1039);
+  - `reactor_command_latency_histogram_` and `reactor_other_command_latency_histogram_`
+    (`Reactor.cpp`, lines 1226 and 1228);
+  - `itc_queue_depth_histogram_` and `itc_queue_latency_histogram_`
+    (`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`, lines 478 and 571), on every message
+    taken from an application thread's queue.
 - **Contended?** Usually not, because one thread records into each histogram. But when Prometheus
-  scrapes the endpoint, the scrape thread holds the same mutex while it copies the buckets, and an
-  order arriving at that moment waits for it.
+  scrapes the endpoint, the scrape thread holds the same mutex while it copies the buckets, and a
+  thread that records into that histogram at that moment waits for it.
+- **Contention measured in the venue.** `perf_run.py` with the binary gateway, 4 sessions at 500
+  orders a second each. Every context switch in each sequencer, matching engine and binary gateway
+  process was recorded with its stack (`perf record -e context-switches -c 1 -g`), and the
+  switches counted were those whose stack passes through glibc's wait for a contended mutex,
+  `__lll_lock_wait`, inside `prometheus::Histogram::Observe`. Before it was used on the venue, the
+  same count was checked on a small test program: 0 with no other thread, 261 with a second
+  thread calling `Collect` once a millisecond.
+  - For 40 seconds with no Prometheus running: 0 such switches in every process.
+  - For 40 seconds with Prometheus scraping every process every 5 seconds (10 or 11 scrapes of each
+    in the minute measured): 2, both on the primary matching engine's reactor thread, in
+    `Reactor::record_look_for_work`, recording into the lap histogram, 15 seconds apart. 0 in every
+    other process. In each case the thread went to sleep in the kernel until the scrape released
+    the mutex.
+
+  The histogram recorded most often is the one that collided. None of the histograms recorded
+  once per order collided in this run, but they take the same mutex and differ only in how often
+  they are recorded.
 - **Recorded?** BUG-0125. BUG-0124 covers only the two sequencer locks.
 
 ### 2. `SequencerThread::log_epochs_mutex_`
@@ -214,7 +253,7 @@ Left out, as asked or because they are not the venue's running code:
 |---|---|
 | FIX and binary gateways | Histogram mutexes (item 1). The allocator's expansion mutex only if a pool runs out (item 5) |
 | Leading sequencer | `log_epochs_mutex_` on each write to its log (item 2), histogram mutexes (item 1); the promise recorder's mutex every 100 ms on the same thread (item 4) |
-| Following sequencer | `log_epochs_mutex_` and `ReplicatedRecordWriter` on each record (items 2 and 3) |
+| Following sequencer | `log_epochs_mutex_` and `ReplicatedRecordWriter` on each record (items 2 and 3); the framework's histogram mutexes (item 1) |
 | Leading matching engine | Histogram mutexes (item 1); the promise recorder's mutex every 100 ms on the same thread (item 4) |
 
 ## Possible remedies, for discussion

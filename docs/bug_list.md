@@ -250,6 +250,24 @@ trip and acknowledgement histograms, the sequencer's log write time (`wal_append
 `append_to_wal`) and its checkpoints in each direction, and the matching engine's checkpoints for an
 order arriving and its acknowledgement leaving.
 
+**In the framework, in every process,** the following sequencer included: the reactor's lap
+histogram (`libraries/pubsub_itc_fw/src/Reactor.cpp`, line 1018), recorded on every pass of the
+reactor's loop and on every turn while it spins waiting for work; the reactor's receive path, send
+path and command latency histograms (`Reactor.cpp`, lines 1027, 1037, 1039, 1226 and 1228); and each
+application thread's queue depth and queue latency histograms
+(`libraries/pubsub_itc_fw/src/ApplicationThread.cpp`, lines 478 and 571).
+
+**Measured in the venue.** Under load from `perf_run.py` (binary gateway, 4 sessions at 500 orders a
+second each), every context switch in each sequencer, matching engine and binary gateway process
+was recorded with its stack, and those that were a wait for a contended mutex inside
+`prometheus::Histogram::Observe` were counted. With no Prometheus running, for 40 seconds: none.
+With Prometheus scraping every process every 5 seconds, for 40 seconds: two, both on the primary
+matching engine's reactor thread, recording into the lap histogram from
+`Reactor::record_look_for_work`, 15 seconds apart. Each time the thread went to sleep in the kernel
+until the scrape released the mutex. The lap histogram is the one recorded most often, which is why
+it is the one that collided; the others take the same mutex. See `lock-audit-report.txt` for the
+method and how the count was checked first.
+
 **What is wanted.** A lock-free histogram of the project's own for the order path, with one writer
 and atomic bucket counts, read by the endpoint when it is scraped, in place of
 `prometheus::Histogram`. Counters and gauges can stay as they are. See `lock-audit-report.txt`.
