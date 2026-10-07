@@ -13,17 +13,17 @@ situations in which the leader does not wait, and sends commands to the engine a
   runs as if it had no follower, and the gauge `sequencer_running_alone` is 1.
 
 In both situations the leader's log holds commands that the engine has acted on, that members may have
-been sent reports for, and that the follower's log does not hold. If the leader dies at that moment, the
-follower can still be granted the lead today. A voter granting a lease does not know whether the
-instance asking holds everything the engine has acted on. The new leader would then number new commands
+been sent reports for, and that the follower's log does not hold. If the leader died at that moment and
+nothing else were done, the follower could be granted the lead, because a voter granting a lease does not
+know whether the instance asking holds everything the engine has acted on. The new leader would then number new commands
 from a point below commands the engine has already applied. The engine's guard refuses commands whose
 sequence numbers do not go forward, so the venue would stop placing orders. And the commands only the
 dead leader held would be missing from the surviving record of the day, even though members have
 reports for them.
 
 This document states what must hold, explains why the usual rule from the literature does not fit this
-venue, sets out the design and the decisions taken on it, and gives the tests. It proposes no
-code until the design is agreed.
+venue, sets out the design and the decisions taken on it, and gives the tests. The design is built and
+switched on in the sequencer (section 8), and is rule 11 of [majority_leases.md](majority_leases.md).
 
 ## 2. What must hold
 
@@ -181,10 +181,10 @@ The old leader returns in one of two ways:
   it is not the instance the arbiter's record names. The follower then catches up from it.
 - **Its machine is lost.** Nothing in the venue can recover the commands only that machine held. The
   operator, who knows the machine has died, decides to let the follower lead, accepting that those
-  commands, which members have reports for, are missing from the record. An operator's tool clears the
-  statement at the arbiter and at the follower, and logs at Warning what it has done and why. The tool,
-  and the procedure for reconciling what members were told with what the log holds, are designed
-  separately.
+  commands, which members have reports for, are missing from the record. An operator's tool is to
+  clear the statement at the arbiter and at the follower, and log at Warning what it has done and why.
+  **The tool is not built**, and neither is the procedure for reconciling what members were told with
+  what the log holds; both are to be designed separately.
 
 ### 4.5 When the follower's disk has stopped answering
 
@@ -248,12 +248,13 @@ has caught up.
    the follower's disk** (4.2 and 4.5). Holding commands until the disk confirms was considered and
    rejected, because it turns a fault in the backup into a pause in trading.
 2. **An operator's tool lets the follower lead after the old leader's machine is lost** (4.4), accepting
-   the loss of the commands only that machine held. It is designed separately, with the procedure for
-   reconciling members' reports.
+   the loss of the commands only that machine held. It is to be designed separately, with the procedure
+   for reconciling members' reports, and is not built.
 
 ## 7. Tests
 
-Each test must fail on today's code. That is shown, not assumed, before it is used to judge the change.
+Each test was shown to fail with the rule, or a part of it, removed, before it was used to judge the
+change.
 
 | Test | What it requires | Status |
 |---|---|---|
@@ -267,7 +268,7 @@ Each test must fail on today's code. That is shown, not assumed, before it is us
 
 ## 8. Order of the work
 
-1. Agreement to the design.
+1. Agreement to the design. Done.
 2. The TLA+ model, done in section 12 of [tla/findings.md](tla/findings.md), and the simulation, done
    in `LeaseSimulationTest.cpp` with the rule itself in `LeaseVoter` and `LeaseParticipant`, each shown
    to find the fault when a part of the rule is removed. Only a pair constructed with

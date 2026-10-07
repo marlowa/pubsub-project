@@ -18,7 +18,8 @@ Before committing, run `scripts/check_docs.py` (links resolve and every document
 
 availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_death.md`,
 `resend_provenance.md`, `session_binding.md`, `gateway_ha.md`,
-`majority_leases.md`, `follower_log_repair.md`
+`majority_leases.md`, `follower_log_repair.md`,
+`a_follower_behind_does_not_lead.md`
 
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
@@ -36,7 +37,7 @@ venue: `README.md`, `admin_service.md`, `arbiter.md`, `authentication_service.md
 
 ## Not started
 
-availability: `README.md`, `a_follower_behind_does_not_lead.md`, `change_of_sequencer_leader.md`,
+availability: `README.md`, `change_of_sequencer_leader.md`,
 `commands_during_a_change_of_leader.md`, `design_notes.md`, `wal_and_ha.md`, `tla/findings.md`
 
 durability: `README.md`, `open_order_checkpoint.md`, `replay.md`, `wal.md`
@@ -117,3 +118,7 @@ Reported to Andrew, and not changed by the audit.
   when every arbiter says no matching engine exists. It rests on the arbiter tracking which
   instances have registered, which the arbiter no longer does since leases decide leadership. The
   document now says so at the top; whether the design is revised or withdrawn is Andrew's decision.
+- The operator's tool that lets a sequencer follower lead after the old leader's machine is lost
+  (`docs/availability/a_follower_behind_does_not_lead.md`, section 4.4) is not built. Until it is,
+  a venue whose leader dies while running without its follower stays halted if that machine does
+  not return.
