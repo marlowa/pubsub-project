@@ -12,8 +12,8 @@
 | Logging | Quill 11.0.2 |
 | Test framework | GoogleTest (C++), pytest (Python DSL tests) |
 | License | Apache-2.0 |
-| Max line width | 160 characters (clang-format enforced) |
-| Documentation | `docs/README.md` — start here; chapters under `docs/`, application docs in `docs/applications/` |
+| Max line width | 160 characters, for source and configuration; checked for C++ by `scripts/check_standards.py`, and `.clang-format` formats staged C++ through the pre-commit hook |
+| Documentation | `docs/README.md` — start here; chapters under `docs/`, the deployable components in `docs/venue/` |
 
 ---
 
@@ -75,14 +75,14 @@ test suite. Use it rather than `build.sh` followed by `deploy.py`, which skips t
 ./scripts/devenv.py status
 ```
 
-Startup order is dependency-driven and counterintuitive in one place: the gateway must be listening before the sequencers start, because the sequencers connect outbound to its execution-report listener. Under valgrind, use `callgrind_run.py`.
+The order components start in does not matter: every outbound connection is retried every two seconds until the other end answers. `devenv.py` starts components in the order the environment file's `[startup_order]` gives, and stops them in the reverse order. Under valgrind, use `callgrind_run.py`.
 
 **`ha_test.py`** — the high availability suite. Each scenario starts the whole venue, sends orders,
 kills, stops or restarts processes, and checks what follows: `./scripts/ha_test.py --scenario N`, or
 `--scenario all`. A scenario marked as expected to fail records a known gap: it does not fail the
 suite while it fails, and does fail it once it passes.
 
-**`perf_run.py`** — starts the full system, attaches `perf record` to gateway and ME, fires fix8 NOS orders, waits for completion, SIGTERMs everything, then produces per-process perf reports and flamegraph SVGs.
+**`perf_run.py`** — starts the full system, attaches `perf record` to gateway and ME, sends bursts of orders (through the FIX gateway with fix8's `f8test`, or with `--gateway binary` through the binary gateway with `binary_load_client`), waits for completion, SIGTERMs everything, then produces per-process perf reports and flamegraph SVGs. `--rate` paces the orders, which any latency measurement needs.
 
 ```
 ./scripts/perf_run.py                              # 1 client, 1 burst (1 000 orders)
@@ -210,7 +210,7 @@ Represents one reactor-managed outbound TCP connection. Lives in `OutboundConnec
 | Phase | Indicator | Active members |
 |---|---|---|
 | Connecting | `is_connecting()` true | `connector_`, `connect_started_at_`, `trying_secondary_` |
-| Established | `is_established()` true | `socket_`, `framer_`, `parser_` |
+| Established | `is_established()` true | `socket_`, and either `framer_` and `parser_` (framework PDUs) or `protocol_handler_` (TLS; see section 16) |
 
 **Connection flow:**
 1. `Connect` command → `OutboundConnectionManager::process_connect_command()` → `TcpConnector::connect(primary)` → register fd for `EPOLLOUT`
@@ -299,7 +299,7 @@ A stream-oriented ring buffer using virtual memory mirroring.
 
 **`RawBytesProtocolHandler`**
 
-Implements `ProtocolHandlerInterface` (Strategy B). Owns the `MirroredBuffer` and a `PduFramer` for the outbound path.
+Implements `ProtocolHandlerInterface` (Strategy B). Owns the `MirroredBuffer`, and the state of the send in progress.
 
 Inbound path:
 1. `on_data_ready()` is called by the reactor when `EPOLLIN` fires.
@@ -310,7 +310,7 @@ Inbound path:
    - `payload_size()` — `bytes_available()` at enqueue time (ALL unprocessed bytes, not just newly arrived ones)
    - `tail_position()` — the buffer's `tail_` value at enqueue time (used by the app to detect tail advances unambiguously)
 
-Outbound path: identical to `PduProtocolHandler` — `PduFramer` handles partial sends and slab chunk lifetime.
+Outbound path: the bytes to send are in a slab chunk, which the handler writes with its own `send_prebuilt()`, finishing a partial write in `continue_send()` and freeing the chunk when done.
 
 **`EventMessage` for raw socket delivery**
 
@@ -329,7 +329,7 @@ Outbound path: identical to `PduProtocolHandler` — `PduFramer` handles partial
 
 The application thread subclass must implement `on_raw_socket_message()`. Each call receives ALL currently unprocessed bytes from the tail — not just the newly arrived bytes. The tail only advances when the reactor processes a `CommitRawBytes` command. Between two calls, if the tail has not yet advanced, `payload()` points to the same start address and `payload_size()` may be larger.
 
-The application thread pattern (as used in `BurstListenerThread`) employs the following:
+The application thread pattern (as used by `BurstListenerThread` in `integration_tests/RawBytesProtocolHandlerIntegrationTest.cpp`) employs the following:
 - Track `bytes_decoded_` (bytes decoded since the last tail advance) and `last_tail_` (tail position from the last delivery).
 - On each call, compare `message.tail_position()` against `last_tail_`. If different, the tail advanced — reset `bytes_decoded_` to 0.
 - Decode from `data + bytes_decoded_` for `available - bytes_decoded_` bytes.
@@ -342,7 +342,7 @@ Without it, the app uses `available < last_available_` to detect a tail advance.
 
 **Failure handling in `InboundConnectionManager`**
 
-`on_data_ready()`, `on_write_ready()`, `process_send_pdu_command()`, and `process_send_raw_command()` each inspect the `tuple<bool, std::string>` returned by the handler call and call `teardown_connection(id, reason, true)` directly on `!ok`. The handler does not destroy the connection synchronously, so no re-lookup of the connection in the map is required after the call returns.
+`on_data_ready()`, `on_write_ready()`, `process_send_pdu_command()`, and `process_send_raw_command()` each inspect the `tuple<bool, std::string>` returned by the handler call and call `teardown_connection()` directly on `!ok`, telling the application thread the connection was lost. The handler does not destroy the connection synchronously, so no re-lookup of the connection in the map is required after the call returns.
 
 ---
 
@@ -385,7 +385,7 @@ Without it, the app uses `available < last_available_` to detect a tail advance.
 
 **Inbound PDU ownership:** reactor allocates slab → PduParser reads into it → EventMessage carries ptr+slab_id → app thread must call `release_pdu_payload(msg)` after processing.
 
-**Outbound PDU ownership:** app thread allocates slab from `outbound_slab_allocator()` → writes PduHeader + encoded payload → enqueues `SendPdu` → reactor sends via `send_prebuilt()` → reactor deallocates slab when send complete.
+**Outbound PDU ownership:** `ApplicationThread::send_pdu()`, on the application thread, takes a chunk from the outbound slab allocator, writes the PduHeader and encoded payload, and enqueues `SendPdu` → reactor sends via `send_prebuilt()` → reactor deallocates the chunk when the send completes or the connection is torn down.
 
 ---
 
@@ -402,7 +402,7 @@ The full reference, including the wire format and the benchmark figures, is
 
 **`fix_orders.dsl`** — the FIX 5.0 SP2 order messages, generated into the build tree (`generated_dsl/`) from the FIX data dictionary rather than written by hand: `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002) and the rest. Prices and quantities are `string`; `TransactTime` is `datetime_ns`; conditionally required fields are `optional`. The hand-written message definitions are `applications/authentication.dsl`, `binary_session.dsl`, `pubsub.dsl` and `topics.dsl`, and `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl`.
 
-**generate_cpp_from_dsl.py** — takes input DSL path and output **file path** (not directory) as positional arguments, plus `--namespace` and `--topics` flags.
+**generate_cpp_from_dsl.py** — takes the input DSL path as its one positional argument, and writes C++ to the file named by `--cpp` (with `--namespace`, and `--pdu-id-enum` for an enum of the PDU ids), Java to the file named by `--java` (with `--package`), and a topic catalogue with `--topics-registry`.
 
 ---
 ### 12. Leader-Follower Protocol
@@ -519,7 +519,7 @@ The framework's raw-bytes connection layer supports TLS, for both inbound (serve
 - `create_server(cert_path, key_path, ca_path, require_client_cert)` — server-side context. `ca_path` empty disables client certificate verification.
 - `create_client(ca_path, cert_path, key_path)` — client-side context. `ca_path` empty skips server verification.
 
-Both enforce **TLS 1.2 only** -- `TlsContext::apply_common_tls_options()` sets min *and* max proto version to `TLS1_2_VERSION`. This is a deliberate cap, not a floor: QuickFIX/J's MINA `SslFilter` mishandles TLS 1.3 `NewSessionTicket` records and deadlocks, timing the fix-test-client out on logon. Lifting it means removing those two calls and adding the TLS 1.3 cipher groups. Ciphers: AEAD only (`ECDHE-RSA-AES256-GCM-SHA384` and similar). See docs/design/secure_comms.md. One `TlsContext` per listener or outbound service; certificate loading happens once at construction, not per-connection.
+Both enforce **TLS 1.2 only** -- `TlsContext::apply_common_tls_options()` sets min *and* max proto version to `TLS1_2_VERSION`. This is a deliberate cap, not a floor: QuickFIX/J's MINA `SslFilter` mishandles TLS 1.3 `NewSessionTicket` records and deadlocks, timing the fix-test-client out on logon. Lifting it means removing those two calls and adding the TLS 1.3 cipher groups. Ciphers: AEAD only (`ECDHE-RSA-AES256-GCM-SHA384` and similar). See [Secure Communications](../operations/secure_comms.md). One `TlsContext` per listener or outbound service; certificate loading happens once at construction, not per-connection.
 
 **`TlsState`** (`TlsState.hpp` / `.cpp`). Per-connection. Owns `SSL*`, `BIO* rbio`, `BIO* wbio`. Owns a `pending_outbound` byte vector (ciphertext bytes that could not be sent immediately). `HandshakePhase` enum: `Pending`, `Complete`, `Failed`. Move-constructible (needed when `OutboundConnection` is move-inserted into the connections map).
 
@@ -535,7 +535,7 @@ Both enforce **TLS 1.2 only** -- `TlsContext::apply_common_tls_options()` sets m
 
 **`TlsListenerConfiguration`** (`TlsListenerConfiguration.hpp`). Fields: `certificate_path`, `private_key_path`, `ca_path`, `require_client_certificate`. Carried by `InboundListenerConfiguration::tls` (`std::optional<TlsListenerConfiguration>`). The `Reactor` reads this during init, calls `TlsContext::create_server`, and stores the context in the `InboundListener`. Each accepted connection creates one `SSL` object from the shared context.
 
-**`TlsClientConfiguration`** (`TlsClientConfiguration.hpp`). Fields: `ca_path`, `certificate_path`, `private_key_path`, `raw_buffer_capacity`. Carried by `ServiceEndpoints::tls` (`std::optional<TlsClientConfiguration>`). When present, `OutboundConnectionManager` creates a `TlsContext` and a `TlsRawBytesProtocolHandler` for the connection instead of a `PduProtocolHandler`.
+**`TlsClientConfiguration`** (`TlsClientConfiguration.hpp`). Fields: `ca_path`, `certificate_path`, `private_key_path`, `raw_buffer_capacity`. Carried by `ServiceEndpoints::tls` (`std::optional<TlsClientConfiguration>`). When present, the outbound connection creates a `TlsContext` and a `TlsRawBytesProtocolHandler` instead of its `PduFramer` and `PduParser`.
 
 **`ProtocolHandlerInterface` additions**: `start_outbound_handshake()`, `is_handshake_complete()`, `is_reads_paused()` virtuals. Non-TLS handlers return sensible defaults (`{true, ""}`, `true`, `false` respectively).
 
@@ -543,7 +543,7 @@ Both enforce **TLS 1.2 only** -- `TlsContext::apply_common_tls_options()` sets m
 
 **OpenSSL dependency**: `find_package(OpenSSL REQUIRED)` in top-level `CMakeLists.txt`; `target_link_libraries` against `OpenSSL::SSL` and `OpenSSL::Crypto`.
 
-**Integration tests** (`TlsProtocolHandlerIntegrationTest.cpp` — 5 tests; `TlsOutboundIntegrationTest.cpp` — 4 tests):
+**Integration tests** (`TlsProtocolHandlerIntegrationTest.cpp` — 6 tests; `TlsOutboundIntegrationTest.cpp` — 6 tests):
 
 | Test | Scenario |
 |---|---|
@@ -552,14 +552,17 @@ Both enforce **TLS 1.2 only** -- `TlsContext::apply_common_tls_options()` sets m
 | `PeerDisconnect` | Inbound: SSL_shutdown → close_notify → ConnectionLost |
 | `MutualTlsHandshake` | Inbound: server requires client certificate; both sides authenticate |
 | `HandshakeFailure` | Inbound: client has wrong CA; TLS alert → server tears down → ConnectionLost |
+| `TlsBackpressureHighAndLowWatermark` | Inbound: reading pauses at the high-water mark and resumes at the low-water mark |
 | `OutboundTlsHandshakeAndRoundTrip` | Outbound: reactor as TLS client; send on ConnectionEstablished; server replies; ConnectionLost on server close |
 | `OutboundMutualTls` | Outbound: server requires client certificate; TlsClientConfiguration carries cert/key paths |
 | `OutboundTlsServerDisconnect` | Outbound: server closes after handshake; ConnectionEstablished delivered before ConnectionLost |
 | `OutboundTlsHandshakeFailureNoConnectionEstablished` | Outbound: wrong trust anchor; cert verification fails; ConnectionEstablished never delivered; reactor stays alive |
+| `OutboundTlsLargeSendCompletesAcrossWriteReadyEvents` | Outbound: a send too large for one write completes over several write-ready events |
+| `TlsTeardownDuringUnfinishedSendReleasesPendingCiphertext` | Outbound: tearing down a connection with a send unfinished releases the ciphertext waiting to be sent |
 
 All certificates generated programmatically in tests via OpenSSL C API (EC prime256v1, SHA-256). No external tooling required.
 
-**Relationship to SCRAM-SHA-256.** SCRAM (see Section 13) provides *authentication* — proof that the client knows the correct password — but does not encrypt the channel. TLS provides *confidentiality and integrity* for the byte stream. In the full production design, the gateway's inbound FIX listener should use `TlsRawBytes` so that both the FIX messages and the SCRAM exchange over that channel are protected in transit. The two mechanisms are complementary: SCRAM authenticates the SCRAM exchange itself (mutual authentication via `ServerSignature`), TLS prevents the exchange from being observed or tampered with by a network eavesdropper. The binary order gateway has no TLS listener, so its SCRAM exchange travels over plain TCP; whether to add one is an open item in the [roadmap](../roadmap.md).
+**Relationship to SCRAM-SHA-256.** SCRAM (see Section 13) provides *authentication* — proof that the client knows the correct password — but does not encrypt the channel. TLS provides *confidentiality and integrity* for the byte stream. The FIX gateway's member listener uses `TlsRawBytes` when `fix_tls_enabled` is set, so that both the FIX messages and the password the member sends in its Logon are protected in transit. The two mechanisms are complementary: SCRAM authenticates the SCRAM exchange itself (mutual authentication via `ServerSignature`), TLS prevents the exchange from being observed or tampered with by a network eavesdropper. The binary order gateway has no TLS listener, so its SCRAM exchange travels over plain TCP; whether to add one is an open item in the [roadmap](../roadmap.md).
 
 **Where it is used.** The FIX order gateway's member listener (`TlsRawBytes` when `fix_tls_enabled` is set) and the authentication service's administration listener. The binary order gateway and every connection between the venue's components use plain TCP.
 
@@ -605,8 +608,8 @@ The design borrows the ideas of the hffix library (zero-copy, no heap allocation
 
 ## Outbound PDU Path (implemented, tested)
 
-The sending node allocates a slab chunk, writes the `PduHeader` in network byte order, encodes the payload using the DSL, then enqueues a `SendPdu` reactor control command:
-1. Call `reactor.outbound_slab_allocator().allocate(sizeof(PduHeader) + payload_size)`
+`ApplicationThread::send_pdu()` does steps 1 to 4 on the application thread:
+1. Allocate a chunk of `sizeof(PduHeader) + payload_size` bytes from the outbound slab allocator
 2. Write `PduHeader` in network byte order at chunk start
 3. Encode payload after header using DSL `encode()` / `encode_fast()`
 4. Enqueue `ReactorControlCommand{SendPdu}` with `connection_id_`, `slab_id_`, `pdu_chunk_ptr_`, `pdu_byte_count_`
@@ -619,12 +622,12 @@ The sending node allocates a slab chunk, writes the `PduHeader` in network byte 
 The receiving node's reactor accepts data via epoll and delivers it zero-copy to the application thread:
 1. epoll signals `EPOLLIN` on connected socket
 2. Reactor delegates to `InboundConnectionManager::on_data_ready()` → `InboundConnection::handle_read()` → `PduProtocolHandler::on_data_ready()` → `PduParser::receive()`
-3. `PduParser` reads 16-byte `PduHeader` into `header_buffer_`; validates canary
+3. `PduParser` reads the 24-byte `PduHeader` into `header_buffer_`; validates canary
 4. `PduParser` allocates slab chunk: `auto [slab_id, chunk] = inbound_slab_allocator_.allocate(byte_count)`
 5. `PduParser` reads payload **directly from socket into slab chunk** — zero copy
 6. Dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to thread queue
 7. Application thread calls `on_framework_pdu_message(msg)`, processes payload
-8. Application thread calls `inbound_slab_allocator_.deallocate(msg.slab_id(), msg.payload())`
+8. Application thread calls `release_pdu_payload(msg)`, which returns the chunk to the inbound slab allocator
 
 ---
 
