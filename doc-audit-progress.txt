@@ -43,11 +43,20 @@ orientation: `README.md`, `architecture.md`, `building.md`, `running.md`, `testi
 
 top level of `docs/`: `README.md`, `project_status.md`, `roadmap.md`
 
-## Not yet decided whether they are in the audit
+Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_howto.dox`,
+`dsl_design.dox`, `groups.dox`, `memory_management_design.dox`, `raw_socket_design.dox`
 
-- The Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_howto.dox`,
-  `dsl_design.dox`, `groups.dox`, `memory_management_design.dox`, `raw_socket_design.dox`.
-- The LaTeX book under `docs/book/`.
+The LaTeX book under `docs/book/` (the functional specification, about 4,400 lines in 33 `.tex`
+files): `book.tex`, `glossary.tex`, and the chapters `applications`, `disaster_recovery`,
+`high_availability` (with its `disabled` and `enabled` sections), `library`, `metrics` and
+`security`. A requirement in the book states what the venue must do, so a requirement the code does
+not meet is not corrected to match the code: it is reported, as a problem found in the code is.
+Statements of fact in the book (what exists, what a component does, which test covers a
+requirement) are corrected as in any other document. `scripts/check_book_requirements.py` checks
+the requirement identifiers.
+
+## Not yet decided whether it is in the audit
+
 - `docs/bug_list.md`, which records each bug and its state. It is checked by
   `scripts/check_bug_list.py` rather than read against the code as a whole.
   Found while auditing other documents: BUG-0065 says there is no notion of a trading halt anywhere
