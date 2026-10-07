@@ -1,8 +1,24 @@
 # Knowing there is no matching engine {#ha_me_presence}
 
-**Status: designed, not built. 2026-08-28; the startup race settled the same day.** It is the next step for
-[BUG-0009](../bug_list.md#bug_0009) and is what makes
-[BUG-0064](../bug_list.md#bug_0064)'s cold-start case tractable.
+**Status: designed, not built.** The design rests on the arbiter knowing which instances of a
+component are connected to it. The arbiter no longer works that way, so the design needs revisiting
+before it is built:
+
+- **The arbiters no longer track registration.** They take part in deciding leadership as one voter,
+  by granting leases ([Majority leases](majority_leases.md)). An arbiter remembers which instance it
+  last granted a lease in each group (`ArbiterThread::last_granted_to_`), and the newest statement
+  each leader made about whether its peer may lead. It does not record each instance as it registers
+  or drop it on disconnect, the log line quoted below no longer exists, and nor does `started_at_`.
+  The nearest fact an arbiter now holds is whether any instance of a group holds a lease it granted.
+- **The deferred orders this design worried about are recovered.** A matching engine that starts
+  cold catches up from the sequencer's log before it acts, like a promoted one, so an order deferred
+  while no engine ran is applied and reported to the member ([BUG-0064](../bug_list.md#bug_0064)
+  and [BUG-0009](../bug_list.md#bug_0009), both fixed).
+- **With high availability off, the sequencer leads at once**, so the age threshold of
+  [order acceptance](order_acceptance.md) does run in that configuration.
+
+The sections below are the design as written; where a statement about the code no longer holds, it
+is marked.
 
 ## The requirement
 
@@ -35,8 +51,9 @@ than the worst promotion, which makes it too long for the case it exists to catc
 ## The fact already exists
 
 The arbiter tracks component registration per group, `matching_engine` among them. It must: it
-cannot decide who leads a group without knowing who is in it. `ArbiterThread.cpp` records each
-instance as it registers and drops it on disconnect, logging
+cannot decide who leads a group without knowing who is in it. *(No longer true: see the status
+above.)* `ArbiterThread.cpp` recorded each instance as it registered and dropped it on disconnect,
+logging
 
 ```
 ArbiterThread: component group=matching_engine instance_id=2 disconnected
@@ -108,7 +125,7 @@ Getting this wrong is not a small error. **An arbiter restart would refuse every
 perfectly healthy venue.** That is worse than the bug being fixed, and it is the failure mode this
 design has to be judged on.
 
-### Decided 2026-08-28: a negative answer requires positive evidence
+### The decision: a negative answer requires positive evidence
 
 **The arbiter never infers absence from the passage of time. It reports absence only when it has
 seen an instance and seen it go.**
@@ -143,9 +160,8 @@ the same answer because it is the same problem.
 truthfully and mislead completely. Requiring agreement makes the conservative direction the default:
 any arbiter still seeing an instance means defer.
 
-An earlier draft called this option "the most informative and the least reliable after a restart".
-That was wrong, and the correction is the reason it was chosen. **It is less *available* after a
-restart, not less reliable.** Its unavailability degrades to the age threshold, which is what the
+This option is **less *available* after a restart, not less reliable**, and that is why it is the
+one chosen. Its unavailability degrades to the age threshold, which is what the
 venue does today, so the failure mode is "no improvement" rather than "wrong answer". The timer's
 failure mode is a wrong answer.
 
@@ -163,8 +179,7 @@ threshold behind it.
 
 ## With high availability turned off {#ha_me_presence_no_ha}
 
-Asked while this note was being written, and it is the case that decides how the threshold is
-described. **With no arbiter there is no fact to ask for.** Every query resolves to "cannot answer"
+This is the case that decides how the threshold is described. **With no arbiter there is no fact to ask for.** Every query resolves to "cannot answer"
 and the venue falls back on the age threshold for the life of the deployment.
 
 So the threshold is not a backstop there. **It is the entire mechanism**, running in production
@@ -182,24 +197,18 @@ why the catch-up an engine performs before it acts runs in this configuration to
 sequencer's connection rather than by an arbitration that never happens: orders deferred while the
 engine was down are sent to it when it returns, and reported to the members that placed them.
 
-**And today the venue would not even reach the threshold.** Deferral is counted inside the leader
-branch of the forward path: `SequencerThread.cpp` returns for `role_ != leader` before
-`note_order_deferred` is called. A sequencer that never adopts leadership never defers, never
-refuses, and tells nobody anything — which is precisely
-[BUG-0061](../bug_list.md#bug_0061), where a venue with high availability disabled accepts orders,
-forwards none, and looks healthy throughout. **So the answer to "how would the client ever know?"
-is, today, that it would not** — not because the mechanism is missing, but because the code that
-runs it is behind a role the venue never adopts.
-
-That makes BUG-0061 a prerequisite for this note rather than a neighbour of it. Fixing it is what
-puts the sequencer in the leader role with high availability off, and only then does the fallback
-described here actually run.
+**The sequencer reaches the threshold.** Deferral is counted inside the leader branch of the
+forward path, and with high availability off the sequencer takes the lead as soon as it starts, so
+the age threshold runs and the gateways refuse orders once it is passed. What remains open with high
+availability off is [BUG-0061](../bug_list.md#bug_0061): a secondary sequencer started alone leads,
+but the gateways send orders only to the primary, so no order reaches it.
 
 ## What this does not solve
 
-- **Orders already deferred when the answer arrives.** They remain [BUG-0064](../bug_list.md#bug_0064)'s:
-  a cold-starting engine never reconciles, so nothing applies them and the member is never told.
-  Knowing sooner reduces how many join them and does not rescue the ones there.
+- **Orders already deferred when the answer arrives.** They are in the log, and whichever engine
+  acts next applies them and reports them to their members when it catches up
+  ([BUG-0064](../bug_list.md#bug_0064), fixed). Knowing sooner reduces how many there are; it does
+  not change what happens to them.
 - **An engine that is connected and not working.** Everything here keys on registration, and a
   wedged engine is registered. See [BUG-0010](../bug_list.md#bug_0010).
 - **Whether the sequencer should ever stop.** It was proposed that a sequencer with no matching

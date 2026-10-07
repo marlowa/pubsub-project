@@ -16,7 +16,7 @@ Before committing, run `scripts/check_docs.py` (links resolve and every document
 
 ## Done
 
-availability: `order_acceptance.md`
+availability: `matching_engine_presence.md`, `order_acceptance.md`
 
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
@@ -36,7 +36,7 @@ venue: `README.md`, `admin_service.md`, `arbiter.md`, `authentication_service.md
 
 availability: `README.md`, `a_follower_behind_does_not_lead.md`, `change_of_sequencer_leader.md`,
 `commands_during_a_change_of_leader.md`, `design_notes.md`, `follower_log_repair.md`, `gateway_ha.md`,
-`majority_leases.md`, `matching_engine_presence.md`, `process_death.md`, `resend_provenance.md`,
+`majority_leases.md`, `process_death.md`, `resend_provenance.md`,
 `session_binding.md`, `wal_and_ha.md`, `tla/findings.md`
 
 durability: `README.md`, `open_order_checkpoint.md`, `replay.md`, `wal.md`
@@ -113,3 +113,7 @@ Reported to Andrew, and not changed by the audit.
 - `java/fix-test-client/.../fix/MaskingLog.java` hides only `Password` (554). In proprietary logon
   mode the password is sent in `EncryptedPassword` (1402), not yet encrypted, so it is written to
   the client's FIX log files in plain text.
+- `docs/availability/matching_engine_presence.md` is a design, not built, for refusing orders at once
+  when every arbiter says no matching engine exists. It rests on the arbiter tracking which
+  instances have registered, which the arbiter no longer does since leases decide leadership. The
+  document now says so at the top; whether the design is revised or withdrawn is Andrew's decision.
