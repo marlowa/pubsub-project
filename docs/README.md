@@ -2,13 +2,14 @@
 
 ## Working documents
 
-These three are current. Everything else describes how something is built; these say where the
-project stands and what is wrong with it.
+These are current. Everything else describes how something is built; these say where the
+project stands, what is wrong with it, and what the design must keep to.
 
 - **[Introduction](../README.md)** — on the front page: what this is, what it does, and why it is built this way. No prior knowledge assumed
 - **[Project status](project_status.md)** — development is paused: what works, what does not, and where to start
 - **[Roadmap](roadmap.md)** — the slicing plan: what is done, what comes next
 - **[Bug List](bug_list.md)** — every known defect, numbered, ranked by severity
+- **[The rules the design keeps](design_rules.md)** — the thread rules and the venue rules in one list: where each is enforced, what tests it, and where it is broken today
 
 > **Deploying to a new machine?** The filesystem holding the sequencer's log must be mounted
 > `lazytime`. It is a mount option, so it is in no file this repository holds, and without it the
