@@ -159,7 +159,7 @@ def main() -> None:
     build_group.add_argument("--no-pylint", action="store_true",
         help="skip pylint: the Python DSL and FIX dictionary source, and the top-level scripts")
     build_group.add_argument("--no-pytest", action="store_true",
-        help="skip Python DSL tests (pytest)")
+        help="skip both Python test suites, the DSL tests and the script tests (pytest)")
     build_group.add_argument("--jobs", "-j", type=int, metavar="N",
         help="parallel C++ build jobs")
 

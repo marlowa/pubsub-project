@@ -1129,7 +1129,7 @@ Examples:
     )
 
     parser.add_argument('--no-tests', action='store_true',
-        help='Skip all tests: C++ unit+integration, Python DSL pytest, and Java Maven tests (pylint still runs)'
+        help='Skip all tests: C++ unit+integration, the Python DSL and script tests, and Java Maven tests (pylint still runs)'
     )
 
     parser.add_argument('--no-cpp-tests', action='store_true',
@@ -1145,7 +1145,7 @@ Examples:
     )
 
     parser.add_argument('--no-pytest', action='store_true',
-        help='Skip the Python DSL test suite only (pylint still runs; C++ and Java tests are unaffected)'
+        help='Skip both Python test suites, the DSL tests and the script tests (pylint still runs; C++ and Java tests are unaffected)'
     )
 
     parser.add_argument('--no-pylint', action='store_true',
