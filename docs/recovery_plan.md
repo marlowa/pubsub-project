@@ -1,7 +1,7 @@
 # Restoring the design: what is wrong, and the plan {#recovery_plan}
 
 > **Status: agreed, 9 October 2026.** Each phase ends with a review at which Andrew decides whether
-> the next one starts. Phase 1, agreeing the rules, is under way.
+> the next one starts. Phase 1, agreeing the design principles, is under way.
 
 ## In one page
 
@@ -18,16 +18,16 @@ again.
    to have neither.
 2. Two classes, the sequencer's and the matching engine's application threads, have absorbed almost
    every high-availability fix, and no longer have a shape a reader can hold in mind.
-3. The rules the design depends on are written nowhere as one list, so a fix can break one without
-   anyone noticing; and one of them, never sequencing a command twice, is enforced by several
+3. The principles the design depends on are written nowhere as one list, so a fix can break one
+   without anyone noticing; and one of them, never sequencing a command twice, is enforced by several
    separate mechanisms instead of one.
 4. The way of working has been to fix defects one at a time, each where it showed up, without
    checking the fix against the design as a whole. That is what produced the first three.
 
-**The plan.** Stop adding features and fixing bugs. Write the rules down and agree them. Make the
-build enforce the rules it can. Then repair the design in a fixed order, one phase at a time,
+**The plan.** Stop adding features and fixing bugs. Write the design principles down and agree them.
+Make the build enforce the principles it can. Then repair the design in a fixed order, one phase at a time,
 starting with the order path, each phase reviewed before the next begins. Only after that, go back
-to the bug list, judging each entry against the rules.
+to the bug list, judging each entry against the principles.
 
 ---
 
@@ -67,13 +67,13 @@ which combinations are possible, so every change has to be reasoned about agains
 matching engine is the same, with fourteen. Most high-availability fixes added one more such member
 and a few tests of it.
 
-### 3. The rules are not written down together
+### 3. The principles are not written down together
 
-The guarantees the venue gives its members, and the rules about threads, are each stated somewhere,
+The guarantees the venue gives its members, and the principles about threads, are each stated somewhere,
 but in a dozen documents, each describing one mechanism. A person fixing a defect reads the document
-for the mechanism in front of them, and does not see the rule they are about to break.
+for the mechanism in front of them, and does not see the principle they are about to break.
 
-The clearest consequence is the rule that a command is never sequenced twice. It is enforced by three
+The clearest consequence is the principle that a command is never sequenced twice. It is enforced by three
 separate checks, one for each way a command can arrive twice, and each new way has needed a new check
 (BUG-0122). The matching engine has a fourth, which stops working once the first order has ended
 (BUG-0114).
@@ -99,8 +99,8 @@ These apply to every phase below.
   so.
 - **No new features and no bug fixes outside the plan**, unless a defect is found that loses or
   duplicates orders, in which case it is raised with Andrew first.
-- **Every change is checked against the rules** in [design_rules.md](design_rules.md). A change that
-  would break a rule, or needs a new one, is a design question and is raised as one.
+- **Every change is checked against the principles** in [design_principles.md](design_principles.md). A
+  change that would break a principle, or needs a new one, is a design question and is raised as one.
 - **The tests decide.** The whole test suite, including the high-availability scenarios, passes at the
   end of every phase. A new check is made to fail on purpose before it is trusted.
 - **Measure what matters.** Any phase that touches the order path measures the order's round trip
@@ -123,19 +123,20 @@ each is decided in its own design at the start of the phase, not here.
 
 **Finished when:** this plan is agreed. Done: agreed 9 October 2026, and the tag exists.
 
-### Phase 1. Agree the rules
+### Phase 1. Agree the design principles
 
-**For:** one list of the rules the design keeps, which every later phase is checked against.
+**For:** one list of the design principles, which every later phase is checked against.
 
-**Involves:** reviewing [design_rules.md](design_rules.md), a draft that lists five rules about threads
-and ten about what the venue guarantees, says where each is enforced and tested, and where each is
-broken today. It ends with three questions that need Andrew's decision.
+**Involves:** reviewing [design_principles.md](design_principles.md), a draft that lists eight
+principles for the framework and twelve for the venue, says where each is enforced and tested, and
+where each is broken today. It also lists positions not yet on the list, to be accepted or left out,
+and ends with questions that need Andrew's decision.
 
 **Finished when:** Andrew has answered those questions and agreed the document.
 
-### Phase 2. Make the build enforce the thread rules
+### Phase 2. Make the build enforce the framework principles
 
-**For:** the rules about threads checked by a machine rather than by memory, so they cannot be broken
+**For:** the principles about threads checked by a machine rather than by memory, so they cannot be broken
 again unnoticed.
 
 **Involves:** making the standards check reject any lock outside a short, named list of start-up and
@@ -192,7 +193,7 @@ whole test suite passing after each.
 
 ### Phase 7. One check against sequencing a command twice
 
-**For:** the rule "a command is sequenced at most once" enforced in one place, for every command,
+**For:** the principle "a command is sequenced at most once" enforced in one place, for every command,
 however it arrived.
 
 **Involves:** replacing the separate checks with one check on every command (BUG-0122), and making the
@@ -202,11 +203,11 @@ the check's cost on the order path.
 **Finished when:** the separate checks are gone, the high-availability scenarios that test repeated
 commands pass, and the cost is measured.
 
-### Phase 8. Check the models and documents against the rules
+### Phase 8. Check the models and documents against the principles
 
 **For:** the written descriptions agreeing with the repaired code.
 
-**Involves:** checking the TLA+ models against the agreed rules; bringing the high-availability, sequencer
+**Involves:** checking the TLA+ models against the agreed principles; bringing the high-availability, sequencer
 and matching engine documents up to date with the code, as part of the documentation audit already
 under way; removing descriptions of mechanisms that phases 3 to 7 removed.
 
@@ -216,8 +217,8 @@ under way; removing descriptions of mechanisms that phases 3 to 7 removed.
 
 **For:** the remaining defects, now fixed against a design that is written down.
 
-**Involves:** going through every open entry and deciding, against the rules, whether it is already
-fixed by phases 3 to 7, is a breach of a rule, or is a new requirement. Then agreeing an order for
+**Involves:** going through every open entry and deciding, against the principles, whether it is already
+fixed by phases 3 to 7, is a breach of a principle, or is a new requirement. Then agreeing an order for
 those that remain, with Andrew. Each fix from then on follows the same way of working as above.
 
 **Finished when:** every open entry has been judged and the order agreed.
@@ -237,4 +238,4 @@ those that remain, with Andrew. Each fix from then on follows the same way of wo
 - The metric handles record without a virtual call, measured before and after, at Andrew's request,
   before this plan was written.
 - The code is tagged `pre-recovery-2026-10-09`.
-- The draft of the rules, [design_rules.md](design_rules.md), exists for phase 1.
+- A draft of the design principles, [design_principles.md](design_principles.md), exists for phase 1.

@@ -27,15 +27,8 @@ buyers with sellers; the functional specification in `docs/book` records what it
 
 ## Design principles
 
-| Principle | How it is met |
-|---|---|
-| Nothing on the order path allocates from the heap | Pool, bump and slab allocators; slab-backed message payloads |
-| Fast paths take no locks | Lock-free queues; compare-and-swap in the pool allocator |
-| Incoming messages are not copied | The slab chunk a message arrived in is handed to the application thread |
-| Threads stay on their cores | A shared registry of CPUs; each thread claims its cores at startup |
-| Shutdown is deterministic | A lifecycle state machine; a descriptor that wakes `epoll`; joins with a timeout |
-| One order of events | The leading sequencer alone decides the order in which the matching engine sees commands |
-| The log is the record | The sequencer's write-ahead log holds every order; everything else can be rebuilt from it |
+The principles the design rests on, how each is met, and whether each holds today are listed in
+one place: [design_principles.md](../design_principles.md).
 
 ---
 

@@ -223,11 +223,10 @@ Scripts are run from the repository root — `python3 scripts/deploy.py`, `./scr
 
 ## Design Principles
 
-- CPU-pinned threads with lock-free fast paths throughout
-- No heap allocation on any hot path — pool allocators, bump allocators, and slab allocators used exclusively
-- Zero-copy on all inbound and outbound PDU paths
-- Deterministic shutdown
-- Message ordering preserved
+The principles the design rests on -- one owning thread for each piece of state, no locks and no heap
+allocation on the order path, one order of events decided by the sequencer, and what the venue
+guarantees its members when a process or a machine fails -- are listed in one place, with where each
+is enforced and whether it holds today: [docs/design_principles.md](docs/design_principles.md).
 
 ## High Availability
 
