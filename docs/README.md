@@ -9,6 +9,7 @@ project stands, what is wrong with it, and what the design must keep to.
 - **[Project status](project_status.md)** — development is paused: what works, what does not, and where to start
 - **[Roadmap](roadmap.md)** — the slicing plan: what is done, what comes next
 - **[Bug List](bug_list.md)** — every known defect, numbered, ranked by severity
+- **[Restoring the design](recovery_plan.md)** — what is wrong with the design, and the plan, phase by phase, to put it right
 - **[The rules the design keeps](design_rules.md)** — the thread rules and the venue rules in one list: where each is enforced, what tests it, and where it is broken today
 
 > **Deploying to a new machine?** The filesystem holding the sequencer's log must be mounted
