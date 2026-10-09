@@ -51,7 +51,7 @@ else
 fi
 
 INSTALL_PREFIX="${THIRDPARTY_DIR}/installed/cpptrace/${CPPTRACE_VERSION}"
-BUILD_DIR="/tmp/cpptrace-build"
+BUILD_DIR="${PWD}/tmp/cpptrace-build"
 
 echo "============================================================"
 echo "Building cpptrace ${CPPTRACE_VERSION}"
@@ -60,12 +60,15 @@ echo "Install prefix: ${INSTALL_PREFIX}"
 echo "============================================================"
 
 # Use the source already unpacked in the third-party tree if it is there, and fetch it if it is
-# not. Downloading goes to /tmp rather than the current directory: run from the project root, a
-# bare wget leaves the tarball in the tree, and it will not overwrite an existing file -- it saves
-# alongside as .1 and the build then silently uses whatever stale tarball was already there.
+# not. The download, the unpacked copy and the build all go in tmp/ under the directory the script
+# is run from, not the shared /tmp; run from the project root, that directory is ignored by git,
+# so nothing is left in the tree. The archive is fetched to a name of its own only when it is not
+# already there, because a bare wget will not overwrite an existing file: it saves alongside as
+# .1, and the build then silently uses whatever stale tarball was already there.
 SOURCE_DIR="${THIRDPARTY_DIR}/cpptrace-${CPPTRACE_VERSION}"
 if [ ! -d "${SOURCE_DIR}" ]; then
-    ARCHIVE="/tmp/cpptrace-${CPPTRACE_VERSION}.tar.gz"
+    mkdir -p "${PWD}/tmp"
+    ARCHIVE="${PWD}/tmp/cpptrace-${CPPTRACE_VERSION}.tar.gz"
     if [ ! -f "${ARCHIVE}" ]; then
         if ! wget "https://github.com/jeremy-rifkin/cpptrace/archive/refs/tags/v${CPPTRACE_VERSION}.tar.gz" -O "${ARCHIVE}"; then
             rm -f "${ARCHIVE}"
@@ -77,9 +80,9 @@ if [ ! -d "${SOURCE_DIR}" ]; then
             exit 1
         fi
     fi
-    rm -rf "/tmp/cpptrace-${CPPTRACE_VERSION}"
-    tar xzf "${ARCHIVE}" -C /tmp
-    SOURCE_DIR="/tmp/cpptrace-${CPPTRACE_VERSION}"
+    rm -rf "${PWD}/tmp/cpptrace-${CPPTRACE_VERSION}"
+    tar xzf "${ARCHIVE}" -C "${PWD}/tmp"
+    SOURCE_DIR="${PWD}/tmp/cpptrace-${CPPTRACE_VERSION}"
 fi
 echo "Source:         ${SOURCE_DIR}"
 

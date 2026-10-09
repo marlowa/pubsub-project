@@ -1,12 +1,13 @@
 #!/bin/bash
 # Builds and installs prometheus-cpp into the thirdparty directory.
-# Run this inside the RHEL8/Rocky Linux 8 Docker container.
+# Run this inside the RHEL8/Rocky Linux 8 Docker container. It downloads and builds in
+# tmp/prometheus-cpp-build under the directory it is run from, not in the shared /tmp.
 
 set -euo pipefail
 
 PROMETHEUS_VERSION="1.3.0"
 INSTALL_PREFIX="/development/3rdparty/installed/prometheus-cpp/${PROMETHEUS_VERSION}"
-BUILD_DIR="/tmp/prometheus-cpp-build"
+BUILD_DIR="${PWD}/tmp/prometheus-cpp-build"
 
 echo "============================================================"
 echo "Building prometheus-cpp ${PROMETHEUS_VERSION}"

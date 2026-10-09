@@ -218,7 +218,7 @@ Options: `--skip-certs`, `--force-certs`, `--skip-db`, `--skip-create-db`, `--dr
 python3 scripts/devenv.py start
 ```
 
-Components are started in the order defined in `[startup_order]` in the env TOML, with a 1-second delay between each. Logs go to `installed/log/<name>.log` (application log) and `installed/log/<name>.stdout` (stdout/stderr). PID files go to `/var/tmp/pubsub/run/<name>.pid`.
+Components are started in the order defined in `[startup_order]` in the env TOML, with a 1-second delay between each. Logs go to `installed/log/<name>.log` (application log) and `installed/log/<name>.stdout` (stdout/stderr). PID files go to `<run_dir>/<name>.pid`, where `run_dir` is set in the `[paths]` section of the env TOML (`installed/run` in `dev.toml`).
 
 **Checking status:**
 

@@ -1185,7 +1185,11 @@ def main() -> None:
             sys.exit(1)
         scenarios_to_run = [scenario_number]
 
-    with tempfile.TemporaryDirectory(prefix="auth_service_test_") as tmp_str:
+    # In tmp/ under the directory the script is run from, not the shared /tmp: nothing the project
+    # runs writes to a machine-wide directory.
+    scratch_root = Path.cwd() / "tmp"
+    scratch_root.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="auth_service_test_", dir=scratch_root) as tmp_str:
         temp_dir = Path(tmp_str)
         log(f"Temporary directory: {temp_dir}")
         log("")

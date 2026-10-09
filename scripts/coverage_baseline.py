@@ -225,7 +225,11 @@ def read_baseline_at_ref(reference, path):
             f"no {path} committed at '{reference}': {result.stderr.strip()}\n"
             f"A release before the baseline existed will not have one; compare against a "
             f"later tag, or review this release's coverage without a comparison.")
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
+    # In tmp/ under the directory the script is run from, not the shared /tmp: nothing the project
+    # runs writes to a machine-wide directory.
+    scratch_root = Path.cwd() / "tmp"
+    scratch_root.mkdir(exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8", dir=scratch_root) as handle:
         handle.write(result.stdout)
         temporary_path = handle.name
     try:

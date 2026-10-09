@@ -79,3 +79,7 @@ docs/book/**/*.aux
 # store is read back off a real filesystem, which is the thing being tested.
 mapped_slot_store_test_*/
 order_book_test_*/
+
+# Working directories of the third-party build scripts (scripts/build_*.sh), made under the
+# directory a script is run from.
+/tmp/

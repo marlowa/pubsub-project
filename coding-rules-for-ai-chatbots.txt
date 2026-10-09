@@ -192,6 +192,28 @@ This is enforced by check_standards.py: it flags a bare true/false passed to a p
 (standard/library calls such as an atomic store or make_tuple are not project functions and are not flagged). A genuinely
 unavoidable case can opt out with a "bool-arg-ok" comment on the call line.
 
+Where files are written
+
+Nothing the project runs -- the venue, its tests or its scripts -- writes to a machine-wide
+directory such as /tmp, /var/tmp or /dev/shm. Files go under the installation, the build tree,
+or the directory a script is run from.
+
+This applies to everything: a deployed component's log, write-ahead log and PID files go under
+the installation's own directory, as the environment files set them; a unit test makes its
+scratch directory under the build tree (tests_common/ScratchDirectory); a script that needs
+somewhere to download, unpack or build uses tmp/ under the directory it is run from, which git
+ignores at the root of the repository. In Python, give tempfile a dir= argument; never take its
+default, which is /tmp. A default value in a configuration class must not name such a directory
+either, even if the setting is required.
+
+The reasons. Two installations, or two users, on one machine must not contend for one file.
+A machine-wide directory may be mounted noexec, which stops a build that runs the programs it
+compiles while configuring. And /dev/shm is tmpfs, with no journal and no block allocation, so a
+test of filesystem behaviour run there cannot fail.
+
+The one exception is a directory inside a container that is discarded when the container exits,
+such as /tmp in a "docker run --rm" command: that directory belongs to the container alone.
+
 Performance work
 
 The build stays at -O2. Do not raise the optimisation level, and do not offer -O3 as a way

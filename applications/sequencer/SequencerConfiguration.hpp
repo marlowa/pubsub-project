@@ -190,8 +190,11 @@ struct SequencerConfiguration {
 
     // WAL -- mmap'd on-disk write-ahead log
 
-    /** @brief Directory in which WAL segment files are created. */
-    std::string wal_directory{"/var/tmp/pubsub/sequencer_wal"};
+    /**
+     * @brief Directory in which WAL segment files are created. Required in the configuration file;
+     *        there is no default, because any default would be a guess at a machine-wide location.
+     */
+    std::string wal_directory;
 
     /** @brief Pre-allocation size of each WAL segment file in bytes. */
     size_t wal_segment_size{4 * 1024 * 1024};

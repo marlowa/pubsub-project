@@ -432,7 +432,11 @@ def run_test(prefix: Path) -> bool:
     gw_proc     = None
 
     try:
-        with tempfile.TemporaryDirectory(prefix="fix_capture_test_") as tmp_str:
+        # In tmp/ under the directory the script is run from, not the shared /tmp: nothing the project
+        # runs writes to a machine-wide directory.
+        scratch_root = Path.cwd() / "tmp"
+        scratch_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="fix_capture_test_", dir=scratch_root) as tmp_str:
             tmp = Path(tmp_str)
             log(f"  temp directory: {tmp}")
 

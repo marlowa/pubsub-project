@@ -52,7 +52,9 @@ struct MatchingEnginePublisherConfiguration {
 
     // WAL -- MEP's own write-ahead log
 
-    std::string wal_directory{"/var/tmp/pubsub/mep_wal"};
+    /// Required in the configuration file; there is no default, because any default would be a
+    /// guess at a machine-wide location.
+    std::string wal_directory;
     size_t wal_segment_size{4 * 1024 * 1024};
     int32_t snapshot_interval_seconds{30};
 

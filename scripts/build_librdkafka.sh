@@ -7,7 +7,8 @@
 #   scripts/build_librdkafka.sh /path/to/librdkafka-2.15.1
 #
 # Nothing is downloaded, so this runs on a build host with no network. The source is only read:
-# the build happens under /tmp, so the source may be mounted read-only in a container. The
+# the build happens in tmp/ under the directory the script is run from, not the shared /tmp, so
+# the source may be mounted read-only in a container. The
 # example programs are built but not installed; they stay in the build directory, which is
 # printed at the end, for trying the library against a broker.
 #
@@ -58,7 +59,7 @@ case "${ID}${VERSION_ID}" in
 esac
 
 INSTALL_PREFIX="${THIRDPARTY_DIR}/installed/librdkafka/${RDKAFKA_VERSION}"
-BUILD_DIR="${TMPDIR:-/tmp}/librdkafka-${RDKAFKA_VERSION}-build"
+BUILD_DIR="${PWD}/tmp/librdkafka-${RDKAFKA_VERSION}-build"
 
 echo "============================================================"
 echo "Building librdkafka ${RDKAFKA_VERSION}"

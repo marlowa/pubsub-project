@@ -6,17 +6,18 @@ set -euo pipefail
 
 FMT_VERSION="11.0.2"
 INSTALL_PREFIX="/development/3rdparty/installed/fmt/${FMT_VERSION}"
-BUILD_DIR="/tmp/fmt-build"
+BUILD_DIR="${PWD}/tmp/fmt-build"
 
 echo "============================================================"
 echo "Building fmt ${FMT_VERSION}"
 echo "Install prefix: ${INSTALL_PREFIX}"
 echo "============================================================"
 
-# Download into /tmp, not the current directory. Run from the project root this used to leave
-# the tarball and the unpacked source behind in the tree, and a bare wget will not overwrite an
-# existing file -- it saves alongside as .1 and the build then silently uses whatever stale
-# tarball was already there.
+# Download and build in tmp/fmt-build under the directory the script is run from, not in the
+# shared /tmp. Run from the project root, that directory is ignored by git, so nothing is left
+# in the tree. The archive is downloaded to a name of its own and only when it is not already
+# there: a bare wget will not overwrite an existing file, it saves alongside as .1, and the build
+# would then silently use whatever stale tarball was already there.
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 

@@ -380,7 +380,11 @@ def main() -> None:
     print(f"  output dir   : {args.output_dir.resolve()}")
     print()
 
-    with tempfile.TemporaryDirectory(prefix="pubsub-release-") as temp_dir:
+    # In tmp/ under the directory the script is run from, not the shared /tmp: nothing the project
+    # runs writes to a machine-wide directory.
+    scratch_root = Path.cwd() / "tmp"
+    scratch_root.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pubsub-release-", dir=scratch_root) as temp_dir:
         stage = Path(temp_dir) / artefact_name
 
         print("=== staging ===")

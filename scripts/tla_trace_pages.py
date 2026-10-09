@@ -255,7 +255,11 @@ def run_tlc(java: str, jar: Path, example: Counterexample) -> str:
     """Run TLC on the example in a scratch directory and return everything it printed."""
     spec = example.spec
     base = (_TLA_DIR / f'{spec}.cfg').read_text()
-    with tempfile.TemporaryDirectory(prefix='tla_trace_') as work:
+    # In tmp/ under the directory the script is run from, not the shared /tmp: nothing the project
+    # runs writes to a machine-wide directory.
+    scratch_root = Path.cwd() / 'tmp'
+    scratch_root.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='tla_trace_', dir=scratch_root) as work:
         work_dir = Path(work)
         shutil.copy(_TLA_DIR / f'{spec}.tla', work_dir)
         (work_dir / f'{spec}.cfg').write_text(make_config(base, example))

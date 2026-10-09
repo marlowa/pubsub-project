@@ -1,12 +1,13 @@
 #!/bin/bash
 # Builds and installs GoogleTest 1.10.0 into the thirdparty directory.
-# Run this inside the RHEL8/Rocky Linux 8 Docker container.
+# Run this inside the RHEL8/Rocky Linux 8 Docker container. It downloads and builds in
+# tmp/googletest-build under the directory it is run from, not in the shared /tmp.
 
 set -euo pipefail
 
 GTEST_VERSION="1.10.0"
 INSTALL_PREFIX="/development/3rdparty/installed/googletest/${GTEST_VERSION}"
-BUILD_DIR="/tmp/googletest-build"
+BUILD_DIR="${PWD}/tmp/googletest-build"
 
 echo "============================================================"
 echo "Building GoogleTest ${GTEST_VERSION}"

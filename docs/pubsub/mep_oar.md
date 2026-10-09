@@ -816,7 +816,7 @@ ha_enabled                      = true
 instance_id                     = 1
 peer_host                       = "127.0.0.1"
 arbiter_primary_host            = "127.0.0.1"
-wal_directory                   = "/var/tmp/pubsub/mep_primary_wal"
+wal_directory                   = "var/mep_primary_wal"
 
 [matching_engine_publisher_secondary]
 # same fields, instance_id = 2, peer_host points to primary
@@ -829,7 +829,7 @@ ha_enabled                   = true
 instance_id                  = 1
 peer_host                    = "127.0.0.1"
 arbiter_primary_host         = "127.0.0.1"
-cursors_directory            = "/var/tmp/pubsub/tap_primary_cursors"
+cursors_directory            = "var/tap_primary_cursors"
 
 [tap_secondary]
 # same fields, instance_id = 2

@@ -8,7 +8,8 @@
 #
 # The argument is the top of the unpacked release, the directory holding share/VERSION.txt and
 # lang/. Nothing is downloaded, so this runs on a build host with no network. The source is only
-# read: it is copied under /tmp and built there, so it may be mounted read-only in a container.
+# read: it is copied into tmp/ under the directory the script is run from, not the shared /tmp,
+# and built there, so it may be mounted read-only in a container.
 #
 # Avro is built against, and linked to, the fmt the project uses, from THIRDPARTY_DIR. Upstream,
 # Avro compiles its own copy of the fmt code it needs and does not tell a project that uses it
@@ -60,7 +61,7 @@ esac
 
 FMT_PREFIX="${THIRDPARTY_DIR}/installed/fmt/${FMT_VERSION}"
 INSTALL_PREFIX="${THIRDPARTY_DIR}/installed/avro-cpp/${AVRO_VERSION}"
-WORK_DIR="${TMPDIR:-/tmp}/avro-cpp-${AVRO_VERSION}"
+WORK_DIR="${PWD}/tmp/avro-cpp-${AVRO_VERSION}"
 COPY_DIR="${WORK_DIR}/source"
 BUILD_DIR="${WORK_DIR}/build"
 
