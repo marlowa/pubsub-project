@@ -18,15 +18,10 @@
 #include <prometheus/registry.h>
 
 #include <pubsub_itc_fw/CounterHandle.hpp>
-#include <pubsub_itc_fw/CounterInterface.hpp>
 #include <pubsub_itc_fw/GaugeHandle.hpp>
-#include <pubsub_itc_fw/GaugeInterface.hpp>
 #include <pubsub_itc_fw/HistogramHandle.hpp>
-#include <pubsub_itc_fw/HistogramInterface.hpp>
 #include <pubsub_itc_fw/MetricKey.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
-#include <pubsub_itc_fw/PrometheusCounter.hpp>
-#include <pubsub_itc_fw/PrometheusGauge.hpp>
 #include <pubsub_itc_fw/SingleWriterHistogramRegistry.hpp>
 
 namespace prometheus {
@@ -44,9 +39,10 @@ namespace pubsub_itc_fw {
  * leaf becomes the Prometheus metric name and the rest become labels, so metrics sharing a
  * leaf name form one family with several labelled children.
  *
- * `register_*` hands back a reference to an interface, never to a prometheus-cpp type, so
- * no call site knows whether metrics are switched on. When they are not, every metric is a
- * shared no-op.
+ * `register_*` hands back a handle (CounterHandle, GaugeHandle or HistogramHandle) that
+ * holds a pointer to the metric itself, so recording makes no virtual call. No call site
+ * needs to know whether metrics are switched on: when they are not, every handle holds a
+ * null pointer and recording through it does nothing.
  *
  * **Construction, then start**
  *
@@ -229,12 +225,6 @@ class PrometheusEndpoint {
 
     std::map<std::string, prometheus::Family<prometheus::Counter>*> counter_families_;
     std::map<std::string, prometheus::Family<prometheus::Gauge>*> gauge_families_;
-
-    // std::map is used rather than unordered_map because references to elements must stay
-    // valid as more are inserted: register_* hands those references to callers that keep
-    // them for the life of the process.
-    std::map<std::string, PrometheusCounter> counters_;
-    std::map<std::string, PrometheusGauge> gauges_;
 
     // Null when metrics are disabled. Holds every histogram, and is the second collectable the
     // listener reads. A shared_ptr because the Exposer keeps a weak_ptr to each collectable.

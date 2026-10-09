@@ -19,9 +19,6 @@
 #include <prometheus/text_serializer.h>
 
 #include <pubsub_itc_fw/MetricKey.hpp>
-#include <pubsub_itc_fw/NoOpCounter.hpp>
-#include <pubsub_itc_fw/NoOpGauge.hpp>
-#include <pubsub_itc_fw/NoOpHistogram.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #include <pubsub_itc_fw/PrometheusEndpoint.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
@@ -31,24 +28,6 @@
 namespace pubsub_itc_fw {
 
 namespace {
-
-// The no-op metrics carry no state, so one of each serves every disabled metric in the
-// process rather than one per registration. That is what makes the disabled path free of
-// allocation as well as free of work.
-NoOpCounter& shared_no_op_counter() {
-    static NoOpCounter instance;
-    return instance;
-}
-
-NoOpGauge& shared_no_op_gauge() {
-    static NoOpGauge instance;
-    return instance;
-}
-
-NoOpHistogram& shared_no_op_histogram() {
-    static NoOpHistogram instance;
-    return instance;
-}
 
 constexpr const char* application_label = "application";
 constexpr const char* component_label = "component";
@@ -187,7 +166,7 @@ CounterHandle PrometheusEndpoint::register_counter(const MetricKey& metric_key, 
 
     const std::map<std::string, std::string> labels = note_registration(metric_key, help);
     if (!configuration_.enabled) {
-        return CounterHandle(&shared_no_op_counter());
+        return CounterHandle{};
     }
 
     const std::string& name = metric_key.metric_name();
@@ -197,8 +176,10 @@ CounterHandle PrometheusEndpoint::register_counter(const MetricKey& metric_key, 
         family = counter_families_.emplace(name, &built).first;
     }
 
+    // The family holds each counter by unique_ptr, so the address handed out stays valid as more
+    // counters are added.
     prometheus::Counter& counter = family->second->Add(labels);
-    return CounterHandle(&counters_.emplace(metric_key.full_name(), PrometheusCounter(&counter)).first->second);
+    return CounterHandle(&counter);
 }
 
 GaugeHandle PrometheusEndpoint::register_gauge(const MetricKey& metric_key, const char* help) {
@@ -206,7 +187,7 @@ GaugeHandle PrometheusEndpoint::register_gauge(const MetricKey& metric_key, cons
 
     const std::map<std::string, std::string> labels = note_registration(metric_key, help);
     if (!configuration_.enabled) {
-        return GaugeHandle(&shared_no_op_gauge());
+        return GaugeHandle{};
     }
 
     const std::string& name = metric_key.metric_name();
@@ -216,8 +197,9 @@ GaugeHandle PrometheusEndpoint::register_gauge(const MetricKey& metric_key, cons
         family = gauge_families_.emplace(name, &built).first;
     }
 
+    // As for counters: the family holds each gauge by unique_ptr, so its address stays valid.
     prometheus::Gauge& gauge = family->second->Add(labels);
-    return GaugeHandle(&gauges_.emplace(metric_key.full_name(), PrometheusGauge(&gauge)).first->second);
+    return GaugeHandle(&gauge);
 }
 
 HistogramHandle PrometheusEndpoint::register_histogram(const MetricKey& metric_key, const char* help, const std::vector<double>& buckets) {
@@ -225,7 +207,7 @@ HistogramHandle PrometheusEndpoint::register_histogram(const MetricKey& metric_k
 
     const std::map<std::string, std::string> labels = note_registration(metric_key, help);
     if (!configuration_.enabled) {
-        return HistogramHandle(&shared_no_op_histogram());
+        return HistogramHandle{};
     }
 
     SingleWriterHistogram& histogram = histogram_registry_->add(metric_key.metric_name(), help != nullptr ? help : "", labels, buckets);

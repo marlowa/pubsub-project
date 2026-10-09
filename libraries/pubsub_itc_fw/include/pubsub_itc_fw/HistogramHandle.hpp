@@ -3,7 +3,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <pubsub_itc_fw/HistogramInterface.hpp>
+#include <pubsub_itc_fw/SingleWriterHistogram.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -11,15 +11,18 @@ namespace pubsub_itc_fw {
  * @brief A copyable value that records through a histogram owned by PrometheusEndpoint.
  *
  * As CounterHandle, which carries the full rationale for why registration returns a value
- * rather than a reference. This is not a HistogramInterface; it holds a pointer to one.
+ * rather than a reference. The handle holds a pointer to the SingleWriterHistogram itself, so
+ * observe() compiles into the caller: a test of the pointer, the search of the bucket bounds
+ * and two stores, with no call at all. A null pointer means metrics are disabled, and observe()
+ * then does nothing. A default-constructed handle holds a null pointer, so it records nowhere and
+ * is safe to observe on.
  */
 class HistogramHandle {
   public:
-    /** @brief A handle that records nowhere. Observing on it is safe and does nothing. */
     HistogramHandle() = default;
 
     /** @param[in] histogram Histogram to record through. Must outlive this handle. */
-    explicit HistogramHandle(HistogramInterface* histogram) : histogram_(histogram) {}
+    explicit HistogramHandle(SingleWriterHistogram* histogram) : histogram_(histogram) {}
 
     /** @brief Records one observation. Does nothing on a default-constructed handle. */
     void observe(double value) {
@@ -34,7 +37,7 @@ class HistogramHandle {
     }
 
   private:
-    HistogramInterface* histogram_ = nullptr;
+    SingleWriterHistogram* histogram_ = nullptr;
 };
 
 } // namespaces

@@ -3,22 +3,21 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cstdint>
-
-#include <pubsub_itc_fw/CounterInterface.hpp>
+#include <prometheus/counter.h>
 
 namespace pubsub_itc_fw {
 
 /**
  * @brief A copyable value that records through a counter owned by PrometheusEndpoint.
  *
- * This is NOT a CounterInterface. It does not derive from it and takes no part in the
- * hierarchy -- it holds a pointer to one. PrometheusCounter and NoOpCounter remain the
- * implementations, and the virtual call still happens; this type exists only to give
- * callers something they can hold by value.
+ * The handle holds a pointer to the prometheus-cpp counter itself, so increment() compiles to a
+ * test of the pointer and the counter's own update, with no virtual call and no call through a
+ * function pointer in between. A null pointer means metrics are disabled, and increment() then
+ * does nothing. A default-constructed handle holds a null pointer, so it records nowhere and is
+ * safe to increment.
  *
- * Registration returns one of these rather than a CounterInterface& for three reasons,
- * all of which bite at the call site rather than here:
+ * Registration returns one of these rather than a reference for three reasons, all of which
+ * bite at the call site rather than here:
  *
  *  - A reference member must be initialised in the constructor's initialiser list, which
  *    runs in member *declaration* order. A metric whose key is built from another member --
@@ -33,21 +32,20 @@ namespace pubsub_itc_fw {
  * What this does NOT provide is lifetime safety. The pointer dangles if the endpoint is
  * destroyed first, exactly as a reference would. That is not a problem in practice because
  * the endpoint is a Reactor member and outlives everything that registers with it, and
- * because registrations are held in a node-based map whose elements do not move as further
- * metrics are registered.
+ * because prometheus-cpp keeps each counter in a family that holds it by unique_ptr, so a
+ * counter does not move as further counters are registered.
  */
 class CounterHandle {
   public:
-    /** @brief A handle that records nowhere. Increments on it are safe and do nothing. */
     CounterHandle() = default;
 
     /** @param[in] counter Counter to record through. Must outlive this handle. */
-    explicit CounterHandle(CounterInterface* counter) : counter_(counter) {}
+    explicit CounterHandle(prometheus::Counter* counter) : counter_(counter) {}
 
     /** @brief Adds one. Does nothing on a default-constructed handle. */
     void increment() {
         if (counter_ != nullptr) {
-            counter_->increment();
+            counter_->Increment();
         }
     }
 
@@ -57,7 +55,7 @@ class CounterHandle {
     }
 
   private:
-    CounterInterface* counter_ = nullptr;
+    prometheus::Counter* counter_ = nullptr;
 };
 
 } // namespaces

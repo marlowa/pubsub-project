@@ -16,7 +16,6 @@
 
 #include <prometheus/client_metric.h>
 
-#include <pubsub_itc_fw/HistogramInterface.hpp>
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 #endif
@@ -54,9 +53,9 @@ namespace pubsub_itc_fw {
  * ownership, because registering a histogram and recording into it need not happen on the same
  * thread.
  */
-class SingleWriterHistogram : public HistogramInterface {
+class SingleWriterHistogram {
   public:
-    ~SingleWriterHistogram() override = default;
+    ~SingleWriterHistogram() = default;
 
     /**
      * @param[in] upper_bounds Bucket upper bounds, strictly ascending. A value equal to a bound
@@ -79,7 +78,7 @@ class SingleWriterHistogram : public HistogramInterface {
      * Defined here so that it can be inlined at the call site, as the whole cost of recording
      * is meant to be a search of the bounds and two stores.
      */
-    void observe(double value) override {
+    void observe(double value) {
         check_single_writer();
 
         // lower_bound finds the first bound not less than the value, so a value equal to a bound

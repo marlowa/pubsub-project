@@ -98,15 +98,14 @@ is the one that collided. The others take the same mutex. The method is set out 
 4. Every count a scrape reports is one that really was reached, and no count ever goes down from one
    scrape to the next. Prometheus's `rate()` treats a decrease as a restart of the process, so a
    count that went down would be read as a restart.
-5. Nothing at a call site changes. `HistogramHandle`, `HistogramInterface` and `NoOpHistogram` stay
-   as they are.
+5. Nothing at a call site changes. A call site records through `HistogramHandle` as before.
 6. When metrics are disabled, nothing is allocated and recording does nothing, as today.
 
 ## 4. The design
 
 ### 4.1 One writer, ordinary stores
 
-A new class, `SingleWriterHistogram`, implements `HistogramInterface`. It holds:
+A new class, `SingleWriterHistogram`, which `HistogramHandle` points to. It holds:
 
 - the bucket upper bounds, fixed at registration, ascending;
 - one count for each bucket and one for values above the last bound, each a `std::atomic<int64_t>`;

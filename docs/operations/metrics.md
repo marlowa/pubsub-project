@@ -2,8 +2,7 @@
 
 How this project exposes measurements, and the decisions behind the shape of it.
 
-> **Status: in use.** `MetricKey`, the metric interfaces, their no-op and prometheus-cpp
-> implementations, the `Exposer` and the configuration below are all built. Metrics are
+> **Status: in use.** `MetricKey`, the recording handles, the `Exposer` and the configuration below are all built. Metrics are
 > enabled in `dev.toml` and disabled in `test-1.toml`, `preprod.toml` and `prod.toml`. Every
 > component with metrics enabled exposes the reactor's own series. The sequencer, the matching
 > engine and both order gateways also name a `metrics_scope`, so their application threads
@@ -84,24 +83,29 @@ name is stricter than the other tokens.
 
 ## Metric types and the on/off switch
 
-Three interfaces -- `CounterInterface`, `GaugeInterface`, `HistogramInterface` -- each with
-a recording implementation and a no-op one. Counters and gauges are recorded by prometheus-cpp's
-own types. Histograms are recorded by `SingleWriterHistogram`, the framework's own, for the reason
-given under "Metric objects and locking" below. `PrometheusEndpoint::register_*` returns a
-handle that refers to one or the other (see "Recording handles" below), so **no call site knows
-which it got**.
+Counters and gauges are recorded by prometheus-cpp's own types, `prometheus::Counter` and
+`prometheus::Gauge`. Histograms are recorded by `SingleWriterHistogram`, the framework's own, for
+the reason given under "Metric objects and locking" below. `PrometheusEndpoint::register_*`
+returns a handle -- `CounterHandle`, `GaugeHandle` or `HistogramHandle` -- that holds a pointer to
+that object itself (see "Recording handles" below).
 
 That is what makes metrics switchable at one point. When metrics are disabled the endpoint
-returns references to shared no-op instances; the no-ops are stateless, so one instance of
-each type serves the whole process.
+returns a handle holding a null pointer, and recording through it does nothing. No call site
+needs to know whether metrics are on.
 
 Two consequences worth knowing at call sites:
 
-- an observation on a disabled metric still costs a virtual call, because an empty virtual
-  function cannot be inlined away. That is a few nanoseconds and is not worth avoiding;
+- recording makes no virtual call and no call through a function pointer. The handle's
+  `observe`, `increment` and `set` test the pointer and then do the work of the metric itself,
+  and for a histogram all of that is compiled into the caller. Measured on the development
+  machine at `-O2`, pinned to one core, a histogram observation costs about 5.7 nanoseconds
+  this way, against 6.4 through a virtual call; nearly all of it is the search of the bucket
+  bounds and the two stores. A counter costs about 7.9 nanoseconds either way, almost all of it
+  the atomic update inside prometheus-cpp. On a disabled metric recording costs about 0.2
+  nanoseconds for a histogram and 0.5 for a counter;
 - **the argument is still evaluated.** `observe(expensive())` pays for `expensive()` whether
   or not metrics are on. Where computing the value is itself costly, guard the computation
-  rather than relying on the no-op.
+  rather than relying on the handle to do nothing.
 
 The interfaces are named for what they are, not for Prometheus, so a second backend would
 not make every call site a lie.
@@ -234,14 +238,14 @@ order. It looks like arbitrary field ordering otherwise, so it is worth a commen
 ## Recording handles
 
 `register_counter`, `register_gauge` and `register_histogram` return a **`CounterHandle`,
-`GaugeHandle` or `HistogramHandle` by value**, not a reference to the interface.
+`GaugeHandle` or `HistogramHandle` by value**, not a reference to the metric.
 
-A handle is not a `CounterInterface`. It does not derive from one and takes no part in the
-hierarchy; it holds a pointer to one. `PrometheusCounter` and `NoOpCounter` remain the
-implementations and the virtual call still happens. The handle exists purely so callers have
-something they can hold by value.
+A handle holds one pointer: to a `prometheus::Counter`, a `prometheus::Gauge` or a
+`SingleWriterHistogram`, or a null pointer when metrics are disabled. Each kind of metric has
+exactly one implementation, so there is no class hierarchy and no virtual call; the handle's
+recording function is defined in its header and is compiled into the caller.
 
-Returning a reference to the interface would be the obvious shape, and it is wrong for
+Returning a reference to the metric would be the obvious shape, and it is wrong for
 reasons that all bite at the call site:
 
 - A reference member must be initialised in the constructor's initialiser list, which runs in
@@ -257,8 +261,8 @@ reasons that all bite at the call site:
 What handles do **not** provide is lifetime safety: the pointer dangles if the endpoint is
 destroyed first, exactly as a reference would. That is acceptable because the endpoint is a
 Reactor member and outlives every registrant by construction, and because no registered metric
-moves as further metrics are registered: counters and gauges live in node-based `std::map`s, and
-each histogram is allocated on its own and held by a `std::unique_ptr`.
+moves as further metrics are registered: prometheus-cpp holds each counter and gauge in its
+family by `std::unique_ptr`, and each histogram is allocated on its own and held by a `std::unique_ptr`.
 `PrometheusEndpointTest.HandlesStayValidAsMoreMetricsAreRegistered` pins that down.
 
 ---
