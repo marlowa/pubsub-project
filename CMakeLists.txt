@@ -139,6 +139,9 @@ set(TOMLPLUSPLUS_VERSION $ENV{TOMLPLUSPLUS_VERSION})
 set(ROBINMAP_VERSION $ENV{ROBINMAP_VERSION})
 set(PROMETHEUS_VERSION $ENV{PROMETHEUS_VERSION})
 set(CPPTRACE_VERSION $ENV{CPPTRACE_VERSION})
+# Optional: only libraries/pubsub_itc_fw/benchmarks uses Google Benchmark, and it builds nothing
+# without it.
+set(BENCHMARK_VERSION $ENV{BENCHMARK_VERSION})
 
 list(PREPEND CMAKE_PREFIX_PATH ${THIRDPARTY_DIR})
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake_modules")
@@ -151,6 +154,7 @@ list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tomlplusplus/${TOMLPL
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/tsl-robin-map/${ROBINMAP_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/prometheus-cpp/${PROMETHEUS_VERSION}")
 list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/cpptrace/${CPPTRACE_VERSION}")
+list(APPEND CMAKE_PREFIX_PATH "${THIRDPARTY_DIR}/installed/benchmark/${BENCHMARK_VERSION}")
 # Second candidate prefix for the same package. An RHEL8 target's third-party tree holds it
 # directly under THIRDPARTY_DIR and names the directory after the metric system rather than
 # after the C++ client, so the prefix above does not exist there and 0.3.0 would not configure.
@@ -667,5 +671,6 @@ add_subdirectory(libraries/fix_codec)
 add_subdirectory(libraries/pubsub_itc_fw/tests_common)
 add_subdirectory(libraries/pubsub_itc_fw/tests)
 add_subdirectory(libraries/pubsub_itc_fw/performance)
+add_subdirectory(libraries/pubsub_itc_fw/benchmarks)
 add_subdirectory(libraries/pubsub_itc_fw/integration_tests)
 add_subdirectory(applications)
