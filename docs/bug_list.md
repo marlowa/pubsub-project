@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 138 |
-| Open | 55 (36 defects, 19 tasks) |
+| Bugs recorded | 139 |
+| Open | 56 (37 defects, 19 tasks) |
 | Closed | 83 |
-| Next id | BUG-0139 |
+| Next id | BUG-0140 |
 
 ## Open bugs by severity
 
-13 high, 37 medium, 5 low.
+13 high, 38 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -63,6 +63,7 @@
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
 | [BUG-0138](#bug_0138) | medium | defect | A test process sometimes freezes entirely for 100 to 500 ms, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently |
+| [BUG-0139](#bug_0139) | medium | defect | A matching engine that restarts or is promoted issues report identifiers that were already used that day |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -164,6 +165,30 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0139: A matching engine that restarts or is promoted issues report identifiers that were already used that day {#bug_0139}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reading how the matching engine makes its identifiers, while checking whether it is deterministic, for the design in `docs/availability/ha_library_boundary.md` |
+| Impact | After a restart or a change of leader, members receive execution reports whose `ExecID` repeats one they already received that day, for a different event. FIX expects an `ExecID` to be unique, and a member that uses it to recognise a report it has already processed may discard a new one |
+
+**What happens.** The engine makes `OrderID` and `ExecID` from two counters, `order_id_counter_` and
+`exec_id_counter_` in `MatchingEngineThread`, as `ME-ORD-N` and `ME-EXEC-N`. When it starts, it sets the
+order counter above the highest order number in its book (`MatchingEngineThread.cpp`, where it reads its
+open-order region back), so order numbers are never reused. Nothing sets the report counter: it starts at
+zero in every process. A follower engine issues no reports until it is promoted, so its counter is still
+at zero then. Either way the first reports after a restart or a promotion, including those sent while
+catching up, are `ME-EXEC-1`, `ME-EXEC-2` and so on, which the earlier engine had already issued.
+
+**What is wanted.** Report identifiers that cannot repeat within the trading day, whichever engine issues
+them and however often engines restart. The design in `docs/availability/ha_library_boundary.md`, section
+9, proposes deriving them from the position in the log (the sequence number of the command and the
+report's place among that command's reports), which is also what two engines running in lockstep need.
+A smaller fix would restore the counter from a durable record, but would not make two engines agree.
 
 ### BUG-0138: A test process sometimes freezes entirely for 100 to 500 ms, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently {#bug_0138}
 

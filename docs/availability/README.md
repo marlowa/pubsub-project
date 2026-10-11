@@ -16,6 +16,7 @@ different time budgets, and conflating them is the subject of a bug entry.
 - [a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md) — how a leader that sends to the matching engine without waiting for its follower stops that follower taking the lead: the problem, why Raft's rule does not fit, the design and its two decisions (for review)
 - [follower_log_repair.md](follower_log_repair.md) — how a sequencer follower's log is made a copy of its leader's again when it rejoins: the epoch on each record, finding the last record the two logs agree on, discarding after it and sending what it missed
 - [ha_in_the_library.md](ha_in_the_library.md) — why most of the high availability machinery is in the applications rather than the library, and the agreed direction for moving it: a replicated, sequenced log in the library, and applications written as deterministic state machines
+- [ha_library_boundary.md](ha_library_boundary.md) — the design, area by area, of what the library would provide for high availability and what each application would supply, with a proposed order of work replacing phases 3 to 6 (draft for review)
 - [tla/findings.md](tla/findings.md) — the HA design specified in TLA+ and model checked: what held, eight findings with counterexamples, and directions for fixing
 
 ---

@@ -139,4 +139,5 @@ These are to be settled in the design of the boundary, not here.
 1. Phase 2 goes ahead.
 2. Meanwhile, the design of the boundary is written: what the library offers, what an application
    supplies, how each of today's pieces maps onto it, and answers to the questions in section 6. No code.
+   A draft is in [ha_library_boundary.md](ha_library_boundary.md).
 3. Once Andrew has agreed it, phases 3 to 6 of [the plan](../recovery_plan.md) are revised to match.
