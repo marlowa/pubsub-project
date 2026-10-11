@@ -1,7 +1,8 @@
 # Restoring the design: what is wrong, and the plan {#recovery_plan}
 
 > **Status: agreed, 9 October 2026.** Each phase ends with a review at which Andrew decides whether
-> the next one starts. Phase 1, agreeing the design principles, is under way.
+> the next one starts. Phase 1, agreeing the design principles, is finished: Andrew agreed them on
+> 11 October 2026. Phase 2 is next.
 
 ## In one page
 
@@ -127,12 +128,26 @@ each is decided in its own design at the start of the phase, not here.
 
 **For:** one list of the design principles, which every later phase is checked against.
 
-**Involves:** reviewing [design_principles.md](design_principles.md), a draft that lists eight
-principles for the framework and twelve for the venue, says where each is enforced and tested, and
-where each is broken today. It also lists positions not yet on the list, to be accepted or left out,
-and ends with questions that need Andrew's decision.
+**Involves:** reviewing [design_principles.md](design_principles.md), which states eight principles
+for the framework and fourteen for the venue, says where each is enforced and tested, and where each
+is broken today.
 
-**Finished when:** Andrew has answered those questions and agreed the document.
+**Finished when:** Andrew has answered those questions and agreed the document. Done: agreed 11 October
+2026.
+
+**What it found.** Checking each principle against the code found breaches not recorded before, now in
+the bug list:
+
+- breaches of the framework principles, taken in phase 4: [BUG-0128](bug_list.md#bug_0128) (every timer
+  start creates a timer and every cancel destroys one, under a lock), [BUG-0129](bug_list.md#bug_0129)
+  (the check for stuck threads takes a lock it does not need, and reads two values without
+  synchronisation), [BUG-0130](bug_list.md#bug_0130) (the log's helper keeps only one segment ready),
+  [BUG-0131](bug_list.md#bug_0131) (the leading sequencer allocates from the heap for every order) and
+  [BUG-0133](bug_list.md#bug_0133) (catch-ups read the log on the thread that sequences orders);
+- gaps in the venue principles, to be ordered with the rest of the bug list in phase 9 unless Andrew
+  brings one forward: [BUG-0132](bug_list.md#bug_0132) (orders open at the end of the day are never
+  cancelled), [BUG-0134](bug_list.md#bug_0134) to [BUG-0136](bug_list.md#bug_0136) (a venue running
+  without a standby) and [BUG-0137](bug_list.md#bug_0137) (no start-of-day or end-of-day procedure).
 
 ### Phase 2. Make the build enforce the framework principles
 
@@ -141,7 +156,8 @@ again unnoticed.
 
 **Involves:** making the standards check reject any lock outside a short, named list of start-up and
 shut-down code; and adding checks, in Debug and sanitizer builds, that each important piece of state is
-changed by only one thread. At first these checks fail on the code as it stands. That is intended: the
+changed by only one thread; and making the standards check reject a raw `std::thread` in a venue
+component (F8). At first these checks fail on the code as it stands. That is intended: the
 list of failures is the list of work for phases 3 and 4.
 
 **Finished when:** the checks exist, have been shown to fail on the known breaches, and those breaches
@@ -166,8 +182,12 @@ after.
 
 **Involves:** replacing the lease promise recorder's lock with a hand-over between two threads that
 needs none, and keeping its disk sync off the order-handling threads (BUG-0126); making sure memory
-pools do not run out during a trading day (BUG-0127); and whatever Andrew decides in phase 1 about the
-two reactor locks.
+pools do not run out during a trading day (BUG-0127); the reactor's two locks, which phase 1 decided
+are not allowed: the timer lock, removed by creating timers at start-up and only starting and stopping
+them afterwards (BUG-0128), and the thread registry lock (BUG-0129); and the other breaches of the
+framework principles phase 1 found: the log's helper keeping only one segment ready (BUG-0130), the
+leading sequencer's heap allocations (BUG-0131), and catch-ups reading the log on the thread that
+sequences orders (BUG-0133).
 
 **Finished when:** the phase 2 list of exceptions holds only what Andrew has agreed to keep.
 
@@ -238,4 +258,4 @@ those that remain, with Andrew. Each fix from then on follows the same way of wo
 - The metric handles record without a virtual call, measured before and after, at Andrew's request,
   before this plan was written.
 - The code is tagged `pre-recovery-2026-10-09`.
-- A draft of the design principles, [design_principles.md](design_principles.md), exists for phase 1.
+- Phase 1: the design principles, [design_principles.md](design_principles.md), agreed 11 October 2026.

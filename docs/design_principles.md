@@ -1,9 +1,8 @@
 # Design principles {#design_principles}
 
-> **Status: draft, being agreed with Andrew, one principle at a time.** This is phase 1 of
-> [the plan for restoring the design](recovery_plan.md). Nothing in the code is to be changed on the
-> strength of this page until it is agreed. Where a principle is broken today, the entry says so and
-> names the bug that records it.
+> **Status: agreed with Andrew, 11 October 2026.** Every principle on this page was agreed one at a
+> time, in phase 1 of [the plan for restoring the design](recovery_plan.md). Where a principle is broken
+> today, the entry says so and names the bug that records it.
 
 ## What this page is for
 
