@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 137 |
-| Open | 54 (35 defects, 19 tasks) |
+| Bugs recorded | 138 |
+| Open | 55 (36 defects, 19 tasks) |
 | Closed | 83 |
-| Next id | BUG-0138 |
+| Next id | BUG-0139 |
 
 ## Open bugs by severity
 
-13 high, 36 medium, 5 low.
+13 high, 37 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -62,6 +62,7 @@
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
+| [BUG-0138](#bug_0138) | medium | defect | A test process sometimes freezes entirely for 100 to 500 ms, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -163,6 +164,54 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0138: A test process sometimes freezes entirely for 100 to 500 ms, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently {#bug_0138}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Investigating intermittent failures of the Debug integration suite after the ownership checks of phase 2 were added. Built separately and run alternately, the committed code without those checks failed in the same way (2 of 8 runs, against 1 of 8 with them), so the cause was already there |
+| Impact | The framework integration suite fails now and then in a Debug build, in `SlowReaderIntegrationTest`, whatever code is being tested, which makes a real failure hard to tell from a chance one. Separately, every thread of a process stopping at once for up to half a second, cause unknown, would be serious on the order path if it is not peculiar to the tests |
+
+**Two causes, which add together.**
+
+**1. The timing tests have almost no margin.** `SlowReaderIntegrationTest.ReadersThatKeepUpAreServedAlikeWhileOneHasStopped`
+sends 20,000 messages to each of three receivers and waits 5 seconds for each to have them all
+(`wait_for(..., 5000)` in `SlowReaderIntegrationTest.cpp`). In a Debug build the receivers get a
+steady 3,900 to 4,100 messages a second, so delivery takes about 5.0 to 5.2 seconds: one failing run
+had no disturbance at all and simply took 5.2 seconds. In a Release build the test takes 4.72 to 4.81
+seconds, a margin of only 4 to 6 per cent. The other timing tests in the same file and in
+`PauseReadingIntegrationTest` are of the same kind.
+
+**2. The test process sometimes freezes entirely.** In failing runs, every thread of the test process
+(three reactor threads and the application threads) stopped logging at the same instant and resumed
+at the same instant: 511 ms in one run, 105 ms in another, with a reactor's 1 ms timer piling up 510
+expirations meanwhile. Freezes of hundreds of milliseconds also appear in runs that pass, when they
+happen not to fall in a measured window. What the freeze is not, as measured:
+
+- not memory reclaim or compaction: the kernel's stall counters and memory pressure, sampled every
+  200 ms, did not move;
+- not a CPU limit: no control group above the session has one, and none was ever throttled;
+- not the logging queue: it never grew, and it blocks threads only beyond 2 GiB;
+- not a fork or a command: neither the framework nor the tests start one;
+- not the slab allocator's mapping: slabs are 256 KB;
+- not machine-wide: a separate program waking every millisecond was never held up by more than 20 ms.
+
+The cause has not been found. A likely next step is to record, during a run, what each thread of the
+test process is blocked in when a freeze happens, for example with `perf sched` or
+`/proc/<pid>/task/*/stack` sampled by a watcher.
+
+**What is wanted.**
+
+1. Find the cause of the freezes, and establish whether they can happen in the venue's processes or
+   only in the test process.
+2. Give the timing tests a margin that survives a Debug build, or run them only in Release, so that
+   the integration suite fails only for a real reason.
+
+The measurements, scripts and failing logs of the investigation were kept outside the repository, in
+the working directory's `tmp/ab`, and are summarised here.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 

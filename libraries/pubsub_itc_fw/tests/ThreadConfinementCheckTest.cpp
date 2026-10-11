@@ -60,17 +60,17 @@ TEST(ThreadConfinementCheckTest, ARefusalNamesWhatWasTouched) {
 
 TEST(ThreadConfinementCheckTest, UnderAKnownBreachASecondThreadIsCountedNotRefused) {
     ThreadConfinementCheck confinement("the state under test");
-    confinement.mark_known_breach("BUG-0000, removed in phase 0");
+    confinement.mark_known_breach("a known breach, removed in a later phase");
     confinement.check();
     EXPECT_FALSE(refused_on_another_thread(confinement));
     EXPECT_FALSE(refused_on_another_thread(confinement));
     EXPECT_EQ(confinement.known_breach_count(), 2);
-    EXPECT_STREQ(confinement.known_breach(), "BUG-0000, removed in phase 0");
+    EXPECT_STREQ(confinement.known_breach(), "a known breach, removed in a later phase");
 }
 
 TEST(ThreadConfinementCheckTest, UnderAKnownBreachTheOwnerIsNotCounted) {
     ThreadConfinementCheck confinement("the state under test");
-    confinement.mark_known_breach("BUG-0000, removed in phase 0");
+    confinement.mark_known_breach("a known breach, removed in a later phase");
     confinement.check();
     confinement.check();
     confinement.check();
