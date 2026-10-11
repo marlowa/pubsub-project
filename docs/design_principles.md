@@ -381,6 +381,8 @@ archived, and their members are never told. Recorded as [BUG-0132](bug_list.md#b
 
 ### V3. At most one instance of a pair acts as leader at any moment
 
+**Agreed** with Andrew, 11 October 2026.
+
 **The principle.** An instance of the sequencer, the matching engine or the arbiter acts as leader
 only while a majority of its three voters grants it a lease. Requirement R-0146.
 
