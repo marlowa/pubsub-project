@@ -531,9 +531,10 @@ the lookup answers on its own, in the order of 100 nanoseconds. That figure is n
 the order path; measuring it, by the method in `docs/operations/latency_findings.md`, is part of this
 task. A command the record may hold is checked exactly against the end of the log, as now.
 
-**Not proposed yet.** This is recorded so that the simplification is not lost, not as work to start
-now. Whether to make it, and when, is to be decided; it fits naturally with BUG-0114 and with any
-consolidated statement of the venue's end-to-end rules for commands.
+**Decided.** The wider rule is principle V7 in `docs/design_principles.md`, agreed with Andrew on
+11 October 2026, so this is now work the code must be brought up to, not an idea parked for later. It
+is to be designed together with BUG-0114, and scheduled within the plan for restoring the design
+(`docs/recovery_plan.md`), not started on its own.
 
 ### BUG-0121: A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader {#bug_0121}
 
