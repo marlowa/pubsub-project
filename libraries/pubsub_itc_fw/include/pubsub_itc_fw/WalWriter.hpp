@@ -12,6 +12,9 @@
 #include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace pubsub_itc_fw {
 
@@ -118,6 +121,34 @@ class WalWriter {
 
     [[nodiscard]] bool is_open() const {
         return mmap_ptr_ != nullptr;
+    }
+
+    /**
+     * @brief Says that a second thread is known to append to this log, so that it is counted rather
+     *        than refused (see ThreadConfinementCheck).
+     *
+     * One thread owns a log and only it appends (principle F1). In builds with thread checks, a
+     * second thread that appends is refused, unless the code that owns the log has called this.
+     * Must be called before the first append. Does nothing in a build without thread checks.
+     *
+     * @param[in] bug_and_phase The bug that records the breach and the phase that removes it.
+     */
+    void mark_second_writer_known_breach([[maybe_unused]] const char* bug_and_phase) {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        writer_thread_.mark_known_breach(bug_and_phase);
+#endif
+    }
+
+    /**
+     * @brief How many appends a second thread has made under a known breach. Always zero in a build
+     *        without thread checks.
+     */
+    [[nodiscard]] int64_t second_writer_appends() const {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        return writer_thread_.known_breach_count();
+#else
+        return 0;
+#endif
     }
 
     /**
@@ -240,6 +271,10 @@ class WalWriter {
     bool preparation_enabled_{true};
     uint64_t segments_filled_inline_{0};
     uint64_t segments_waited_for_{0};
+
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    ThreadConfinementCheck writer_thread_{"WalWriter"};
+#endif
 
     ThreadWithJoinTimeout helper_;
     bool helper_running_{false};

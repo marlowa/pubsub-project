@@ -82,6 +82,10 @@ TEST_F(ReplicatedRecordWriterTest, TheNextRecordIsWrittenAndOthersAreNot) {
 TEST_F(ReplicatedRecordWriterTest, TwoThreadsWritingTheSameRecordsAtOnceLeaveEachRecordOnceAndInOrder) {
     constexpr int64_t count = 20000;
     ReplicatedRecordWriter writer;
+    // Two threads appending to one log is the follower's second writer, the known breach of principle
+    // F1 that this class exists to keep safe until phase 3 removes it. Marked as the sequencer marks it,
+    // so that builds with thread checks count the second thread's appends instead of refusing them.
+    wal_->mark_second_writer_known_breach("BUG-0124, removed in phase 3");
     std::atomic<int64_t> written{0};
     std::atomic<bool> go{false};
     auto offer_every_record = [&] {
@@ -102,6 +106,9 @@ TEST_F(ReplicatedRecordWriterTest, TwoThreadsWritingTheSameRecordsAtOnceLeaveEac
     second.join();
 
     EXPECT_EQ(written.load(), count) << "a record was written more than once";
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    EXPECT_GT(wal_->second_writer_appends(), 0) << "the second thread's appends were not counted under the known breach";
+#endif
     std::vector<int64_t> records;
     ASSERT_NO_THROW(records = records_in_log()) << "the log was damaged";
     ASSERT_EQ(records.size(), static_cast<size_t>(count));

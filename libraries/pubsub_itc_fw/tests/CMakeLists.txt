@@ -12,6 +12,7 @@ add_executable(pubsub_itc_fw_tests
     MetricKeyTest.cpp
     PrometheusEndpointTest.cpp
     SingleWriterHistogramTest.cpp
+    ThreadConfinementCheckTest.cpp
     EmptySlabQueueTest.cpp
     EventMessageTest.cpp
     ExpandablePoolAllocatorTest.cpp

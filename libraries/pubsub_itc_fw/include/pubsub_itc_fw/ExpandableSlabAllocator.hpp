@@ -96,6 +96,9 @@
 #include <pubsub_itc_fw/EmptySlabQueue.hpp>
 #include <pubsub_itc_fw/SlabAllocator.hpp>
 #include <pubsub_itc_fw/SlabHandle.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace pubsub_itc_fw {
 
@@ -298,6 +301,13 @@ class ExpandableSlabAllocator {
     // until the next drain confirms head_ has moved past it.
     // -1 means no slab is currently deferred.
     int deferred_reclaim_slot_{-1};
+
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    // allocate() and everything it reaches belong to one thread: the reactor thread for the inbound
+    // allocator, the application thread for an outbound one. deallocate() may be called from any
+    // thread and is not checked.
+    ThreadConfinementCheck allocating_thread_{"ExpandableSlabAllocator::allocate"};
+#endif
 };
 
 } // namespaces

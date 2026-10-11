@@ -430,6 +430,9 @@ void WalWriter::ensure_capacity(size_t bytes_needed) {
 // append() -- the commit act
 
 void WalWriter::append(int64_t record_id, const void* payload, size_t size) {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    writer_thread_.check();
+#endif
     const size_t total = sizeof(WalEntryHeader) + size + sizeof(uint32_t);
     ensure_capacity(total);
 

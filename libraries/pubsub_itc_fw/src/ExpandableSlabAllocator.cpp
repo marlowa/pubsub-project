@@ -79,6 +79,9 @@ void ExpandableSlabAllocator::release_slot(int slot) {
 }
 
 std::tuple<SlabHandle, void*> ExpandableSlabAllocator::allocate(size_t size) {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    allocating_thread_.check();
+#endif
     if (size == 0) {
         throw PreconditionAssertion("ExpandableSlabAllocator::allocate: size must be greater than zero", __FILE__, __LINE__);
     }

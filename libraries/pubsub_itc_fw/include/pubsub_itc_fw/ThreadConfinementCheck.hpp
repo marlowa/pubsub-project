@@ -3,6 +3,8 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <thread>
 
@@ -27,8 +29,17 @@ namespace pubsub_itc_fw {
  * with PUBSUB_ITC_FW_THREAD_CHECKS defined, which the top-level CMakeLists sets for Debug,
  * AddressSanitizer and coverage builds, and the release build has neither the member nor the call.
  *
- * One thread calls check() first and that thread alone thereafter, so the recorded owner needs no
- * synchronisation in correct use. Its purpose is to make incorrect use visible.
+ * **A known breach is counted, not refused.** Where a second thread is already known to touch the
+ * state, and a bug records it with the phase of docs/recovery_plan.md that removes it, the code that
+ * owns the state calls mark_known_breach() with that bug and phase, before the state is first used.
+ * check() then lets the second thread through and counts each time it does, so that the program goes
+ * on running and the breach can be seen happening. The owner of the state reads the count with
+ * known_breach_count(), logs one warning when it first becomes non-zero, and publishes it as a
+ * metric. When the breach is removed, the count stays at zero, and the call to mark_known_breach()
+ * is deleted, so that a second thread is refused again.
+ *
+ * The owner is held in an atomic variable because, under a known breach, two threads do call
+ * check() at the same time.
  */
 class ThreadConfinementCheck {
   public:
@@ -38,27 +49,68 @@ class ThreadConfinementCheck {
      */
     explicit ThreadConfinementCheck(const char* what_is_guarded) : what_is_guarded_(what_is_guarded) {}
 
+    ThreadConfinementCheck(const ThreadConfinementCheck&) = delete;
+    ThreadConfinementCheck& operator=(const ThreadConfinementCheck&) = delete;
+
+    /**
+     * @brief Says that a second thread is known to touch this state, and that it is to be counted
+     *        rather than refused.
+     *
+     * @param[in] bug_and_phase The bug that records the breach and the phase that removes it, for
+     *            example "BUG-0124, removed in phase 3". Must outlive this object; a string
+     *            literal does.
+     *
+     * Called by the code that owns the state, before the state is first used.
+     */
+    void mark_known_breach(const char* bug_and_phase) {
+        known_breach_ = bug_and_phase;
+    }
+
+    /**
+     * @return The bug and phase given to mark_known_breach(), or nullptr if there is none.
+     */
+    [[nodiscard]] const char* known_breach() const {
+        return known_breach_;
+    }
+
+    /**
+     * @return How many times a second thread has been let through under a known breach.
+     */
+    [[nodiscard]] int64_t known_breach_count() const {
+        return known_breach_count_.load(std::memory_order_relaxed);
+    }
+
     /**
      * @brief Records the calling thread as the owner if there is none yet, and refuses any other
-     *        thread.
+     *        thread, or counts it under a known breach.
      *
      * const, with the owner held mutable, because a lookup establishes ownership just as a change
      * does.
      */
     void check() const {
         const std::thread::id calling_thread = std::this_thread::get_id();
-        if (owning_thread_ == std::thread::id{}) {
-            owning_thread_ = calling_thread;
+        std::thread::id owner = owning_thread_.load(std::memory_order_acquire);
+        if (owner == std::thread::id{}) {
+            if (owning_thread_.compare_exchange_strong(owner, calling_thread, std::memory_order_acq_rel)) {
+                return;
+            }
+            // Another thread became the owner first; owner now holds its id.
+        }
+        if (owner == calling_thread) {
             return;
         }
-        if (owning_thread_ != calling_thread) {
-            throw PreconditionAssertion(std::string(what_is_guarded_) + " is owned by one thread and was touched by a second thread", __FILE__, __LINE__);
+        if (known_breach_ != nullptr) {
+            known_breach_count_.fetch_add(1, std::memory_order_relaxed);
+            return;
         }
+        throw PreconditionAssertion(std::string(what_is_guarded_) + " is owned by one thread and was touched by a second thread", __FILE__, __LINE__);
     }
 
   private:
     const char* what_is_guarded_;
-    mutable std::thread::id owning_thread_{};
+    const char* known_breach_{nullptr};
+    mutable std::atomic<std::thread::id> owning_thread_{};
+    mutable std::atomic<int64_t> known_breach_count_{0};
 };
 
 } // namespaces

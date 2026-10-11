@@ -103,6 +103,15 @@ void SequencerThread::on_initial_event() {
                    "SequencerThread: could not read the CPU layout, so the log's helper thread stays where it lands: {}", helper_layout_error);
     }
 
+    // On a follower, the reactor thread's inline handler appends replicated records to the log as
+    // well as this thread: a second writer, which principle F1 forbids, recorded as BUG-0124 and
+    // removed in phase 3 of docs/recovery_plan.md. Marked so that builds with thread checks count
+    // the second writer's appends instead of refusing them; the count is published and warned about
+    // in on_timer_event. Delete this call when the second writer is removed.
+    if (config_.ha_enabled) {
+        wal_.mark_second_writer_known_breach("BUG-0124, removed in phase 3");
+    }
+
     if (config_.replay_mode) {
         // Replay mode: open WAL with a buffering callback that accumulates all
         // records into replay_buffer_.  dispatch_replay_records() sends them to
@@ -260,6 +269,10 @@ void SequencerThread::on_initial_event() {
         "Log segments the writer created itself instead of adopting one prepared ahead of it. Expected to be 1, for the first segment");
     wal_segments_waited_for_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "wal_segments_waited_for", "Segment rolls that had to wait for a preparation still in progress. Expected to be 0");
+    wal_second_writer_appends_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "wal_second_writer_appends",
+        "Appends to the log by a second thread, the known breach BUG-0124, counted only in builds with thread checks. Expected to be 0 once "
+        "phase 3 removes the second writer");
     running_alone_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_running_alone",
         "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
@@ -1224,6 +1237,16 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         // segment, which is seconds apart, so there is nothing to gain from the order path.
         wal_segments_filled_inline_gauge_.set(static_cast<double>(wal_.segments_filled_inline()));
         wal_segments_waited_for_gauge_.set(static_cast<double>(wal_.segments_waited_for()));
+        const int64_t second_writer_appends = wal_.second_writer_appends();
+        wal_second_writer_appends_gauge_.set(static_cast<double>(second_writer_appends));
+        if (second_writer_appends > 0 && !second_writer_warned_) {
+            second_writer_warned_ = true;
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "SequencerThread: a second thread has appended to the log ({} append(s) so far), the known breach of principle F1 "
+                       "recorded as BUG-0124 and removed in phase 3. Counted, not refused; the metric wal_second_writer_appends follows it. "
+                       "Not logged again",
+                       second_writer_appends);
+        }
 
         try {
             wal_.take_snapshot();
