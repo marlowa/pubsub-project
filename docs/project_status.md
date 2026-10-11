@@ -1,7 +1,8 @@
 # Project status {#project_status}
 
-Development is paused at version 0.4.0. This page says what the project is, what has been shown
-to work, what is known to be wrong, and where anyone picking it up should start.
+The version is 0.4.0. New features are frozen while the design is restored, phase by phase, under
+[the plan for restoring the design](recovery_plan.md). This page says what the project is, what has
+been shown to work, what is known to be wrong, and where anyone picking it up should start.
 
 ## What exists
 
@@ -12,13 +13,15 @@ to work, what is known to be wrong, and where anyone picking it up should start.
   a matching engine, an authentication service, arbiters and a witness. The sequencer, matching
   engine and arbiters each run as a pair of instances.
 - **A Java admin service and FIX test client**, in `java/`.
-- **A functional specification**, `docs/book`, stating 139 requirements.
+- **A functional specification**, `docs/book`, stating 148 requirements.
+- **One list of design principles**, [design_principles.md](design_principles.md), agreed, with
+  where each holds and where it is broken today.
 
 ## What has been shown to work
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 57 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 72 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, and a member's open orders surviving a
   restart of the matching engine.
 - **The FIX session layer.** Resend requests are answered with the real execution reports, a
@@ -27,36 +30,42 @@ to work, what is known to be wrong, and where anyone picking it up should start.
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 33 open entries, 12 of them high severity. The ones most likely to
-matter first:
+The [bug list](bug_list.md) holds 56 open entries, 13 of them high severity. The ones most likely to
+matter first, by design area:
 
-- **The specification is mostly untested.** 24 of 139 requirements are verified by a scenario
-  ([BUG-0068](bug_list.md#bug_0068)). A scenario passing has repeatedly been found to say less
-  than it appeared to, so treat untested requirements as unverified.
-- **High availability has open defects.** A degraded promotion advances a generation the arbiter
-  never learns ([BUG-0085](bug_list.md#bug_0085)); failover can move into a condition both
-  instances share ([BUG-0010](bug_list.md#bug_0010)); and a process death on the same host is
-  handled as a machine death ([BUG-0029](bug_list.md#bug_0029)).
-- **Members can lose information.** An execution report produced while a session is unbound is
-  never delivered ([BUG-0088](bug_list.md#bug_0088)), and a restarted gateway stops honouring
-  cancel-on-disconnect ([BUG-0090](bug_list.md#bug_0090)).
-- **The write-ahead log grows without limit** ([BUG-0048](bug_list.md#bug_0048)). Reclaiming it
-  waits on a decision about how long history must be kept.
-- **The venue cannot declare a trading halt** ([BUG-0065](bug_list.md#bug_0065)).
+- **The specification is mostly untested.** 30 of 148 requirements are verified by a scenario
+  (`scripts/check_book_requirements.py` counts them; [BUG-0068](bug_list.md#bug_0068)). A scenario
+  passing has repeatedly been found to say less than it appeared to, so treat untested requirements
+  as unverified.
+- **Locks and waits on the order path.** The design is meant to have none; the follower's second
+  writer of the log, the lease promise recorder, the memory pools, the reactor's timers and its thread
+  registry still take locks, each recorded under principle F2 in
+  [design_principles.md](design_principles.md) with the phase of the plan that removes it.
+- **High availability is built in the applications, not the library.** Moving it is the direction
+  agreed in [ha_in_the_library.md](availability/ha_in_the_library.md); the design of the boundary is a
+  draft for review ([ha_library_boundary.md](availability/ha_library_boundary.md)). Open defects
+  include failover into a condition both instances share ([BUG-0010](bug_list.md#bug_0010)), a
+  process death on the same host handled as a machine death ([BUG-0029](bug_list.md#bug_0029)), and a
+  venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
+- **Members can lose information.** A restarted gateway stops honouring cancel-on-disconnect
+  ([BUG-0090](bug_list.md#bug_0090)), and an engine that restarts or is promoted reuses report
+  identifiers ([BUG-0139](bug_list.md#bug_0139)).
+- **The trading day has no start or end procedure.** Nothing archives the day's files, a file left
+  from an earlier day is taken as a restart ([BUG-0137](bug_list.md#bug_0137)), orders open at the
+  close are never cancelled ([BUG-0132](bug_list.md#bug_0132)), and the venue cannot declare a
+  trading halt ([BUG-0065](bug_list.md#bug_0065)).
+- **The write-ahead log is never reclaimed during the day** ([BUG-0048](bug_list.md#bug_0048)).
+  Whether it may be waits on a decision about how long history must be kept.
 
-## What was to come next
+## What comes next
 
-In order:
-
-1. **Pub/sub.** The requirements are in the framework chapter of the specification, and none is
-   tested. The next step was a test script for simple publish and subscribe with high availability
-   off, then with it on. The alternatives to unicast fanout are named there but not yet assessed.
-2. **Technical events and trading phases** -- start of day, end of day, and a market halt. The
-   shape is settled in [trading phases](venue/trading_phases.md), and the halt should be decided
-   together with [BUG-0065](bug_list.md#bug_0065).
-3. **The order activity recorder**, slice 11 of the [roadmap](roadmap.md), a subscriber to the
-   matching engine's published topics.
-4. **Log retention** ([BUG-0048](bug_list.md#bug_0048)), once the period is decided.
+The order is set by [the plan for restoring the design](recovery_plan.md), and each phase ends with a
+review at which Andrew decides whether the next starts. Phase 1, agreeing the design principles, is
+done. Phase 2, making the build enforce the framework principles, has its three parts built and
+awaits that review. Phases 3 to 7 are to be revised
+once the design of the boundary between the library and the applications for high availability is
+agreed. New features, including pub/sub, the order activity recorder and the trading phases, wait
+until the plan is finished.
 
 ## Where to start
 
