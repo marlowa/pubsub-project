@@ -33,7 +33,7 @@ pieces it needs.
 
 | Component | How it is duplicated | Who decides who leads | Uses the write-ahead log | What a member sees on failover |
 |---|---|---|---|---|
-| **Sequencer** | A pair: leader and follower | A majority of three voters: the two sequencers and the active arbiter | Yes: the leader writes it, the follower receives every record | A pause of a few seconds. Orders sent during it are lost ([BUG-0103](../bug_list.md#bug_0103)) |
+| **Sequencer** | A pair: leader and follower | A majority of three voters: the two sequencers and the active arbiter | Yes: the leader writes it, the follower receives every record | A pause of a few seconds. Orders sent during it are answered: each gateway keeps every command until it is answered and sends the unanswered ones again to the new leader ([Commands during a change of leader](commands_during_a_change_of_leader.md)) |
 | **Matching engine** | A pair: leader and follower, the follower holding a copy of the book | A majority of three voters, as for the sequencer | It has no log of its own; it catches up from the sequencer's | A pause. What happens to resting orders is a configured policy (below) |
 | **Matching engine publisher** | A pair, as for the sequencer | A majority of three voters | It reads the sequencer's log | A subscriber reconnects and asks for records from the sequence number it had reached |
 | **Arbiters** | Two arbiters and a witness | A majority of the two arbiters and the witness | No | None: arbiters are not on the order path |
@@ -76,13 +76,15 @@ The log's format, its segments, the single-writer rule and replay are described 
 
 | Level | What makes it so | What it releases |
 |---|---|---|
-| **Written on the leader** | The record has been appended to the leading sequencer's log | The order is sent on to the matching engine |
-| **Held on both machines** | The following sequencer has received the record, written it to its own log, and acknowledged it (`WalAck`) | The execution report for that order is sent to the member's gateway |
+| **Written on the leader** | The record has been appended to the leading sequencer's log | Nothing yet: the command is held back |
+| **Held on both machines** | The following sequencer has received the record, written it to its own log, and acknowledged it (`WalAck`) | The command is sent on to the matching engine, and the reports that depend on it to the member's gateway |
 
-The leader holds back each execution report until the follower has acknowledged the record of the
-order the report answers. So a member is never told about an order that only one machine holds: if
-the leader's machine died a moment after the report went out, the follower would still have the
-order in its log, and would take over with it.
+The leader holds back each command from the matching engine until the follower has acknowledged its
+record (`SequencerThread::hold_until_acknowledged` and `release_if_confirmed`). So the matching engine
+never acts on, and a member is never told about, an order that only one machine holds: if the leader's
+machine died, the follower would still have every order the engine had acted on, and would take over
+with it (principle V5 in [design_principles.md](../design_principles.md)). The one exception is a
+leader trading without a follower, below, which first records that its follower may not take over.
 
 This gives durability on two machines without the cost of a quorum vote of the kind Raft uses. There
 is exactly one follower, and records reach it as a stream over a single connection, so there is no
@@ -107,17 +109,19 @@ timing or from the leader's silence. Its part is passive: it receives, it acknow
 nothing on the order path -- not to the matching engine, and not to any gateway.
 
 Each gateway sends every order to both sequencers, and the matching engine sends every report to
-both. Only the leader acts on them. The follower discards the copies it is sent directly, because
-its log must match its leader's exactly. The consequence for orders sent in the seconds after the
-leader has died and before the follower takes over is
-[BUG-0103](../bug_list.md#bug_0103): the follower discards them, and nothing else holds them.
+both. Only the leader acts on them. The follower discards the commands it is sent directly, because
+its log must match its leader's exactly. An order sent in the seconds after the leader has died and
+before the follower takes over is not lost: the gateway keeps every command until it is answered and
+sends the unanswered ones again to the new leader, which sequences only those its log does not hold
+([Commands during a change of leader](commands_during_a_change_of_leader.md)).
 
-**The replication connection cannot be dropped to protect the leader.** If the follower falls behind,
-the leader keeps writing to its own log and keeps sending orders to the matching engine, but it holds
-back the execution reports until the follower has acknowledged the records they answer. Members then
-see a delay in their reports, not a loss of durability. If the follower stops altogether, reports
-stop until it is back, because sending them would mean telling members about orders that only one
-machine holds.
+**A follower that falls behind or stops does not stop trading.** When no follower is connected, or the
+follower has fallen behind (the leader's storage for commands waiting on it is full, or no
+acknowledgement has arrived for 100 ms while commands were waiting), the leader trades alone: it first
+records, with another voter, that its follower may not take over, and then sends commands to the
+matching engine without waiting. When the follower holds everything again, the leader goes back to
+waiting for it. A fault in the standby is a loss of resilience, not a loss of service (principle V11);
+[A follower that is behind must not lead](a_follower_behind_does_not_lead.md) has the design.
 
 **One slow connection does not hold up the others.** Every send is non-blocking, and each connection
 keeps its own partly sent message while the peer cannot take more. A matching engine or gateway that
@@ -129,7 +133,8 @@ The sequencer records where its log has reached every thirty seconds (`Wal::take
 sequence number, the number of records and the position of the end of the log, in a 48-byte file. It
 holds no other state, and taking it deletes nothing. `Wal::truncate_below`, which deletes segments
 below a given sequence number, exists but nothing in the venue calls it, so the log is never
-reclaimed while the venue runs. How long it must be kept waits on a decision about how long
+reclaimed while the venue runs. Every trading day starts with an empty log (principle V12), so the log
+holds one day at most. Whether it can be reclaimed during the day waits on a decision about how long
 execution reports must remain available to a member that asks for them again.
 
 ### When something is wrong with the log
@@ -504,7 +509,7 @@ exchange. The venue relies on it being present and does not implement PTP itself
 
 | What fails | What happens, and how long it takes |
 |---|---|
-| The leading sequencer | Its follower takes over once its promise and the arbiter's to the old leader have run out: about one lease period plus one renewal interval. `ha_test.py` scenario 1 measures about five and a half seconds, including the new leader's first orders. Orders sent in that time are lost ([BUG-0103](../bug_list.md#bug_0103)) |
+| The leading sequencer | Its follower takes over once its promise and the arbiter's to the old leader have run out: about one lease period plus one renewal interval. `ha_test.py` scenario 1 measures about five and a half seconds, including the new leader's first orders. Orders sent in that time are sent again by their gateways and answered |
 | The leading matching engine | Its follower takes over on the same timing, then catches up with the sequencer before it acts. Orders sent meanwhile are deferred, not lost, and answered once it has caught up |
 | A leading process, restarted by its supervisor within the lease period | It keeps the lead, because its peer and the arbiter promised their votes to it. The interruption is the restart: about 3.5 seconds for a matching engine from dying to leading ([Process death](process_death.md)) |
 | A gateway | The member reconnects to its other provisioned instance, typically within seconds; resting orders are kept for the comp id's grace period |
@@ -518,7 +523,7 @@ exchange. The venue relies on it being present and does not implement PTP itself
 
 | Situation | What happens |
 |---|---|
-| The leading sequencer dies before writing an order to its log | The order was never taken. The member receives no reply ([BUG-0103](../bug_list.md#bug_0103)) |
+| The leading sequencer dies before writing an order to its log | The gateway still holds the order, unanswered, and sends it again to the new leader, which sequences it; the member is answered |
 | The leading sequencer dies after writing an order and replicating it | The follower holds it and takes over. It asks the matching engine for the highest order it has acted on and sends it any order its log holds above that; the member is answered ([commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md), section 3.5) |
 | The leading sequencer dies after sending an order to the engine but before the report reached the member | The engine sends its report to both sequencers. The follower keeps every report, and on taking the lead forwards those its predecessor had not said it forwarded, marked as possible repeats ([change_of_sequencer_leader.md](change_of_sequencer_leader.md), section 4.4) |
 | A matching engine restarts | It reads its open orders back from its region and catches up with the sequencer from the last position its book reflects |
@@ -533,10 +538,9 @@ exchange. The venue relies on it being present and does not implement PTP itself
 
 | Question | Status |
 |---|---|
-| Orders sent during a change of sequencer leader | Lost without a reply; the remedy needs a design ([BUG-0103](../bug_list.md#bug_0103)) |
 | Disaster recovery to a second site | Not designed |
 | Several instruments: one sequencer, or one per group of instruments | Not designed |
-| How long the log must be kept | Waiting on a decision about how long execution reports must be available |
+| Whether the log can be reclaimed during the trading day | Waiting on a decision about how long execution reports must be available |
 
 ---
 
