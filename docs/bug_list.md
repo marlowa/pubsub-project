@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 130 |
-| Open | 47 (31 defects, 16 tasks) |
+| Bugs recorded | 131 |
+| Open | 48 (32 defects, 16 tasks) |
 | Closed | 83 |
-| Next id | BUG-0131 |
+| Next id | BUG-0132 |
 
 ## Open bugs by severity
 
-12 high, 30 medium, 5 low.
+12 high, 31 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -55,6 +55,7 @@
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
 | [BUG-0129](#bug_0129) | medium | defect | The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation |
 | [BUG-0130](#bug_0130) | medium | defect | The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait |
+| [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -156,6 +157,51 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0131: The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower {#bug_0131}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principles F5 (nothing on the order path allocates from the heap) and F6 (messages are not copied) in `docs/design_principles.md` |
+| Impact | Every order the leading sequencer handles allocates from the heap, whose cost varies and which takes locks of its own. Each execution report that has to wait for the follower is copied, with up to three more heap allocations |
+
+**Where.** Two containers in `SequencerThread` (`applications/sequencer/SequencerThread.hpp`):
+
+- **`seq_no_to_session_`**, a `std::unordered_map<int64_t, OriginSession>`, records which session
+  each order came from, keyed by the order's sequence number. It gains an entry for every order
+  sequenced, and loses it when the order ends, so it holds every open order, and resting orders can
+  last all day. Adding a new key to a `std::unordered_map` allocates a node from the heap, and when
+  the table grows it rehashes every entry in one operation, which is the stall the order book
+  suffered before it moved to `IncrementalRehashMap`.
+- **`pending_er_`**, a `std::multimap<int64_t, PendingEr>`, holds an execution report that arrives
+  before the follower has acknowledged the record it depends on. Each `PendingEr` holds a copy of the
+  report's bytes in a `std::vector<uint8_t>` and the ClOrdID in a `std::string`. With the map's own
+  node, that is up to three heap allocations for each waiting report, and a copy of the report.
+
+**What is wanted.** Agreed with Andrew, 11 October 2026:
+
+1. **`seq_no_to_session_` becomes an `IncrementalRehashMap`.** `OriginSession` is a fixed size (the
+   session identity holds its comp id in a `std::array`), so entries are stored in the table and
+   inserting allocates nothing. The map is sized at start-up from the expected number of open orders,
+   so that in a normal day it never grows; if it does grow, it moves entries a few at a time.
+2. **A waiting report keeps the slab chunk it arrived in** instead of copying its bytes into a
+   vector, and the chunk is released when the report is sent or discarded. A slab cannot be reclaimed
+   until every chunk in it has been freed, so a report that waits a long time holds its whole slab;
+   the design must set a limit on how long a report may wait, for example when no follower is keeping
+   up.
+3. **The ClOrdID is held in a fixed-length `std::array`**, as the session identity holds the comp id.
+4. **Each waiting report is then a fixed-size record** and is taken from an `ExpandablePoolAllocator`,
+   sized so that it does not run out in a normal day, because running out takes that allocator's
+   expansion mutex (BUG-0127).
+5. **The ordered structure that replaces the `std::multimap`** is to be designed when this bug is
+   worked on. Reports are released in order as the follower acknowledges records.
+
+The waiting reports' storage and its limits are to be written up and agreed before any code.
+
+**Principles.** F5 and F6 in `docs/design_principles.md`.
 
 ### BUG-0130: The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait {#bug_0130}
 

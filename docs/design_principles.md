@@ -207,6 +207,8 @@ warning, and treated as an incident.
 
 ### F5. Nothing on the order path allocates from the heap
 
+**Agreed** with Andrew, 11 October 2026.
+
 **The principle.** Handling an order, a cancel or an execution report allocates no memory from the
 general heap. Memory comes from pools, bump allocators, slabs and fixed buffers sized at start-up.
 
@@ -222,8 +224,8 @@ from in `seq_no_to_session_`, a `std::unordered_map`, adding an entry for every 
 key to a `std::unordered_map` allocates a node from the heap. An execution report that arrives before
 the follower has acknowledged the order it answers is copied into `pending_er_`, a `std::multimap`,
 with its payload in a `std::vector` and its `ClOrdID` in a `std::string`, which is up to three
-allocations for each such report. No bug records these yet. Other standard containers on the order
-path have not been checked.
+allocations for each such report. Both are recorded as [BUG-0131](bug_list.md#bug_0131). Other standard
+containers on the order path have not been checked.
 
 ### F6. Incoming messages are not copied
 
