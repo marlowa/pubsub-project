@@ -1075,6 +1075,11 @@ def check_doxygen_blank_line(path: Path, lines: list[str], stripped: list[str]) 
 # bug that records it and the phase of docs/recovery_plan.md that removes it; when that work is
 # done, its entry is deleted, and the check then fails if the lock is still there.
 #
+# Each entry names what it permits. In a .cpp file, a name of the form Class::function permits every
+# lock in that function. Any other name, in a .cpp or a .hpp file, permits a line holding a lock that
+# also holds that word: usually the mutex member, for example mutex_. An entry may not cover a whole
+# file, so that a lock added to a file already in the table is checked like a lock anywhere else.
+#
 # A loop that waits for another thread is also a lock under F2, and cannot be found this way.
 
 _VENUE_CODE_EXEMPT_DIRS = ('/tests/', '/integration_tests/', '/performance/', '/tools/', '/tests_common/')
@@ -1134,25 +1139,28 @@ _PERMITTED_LOCKS = [
      'breach: BUG-0124, removed in phase 3'),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_reply',
      'breach: BUG-0124, removed in phase 3'),
-    ('applications/sequencer/ReplicatedRecordWriter.hpp', '*', 'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/ReplicatedRecordWriter.hpp', 'mutex_', 'breach: BUG-0124, removed in phase 3'),
     # The lease promise recorder, on the sequencer's and the matching engine's application threads.
-    ('applications/fix_common/BackgroundPromiseRecorder.hpp', '*', 'breach: BUG-0126, removed in phase 4'),
+    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'mutex_', 'breach: BUG-0126, removed in phase 4'),
+    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'wake_', 'breach: BUG-0126, removed in phase 4'),
+    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'idle_', 'breach: BUG-0126, removed in phase 4'),
     # Memory pools.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'expansion_mutex_',
      'breach: BUG-0127, removed in phase 4'),
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'callback_mutex_', _ERROR_PATH),
     # Metrics: registration happens at start-up, and the scrape runs on the endpoint's own thread.
-    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusEndpoint.hpp', '*', _NOT_ORDER_HANDLING),
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusEndpoint.hpp', 'mutex_', _NOT_ORDER_HANDLING),
     ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::exposition_text', _NOT_ORDER_HANDLING),
     ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::register_counter', _START_UP_AND_SHUTDOWN),
     ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::register_gauge', _START_UP_AND_SHUTDOWN),
     ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::register_histogram', _START_UP_AND_SHUTDOWN),
-    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/SingleWriterHistogramRegistry.hpp', '*', _NOT_ORDER_HANDLING),
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/SingleWriterHistogramRegistry.hpp', 'registration_mutex_', _NOT_ORDER_HANDLING),
     ('libraries/pubsub_itc_fw/src/SingleWriterHistogramRegistry.cpp', 'SingleWriterHistogramRegistry::Collect',
      _NOT_ORDER_HANDLING),
     # Start-up only.
-    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/FileLock.hpp', '*', _START_UP_AND_SHUTDOWN),
-    ('libraries/pubsub_itc_fw/src/QuillLogger.cpp', '*', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/FileLock.hpp', 'flock', _START_UP_AND_SHUTDOWN),
+    # The logging library's backend thread is started once, when the first logger is created.
+    ('libraries/pubsub_itc_fw/src/QuillLogger.cpp', 'backend_started', _START_UP_AND_SHUTDOWN),
 ]
 
 # Entries of _PERMITTED_LOCKS that matched at least one lock in this run, so that an entry left behind
@@ -1215,9 +1223,7 @@ def check_locks(path: Path, lines: list[str], stripped: list[str]) -> list[Viola
             continue
         permitted = False
         for where, _why in entries:
-            if where == '*':
-                permitted = True
-            elif path.suffix == '.cpp' and '::' in where:
+            if path.suffix == '.cpp' and '::' in where:
                 permitted = function == where
             else:
                 permitted = re.search(r'\b' + re.escape(where) + r'\b', line) is not None
@@ -1232,6 +1238,14 @@ def check_locks(path: Path, lines: list[str], stripped: list[str]) -> list[Viola
                 "on a thread that handles no orders, or only on an error path, add it to the table with that reason; "
                 "otherwise do not add the lock"))
     return violations
+
+
+def report_whole_file_permitted_locks() -> list[str]:
+    """Entries of _PERMITTED_LOCKS that name no lock or function. An entry must say which lock or function it
+    permits, so that a new lock added to the same file is checked like a lock anywhere else."""
+    return [f"scripts/check_standards.py: _PERMITTED_LOCKS has an entry for {entry_path} that names no lock or function "
+            f"('{where}'); name the member, variable or Class::function that holds the lock"
+            for entry_path, where, _why in _PERMITTED_LOCKS if not re.fullmatch(r'\w+(::~?\w+)?', where)]
 
 
 def report_unused_permitted_locks() -> list[str]:
@@ -1368,6 +1382,10 @@ def main() -> int:
             for violation in check(path, lines, stripped):
                 print(violation)
                 total += 1
+
+    for message in report_whole_file_permitted_locks():
+        print(message)
+        total += 1
 
     if not args.paths:
         for message in report_unused_permitted_locks():
