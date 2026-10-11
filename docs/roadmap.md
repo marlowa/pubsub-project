@@ -2,8 +2,9 @@
 
 ## Slices
 
-Each slice leaves the system in a working state. Slices 1–8 and 10 are complete; slice 11
-(OAR) is the next planned application.
+Each slice leaves the system in a working state. Slices 1–8 and 10 are complete. The order of work
+is now set by [the plan for restoring the design](recovery_plan.md): new features, slice 11 among
+them, wait until it is finished.
 
 | # | Description | Status |
 |---|-------------|--------|
@@ -16,16 +17,14 @@ Each slice leaves the system in a working state. Slices 1–8 and 10 are complet
 | 7 | Network WAL replication (leader streams records; follower acks; ER gated on ack) | ✓ Done |
 | 8 | Arbiter implementation — replaces file-based fencing with real lease+epoch arbiter; PSA+witness topology | ✓ Done |
 | 9 | Dual snapshots, snapshot validation, operational polish | Not started |
-| 10 | WAL multi-subscriber generalisation + MEP (MatchingEnginePublisher); topic pub/sub over the WAL | ✓ Done |
-| 11 | OAR (Order Activity Recorder) — topic subscriber to MEP; Kafka/Pulsar publisher | Not started |
-| 12+ | Market data; seamless ME failover; DR site; multi-instrument scaling | Forward-looking, not yet planned |
+| 10 | WAL multi-subscriber generalisation + the matching engine publisher (`MatchingEnginePublisher`); topic pub/sub over the WAL | ✓ Done |
+| 11 | The order activity recorder (OAR) — a topic subscriber to the matching engine publisher; Kafka/Pulsar publisher | Designed, not built |
+| 12+ | Market data; seamless matching engine failover; a disaster recovery site; multi-instrument scaling | Forward-looking, not yet planned |
 
-The ME primary-secondary pair was listed under slice 12+ as forward-looking; it landed on
-2026-07-05 (role config, book replication via `BookUpdate`, arbiter-mediated promotion, WAL
-reconciliation with cancel-on-failover). `ha_test.py` scenario 16 covers it. A second gateway
-(`applications/binary_order_gateway`, same venue over internal PDUs with no FIX layer) also exists
-now, which makes the venue multi-gateway for the first time — but that is one more gateway, not
-the pool of slice 12+, and it raises the availability and fairness questions listed below.
+The matching engine already runs as a pair: book replication (`BookUpdate`), leadership by majority
+lease, and a catch-up from the sequencer's log before a new leader acts, with a configured policy for
+the orders it inherits ([WAL and HA](availability/wal_and_ha.md)). The venue has two gateways, FIX
+and binary, each run as two instances; that is not the pool of gateways of slice 12+.
 
 See [WAL and High Availability](availability/wal_and_ha.md) for the full design behind slices 1–11.
 

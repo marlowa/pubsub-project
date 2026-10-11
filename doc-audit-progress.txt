@@ -34,6 +34,10 @@ The audit continues with the rest of the availability directory meanwhile; these
    it a decision record. Should it stay a record, with each superseded section marked as such and
    everything else checked against the code; or should its superseded sections move to
    `docs/superseded/`, leaving a document of current decisions?
+5. `docs/roadmap.md` is partly a dated planning record: "Priority order, agreed 2026-08-23", "Active /
+   Next" and "Completed since this list was last revised" set an order of work that the recovery plan
+   has replaced. Its slices table (corrected) and its decision log are still useful. Should the dated
+   planning sections stay, marked as superseded by the plan, or move to `docs/superseded/`?
 ## Building and testing on Rocky 8 in Docker (started, blocked)
 
 Asked for on 7 October 2026: build, release, deploy and test with `scripts/devsetup.sh` inside the
