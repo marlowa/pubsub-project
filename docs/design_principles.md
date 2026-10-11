@@ -467,25 +467,52 @@ model `FollowerBehindHA.tla`.
 
 ### V5. The matching engine acts only on commands the logs hold (G2)
 
-**The principle.** The leading sequencer sends a command to the matching engine only once its follower
-has written and acknowledged it, or, when it is running without a follower, only under V4.
+**Agreed** with Andrew, 11 October 2026.
 
-**Why.** If the leader's machine died, the engine would hold an order that no surviving log holds, and
-the venue could not account for it.
+**The principle.** The matching engine acts only on commands the sequencer's logs hold. While both
+sequencers are running, the leader passes a command to the matching engine only after its follower has
+confirmed that it holds the command, so both logs hold everything the engine acts on. While the leader
+trades alone, only the leader's log holds the newest commands, and V4 makes sure that no instance
+missing them can take over. That log survives the leader's process dying but not its machine dying, so
+while the leader trades alone, the loss of its machine loses the commands only it held.
+
+A command the leader had logged but not yet passed to the matching engine when it died was never acted
+on, and no member was sent a report for it; the gateway that sent it still holds it as unanswered and
+sends it again to the new leader (V6).
+
+**Why.** If the engine acted on an order no log held and the leader's machine then died, the engine
+would hold an order, and members might have reports for it, that no surviving record shows the venue
+ever accepted. The venue could not account for it, rebuild it after a restart, or answer a member who
+asked about it.
 
 **Where it holds.** In the leading sequencer: `hold_until_acknowledged`, `release_if_confirmed` and
 the running-alone logic in `SequencerThread`.
 
-**What checks it.** `ha_test.py` scenario 59.
+**What checks it.** `ha_test.py` scenario 59, in which the leading sequencer dies holding orders its
+follower never received.
 
 **Today: holds.**
 
 ### V6. Every command a gateway accepted is answered (G1)
 
-**The principle.** Every command a gateway accepted from a member is either placed and reported, or
-refused with a reply. It is never left unanswered.
+**Agreed** with Andrew, 11 October 2026.
 
-**Why.** A member that hears nothing cannot tell whether its order is in the market.
+**The principle.** Every command a gateway has accepted from a member, a new order or a cancel, is
+answered: either placed and reported, or refused with a reply. It is never left unanswered, whatever
+happens to the sequencers, including a change of leader. The gateway keeps a copy of each command
+until the first report for it arrives, and sends every copy it still holds again when a new leader
+announces itself or its connection to the leader is made again; sending again is safe because of V7.
+If the gateway runs out of room for copies, it refuses each new command with a reply.
+
+**Scope.** The copies live in the gateway's memory, so this holds while the gateway that accepted the
+command keeps running. If that gateway dies, the member's connection drops with it, and the member
+recovers as the functional specification provides: it may ask what became of an order (R-0002), or
+resubmit it under its original ClOrdID (R-0003), and the venue refuses the repeat of an order it has
+already taken (R-0006).
+
+**Why.** A member that hears nothing cannot tell whether its order is in the market. It may resubmit
+and risk a second order, or do nothing and risk having none; either way the venue has left it
+guessing.
 
 **Where it holds.** In the gateways, which keep each command until it is answered and send again what
 they hold when the leader changes or their connection to it is made again
