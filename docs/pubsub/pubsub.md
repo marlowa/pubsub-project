@@ -74,16 +74,20 @@ carries a record list, so this is purely a pacing choice, not a protocol change.
 
 ### D4 — Slow consumers are dropped explicitly and recoverably, never silently.
 
-Transient slowness is absorbed by the WAL and its retention window. "Too slow" means a
-subscriber's cursor has fallen far enough behind that the next record it needs is about to be
-truncated out of the retained window. When that happens:
+Transient slowness is absorbed by the WAL and a per-topic retention window, `max_lag_records`
+(`subscriber_lag.default_max_lag_records` in the publisher's configuration files, 100,000 records). "Too slow" means a subscriber's acknowledged position has fallen more than
+that window behind the head of the log. When that happens:
 
 - **Best-effort notice:** a `TopicLagged` signal (reason + oldest-retained sequence number) is
   sent on the subscriber's control channel and the connection is closed.
 - **Reliable signal on resubscribe:** however a subscriber dropped, when it reconnects and asks
-  for a sequence number older than the oldest retained record, the publisher clamps the start
-  forward and tells it *where the stream now begins* (`accepted_from_seq_no` greater than
-  requested). A reconnecting subscriber is by definition reading, so this signal always lands.
+  for a sequence number older than the window allows (the head minus `max_lag_records`), the
+  publisher clamps the start forward and tells it *where the stream now begins*
+  (`accepted_from_seq_no` greater than requested). A reconnecting subscriber is by definition
+  reading, so this signal always lands.
+
+The window decides what the publisher will serve, not what the log holds: nothing deletes the log's
+records while the venue runs (see [WAL](../durability/wal.md)).
 
 Data loss is therefore always **explicit and recoverable** (reconnect and accept the gap),
 never a silent hole.
@@ -98,16 +102,17 @@ Each connection carries a `role` field (`Data` or `Control`) and a shared `subsc
 publisher correlates the pair by id. The two connections are **one logical subscription** — if
 either drops, the pair is torn down.
 
-### D6 — Acks survive, but only as a coarse truncation cursor.
+### D6 — Acks survive, but only as a coarse position report.
 
-The one thing a publisher still needs from a subscriber is **how far it has consumed**, so it can
-safely reclaim old WAL segments. So `TopicAck` is not on the hot path: a subscriber reports its
-cursor *periodically* (every N records, or on disconnect), and the publisher truncates the WAL
-only up to the slowest subscriber's acknowledged position. Retention is bounded additionally by a
-per-topic window so one wedged subscriber cannot pin the log forever (see D4).
+The one thing a publisher still needs from a subscriber is **how far it has consumed**. So
+`TopicAck` is not on the hot path: a subscriber reports its cursor *periodically* (every N records,
+or on disconnect), and the publisher compares it with the retention window to decide whether the
+subscriber has fallen too far behind (D4). The acknowledged positions are also what any reclaiming of
+the log would have to respect, never deleting what the slowest subscriber has not passed; nothing
+reclaims the log today.
 
-**The order activity recorder is exempt from the retention window.** Its acknowledged position always
-holds back the log, however far behind it falls. For the recorder, a gap would be a permanent loss of
+**The order activity recorder is to be exempt from the retention window**, in its design, which is not
+yet built: its acknowledged position would always hold back the log, however far behind it falls. For the recorder, a gap would be a permanent loss of
 events that R-0049 forbids, not something a consumer can recover from, and how far behind it can fall
 is limited instead by the backlog bound after which trading halts (R-0053). See
 [oar_external_stream.md](oar_external_stream.md) section 13.4.
@@ -135,14 +140,14 @@ catalog: a record is served on a topic if and only if its pdu id is a declared m
 
 ---
 
-## Publishing — worked example: the Matching Engine Publisher (MEP)
+## Publishing — worked example: the matching engine publisher
 
-The **MEP** (`applications/matching_engine_publisher/`) is the reference publisher. It tails the
+The **matching engine publisher** (`applications/matching_engine_publisher/`) is the reference publisher. It tails the
 order flow and republishes it on two topics — `orders` (new-order and cancel PDUs) and
 `execution_reports` (ERs) — for downstream consumers that do not sit on the low-latency core
 path.
 
-The MEP owns one `TopicPublisher` per topic over a **shared WAL**, and implements
+The publisher owns one `TopicPublisher` per topic over a **shared WAL**, and implements
 `TopicPublisherHost` so the publishers can send and disconnect through the owning
 `ApplicationThread`. The essential wiring:
 
@@ -170,7 +175,7 @@ The MEP owns one `TopicPublisher` per topic over a **shared WAL**, and implement
    both. A live record must be **in the WAL before** `notify_record_appended` — catch-up and live
    delivery share the one cursor path (D2).
 
-4. **Track leadership.** On a role change the MEP calls `set_leader(true/false)` on both
+4. **Track leadership.** On a role change the publisher calls `set_leader(true/false)` on both
    publishers; publishers start non-leader and only begin serving once leadership is adopted, and
    `drop_all_subscribers()` runs on leader→follower (D7).
 
@@ -184,8 +189,9 @@ requests; you do not touch the streaming, pacing, or retention logic.
 ## Subscribing — worked example: `topic_probe`
 
 `topic_probe` (`applications/topic_probe/`) is a tiny diagnostic subscriber — the minimal way to
-watch a topic live — and it is the reference for how to write one. It connects to a publisher's
-topic port, subscribes to one topic, and prints each record as a structured, decoded dump.
+watch a topic live — and it is the reference for how to write one. It connects to a publisher,
+subscribes to one or more topics, each on that topic's port, and prints each record as a
+structured, decoded dump, tagged with its topic name.
 
 A subscriber subclasses `TopicSubscriberThread` and overrides **one** method,
 `on_pubsub_message()`. The base class owns all the boilerplate: connecting to the publisher, the
@@ -229,12 +235,14 @@ Key points a subscriber author needs:
 To run it:
 
 ```bash
-topic_probe orders                       # replay retained history, then stream live
-topic_probe execution_reports --from-seq-no 9000
+topic_probe                                          # every topic: replay what is retained, then stream live
+topic_probe --topics=execution_reports --from-seq-no 9000
+topic_probe --topics=orders --host 10.0.0.2
 ```
 
-Default ports are per topic (`orders` → 11040, `execution_reports` → 11041); override with
-`--host`/`--port` for a secondary. Stop with Ctrl-C.
+The ports are the primary publisher's deployed defaults (`orders` → 11040, `execution_reports` →
+11041); there is no option to change them, so to watch a secondary instance its ports would have to
+be the same on its host. Stop with Ctrl-C.
 
 ---
 
@@ -248,7 +256,7 @@ publisher exchange:
 | `TopicSubscribeRequest` | subscriber → publisher | Names topic, `subscriber_id`, `from_seq_no`, and channel `role` (Data/Control). One is sent on each of the two connections. |
 | `TopicSubscribeAck` | publisher → subscriber | Confirms the subscription and reports `accepted_from_seq_no` — where the stream actually begins (may be clamped forward; see D4). |
 | `TopicPage` | publisher → subscriber | A batch of records on the data channel (D3). |
-| `TopicAck` | subscriber → publisher | The periodic truncation cursor (D6). |
+| `TopicAck` | subscriber → publisher | The periodic report of how far the subscriber has consumed (D6). |
 | `TopicNotLeader` | publisher → subscriber | The endpoint is not the leader; reconnect to the leader (D7). |
 | `TopicLagged` | publisher → subscriber | Best-effort out-of-band lag notice on the control channel (D4). |
 
@@ -263,6 +271,6 @@ these PDUs and the topic catalog are always in step with the messages they carry
 - [Serialisation DSL](../framework/serialisation_dsl.md) — how records and topic PDUs are encoded; the
   generated views and `to_string` dumps.
 - [Sequencer](../venue/sequencer_app.md) and
-  [WAL and High Availability](../availability/wal_and_ha.md) — the order flow the MEP republishes, and the
+  [WAL and High Availability](../availability/wal_and_ha.md) — the order flow the publisher republishes, and the
   leadership model a publisher runs under.
 - [Reactor](../framework/reactor.md) — the event loop that drives the writable-pacing and connection paths.
