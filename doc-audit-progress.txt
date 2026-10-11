@@ -74,7 +74,7 @@ availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_dea
 
 durability: `wal.md`, `replay.md`, `open_order_checkpoint.md`, `README.md`
 
-orientation: `architecture.md`
+orientation: `architecture.md`, `building.md`
 
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
@@ -99,7 +99,7 @@ code as it then stood)
 pubsub: `README.md`, `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
 `oar_bus_deduplication.md`, `oar_external_stream.md`, `pubsub.md`
 
-orientation: `README.md`, `building.md`, `running.md`, `testing.md`
+orientation: `README.md`, `running.md`, `testing.md`
 
 top level of `docs/`: `README.md`, `project_status.md`, `roadmap.md`
 
@@ -131,6 +131,12 @@ so they are not corrected to describe the current code.
 ## Problems found in the code during the audit
 
 Reported to Andrew, and not changed by the audit.
+
+- **A `--debug` build stages into `installed/`** (`scripts/build.py`, `flavour_suffix()`): Debug is not
+  one of the flavours given a directory of its own, so a Debug build, even with its own `--build-dir`,
+  replaces the release libraries and programs that `devenv.py`, `perf_run.py` and `ha_test.py` run. The
+  instrumented flavours were separated for exactly this reason. Found auditing
+  `docs/orientation/building.md`, 11 October 2026, after it happened in practice.
 
 - **`Wal::append` allocates from the heap for a record over 512 bytes** (`libraries/pubsub_itc_fw/src/Wal.cpp`):
   it builds the record's payload in a 512-byte buffer on the stack, and in a `std::vector` otherwise. On

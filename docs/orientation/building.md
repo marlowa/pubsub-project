@@ -10,6 +10,10 @@
 platform and then calls `build.py`, which does the work: configure, compile, run the test suites,
 generate coverage or Doxygen if asked, and install into a staging directory.
 
+**For the whole developer loop, use `scripts/devsetup.sh`**, which builds, makes a release, deploys
+it and tests it. Running `build.sh` and then deploying skips the release step. This page covers the
+build itself.
+
 ```bash
 ./scripts/build.sh                       # normal build, all tests, install into installed/
 ./scripts/build.sh --no-java             # skip the Maven build
@@ -31,9 +35,12 @@ generate coverage or Doxygen if asked, and install into a staging directory.
 | `--asan` | `-fsanitize=address -fno-omit-frame-pointer` |
 | `--tsan` | `-fsanitize=thread`, lock-free optimisations disabled |
 | `--valgrind` | `USING_VALGRIND` defined, lock-free optimisations disabled |
-| `--debug` | `CMAKE_BUILD_TYPE=Debug` |
+| `--debug` | `CMAKE_BUILD_TYPE=Debug`, with the thread-ownership checks compiled in |
 
 `--asan` and `--tsan` are mutually exclusive; `build.py` rejects the combination.
+
+**`--debug` is not treated as a flavour of its own** (below): a Debug build uses `build/` and stages
+into `installed/`, as a plain build does, and so replaces the release libraries and programs there.
 
 ---
 
@@ -110,6 +117,13 @@ installed there becomes what every one of those tools runs against.
 The dangerous case is not coverage but performance. A coverage library is `-O0` with inlining
 disabled and roughly 10% larger; a `perf_run.py` executed after a coverage build would produce
 figures that mean nothing, with nothing in its output to indicate why.
+
+**A `--debug` build is not protected in this way.** It is not one of the flavours that
+`flavour_suffix()` in `build.py` names, so it stages into `installed/`, even when it is given its own
+`--build-dir`, and everything above then runs the Debug build. After a Debug build, run
+`scripts/devsetup.sh` (or a plain `build.sh`) before measuring anything or running `ha_test.py`. To
+build and test Debug without disturbing `installed/`, build with CMake directly in a directory of its
+own and run the test programs from that directory, without installing.
 
 To run the system deliberately instrumented, name the prefix. `perf_run.py` and `ha_test.py` take
 it as a positional argument; `devenv.py` reads it from the environment file instead, so point one
