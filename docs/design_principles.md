@@ -257,33 +257,59 @@ the slab chunk, and in the hand-over of that chunk to the application thread
 
 ### F7. Threads stay on their cores
 
-**The principle.** Each hot-path thread is pinned to its own processor core, chosen at start-up from a
-registry of cores shared by every process on the machine, and stays there.
+**Agreed** with Andrew, 11 October 2026.
 
-**Why.** A thread moved between cores loses what it had in the core's caches, and a thread sharing a
-core with an unrelated one waits for it.
+**The principle.** Each component's hot-path threads, its reactor thread and its application
+threads, are pinned to the cores the machine's layout gives that component, and stay there. A
+component's threads share the hyperthreads of one physical core; a physical core is never shared
+between components. Every other thread runs in a shared background tier and never on a hot-path core.
+The layout is decided before any process starts, not claimed at run time.
 
-**Where it is meant to hold.** In `CpuRegistry` and the CPU layout applied by the reactor
-([cpu_pinning.md](framework/cpu_pinning.md), [cpu_pinning_anti_affinity.md](framework/cpu_pinning_anti_affinity.md)).
+**Why.** A thread moved between cores loses what it had in the core's caches. A component's reactor
+thread and application thread exchange messages constantly, and on the two hyperthreads of one
+physical core they share the level-one cache, so the hand-over is nearly free; measured on the same
+load, the round trip's 99th percentile was 471 microseconds with each component's threads together on
+one physical core, against 2.4 to 3.0 milliseconds with one thread per physical core. Two different
+components on one physical core simply compete for it. Cores cannot be claimed at run time, because
+what is free depends on which processes have started so far
+([cpu_pinning_anti_affinity.md](framework/cpu_pinning_anti_affinity.md)).
 
-**What checks it.** Not yet checked.
+**Where it is meant to hold.** The layout is declared for each environment and resolved into core
+numbers on the target machine by `deploy.py`, using `scripts/cpu_layout.py`, which fills each physical
+core with one component or leaves it alone. Every process starts confined to the background tier, and
+the reactor then moves its hot-path threads onto the component's cores
+([cpu_pinning.md](framework/cpu_pinning.md)).
 
-**Today: not yet checked.**
+**What checks it.** Nothing in the build. The layout was checked by hand on the development
+workstation: every ranked component landed on the cores the layout allocated it, and the JVM
+components started in the background tier.
+
+**Today: holds**, as far as that check goes.
 
 ### F8. Shutdown is deterministic
 
-**The principle.** A process shuts down in a bounded time: each thread's queue stops accepting
-messages, the thread is woken and leaves its run loop, and the reactor joins every thread within a
-fixed timeout.
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** A process shuts down within a bounded time. Each thread is told to stop, given a
+fixed time to leave its run loop, and joined with a timeout. A thread that does not stop in that time
+is never left running: the process is ended deliberately, and the thread that would not stop is
+logged.
 
 **Why.** A process that cannot be relied on to stop cannot be relied on to be restarted.
 
 **Where it is meant to hold.** The thread lifecycle state machine in `ApplicationThread`, the
 descriptor that wakes `epoll`, and `ThreadWithJoinTimeout` ([threading.md](framework/threading.md)).
 
-**What checks it.** Not yet checked.
+**How it is done.** `Reactor::finalize_threads_after_shutdown` cancels each thread's timers, tells each
+thread to shut down, waits up to `shutdown_timeout_` (one second by default) for each to stop running,
+and then joins each with the same timeout. The waits are made one thread at a time, so the bound is
+twice the shutdown timeout for each thread. The log's helper thread is given up to 30 seconds to join,
+because it may be in the middle of writing a segment. A thread that does not join is recorded, and
+`abort_if_thread_abandoned` ends the process.
 
-**Today: not yet checked.** [BUG-0119](bug_list.md#bug_0119) records an application thread that can
+**What checks it.** Not checked in the build.
+
+**Today: broken in one known place.** [BUG-0119](bug_list.md#bug_0119) records an application thread that can
 go on using its reactor after the reactor has been destroyed.
 
 ---
