@@ -163,20 +163,37 @@ list of failures is the list of work for phases 3 and 4.
 **Finished when:** the checks exist, have been shown to fail on the known breaches, and those breaches
 are listed as the only permitted exceptions, each with the phase that removes it.
 
-**Where it stands.** All three parts are built, and await the review that ends the phase:
+**Where it stands.** All three parts are built and have been reviewed with Andrew; the phase ends when he
+agrees the results below.
 
 - `scripts/check_standards.py` refuses any lock in venue code that its table `_PERMITTED_LOCKS` does not
   list, with the reason for each (start-up or shutdown only, a thread that handles no orders, an error
-  path, or a breach naming its bug and the phase that removes it), and reports a table entry that no
-  longer matches a lock;
-- it refuses a raw `std::thread` in venue code;
-- in Debug and sanitizer builds, `ThreadConfinementCheck` refuses a second thread on the log writer,
-  the slab allocator, the ring buffer, the sequencer's table of epochs, the gateways' unanswered
-  commands and session tables, and the reactor's handler and connection tables. The known second
-  writer of the follower's log (BUG-0124) is counted rather than refused, published as a metric, and
-  warned about once.
+  path, or a breach naming its bug and the phase that removes it). Each entry names the lock or function
+  it permits; an entry covering a whole file is refused, and so is an entry that no longer matches a lock.
+- It refuses a raw `std::thread` in venue code.
+- In Debug and sanitizer builds, `ThreadConfinementCheck` refuses a second thread on the log writer,
+  the slab allocator, the ring buffer, the incremental rehash map, the sequencer's table of epochs, the
+  gateways' unanswered commands and session tables, and the reactor's handler and connection tables.
+  The known second writer of the follower's log (BUG-0124) is counted rather than refused, published as
+  a metric, and warned about once.
 
 Each check was made to fail on purpose before it was relied on.
+
+**Checked in the running venue.** Every high-availability scenario was run against a Debug install, so
+that the ownership checks ran inside the real venue. 67 of the 72 scenarios pass.
+
+- The checks refused one thing: the matching engine's order book, which is filled while the engine is
+  built and then used by the engine's own thread. That is a hand-over, not a second thread, and the
+  engine now hands the book over on its first event ([BUG-0140](bug_list.md#bug_0140), fixed). No other
+  second thread was found. The counted second writer of the follower's log appears in 15 scenarios, as
+  expected.
+- The five failures, and one crash in a scenario that passed, have causes outside the checks, recorded
+  as [BUG-0141](bug_list.md#bug_0141) (a follower that discards records while its record of command
+  identifiers is being built stops), [BUG-0142](bug_list.md#bug_0142) (the arbiter and the matching
+  engine wait seconds for the disk while handling leases), [BUG-0143](bug_list.md#bug_0143) (a matching
+  engine whose lease runs out while starting cancels every order it recovered),
+  [BUG-0144](bug_list.md#bug_0144) (`ha_test.py` misses a log line split between two reads) and
+  [BUG-0145](bug_list.md#bug_0145) (scenarios 59 and 62 stop the leader before it has their orders).
 
 > **Phases 3 to 7 are to be revised.** On 11 October 2026 Andrew agreed the direction in
 > [ha_in_the_library.md](availability/ha_in_the_library.md): most of the high availability machinery

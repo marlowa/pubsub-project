@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 139 |
-| Open | 55 (36 defects, 19 tasks) |
-| Closed | 84 |
-| Next id | BUG-0140 |
+| Bugs recorded | 145 |
+| Open | 60 (41 defects, 19 tasks) |
+| Closed | 85 |
+| Next id | BUG-0146 |
 
 ## Open bugs by severity
 
-13 high, 37 medium, 5 low.
+15 high, 39 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -26,6 +26,8 @@
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0124](#bug_0124) | high | task | Locks are taken on the order path, in a design meant to be free of them |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
+| [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
+| [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -63,11 +65,14 @@
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
 | [BUG-0139](#bug_0139) | medium | defect | A matching engine that restarts or is promoted issues report identifiers that were already used that day |
+| [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
+| [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
 | [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
+| [BUG-0145](#bug_0145) | low | defect | Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding |
 
 ---
 
@@ -164,6 +169,190 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0145: Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding {#bug_0145}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenarios 59 and 62 failed: in each, the leader's log did not hold the three orders sent to it |
+| Impact | Each scenario fails when the leader is slow to read its orders. On such a run scenario 59's check that "the matching engine has accepted none of them" passes without meaning anything, because the leader never had them. Its later check of the old leader's log notices, so the result is a false failure rather than a false pass |
+
+**What happens.** To test a leader that dies holding orders its follower never received, the scenario
+sends three orders to the leader with `inject_order` and stops the leader with `SIGSTOP` as soon as
+`inject_order` reports that it has sent them (`ha_test.py`, the scenario's step 2). Nothing confirms
+that the leader has read the orders and written them to its log before it is stopped. In this run the
+leader, a Debug build, had not, so its log held none of them.
+
+Scenario 62, an old leader that rejoins and discards the records its new leader does not have, sends
+its three orders and stops the leader in the same way, and failed in the same run for the same reason:
+"the leader's log does not hold the three orders sent to it".
+
+**What is wanted.** Each scenario waits for evidence that the leader has written the three orders, for
+example a line the leader logs for each order it holds waiting for its follower, before it stops the
+leader, and fails clearly if that evidence does not come.
+
+### BUG-0144: ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent {#bug_0144}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 54 failed with "interim orders did not appear within 30s", although the matching engine had logged all 1,000 acceptances within 31 ms of the orders being sent |
+| Impact | A wait can miss the line it waits for and fail a healthy run. Worse, a check that something did not happen can miss the line that says it did, and pass |
+
+**What happened.** In scenario 54, `wait_for_accepted_count` waited for 1,000 lines containing "accepted
+NOS OrderID=ME-ORD-" in `matching_engine_secondary.log`, reading from the start of the file. All 1,000
+are in the log, written between 23:32:26.272 and 23:32:26.304, yet after 30 seconds it had not counted
+1,000.
+
+**Why.** Each time it polls, the function reads whatever has been added to the log since the last poll
+and counts the text in that piece alone (`seen += chunk.count(needle)`). The logging library writes the
+file in pieces that need not end at the end of a line, so a poll can read the first half of a line and
+the next poll the second half; the text is then in neither piece and is never counted. Reading from
+the start of the file rules out the only other explanation, a starting position past the lines.
+
+**The same pattern elsewhere in the script.** `poll_log_for`, which most waits and every check that
+something is absent go through, splits each piece into lines and tests each line, so a line split
+between two reads is tested as two halves, neither of which holds all the markers. At least two other
+readers do the same (`ha_test.py`, near lines 4616 and 4645).
+
+**What is wanted.** Every reader keeps the unfinished end of what it read and searches only complete
+lines, joining the remainder to the next read. A unit test feeds a reader a line in two pieces.
+
+### BUG-0143: A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered {#bug_0143}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 53 failed: the member was told its order was accepted and then that it was cancelled |
+| Impact | With `open_orders_on_promotion = cancel`, which is the setting today, every order the engine recovered from its own region is cancelled and each member is told so, although the engine took no book over from a peer. Requirement R-0018 says a started engine keeps what it recovered |
+
+**What happened.** In scenario 53, the primary matching engine was started cold with 1,000 orders in its
+region and an order waiting in the sequencer's log.
+
+1. It was granted a lease and began its first reconciliation with the sequencers.
+2. Recording the new epoch took 5.5 seconds ([BUG-0142](#bug_0142)), and the lease ran out. The engine
+   logged "role now FOLLOWER (was RECONCILING, epoch=2165)".
+3. It was granted a lease again and reconciled again. Its book was reconciled to 1,001 orders, and it
+   then logged "open_orders_on_promotion=cancel -- cancelling the 1001 order(s) inherited at this
+   promotion" and cancelled them all, where the scenario expects "started rather than promoted --
+   keeping the ... open order(s) recovered from the region (R-0018)".
+
+**Why.** When reconciliation begins, `MatchingEngineThread` sets `reconciling_from_follower_` from whether
+its role is follower at that moment (`MatchingEngineThread.cpp`, where it enters RECONCILING). A lease
+that runs out during the first reconciliation of a start sets the role to follower, so the next
+reconciliation is taken for a promotion from follower. Whether an instance is starting or being
+promoted depends on whether it ever followed a leader and took a book over from it, which a lapse
+during its own start does not change.
+
+**What is wanted.** The engine decides between a start and a promotion from what it has done, not from
+its role at the moment reconciliation begins: an engine that has not yet completed a start is still
+starting, however many times its lease runs out meanwhile. A scenario that makes the lease run out
+during a start should check it.
+
+### BUG-0142: The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader {#bug_0142}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 8 failed before its kills began: its baseline orders never completed |
+| Impact | While the arbiter's thread waits for the disk it renews no lease. A pair whose leader depends on the arbiter's vote, because its peer is down, loses its leader, and trading stops until a leader is chosen again. The arbiter's own lease can run out in the same wait, as it did here |
+
+**What happened.** In scenario 8, against the Debug install:
+
+1. The secondary sequencer discarded records from its log at 23:06:42.43 and then stopped
+   ([BUG-0141](#bug_0141)), so the primary sequencer could keep its lease only with the arbiter's vote.
+2. At 23:06:43.64 the primary sequencer sent the arbiter a new statement, that its follower may not lead.
+3. The arbiter's application thread took that statement in and did not finish handling it until
+   23:06:48.53: its reactor logged "callback not finished yet" every half second, up to 4,788 ms.
+4. Meanwhile the primary sequencer's lease ran out at 23:06:46.33, "neither the peer nor the arbiter
+   renewed it in time", and it stopped leading while holding 1,000 orders. The arbiter's own lease ran
+   out at 23:06:48.53 as well. The baseline orders never completed and the scenario failed.
+
+**Where the arbiter waits.** When a request for a lease carries a changed statement, `ArbiterThread`
+calls `save_component_statements()` before it sends the grant (`ArbiterThread.cpp`, in the handling of a
+lease request). That writes the statements through `ComponentStatementStore`, which writes a temporary
+file, calls `fsync` on it, renames it and syncs the directory, all on the arbiter's application thread.
+The arbiter logged the statement only after the save returned, at 23:06:48.53.
+
+**A suspected cause of the long `fsync`, not established.** The statement file is on `/mnt/sda2`, the
+`lazytime` device, which also holds both sequencers' logs. About a second before the stall, the
+secondary sequencer's log repair had overwritten the rest of a segment with zeros, synced it, and
+deleted the later segments (`Wal::truncate_after`), on the same filesystem. On ext4, an `fsync` of a
+small file waits for the journal commit, which may have to write out other files' data first. Showing
+it needs the arbiter's kernel stack caught during such a stall.
+
+**Whatever the cause,** this is the weakness [BUG-0107](#bug_0107) described: code that renews leases
+must not be able to block for seconds on the disk. BUG-0107 moved the lease promise records onto a
+thread of their own; the statement records were not moved.
+
+**The same wait, recording an epoch.** In scenario 53 of the same run, the restarted primary matching
+engine was granted a lease and then spent 5.5 seconds in one callback, which ended with "epoch advanced
+2161 -> 2165 (recorded)": `EpochStore::store` syncing the new epoch on the engine's thread. The lease it
+had just been granted ran out during the wait. Principle F4 allows this wait, because the instance is
+changing role and handles no orders meanwhile. But a wait longer than the lease defeats the change of
+role it belongs to, and here it led on to [BUG-0143](#bug_0143). So F4's exception needs a bound, or the
+lease must not run out while the epoch is being recorded; that is a design question for Andrew.
+
+**What is wanted.** A design for recording statements without the lease thread waiting for the disk,
+which must keep the rule that an arbiter echoes a statement only once it is recorded. This belongs with
+the high availability machinery that [ha_library_boundary.md](availability/ha_library_boundary.md)
+proposes moving into the library.
+
+### BUG-0141: A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted {#bug_0141}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. In scenario 2 the secondary sequencer stopped, although the scenario passed, because it checks only the arbiters' failover |
+| Impact | The following sequencer stops with an exception that nothing catches, so the venue loses its standby sequencer until the instance is started again. Trading goes on: only a follower discards records, so the leader cannot stop this way. A scenario that does not look at the follower passes regardless, as scenario 2 did |
+
+**What happened.** In scenario 2, against the Debug install, the secondary sequencer started, joined as
+follower, and found records at the end of its log that the leader did not hold. It discarded records
+694198 to 700778 (`SequencerThread.cpp`, the warning "discarded records ... from this instance's log").
+About a second and a half later the process ended with:
+
+```
+terminate called after throwing an instance of 'pubsub_itc_fw::PubSubItcException'
+  what():  WalReader: open(/mnt/sda2/mystuff2/var/sequencer_secondary_wal/wal_000063.log): No such file or directory
+```
+
+**Why.** Two parts of the sequencer use the log's segment files at the same time.
+
+1. `LoggedCommandIdentifiersBuilder` builds the record of command identifiers on a thread of its own. When
+   it starts, it takes the list of segment paths (64 of them in this run, numbers 0 to 63) and then reads
+   each in turn with `WalReader::replay_segment`. In this run it started at 23:04:17.46 and had not
+   finished when the process ended.
+2. The follower's log repair calls `Wal::truncate_after` (`Wal.cpp`), which ends with
+   `delete_segments_after`, deleting every segment after the one the kept records end in. In this run
+   that removed `wal_000063.log` at 23:04:19.68.
+
+When the builder reached the deleted segment, `replay_segment` threw because the file was not there.
+Nothing on the builder's thread catches an exception, so the process was terminated.
+
+**Why it showed in Debug.** A Debug build reads the log more slowly, so the builder was still running when
+the repair came. A Release build has the same window whenever a follower starts with a log large enough
+that its builder is still reading when the leader's answer makes it discard records.
+
+**Also wrong, though harmless as the code stands.** A builder that reads a segment while it is being
+truncated can record identifiers of records that are then discarded. The comment in the repair code
+says such an identifier is harmless: a command matching it is checked against the log exactly, not
+found, and sequenced as new.
+
+**What is wanted.** The builder and the repair must not use the same segment files unsynchronised. The
+choice of how is a design question for the recovery plan, because the builder and the repair are both
+part of the machinery that [ha_library_boundary.md](availability/ha_library_boundary.md) proposes moving into
+the library.
 
 ### BUG-0139: A matching engine that restarts or is promoted issues report identifiers that were already used that day {#bug_0139}
 
@@ -2930,6 +3119,30 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0140: In builds with thread checks, the matching engine stopped on its first order {#bug_0140}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-10-11 -- the engine's own thread takes over the order book's map on its first event, through `IncrementalRehashMap::hand_over_ownership()` |
+| How | Running every high-availability scenario against a Debug install, to end phase 2 of the recovery plan. Scenario 1 failed: the matching engine stopped four seconds after it started |
+| Impact | In Debug, AddressSanitizer and coverage builds, the matching engine ended its thread on the first order it handled, so no high-availability scenario could pass against such a build. Release builds were not affected: they have no thread checks |
+
+**Why.** The order book is opened, and its open orders recovered from the region, in the
+`MatchingEngineThread` constructor, which runs on the thread that builds the engine. Opening the book
+calls `reserve()` on its map, `IncrementalRehashMap`, which in builds with thread checks records the
+first thread to touch it as its owner. The engine's own application thread was then refused, with
+"IncrementalRehashMap is owned by one thread and was touched by a second thread", when it first used the
+book. The unit tests did not show it because they build and use an order book on the same thread.
+
+**The fix.** `IncrementalRehashMap::hand_over_ownership()` makes the next thread to use the map its owner,
+as the connection managers' method of the same name does for their tables. `OrderBook` passes it on,
+and `MatchingEngineThread::on_initial_event()`, the first event delivered on the engine's thread, calls
+it before anything on that thread uses the book. A unit test hands a map to a second thread and checks
+that the new owner is accepted and the old one refused; with the hand-over removed, it fails.
 
 ### BUG-0138: Test processes freeze while their logger waits for the disk, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently {#bug_0138}
 
