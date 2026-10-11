@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 127 |
-| Open | 44 (28 defects, 16 tasks) |
+| Bugs recorded | 128 |
+| Open | 45 (29 defects, 16 tasks) |
 | Closed | 83 |
-| Next id | BUG-0128 |
+| Next id | BUG-0129 |
 
 ## Open bugs by severity
 
-12 high, 27 medium, 5 low.
+12 high, 28 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -52,6 +52,7 @@
 | [BUG-0122](#bug_0122) | medium | task | Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism |
 | [BUG-0126](#bug_0126) | medium | defect | The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
+| [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -153,6 +154,69 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principle F2 (no locks on fast paths) in `docs/design_principles.md`, and asking whether `Reactor::timer_registry_mutex_` could be allowed because timers are created at start-up. They are not: the framework has no way to create a timer separately from starting it |
+| Impact | Any application thread that starts or cancels a timer takes a mutex that the reactor thread also takes, and makes the reactor thread, which carries every order, allocate from the heap, create or close a file descriptor and make three or four system calls. Nothing stops an application from doing this on the order path |
+
+**What happens now.** `ApplicationThread` offers `start_one_off_timer`, `start_recurring_timer` and
+`cancel_timer`, and nothing else. There is no separate step that creates a timer.
+
+Starting a timer (`ApplicationThread::schedule_timer`):
+
+1. On the application thread, `Reactor::allocate_timer_id` takes `timer_registry_mutex_` to hand out
+   the next timer number, and an "add timer" command is put on the reactor's queue.
+2. On the reactor thread, `Reactor::create_timer_fd` takes the same mutex, allocates a new
+   `TimerHandler` on the heap, which calls `timerfd_create` and `timerfd_settime`, registers the new
+   file descriptor with epoll, and inserts it into two tables.
+
+Cancelling a timer (`Reactor::cancel_timer_fd`, on the reactor thread) takes the mutex, removes the
+timer from both tables, removes the descriptor from epoll, closes it and frees the handler. It also
+writes a log line at Info level on every cancel (`ApplicationThread::cancel_timer`).
+
+**Who does this during the trading day.**
+
+- The FIX gateway starts and cancels one-off timers per session: the logon timeout, the
+  authentication timeout, the sequence-state timeout and resend request retries.
+- Both gateways start a one-off timer for the cancel-on-disconnect grace period, and a one-off timer
+  for each batch of cancels while cancelling a departed session's orders.
+- The binary gateway starts and cancels the authentication timeout per session.
+- The matching engine cancels and restarts its reconciliation timer.
+
+The recurring timers that every component starts in its start-up handlers are not a problem.
+
+**What is wanted.** Agreed with Andrew, 11 October 2026; the design is to be written up and agreed
+before any code:
+
+1. **Creating a timer is separate from starting it.** A thread creates its timers while it is
+   initialising, with a function such as `create_timer(type)`. The reactor creates the timer file
+   descriptor unarmed, registers it with epoll and returns the `TimerID`. Locks, allocation and
+   system calls are acceptable here because this is start-up. Creating a timer after initialisation
+   fails with a precondition exception.
+2. **Starting and stopping a timer re-arms or disarms the existing descriptor.** `start_timer(id,
+   interval)` and `stop_timer(id)` put a command on the reactor's queue, and the reactor calls
+   `timerfd_settime` on the descriptor it already has: no lock, no allocation, no new descriptor.
+   Starting a timer that is already running re-arms it. Timers are destroyed only at shutdown.
+3. **A ring from an earlier start is discarded.** A timer can ring just before it is stopped or
+   restarted, leaving a ring message already in the application thread's queue. Each start increases
+   a count kept with the timer, the ring message carries the count, and the framework discards a ring
+   whose count is out of date before the application sees it.
+4. **Timers belonging to a session use one timer per thread.** Sessions arrive and leave during the
+   day, so their timers cannot all be created at start-up. Instead each thread that needs them
+   creates one recurring timer at start-up, and keeps its own list of session deadlines; on each tick
+   it handles the deadlines that have passed. Session deadlines are counted in seconds, so a tick of
+   about 10 milliseconds is precise enough. Per-session timing then sends no commands to the reactor.
+
+With timer numbers handed out only during initialisation, and the tables changed only by the reactor
+thread afterwards, `timer_registry_mutex_` has nothing to protect during the day and is removed.
+
+**Principle.** F2 in `docs/design_principles.md`: this lock is not accepted as an exception.
 
 ### BUG-0127: A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it {#bug_0127}
 

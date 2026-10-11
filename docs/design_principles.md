@@ -54,6 +54,8 @@ for the venue, followed by a number, so that other documents and commit messages
 
 ### F1. Each piece of changing state has exactly one owning thread
 
+**Agreed** with Andrew, 11 October 2026.
+
 **The principle.** Only one thread ever changes a given piece of state. Another thread that needs the
 state, or needs it changed, sends the owning thread a message through its queue. The one exception
 is a value that one thread writes and others only read, held in an atomic variable or in a structure
@@ -84,6 +86,8 @@ Two locks were added to keep the two writers apart (see F2), and two atomic vari
 
 ### F2. Fast paths take no locks, and no order-handling thread waits for another thread
 
+**Agreed** with Andrew, 11 October 2026.
+
 **The principle.** An order-handling thread never takes a lock and never waits for another thread to
 finish something. It may block only in the one place the framework provides, waiting for work when
 its queue is empty or its sockets are idle.
@@ -112,10 +116,17 @@ mutex (`lock-audit-report.txt`).
 
 The first two exist only because of the two writers described under F1.
 
-Two more locks are taken by reactor threads during the trading day, but not for each order:
-`Reactor::timer_registry_mutex_`, when an application thread starts or cancels a timer, and
-`Reactor::thread_registry_mutex_`, in the reactor's once-a-second check of its threads. Whether these
-are allowed is open question 1 below.
+Two more locks are taken during the trading day, but not for each order.
+
+`Reactor::timer_registry_mutex_` is taken when an application thread starts or cancels a timer, and
+by the reactor thread when it creates or destroys the timer. It is not accepted as an exception. The
+framework has no way to create a timer separately from starting it, so every start creates a new
+timer and every cancel destroys one, and nothing stops that from happening on the order path. Timers
+are to be created during initialisation and only started and stopped afterwards, which leaves the lock
+nothing to protect. Recorded as [BUG-0128](bug_list.md#bug_0128).
+
+`Reactor::thread_registry_mutex_` is taken in the reactor's once-a-second check of its threads.
+Whether it is allowed is open question 1 below.
 
 ### F3. The reactor thread runs only framework code
 
@@ -456,11 +467,12 @@ principle, or left out.
 These need Andrew's decision before this page is agreed. They are separate questions, not
 alternatives.
 
-1. **Two reactor locks taken during the day, but not for each order.** `Reactor::timer_registry_mutex_`
-   is taken when an application thread starts or cancels a timer; the FIX gateway does that for session
-   events and both gateways once for each batch of 500 cancels when a session departs.
-   `Reactor::thread_registry_mutex_` is taken once a second by the reactor thread alone, so it is never
-   contended. Should F2 allow these two?
+1. **The reactor's thread registry lock.** `Reactor::thread_registry_mutex_` is taken during the day
+   once a second by the reactor thread alone, in its checks for threads that have exited or are stuck,
+   so it is never contended. `route_message` also takes it, but only for a message sent straight from
+   one application thread to another through `ApplicationThread::post_message`, which no application
+   does. The tables it guards change only at start-up and shutdown. Should F2 allow it, or should it be
+   dropped from `route_message` and the once-a-second checks and kept for start-up and shutdown only?
 2. **Creating a log segment on the writing thread (F4).** When the helper is late, the thread writing
    the log creates the next segment itself, which waits for the disk. The alternative is for that
    thread to wait for the helper, which is also a wait. Should this stay as the one accepted exception,
