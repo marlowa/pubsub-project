@@ -8,16 +8,11 @@
 #include <cstdint>
 #include <vector>
 
-// The thread check needs these two only in the builds that compile it in. They are guarded
-// separately so that each still sits in the section the include-order rule puts it in.
-#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-#include <thread>
-#endif
-
 #include <prometheus/client_metric.h>
 
+// The thread check is needed only in the builds that compile it in.
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-#include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
 
 namespace pubsub_itc_fw {
@@ -124,14 +119,7 @@ class SingleWriterHistogram {
     // so the release build records with no check at all.
     void check_single_writer() {
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-        const std::thread::id calling_thread = std::this_thread::get_id();
-        if (owning_thread_ == std::thread::id{}) {
-            owning_thread_ = calling_thread;
-            return;
-        }
-        if (owning_thread_ != calling_thread) {
-            throw PreconditionAssertion("SingleWriterHistogram has one writer and a second thread recorded into it", __FILE__, __LINE__);
-        }
+        single_writer_.check();
 #endif
     }
 
@@ -142,7 +130,7 @@ class SingleWriterHistogram {
     std::vector<CacheLineOfCounts> cache_lines_;
 
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-    std::thread::id owning_thread_{};
+    ThreadConfinementCheck single_writer_{"SingleWriterHistogram"};
 #endif
 
     // On a cache line of its own, away from the members above, which the scrape reads.

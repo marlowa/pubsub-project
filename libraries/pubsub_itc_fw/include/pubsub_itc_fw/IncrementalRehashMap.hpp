@@ -13,15 +13,10 @@
 // Thread-confinement checking is a debug, ASan and coverage build facility: it costs a
 // thread-local read on every operation, which a hot path should not pay to verify something
 // the design already guarantees. PUBSUB_ITC_FW_THREAD_CHECKS is set by the top-level
-// CMakeLists for exactly those build types. The two includes it needs are guarded separately
-// so that each still sits in the section the include-order rule puts it in.
-#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-#include <thread>
-#endif
-
+// CMakeLists for exactly those build types.
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-#include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
 
 namespace pubsub_itc_fw {
@@ -484,14 +479,7 @@ class IncrementalRehashMap {
     /// would.
     void check_thread_confinement() const {
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-        const std::thread::id calling_thread = std::this_thread::get_id();
-        if (owning_thread_ == std::thread::id{}) {
-            owning_thread_ = calling_thread;
-            return;
-        }
-        if (owning_thread_ != calling_thread) {
-            throw PreconditionAssertion("IncrementalRehashMap is thread-confined and was touched by a second thread", __FILE__, __LINE__);
-        }
+        thread_confinement_.check();
 #endif
     }
 
@@ -755,7 +743,7 @@ class IncrementalRehashMap {
     size_t size_{0};
 
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-    mutable std::thread::id owning_thread_{};
+    ThreadConfinementCheck thread_confinement_{"IncrementalRehashMap"};
 #endif
 };
 
