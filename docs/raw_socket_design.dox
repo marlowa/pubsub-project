@@ -42,7 +42,8 @@ unprocessed bytes.
   application thread.
 - The \b application thread reads from \c read_ptr() and \c bytes_available()
   but never modifies the buffer directly.
-- The head never overtakes the tail (buffer-full policy: disconnect the peer).
+- The head never overtakes the tail: reading pauses before the buffer fills (see
+  \ref rsd_backpressure).
 - The tail never overtakes the head (precondition enforced by \c advance_tail).
 
 \section rsd_delivery Delivery to the application thread
@@ -56,6 +57,9 @@ When \c on_data_ready() fires (EPOLLIN), the reactor:
    - \c payload() -- \c read_ptr() at enqueue time (pointer into the MirroredBuffer).
    - \c payload_size() -- \c bytes_available() at enqueue time.
    - \c tail_position() -- the buffer's \c tail_ value at enqueue time.
+   - a shared pointer to the buffer itself, so that the bytes stay valid if the
+     connection is torn down while the message is still in the application
+     thread's queue.
 
 Crucially, the message delivers \b all currently unprocessed bytes, not just the
 newly arrived bytes. If bytes from a previous delivery were not committed, they are
@@ -102,11 +106,14 @@ bytes. The application can then decode the previously partial message.
 
 \subsection rsd_fragmentation_rogue_client Rogue client protection
 
-A rogue client that sends a partial message and then goes silent will cause the
-application to stop committing. The buffer fills up. When \c space_remaining()
-reaches zero, \c on_data_ready() detects the buffer-full condition, logs an error,
-and invokes the disconnect handler. The connection is closed. All other connections
-and threads in the reactor are unaffected.
+A rogue client that sends a partial message and then goes silent causes the
+application to stop committing. If it goes on sending bytes the application cannot
+decode, the buffer fills to its high-water mark and the reactor stops reading the
+socket (\ref rsd_backpressure), so the kernel's buffers fill and TCP stops the
+client sending. What ends such a connection is the listener's idle timeout, where
+one is configured, or the application deciding the bytes are not a valid message
+and asking for a disconnect. All other connections and threads in the reactor are
+unaffected.
 
 \section rsd_tail_position Why tail_position() is needed
 
@@ -146,16 +153,24 @@ the buffer tail.
 Outbound raw bytes use the \c SendRaw \c ReactorControlCommand. The application
 thread allocates a slab chunk, fills it with the raw bytes to send, and enqueues
 a \c SendRaw command. The reactor calls \c send_prebuilt() on the handler, which
-delegates to \c PduFramer for partial-send management and slab chunk lifetime.
-The outbound path is identical to the PDU path in this respect.
+keeps the chunk and how much of it has been sent until the send completes, then
+releases it. The handler does not use \c PduFramer, which frames PDUs; raw bytes
+have no frame.
 
 \section rsd_backpressure Backpressure summary
 
 | Condition | Response |
 |-----------|----------|
-| Buffer full on recv | Disconnect peer; deliver ConnectionLost to app thread |
+| Buffer reaches three quarters full | Stop reading the socket, so TCP holds the sender back |
+| Application commits until the buffer is half full | Start reading again |
 | Partial message, no new data | Leave in buffer; wait for next EPOLLIN |
-| Rogue client fills buffer | Buffer-full disconnect (see above) |
-| Slow application thread | Buffer fills; eventually buffer-full disconnect |
+| Rogue client | Reading paused at the high-water mark; ended by the idle timeout or the application (see above) |
+| Slow application thread | Reading paused until it catches up; nothing is lost |
+| Buffer completely full on recv | A defensive fallback that the pausing should make unreachable: disconnect the peer and deliver ConnectionLost |
+
+The thresholds are \c high_water_numerator and \c low_water_numerator over
+\c water_denominator in \c RawBytesProtocolHandler. A connection whose reads were paused
+can stay stalled for a while after they resume, because the sender may not be told at once
+that room has opened (BUG-0104).
 
 */
