@@ -162,7 +162,8 @@ std::string QuillLogger::ensure_log_file_writable(const std::string& file_path) 
 }
 
 QuillLogger::~QuillLogger() {
-    if (callback_sink_ != nullptr) {
+    // flush_log() never returns if the backend thread is not running; see the header.
+    if (callback_sink_ != nullptr && quill::Backend::is_running()) {
         flush();
     }
 }

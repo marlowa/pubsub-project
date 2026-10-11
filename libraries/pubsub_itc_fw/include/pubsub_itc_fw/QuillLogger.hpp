@@ -87,6 +87,15 @@ class QuillLogger {
      * A logger with a callback flushes before it is destroyed, so that no record is
      * delivered to the callback, or to whatever the callback refers to, after the
      * logger has gone.
+     *
+     * The flush happens only while Quill's backend thread is running. Quill's
+     * flush_log() waits, with no time limit, for the backend thread to process the
+     * flush, so with the backend stopped it would never return.
+     *
+     * A logger with a callback must not be a static object, or be owned by one.
+     * Quill forbids calling flush_log() from the destructor of a static object: its
+     * data for each thread may already have been destroyed by then, and the program
+     * can crash. Nothing checks this rule; it is stated here.
      */
     ~QuillLogger();
 
