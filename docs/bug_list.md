@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 132 |
-| Open | 49 (32 defects, 17 tasks) |
+| Bugs recorded | 133 |
+| Open | 50 (33 defects, 17 tasks) |
 | Closed | 83 |
-| Next id | BUG-0133 |
+| Next id | BUG-0134 |
 
 ## Open bugs by severity
 
-12 high, 32 medium, 5 low.
+12 high, 33 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -57,6 +57,7 @@
 | [BUG-0130](#bug_0130) | medium | defect | The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait |
 | [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
 | [BUG-0132](#bug_0132) | medium | task | Orders still open at the end of the trading day are never cancelled, and their members are never told |
+| [BUG-0133](#bug_0133) | medium | defect | A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -158,6 +159,38 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0133: A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders {#bug_0133}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principle V10 (a follower's log becomes a copy of its leader's) in `docs/design_principles.md`; the cost was already stated as an open question in section 7 of `docs/availability/follower_log_repair.md` and was not in this list |
+| Impact | When a follower rejoins after a long absence, the leading sequencer stops taking orders while it reads the records the follower missed, for seconds after an hour's absence in a busy day, longer if the records must come from disk. A publisher's catch-up has the same effect |
+
+**Where.** When a follower rejoins, the leader finds the last record on which the two logs agree and
+sends the follower every record after it (part 4.5 of `docs/availability/follower_log_repair.md`). It
+reads those records from its log on the sequencer thread, the thread that sequences every order, and
+no order is handled while it does. Reading starts at the segment holding the first missed record, so
+the cost grows with what the follower missed, not with the size of the log. The publishers'
+catch-ups (`SequencerThread::handle_wal_subscribe_request`) read on the same thread, and the repair
+design says they still read from the start of the log. The matching engine's catch-up was bounded to
+start at the segment it needs on 5 October 2026 under [BUG-0113](#bug_0113), but it too reads on the
+sequencer thread.
+
+**How much.** At 50 million orders a day, a follower away for an hour misses several million records.
+The startup measurement recorded under [BUG-0107](#bug_0107) puts reading 5.5 million records at 2.6
+seconds with the files already in memory. Not measured on a catch-up.
+
+**What is wanted.** Read and send the missed records from a thread of their own, and hand over to live
+records at the exact point where that thread stops, so that there is no gap and no record is sent
+twice; the same for the publishers' catch-ups. The sequencer thread then does no reading of its log on
+behalf of anyone else. To be designed and agreed before code.
+
+**Principle.** F4 in `docs/design_principles.md`: an order-handling thread doing work that can wait for
+the disk.
 
 ### BUG-0132: Orders still open at the end of the trading day are never cancelled, and their members are never told {#bug_0132}
 

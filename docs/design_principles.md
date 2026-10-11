@@ -613,11 +613,27 @@ reach the member from the new leader, and the session scenarios.
 
 ### V9. Within a log, sequence numbers only go forward (G4)
 
-**The principle.** No sequence number is used twice in a log. A new leader numbers from the highest
-record it holds.
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** Every record in a sequencer's log has its own sequence number, and the numbers only
+go forward: no number that anything has acted on is ever given to a second command. A follower moves
+its counter past every record it writes, however the record reached it, and an instance that takes the
+lead numbers new commands from the highest record its log holds, plus one. As a second line of
+defence, the matching engine refuses any command whose number is not above the highest it has already
+acted on (`MatchingEngineThread::sequence_goes_backwards`), logs the refusal as an error naming both
+numbers, and sends the member a rejection.
+
+A follower repairing its log (V10) may discard records an old leader wrote and then hold its new
+leader's records under the same numbers. The discarded records were never acted on by the matching
+engine (V5), and no member was answered for them.
+
+**Why.** Sequence numbers are how every part of the venue knows where it is and what it has missed:
+the matching engine, the publishers, a follower, and the gateways. A number given to two commands
+would let two components agree they were at the same point while holding different commands.
 
 **Where it holds.** In the sequencer's numbering when it takes the lead (section 4.1 of
-[change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md)).
+[change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md)), and in the matching
+engine's refusal.
 
 **What checks it.** The numbering checks in `ha_test.py` scenarios 1 and 59.
 
@@ -625,16 +641,38 @@ record it holds.
 
 ### V10. A follower's log becomes a copy of its leader's (G5)
 
-**The principle.** When an instance rejoins as a follower, its log ends up identical to its leader's:
-records the leader does not hold are discarded, and records it lacks are sent to it.
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** When an instance rejoins the pair as follower, after being disconnected, after
+restarting, or as an old leader after the lead changed, its log is made an exact copy of its leader's
+before it counts as holding anything. Records it holds that its leader does not are discarded, and
+records it lacks are sent to it.
+
+**How.** Each record carries the epoch of the leadership that wrote it, so two records with the same
+number and epoch are the same record. The follower and leader exchange the number and epoch of their
+last records to find the last record on which the two logs agree. The follower discards everything
+after it, and logs at Warning what it discarded; the leader sends everything after it, in order, and
+only then live records. Until then the follower writes no live records, and the leader counts it as
+behind, so under V4 it may not take over.
+
+**Why.** A follower whose log had a gap or held records its leader does not could take over, and the
+matching engine would catch up from a log missing records; the publishers and the order activity
+recorder would read a log that disagrees with the one the venue acted on. And the leader can say its
+follower holds everything again (V4) only once it knows the two logs agree.
 
 **Where it holds.** In the follower's log repair ([follower_log_repair.md](availability/follower_log_repair.md)),
 in `SequencerThread`.
 
-**What checks it.** `ha_test.py` scenario 62.
+**What checks it.** `ha_test.py` scenario 62, and the scenarios in section 8 of the repair design, each
+of which was made to fail with the repair disabled.
 
-**Today: holds**, but the repair is the part of the sequencer where the two writers of F1 meet, and
-it is to be checked again when the second writer is removed.
+**Today: holds, with two reservations.**
+
+- The repair is where the two writers of F1 meet: on a follower, the reactor thread's handler and the
+  sequencer thread both write the log, kept apart by the lock in `ReplicatedRecordWriter`
+  ([BUG-0124](bug_list.md#bug_0124)). It is to be checked again when the second writer is removed.
+- The leader reads the records the follower missed on the thread that sequences orders, so orders wait
+  while it does, for seconds after a long absence: [BUG-0133](bug_list.md#bug_0133).
 
 ### V11. A fault in the standby is a loss of resilience, not a loss of service
 
