@@ -110,6 +110,7 @@ void SequencerThread::on_initial_event() {
     // in on_timer_event. Delete this call when the second writer is removed.
     if (config_.ha_enabled) {
         wal_.mark_second_writer_known_breach("BUG-0124, removed in phase 3");
+        log_epochs_.mark_second_thread_known_breach("BUG-0124, removed in phase 3");
     }
 
     if (config_.replay_mode) {
@@ -273,6 +274,10 @@ void SequencerThread::on_initial_event() {
         "sequencer_thread", "wal_second_writer_appends",
         "Appends to the log by a second thread, the known breach BUG-0124, counted only in builds with thread checks. Expected to be 0 once "
         "phase 3 removes the second writer");
+    log_epochs_second_thread_calls_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "log_epochs_second_thread_calls",
+        "Uses of the table of epochs in the log by a second thread, the known breach BUG-0124, counted only in builds with thread checks. "
+        "Expected to be 0 once phase 3 removes the second writer");
     running_alone_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_running_alone",
         "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
@@ -1238,14 +1243,16 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         wal_segments_filled_inline_gauge_.set(static_cast<double>(wal_.segments_filled_inline()));
         wal_segments_waited_for_gauge_.set(static_cast<double>(wal_.segments_waited_for()));
         const int64_t second_writer_appends = wal_.second_writer_appends();
+        const int64_t second_thread_epoch_calls = log_epochs_.second_thread_calls();
         wal_second_writer_appends_gauge_.set(static_cast<double>(second_writer_appends));
-        if (second_writer_appends > 0 && !second_writer_warned_) {
+        log_epochs_second_thread_calls_gauge_.set(static_cast<double>(second_thread_epoch_calls));
+        if ((second_writer_appends > 0 || second_thread_epoch_calls > 0) && !second_writer_warned_) {
             second_writer_warned_ = true;
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: a second thread has appended to the log ({} append(s) so far), the known breach of principle F1 "
-                       "recorded as BUG-0124 and removed in phase 3. Counted, not refused; the metric wal_second_writer_appends follows it. "
-                       "Not logged again",
-                       second_writer_appends);
+                       "SequencerThread: a second thread has used the log ({} append(s)) and its table of epochs ({} call(s)) so far, the known "
+                       "breach of principle F1 recorded as BUG-0124 and removed in phase 3. Counted, not refused; the metrics "
+                       "wal_second_writer_appends and log_epochs_second_thread_calls follow it. Not logged again",
+                       second_writer_appends, second_thread_epoch_calls);
         }
 
         try {

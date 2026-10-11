@@ -21,6 +21,9 @@
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 #include "CancelClOrdId.hpp"
 #include "FixCapture.hpp"
@@ -486,6 +489,10 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
 
     // Active FIX client sessions keyed by ConnectionID.
     std::unordered_map<pubsub_itc_fw::ConnectionID, FixSession> sessions_;
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    // Sessions are added and removed by this thread alone (principle F1). Checked where they are.
+    pubsub_itc_fw::ThreadConfinementCheck sessions_owner_{"FixOrderGatewayThread sessions"};
+#endif
 
     // Stateless serialiser shared across all sessions.
     FixSerialiser serialiser_;

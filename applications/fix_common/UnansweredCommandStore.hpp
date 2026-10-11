@@ -14,6 +14,9 @@
 #include <tsl/robin_map.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace fix_common {
 
@@ -65,6 +68,7 @@ class UnansweredCommandStore {
 
     /// Keeps a copy of a command about to be sent: the member's comp id, the command's ClOrdID, and its encoded envelope.
     Kept keep(std::string_view comp_id, std::string_view cl_ord_id, const uint8_t* envelope, size_t size) {
+        check_owning_thread();
         const size_t key_size = comp_id.size() + 1 + cl_ord_id.size();
         const size_t total = key_size + size;
         // The key is built in place in the block, so the lookup below needs the bytes written first.
@@ -106,6 +110,7 @@ class UnansweredCommandStore {
      * @return Whether a copy of it was held.
      */
     bool answered(std::string_view comp_id, std::string_view cl_ord_id) {
+        check_owning_thread();
         const auto found = find(comp_id, cl_ord_id);
         if (found == index_.end()) {
             return false;
@@ -117,6 +122,7 @@ class UnansweredCommandStore {
 
     /// Hands every unanswered copy to @p visit, as visit(envelope, size), oldest first. The bytes are valid only during the call.
     template <typename Visit> void for_each_unanswered(Visit&& visit) const {
+        check_owning_thread();
         for (size_t position = 0; position < live_; ++position) {
             const Entry& entry = entries_[(head_ + position) % entries_.size()];
             if (!entry.answered) {
@@ -130,6 +136,7 @@ class UnansweredCommandStore {
      * @return How many were forgotten.
      */
     size_t drop_session(std::string_view comp_id) {
+        check_owning_thread();
         size_t dropped = 0;
         for (size_t position = 0; position < live_; ++position) {
             const size_t slot = (head_ + position) % entries_.size();
@@ -149,15 +156,25 @@ class UnansweredCommandStore {
 
     /// How many commands are held unanswered.
     [[nodiscard]] size_t unanswered() const {
+        check_owning_thread();
         return unanswered_;
     }
 
     /// Whether the command (@p comp_id, @p cl_ord_id) is held unanswered.
     [[nodiscard]] bool holds(std::string_view comp_id, std::string_view cl_ord_id) const {
+        check_owning_thread();
         return find(comp_id, cl_ord_id) != index_.end();
     }
 
   private:
+    // Every member function is for the gateway's thread alone (principle F1). Compiled to nothing
+    // unless PUBSUB_ITC_FW_THREAD_CHECKS is set.
+    void check_owning_thread() const {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        owning_thread_.check();
+#endif
+    }
+
     struct Entry {
         size_t offset{0};
         size_t key_size{0};
@@ -255,6 +272,10 @@ class UnansweredCommandStore {
     size_t unanswered_{0};
     size_t next_offset_{0};
     bool wrapped_{false};
+
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    pubsub_itc_fw::ThreadConfinementCheck owning_thread_{"UnansweredCommandStore"};
+#endif
 };
 
 } // namespaces

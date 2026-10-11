@@ -70,6 +70,9 @@ void OutboundConnectionManager::process_connect_command(const ReactorControlComm
                                                      *target_thread, logger_);
 
     OutboundConnection* conn_ptr = conn.get();
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    connections_owner_.check();
+#endif
     connections_[id] = std::move(conn);
     connections_by_fd_[fd] = conn_ptr;
 
@@ -737,6 +740,9 @@ void OutboundConnectionManager::teardown_connection(ConnectionID id, const std::
         }
     }
 
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    connections_owner_.check();
+#endif
     connections_.erase(it);
 }
 

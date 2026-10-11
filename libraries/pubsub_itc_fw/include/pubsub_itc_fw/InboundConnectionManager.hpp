@@ -25,6 +25,9 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
 #include <pubsub_itc_fw/WaitingSendQueue.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace pubsub_itc_fw {
 
@@ -122,6 +125,18 @@ class InboundConnectionManager {
      * @return true on success, false if any listener fails to bind or listen.
      */
     [[nodiscard]] bool initialize_listeners();
+
+    /**
+     * @brief Makes the thread that calls this the owner of the connection table, in builds with thread
+     *        checks. Called by Reactor::run() as it starts: the table is filled by the thread that
+     *        builds the reactor and then used by the thread that runs it, a hand-over made once
+     *        before the reactor runs. Does nothing in a build without thread checks.
+     */
+    void hand_over_ownership() {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        connections_owner_.hand_over();
+#endif
+    }
 
     /**
      * @brief Called when EPOLLIN fires on a listening socket.
@@ -324,6 +339,10 @@ class InboundConnectionManager {
     // in fd order, which is not necessarily the same as registration order.
     std::vector<int> listener_fds_in_registration_order_;
     std::unordered_map<ConnectionID, std::unique_ptr<InboundConnection>> connections_;
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    // Connections are added and removed by the reactor thread alone (principle F1).
+    ThreadConfinementCheck connections_owner_{"InboundConnectionManager connections"};
+#endif
     std::unordered_map<int, InboundConnection*> connections_by_fd_;
 };
 

@@ -19,6 +19,9 @@
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
 #include <pubsub_itc_fw/WaitingSendQueue.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace pubsub_itc_fw {
 
@@ -260,6 +263,18 @@ class OutboundConnectionManager {
      */
     void handle_socket_error(OutboundConnection& conn);
 
+    /**
+     * @brief Makes the thread that calls this the owner of the connection table, in builds with thread
+     *        checks. Called by Reactor::run() as it starts: the table is filled by the thread that
+     *        builds the reactor and then used by the thread that runs it, a hand-over made once
+     *        before the reactor runs. Does nothing in a build without thread checks.
+     */
+    void hand_over_ownership() {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        connections_owner_.hand_over();
+#endif
+    }
+
   private:
     // Whether a connection should be watched for incoming data: neither its handler nor the application has paused it.
     [[nodiscard]] static bool wants_reads(const OutboundConnection& conn);
@@ -292,6 +307,10 @@ class OutboundConnectionManager {
     QuillLogger& logger_;
 
     std::unordered_map<ConnectionID, std::unique_ptr<OutboundConnection>> connections_;
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    // Connections are added and removed by the reactor thread alone (principle F1).
+    ThreadConfinementCheck connections_owner_{"OutboundConnectionManager connections"};
+#endif
     std::unordered_map<int, OutboundConnection*> connections_by_fd_;
 
     // Pending connect retries. Keyed by service name. Each entry holds the

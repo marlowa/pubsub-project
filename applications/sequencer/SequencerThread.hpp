@@ -215,9 +215,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::HistogramHandle wal_append_reactor_thread_histogram_;
     pubsub_itc_fw::GaugeHandle wal_segments_filled_inline_gauge_;
     pubsub_itc_fw::GaugeHandle wal_segments_waited_for_gauge_;
-    // Appends by a second thread, counted under the known breach BUG-0124 in builds with thread
-    // checks, and whether the one warning about it has been logged.
+    // Uses of the log and of its table of epochs by a second thread, counted under the known breach
+    // BUG-0124 in builds with thread checks, and whether the one warning about them has been logged.
     pubsub_itc_fw::GaugeHandle wal_second_writer_appends_gauge_;
+    pubsub_itc_fw::GaugeHandle log_epochs_second_thread_calls_gauge_;
     bool second_writer_warned_{false};
 
     // Four points on the order's journey, each recording how much of the round trip had

@@ -81,6 +81,19 @@ class ThreadConfinementCheck {
     }
 
     /**
+     * @brief Leaves the state with no owner, so that the next thread to call check() becomes its
+     *        owner.
+     *
+     * For state that one thread prepares and then hands to another, once, before that other thread
+     * starts using it: for example, a reactor's tables, filled by the thread that builds the reactor
+     * and then used by the thread that runs it. Called by the thread taking over, before it uses the
+     * state, and only while no other thread is using it.
+     */
+    void hand_over() {
+        owning_thread_.store(std::thread::id{}, std::memory_order_release);
+    }
+
+    /**
      * @brief Records the calling thread as the owner if there is none yet, and refuses any other
      *        thread, or counts it under a known breach.
      *

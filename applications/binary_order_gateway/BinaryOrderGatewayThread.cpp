@@ -223,6 +223,9 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
     if (service == client_inbound_service_) {
         BinarySession session{};
         session.conn_id = id;
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        sessions_owner_.check();
+#endif
         sessions_.emplace(id.get_value(), std::move(session));
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: client connection {} accepted, awaiting Logon", id.get_value());
         return;
@@ -271,6 +274,9 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
         // The client is gone but its orders are still on the book with nobody managing
         // them, so cancel them on its behalf before the session is destroyed.
         queue_session_for_cleanup(it->second);
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        sessions_owner_.check();
+#endif
         sessions_.erase(it);
         return;
     }

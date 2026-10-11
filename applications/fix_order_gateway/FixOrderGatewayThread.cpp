@@ -323,6 +323,9 @@ void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID
         // rather than inferred because the sequencer cannot see a client socket close.
         announce_session_unbound(session);
         queue_session_for_cleanup(session);
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        sessions_owner_.check();
+#endif
         sessions_.erase(it);
     }
 
@@ -393,6 +396,9 @@ void FixOrderGatewayThread::on_raw_socket_message(const pubsub_itc_fw::EventMess
 
     auto it = sessions_.find(conn_id);
     if (it == sessions_.end()) {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        sessions_owner_.check();
+#endif
         sessions_.emplace(
             std::piecewise_construct, std::forward_as_tuple(conn_id),
             std::forward_as_tuple(

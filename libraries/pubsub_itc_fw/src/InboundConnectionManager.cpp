@@ -164,6 +164,9 @@ void InboundConnectionManager::on_accept(InboundListener& listener, ConnectionID
     auto conn = std::make_unique<InboundConnection>(populated_id, std::move(socket), listener.configuration.target_thread_id, std::move(handler), peer_desc,
                                                     listener.configuration.idle_timeout);
     InboundConnection* conn_ptr = conn.get();
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    connections_owner_.check();
+#endif
     connections_[populated_id] = std::move(conn);
     connections_by_fd_[fd] = conn_ptr;
 
@@ -312,6 +315,9 @@ void InboundConnectionManager::teardown_connection(ConnectionID id, const std::s
         }
     }
 
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    connections_owner_.check();
+#endif
     connections_.erase(it);
 }
 

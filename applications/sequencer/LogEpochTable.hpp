@@ -10,6 +10,9 @@
 #include <fmt/format.h>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace sequencer {
 
@@ -27,7 +30,10 @@ namespace sequencer {
  * Epochs usually rise from one run to the next, but are not assumed to: a new leader can briefly lead
  * below an epoch already led in (docs/availability/tla/findings.md, section 11.5).
  *
- * One thread, the sequencer's, calls every member function.
+ * One thread, the sequencer's, is meant to call every member function (principle F1). On a follower
+ * the reactor thread's inline handler calls it as well, the known breach BUG-0124 removed in phase 3,
+ * which the sequencer marks with mark_second_thread_known_breach() so that builds with thread checks
+ * count those calls instead of refusing them.
  */
 class LogEpochTable {
   public:
@@ -37,6 +43,7 @@ class LogEpochTable {
      * @param[in] epoch The epoch it carries; zero for a record written before records carried one.
      */
     void note_record(int64_t seq_no, int32_t epoch) {
+        check_owning_thread();
         if (seq_no != last_seq_no_ + 1) {
             throw pubsub_itc_fw::PreconditionAssertion(fmt::format("LogEpochTable: record {} follows record {}", seq_no, last_seq_no_), __FILE__, __LINE__);
         }
@@ -48,16 +55,19 @@ class LogEpochTable {
 
     /// The sequence number of the last record, or zero for an empty log.
     [[nodiscard]] int64_t last_seq_no() const {
+        check_owning_thread();
         return last_seq_no_;
     }
 
     /// The epoch of the last record, or zero for an empty log.
     [[nodiscard]] int32_t last_epoch() const {
+        check_owning_thread();
         return runs_.empty() ? 0 : runs_.back().epoch;
     }
 
     /// The epoch of record @p seq_no, which must be in the log.
     [[nodiscard]] int32_t epoch_of(int64_t seq_no) const {
+        check_owning_thread();
         if (seq_no < 1 || seq_no > last_seq_no_) {
             throw pubsub_itc_fw::PreconditionAssertion(fmt::format("LogEpochTable::epoch_of: record {} is not in a log of {}", seq_no, last_seq_no_), __FILE__,
                                                        __LINE__);
@@ -72,6 +82,7 @@ class LogEpochTable {
 
     /// The last record written in epoch @p epoch or an earlier one, or zero if there is none.
     [[nodiscard]] int64_t last_record_at_or_before(int32_t epoch) const {
+        check_owning_thread();
         int64_t end = last_seq_no_;
         for (auto run = runs_.rbegin(); run != runs_.rend(); ++run) {
             if (run->epoch <= epoch) {
@@ -103,6 +114,7 @@ class LogEpochTable {
      * is from a later epoch than any the follower holds.
      */
     [[nodiscard]] PositionAnswer answer_position(int64_t follower_last_seq_no, int32_t follower_last_epoch) const {
+        check_owning_thread();
         const int64_t seq_no = std::min(follower_last_seq_no, last_record_at_or_before(follower_last_epoch));
         return PositionAnswer{seq_no, seq_no == 0 ? 0 : epoch_of(seq_no)};
     }
@@ -120,6 +132,7 @@ class LogEpochTable {
      * for each run discarded rather than one for each record.
      */
     [[nodiscard]] FollowerStep follower_step(const PositionAnswer& answer) const {
+        check_owning_thread();
         const int64_t seq_no = std::min(answer.seq_no, last_seq_no_);
         if (seq_no <= 0) {
             return FollowerStep{0, true};
@@ -132,6 +145,7 @@ class LogEpochTable {
 
     /// Records after @p seq_no have been discarded from the log.
     void truncate_after(int64_t seq_no) {
+        check_owning_thread();
         if (seq_no < 0 || seq_no > last_seq_no_) {
             throw pubsub_itc_fw::PreconditionAssertion(fmt::format("LogEpochTable::truncate_after: record {} is not in a log of {}", seq_no, last_seq_no_),
                                                        __FILE__, __LINE__);
@@ -142,7 +156,35 @@ class LogEpochTable {
         last_seq_no_ = seq_no;
     }
 
+    /**
+     * @brief Says that a second thread is known to use this table, so that it is counted rather than
+     *        refused. Does nothing in a build without thread checks.
+     */
+    void mark_second_thread_known_breach([[maybe_unused]] const char* bug_and_phase) {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        owning_thread_.mark_known_breach(bug_and_phase);
+#endif
+    }
+
+    /**
+     * @brief How many calls a second thread has made under a known breach. Always zero in a build
+     *        without thread checks.
+     */
+    [[nodiscard]] int64_t second_thread_calls() const {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        return owning_thread_.known_breach_count();
+#else
+        return 0;
+#endif
+    }
+
   private:
+    void check_owning_thread() const {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        owning_thread_.check();
+#endif
+    }
+
     // The first record of the run of records from one epoch that holds record seq_no, which is in the log.
     [[nodiscard]] int64_t first_of_run_holding(int64_t seq_no) const {
         for (auto run = runs_.rbegin(); run != runs_.rend(); ++run) {
@@ -160,6 +202,10 @@ class LogEpochTable {
 
     std::vector<Run> runs_;
     int64_t last_seq_no_{0};
+
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    pubsub_itc_fw::ThreadConfinementCheck owning_thread_{"LogEpochTable"};
+#endif
 };
 
 } // namespaces

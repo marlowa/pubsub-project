@@ -24,6 +24,9 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 // authentication.hpp must be included before the others because only it defines BytesView
 // inside the PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS guard block.
@@ -321,6 +324,10 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // it is accepted, before Logon, so that an order arriving too early can be refused
     // against a known session rather than an absent one.
     std::unordered_map<int32_t, BinarySession> sessions_;
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    // Sessions are added and removed by this thread alone (principle F1). Checked where they are.
+    pubsub_itc_fw::ThreadConfinementCheck sessions_owner_{"BinaryOrderGatewayThread sessions"};
+#endif
 
     pubsub_itc_fw::ConnectionID auth_service_primary_conn_id_{};
     pubsub_itc_fw::ConnectionID auth_service_secondary_conn_id_{};

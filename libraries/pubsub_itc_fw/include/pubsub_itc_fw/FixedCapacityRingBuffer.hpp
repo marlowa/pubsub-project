@@ -10,6 +10,9 @@
 
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace pubsub_itc_fw {
 
@@ -52,8 +55,8 @@ namespace pubsub_itc_fw {
  * the buffer moved from is left with no storage and a capacity of zero, fit only to be destroyed
  * or assigned to.
  *
- * **Threading.** Not thread-safe. Each buffer must be used by one thread, or every call protected
- * by the caller.
+ * **Threading.** Not thread-safe. Each buffer is used by one thread (principle F1). In builds with
+ * thread checks, a second thread that uses it is refused (ThreadConfinementCheck).
  *
  * **Why a template.** The buffer is a general-purpose framework container, so the type of element
  * it holds is the user's choice, not the buffer's. Its first user, the gateways' rate throttle,
@@ -134,6 +137,7 @@ template <typename T> class FixedCapacityRingBuffer {
      *         constructed and nothing changed.
      */
     template <typename... Arguments> [[nodiscard]] bool emplace_back(Arguments&&... arguments) {
+        check_owning_thread();
         if (full()) {
             return false;
         }
@@ -150,6 +154,7 @@ template <typename T> class FixedCapacityRingBuffer {
      * The buffer must not be empty.
      */
     void pop_front() {
+        check_owning_thread();
         if (empty()) {
             throw PreconditionAssertion("FixedCapacityRingBuffer: pop_front called on an empty buffer", __FILE__, __LINE__);
         }
@@ -165,6 +170,7 @@ template <typename T> class FixedCapacityRingBuffer {
      * @return A reference that stays valid until the element is removed.
      */
     [[nodiscard]] T& front() {
+        check_owning_thread();
         if (empty()) {
             throw PreconditionAssertion("FixedCapacityRingBuffer: front called on an empty buffer", __FILE__, __LINE__);
         }
@@ -178,6 +184,7 @@ template <typename T> class FixedCapacityRingBuffer {
      * @return A reference that stays valid until the element is removed.
      */
     [[nodiscard]] const T& front() const {
+        check_owning_thread();
         if (empty()) {
             throw PreconditionAssertion("FixedCapacityRingBuffer: front called on an empty buffer", __FILE__, __LINE__);
         }
@@ -186,6 +193,7 @@ template <typename T> class FixedCapacityRingBuffer {
 
     /// The number of elements held.
     [[nodiscard]] size_t size() const {
+        check_owning_thread();
         return size_;
     }
 
@@ -196,11 +204,13 @@ template <typename T> class FixedCapacityRingBuffer {
 
     /// True if the buffer holds no elements.
     [[nodiscard]] bool empty() const {
+        check_owning_thread();
         return size_ == 0;
     }
 
     /// True if the buffer holds as many elements as its capacity, so that adding one would be refused.
     [[nodiscard]] bool full() const {
+        check_owning_thread();
         return size_ == capacity_;
     }
 
@@ -210,6 +220,13 @@ template <typename T> class FixedCapacityRingBuffer {
     }
 
   private:
+    // Compiled to nothing unless PUBSUB_ITC_FW_THREAD_CHECKS is set, so the release build is unchanged.
+    void check_owning_thread() const {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        owning_thread_.check();
+#endif
+    }
+
     /// The index of the slot @p offset places after the front, continuing from the start of the
     /// storage past its end. @p offset is never more than the capacity, so one subtraction is enough.
     [[nodiscard]] size_t index_after_front(size_t offset) const {
@@ -251,6 +268,10 @@ template <typename T> class FixedCapacityRingBuffer {
     // The index of the oldest element. Meaningful only when size_ is greater than zero.
     size_t front_{0};
     size_t size_{0};
+
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    ThreadConfinementCheck owning_thread_{"FixedCapacityRingBuffer"};
+#endif
 };
 
 } // namespaces

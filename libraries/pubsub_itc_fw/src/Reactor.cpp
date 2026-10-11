@@ -226,6 +226,13 @@ void Reactor::register_inbound_tls_listener(NetworkEndpointConfiguration address
 }
 
 int Reactor::run() {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    // The tables below were filled by the thread that built this reactor; from here on they belong
+    // to the thread running it.
+    handlers_owner_.hand_over();
+#endif
+    inbound_manager_.hand_over_ownership();
+    outbound_manager_.hand_over_ownership();
     lifecycle_.store(ReactorLifecycleState::Running, std::memory_order_release);
     shutdown_reason_ = "";
 
@@ -881,11 +888,17 @@ void Reactor::register_handler(std::unique_ptr<EventHandler> handler) {
         throw PubSubItcException("epoll_ctl ADD failed in register_handler");
     }
 
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    handlers_owner_.check();
+#endif
     handlers_.emplace(fd, std::move(handler));
 }
 
 void Reactor::deregister_handler(int fd) {
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    handlers_owner_.check();
+#endif
     handlers_.erase(fd);
     ::close(fd);
 }
@@ -1508,6 +1521,9 @@ void Reactor::dispatch_events(int nfds, epoll_event* events) {
         }
 
         // Fall through to generic event handlers (timers, etc.).
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        handlers_owner_.check();
+#endif
         auto handler_it = handlers_.find(fd);
         if (handler_it == handlers_.end()) {
             PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "dispatch_events unknown fd, ignore defensively");

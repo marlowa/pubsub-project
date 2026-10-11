@@ -45,6 +45,9 @@
 #include <pubsub_itc_fw/ThreadLookupInterface.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TlsListenerConfiguration.hpp>
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+#include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
+#endif
 
 namespace pubsub_itc_fw {
 
@@ -615,6 +618,11 @@ class Reactor : public ThreadLookupInterface {
 
     // Handler management: maps file descriptors to their EventHandlers.
     std::map<int, std::unique_ptr<EventHandler>> handlers_;
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    // handlers_ is filled by the thread that builds the reactor, handed to the thread that runs it
+    // when run() starts, and used by that thread alone from then on (principle F1).
+    ThreadConfinementCheck handlers_owner_{"Reactor handlers"};
+#endif
 
     std::unordered_map<TimerID, int> timer_id_to_fd_;
 
