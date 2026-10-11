@@ -227,24 +227,33 @@ with its payload in a `std::vector` and its `ClOrdID` in a `std::string`, which 
 allocations for each such report. Both are recorded as [BUG-0131](bug_list.md#bug_0131). Other standard
 containers on the order path have not been checked.
 
-### F6. Incoming messages are not copied
+### F6. Messages are not copied
 
-**The principle.** A message's bytes are read from the socket straight into a slab chunk, and that
-chunk is handed to the application thread; the payload is not copied on its way through the
-framework.
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** A message's bytes are not copied from one buffer into another once they exist, in
+either direction. On the way in, they are read from the socket straight into a slab chunk, and that
+chunk is handed to the application thread. On the way out, the application thread encodes the
+message directly into a slab chunk, and the reactor sends from that chunk. Encoding a message into
+its outgoing buffer is producing the message, not copying it.
 
 **Why.** Copying costs time in proportion to the message's size, on every message.
 
-**Where it is meant to hold.** In `PduParser`, which reads the payload directly into the slab chunk,
-and in the hand-over of that chunk to the application thread ([reactor.md](framework/reactor.md),
-"Inbound PDU path").
+**Where it is meant to hold.** On the way in, in `PduParser`, which reads the payload directly into
+the slab chunk, and in the hand-over of that chunk to the application thread
+([reactor.md](framework/reactor.md), "Inbound PDU path"). On the way out, in
+`PduFramer::send_prebuilt`, which sends from the slab chunk by pointer.
 
 **What checks it.** Nothing.
 
-**Today: holds in the framework; broken in the sequencer** for execution reports that wait for the
-follower, which are copied as described under F5. The two lists this page replaces disagreed about
-this principle: one said no copy on any inbound **or outbound** path, the other only that incoming
-messages are not copied. Which is meant is open question 3 below.
+**Today: holds in the framework; broken in the sequencer in two places.**
+
+- Execution reports that wait for the follower are copied, as described under F5. Recorded as
+  [BUG-0131](bug_list.md#bug_0131).
+- The following sequencer sends its acknowledgement of the leader's records with `PduFramer::send`,
+  which copies the payload into a buffer inside the framer. It does so from the inline handler on the
+  reactor thread, which is removed under F1 and F3 ([BUG-0124](bug_list.md#bug_0124)); when it is,
+  nothing uses `PduFramer::send` on the order path.
 
 ### F7. Threads stay on their cores
 
@@ -501,6 +510,4 @@ principle, or left out.
 These need Andrew's decision before this page is agreed. They are separate questions, not
 alternatives.
 
-3. **F6: inbound only, or outbound as well?** Is the principle that no message's payload is copied on
-   any path, or only on the way in?
 4. **V12 is written down here for the first time.** Is it stated correctly?
