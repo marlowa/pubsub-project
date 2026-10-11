@@ -74,6 +74,8 @@ availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_dea
 
 durability: `wal.md`, `replay.md`, `open_order_checkpoint.md`, `README.md`
 
+orientation: `architecture.md`
+
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
 `socket_comms.md`, `summary.md`, `threading.md`, `topology.md`
@@ -97,7 +99,7 @@ code as it then stood)
 pubsub: `README.md`, `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
 `oar_bus_deduplication.md`, `oar_external_stream.md`, `pubsub.md`
 
-orientation: `README.md`, `architecture.md`, `building.md`, `running.md`, `testing.md`
+orientation: `README.md`, `building.md`, `running.md`, `testing.md`
 
 top level of `docs/`: `README.md`, `project_status.md`, `roadmap.md`
 

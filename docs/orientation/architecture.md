@@ -11,14 +11,20 @@ under the demands of a real system.
 - Communication between threads through lock-free queues with many producers and one consumer
 - Communication between processes over TCP, with incoming messages handed to the application
   thread without being copied
-- Pool, bump and slab allocators, so that nothing on the order path allocates from the heap
+- Pool, bump and slab allocators, so that the order path need not allocate from the heap (where it
+  still does is listed under principle F5 in [design_principles.md](../design_principles.md))
 - Timers, through `timerfd` and `epoll`
-- High availability, composed differently for each component: a pair whose leader holds a majority
-  lease, for the sequencer, the matching engine and its publisher; two instances serving at once,
-  for the authentication service; and two gateway instances per protocol, each member provisioned
-  to a primary and a backup ([WAL and HA](../availability/wal_and_ha.md#ha_component_specific))
+- A write-ahead log, and a memory-mapped store of fixed-size records that survives a process restart
 - A serialisation language: message definitions from which a Python generator writes the C++
   encoders and decoders
+
+**High availability is built in the applications**, composed differently for each component: a pair
+whose leader holds a majority lease, for the sequencer, the matching engine and its publisher; two
+instances serving at once, for the authentication service; and two gateway instances per protocol,
+each member provisioned to a primary and a backup
+([WAL and HA](../availability/wal_and_ha.md#ha_component_specific)). The lease classes they share are
+in `applications/fix_common`. Moving the general part of it into the framework is the direction agreed
+in [ha_in_the_library.md](../availability/ha_in_the_library.md).
 
 **The applications** are a working venue that accepts orders and cancels them. It does not match
 buyers with sellers; the functional specification in `docs/book` records what it does and does not do.
@@ -35,7 +41,8 @@ one place: [design_principles.md](../design_principles.md).
 ## Framework and applications
 
 The framework (`libraries/pubsub_itc_fw/`) provides the infrastructure. The applications
-(`applications/`) use it and contain no framework logic. The framework knows nothing of what a
+(`applications/`) use it. They also contain the high availability machinery described above, which is
+general rather than particular to any application. The framework knows nothing of what a
 message means: message shapes are defined in the serialisation language, and the generated headers
 encode and decode them.
 
@@ -62,9 +69,10 @@ instruments is not designed.
  ┌──────────────────────────────┐   records, and acknowledgements   ┌──────────────────────────────┐
  │ Sequencer (leading)          │ ────────────────────────────────► │ Sequencer (following)        │
  │ numbers each command,        │ ◄──────────────────────────────── │ writes its log only from the │
- │ writes it to the log,        │                                   │ leader's records; forwards   │
- │ sends it to the engine,      │                                   │ nothing                      │
- │ routes each report back      │                                   │                              │
+ │ writes it to the log, sends  │                                   │ leader's records; forwards   │
+ │ it to the engine once the    │                                   │ nothing; keeps the engine's  │
+ │ follower holds it, routes    │                                   │ reports for a change of      │
+ │ each report back             │                                   │ leader                       │
  └───────┬───────────▲──────────┘                                   └──────────────────────────────┘
          │ commands  │ reports (the engine sends each to both sequencers)
          ▼           │
@@ -124,24 +132,27 @@ Gateway
      binary: decodes it and checks it against the protocol's definition and the venue's rules
    - refuses it, with a reply, if it fails, if the venue is not accepting orders, or if the
      session is over its limit per second
-   - wraps it in a WalRecord envelope naming the session, and sends it to both sequencers
+   - wraps it in a WalRecord envelope naming the session, sends it to both sequencers, and keeps a
+     copy until it is answered, to send again if the sequencers change leader
    │
    ▼
 Sequencer (leading)
    - gives it the next sequence number
    - writes it to the log, and sends the record to the following sequencer
-   - sends it to the leading matching engine
+   - once the following sequencer has acknowledged the record, sends it to the leading matching
+     engine
    │
    ▼
 Matching engine (leading)
-   - refuses it if its ClOrdID is already in use by the session, or is too long for the book
+   - refuses it if its ClOrdID is already open for the session, is too long for the book, or the book
+     is full, or if trading is halted
    - otherwise puts it on the book, records it in its open-order region, and sends the change
      to the following engine
    - sends the execution report to both sequencers
    │
    ▼
 Sequencer (leading)
-   - holds the report until the following sequencer has acknowledged the order's record
+   - writes the report to the log and replicates it
    - sends it to the gateway the order's session is now connected to
    │
    ▼
@@ -183,7 +194,7 @@ The development environment's values, from `environments/dev.toml` as deployed i
 | 11100 | Witness: the arbiters |
 | 11200, 11201 | Arbiter primary, secondary: the components |
 | 11203, 11204 | Arbiter primary, secondary: the other arbiter |
-| 9201 to 9214 | Each process's Prometheus metrics |
+| 9200 to 9214 | Each process's Prometheus metrics |
 
 ---
 
