@@ -400,13 +400,59 @@ TLA+ models, whose counterexamples are rerun on every install ([tla/findings.md]
 **Today: holds.** It is the one venue principle enforced in one place, by classes that know nothing of
 the component using them.
 
-### V4. A follower that lacks commands the engine acted on never leads
+### V4. A follower that is missing commands never takes over
 
-**The principle.** A following sequencer that does not hold every command the matching engine has
-acted on does not take the lead. Rule 11 in [majority_leases.md](availability/majority_leases.md).
+**Agreed** with Andrew, 11 October 2026.
 
-**Why.** If it led, the venue would continue from a history that is missing orders the engine has
-already matched.
+**The principle.** A following sequencer never becomes the leader if its log is missing any command
+that the matching engine has already acted on. If the leader dies at a moment when the follower is
+missing such commands, trading stops rather than continuing from an incomplete record.
+
+**How the follower normally holds everything.** The sequencer runs as a pair, a leader and a follower.
+The leader writes each command to its log and sends the record to the follower. It then waits: it
+passes the command to the matching engine only after the follower has confirmed that the command is
+in its own log too. So, normally, every command the matching engine has acted on is also in the
+follower's log, and if the leader dies the follower can take over safely.
+
+**When it does not.** There are two situations in which the leader does not wait, and passes commands
+to the matching engine at once:
+
+- no follower is connected, because it has died, has not started yet, or the link to it is down;
+- the follower has fallen behind: the leader's storage for commands waiting on the follower is full,
+  or the follower has confirmed nothing for 100 milliseconds while commands were waiting.
+
+In both, the leader carries on trading alone rather than stopping trading because its standby is
+unwell (V11). While it does, the matching engine acts on commands that only the leader holds: orders
+are matched, and members are sent reports for them.
+
+**What the leader does before trading alone.** Before it passes the matching engine any command the
+follower does not hold, the leader records the statement "my follower may not take over". It records
+it in two places: on its own disk, and with at least one other voter, the arbiter or the follower
+itself, by adding it to the lease renewals it already sends every second. The statement stays in force
+until the follower has caught up and holds every command again.
+
+**Why that is enough.** To become leader, the follower needs a majority of its three voters: its own
+vote and one other. Every voter that could give it that vote knows the statement:
+
+- the follower knows it, so it does not ask to lead;
+- the arbiter knows it, so it refuses;
+- the old leader, if it comes back, has it on its disk, so it refuses.
+
+**What happens if the leader dies while trading alone.** Trading stops until the leader returns. If its
+process is restarted, it reads its complete log, takes the lead again, and the follower catches up
+from it. If its machine is lost for good, nothing in the venue can recover the commands only it held;
+an operator who knows the machine is gone can clear the statement and let the follower lead,
+accepting that those commands are missing from the record, and the tool logs a warning saying what
+was done and why. This is the same outcome the venue already accepts when a leader with no follower
+at all dies: the only complete record of the day is on that leader's disk.
+
+**Why.** If a follower missing commands took over, two things would go wrong. The venue would stop
+anyway: the new leader would number new commands from where its own log ends, which is below numbers
+the matching engine has already used, and the engine refuses commands whose numbers do not go
+forward. And the day's record would be wrong: the commands only the dead leader held would be
+missing from the surviving log, although members have been sent reports for them. The arbiter cannot
+catch this by comparing logs, because the arbiter holds no log, which is why the leader has to tell
+the voters. This is rule 11 in [majority_leases.md](availability/majority_leases.md).
 
 **Where it holds.** In the lease classes (the statement that the follower may not lead travels on the
 lease requests and is recorded by the voters), and in the leading sequencer, which acts on a command
