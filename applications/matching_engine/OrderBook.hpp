@@ -75,6 +75,17 @@ class OrderBook {
      */
     bool open(const std::string& region_path, SlotIndex region_capacity, size_t map_capacity);
 
+    /**
+     * @brief Makes the calling thread the owner of the book's map, in builds with thread checks.
+     *
+     * The book is opened and recovered by the thread that constructs the matching engine, and is
+     * used from then on by the engine's own application thread. That thread calls this before it
+     * first uses the book. Does nothing in a build without thread checks.
+     */
+    void hand_over_ownership() {
+        index_.hand_over_ownership();
+    }
+
     /** @brief True when the region is mapped. Everything below requires it. */
     [[nodiscard]] bool is_open() const {
         return store_.is_open();

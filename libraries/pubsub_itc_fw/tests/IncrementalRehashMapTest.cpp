@@ -767,6 +767,32 @@ TEST_F(IncrementalRehashMapTest, ConfinementIsClaimedByWhicheverThreadTouchesItF
     // The map was claimed by the thread that has now finished, so this one is the intruder.
     EXPECT_THROW((void)map.find(1), PreconditionAssertion);
 }
+
+TEST_F(IncrementalRehashMapTest, AMapHandedOverIsOwnedByTheThreadThatTookItOver) {
+    // Built and filled on this thread, then handed to another thread that uses it from then on, as
+    // the matching engine's order book is: filled while the engine is constructed, used on the
+    // engine's own thread.
+    IntMap map;
+    map.reserve(16);
+    map.emplace(1, 1);
+
+    bool found_on_new_owner = false;
+    bool refused_on_new_owner = false;
+    std::thread new_owner([&map, &found_on_new_owner, &refused_on_new_owner]() {
+        try {
+            map.hand_over_ownership();
+            found_on_new_owner = map.find(1) != map.end();
+            map.emplace(2, 2);
+        } catch (const PreconditionAssertion&) {
+            refused_on_new_owner = true;
+        }
+    });
+    new_owner.join();
+    EXPECT_FALSE(refused_on_new_owner) << "the thread the map was handed to was refused";
+    EXPECT_TRUE(found_on_new_owner);
+    // The map now belongs to the thread it was handed to, so the thread that built it is refused.
+    EXPECT_THROW((void)map.find(1), PreconditionAssertion);
+}
 #endif
 
 } // namespaces

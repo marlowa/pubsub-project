@@ -244,6 +244,13 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     }
 }
 
+void MatchingEngineThread::on_initial_event() {
+    // The constructor opened and recovered the book on the thread that built this engine. The
+    // first event delivered on this thread is this one, so the book is handed to it here, before
+    // anything on this thread uses it.
+    order_book_.hand_over_ownership();
+}
+
 void MatchingEngineThread::on_app_ready_event() {
     // Registered here rather than in the constructor because the reactor's metrics
     // endpoint is what gauges bind to, and it is ready by this point.

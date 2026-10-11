@@ -452,6 +452,16 @@ class IncrementalRehashMap {
         return following;
     }
 
+    /// Makes the next thread to use the map its owner, in builds with thread checks. For a map
+    /// that one thread builds and fills and then hands, once, to the thread that uses it from then
+    /// on: that thread calls this before its first use, while no other thread is using the map.
+    /// Does nothing in a build without thread checks.
+    void hand_over_ownership() {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+        thread_confinement_.hand_over();
+#endif
+    }
+
     /// Destroys every entry, keeping the current table's storage so that a map that is
     /// cleared and refilled does not have to grow its way back.
     void clear() {
