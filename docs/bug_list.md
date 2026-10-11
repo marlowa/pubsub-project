@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 129 |
-| Open | 46 (30 defects, 16 tasks) |
+| Bugs recorded | 130 |
+| Open | 47 (31 defects, 16 tasks) |
 | Closed | 83 |
-| Next id | BUG-0130 |
+| Next id | BUG-0131 |
 
 ## Open bugs by severity
 
-12 high, 29 medium, 5 low.
+12 high, 30 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -54,6 +54,7 @@
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
 | [BUG-0129](#bug_0129) | medium | defect | The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation |
+| [BUG-0130](#bug_0130) | medium | defect | The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -155,6 +156,47 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0130: The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait {#bug_0130}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principle F4 (no order-handling thread waits for the disk) in `docs/design_principles.md`, and reading `WalWriter::ensure_capacity` to see what happens when the helper is late |
+| Impact | If filling the next segment stalls for longer than one segment's lifetime, the sequencer's thread that writes the log waits, and the wait falls on the order being written. In a burst a 4 MiB segment can fill in about a tenth of a second, so a journal stall of a few hundred milliseconds is enough |
+
+**What happens now.** The sequencer's log is a series of segment files, 4 MiB each in the sequencer's
+configuration. Each new segment is filled with zeros when it is created, so that later writes into it
+allocate no disk blocks (BUG-0070). Filling is the one step that can wait for the disk, so the helper
+thread `WalSegmentPrep` fills segment N+1 while the writer appends to segment N. It keeps one segment
+ready, no more. When the current segment is full, `WalWriter::ensure_capacity` does one of three
+things:
+
+1. The helper has finished: the writer takes over the prepared segment, and nothing waits.
+2. The helper is still filling it: the writer spins with `std::this_thread::yield()` in
+   `await_helper` until it finishes, counted by `wal_segments_waited_for`. It cannot create the
+   segment itself, because the helper is writing that very file, and mapping a partly written file
+   makes an ordinary append fail with SIGBUS. This is a wait for another thread, which F2 forbids, and
+   that thread is waiting for the disk.
+3. The helper is not working on it, because it failed, lost its wake-up or could not be started: the
+   writer creates and fills the segment itself, counted by `wal_segments_filled_inline`. Nothing is
+   logged.
+
+In the run recorded under BUG-0070, 686 rolls gave counts of 1 (the first segment at start-up) and 0,
+with about 1.7 seconds between rolls. The risk is a burst of orders together with a slow disk.
+
+**What is wanted.** Agreed with Andrew, 11 October 2026:
+
+1. The helper keeps a configurable number of filled segments ready instead of one, four by default,
+   so that the writer waits only if the disk stalls for longer than it takes to fill that many
+   segments.
+2. When the writer creates a segment itself because the helper has failed, it logs a warning, so that
+   it is treated as an incident and not only counted. The first segment at start-up is not a warning.
+
+**Principle.** F4 in `docs/design_principles.md`: a segment created by the writing thread because
+the helper has failed is the one accepted exception, and waiting for the helper is not accepted.
 
 ### BUG-0129: The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation {#bug_0129}
 

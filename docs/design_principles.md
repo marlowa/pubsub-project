@@ -155,7 +155,7 @@ is removed from the framework, so that the framework no longer offers a way roun
 
 ### F4. No order-handling thread waits for the disk
 
-**Agreed** with Andrew, 11 October 2026, except for open question 2, which is still being discussed.
+**Agreed** with Andrew, 11 October 2026.
 
 **The principle.** No order-handling thread syncs a file to disk, or does anything else that can wait
 for the disk, during the trading day.
@@ -177,11 +177,22 @@ else meanwhile.
 **Where it is meant to hold.** The sequencer's log is written into memory-mapped segments with no
 sync per record; a record is safe because it is held on two machines, not because it is on disk
 ([wal_and_ha.md](availability/wal_and_ha.md), "Two levels of commit"). New segments are created ahead
-of time by the log's helper thread. Lease promises are written and synced by
+of time by the log's helper thread, which keeps several segments ready (see below). Lease promises are written and synced by
 `BackgroundPromiseRecorder` on a thread of its own.
 
-**What checks it.** Nothing in the build. The metric `wal_segments_filled_inline` counts the times
-the helper was not ready and the writing thread had to create a segment itself.
+**What checks it.** Nothing in the build. Two metrics show whether the log's helper keeps pace:
+`wal_segments_waited_for` counts the times the writing thread had to wait for the helper to finish a
+segment, and `wal_segments_filled_inline` counts the segments the writing thread created itself. The
+first should be 0, and the second 1, for the first segment at start-up, which nothing can prepare in
+advance.
+
+**Creating log segments.** Each new segment is filled with zeros when it is created, so that later
+writes into it allocate nothing; filling is the one step that can wait for the disk. The helper
+thread does it ahead of the writer, and keeps a configurable number of filled segments ready, four by
+default, so that the writer only waits if the disk stalls for longer than it takes to fill four
+segments with records. If the helper has failed, the writing thread creates and fills the next
+segment itself. That is the one accepted exception to this principle: it is counted, logged as a
+warning, and treated as an incident.
 
 **Today: broken in two places, both uncommon.**
 
@@ -189,8 +200,10 @@ the helper was not ready and the writing thread had to create a segment itself.
   sequencer's or the matching engine's application thread, when the record held does not cover the
   promise about to be made: when an instance first promises its vote to another, or when a background
   write has not finished within five seconds. Recorded as [BUG-0126](bug_list.md#bug_0126).
-- When the log's helper has not prepared the next segment in time, the thread writing the log creates
-  it itself, which writes the whole segment to disk. Open question 2 below.
+- The log's helper keeps only one segment ready. If it is still filling that segment when the writer
+  needs it, the writer waits for it, spinning until it finishes; and the writer creates a segment
+  itself, if the helper has failed, without logging a warning. Recorded as
+  [BUG-0130](bug_list.md#bug_0130).
 
 ### F5. Nothing on the order path allocates from the heap
 
@@ -486,11 +499,6 @@ principle, or left out.
 These need Andrew's decision before this page is agreed. They are separate questions, not
 alternatives.
 
-2. **Creating a log segment on the writing thread (F4).** When the helper is late, the thread writing
-   the log creates the next segment itself, which waits for the disk. The alternative is for that
-   thread to wait for the helper, which is also a wait. Should this stay as the one accepted exception,
-   counted by `wal_segments_filled_inline`, with the segment size chosen so that it does not happen in
-   a normal day?
 3. **F6: inbound only, or outbound as well?** Is the principle that no message's payload is copied on
    any path, or only on the way in?
 4. **V12 is written down here for the first time.** Is it stated correctly?
