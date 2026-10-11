@@ -525,41 +525,91 @@ sections 3.1 and 3.2; `UnansweredCommandStore`). Sending again is safe only beca
 
 ### V7. A command is sequenced at most once, judged by its identity
 
-**The principle.** The leading sequencer places a command in the log at most once, judged by the
-member's comp id, the protocol and the `ClOrdID`, however many times and by whatever path the command
-arrives. A command the log already holds is answered, not sequenced again. Requirements R-0006 and
-R-0119 cover the member's side: a resubmitted order is refused as a duplicate, for the rest of the day.
+**Agreed** with Andrew, 11 October 2026.
 
-**Why.** It is what makes it safe for a gateway to send a command again whenever it is unsure (V6).
+**The principle.** The leading sequencer places a command in its log at most once. A command is
+identified by the member's comp id, the protocol it arrived by, and its `ClOrdID`, and the rule holds
+however many times the command arrives and by whatever path: sent again after a change of leader,
+after a connection is made again, or still unread on an old connection when its copy arrives on a new
+one. Every command is checked against the sequencer's record of the day's identifiers, in one check,
+whatever path it came by. A command whose identity the log already holds is never logged again. What
+it is sent back depends on why it arrived twice: a command its gateway marked as sent again is
+answered with what became of the original; one not so marked is a member reusing an identifier, which
+the functional specification forbids for the rest of the trading day (R-0119), and is refused.
 
-**Where it should hold.** In one check, in the leading sequencer, applied to every command.
+**Why.** It is what makes it safe for a gateway to send a command again whenever it is unsure whether
+the command arrived (V6). Because there is one check on every command, nobody has to reason about the
+order in which copies arrive, and a new way for a command to arrive twice needs no new mechanism.
+
+**Where it should hold.** In one check, in the leading sequencer, applied to every command, against
+`LoggedCommandIdentifiers`. For a command not in the log, which is nearly every command, the record
+answers on its own; one it may hold is checked exactly against the end of the log.
 
 **What checks it.** `ha_test.py` scenarios 67, 68 and 71; unit tests of `LoggedCommandIdentifiers`
 and `LogTailIndex`.
 
-**Today: holds on the paths tested, but by several mechanisms, not one.** The leader checks a command
-against its log only when the gateway has marked it as sent again. Each way a command can arrive twice
-has then needed its own argument or its own check: after a change of leader, after a connection is
-made again, and while a gateway has two connections open to the leader. Recorded as
-[BUG-0122](bug_list.md#bug_0122). Separately, the matching engine refuses a repeated `ClOrdID` only
-while the first order is still in its book, so an identifier can be used again once its first order
-has ended, which R-0119 forbids: [BUG-0114](bug_list.md#bug_0114).
+**Today: holds on the paths tested, by three separate mechanisms, not by one check.** The leader
+checks a command against its record only when the gateway has marked it as sent again, and every
+other command is logged without a check. That is safe only if an unmarked original can never arrive
+after its marked copy, so each way a command can arrive twice has needed its own argument or its own
+mechanism:
+
+1. after a change of leader, the gateway sends its unanswered commands again, marked;
+2. after a connection to a sequencer is made again, the gateway sends again, marked, the commands
+   discarded when the connection was closed for a full queue;
+3. while a gateway has two connections open to the leader, the leader checks every command from that
+   gateway until the old connection ends, because unmarked originals still unread on the old
+   connection could be read after their marked copies on the new one.
+
+Bringing the code up to the one check is [BUG-0122](bug_list.md#bug_0122). Separately, the matching
+engine refuses a repeated `ClOrdID` only while the first order is still in its book, so an identifier
+can be used again once its first order has ended, which R-0119 forbids:
+[BUG-0114](bug_list.md#bug_0114). The two are to be designed together, and the cost of the check on
+every command, estimated at about 100 nanoseconds, is to be measured on the order path.
 
 ### V8. Every report the matching engine produces reaches the member (G3)
 
-**The principle.** Every execution report reaches the member it is for. A member may receive a report
-more than once, provided every repeat is marked as one (R-0122).
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** Every execution report the matching engine produces reaches the member it is for,
+whatever happens to the sequencers and whichever gateway the member's session is connected through. A
+member may be sent a report more than once, provided every repeat is marked as a possible repeat
+(R-0122).
+
+**How.** The matching engine sends each report to both sequencers. The leader forwards it to the
+gateway the member's session is connected through at the moment it sends, so a member that
+reconnects, to the same gateway or its backup, still receives reports for orders placed before. A
+report that must wait for the follower (V5) waits in the leader. A follower keeps a copy of every
+report for about the last 4.25 seconds (`KeptReportStore`), and on taking over forwards them all, each
+marked as a possible repeat, because it cannot tell which the old leader forwarded. A member that
+missed reports while disconnected asks for them with a FIX resend request.
+
+**Why.** The member's record of its orders is built from these reports: a missing fill means it does
+not know it has traded, and a missing cancel confirmation means it believes an order is in the market
+when it is not.
 
 **Where it holds.** In the sequencer, which forwards reports to the gateway the session is bound to and
 keeps the reports a gateway has not received; in a new leader, which forwards the reports its
 predecessor had not; and in the gateways' resend handling. Design: section 4.4 of
 [change_of_sequencer_leader.md](availability/change_of_sequencer_leader.md), and
-[session_binding.md](availability/session_binding.md).
+[session_binding.md](availability/session_binding.md). The work is spread across several of the
+sequencer's jobs: the reports waiting for the follower, the kept reports, the record of what the
+leader forwarded, and the session state.
 
-**What checks it.** `ha_test.py` scenario 65, and the session scenarios.
+**What checks it.** `ha_test.py` scenario 65, in which reports the leader received but never forwarded
+reach the member from the new leader, and the session scenarios.
 
-**Today: holds on the paths tested.** It is spread across several of the sequencer's jobs: pending
-reports, kept reports, the samples of what the leader forwarded, and the session state.
+**Today: holds on the paths tested, with three known gaps.**
+
+- A report that reached neither sequencer, for example because the matching engine's connection to the
+  follower was down when the leader died, can be recovered only by an order status enquiry (R-0002),
+  which the venue does not answer: [BUG-0089](bug_list.md#bug_0089).
+- The binary order gateway cannot recover the reports a member missed while disconnected:
+  [BUG-0046](bug_list.md#bug_0046).
+- Every resend request reads the whole day's log on the thread that sequences orders, so late in a busy
+  day one member's request could stop the sequencer taking orders for minutes:
+  [BUG-0113](bug_list.md#bug_0113). The reports are delivered; the cost breaks the framework principles
+  about order-handling threads.
 
 ### V9. Within a log, sequence numbers only go forward (G4)
 
