@@ -3,7 +3,7 @@
 How this project decides what to test, how it reads a coverage figure, and — mostly — what it
 deliberately does not do. [Building](building.md) covers the mechanics: which flags produce a
 coverage build, where the report lands, how to update the baseline. This page is the policy, and
-exists because most of the reasoning behind it previously lived only in commit messages.
+the reasoning behind it.
 
 ---
 
@@ -176,11 +176,23 @@ assertion-free test the coverage figure cannot see.
 
 ## Where the tests live
 
-- `libraries/pubsub_itc_fw/tests/` — unit tests, one file per unit, listed in that directory's
-  `CMakeLists.txt`. Several are integration-flavoured by necessity (real loopback sockets, a real
-  `Reactor`), which is fine; the reactor is not meaningfully testable through a mock.
-- `libraries/pubsub_itc_fw/integration_tests/` — multi-component tests.
-- Both are excluded from the coverage report: they are the instrument, not the subject.
+- `libraries/pubsub_itc_fw/tests/` — the framework's unit tests, one file per unit, listed in that
+  directory's `CMakeLists.txt`. Several are integration-flavoured by necessity (real loopback
+  sockets, a real `Reactor`), which is fine; the reactor is not meaningfully testable through a mock.
+- `libraries/pubsub_itc_fw/integration_tests/` — the framework's multi-component tests.
+- `applications/<application>/tests/` — each application's own tests: the arbiter, both gateways,
+  `fix_common`, the matching engine and the sequencer.
+- `scripts/ha_test.py` — the high availability scenarios, run against a deployed venue, each numbered;
+  the design documents name the scenario that checks each behaviour. The other `scripts/*_test.py`
+  files test the authentication service, FIX capture and the FIX client, and `scripts/tests/` and
+  `python/` hold the Python tests.
+- The framework's tests are excluded from the coverage report: they are the instrument, not the
+  subject. So is application code (see [building](building.md)).
+
+**The slow-reader and pause-reading integration tests fail when the disk is busy**, whatever code is
+being tested: the logger the tests use waits for every record to reach the disk, so a busy filesystem
+freezes the test process. Before blaming a change for a failure there, compare against the code
+without it, run alternately ([BUG-0138](../bug_list.md#bug_0138)).
 
 Each test file opens with a docblock naming every test in it and what it pins down. Keep that
 list current — it is the fastest way to find out whether a behaviour is already covered, and
