@@ -676,11 +676,21 @@ of which was made to fail with the repair disabled.
 
 ### V11. A fault in the standby is a loss of resilience, not a loss of service
 
-**The principle.** While the leader is working, nothing wrong with the follower stops the venue
-trading. The leader carries on alone and reports loudly that it is doing so.
+**Agreed** with Andrew, 11 October 2026.
 
-**Why.** Otherwise a fault in the backup becomes an outage, and a follower that is alive but stalled
+**The principle.** While the instance that serves is working, nothing wrong with its standby stops the
+venue trading. This applies to every pair: the follower sequencer, the follower matching engine, and
+the arbiter that is not active. The venue carries on without a standby, reports loudly that it is doing
+so for as long as it lasts, and returns to being protected cleanly when the standby is back. It never
+halts itself because a standby has been unwell, however long that lasts; whether to halt is for the
+operators.
+
+**Why.** Otherwise a fault in the backup becomes an outage, and a standby that is alive but stalled
 becomes more dangerous than one that has died.
+
+**What it costs.** While there is no standby, the serving instance is the only copy: if it dies,
+trading stops until it returns (V4), and if its machine is lost for good, the commands only it held
+are lost.
 
 **Where it holds.** In the leading sequencer's running-alone logic, together with V4, which keeps a
 follower that fell behind from leading later. Decided in section 7 of
@@ -688,23 +698,44 @@ follower that fell behind from leading later. Decided in section 7 of
 
 **What checks it.** `ha_test.py` scenario 63.
 
-**Today: holds.**
+**Today: trading continues, but the rest is not yet true.**
+
+- The venue does not report loudly: it says so once, when the follower falls behind, and not at all
+  when no follower is connected ([BUG-0134](bug_list.md#bug_0134)).
+- While the leader trades alone, a power failure on its machine can lose the last several seconds of
+  the record ([BUG-0135](bug_list.md#bug_0135)).
+- Whether any copy of the log outside the leader's machine could recover what is lost with it is not
+  known ([BUG-0136](bug_list.md#bug_0136)).
+- When the follower sequencer returns after a long absence, trading stalls for seconds while the leader
+  reads the records it missed ([BUG-0133](bug_list.md#bug_0133)).
 
 ### V12. Every trading day starts fresh
 
-**The principle.** At the end of a trading day everything is halted, and the logs are archived. A log
-never spans two trading days, and no state is carried from one day into the next except through the
-start-of-day loading of reference data.
+**Agreed** with Andrew, 11 October 2026.
 
-**Why.** It bounds how much any component has to read or recover, and it means a defect cannot carry
-damage from one day into the next.
+**The principle.** At the end of each trading day every component is stopped and every file the venue
+wrote that day is archived: the sequencers' logs, the matching engine's open-order region, the epoch
+files, the lease promise records, the arbiter's component statements and the application logs. The
+next day starts with none of them. A log never spans two trading days, and nothing is carried from one
+day into the next except what is loaded at the start of the day: the reference data, and long orders
+if they are ever implemented (V2). A component that finds a file written on a different trading day
+refuses to start, and says which file and which day, rather than treating it as a restart.
 
-**Where it holds.** In operations: the end-of-day procedure. The phases of the day are in
-[trading_phases.md](venue/trading_phases.md).
+**Why.** It bounds how much any component has to read or recover to one day, it means a defect cannot
+carry damage from one day into the next, and V2's statement that the log is the record rests on it. A
+component tells a restart from a fresh start by whether its files are present, so a file left over
+from an earlier day must be refused, not mistaken for a restart.
 
-**What checks it.** Nothing automated.
+**Where it should hold.** In a start-of-day and an end-of-day procedure, and in each component's
+start-up. The phases of the day are in [trading_phases.md](venue/trading_phases.md).
 
-**Today: holds by procedure.**
+**What checks it.** Nothing.
+
+**Today: assumed, not carried out.** There is no start-of-day or end-of-day procedure in the
+repository, no list of the files the venue writes during a day, and nothing stops a component taking a
+file left from an earlier day as a restart. Left in place, yesterday's open-order region, for example,
+would make the matching engine judge itself absent for hours, cancel yesterday's orders and halt the
+new day before it opens. Recorded as [BUG-0137](bug_list.md#bug_0137).
 
 ---
 
@@ -726,7 +757,5 @@ principle, or left out.
 
 ## Open questions
 
-These need Andrew's decision before this page is agreed. They are separate questions, not
-alternatives.
-
-4. **V12 is written down here for the first time.** Is it stated correctly?
+All the open questions on this page have been answered, and the answers are written into the
+principles they concern.

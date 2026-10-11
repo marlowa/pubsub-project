@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 136 |
-| Open | 53 (35 defects, 18 tasks) |
+| Bugs recorded | 137 |
+| Open | 54 (35 defects, 19 tasks) |
 | Closed | 83 |
-| Next id | BUG-0137 |
+| Next id | BUG-0138 |
 
 ## Open bugs by severity
 
-12 high, 36 medium, 5 low.
+13 high, 36 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -25,6 +25,7 @@
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0124](#bug_0124) | high | task | Locks are taken on the order path, in a design meant to be free of them |
+| [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -162,6 +163,48 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
+
+| | |
+|---|---|
+| Severity | high |
+| Kind | task |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principle V12 (every trading day starts fresh) in `docs/design_principles.md`, which said it held "by procedure" when no procedure exists |
+| Impact | The whole design assumes each trading day starts with none of the previous day's files, and nothing makes that so. A file left behind is silently taken as a restart of the earlier day. For example, yesterday's open-order region would make the matching engine judge itself absent for hours, cancel yesterday's orders, send the cancels to members, and halt the new day before it opens |
+
+**What is assumed.** At the end of each trading day every component is stopped and every file the
+venue wrote that day is archived, and the next day starts with none of them (V12). Several principles
+rest on this, V2 among them: the log is the record of one trading day.
+
+**What exists.** Nothing that carries this out or describes it: no start-of-day procedure, no
+end-of-day procedure, and no list of the files the venue writes during a day. A component tells a
+restart from a fresh start only by whether its files are present; for example, a sequencer that finds
+a non-empty log at start-up treats it as a restart. Nothing checks which trading day a file belongs to.
+
+**What is wanted.** Agreed with Andrew, 11 October 2026:
+
+1. **One list of every file the venue writes during a trading day,** kept in one place: at least the
+   sequencers' logs, the matching engine's open-order region, the epoch files (`EpochStore`), the lease
+   promise records (`LeasePromiseStore`), the arbiter's component statements
+   (`ComponentStatementStore`) and the application logs. Building the list means checking every
+   component for files it writes, not only these.
+2. **An end-of-day procedure** that stops every component and archives every file on the list.
+3. **A start-of-day procedure** that loads the reference data and starts the components, with none of
+   the previous day's files present.
+4. **A refusal at start-up.** Each file records the trading day it was written on, and a component that
+   finds a file from a different trading day refuses to start, saying which file and which day, rather
+   than treating it as a restart. This is the same idea as the trading phases design, in which a
+   component refuses a phase event older than the trading day it holds
+   (`docs/venue/trading_phases.md`).
+
+The procedures go with the trading phases (`sod`, `pre_open`, `open`, `closed`, `eod`), which are
+designed and not built, and with [BUG-0132](#bug_0132), cancelling the orders still open at the end
+of the day. To be designed and agreed before code.
+
+**Principle.** V12 in `docs/design_principles.md`.
 
 ### BUG-0136: Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known {#bug_0136}
 
