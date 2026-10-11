@@ -47,6 +47,11 @@ for the venue, followed by a number, so that other documents and commit messages
 - A **lock** means a mutex of any kind, a condition variable, a semaphore, a file lock, or a loop
   that waits for another thread to release something. A lock-free queue or a single atomic variable
   is not a lock.
+- **Primary** and **secondary** are fixed identities: each instance of a pair is one or the other,
+  tied to its instance id in the configuration, for as long as it exists. **Leader** and **follower**
+  are roles, which change whenever the lead changes; the primary is not necessarily the leader. A rule
+  that says "the primary does this" when it means "the leader does this" is wrong after the first
+  change of leader ([design_notes.md](availability/design_notes.md)).
 
 ---
 
@@ -284,6 +289,18 @@ the reactor then moves its hot-path threads onto the component's cores
 workstation: every ranked component landed on the cores the layout allocated it, and the JVM
 components started in the background tier.
 
+**Threads created by third-party libraries.** Libraries such as prometheus-cpp (its HTTP server) and
+librdkafka create threads of their own, which the venue does not create and cannot pin. They must be
+kept off the hot-path cores like every other thread. A new thread inherits the processor mask of the
+thread that creates it, so a library thread is safe if it is created by a thread still in the
+background tier, which every process is confined to from its start; it lands on a hot-path core if a
+thread already moved there creates it, for example by initialising the library from an application
+thread's handler. So a library that creates threads is initialised before the reactor moves its
+threads, or from a thread that stays in the background tier, or its threads are placed explicitly, as
+the logging library's backend thread is ([cpu_pinning.md](framework/cpu_pinning.md)). `cpu_audit.py`
+compares every running thread's mask, and where it actually ran, against the layout, and reports a
+library thread found on a hot-path core.
+
 **Today: holds**, as far as that check goes.
 
 ### F8. Shutdown is deterministic
@@ -297,6 +314,11 @@ logged.
 
 **Why.** A process that cannot be relied on to stop cannot be relied on to be restarted.
 
+Every thread a venue component creates is created through `ThreadWithJoinTimeout`, never as a raw
+`std::thread`, because a raw `std::thread` cannot be joined with a timeout. Benchmarks and test tools
+are not venue components. Threads that third-party libraries create for themselves, such as
+prometheus-cpp's or librdkafka's, are outside this rule, and F7 says where they may run.
+
 **Where it is meant to hold.** The thread lifecycle state machine in `ApplicationThread`, the
 descriptor that wakes `epoll`, and `ThreadWithJoinTimeout` ([threading.md](framework/threading.md)).
 
@@ -307,9 +329,11 @@ twice the shutdown timeout for each thread. The log's helper thread is given up 
 because it may be in the middle of writing a segment. A thread that does not join is recorded, and
 `abort_if_thread_abandoned` ends the process.
 
-**What checks it.** Not checked in the build.
+**What checks it.** Not checked in the build. Phase 2 of [the plan](recovery_plan.md) adds a check to
+`scripts/check_standards.py` that refuses a raw `std::thread` in a venue component.
 
-**Today: broken in one known place.** [BUG-0119](bug_list.md#bug_0119) records an application thread that can
+**Today: broken in one known place.** No venue component creates a raw `std::thread`; the only ones
+are in two benchmark programs and the binary gateway's load-test client. [BUG-0119](bug_list.md#bug_0119) records an application thread that can
 go on using its reactor after the reactor has been destroyed.
 
 ---
@@ -386,7 +410,17 @@ archived, and their members are never told. Recorded as [BUG-0132](bug_list.md#b
 **The principle.** An instance of the sequencer, the matching engine or the arbiter acts as leader
 only while a majority of its three voters grants it a lease. Requirement R-0146.
 
-**Why.** Two leaders acting at once would sequence or match two different histories.
+Only the voters decide which instance leads. The supervisor (`launch.py`) decides only whether to
+start a process, or start it again; it never decides which instance leads
+([process_death.md](availability/process_death.md)). And a voter that cannot be sure that granting a
+lease is safe refuses, rather than guess: an arbiter that has just become active, and does not know
+what the previous active arbiter promised, grants no component a lease for one lease period, and an
+arbiter refuses an instance its record says may not lead (V4).
+
+**Why.** Two leaders acting at once would sequence or match two different histories. A second
+authority beside the voters, such as a supervisor that chose a leader, could disagree with them, which
+is how two leaders arise. A voter's refusal costs availability, which can be recovered; a wrong grant
+can produce two leaders, or a leader with an incomplete history, which may not be.
 
 **Where it holds.** In the lease classes in `applications/fix_common/`: `LeaseVoter`, `LeaseHolder`,
 `LeaseParticipant`, driven by `PairLeaseAgent`. Each component supplies only the connections the agent
@@ -479,6 +513,11 @@ while the leader trades alone, the loss of its machine loses the commands only i
 A command the leader had logged but not yet passed to the matching engine when it died was never acted
 on, and no member was sent a report for it; the gateway that sent it still holds it as unanswered and
 sends it again to the new leader (V6).
+
+A matching engine that starts, restarts or is promoted first catches up on every command in the
+leading sequencer's log that it does not yet hold, and checks that the catch-up accounted for every
+record sent (R-0101), before it acts on anything new. An engine that acted first would apply new
+commands to a book missing older ones.
 
 **Why.** If the engine acted on an order no log held and the leader's machine then died, the engine
 would hold an order, and members might have reports for it, that no surviving record shows the venue
@@ -737,23 +776,57 @@ file left from an earlier day as a restart. Left in place, yesterday's open-orde
 would make the matching engine judge itself absent for hours, cancel yesterday's orders and halt the
 new day before it opens. Recorded as [BUG-0137](bug_list.md#bug_0137).
 
+### V13. Nothing the venue needs in order to run depends on something optional
+
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** Prometheus, Grafana, and anything else that is optional are never something the
+venue needs in order to trade, change leader or recover. The venue works the same with them absent.
+
+**Why.** Something optional will, sooner or later, be absent, and if trading depends on it, its absence
+becomes an outage. It is the same reasoning as V11: what is not essential must not be able to stop the
+service. It is also why warnings the operators must see, such as a venue running without a standby
+([BUG-0134](bug_list.md#bug_0134)), are logged as well as reported as metrics.
+
+**Where it holds.** In keeping metrics out of every decision the venue makes: each process serves its
+metrics for Prometheus to read, and reads nothing back.
+
+**What checks it.** Nothing directly.
+
+**Today: holds, as far as checked.** Nothing on the order path or in the high availability decisions
+examined during this review reads from Prometheus; every place has not been searched.
+
+### V14. An instance interrupted twice is a loss of service, and is not restarted again
+
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** If an instance dies and returns, and then dies again, its supervisor stops
+restarting it, and the venue treats it as a loss of service, not as two recoveries.
+
+**Why.** A leader that dies and is restarted within its lease period keeps the lead, so the pair never
+changes leader, and members get a silent gap each time: orders are accepted and not answered, and
+cancels cannot get through. The gaps never reach the 45 seconds of continuous outage after which the
+venue stops accepting, so nothing is said. One interruption is a fault; two are a pattern. Giving up
+at the second leaves the instance absent for longer than a lease period, so its follower takes over
+under the lease rules (V3).
+
+**Where it holds.** In the supervisor: `launch.py --max-interruptions 2` gives up at the second
+interruption and records `gave up` ([process_death.md](availability/process_death.md)).
+
+**What checks it.** Not yet checked here.
+
+**Today: partly built.** The supervisor's part is built. When the instance that will not stay up is the
+last one left, the venue is to halt, and that is not built; the venue cannot declare a halt at all
+([BUG-0065](bug_list.md#bug_0065)).
+
 ---
 
-## Proposed additions, not yet agreed
+## Proposed additions
 
-These are positions Andrew has stated that are not yet on the list. Each is to be accepted as a
-principle, or left out.
-
-- **(a)** Primary and secondary are fixed identities, tied to the instance id. Leader and follower are
-  roles, and change.
-- **(b)** A supervisor starts processes. It never decides which instance leads; only the voters do.
-- **(c)** An arbiter that cannot be sure declines, rather than guess.
-- **(d)** Nothing the venue needs in order to run may depend on something optional, such as
-  Prometheus.
-- **(e)** Every matching engine catches up on the log before it acts on anything.
-- **(f)** Threads are created only through `ThreadWithJoinTimeout`, never as a raw `std::thread`.
-- **(g)** An instance interrupted twice in a short time is treated as a loss of service and is not
-  restarted.
+All seven positions proposed for this page were accepted on 11 October 2026 and are written into it:
+the fixed identities of primary and secondary under "Words used here"; the supervisor and the voter
+that declines under V3; the engine catching up first under V5; threads created only through
+`ThreadWithJoinTimeout` under F8; and V13 and V14 as principles of their own.
 
 ## Open questions
 
