@@ -2,9 +2,9 @@
 
 **Status: NOT DESIGNED. These are constraints and findings to start from, not a plan.**
 
-Replay as a first-class `pubsub_itc_fw` capability, backed by the WAL. Raised 2026-08-06 as a
-conversation rather than a task; these notes are from working through it on 2026-08-08 and exist so
-the conclusions are not rediscovered.
+Replay as a first-class `pubsub_itc_fw` capability, backed by the WAL. These notes record the
+constraints and conclusions reached so far, so that they are not rediscovered when the design is
+written.
 
 ---
 
@@ -26,15 +26,16 @@ two.
 
 ## What the framework already gets right
 
-**Time is injected, not read.** `WallClock` is a virtual interface with `now_ns()`, and there are
-no direct `system_clock::now()` or `steady_clock::now()` calls on the matching engine or sequencer
-processing paths. A `ReplayClock` implementing that interface is a small class.
+**Time is injected, not read.** `WallClock` is a virtual interface with `now_ns()`, and the matching
+engine and the sequencer read the time of day only through it on their order paths. (Their lease
+agents read `steady_clock`, but leases decide which instance acts, not what the state is, and are not
+part of replay.) A `ReplayClock` implementing that interface is a small class.
 
 **Time arrives with the event.** The matching engine does not ask what time it is; it is told:
 
 ```cpp
-void handle_new_order_single(const NewOrderSingleView&, int64_t seq_no,
-                             int64_t sequenced_at_ns, const SessionIdentity&);
+void handle_new_order_single(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t seq_no,
+                             int64_t sequenced_at_ns, const fix_common::SessionIdentity& session);
 ```
 
 **The sequencer collapses concurrency into a total order before the WAL is written.** This is the
@@ -58,8 +59,12 @@ The question that dissolves most of the difficulty is not "how do I replay a tim
 - **It does not** — heartbeats, inactivity teardown, retry backoff. These never touched replicated
   state, so there is nothing to reconstruct.
 
-**Audit item before building anything:** find any state-changing effect that bypasses the
-sequencer. That is the only residue of this rule, and it is a short audit.
+**What bypasses the sequencer.** Any state-changing effect that does not pass through the sequencer is
+the residue of this rule. In the matching engine there are three, all decided by the leading engine
+alone: cancelling everything and halting after it has been unable to match for too long, cancelling
+inherited orders on promotion, and refusing orders while halted. Section 8 of
+[ha_library_boundary.md](../availability/ha_library_boundary.md) proposes making each a command in the
+log, which would also make them replayable.
 
 ---
 
@@ -67,10 +72,11 @@ sequencer. That is the only residue of this rule, and it is a short audit.
 
 ### Do not resurrect the venue
 
-Timers are kernel `timerfd`, and the framework core reads `steady_clock::now()` directly in four
-places — all connection lifecycle (`InboundConnection::last_activity_time_`,
-`InboundConnectionManager`'s inactivity check, `OutboundConnectionManager`'s retry backoff). Those
-fire on **real elapsed time regardless of any injected clock**.
+Timers are kernel `timerfd`, and the framework core reads `steady_clock::now()` directly for the
+connection lifecycle (`InboundConnection::last_activity_time_`, `InboundConnectionManager`'s inactivity
+check, `OutboundConnectionManager`'s retry backoff) and for two waits with deadlines (the log writer's
+wait for a prepared segment, and the slab allocator's tripwire at shutdown). The connection lifecycle
+fires on **real elapsed time regardless of any injected clock**.
 
 So if replay means *"start the components and feed them the WAL"*, inactivity teardown will fire
 part-way through and connections will drop mid-replay. If replay means *"feed recorded events into
@@ -80,7 +86,7 @@ Prefer the second. It is also the cheaper one.
 
 ### Any `now() - recorded_timestamp` is broken under replay
 
-Already met once, in the metrics work: `order_round_trip_nanoseconds` deliberately drops the
+For example, `order_round_trip_nanoseconds` deliberately drops the
 `gateway_ingress_ns` stamp on the WAL replay path, because a replayed order's ingress time is hours
 stale and would invent a tail-latency spike at every failover.
 
