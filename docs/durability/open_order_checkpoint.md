@@ -1,37 +1,30 @@
 # Recovering the open orders after a process restart {#open_order_checkpoint}
 
-Design note, 2026-08-30.
-
-**All of this is built.** The region itself, as `pubsub_itc_fw::MappedSlotStore`;
+**Status: built.** All of it: The region itself, as `pubsub_itc_fw::MappedSlotStore`;
 the matching engine's book on top of it, as `matching_engine::OrderBook`, so an
 open order is written to the region as it is accepted and taken out of it as it is
 cancelled; reading the region back at startup; the warming; the absence rule; and
 what happens when the region cannot be used at all.
 
-The matching engine's set of open orders exists only in the running process. When
-the process dies they are gone: measured on 2026-08-29 with a thousand orders
-open, the engine was killed and restarted and came back holding none of them,
-while the gateway went on reporting them as open and the member went on believing
-they were live. A later cancel for any of them is refused as an order the venue
-does not recognise.
+Without this, the matching engine's set of open orders exists only in the running
+process, and when the process dies they are gone. Measured without the region, with
+a thousand orders open, an engine that was killed and restarted came back holding
+none of them, while the gateway went on reporting them as open and the member went
+on believing they were live. A later cancel for any of them was refused as an order
+the venue did not recognise.
 
 The requirement is R-0018 in the functional specification: an order open before
 the engine restarted shall be open afterwards, on the same terms, and shall
 remain cancellable by the member that placed it. R-0073 requires the same of a
 failover, R-0102 of a checkpoint that cannot be trusted, and R-0108 that the work
-a recovery must do is bounded. All four wait on this.
+a recovery must do is bounded. All four rest on this.
 
 ## Why the write-ahead log does not serve
 
-It looks like the obvious source and it is not, for two independent reasons.
-
-**It is truncated.** `Wal::take_snapshot()` writes a 48-byte header — magic,
-version, last sequence number, record count, segment, offset, checksum — and
-then unlinks every segment before the current one. The snapshot holds no state;
-it is a truncation anchor. In a running system the retained log was two 4 MB
-segments against a recorded count of about fifty million records.
-
-**And replay is too slow even with full retention.** At forty million orders in a
+It looks like the obvious source and it is not. The log keeps the whole trading day:
+`Wal::take_snapshot()` writes a 48-byte record of where the log has reached and deletes
+nothing, and nothing else reclaims it. So the records are there, but **replaying them is too
+slow.** At forty million orders in a
 trading day and one microsecond an order, a full replay is forty seconds. The
 failure being recovered from is a process restart on a healthy machine, which the
 supervisor completes in about two and a half seconds. A forty-second recovery
@@ -56,7 +49,7 @@ number the day has seen, and the engine needs something of its own.
 
 | Approach | Why not |
 |---|---|
-| Replay the sequencer's log | 40 s at realistic volume, and the log is truncated |
+| Replay the sequencer's log | About 40 s at realistic volume |
 | Serialise the book periodically on the engine's thread | Walks the whole book; breaks (a) |
 | Serialise it on another thread | Needs a lock or a full copy of a mutating structure; breaks (a) or (b) |
 | Back the pool allocator with a mapped file | Breaks (c): chained slabs at arbitrary addresses, absolute pointers, and a persistence concern in the wrong class |
@@ -133,8 +126,10 @@ with the day's volume rather than with what is open, so holding it here would
 break the recovery bound this whole design exists for.
 
 It belongs with the sequencer, which commits every order and every cancellation
-and therefore has the facts already. The engine consults it only when refusing,
-which is rare and not latency-critical.
+and therefore has the facts already, and the sequencer keeps it
+(`LoggedCommandIdentifiers`). The engine refuses a repeated identifier only while
+the first order is still on its book; refusing one used earlier in the day is
+[BUG-0114](../bug_list.md#bug_0114).
 
 ### On the hot path
 
@@ -163,8 +158,8 @@ silent loss, where the venue holds an order the member was never told about.
 
 ### One copy of the order, not two
 
-The engine's map from order identity to order becomes **a map to a slot index**,
-and the region holds the only copy of the order itself.
+The engine's map from order identity to order is **a map to a slot index**, and the
+region holds the only copy of the order itself.
 
 The alternative — a region alongside the existing map of entries — writes every
 order twice on the accept path and allows the two to disagree, which is a class
@@ -174,9 +169,6 @@ The cost is an indirection on lookup: the map gives an index, and the order is a
 `header_size + index * slot_size`, which on a region of a few hundred megabytes
 is likely a cache miss. Both paths that pay it — the duplicate check on accept,
 and finding an order to cancel — can afford it.
-
-It does mean changing the engine's existing structures rather than adding a
-region beside them. That is more work and it is the right kind.
 
 The published position is a single aligned 64-bit value. A store to it does not
 tear, so there is no partial publish to detect. **It is written on the engine's
@@ -378,20 +370,16 @@ fault of its own that it will not find.
 
 ## What this changes for the availability design
 
-**Cancelling everything on a promotion has stopped.** It was the chosen baseline
-in [wal_and_ha.md](../availability/wal_and_ha.md): a promoted engine issued a
-cancel for every order on the reconciled book, and members resubmitted. That was
-right while the book could not survive the process holding it. The region is what
-changed it. The correctness rule in that document already said what follows --
-"any order still on the reconciled book is genuinely outstanding" -- and the only
-reason to cancel one anyway was that the engine could not vouch for the book it
-had reconstructed. It can now: its own region says what it held and to what
-position, and the sequencer's tail supplies the rest.
+**What a promoted engine does with the orders it inherits is a configured policy**,
+`order_book.open_orders_on_promotion` ([wal_and_ha.md](../availability/wal_and_ha.md),
+"What happens to resting orders on promotion"). Under `"cancel"` it cancels every order on its
+caught-up book and reports each cancel; under `"keep"` it keeps them. Every environment uses
+`"cancel"`. The region is what makes `"keep"` possible: the engine can vouch for the book it
+has reconstructed, because its own region says what it held and to what position, and the
+sequencer's tail supplies the rest. An engine that *restarts*, rather than taking over from a
+peer, keeps the orders it recovered from its region whatever the policy says (R-0018).
 
-So the ordinary path keeps the book, and cancelling everything becomes the answer
-where the region has failed. That is the same answer as before, moved to the case
-that still needs it.
-
+Cancelling everything is also the answer where the region has failed, as described above.
 
 Section 11e of [design_notes.md](../availability/design_notes.md) records three
 defects that had one shape between them: a rule that held while the epoch was
@@ -400,15 +388,11 @@ same kind is likely. This is a second piece of state that now survives a restart
 so it is worth saying which rules it touches before one of them turns out to be
 the fourth.
 
-**A restarted engine no longer comes back empty.** Section 11 argues that a
-restarted process comes back as a follower, and one of its two consequences is
-that "resuming leadership must wait for reconciliation, not for the decision. A
-restarted process has lost its state; that is why it restarted." With the region
-that premise is no longer true: a restarted engine comes back holding the orders
-it held. The conclusion still stands and for the better reason -- the region is
-current only to its published position, so the tail after it still has to be
-replayed before the engine can lead -- but the reason has changed, and the amount
-of replaying is now bounded by the gap rather than by the whole day.
+**A restarted engine does not come back empty.** It comes back holding the orders it
+held, current to its region's published position. It must still catch up on the tail
+after that position before it acts, as every engine does (principle V5 in
+[design_principles.md](../design_principles.md)), but the amount it replays is bounded by
+the gap rather than by the whole day.
 
 **Two instances now hold two regions and they may disagree.** That is correct
 rather than a fault: each region records what that instance actually holds, which
@@ -423,10 +407,10 @@ other's. A region is not a shared store and must not become one -- what makes th
 second machine the answer to a lost region is that it is a different machine with
 a different copy.
 
-**The grace period gets longer.** Section 11 says the follower's wait before
-promoting is measured rather than chosen, and equals what a supervised restart
-actually takes plus a margin. Reading a region back adds to that; the figure is
-below.
+**Reading the region back adds to a restart.** A leading engine restarted by its
+supervisor keeps the lead only if it is back within the lease period
+([design_notes.md](../availability/design_notes.md), section 11), and reading the region
+is part of the restart; the figure is below.
 
 ## What it costs
 
@@ -435,7 +419,7 @@ a million orders accepted and then cancelled, one record of 232 bytes each, so a
 region of 221 MB. Figures in nanoseconds a call, and each carries about 10 ns of
 clock overhead, which the harness reports so it can be read off.
 
-| Operation | The book as it was | The book as it is |
+| Operation | The map holding the orders, no region | The map holding slot indexes, with the region |
 |---|---|---|
 | accept, p50 | 76 | 57 |
 | accept, p90 | 772 | 209 |
@@ -463,16 +447,15 @@ which is the case a process restart on a live machine actually presents.
 **When the cache has given them up it costs 457 milliseconds.** Written, pushed
 to the disk, and dropped from the page cache, the same walk takes 457 ms, or
 **8.1 microseconds a page over 56,640 pages** — a disk read per page. That is what
-R-0121's warming exists to keep off the order path. Touching every page of a
-region that was freshly created costs 0.7 ms instead, because the file is all
-holes and there is nothing to read.
+R-0121's warming exists to keep off the order path. Warming writes every page back,
+which also gives a newly created region, whose file is all holes, a disk block for
+every page ([BUG-0071](../bug_list.md#bug_0071)); what that costs for a new region has
+not been measured.
 
 **Two consequences.**
 
-- The restart cost belongs in the grace period the follower waits before
-  promoting, which section 11 of
-  [design_notes.md](../availability/design_notes.md) says is measured rather than
-  chosen. 56 ms is the ordinary case and 457 ms the worst, and both scale with the
+- The restart cost counts against the lease period, within which a restarted leader must
+  be back to keep the lead. 56 ms is the ordinary case and 457 ms the worst, and both scale with the
   size of the region rather than with the orders in it: a region sized for a
   million orders costs that whether one order was open or a million.
 - A recovery scan touches every page anyway, so after a recovery the warming is
@@ -495,7 +478,7 @@ holes and there is nothing to read.
 
 - [wal.md](wal.md) — the log this deliberately does not rebuild from
 - [Availability](../availability/README.md) — the failures this serves
-- `docs/book` — R-0018, R-0073, R-0102 and R-0108, which wait on it
+- `docs/book` — R-0018, R-0073, R-0102 and R-0108, which rest on it
 
 ---
 

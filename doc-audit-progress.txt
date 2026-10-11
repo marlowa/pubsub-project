@@ -72,7 +72,7 @@ availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_dea
 `majority_leases.md`, `follower_log_repair.md`,
 `a_follower_behind_does_not_lead.md`, `commands_during_a_change_of_leader.md`, `README.md`, `wal_and_ha.md`, `change_of_sequencer_leader.md`, `tla/findings.md`
 
-durability: `wal.md`, `replay.md`
+durability: `wal.md`, `replay.md`, `open_order_checkpoint.md`, `README.md`
 
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
@@ -93,8 +93,6 @@ venue: `README.md`, `admin_service.md`, `arbiter.md`, `authentication_service.md
 availability: `design_notes.md` (see question 4)
 (`ha_in_the_library.md` and `ha_library_boundary.md` were written on 11 October 2026 against the
 code as it then stood)
-
-durability: `README.md`, `open_order_checkpoint.md`
 
 pubsub: `README.md`, `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
 `oar_bus_deduplication.md`, `oar_external_stream.md`, `pubsub.md`
