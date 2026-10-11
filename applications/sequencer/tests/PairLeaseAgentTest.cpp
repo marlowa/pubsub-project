@@ -218,7 +218,9 @@ class PairLeaseAgentTest : public ::testing::Test {
         }
     }
 
-    bool log_contains(const std::string& text) const {
+    // Flushes first, because the logger delivers records on its own thread after the log macro returns.
+    bool log_contains(const std::string& text) {
+        logger_.flush();
         for (const auto& line : log_) {
             if (line.find(text) != std::string::npos) {
                 return true;

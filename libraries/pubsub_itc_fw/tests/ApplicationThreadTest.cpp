@@ -717,10 +717,8 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata) {
     std::this_thread::sleep_for(reactor_configuration_.inactivity_check_interval_);
     EXPECT_TRUE(reactor_->is_finished());
 
-    // 3. Give the logger a moment to flush into the sink
-    for (int i = 0; i < 100 && logger_with_sink_.records.empty(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    // 3. Wait until everything logged so far has been delivered to the sink
+    logger_with_sink_.logger.flush();
 
     const auto& records = logger_with_sink_.records;
     ASSERT_FALSE(records.empty());

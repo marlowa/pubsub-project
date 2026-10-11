@@ -21,7 +21,9 @@ namespace pubsub_itc_fw::tests_common {
  * delivered to the callback, which appends the fully formatted string to
  * records.
  *
- * Test code can inspect records directly or use the helper methods below.
+ * The backend thread delivers records after the log macro returns. The helper
+ * methods below flush first, so they see everything logged before they were called;
+ * test code that reads records directly calls logger.flush() first.
  */
 class LoggerWithSink {
   public:
@@ -33,10 +35,12 @@ class LoggerWithSink {
     LoggerWithSink& operator=(LoggerWithSink&&) = delete;
 
     void clear() {
+        logger.flush();
         records.clear();
     }
 
-    [[nodiscard]] bool contains_message(const std::string& text) const {
+    [[nodiscard]] bool contains_message(const std::string& text) {
+        logger.flush();
         for (const auto& record : records) {
             if (record.find(text) != std::string::npos) {
                 return true;
@@ -45,12 +49,15 @@ class LoggerWithSink {
         return false;
     }
 
-    [[nodiscard]] size_t count() const {
+    [[nodiscard]] size_t count() {
+        logger.flush();
         return records.size();
     }
 
-    QuillLogger logger;
+    // Declared before the logger, so that it is destroyed after it: the logger's destructor
+    // flushes, delivering any record still pending into this vector.
     std::vector<std::string> records;
+    QuillLogger logger;
 };
 
 } // namespaces

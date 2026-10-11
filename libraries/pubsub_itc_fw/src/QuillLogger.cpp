@@ -161,7 +161,11 @@ std::string QuillLogger::ensure_log_file_writable(const std::string& file_path) 
     return "";
 }
 
-QuillLogger::~QuillLogger() = default;
+QuillLogger::~QuillLogger() {
+    if (callback_sink_ != nullptr) {
+        flush();
+    }
+}
 
 QuillLogger::QuillLogger(const std::string& file_path, FileOpenMode file_mode, FwLogLevel applog_level, FwLogLevel syslog_level,
                          const RollingLogfileConfiguration& rolling_logfile_configuration)
@@ -225,7 +229,6 @@ QuillLogger::QuillLogger(FwLogLevel applog_level, LogCallback callback) : applog
 
     quill_logger_ = PubsubFrontend::create_or_get_logger(generate_unique_logger_name("pubsub_test"), sinks, make_pattern_formatter_options());
     quill_logger_->set_log_level(LoggerUtils::to_quill_log_level(applog_level));
-    quill_logger_->set_immediate_flush();
 }
 
 void QuillLogger::set_log_level(FwLogLevel level) {
@@ -241,6 +244,12 @@ void QuillLogger::set_log_level(FwLogLevel level) {
         const quill::LogLevel gate =
             applog_level_ <= syslog_level_ ? LoggerUtils::to_quill_log_level(applog_level_) : LoggerUtils::to_quill_log_level(syslog_level_);
         quill_logger_->set_log_level(gate);
+    }
+}
+
+void QuillLogger::flush() {
+    if (quill_logger_ != nullptr) {
+        quill_logger_->flush_log();
     }
 }
 

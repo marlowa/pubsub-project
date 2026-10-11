@@ -65,8 +65,17 @@ const std::string sender_service = "sender";
 // Which side of a connection opens it.
 enum class Opener { ThisThread, ThePeer };
 
+// Large enough that the kernel's buffers and the reactor's reads cannot take it all before the pause
+// takes effect, so a pause that works must hold some of it back.
+constexpr int large_burst = 200000;
+
 ReactorConfiguration make_reactor_config() {
     ReactorConfiguration cfg{};
+    // While the receiver is paused, the sending reactor holds the sends its socket cannot take. A whole
+    // burst may wait there, because the sender queues all of it at once. The default limit of 65,536
+    // waiting sends would close the connection as a peer that has stopped reading, which is what
+    // SlowReaderIntegrationTest tests; these tests are about pausing, so the limit is set above the burst.
+    cfg.connection_waiting_sends_maximum = 2 * static_cast<size_t>(large_burst);
     cfg.inactivity_check_interval_ = std::chrono::milliseconds(100);
     cfg.init_phase_timeout_ = std::chrono::milliseconds(5000);
     cfg.shutdown_timeout_ = std::chrono::milliseconds(1000);
@@ -75,15 +84,18 @@ ReactorConfiguration make_reactor_config() {
     return cfg;
 }
 
-// Sends `count` numbered PDUs, 1 to count, as soon as a connection is established, whichever side
-// opened it. Optionally opens the connection itself.
+// Sends `count` numbered PDUs, 1 to count, once a connection is established, whichever side opened
+// it. Optionally opens the connection itself. With `per_tick` zero it sends them all at once; otherwise
+// it sends `per_tick` of them on each tick of a one-millisecond timer, so that the burst lasts for a
+// known length of time instead of as long as the reactors take to move it.
 class BurstSender : public ApplicationThread {
   public:
-    BurstSender(ConstructorToken token, QuillLogger& logger, Reactor& reactor, ThreadID id, int count, Opener opener)
+    BurstSender(ConstructorToken token, QuillLogger& logger, Reactor& reactor, ThreadID id, int count, Opener opener, int per_tick = 0)
         : ApplicationThread(token, logger, reactor, "BurstSender" + std::to_string(id.get_value()), id, make_queue_config(),
                             make_allocator_config("BurstSenderPool" + std::to_string(id.get_value())), ApplicationThreadConfiguration{})
         , count_(count)
-        , opener_(opener) {}
+        , opener_(opener)
+        , per_tick_(per_tick) {}
 
     std::atomic<bool> burst_sent{false};
 
@@ -95,12 +107,12 @@ class BurstSender : public ApplicationThread {
     }
 
     void on_connection_established(ConnectionID id) override {
-        pubsub_itc_fw_app::WalAck message{};
-        for (int i = 1; i <= count_; ++i) {
-            message.seq_no = i;
-            send_pdu(id, pubsub_itc_fw_app::WalAck::message_pdu_id, static_cast<int64_t>(i), message);
+        connection_ = id;
+        if (per_tick_ == 0) {
+            send_up_to(count_);
+        } else {
+            timer_ = start_recurring_timer(std::chrono::milliseconds{1});
         }
-        burst_sent.store(true, std::memory_order_release);
     }
 
     void on_connection_failed(const std::string&) override {}
@@ -110,11 +122,34 @@ class BurstSender : public ApplicationThread {
         release_pdu_payload(message);
     }
     void on_itc_message(const EventMessage&) override {}
-    void on_timer_event(TimerID) override {}
+    void on_timer_event(TimerID id) override {
+        if (id == timer_) {
+            send_up_to(next_ + per_tick_ - 1);
+        }
+    }
 
   private:
+    // Sends the PDUs from next_ up to `last`, or up to count_ if that is fewer.
+    void send_up_to(int last) {
+        pubsub_itc_fw_app::WalAck message{};
+        for (; next_ <= last && next_ <= count_; ++next_) {
+            message.seq_no = next_;
+            send_pdu(connection_, pubsub_itc_fw_app::WalAck::message_pdu_id, static_cast<int64_t>(next_), message);
+        }
+        if (next_ > count_ && !burst_sent.load(std::memory_order_relaxed)) {
+            if (per_tick_ != 0) {
+                cancel_timer(timer_);
+            }
+            burst_sent.store(true, std::memory_order_release);
+        }
+    }
+
     int count_;
     Opener opener_;
+    int per_tick_;
+    int next_{1};
+    ConnectionID connection_{};
+    TimerID timer_{};
 };
 
 // What a receiver does with reading on one connection.
@@ -306,7 +341,7 @@ class PauseReadingIntegrationTest : public ::testing::Test {
         PausingReceiver* receiver{nullptr};
     };
 
-    InboundSetup make_inbound(const std::vector<int>& burst_sizes, const std::map<size_t, PausePlan>& plans) {
+    InboundSetup make_inbound(const std::vector<int>& burst_sizes, const std::map<size_t, PausePlan>& plans, int per_tick = 0) {
         InboundSetup setup;
         static const ServiceRegistry empty_registry;
         setup.receiver_reactor = &new_reactor(empty_registry);
@@ -327,7 +362,7 @@ class PauseReadingIntegrationTest : public ::testing::Test {
             registries_.push_back(std::make_unique<ServiceRegistry>());
             registries_.back()->add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", port}, NetworkEndpointConfiguration{});
             Reactor& reactor = new_reactor(*registries_.back());
-            new_thread<BurstSender>(reactor, ThreadID{sender_number}, burst, Opener::ThisThread);
+            new_thread<BurstSender>(reactor, ThreadID{sender_number}, burst, Opener::ThisThread, per_tick);
             start(reactor);
             // One at a time, so that the receiver's connection index matches the sender's position.
             EXPECT_TRUE(wait_for([&]() { return setup.receiver->connections_established.load() == sender_number; }));
@@ -342,10 +377,6 @@ class PauseReadingIntegrationTest : public ::testing::Test {
     std::vector<std::shared_ptr<ApplicationThread>> threads_;
     std::vector<std::pair<Reactor*, std::thread>> running_;
 };
-
-// Large enough that the kernel's buffers and the reactor's reads cannot take it all before the pause
-// takes effect, so a pause that works must hold some of it back.
-constexpr int large_burst = 200000;
 
 TEST_F(PauseReadingIntegrationTest, APausedInboundConnectionDeliversNothingUntilItIsResumed) {
     auto setup = make_inbound({large_burst}, {{0, PausePlan{1, std::chrono::milliseconds{1500}, std::chrono::milliseconds{0}}}});
@@ -406,6 +437,7 @@ TEST_F(PauseReadingIntegrationTest, OtherConnectionsAndTimersAreServedWhileOneIs
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
     const size_t held_at = receiver.count_on(0);
     const int ticks_before = receiver.timer_ticks.load();
+    const auto ticks_counted_from = std::chrono::steady_clock::now();
 
     registries_.push_back(std::make_unique<ServiceRegistry>());
     registries_.back()->add(receiver_service, NetworkEndpointConfiguration{"127.0.0.1", setup.receiver_reactor->get_inbound_listener_port(0)},
@@ -419,6 +451,11 @@ TEST_F(PauseReadingIntegrationTest, OtherConnectionsAndTimersAreServedWhileOneIs
     ASSERT_TRUE(receiver.paused_now.load()) << "connection 0's pause ended before connection 1 finished, so this shows nothing";
     EXPECT_EQ(receiver.count_on(0), held_at) << "connection 0 delivered PDUs while paused";
     EXPECT_TRUE(exactly_once_in_order(receiver.received_on(1), second_burst));
+    // The timer is counted over at least 300 ms, however quickly connection 1's burst arrived, so that the
+    // count measures whether the timer fires and not how long the burst took. At one tick a millisecond,
+    // 300 ticks are due; fewer than 50 means the timer was not being served.
+    std::this_thread::sleep_until(ticks_counted_from + std::chrono::milliseconds{300});
+    ASSERT_TRUE(receiver.paused_now.load()) << "connection 0's pause ended before the timer was counted";
     EXPECT_GT(receiver.timer_ticks.load() - ticks_before, 50) << "the receiver's timer stopped firing while a connection was paused";
     ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 20000));
     EXPECT_TRUE(exactly_once_in_order(receiver.received_on(0), large_burst));
@@ -426,8 +463,11 @@ TEST_F(PauseReadingIntegrationTest, OtherConnectionsAndTimersAreServedWhileOneIs
 
 TEST_F(PauseReadingIntegrationTest, ManyPausesAndResumesLoseDuplicateAndReorderNothing) {
     // Soak: the receiver pauses for 2 ms and reads for 2 ms, over and over, for the whole of a long
-    // burst, so that pausing and resuming meet the reactor at every point in reading a socket.
-    auto setup = make_inbound({large_burst}, {{0, PausePlan{1, std::chrono::milliseconds{2}, std::chrono::milliseconds{2}}}});
+    // burst, so that pausing and resuming meet the reactor at every point in reading a socket. The sender
+    // sends 100 PDUs a millisecond, so the burst lasts about two seconds, long enough for hundreds of
+    // pauses; sent all at once, it can arrive between a handful of them.
+    constexpr int per_tick = 100;
+    auto setup = make_inbound({large_burst}, {{0, PausePlan{1, std::chrono::milliseconds{2}, std::chrono::milliseconds{2}}}}, per_tick);
     PausingReceiver& receiver = *setup.receiver;
     ASSERT_TRUE(wait_for([&]() { return receiver.count_on(0) == static_cast<size_t>(large_burst); }, 60000))
         << receiver.count_on(0) << " of " << large_burst << " PDUs arrived";

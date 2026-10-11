@@ -83,6 +83,11 @@ class QuillLogger {
     /// record string for each record that passes the applog threshold.
     using LogCallback = std::function<void(const std::string&)>;
 
+    /**
+     * A logger with a callback flushes before it is destroyed, so that no record is
+     * delivered to the callback, or to whatever the callback refers to, after the
+     * logger has gone.
+     */
     ~QuillLogger();
 
     QuillLogger(const QuillLogger&) = delete;
@@ -103,6 +108,13 @@ class QuillLogger {
 
     /**
      * @brief Unit-test constructor.  Creates a console sink; syslog is suppressed.
+     *
+     * Records are delivered by the backend thread, after the log macro returns, as
+     * for any other logger. A test that reads what was delivered to the callback
+     * calls flush() first. The logger does not flush every record, because that makes
+     * every thread that logs wait for the console output; with the output sent to a
+     * file on a busy filesystem, the whole test process freezes (BUG-0138).
+     *
      * @param applog_level  [in] Minimum severity written to the console.
      * @param callback      [in] Optional.  Called with the fully formatted string
      *                          for every record that passes applog_level.  Pass
@@ -161,6 +173,16 @@ class QuillLogger {
      * @param[in] level New minimum severity for the syslog sink.
      */
     void set_syslog_level(FwLogLevel level);
+
+    /**
+     * @brief Waits until every record logged before the call, by any thread, has been
+     *        delivered to the sinks and the callback.
+     *
+     * For tests that read what the logger delivered. It blocks the calling thread
+     * until the backend has caught up, so it is not for use on a reactor or
+     * application thread in a running venue.
+     */
+    void flush();
 
     /**
      * @brief Returns the current applog severity threshold.

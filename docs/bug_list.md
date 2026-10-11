@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 139 |
-| Open | 56 (37 defects, 19 tasks) |
-| Closed | 83 |
+| Open | 55 (36 defects, 19 tasks) |
+| Closed | 84 |
 | Next id | BUG-0140 |
 
 ## Open bugs by severity
 
-13 high, 38 medium, 5 low.
+13 high, 37 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -62,7 +62,6 @@
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
-| [BUG-0138](#bug_0138) | medium | defect | Test processes freeze while their logger waits for the disk, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently |
 | [BUG-0139](#bug_0139) | medium | defect | A matching engine that restarts or is promoted issues report identifiers that were already used that day |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
@@ -189,92 +188,6 @@ them and however often engines restart. The design in `docs/availability/ha_libr
 9, proposes deriving them from the position in the log (the sequence number of the command and the
 report's place among that command's reports), which is also what two engines running in lockstep need.
 A smaller fix would restore the counter from a durable record, but would not make two engines agree.
-
-### BUG-0138: Test processes freeze while their logger waits for the disk, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently {#bug_0138}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Investigating intermittent failures of the Debug integration suite after the ownership checks of phase 2 were added. Built separately and run alternately, the committed code without those checks failed in the same way (2 of 8 runs, against 1 of 8 with them), so the cause was already there |
-| Impact | The framework integration suite fails now and then, in `SlowReaderIntegrationTest` and `PauseReadingIntegrationTest`, whatever code is being tested, and fails every time while the disk is busy, which makes a real failure hard to tell from a chance one. The venue's processes are not affected: their loggers do not flush on every record |
-
-**Two causes, which add together.**
-
-**1. The timing tests have almost no margin.** `SlowReaderIntegrationTest.ReadersThatKeepUpAreServedAlikeWhileOneHasStopped`
-sends 20,000 messages to each of three receivers and waits 5 seconds for each to have them all
-(`wait_for(..., 5000)` in `SlowReaderIntegrationTest.cpp`). In a Debug build the receivers get a
-steady 3,900 to 4,100 messages a second, so delivery takes about 5.0 to 5.2 seconds: one failing run
-had no disturbance at all and simply took 5.2 seconds. In a Release build the test takes 4.72 to 4.81
-seconds, a margin of only 4 to 6 per cent. The other timing tests in the same file and in
-`PauseReadingIntegrationTest` are of the same kind.
-
-**2. The test process sometimes freezes entirely.** In failing runs, every thread of the test process
-(three reactor threads and the application threads) stopped logging at the same instant and resumed
-at the same instant: 511 ms in one run, 105 ms in another, with a reactor's 1 ms timer piling up 510
-expirations meanwhile. Freezes of hundreds of milliseconds also appear in runs that pass, when they
-happen not to fall in a measured window. What the freeze is not, as measured:
-
-- not memory reclaim or compaction: the kernel's stall counters and memory pressure, sampled every
-  200 ms, did not move;
-- not a CPU limit: no control group above the session has one, and none was ever throttled;
-- not the logging queue: it never grew, and it blocks threads only beyond 2 GiB;
-- not a fork or a command: neither the framework nor the tests start one;
-- not the slab allocator's mapping: slabs are 256 KB;
-- not machine-wide: a separate program waking every millisecond was never held up by more than 20 ms.
-
-**The cause of the freezes: the test logger waits for the disk on every record.** The logger the tests use
-(`QuillLogger`'s console constructor, which `LoggerWithSink` wraps) calls `set_immediate_flush()`, so every
-log statement waits until the logging library's backend thread has written that record out. The tests log
-every message at Debug level, and their output goes to a file. When the filesystem makes the backend wait,
-every thread that logs waits with it, and the whole process stops. Established in four steps:
-
-1. **Where the threads were.** A watcher sampling every thread every 5 ms caught the backend thread
-   (`QuillBackend`) in uninterruptible sleep inside ext4, in `do_get_write_access` (the journal) and
-   `ext4_da_map_blocks` (block allocation), while the reactor and application threads sat in
-   `hrtimer_nanosleep`. The framework's own threads wait in `epoll` and do not sleep that way.
-2. **Why they were asleep.** `perf`, recording the call stack at every context switch of one run, showed
-   that by far the largest source of timed sleeps (42,382 of them) was `quill::LoggerImpl::flush_log`,
-   reached from the immediate flush in `_commit_log_statement`, called from
-   `ApplicationThread::process_message`, `Reactor::process_control_commands` and
-   `TimerHandler::handle_event`.
-3. **Freezes follow the disk, not the code.** A whole-process freeze shows in the log as a stretch in which
-   no thread logs at all. With the machine's disk quiet, ten runs (five with output to a file, five with it
-   discarded) had none over 80 ms. With a separate process writing 1 GiB files to the same filesystem,
-   all five runs whose output went to a file froze, 15 to 31 times each and for up to 2.2 seconds, and
-   failed (one of them ending in the shutdown abort of BUG-0119); all five runs with output discarded,
-   alternated with them under the same load, had no freeze longer than 27 ms and passed.
-4. **The venue's processes are not affected.** They create their loggers with the file constructor, which
-   does not call `set_immediate_flush()`. The `topic_probe` tool uses the console constructor at Warning
-   level.
-
-**Why the test logger flushes immediately.** `LoggerWithSink` copies every record into a list,
-`records`, that tests inspect straight after logging (`contains_message`). The immediate flush is what
-guarantees a record is in the list by the time the test looks, and is also what makes it safe for the test
-thread to read a list the backend thread appends to.
-
-**The tight timing test is a separate matter.** Discarding the output does not speed up
-`ReadersThatKeepUpAreServedAlikeWhileOneHasStopped`: it takes about 4.9 seconds either way. Its delivery
-rate is set by how the test paces its sender, and its 5 second deadline leaves almost nothing over, even
-in Release (4.72 to 4.81 seconds).
-
-**What is wanted.**
-
-1. **Stop tests waiting for the disk on every record.** The alternatives:
-   - A. keep immediate flushing for unit tests, and turn it off for integration tests, which do not
-     inspect their log;
-   - B. turn immediate flushing off everywhere, and have a test that inspects the log call an explicit
-     flush just before it looks, so that the wait happens only where a test needs it and the list is read
-     safely;
-   - C. log less in the integration tests, Info rather than Debug, which makes the freezes rarer without
-     removing them.
-   B is recommended: it puts the wait where it is needed and nowhere else.
-2. **Give the timing tests a deadline with a margin**, or a sender paced to finish well inside it, so that
-   the integration suite fails only for a real reason.
-
-The measurements, scripts and failing logs of the investigation were kept outside the repository, in
-the working directory's `tmp/ab` and `tmp/freeze`, and are summarised here.
 
 ### BUG-0137: There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart {#bug_0137}
 
@@ -3017,6 +2930,115 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0138: Test processes freeze while their logger waits for the disk, and the slow-reader timing tests have almost no margin, so the integration suite fails intermittently {#bug_0138}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-10-11 -- the test logger no longer waits for each record to be written; a test that reads its log calls `QuillLogger::flush()` first |
+| How | Investigating intermittent failures of the Debug integration suite after the ownership checks of phase 2 were added. Built separately and run alternately, the committed code without those checks failed in the same way (2 of 8 runs, against 1 of 8 with them), so the cause was already there |
+| Impact | The framework integration suite fails now and then, in `SlowReaderIntegrationTest` and `PauseReadingIntegrationTest`, whatever code is being tested, and fails every time while the disk is busy, which makes a real failure hard to tell from a chance one. The venue's processes are not affected: their loggers do not flush on every record |
+
+**Two causes, which add together.**
+
+**1. The timing tests have almost no margin.** `SlowReaderIntegrationTest.ReadersThatKeepUpAreServedAlikeWhileOneHasStopped`
+sends 20,000 messages to each of three receivers and waits 5 seconds for each to have them all
+(`wait_for(..., 5000)` in `SlowReaderIntegrationTest.cpp`). In a Debug build the receivers get a
+steady 3,900 to 4,100 messages a second, so delivery takes about 5.0 to 5.2 seconds: one failing run
+had no disturbance at all and simply took 5.2 seconds. In a Release build the test takes 4.72 to 4.81
+seconds, a margin of only 4 to 6 per cent. The other timing tests in the same file and in
+`PauseReadingIntegrationTest` are of the same kind.
+
+**2. The test process sometimes freezes entirely.** In failing runs, every thread of the test process
+(three reactor threads and the application threads) stopped logging at the same instant and resumed
+at the same instant: 511 ms in one run, 105 ms in another, with a reactor's 1 ms timer piling up 510
+expirations meanwhile. Freezes of hundreds of milliseconds also appear in runs that pass, when they
+happen not to fall in a measured window. What the freeze is not, as measured:
+
+- not memory reclaim or compaction: the kernel's stall counters and memory pressure, sampled every
+  200 ms, did not move;
+- not a CPU limit: no control group above the session has one, and none was ever throttled;
+- not the logging queue: it never grew, and it blocks threads only beyond 2 GiB;
+- not a fork or a command: neither the framework nor the tests start one;
+- not the slab allocator's mapping: slabs are 256 KB;
+- not machine-wide: a separate program waking every millisecond was never held up by more than 20 ms.
+
+**The cause of the freezes: the test logger waits for the disk on every record.** The logger the tests use
+(`QuillLogger`'s console constructor, which `LoggerWithSink` wraps) calls `set_immediate_flush()`, so every
+log statement waits until the logging library's backend thread has written that record out. The tests log
+every message at Debug level, and their output goes to a file. When the filesystem makes the backend wait,
+every thread that logs waits with it, and the whole process stops. Established in four steps:
+
+1. **Where the threads were.** A watcher sampling every thread every 5 ms caught the backend thread
+   (`QuillBackend`) in uninterruptible sleep inside ext4, in `do_get_write_access` (the journal) and
+   `ext4_da_map_blocks` (block allocation), while the reactor and application threads sat in
+   `hrtimer_nanosleep`. The framework's own threads wait in `epoll` and do not sleep that way.
+2. **Why they were asleep.** `perf`, recording the call stack at every context switch of one run, showed
+   that by far the largest source of timed sleeps (42,382 of them) was `quill::LoggerImpl::flush_log`,
+   reached from the immediate flush in `_commit_log_statement`, called from
+   `ApplicationThread::process_message`, `Reactor::process_control_commands` and
+   `TimerHandler::handle_event`.
+3. **Freezes follow the disk, not the code.** A whole-process freeze shows in the log as a stretch in which
+   no thread logs at all. With the machine's disk quiet, ten runs (five with output to a file, five with it
+   discarded) had none over 80 ms. With a separate process writing 1 GiB files to the same filesystem,
+   all five runs whose output went to a file froze, 15 to 31 times each and for up to 2.2 seconds, and
+   failed (one of them ending in the shutdown abort of BUG-0119); all five runs with output discarded,
+   alternated with them under the same load, had no freeze longer than 27 ms and passed.
+4. **The venue's processes are not affected.** They create their loggers with the file constructor, which
+   does not call `set_immediate_flush()`. The `topic_probe` tool uses the console constructor at Warning
+   level.
+
+**Why the test logger flushes immediately.** `LoggerWithSink` copies every record into a list,
+`records`, that tests inspect straight after logging (`contains_message`). The immediate flush is what
+guarantees a record is in the list by the time the test looks, and is also what makes it safe for the test
+thread to read a list the backend thread appends to.
+
+**The tight timing test has the same cause.** Discarding the output does not speed up
+`ReadersThatKeepUpAreServedAlikeWhileOneHasStopped`: it takes about 4.9 seconds either way. Discarding
+the output removes the disk, but not the wait: with immediate flushing, every log statement still waits
+for the backend thread to process its record, wherever the record then goes. That wait is what holds the
+receivers to about 4,000 messages a second.
+
+**The fix.** The console constructor of `QuillLogger` no longer calls `set_immediate_flush()`, so a
+log statement returns as soon as its record is queued for the backend thread. `QuillLogger::flush()` waits
+until every record logged so far has been processed, and a test calls it just before it reads its log:
+`LoggerWithSink` calls it in `clear()`, `contains_message()` and `count()`, and the tests that read records
+in other ways call it themselves. Waiting this way also makes it safe for the test thread to read the list
+of records that the backend thread appends to. A logger with a callback flushes in its destructor, so no
+record is delivered after the logger has gone; `LoggerWithSink` declares its list of records before its
+logger, so that the list is destroyed after the logger's last delivery into it.
+
+**Tests that relied on the slowness.** `PauseReadingIntegrationTest` passed only because waiting on every
+log line slowed its sender. Its sender queues a burst of 200,000 messages at once; with nothing slowing it,
+the sending reactor holds more than 65,536 sends while the receiver is paused, reaches
+`ReactorConfiguration::connection_waiting_sends_maximum`, and closes the connection as a peer that has
+stopped reading, which is the behaviour that `SlowReaderIntegrationTest` tests. These tests now:
+
+- set `connection_waiting_sends_maximum` above the burst, because they test pausing and not that limit;
+- in the soak, `ManyPausesAndResumesLoseDuplicateAndReorderNothing`, pace the sender at 100 messages a
+  millisecond, so that the burst lasts about two seconds and the receiver pauses hundreds of times during
+  it; sent at once, the burst arrived between 4 and 17 pauses;
+- in `OtherConnectionsAndTimersAreServedWhileOneIsPaused`, count the receiver's timer over at least
+  300 ms, instead of over however long the second connection's burst took to arrive.
+
+**Verified.** In the Debug build:
+
+- the framework's 924 unit tests pass three runs in a row, and every application's unit tests pass;
+- the 64 integration tests pass three runs in a row, in about 48 seconds each;
+- under the disk load that froze every run before (a separate process writing 1 GiB files to the same
+  filesystem, with the test output going to a file), five runs all pass, and the longest stretch in
+  which no thread logs is 27 ms, against freezes of up to 2.2 seconds and five failures before;
+- `ReadersThatKeepUpAreServedAlikeWhileOneHasStopped` takes 0.8 to 0.9 seconds against its 5 second
+  deadline, against about 4.9 seconds before;
+- the `PauseReadingIntegrationTest` changes were checked against the failures they cure: with the
+  default limit on waiting sends, the first three of its tests fail every run, and with the soak's sender
+  not paced, the soak fails every run on too few pauses.
+
+The measurements, scripts and failing logs of the investigation were kept outside the repository, in
+the working directory's `tmp/ab` and `tmp/freeze`, and are summarised here.
 
 ### BUG-0125: Every histogram observation takes a mutex inside prometheus-cpp, on the order path {#bug_0125}
 

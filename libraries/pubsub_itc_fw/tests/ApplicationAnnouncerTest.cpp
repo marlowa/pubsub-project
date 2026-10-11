@@ -30,6 +30,7 @@ TEST(ApplicationAnnouncerTest, AnnounceLogsOneRecordWithBuildInfo) {
     QuillLogger logger(FwLogLevel::Info, [&records](const std::string& record) { records.push_back(record); });
 
     ApplicationAnnouncer::announce(logger, "test_app");
+    logger.flush();
 
     ASSERT_EQ(records.size(), 1u);
     EXPECT_TRUE(any_record_contains(records, "test_app"));
@@ -46,6 +47,7 @@ TEST(ApplicationAnnouncerTest, AnnounceIsSuppressedBelowThreshold) {
     QuillLogger logger(FwLogLevel::Error, [&records](const std::string& record) { records.push_back(record); });
 
     ApplicationAnnouncer::announce(logger, "test_app");
+    logger.flush();
 
     EXPECT_TRUE(records.empty());
 }

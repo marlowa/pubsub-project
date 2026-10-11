@@ -33,8 +33,14 @@ class QuillLoggerTest : public ::testing::Test {
         records_.clear();
     }
 
-    bool contains_message(const std::string& text) const {
-        for (const auto& record : records_) {
+    // Everything logged so far, once the backend thread has delivered it.
+    const std::vector<std::string>& records() {
+        logger_->flush();
+        return records_;
+    }
+
+    bool contains_message(const std::string& text) {
+        for (const auto& record : records()) {
             if (record.find(text) != std::string::npos) {
                 return true;
             }
@@ -51,42 +57,42 @@ class QuillLoggerTest : public ::testing::Test {
 TEST_F(QuillLoggerTest, LogsDebugMessage) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug message");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Debug message"));
 }
 
 TEST_F(QuillLoggerTest, LogsInfoMessage) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info message");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Info message"));
 }
 
 TEST_F(QuillLoggerTest, LogsWarningMessage) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning message");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Warning message"));
 }
 
 TEST_F(QuillLoggerTest, LogsErrorMessage) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Error, "Error message");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Error message"));
 }
 
 TEST_F(QuillLoggerTest, LogsCriticalMessage) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Critical, "Critical message");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Critical message"));
 }
 
 TEST_F(QuillLoggerTest, LogsAlertMessage) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Alert, "Alert message");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Alert message"));
 }
 
@@ -97,7 +103,7 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithInteger) {
 
     PUBSUB_LOG(*logger_, FwLogLevel::Info, "Value is {}", value);
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Value is 42"));
 }
 
@@ -106,21 +112,21 @@ TEST_F(QuillLoggerTest, LogsFormattedMessageWithString) {
 
     PUBSUB_LOG(*logger_, FwLogLevel::Info, "Hello {}", name);
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Hello Alice"));
 }
 
 TEST_F(QuillLoggerTest, LogsFormattedMessageWithMultipleArgs) {
     PUBSUB_LOG(*logger_, FwLogLevel::Info, "User {} has {} points", "Bob", 100);
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("User Bob has 100 points"));
 }
 
 TEST_F(QuillLoggerTest, LogsStringWithPubSubLogStr) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Simple string message");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Simple string message"));
 }
 
@@ -132,7 +138,7 @@ TEST_F(QuillLoggerTest, FiltersDebugWhenLevelIsInfo) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug message - should be filtered");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info message - should appear");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Info message"));
     EXPECT_FALSE(contains_message("Debug message"));
 }
@@ -143,7 +149,7 @@ TEST_F(QuillLoggerTest, FiltersInfoWhenLevelIsWarning) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info - filtered");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning - appears");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Warning"));
 }
 
@@ -153,7 +159,7 @@ TEST_F(QuillLoggerTest, FiltersWarningWhenLevelIsError) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning - filtered");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Error, "Error - appears");
 
-    ASSERT_EQ(records_.size(), 1u);
+    ASSERT_EQ(records().size(), 1u);
     EXPECT_TRUE(contains_message("Error"));
 }
 
@@ -166,7 +172,7 @@ TEST_F(QuillLoggerTest, LogsAllLevelsWhenSetToDebug) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Error, "Error");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Critical, "Critical");
 
-    EXPECT_EQ(records_.size(), 5u);
+    EXPECT_EQ(records().size(), 5u);
     EXPECT_TRUE(contains_message("Debug"));
     EXPECT_TRUE(contains_message("Info"));
     EXPECT_TRUE(contains_message("Warning"));
@@ -181,7 +187,7 @@ TEST_F(QuillLoggerTest, SuppressedMessageProducesNoCallback) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info - suppressed");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Warning, "Warning - suppressed");
 
-    EXPECT_EQ(records_.size(), 0u);
+    EXPECT_EQ(records().size(), 0u);
 }
 
 // Dynamic log level change tests
@@ -192,12 +198,16 @@ TEST_F(QuillLoggerTest, ChangesLogLevelDynamically) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug 1 - filtered");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info 1 - appears");
 
+    // The level is applied by the sink, when the backend thread processes a record, not
+    // when it is logged. Without this flush, "Debug 1" could still be waiting when the
+    // level is lowered, and would then appear.
+    logger_->flush();
     logger_->set_log_level(FwLogLevel::Debug);
 
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Debug, "Debug 2 - appears");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Info 2 - appears");
 
-    EXPECT_EQ(records_.size(), 3u);
+    EXPECT_EQ(records().size(), 3u);
     EXPECT_TRUE(contains_message("Info 1"));
     EXPECT_TRUE(contains_message("Debug 2"));
     EXPECT_TRUE(contains_message("Info 2"));
@@ -213,10 +223,10 @@ TEST_F(QuillLoggerTest, LogsMultipleMessagesInSequence) {
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Message 2");
     PUBSUB_LOG_STR(*logger_, FwLogLevel::Info, "Message 3");
 
-    ASSERT_EQ(records_.size(), 3u);
-    EXPECT_TRUE(records_[0].find("Message 1") != std::string::npos);
-    EXPECT_TRUE(records_[1].find("Message 2") != std::string::npos);
-    EXPECT_TRUE(records_[2].find("Message 3") != std::string::npos);
+    ASSERT_EQ(records().size(), 3u);
+    EXPECT_TRUE(records()[0].find("Message 1") != std::string::npos);
+    EXPECT_TRUE(records()[1].find("Message 2") != std::string::npos);
+    EXPECT_TRUE(records()[2].find("Message 3") != std::string::npos);
 }
 
 // Log level getter tests
@@ -245,6 +255,8 @@ TEST(QuillLoggerIsolationTest, TwoLoggersDoNotCrossTalk) {
 
     PUBSUB_LOG_STR(logger1, FwLogLevel::Info, "Message from logger1");
     PUBSUB_LOG_STR(logger2, FwLogLevel::Info, "Message from logger2");
+    logger1.flush();
+    logger2.flush();
 
     ASSERT_EQ(records1.size(), 1u);
     ASSERT_EQ(records2.size(), 1u);

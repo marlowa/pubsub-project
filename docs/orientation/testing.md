@@ -189,10 +189,14 @@ assertion-free test the coverage figure cannot see.
 - The framework's tests are excluded from the coverage report: they are the instrument, not the
   subject. So is application code (see [building](building.md)).
 
-**The slow-reader and pause-reading integration tests fail when the disk is busy**, whatever code is
-being tested: the logger the tests use waits for every record to reach the disk, so a busy filesystem
-freezes the test process. Before blaming a change for a failure there, compare against the code
-without it, run alternately ([BUG-0138](../bug_list.md#bug_0138)).
+**A test that reads its log calls `flush()` first.** The logger the tests use (`QuillLogger`'s console
+constructor, wrapped by `LoggerWithSink`) hands each record to the logging library's backend thread and
+returns at once; the record reaches the test's list of records some time later. `QuillLogger::flush()`
+waits until every record logged so far has been delivered. `LoggerWithSink`'s `clear()`,
+`contains_message()` and `count()` call it themselves; a test that reads the records any other way must
+call it before it looks. The logger does not wait on every record, because that makes every thread that
+logs wait for the test output to be written, and a busy disk then freezes the whole test process
+([BUG-0138](../bug_list.md#bug_0138)).
 
 Each test file opens with a docblock naming every test in it and what it pins down. Keep that
 list current — it is the fastest way to find out whether a behaviour is already covered, and
