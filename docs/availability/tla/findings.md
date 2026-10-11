@@ -1,7 +1,7 @@
 # Checking the high availability design with TLA+: findings {#tla_findings}
 
 This document reports what model checking found when two parts of the venue's high availability
-design were specified in TLA+ and checked with its model checker, TLC. The specifications are
+design were specified in TLA+ and checked with its model checker, TLC. The first two specifications are
 written from the code at commit `42d29e9`, and from the design documents where they explain it.
 
 TLA+ is a language for describing a system's design precisely enough for a tool to check it. A
@@ -66,15 +66,40 @@ Two claims in the design documents do not survive checking:
 
 Writing the specifications raised further questions before the checker ran. Section 7 lists those.
 
-Section 11 checks a proposed replacement design, in which an instance leads only while a majority of three voters
-grants it a lease. It is specified in a third file, `MajorityLeaseHA.tla`.
+Section 11 checks the design that replaced it, and that the venue now uses, in which an instance leads only while a
+majority of three voters grants it a lease. It is specified in a third file, `MajorityLeaseHA.tla`. Section 12 checks
+rule 11 of that design, that a follower which is behind does not lead, in a fourth, `FollowerBehindHA.tla`.
 
 ### 1.1 Which findings the code now addresses
 
-The code now addresses these findings:
+Sections 2 to 10 record the checking of the design at commit `42d29e9`. The venue no longer decides
+leadership that way: it decides by majority, with leases, as section 11 and
+[../majority_leases.md](../majority_leases.md) describe. That changes what each finding means for the
+code as it stands:
 
-| Finding | What the code does now |
-|---------|------------------------|
+| Finding | Where it stands |
+|---------|-----------------|
+| 1 | Addressed. Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`fix_common/LeaderEpoch.hpp`), so two different instances never lead at the same epoch. The lease rules use it for every group and for the arbiters' own epochs. |
+| 2, 3, 4, 5, 6 | No longer apply. They are about mechanisms the majority design removed: heartbeat timeouts, degraded self-promotion without an arbiter, arbitration rounds, and the arbiter computing leadership from its record. An instance now leads only while a majority grants it a lease, and stops at once when its lease runs out. |
+| 7 and 8 | Resolved by the majority design: the arbiter pool is a genuine majority of the two arbiters and the witness, the witness issues no epochs, and an arbiter becomes active only with a grant. |
+
+The earlier specifications keep constants (`WithFixes`, `UniqueEpochs`, `LeaderStandsDown` and
+`ArbiterLiftsIncumbent` in `SequencerPairHA.tla`; `WithFixes` and `UniqueEpochsAndStandDown` in
+`ArbiterPoolHA.tla`) that model the remedies tried on that design before it was replaced; with every
+constant off, each models the code at `42d29e9`.
+
+**What remains open:**
+
+- **An epoch can go backwards** after both arbiters restart, as section 11.5 shows. Two instances still
+  never act at once, and a leader learns of the higher epoch from its peer. Learning it from a receiver
+  is not built.
+
+What the old leader had not replicated when it stopped, which was open here, is now handled: a
+rejoining follower's log is repaired to match its leader's
+([../follower_log_repair.md](../follower_log_repair.md)), and a follower that lacks commands the engine
+acted on never leads (rule 11, checked in section 12).
+
+---------|------------------------|
 | 1 | Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`fix_common/LeaderEpoch.hpp`). Every issuer takes the next such epoch above what it knows, so two different instances never lead at the same epoch. This applies to the sequencer, the matching engine, the arbiter's decisions for every group, and the arbiters' own epochs. |
 | 2 | Heartbeats say whether the sender leads. A sequencer leader that hears its peer leading at a higher epoch, or the same epoch from a lower instance id, stands down and follows it. An active arbiter does the same. The matching engine does not yet, because its peer protocol has not been modelled. |
 | 3 | `SequencerThread::adopt_role` ends any arbitration round in progress whenever a role is adopted, by any route. |
@@ -628,7 +653,7 @@ broken. Every run in this document completes in under a minute on an ordinary ma
 
 ---
 
-## 11. The proposed design: leadership by majority, with leases
+## 11. The design the venue uses: leadership by majority, with leases
 
 Sections 1 to 10 check the design the code implements. This section checks a proposed replacement,
 described in [../majority_leases.md](../majority_leases.md). It is specified in `MajorityLeaseHA.tla`.
