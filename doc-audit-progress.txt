@@ -25,16 +25,15 @@ The audit continues with the rest of the availability directory meanwhile; these
    revised around what the arbiter does know, or withdrawn?
 2. Is `docs/bug_list.md` in the audit? Reading other documents has already turned up a stale entry:
    BUG-0065 says the code has no notion of a trading halt, but the matching engine has one.
+3. The rule for the book, written under "Not started" below: where the code does not meet a
+   requirement, the gap is reported and the requirement is left as it is; statements of fact in the
+   book are corrected as in any other document. Is that how the book should be treated?
 4. `docs/availability/design_notes.md` is a decision record: it dates its decisions, explains where
    earlier defects came from (section 11a), and keeps sections on mechanisms the venue no longer uses
    (section 11c begins by saying so). Rewriting it to describe only the present would remove what makes
    it a decision record. Should it stay a record, with each superseded section marked as such and
    everything else checked against the code; or should its superseded sections move to
    `docs/superseded/`, leaving a document of current decisions?
-3. The rule for the book, written under "Not started" below: where the code does not meet a
-   requirement, the gap is reported and the requirement is left as it is; statements of fact in the
-   book are corrected as in any other document. Is that how the book should be treated?
-
 ## Building and testing on Rocky 8 in Docker (started, blocked)
 
 Asked for on 7 October 2026: build, release, deploy and test with `scripts/devsetup.sh` inside the
