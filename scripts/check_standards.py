@@ -33,6 +33,8 @@ Checks implemented:
   25. Bare true / false literal passed as a function argument
   26. printf family (printf/sprintf/snprintf/fprintf and v- variants); use fmt
   27. Doxygen comment block not preceded by a blank line
+  28. A lock in venue code that is not in the table of permitted locks (principle F2)
+  29. A raw std::thread in venue code; threads are created through ThreadWithJoinTimeout (principle F8)
 """
 
 from __future__ import annotations
@@ -1063,6 +1065,200 @@ def check_doxygen_blank_line(path: Path, lines: list[str], stripped: list[str]) 
     return violations
 
 
+# ── Checks 28 and 29: locks and raw threads in venue code ────────────────────
+#
+# Principle F2 in docs/design_principles.md: an order-handling thread never takes a lock. A lock
+# means a mutex of any kind, a lock guard, a condition variable, a semaphore, a file lock or
+# std::call_once. Every lock in venue code must appear in _PERMITTED_LOCKS below, which says why it
+# is allowed. Most entries are allowed for good: code that runs only at start-up or shutdown, on a
+# thread that handles no orders, or on an error path. The rest are breaches of F2, each naming the
+# bug that records it and the phase of docs/recovery_plan.md that removes it; when that work is
+# done, its entry is deleted, and the check then fails if the lock is still there.
+#
+# A loop that waits for another thread is also a lock under F2, and cannot be found this way.
+
+_VENUE_CODE_EXEMPT_DIRS = ('/tests/', '/integration_tests/', '/performance/', '/tools/', '/tests_common/')
+
+_LOCK_RE = re.compile(
+    r'\bstd::(?:recursive_|timed_|shared_|recursive_timed_|shared_timed_)?mutex\b'
+    r'|\bstd::(?:lock_guard|unique_lock|scoped_lock|shared_lock)\b'
+    r'|\bstd::condition_variable(?:_any)?\b'
+    r'|\bstd::(?:counting|binary)_semaphore\b'
+    r'|\bstd::(?:latch|barrier)\b'
+    r'|\bstd::call_once\b'
+    r'|\bpthread_(?:mutex|cond|rwlock|spin)_\w+'
+    r'|\bsem_(?:wait|timedwait|trywait|post)\s*\('
+    r'|\bflock\s*\(')
+
+_START_UP_AND_SHUTDOWN = 'runs only at start-up or shutdown'
+_NOT_ORDER_HANDLING = 'taken only on a thread that handles no orders'
+_ERROR_PATH = 'taken only on an error path'
+
+# Each entry: (path relative to the project root, where, why). For a .cpp file, `where` is the
+# function holding the lock, as Class::function. For a header, `where` is a name that appears on
+# the line, or '*' for every lock in the file. `why` is one of the three reasons above, or, for a
+# breach, a sentence naming the bug and the phase that removes it.
+_PERMITTED_LOCKS = [
+    # The reactor's registry of threads: filled at start-up and emptied at shutdown.
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/Reactor.hpp', 'thread_registry_mutex_', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::register_thread', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::initialize_threads', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::broadcast_reactor_event', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::wait_for_all_threads', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::finalize_threads_after_shutdown', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::handle_sigterm_and_singint', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_all_timer_fds_for_thread', _START_UP_AND_SHUTDOWN),
+    # The thread registry lock taken during the trading day.
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::route_message',
+     'breach: BUG-0129, removed in phase 4'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::check_for_exited_threads',
+     'breach: BUG-0129, removed in phase 4'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::check_for_stuck_threads',
+     'breach: BUG-0129, removed in phase 4'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::get_thread_name_from_id',
+     'breach: BUG-0129, removed in phase 4'),
+    # The reactor's timer lock: every timer start creates a timer and every cancel destroys one.
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/Reactor.hpp', 'timer_registry_mutex_',
+     'breach: BUG-0128, removed in phase 4'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::allocate_timer_id', 'breach: BUG-0128, removed in phase 4'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::create_timer_fd', 'breach: BUG-0128, removed in phase 4'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_timer_fd', 'breach: BUG-0128, removed in phase 4'),
+    # The follower's second writer of the sequencer's log.
+    ('applications/sequencer/SequencerThread.hpp', 'log_epochs_mutex_', 'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::append_to_wal', 'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::write_replicated_record',
+     'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_log_position_request',
+     'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_request',
+     'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_reply',
+     'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/ReplicatedRecordWriter.hpp', '*', 'breach: BUG-0124, removed in phase 3'),
+    # The lease promise recorder, on the sequencer's and the matching engine's application threads.
+    ('applications/fix_common/BackgroundPromiseRecorder.hpp', '*', 'breach: BUG-0126, removed in phase 4'),
+    # Memory pools.
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'expansion_mutex_',
+     'breach: BUG-0127, removed in phase 4'),
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'callback_mutex_', _ERROR_PATH),
+    # Metrics: registration happens at start-up, and the scrape runs on the endpoint's own thread.
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusEndpoint.hpp', '*', _NOT_ORDER_HANDLING),
+    ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::exposition_text', _NOT_ORDER_HANDLING),
+    ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::register_counter', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::register_gauge', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/PrometheusEndpoint.cpp', 'PrometheusEndpoint::register_histogram', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/SingleWriterHistogramRegistry.hpp', '*', _NOT_ORDER_HANDLING),
+    ('libraries/pubsub_itc_fw/src/SingleWriterHistogramRegistry.cpp', 'SingleWriterHistogramRegistry::Collect',
+     _NOT_ORDER_HANDLING),
+    # Start-up only.
+    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/FileLock.hpp', '*', _START_UP_AND_SHUTDOWN),
+    ('libraries/pubsub_itc_fw/src/QuillLogger.cpp', '*', _START_UP_AND_SHUTDOWN),
+]
+
+# Entries of _PERMITTED_LOCKS that matched at least one lock in this run, so that an entry left behind
+# after its lock was removed can be reported (see report_unused_permitted_locks).
+_USED_PERMITTED_LOCKS: set = set()
+
+_FUNCTION_DEFINITION_RE = re.compile(r'^[A-Za-z_][\w:<>,\s\*&]*?\b(\w+::~?\w+)\s*\(')
+
+
+def _is_venue_code(path: Path) -> bool:
+    text = path.as_posix()
+    return not any(part in text for part in _VENUE_CODE_EXEMPT_DIRS)
+
+
+def _relative_to_project(path: Path) -> str:
+    text = path.resolve().as_posix()
+    root = Path(__file__).resolve().parent.parent.as_posix() + '/'
+    return text[len(root):] if text.startswith(root) else path.as_posix()
+
+
+def _valgrind_only_lines(lines: list[str]) -> set:
+    """Line indices compiled only when USING_VALGRIND is defined: the Valgrind and ThreadSanitizer
+    builds, which replace the lock-free structures with simpler locked ones."""
+    result: set = set()
+    stack: list[str] = []  # one entry per open #if: 'valgrind', 'not_valgrind' or 'other'
+    for i, line in enumerate(lines):
+        directive = line.strip()
+        if directive.startswith('#ifdef USING_VALGRIND') or directive.startswith('#if defined(USING_VALGRIND)'):
+            stack.append('valgrind')
+            continue
+        if directive.startswith('#if'):
+            stack.append('other')
+            continue
+        if directive.startswith('#else') and stack:
+            if stack[-1] == 'valgrind':
+                stack[-1] = 'not_valgrind'
+            continue
+        if directive.startswith('#endif') and stack:
+            stack.pop()
+            continue
+        if 'valgrind' in stack:
+            result.add(i)
+    return result
+
+
+def check_locks(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    """Flag a lock in venue code that _PERMITTED_LOCKS does not list (principle F2)."""
+    if not _is_venue_code(path):
+        return []
+    relative = _relative_to_project(path)
+    entries = [(where, why) for entry_path, where, why in _PERMITTED_LOCKS if entry_path == relative]
+    valgrind_only = _valgrind_only_lines(lines)
+    violations: list[Violation] = []
+    function = None
+    for i, line in enumerate(stripped):
+        definition = _FUNCTION_DEFINITION_RE.match(line)
+        if definition and path.suffix == '.cpp':
+            function = definition.group(1)
+        if not _LOCK_RE.search(line) or i in valgrind_only:
+            continue
+        permitted = False
+        for where, _why in entries:
+            if where == '*':
+                permitted = True
+            elif path.suffix == '.cpp' and '::' in where:
+                permitted = function == where
+            else:
+                permitted = re.search(r'\b' + re.escape(where) + r'\b', line) is not None
+            if permitted:
+                _USED_PERMITTED_LOCKS.add((relative, where))
+                break
+        if not permitted:
+            place = f" in {function}" if path.suffix == '.cpp' and function else ''
+            violations.append(Violation(path, i + 1,
+                f"a lock{place} that is not in _PERMITTED_LOCKS in scripts/check_standards.py. Principle F2: an "
+                "order-handling thread never takes a lock. If this lock is taken only at start-up or shutdown, only "
+                "on a thread that handles no orders, or only on an error path, add it to the table with that reason; "
+                "otherwise do not add the lock"))
+    return violations
+
+
+def report_unused_permitted_locks() -> list[str]:
+    """Entries of _PERMITTED_LOCKS that matched no lock anywhere. Run only on the whole tree: an entry whose lock
+    has been removed must be deleted, so that the table never lists a breach that no longer exists."""
+    return [f"scripts/check_standards.py: _PERMITTED_LOCKS lists {where} in {entry_path} ({why}), and no lock "
+            "there matches it any more; delete the entry"
+            for entry_path, where, why in _PERMITTED_LOCKS if (entry_path, where) not in _USED_PERMITTED_LOCKS]
+
+
+_RAW_THREAD_RE = re.compile(r'\bstd::thread\b(?!\s*::)')
+
+
+def check_raw_thread(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    """Flag a raw std::thread in venue code (principle F8): only ThreadWithJoinTimeout can be joined with a
+    timeout at shutdown. Threads that third-party libraries create for themselves are not affected."""
+    if not _is_venue_code(path):
+        return []
+    violations: list[Violation] = []
+    for i, line in enumerate(stripped):
+        if _RAW_THREAD_RE.search(line):
+            violations.append(Violation(path, i + 1,
+                "a raw std::thread in venue code; create threads through ThreadWithJoinTimeout, which can be joined "
+                "with a timeout at shutdown (principle F8)"))
+    return violations
+
+
 _CHECKS = [
     check_defines,
     check_screaming_snake_case,
@@ -1094,6 +1290,8 @@ _CHECKS = [
     check_printf_family,
     check_namespace_matches_directory,
     check_doxygen_blank_line,
+    check_locks,
+    check_raw_thread,
 ]
 
 
@@ -1170,6 +1368,11 @@ def main() -> int:
             for violation in check(path, lines, stripped):
                 print(violation)
                 total += 1
+
+    if not args.paths:
+        for message in report_unused_permitted_locks():
+            print(message)
+            total += 1
 
     if total > 0:
         print(f"\n{total} violation(s) found.")
