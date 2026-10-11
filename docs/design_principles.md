@@ -125,8 +125,11 @@ timer and every cancel destroys one, and nothing stops that from happening on th
 are to be created during initialisation and only started and stopped afterwards, which leaves the lock
 nothing to protect. Recorded as [BUG-0128](bug_list.md#bug_0128).
 
-`Reactor::thread_registry_mutex_` is taken in the reactor's once-a-second check of its threads.
-Whether it is allowed is open question 1 below.
+`Reactor::thread_registry_mutex_` is taken by the reactor thread in its once-a-second checks for
+threads that have exited or are stuck in a handler. It is not accepted as an exception either. The
+detection is kept; the lock is not needed for it, because the tables it guards change only at start-up
+and shutdown. Recorded as [BUG-0129](bug_list.md#bug_0129), which also makes the two handler times the
+check reads atomic.
 
 ### F3. The reactor thread runs only framework code
 
@@ -467,12 +470,6 @@ principle, or left out.
 These need Andrew's decision before this page is agreed. They are separate questions, not
 alternatives.
 
-1. **The reactor's thread registry lock.** `Reactor::thread_registry_mutex_` is taken during the day
-   once a second by the reactor thread alone, in its checks for threads that have exited or are stuck,
-   so it is never contended. `route_message` also takes it, but only for a message sent straight from
-   one application thread to another through `ApplicationThread::post_message`, which no application
-   does. The tables it guards change only at start-up and shutdown. Should F2 allow it, or should it be
-   dropped from `route_message` and the once-a-second checks and kept for start-up and shutdown only?
 2. **Creating a log segment on the writing thread (F4).** When the helper is late, the thread writing
    the log creates the next segment itself, which waits for the disk. The alternative is for that
    thread to wait for the helper, which is also a wait. Should this stay as the one accepted exception,

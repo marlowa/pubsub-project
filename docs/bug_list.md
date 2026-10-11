@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 128 |
-| Open | 45 (29 defects, 16 tasks) |
+| Bugs recorded | 129 |
+| Open | 46 (30 defects, 16 tasks) |
 | Closed | 83 |
-| Next id | BUG-0129 |
+| Next id | BUG-0130 |
 
 ## Open bugs by severity
 
-12 high, 28 medium, 5 low.
+12 high, 29 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -53,6 +53,7 @@
 | [BUG-0126](#bug_0126) | medium | defect | The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
+| [BUG-0129](#bug_0129) | medium | defect | The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -154,6 +155,56 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0129: The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation {#bug_0129}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principle F2 (no locks on fast paths) in `docs/design_principles.md`, and asking what `Reactor::thread_registry_mutex_` protects during the trading day |
+| Impact | The reactor thread takes a mutex once a second that protects nothing during the day, which breaks F2 for no benefit. Separately, two values written by each application thread and read by the reactor thread are plain members with no synchronisation: a data race, which is undefined behaviour in C++ and would be reported by ThreadSanitizer |
+
+**How stuck threads are detected.** The detection itself is sound and is to be kept. Before calling an
+event handler, an application thread records the time in `time_event_started_`
+(`ApplicationThread.cpp`), and when the handler returns it records the time in `time_event_finished_`.
+Once a second, `Reactor::check_for_stuck_threads` compares the two for every thread. If a handler is
+still running and has run longer than `itc_maximum_inactivity_interval_`, or the last one took longer
+than that, the reactor shuts down and says which thread it was. `Reactor::check_for_exited_threads`
+looks for a thread that has started to shut down. One thread writes the times and another only reads
+them, which is the arrangement F1 allows.
+
+**Part 1: the lock.** Both checks take `thread_registry_mutex_`, only so that they can walk the table
+`threads_`. `Reactor::route_message` takes it for a second lookup in `fast_path_threads_` when a message
+comes from another application thread. The tables it guards are filled when threads are registered,
+before the reactor runs, and emptied in `finalize_threads_after_shutdown`, after its event loop ends;
+nothing changes them during the day, and the application threads never take the lock. `route_message`
+already reads `fast_path_threads_` without the lock a few lines earlier. `get_thread_name_from_id`
+takes the lock and has no callers.
+
+**Part 2: the handler times.** `time_event_started_` and `time_event_finished_` are plain
+`HighResolutionClock::time_point` members, written by the application thread and read by the reactor
+thread with nothing to synchronise them. It works on x86-64 because an aligned 8-byte store cannot be
+seen half-written, but the compiler may assume no other thread reads them, and the check reads each one
+twice, so it can see two different values within one check.
+
+**Part 3: logging.** While a handler is still running but within the limit, the check logs at Info
+level every second. It should be Debug.
+
+**What is wanted.**
+
+1. Take the lock out of `check_for_exited_threads`, `check_for_stuck_threads` and the second lookup in
+   `route_message`, and keep it only where the tables are changed, at start-up and shutdown. Delete
+   `get_thread_name_from_id`.
+2. Hold each time as a `std::atomic<int64_t>` count of nanoseconds, stored by the application thread
+   with release ordering and loaded by the reactor with acquire ordering, which on x86-64 are ordinary
+   loads and stores. Read each value once per check.
+3. Log the "not finished yet" line at Debug.
+
+The existing tests for threads that do not return from a handler must pass unchanged.
+
+**Principle.** F2 in `docs/design_principles.md`: this lock is not accepted as an exception.
 
 ### BUG-0128: Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread {#bug_0128}
 
