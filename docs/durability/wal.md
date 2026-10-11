@@ -5,7 +5,7 @@ It is a **primitive**, reused by two otherwise-unrelated subsystems:
 
 - the **sequencer**, where it is the authoritative order log that leader-follower high
   availability is built on (see [WAL and High Availability](../availability/wal_and_ha.md)); and
-- the **topic publisher** (MEP), where it is the retained backlog that pub/sub subscribers
+- the **matching engine publisher**, where it is the retained backlog that pub/sub subscribers
   stream from and replay (see [Pub/Sub](../pubsub/pubsub.md)).
 
 This document describes the WAL as a data structure — its format, its guarantees, and the
@@ -24,8 +24,11 @@ allowed to be the source of truth for anything the WAL already records.
 Two consequences follow, and they shape the whole design:
 
 1. **Reading is trivial and total.** Recovery, replication, and pub/sub replay are all the
-   same operation: read records from sequence number *N* onward. There is no separate
-   "catch-up" path to get subtly wrong.
+   same operation at bottom: read records from sequence number *N* onward. The venue does not
+   yet have one path for it: a follower's repair, the matching engine's catch-up and the
+   publishers' subscriptions each have code of their own, all run on the sequencer's thread
+   ([BUG-0133](../bug_list.md#bug_0133)); one way of following the log is part of the design in
+   [ha_library_boundary.md](../availability/ha_library_boundary.md), section 4.
 2. **Appending is the only privileged act.** Whoever may append is a policy decision that
    lives *outside* the log (leadership, for the sequencer; leadership again, for the
    publisher). The log itself does not know or care who the writer is — it only guarantees
@@ -35,22 +38,23 @@ Two consequences follow, and they shape the whole design:
 
 ## On-disk format
 
-Each WAL entry is framed as:
+Each WAL entry is a 24-byte header, the payload, and a checksum (`WalWriter.cpp`):
 
 ```
-[ magic | length | seq_no | payload | checksum ]
+[ magic : 4 | length : 4 | seq_no : 8 | reserved : 8 | payload | checksum : 4 ]
 ```
 
-- **magic** — a fixed marker that begins every entry; lets a reader recognise a record
-  boundary and detect where a torn write ends.
+- **magic** — a fixed marker (`0xFEEDFACE`) that begins every entry; lets a reader recognise a
+  record boundary and detect where a torn write ends.
 - **length** — the payload byte count, so a reader can find the checksum and the next entry
   without parsing the payload.
-- **seq_no** — the record's sequence number, assigned by the single writer. Monotonic and
-  gap-free within a WAL.
+- **seq_no** — the record's sequence number, assigned by the writer. Monotonic and gap-free
+  within a WAL.
+- **reserved** — eight bytes, always zero.
 - **payload** — opaque bytes. The WAL does not interpret them; what goes in the payload is
   the writer's convention (see *Payload conventions* below).
-- **checksum** — covers the entry. A reader that fails the checksum treats this entry, and
-  everything after it, as *never having happened*.
+- **checksum** — a CRC32 covering the entry. A reader that fails the checksum treats this
+  entry, and everything after it, as *never having happened*.
 
 ### Replay is scan-from-zero, stop-on-damage
 
@@ -69,7 +73,7 @@ This makes the failure modes clean and symmetrical:
 ### Segmentation
 
 A WAL is not one growing file but a sequence of fixed-size segments (`wal_000001.log`,
-`wal_000002.log`, …). Each segment is independently checksummable and archivable.
+`wal_000002.log`, …). Each segment can be archived on its own.
 Segmentation:
 
 - **localises corruption** to a single segment,
@@ -81,22 +85,28 @@ Segmentation:
 
 ## The writer
 
-The WAL is **single-writer**. Exactly one component appends to a given WAL at a time, so no
-locking is needed on the append path and `seq_no` is trivially monotonic and gap-free. Who
-that writer *is* can change (a follower is promoted; a publisher gains leadership), but at
-any instant there is one, and the log never has two.
+The WAL is **single-writer**. Exactly one thread appends to a given WAL, so no locking is
+needed on the append path and `seq_no` is trivially monotonic and gap-free. Who that writer
+*is* can change (a follower is promoted; a publisher gains leadership), but at any instant
+there is one. The one place this does not hold today is a following sequencer, where the
+reactor thread and the sequencer thread both write the replicated records, kept apart by a
+lock: the known breach [BUG-0124](../bug_list.md#bug_0124), which builds with thread checks
+count (`WalWriter::second_writer_appends`).
 
-**`seq_no` continues across a change of writer; it does not restart.** A promoted follower
-recovers `next_sequence_number` from its own WAL and raises it to the peer's if the peer is
-ahead, so the sequence spans the failover unbroken. This is what makes `seq_no` alone the
-total order over the log's whole life, and it is why the leader epoch is *not* stored in the
-record: epoch fences who may append (see [wal_and_ha.md](../availability/wal_and_ha.md)), but it is not part
-of the order key. A record is located by `seq_no` and nothing else. Restarting the numbering
-on promotion — or ordering by `(epoch, seq_no)` — would both break this.
+**`seq_no` continues across a change of writer; it does not restart.** A follower moves its
+counter past every record it writes, and a sequencer that takes the lead numbers from the
+highest record it holds plus one, so the sequence spans the failover unbroken. This is what
+makes `seq_no` alone the total order over the log's whole life. The leader epoch is not part
+of the WAL frame and not part of the order key: the sequencer carries it inside its record's
+payload (`WalRecord.leader_epoch`), where it is used only to repair a rejoining follower's log
+([follower_log_repair.md](../availability/follower_log_repair.md)). A record is located by
+`seq_no` and nothing else. Restarting the numbering on promotion, or ordering by
+`(epoch, seq_no)`, would both break this.
 
 **No `fsync` per record.** Forcing each append to physical disk would cost tens to hundreds
-of microseconds and is not how durability is achieved here. Disk flushing is out-of-band
-(segment rotation, snapshotting, a periodic flusher). Where stronger durability is required
+of microseconds and is not how durability is achieved here. The log is written into
+memory-mapped segments, and the operating system writes them back to disk in the background;
+nothing in the venue syncs them while it runs. Where stronger durability is required
 it comes from *replication to a second machine*, not from `fsync` on one — a WAL that exists
 on two disks is safer than one `fsync`'d to a single disk that can still fail as a unit. The
 cross-machine durability protocol is a sequencer-HA concern; see
@@ -110,7 +120,8 @@ A reader does not consume the WAL destructively; it holds a **cursor** — a pos
 advances it. This is the single mechanism behind recovery, replication, and pub/sub replay.
 
 - A cursor is opened at a position and reads the next record on demand
-  (`read_next(record_id, data, size)`), yielding the sequence number and the payload bytes.
+  (`WalCursor::read_next(record_id, payload, size)`), yielding the sequence number and the
+  payload bytes.
 - Reaching the end simply means *caught up to the current head*. A cursor can be re-opened at
   its last position to pick up records appended since — so "wait for more" and "replay from
   the past" are the same code path, distinguished only by how far behind the head the cursor
@@ -125,24 +136,23 @@ many subscribers at different positions is just many cursors over one log. See
 
 ### Retention and truncation
 
-The WAL is not kept forever. A **safe floor** is the lowest sequence number any reader still
-needs; records fully behind it may be reclaimed by deleting the segments that hold them. The
-two subsystems compute that floor differently:
+**Nothing reclaims the WAL while the venue runs.** `Wal::truncate_below` deletes the segments
+wholly below a **safe floor**, the lowest sequence number any reader still needs, but nothing
+in the venue calls it. The snapshot both the sequencer and the publisher take
+(`Wal::take_snapshot`) records where the log has reached and deletes nothing. Every trading day
+starts with an empty log, so a log holds one day at most (principle V12); whether it may be
+reclaimed during the day waits on a decision about how long execution reports must remain
+available (see [wal_and_ha.md](../availability/wal_and_ha.md)).
 
-- the **sequencer** anchors truncation to a validated snapshot (and never deletes history a
-  follower still needs) — see [wal_and_ha.md](../availability/wal_and_ha.md);
-- the **publisher** anchors it to the slowest subscriber's acknowledged cursor, bounded by a
-  per-topic retention window — see [Pub/Sub](../pubsub/pubsub.md).
-
-The invariant both obey: **never delete history that a legitimate reader has not yet passed.**
+The rule any reclaiming must obey: **never delete history that a legitimate reader has not yet
+passed.**
 
 ---
 
 ## Payload conventions
 
-The WAL stores opaque payloads; the bytes are the writer's business. Each writer therefore
-defines a small header at the front of the payload for its own needs. The topic publisher,
-for example, prefixes every record payload with:
+The WAL frame carries opaque payloads. `Wal::append`, which both the sequencer and the
+matching engine publisher use, puts a small header at the front of every record's payload:
 
 ```
 [ wall_time_ns : int64 ][ pdu_id : int16 ][ pdu payload... ]
@@ -151,8 +161,8 @@ for example, prefixes every record payload with:
 so a subscriber's page can carry the record's publish timestamp and its message type without
 a separate catalog lookup. The DSL-encoded PDU follows. A reader that only wants to skip a
 record needs nothing but the WAL frame's `length`; a reader that wants to *route* it reads
-this header. The sequencer uses its own payload layout for order records. The WAL frame
-(magic/length/seq_no/checksum) is common to both; the payload interior is not.
+this header. For the sequencer, the PDU is the `WalRecord` envelope around an order, a cancel
+or an execution report.
 
 ### `wall_time_ns` is data, never an ordering key
 
@@ -176,6 +186,6 @@ hours stale.
 
 - [WAL and High Availability](../availability/wal_and_ha.md) — the sequencer's use of the WAL: two-tier
   commit, replication, snapshots, leader election, and failover.
-- [Pub/Sub](../pubsub/pubsub.md) — the topic publisher's use of the WAL as a fan-out backlog.
+- [Pub/Sub](../pubsub/pubsub.md) — the matching engine publisher's use of the WAL as a fan-out backlog.
 - [Sequencer](../venue/sequencer_app.md) — the sequencer application.
 - [Serialisation DSL](../framework/serialisation_dsl.md) — the encoding used for record payloads.

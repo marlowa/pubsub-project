@@ -72,6 +72,8 @@ availability: `matching_engine_presence.md`, `order_acceptance.md`, `process_dea
 `majority_leases.md`, `follower_log_repair.md`,
 `a_follower_behind_does_not_lead.md`, `commands_during_a_change_of_leader.md`, `README.md`, `wal_and_ha.md`, `change_of_sequencer_leader.md`, `tla/findings.md`
 
+durability: `wal.md`
+
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
 `socket_comms.md`, `summary.md`, `threading.md`, `topology.md`
@@ -92,7 +94,7 @@ availability: `design_notes.md` (see question 4)
 (`ha_in_the_library.md` and `ha_library_boundary.md` were written on 11 October 2026 against the
 code as it then stood)
 
-durability: `README.md`, `open_order_checkpoint.md`, `replay.md`, `wal.md`
+durability: `README.md`, `open_order_checkpoint.md`, `replay.md`
 
 pubsub: `README.md`, `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
 `oar_bus_deduplication.md`, `oar_external_stream.md`, `pubsub.md`
@@ -129,6 +131,12 @@ so they are not corrected to describe the current code.
 ## Problems found in the code during the audit
 
 Reported to Andrew, and not changed by the audit.
+
+- **`Wal::append` allocates from the heap for a record over 512 bytes** (`libraries/pubsub_itc_fw/src/Wal.cpp`):
+  it builds the record's payload in a 512-byte buffer on the stack, and in a `std::vector` otherwise. On
+  the sequencer that is the thread that sequences orders, so a large record (an execution report with
+  repeating groups, for example) breaks principle F5. Found auditing `docs/durability/wal.md`,
+  11 October 2026.
 
 - `applications/fix_order_gateway/FixErEncoder.hpp`: an execution report larger than 64 KiB
   (`max_execution_report_buffer_size`) is logged at Error and not sent. The rules forbid a maximum
