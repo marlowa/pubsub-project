@@ -17,8 +17,12 @@ The fastest path from source to a running sandbox is the convenience wrapper, wh
 
 ```bash
 ./scripts/devsetup.sh                        # first time (creates DB)
-./scripts/devsetup.sh --skip-create-db       # subsequent runs (DB already exists)
+./scripts/devsetup.sh --skip-create-db       # subsequent runs: DB exists, credentials exported again
+./scripts/devsetup.sh --skip-db              # skip the database step entirely, credentials included
 ```
+
+On a machine where creating the database would stop to ask for the `postgres` password, use
+`--skip-db` once the database exists.
 
 Once setup completes, start the stack:
 
@@ -49,7 +53,7 @@ git clang-format --staged && git add -u
 ./scripts/build.sh
 ```
 
-Builds both the C++ components and the Java admin service, runs all tests, and stages the result into `build/installed/`. This staging directory is what `release.py` reads from — it is not the runtime location.
+Builds both the C++ components and the Java admin service, runs all tests, and stages the result into `installed/` at the project root (`installed-rhel8/` on Rocky or RHEL 8, and a directory of its own for each instrumented build; see [building](building.md)). This staging directory is what `release.py` reads from. In the developer sandbox the deployed system also runs from `installed/`, because `dev.toml` sets `paths.install_dir` to it.
 
 Unit tests and integration tests run automatically. The build script reports signal-based failures (SIGABRT, SIGSEGV, etc.) by name.
 
@@ -130,7 +134,7 @@ The container entrypoint initialises the PostgreSQL cluster (first run only) and
 ./scripts/build-release-deploy.sh --no-java --no-pylint --sudo-postgres
 ```
 
-`--sudo-postgres` causes `create_db.py` to run `psql` as the `postgres` Unix user, which is required for peer authentication. `--no-java` is needed because the image does not include Java or Maven.
+`--sudo-postgres` causes `create_db.py` to run `psql` as the `postgres` Unix user, which is required for peer authentication. `--no-java` skips the Java build, which the image can do (it installs Java 17 and Maven) but which this step does not need.
 
 ### Step 6 — Subsequent runs
 
@@ -161,7 +165,7 @@ Then inside the container:
 
 - **Pylint:** `--no-pylint` is recommended because the pylint version on Rocky 8 may differ from the development machine and produce false positives.
 - **Ninja vs Make:** `build.sh` respects the `CMAKE_GENERATOR` environment variable. Add `-e CMAKE_GENERATOR=Ninja` to the `docker run` command if ninja is installed in the container.
-- **Java builds:** `admin-service` and `fix-test-client` cannot be built inside the container as supplied. To add Java support, extend the Dockerfile with `java-11-openjdk-devel` and `maven` packages.
+- **Java builds:** the image installs Java 17 and Maven, so `admin-service` and `fix-test-client` can be built inside it by leaving out `--no-java`.
 
 ## Packaging (`release.py`)
 
@@ -171,7 +175,7 @@ Assembles a versioned deployment artefact from the build staging area:
 python3 scripts/release.py
 ```
 
-Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `build/installed/`. Outputs `build/release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, and a `release.json` manifest.
+Reads the version from `project(... VERSION x.y.z ...)` in `CMakeLists.txt` and the git short hash from `git rev-parse`. Reads binaries and the admin-service JAR from `installed/` (`installed-rhel8/` on Rocky or RHEL 8). Outputs `release/pubsub-<version>-<hash>.tar.gz` containing `bin/`, `lib/`, `etc/` (config templates with unexpanded `${placeholder}` values), `db/`, `environments/`, `devenv.py`, `deploy.py`, and a `release.json` manifest.
 
 A build for a platform other than the development host appends its tag, giving
 `pubsub-<version>-<hash>-<mode>-rocky8.tar.gz`. A release tree is not portable between the two —
@@ -179,7 +183,7 @@ a gcc-8.5 build links against an older glibc and names its own third-party tree 
 and the release directory is shared with the Rocky container, so both artefacts land side by
 side and the name is the only thing telling them apart.
 
-Options: `--install-dir` (staging dir, default: `build/installed`), `--env`, `--version`, `--output-dir`, `--no-git-hash`.
+Options: `--install-dir` (staging dir, default: `installed`, or `installed-rhel8` on Rocky or RHEL 8), `--env`, `--version`, `--output-dir` (default: `release`), `--no-git-hash`, `--mode` (`release` or `debug`, recorded in the artefact's name) and `--sanitizer` (`none`, `asan`, `tsan` or `valgrind`, likewise).
 
 ## Deployment (`deploy.py`)
 
@@ -241,7 +245,8 @@ python3 scripts/devenv.py restart sequencer
 python3 scripts/devenv.py restart               # restarts everything
 ```
 
-**Skipping HA components** (run without arbiters, witness, and secondary instances):
+**Skipping HA components** (run without arbiters, witness, and secondary instances), which it
+refuses unless `[ha] enabled` is already false in the environment file:
 
 ```bash
 python3 scripts/devenv.py --no-ha start
@@ -258,8 +263,14 @@ python3 scripts/devenv.py --env environments/test-1.toml start
 | Flag | Default | Effect |
 |---|---|---|
 | `--env PATH` | `environments/dev.toml` | Environment TOML to use |
-| `--no-ha` | off | Skip components with `ha_only = true` |
+| `--no-ha` | off | Skip components with `ha_only = true`; refused unless `[ha] enabled` is false |
 | `--delay SECONDS` | `1.0` | Pause between component starts |
+| `--debug` | off | Set every C++ component's application log level to debug before starting |
+| `--supervised` | off | Start each component under `scripts/launch.py`, which restarts it if it dies ([process death](../availability/process_death.md)) |
+| `--fresh-book` | off | Delete the matching engines' open-order regions first, so the venue starts holding no orders; the write-ahead log is left alone |
+| `--fresh-wal` | off | Delete the write-ahead logs first; never implied by `--fresh-book` |
+| `--no-prometheus` | off | Skip components marked `metrics_only = true`, the Prometheus scraper |
+| `--db-port PORT` | from `[db]` | The PostgreSQL port, as for `deploy.py` |
 
 ### Optional: netfilter on loopback
 
