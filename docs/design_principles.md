@@ -133,6 +133,8 @@ check reads atomic.
 
 ### F3. The reactor thread runs only framework code
 
+**Agreed** with Andrew, 11 October 2026.
+
 **The principle.** A component's own logic runs on its application thread. The reactor thread reads and
 writes sockets, runs timers, and delivers events to application threads' queues. It does not run code
 that belongs to a component.
@@ -148,12 +150,26 @@ into events on an application thread's queue.
 
 **Today: broken in one place.** `ApplicationThread::install_inline_pdu_handler` lets a component run
 its own handler on the reactor thread, inside the parser. Only the sequencer uses it, for the follower
-writing the leader's records (F1).
+writing the leader's records (F1). When the sequencer no longer uses it, `install_inline_pdu_handler`
+is removed from the framework, so that the framework no longer offers a way round this principle.
 
 ### F4. No order-handling thread waits for the disk
 
+**Agreed** with Andrew, 11 October 2026, except for open question 2, which is still being discussed.
+
 **The principle.** No order-handling thread syncs a file to disk, or does anything else that can wait
 for the disk, during the trading day.
+
+**The exception: a change of role.** While an instance is changing role it is not handling orders,
+and two things it does then must wait for the disk:
+
+- **Recording a new epoch.** When a sequencer or a matching engine moves to a new generation,
+  `EpochStore::store` writes the epoch to a file and syncs it on the application thread before the
+  new generation is acted on. The wait is what makes the change safe: without it, a process that
+  crashed before the epoch reached the disk could restart believing it still owned a generation
+  that has already been used.
+- **Cutting back a follower's log.** When a follower sequencer repairs its log to match its leader's,
+  `Wal::truncate_after` zeroes the rest of the segment and syncs it on the sequencer's thread.
 
 **Why.** A sync can take hundreds of milliseconds (BUG-0070, BUG-0107), and the thread can do nothing
 else meanwhile.
