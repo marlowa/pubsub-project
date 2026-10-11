@@ -322,6 +322,8 @@ at every moment, not only during a change of leader.
 
 ### V1. One order of events
 
+**Agreed** with Andrew, 11 October 2026.
+
 **The principle.** The leading sequencer alone decides the order in which the matching engine sees
 commands. Every component that needs the order of events takes it from the sequencer.
 
@@ -329,25 +331,53 @@ commands. Every component that needs the order of events takes it from the seque
 single history.
 
 **Where it is meant to hold.** In the sequencer, which numbers every command it logs, and in the
-matching engine, which acts on commands in the sequencer's order.
+matching engine, which acts on commands in the sequencer's order. The matching engine connects only
+to the two sequencers, its peer engine and the two arbiters; the peer connection carries the leading
+engine's book to the follower, and that book was built in the sequencer's order.
 
-**What checks it.** Not yet checked.
+**What checks it.** Nothing directly.
 
-**Today: not yet checked.**
+**Today: holds.** The matching engine changes nothing in its book on its own initiative: its one
+recurring timer records only that it is alive. Two kinds of event are to travel through the
+sequencer's log when they are built, and are not built yet: changes of trading phase and halts
+([trading_phases.md](venue/trading_phases.md); the venue cannot declare a halt at all, which is
+[BUG-0065](bug_list.md#bug_0065)), and events driven by the time of day, such as good-till-date
+expiry, which the engine records and nothing acts on.
 
 ### V2. The log is the record
 
-**The principle.** The leading sequencer's write-ahead log holds every command the venue accepted.
-Everything else, including the matching engine's book, can be rebuilt from it.
+**Agreed** with Andrew, 11 October 2026.
+
+**The principle.** The leading sequencer's log holds every command the venue accepted during the
+trading day, in the order V1 gives them. It is the venue's authority: from it, together with the
+reference data loaded at start of day, everything else the venue holds can be rebuilt, the matching
+engine's book included. Other durable stores, such as the matching engine's open-order region, are
+copies kept so that recovery is fast; they are never a second record.
 
 **Why.** It gives the venue one authority to recover from, whatever else is lost.
 
+**Scope.** The log holds one trading day: every day starts with an empty log, and the logs are
+archived after end of day. Every order is a day order, and anything still open at the end of the
+trading day is to be cancelled, and its member told, before end of day. Orders that outlive the
+trading day, known as long orders, are deliberately not implemented: they are business functionality
+that would bring out no new requirement of the library. If they ever are implemented, they are
+restored at the start of each day, from a database export as the reference data is, and re-entered as
+commands the sequencer logs, so that each day's log still holds everything that day's venue holds.
+
 **Where it is meant to hold.** In the sequencer's log ([wal.md](durability/wal.md)) and in the matching
-engine's catch-up from it.
+engine's catch-up from it. A restarted matching engine does not replay the whole day, which takes
+about 40 seconds at 40 million orders a day: it reads its open orders back from its open-order region
+([open_order_checkpoint.md](durability/open_order_checkpoint.md)) and takes only the tail of the log
+beyond the position the region records. If the region cannot be used, it establishes from the
+sequencer's record what was open, cancels each order, tells the members and halts.
 
-**What checks it.** Not yet checked.
+**What checks it.** Scenarios 50, 51 and 52 of the high availability tests cover the three recovery
+paths of the open-order region.
 
-**Today: not yet checked.**
+**Today: holds within the day, with one gap at the end of it.** The log keeps the whole day: the
+snapshot deletes nothing, and nothing calls `Wal::truncate_below`. But nothing cancels the orders
+still open at the end of the trading day; they disappear when the processes are stopped and the logs
+archived, and their members are never told. Recorded as [BUG-0132](bug_list.md#bug_0132).
 
 ### V3. At most one instance of a pair acts as leader at any moment
 

@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 131 |
-| Open | 48 (32 defects, 16 tasks) |
+| Bugs recorded | 132 |
+| Open | 49 (32 defects, 17 tasks) |
 | Closed | 83 |
-| Next id | BUG-0132 |
+| Next id | BUG-0133 |
 
 ## Open bugs by severity
 
-12 high, 31 medium, 5 low.
+12 high, 32 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -56,6 +56,7 @@
 | [BUG-0129](#bug_0129) | medium | defect | The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation |
 | [BUG-0130](#bug_0130) | medium | defect | The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait |
 | [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
+| [BUG-0132](#bug_0132) | medium | task | Orders still open at the end of the trading day are never cancelled, and their members are never told |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -157,6 +158,33 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0132: Orders still open at the end of the trading day are never cancelled, and their members are never told {#bug_0132}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Reviewing principle V2 (the log is the record) in `docs/design_principles.md`, and checking its statement that every order is a day order |
+| Impact | An order still resting when trading ends simply disappears when the processes are stopped and the logs archived. The member is never sent a cancel, so its own record still shows the order as open |
+
+**What is meant to happen.** Every trading day starts fresh, with empty logs, and every order is a day
+order: orders that outlive the trading day (long orders) are deliberately not implemented. So
+anything still open at the end of the trading day is to be cancelled, with an execution report to its
+member, before end of day, and the cancels are commands the sequencer logs like any other (V1, V2).
+
+**What happens.** Nothing in the applications cancels open orders at the end of the day. The trading
+phases that would mark the end of trading (`closed`, then `eod`) are designed in
+`docs/venue/trading_phases.md` and not built, and that document leaves open whether a member may cancel
+a resting order after the close.
+
+**What is wanted.** When trading closes, every open order is cancelled through the sequencer and its
+member told, before end of day begins. This depends on the trading phases being built, and is to be
+designed with them.
+
+**Principle.** V2 in `docs/design_principles.md`.
 
 ### BUG-0131: The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower {#bug_0131}
 
