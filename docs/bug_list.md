@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 133 |
-| Open | 50 (33 defects, 17 tasks) |
+| Bugs recorded | 136 |
+| Open | 53 (35 defects, 18 tasks) |
 | Closed | 83 |
-| Next id | BUG-0134 |
+| Next id | BUG-0137 |
 
 ## Open bugs by severity
 
-12 high, 33 medium, 5 low.
+12 high, 36 medium, 5 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -58,6 +58,9 @@
 | [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
 | [BUG-0132](#bug_0132) | medium | task | Orders still open at the end of the trading day are never cancelled, and their members are never told |
 | [BUG-0133](#bug_0133) | medium | defect | A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders |
+| [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
+| [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
+| [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -159,6 +162,84 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0136: Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known {#bug_0136}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Discussing with Andrew what the venue should do when its follower sequencer has been away for a long time, while reviewing principles V10 and V11 in `docs/design_principles.md` |
+| Impact | While the leader trades alone, every command since the follower left exists only on the leader's machine. If that machine is lost for good, those commands are lost from the venue's record, although members have reports for them (V4). If a copy exists elsewhere, it is not known, and nothing could use it |
+
+**The question.** The publishers and the order activity recorder both follow the leading sequencer's
+log. If any of them keeps every record, an hour's trading might exist off the leader's machine after
+all, and could in principle be used to rebuild the record after the machine is lost, instead of an
+operator letting the follower lead and accepting the loss
+(`docs/availability/a_follower_behind_does_not_lead.md`, section 4.4).
+
+**What is wanted.** Establish what each follower of the log keeps, for how long and where: the
+publishers, and the order activity recorder's external stream
+(`docs/pubsub/oar_external_stream.md`, not yet built). Then decide whether recovering from such a copy
+is worth designing, and if so, what it must check before the record it rebuilds can be trusted. An
+investigation, not a change.
+
+### BUG-0135: While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record {#bug_0135}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Discussing with Andrew what the venue should do when its follower sequencer has been away for a long time, while reviewing principles V10 and V11 in `docs/design_principles.md` |
+| Impact | A power failure on the leader's machine while it trades alone loses the records not yet written out to disk, typically up to about the last 30 seconds. The matching engine acted on them and members have reports for them |
+
+**What happens now.** The sequencer's log is written into memory-mapped segment files with no sync to
+disk for each record; a record is safe because it is held on two machines, not because it is on disk
+(`docs/availability/wal_and_ha.md`, "Two levels of commit"). Linux writes dirty pages out in the
+background, by default once they are about 30 seconds old. While both sequencers are running that is
+right. While the leader trades alone (V4), the leader's machine holds the only copy, and nothing
+narrows how much of it is only in memory.
+
+**What is wanted.** While trading alone, the leader has its log synced to disk at a fixed interval, for
+example once a second, by a thread of its own and never on the order path (F4), so that a power failure
+loses at most about that interval. When the follower holds everything again, the syncing stops. The
+interval is configurable. This does not help if the machine is lost for good; only a copy elsewhere
+helps then ([BUG-0136](#bug_0136)).
+
+### BUG-0134: A venue running without a standby says so once, and not at all when no follower is connected {#bug_0134}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| How | Discussing with Andrew what the venue should do when its follower sequencer has been away for a long time, while reviewing principles V10 and V11 in `docs/design_principles.md` |
+| Impact | A venue with no standby looks exactly like a healthy one to its members, by design (V11). The only way a person finds out is from the venue itself, and today it says so once, in one case only. The first thing anyone notices may be the leader's death, when the exposure has already been taken |
+
+**What happens now.** When the follower falls behind, `SequencerThread::start_running_alone` logs one
+Warning and sets the gauge `sequencer_running_alone` to 1; when it catches up, one Info line, and the
+gauge goes back to 0. Nothing is logged in between, however long it lasts. And the gauge is set only in
+that case: from reading the code, when no follower is connected at all (it has died, has not started,
+or the link to it is down), `start_running_alone` is never called, so the gauge stays at 0 although
+the leader is equally alone. The gauge also matters only if Prometheus is running and an alert has
+been set on it, and Prometheus is optional.
+
+**What is wanted.**
+
+1. One condition, "trading without a standby", that covers both situations: no follower connected, and
+   a follower that has fallen behind. The gauge reports it in both.
+2. When it begins, the leader logs at Error, saying why. While it lasts, it logs at Error at a fixed
+   interval, for example every minute, saying how long it has lasted and how many commands now exist
+   only on its machine. When the follower holds everything again, it logs that too, with how long it
+   lasted.
+3. The operations dashboard alerts on the gauge.
+
+**No time limit.** Decided with Andrew, 11 October 2026: the venue does not halt itself after running
+without a standby for some time, because that would turn a loss of resilience into a loss of service
+(V11). Whether to halt is for the operators, with this reporting in front of them.
 
 ### BUG-0133: A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders {#bug_0133}
 
