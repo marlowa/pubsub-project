@@ -91,6 +91,8 @@ top level: `project_status.md`, `README.md`
 
 pubsub: `pubsub.md`
 
+Doxygen pages: `memory_management_design.dox`
+
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
 `socket_comms.md`, `summary.md`, `threading.md`, `topology.md`
@@ -117,7 +119,7 @@ pubsub: `README.md`, `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
 top level of `docs/`: `roadmap.md`
 
 Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_howto.dox`,
-`dsl_design.dox`, `groups.dox`, `memory_management_design.dox`, `raw_socket_design.dox`
+`dsl_design.dox`, `groups.dox`, `raw_socket_design.dox`
 
 The LaTeX book under `docs/book/` (the functional specification, about 4,400 lines in 33 `.tex`
 files): `book.tex`, `glossary.tex`, and the chapters `applications`, `disaster_recovery`,

@@ -6,14 +6,15 @@
 
 A core principle of the framework is that no heap allocation (\c malloc, \c new,
 \c std::vector growth etc.) occurs on the hot path -- the reactor event loop and
-the application thread message processing path. All memory used for message
-transport is pre-allocated at startup from pool and slab allocators. This
-eliminates the latency jitter caused by the general-purpose heap allocator and
-avoids lock contention between threads competing for the heap.
+the application thread message processing path. Memory used for message
+transport comes from pool and slab allocators instead. This eliminates the latency
+jitter caused by the general-purpose heap allocator and avoids lock contention
+between threads competing for the heap. It is principle F5 in
+docs/design_principles.md, which lists where the order path still breaks it.
 
 Two purpose-built allocators provide this guarantee:
 
-- \b ExpandableSlabAllocator -- for variable-sized PDU frames on the reactor thread.
+- \b ExpandableSlabAllocator -- for variable-sized PDU frames.
 - \b ExpandablePoolAllocator -- for fixed-size ITC message queue nodes, shared
   across all threads.
 
@@ -29,26 +30,31 @@ Each slab is a contiguous \c mmap-backed region. Allocations are bump-allocated
 from the current slab with alignment to \c alignof(std::max_align_t). When a slab
 is full, a new slab is chained and allocation continues from it.
 
-Slab IDs are monotonically increasing integers. The allocator returns a
-\c {slab_id, ptr} pair from \c allocate():
+A slab lives in a slot of the allocator's registry, and slots are reused once a slab
+is reclaimed. The allocator returns a \c SlabHandle, naming the slot and its
+generation, together with the pointer:
 
 \code{.cpp}
-auto [slab_id, ptr] = allocator.allocate(payload_size);
+auto [handle, ptr] = allocator.allocate(payload_size);
 \endcode
 
-Both values must be passed back to \c deallocate() to return the memory.
+Both values must be passed back to \c deallocate() to return the memory. A handle
+that outlives its slab no longer matches the slot's generation, and \c deallocate()
+rejects it.
 
 \subsection mmd_slab_threading Threading model
 
-This is a strict two-thread model:
+Each allocator has exactly one allocating thread, and any thread may deallocate:
 
-- \b Allocator thread: the reactor thread only. \c allocate() must never be
-  called from an application thread.
-- \b Deallocator threads: any application thread. \c deallocate() is thread-safe
-  and may be called concurrently from multiple threads.
+- \b Allocating thread: one thread per allocator. For the reactor's inbound
+  allocator that is the reactor thread; each application thread has an outbound
+  allocator of its own, which only it allocates from. In builds with thread checks,
+  a second allocating thread is refused (\c ThreadConfinementCheck).
+- \b Deallocating threads: any thread. \c deallocate() is thread-safe and may be
+  called concurrently from several threads.
 
 Reclamation is demand-driven: at the start of each \c allocate() call, the
-reactor drains a lock-free queue of empty slab IDs and reclaims them. This
+allocating thread drains a lock-free queue of empty slabs and reclaims them. This
 eliminates the GC-starvation failure mode that arises from background reclamation
 threads.
 
@@ -116,7 +122,9 @@ which avoids any dependency on \c libatomic.
 
 Fully thread-safe:
 - \c allocate(): lock-free fast path (Treiber stack CAS on the current pool's
-  free list), mutex-guarded slow path (chain expansion).
+  free list), mutex-guarded slow path (chain expansion, which maps a new pool while
+  holding the mutex; a breach of principle F2 when it happens during the trading
+  day, recorded as BUG-0127).
 - \c deallocate(): lock-free traversal of the pool chain using atomic loads to
   find the owning pool, then atomic Treiber stack push onto that pool's free list.
 
@@ -136,7 +144,7 @@ watermark callbacks on \c LockFreeMessageQueue:
   Signals recovery.
 
 A separate \b pool-exhaustion callback fires when a new \c FixedSizeMemoryPool
-slab must be allocated from the heap. This is a memory-layer event, not a
+must be mapped from the operating system. This is a memory-layer event, not a
 backpressure mechanism -- by the time it fires, the allocation has already
 succeeded. It may be used to log an alert that the allocator has grown beyond
 its pre-allocated capacity.
@@ -146,14 +154,14 @@ its pre-allocated capacity.
 | Property | ExpandableSlabAllocator | ExpandablePoolAllocator |
 |----------|------------------------|------------------------|
 | Allocation size | Variable | Fixed |
-| Allocator thread | Reactor only | Any thread |
+| Allocating thread | One per allocator | Any thread |
 | Deallocator thread | Any thread | Any thread |
-| Thread safety | Two-thread contract | Fully lock-free (Treiber stack) |
+| Thread safety | One allocating thread, any deallocating thread | Lock-free, except chain expansion (a mutex) |
 | Free list | Lock-free MPSC queue | Treiber stack with ABA prevention |
 | Reclamation | Demand-driven on reactor | Immediate on deallocate |
 | Used for | PDU transport | ITC message queues |
 | Backpressure | Buffer-full disconnect | Watermark callbacks |
-| Heap allocation on hot path | No | No |
+| Heap allocation on hot path | No | No; expansion maps a new pool |
 
 \section mmd_raw_socket Raw socket path
 
