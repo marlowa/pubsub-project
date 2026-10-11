@@ -91,7 +91,7 @@ top level: `project_status.md`, `README.md`
 
 pubsub: `pubsub.md`
 
-Doxygen pages: `memory_management_design.dox`, `raw_socket_design.dox`
+Doxygen pages: `memory_management_design.dox`, `raw_socket_design.dox`, `dsl_design.dox` (toolchain section)
 
 framework: `README.md`, `allocators.md`, `application_thread_itc.md`, `configuration_files.md`,
 `cpu_pinning.md`, `cpu_pinning_anti_affinity.md`, `reactor.md`, `serialisation_dsl.md`,
