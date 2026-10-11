@@ -163,6 +163,12 @@ list of failures is the list of work for phases 3 and 4.
 **Finished when:** the checks exist, have been shown to fail on the known breaches, and those breaches
 are listed as the only permitted exceptions, each with the phase that removes it.
 
+> **Phases 3 to 6 are to be revised.** On 11 October 2026 Andrew agreed the direction in
+> [ha_in_the_library.md](availability/ha_in_the_library.md): most of the high availability machinery
+> moves from the applications into the library, as a replicated, sequenced log. Phases 3 and 5 then
+> become moving that machinery out of the sequencer, and phase 6 depends on whether the matching engine
+> is deterministic. They are revised once the design of the boundary is agreed. Phase 2 is unaffected.
+
 ### Phase 3. One writer for the follower's log
 
 **For:** the order path back to its intended design: one thread owns the sequencer's log.
