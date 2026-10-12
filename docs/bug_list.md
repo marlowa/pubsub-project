@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 148 |
-| Open | 63 (44 defects, 19 tasks) |
+| Bugs recorded | 149 |
+| Open | 64 (45 defects, 19 tasks) |
 | Closed | 85 |
-| Next id | BUG-0149 |
+| Next id | BUG-0150 |
 
 ## Open bugs by severity
 
-18 high, 39 medium, 6 low.
+18 high, 39 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -76,6 +76,7 @@
 | [BUG-0104](#bug_0104) | low | defect | A connection whose reads were paused can stay stalled for seconds after they resume |
 | [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
 | [BUG-0145](#bug_0145) | low | defect | Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding |
+| [BUG-0149](#bug_0149) | low | defect | `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment |
 
 ---
 
@@ -172,6 +173,30 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0149: `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment {#bug_0149}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| How | Running every high availability scenario against the Release install after step 2 of phase 3 of the recovery plan |
+| Impact | Scenario 62 fails now and then with a Python traceback instead of a verdict, so a run of every scenario reports a failure that says nothing about the venue |
+
+**What was found.** Scenario 62 restarts the old leading sequencer and waits for it to log that it has
+discarded the records its new leader does not hold. It then reads every file in the old leader's
+write-ahead log (WAL) directory, in `occurrences_in_log` in `scripts/ha_test.py`, to check that those
+records are gone. The sequencer is still running at that moment, and it deletes whole segment files
+when it discards records (`Wal.cpp`, at lines 336 and 343). In one run the harness listed the
+directory, the sequencer then deleted `wal_000040.log`, and reading it failed with
+`FileNotFoundError`. Three further runs of scenario 62 passed.
+
+**What is wanted.** The check reads the WAL in a way that does not fail when a segment disappears
+between listing the directory and reading the file, or it reads the WAL only once the sequencer has
+finished changing it.
+
+**Evidence kept.** The scenario's output and logs are in `tmp/bug0149/scenario-62`.
 
 ### BUG-0148: A bounded resend sometimes returns the wrong orders under the right numbers again, the fault BUG-0053 fixed {#bug_0148}
 
