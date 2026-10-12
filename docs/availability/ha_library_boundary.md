@@ -222,17 +222,42 @@ library's ordinary application thread, the one every component is built on today
 WAL, a pair or a vote, and an application built only on it has none of them. Nothing in this design
 changes that.
 
-**What decides it.** Two things, one in the code and one in the configuration:
+**What decides it: whether the application creates the library's replicated WAL object.** The
+library would offer two new types. The names here are proposals; no code exists yet.
 
-- **In the code: whether the application is written as a state machine.** An application that wants
-  the replicated WAL creates the library's WAL component and gives it what sections 4 and 5 list: a
-  handler for each committed command, and a way to write and read its state together with the position
-  in the WAL it reflects. An application that does none of this does not use the WAL, and its code and
-  configuration are exactly as they would be without this design.
-- **In the configuration: whether it runs as a pair.** An application written as a state machine runs
-  either as a pair, with a follower and voters named in its configuration, or as one instance with
-  neither. Both give it the same interfaces (commands in, committed commands out, a handler and a
-  snapshot), so moving from one instance to a pair changes configuration, not code.
+- `ReplicatedStateMachine`, an interface with three functions an application implements:
+  `apply_committed_command`, which the library calls once for each command after it is held in the WAL
+  on both machines; `save_state`, which writes the application's state together with the position in
+  the WAL that state reflects; and `restore_state`, which reads both back after a restart.
+- `ReplicatedWal`, the object that does everything else in sections 2 to 6: deciding who leads,
+  writing and replicating the WAL, repairing a rejoining follower, catching the application up after a
+  restart, and refusing a command already in the WAL. It is constructed with a reference to the
+  application's `ReplicatedStateMachine` and with the application's configuration.
+
+An application that wants the replicated WAL implements the interface and holds a `ReplicatedWal` as
+a member of its application thread:
+
+```cpp
+class MatchingEngineThread : public ApplicationThread, public ReplicatedStateMachine {
+    void apply_committed_command(const WalRecord& record) override;
+    void save_state(StateWriter& writer) override;
+    void restore_state(StateReader& reader) override;
+
+    ReplicatedWal replicated_wal_;  // constructed with *this and the [replicated_wal] configuration
+};
+```
+
+An application that does not do this, such as the authentication service, never constructs a
+`ReplicatedWal`, so none of its machinery exists in that process: no WAL, no peer connection, no lease,
+no voters. `ApplicationThread` itself gains nothing and knows nothing of any of it. There is no switch
+to turn off, because nothing is there unless the application asks for it.
+
+**What the configuration decides: one instance or a pair.** A `ReplicatedWal` reads a
+`[replicated_wal]` section of the application's configuration, which says where its WAL lives and,
+for a pair, which instance is its peer and where its voters are. With no peer named, it runs as one
+instance: it still writes the WAL and still calls `apply_committed_command` for each command, but it
+replicates nothing and needs no lease. The application's code is the same in both cases, so moving
+from one instance to a pair changes the configuration, not the code.
 
 The client's side (section 7) and the voting service (section 2) are chosen in the same way: an
 application uses them by creating them, and one that does not create them has neither.
