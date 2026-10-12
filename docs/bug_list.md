@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 147 |
-| Open | 62 (43 defects, 19 tasks) |
+| Bugs recorded | 148 |
+| Open | 63 (44 defects, 19 tasks) |
 | Closed | 85 |
-| Next id | BUG-0148 |
+| Next id | BUG-0149 |
 
 ## Open bugs by severity
 
-17 high, 39 medium, 6 low.
+18 high, 39 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -30,6 +30,7 @@
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
 | [BUG-0147](#bug_0147) | high | defect | A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it |
+| [BUG-0148](#bug_0148) | high | defect | A bounded resend sometimes returns the wrong orders under the right numbers again, the fault BUG-0053 fixed |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -171,6 +172,34 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0148: A bounded resend sometimes returns the wrong orders under the right numbers again, the fault BUG-0053 fixed {#bug_0148}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| How | Running every high availability scenario against the Release install, to record which pass before phase 3 of the recovery plan changes anything |
+| Impact | A member that asks for a range of messages out of the middle of its history is sent messages with the right sequence numbers and the wrong contents, and nothing on its side can tell. This is the fault [BUG-0053](#bug_0053) describes |
+
+**What was found.** `ha_test.py` scenario 40 asks for messages 100 to 149 out of a thousand-order
+session, and compares what comes back, by ClOrdID, with what the member was originally sent under
+those numbers. In the Release install it failed in two runs of three. In the first failing run, 50
+messages came back, none outside the range, but 44 of them carried a different order from the one
+originally sent under that number: for example, number 106 was sent as `ord105` and resent as `ord99`,
+and number 107 was sent as `ord106` and resent as `ord100`. The third run failed the same way, and the
+second passed. In the Debug install at the end of phase 2, scenario 40 passed.
+
+**Why it should not happen.** BUG-0053 was fixed on 2026-08-27 by recording which outbound number each
+report went out on, so that a bounded resend returns the reports that occupied the numbers asked for.
+A failure in some runs and not others suggests that the record of outbound numbers is sometimes
+incomplete or out of step with what the member received, for example when reports and the numbers
+they went out on are recorded in a different order from the one in which they were sent. This is not
+established.
+
+**Evidence kept.** The logs of the three runs are in `tmp/bug0148`: `run1-fail`, `run2-pass` and
+`run3-fail`.
 
 ### BUG-0147: A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it {#bug_0147}
 
