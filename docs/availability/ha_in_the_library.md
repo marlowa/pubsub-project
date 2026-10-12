@@ -9,8 +9,8 @@
 
 Most of the machinery that keeps the venue running when a process or a machine fails lives in the
 applications, not in the pubsub library. This page says where it is, why that is a problem, and the
-direction agreed for moving it: the library provides a replicated, sequenced log, and each application
-is written as a deterministic state machine fed by that log. It then lists what is still to be decided.
+direction agreed for moving it: the library provides a replicated, sequenced write-ahead log (WAL), and each application
+is written as a deterministic state machine fed by that WAL. It then lists what is still to be decided.
 
 ## 2. Where the high availability code is now
 
@@ -24,10 +24,10 @@ Measured on 11 October 2026:
 - **The sequencer**, `SequencerThread`, is about 4,800 lines. About a third of its 107 member
   functions are about high availability, judged by their names: peers, followers, leaders, leases,
   epochs, replication, catch-up, repair and running without a follower. Its jobs include replicating its
-  log to the follower, holding commands back from the matching engine until the follower confirms them,
+  WAL to the follower, holding commands back from the matching engine until the follower confirms them,
   trading without a follower, recording that the follower may not take over, repairing a rejoining
-  follower's log, streaming catch-ups to the matching engine and the publishers, and keeping reports for
-  a change of leader. None of these is about sequencing orders; they are about keeping a log replicated.
+  follower's WAL, streaming catch-ups to the matching engine and the publishers, and keeping reports for
+  a change of leader. None of these is about sequencing orders; they are about keeping a WAL replicated.
 - **The matching engine**, about 3,000 lines, has its own catch-up, its own reconciliation, and the
   replication of its book to its follower.
 - **The gateways** keep the commands not yet answered and send them again when the leader changes
@@ -43,7 +43,7 @@ area have been found.
 
 **It is where the design decayed.** The review of the design principles kept finding breaches in the
 same place: three separate mechanisms meeting V7 where one check should; the second writer of the
-follower's log that breaks F1 and F3; the catch-up that reads the log on the thread that sequences
+follower's WAL that breaks F1 and F3; the catch-up that reads the WAL on the thread that sequences
 orders (V10, BUG-0133); and V8's work spread across several of the sequencer's jobs. Each is high
 availability machinery mixed into an application's business code, where each new failure case was met
 by another mechanism.
@@ -64,11 +64,11 @@ today the applications do them. The established way to put them in a library wit
   order, it always reaches the same state and produces the same output. It offers the library a few
   entry points, such as "here is the next command" and "take a snapshot of your state", and knows
   nothing of leaders or followers.
-- **The library provides a replicated, sequenced log.** It elects the leader; replicates the log to the
+- **The library provides a replicated, sequenced WAL.** It elects the leader; replicates the WAL to the
   followers; holds back what a majority has not confirmed; repairs a rejoining follower; brings a
-  restarted instance up to date from a snapshot and the rest of the log; and recognises a command it
+  restarted instance up to date from a snapshot and the rest of the WAL; and recognises a command it
   already holds by its identity.
-- **Every instance, leader or follower, feeds the same log to its own copy of the application.**
+- **Every instance, leader or follower, feeds the same WAL to its own copy of the application.**
   Followers stay in step by doing exactly what the leader does, not by being sent the leader's state.
 
 This is the problem Raft was designed to solve. It is also the shape of Aeron Cluster, an open-source
@@ -81,10 +81,10 @@ of what this library would offer, and is worth reading as a reference before the
 
 | Built in the applications today | What it is in general terms |
 |---|---|
-| Majority leases, epochs, and the statement that a follower may not take over (V3, V4) | Electing a leader, and keeping the log safe while the leader changes |
+| Majority leases, epochs, and the statement that a follower may not take over (V3, V4) | Electing a leader, and keeping the WAL safe while the leader changes |
 | Holding a command back until the follower confirms it (V5) | Acting only on what a majority holds |
-| Repairing a rejoining follower's log (V10) | Log repair, as in Raft and Kafka |
-| Catch-ups for the matching engine and the publishers | Replaying the log from a position |
+| Repairing a rejoining follower's WAL (V10) | Repairing the WAL, which Raft and Kafka call log repair |
+| Catch-ups for the matching engine and the publishers | Replaying the WAL from a position |
 | One check against sequencing a command twice (V7) | Recognising a duplicate by its identity, as Kafka's idempotent producer does |
 | Gateways sending unanswered commands again to a new leader (V6) | A client sending unconfirmed requests again to a new leader |
 
@@ -103,32 +103,32 @@ These are to be settled in the design of the boundary, not here.
    sequenced commands and reach the same book itself, with no book replication. That works only if the
    engine's result depends on nothing but the commands: no reading of the clock, no randomness, no
    dependence on timing. Time is already injected (`WallClock`), and events driven by the time of day
-   are already meant to travel through the log ([roadmap.md](../roadmap.md)). Whether there is a reason
+   are already meant to travel through the WAL ([roadmap.md](../roadmap.md)). Whether there is a reason
    the book is replicated instead has not been established, and must be before anything is decided.
 2. **Which parts are replicated state machines, and which are clients?** The sequencer and the
    matching engine fit the model. The gateways do not: they are the clients that send commands to the
-   replicated log and receive its output, so what the library offers them is the client's side, keeping
+   replicated WAL and receive its output, so what the library offers them is the client's side, keeping
    unconfirmed commands and sending them again to a new leader.
-3. **Where do the voters live?** The arbiters and the witness are voters with no log. Whether the
+3. **Where do the voters live?** The arbiters and the witness are voters with no WAL. Whether the
    library provides them as a ready-made service, or provides the classes they are built from, is to be
    decided.
 4. **How do snapshots fit?** The matching engine's open-order region
    ([open_order_checkpoint.md](../durability/open_order_checkpoint.md)) is already a snapshot kept up to
    date continuously, built on `MappedSlotStore`, which is in the library. The design must say how a
-   snapshot and a position in the log are taken and restored together.
+   snapshot and a position in the WAL are taken and restored together.
 5. **How do timers fit?** A timer whose ringing changes the application's state must ring at the same
-   point in the log on every instance, so it travels through the log. Timers for the process's own
+   point in the WAL on every instance, so it travels through the WAL. Timers for the process's own
    housekeeping do not. This interacts with the timer design in [BUG-0128](../bug_list.md#bug_0128).
 6. **The library must still work without high availability.** Not every use of the library wants a
-   replicated log, so the replicated log is something an application chooses, not something every
+   replicated WAL, so the replicated WAL is something an application chooses, not something every
    application pays for.
 
 ## 7. What this changes in the plan
 
 - **Phase 2**, making the build enforce the framework principles, is unaffected and goes ahead as
   planned.
-- **Phases 3 and 5**, one writer for the follower's log and dividing the sequencer into parts, become
-  moving the replicated log out of the sequencer and into the library. Dividing the sequencer is easier
+- **Phases 3 and 5**, one writer for the follower's WAL and dividing the sequencer into parts, become
+  moving the replicated WAL out of the sequencer and into the library. Dividing the sequencer is easier
   once most of what is in it has left.
 - **Phase 6**, the matching engine, depends on question 1 above.
 - **The lease classes are the first and least risky step.** They are already independent of the

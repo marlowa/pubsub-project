@@ -9,17 +9,20 @@
 
 ## 1. The shape in one paragraph
 
-The library provides a **replicated, sequenced log**: a pair of instances, one leading, that put
+The library provides a **replicated, sequenced write-ahead log (WAL)**: a pair of instances, one leading, that put
 commands in one order, hold them on both machines, and hand them, in that order, to whatever follows
-the log. An application that keeps state is written as a **deterministic state machine** fed by that
-log: given the same commands in the same order it reaches the same state and produces the same output,
-so every instance that applies the log holds the same state without being sent anyone else's. A
-component that only sends commands and receives answers, such as a gateway, is a **client** of the log,
+the WAL. An application that keeps state is written as a **deterministic state machine** fed by that
+WAL: given the same commands in the same order it reaches the same state and produces the same output,
+so every instance that applies the WAL holds the same state without being sent anyone else's. A
+component that only sends commands and receives answers, such as a gateway, is a **client** of the WAL,
 and the library gives it the client's side. Leadership, replication, repair, catch-up and duplicate
 detection are the library's; what a command means is the application's.
 
-In the venue, the sequencer pair is the replicated log, the matching engine is the state machine that
+In the venue, the sequencer pair is the replicated WAL, the matching engine is the state machine that
 follows it, and the gateways are its clients.
+
+Throughout this page, WAL means the write-ahead log, the file of sequenced commands on disk. The text
+log each process writes about what it is doing is called the Quill log, and is never meant by WAL.
 
 ## 2. Design area: deciding who leads
 
@@ -37,7 +40,7 @@ are in `applications/fix_common`. A component supplies the connections they send
 **What the library would provide.** The same classes, moved into the library unchanged in behaviour,
 with the messages they exchange (`LeaseRequest`, `LeaseGrant`, `LeaseRefusal`, and the statement that a
 peer may not lead) defined among the framework's own messages instead of an application's. The voters
-with no log, the arbiters and the witness, become a voting service the library provides and any pair
+with no WAL, the arbiters and the witness, become a voting service the library provides and any pair
 can use, configured rather than written.
 
 **What an application would supply.** Which pair it belongs to, its instance's identity, and where
@@ -47,44 +50,44 @@ its voters are: configuration, not code.
 BUG-0126 say must change (its lock and its occasional wait on the order-handling thread). That change
 is easier made once, in the library, than in each component.
 
-## 3. Design area: the replicated log
+## 3. Design area: the replicated WAL
 
-**What it is for.** Every command is held on both machines before anything acts on it (V5), the log
-is the record of the day (V2), numbers only go forward (V9), and a rejoining follower's log becomes a
+**What it is for.** Every command is held on both machines before anything acts on it (V5), the WAL
+is the record of the day (V2), numbers only go forward (V9), and a rejoining follower's WAL becomes a
 copy of its leader's (V10).
 
-**How it is done now.** Inside `SequencerThread`, mixed with the sequencer's business: writing the log,
+**How it is done now.** Inside `SequencerThread`, mixed with the sequencer's business: writing the WAL,
 sending each record to the follower, holding commands back from the matching engine until the follower
 confirms them, trading without a follower, the statement that the follower may not take over, the
-table of epochs in the log, and the repair of a rejoining follower. On a follower two threads write the
-log, which breaks F1 and is kept safe by locks (BUG-0124).
+table of epochs in the WAL, and the repair of a rejoining follower. On a follower two threads write the
+WAL, which breaks F1 and is kept safe by locks (BUG-0124).
 
-**What the library would provide.** A log component owned by one thread, which:
+**What the library would provide.** A WAL component owned by one thread, which:
 
 - numbers each command and writes it, on the leader;
 - sends each record to the follower, and counts a command as committed once the follower has
   confirmed it;
 - when no follower is connected or it has fallen behind, carries on alone, and first records through
   the leadership component that the follower may not take over (V4, V11);
-- repairs a rejoining follower's log, by the epoch of each record (V10);
+- repairs a rejoining follower's WAL, by the epoch of each record (V10);
 - on the follower, writes the leader's records **on its own thread only**, so the second writer and
   its locks do not exist by construction;
-- reports, as metrics and log lines, whether it is running without a standby (BUG-0134).
+- reports, as metrics and Quill log lines, whether it is running without a standby (BUG-0134).
 
-**What an application would supply.** Nothing for replication itself. It hands the log commands to
+**What an application would supply.** Nothing for replication itself. It hands the WAL commands to
 sequence and is told when each is committed.
 
-## 4. Design area: following the log
+## 4. Design area: following the WAL
 
-**What it is for.** A component that follows the log, such as the matching engine or a publisher,
+**What it is for.** A component that follows the WAL, such as the matching engine or a publisher,
 applies every committed command in order, and one that starts or restarts catches up before it acts.
 
-**How it is done now.** Separately in each follower of the log: the matching engine's catch-up
+**How it is done now.** Separately in each follower of the WAL: the matching engine's catch-up
 (`MePositionRequest`, `MePositionAck`, the R-0101 count check), the publishers' subscription
-(`handle_wal_subscribe_request`), each served by reading the log on the sequencer's thread
+(`handle_wal_subscribe_request`), each served by reading the WAL on the sequencer's thread
 (BUG-0133).
 
-**What the library would provide.** One way to follow the log: a follower says the position it has
+**What the library would provide.** One way to follow the WAL: a follower says the position it has
 reached, the library sends every committed command after it, in order, and says when it has sent all
 it holds, so the follower knows it has caught up; then it goes on sending new commands as they are
 committed. The reading is done on a thread of its own, never on the thread that sequences, and the
@@ -100,12 +103,12 @@ reached when it starts.
 seconds at 40 million orders.
 
 **How it is done now.** The matching engine keeps its open orders in a memory-mapped region, written as
-it goes, with the position in the log it reflects
+it goes, with the position in the WAL it reflects
 ([open_order_checkpoint.md](../durability/open_order_checkpoint.md)), and on restart reads it back and
 catches up from that position. The region is built on `MappedSlotStore`, which is already in the
 library.
 
-**What the library would provide.** The rule that a snapshot and a position in the log are always
+**What the library would provide.** The rule that a snapshot and a position in the WAL are always
 taken and restored together, and the catch-up from that position (section 4). Whether a snapshot is
 written continuously, as the engine's region is, or at intervals, is the application's choice.
 
@@ -114,18 +117,18 @@ read them back.
 
 ## 6. Design area: recognising a command twice
 
-**What it is for.** A command is placed in the log at most once, judged by its identity, however many
+**What it is for.** A command is placed in the WAL at most once, judged by its identity, however many
 times and by whatever path it arrives (V7).
 
 **How it is done now.** Three separate mechanisms in the sequencer, because only commands marked as
 sent again are checked (BUG-0122), and a reused `ClOrdID` is refused only while its first order is still
 on the book (BUG-0114).
 
-**What the library would provide.** One check on every command against the identities the log already
+**What the library would provide.** One check on every command against the identities the WAL already
 holds, before it is sequenced.
 
 **What an application would supply.** How to read a command's identity (for the venue: comp id,
-protocol and `ClOrdID`), and what to send back when a command is already in the log: for the venue, the
+protocol and `ClOrdID`), and what to send back when a command is already in the WAL: for the venue, the
 outcome of the original if the command was marked as sent again, and a refusal if it was not.
 
 ## 7. Design area: the client's side
@@ -146,11 +149,11 @@ own users when the store is full.
 
 ## 8. Design area: time and decisions only one instance may make
 
-**What it is for.** For every instance that applies the log to reach the same state, nothing that
-changes the state may depend on anything but the log.
+**What it is for.** For every instance that applies the WAL to reach the same state, nothing that
+changes the state may depend on anything but the WAL.
 
 **How it is done now.** Partly. The matching engine stamps its reports with the time the sequencer
-recorded, carried in the log, and uses its own clock only when that is missing. But three things that
+recorded, carried in the WAL, and uses its own clock only when that is missing. But three things that
 change the engine's book are decided by the leading engine alone, from its own clock or its own
 circumstances:
 
@@ -159,9 +162,9 @@ circumstances:
 - refusing every order while halted.
 
 **What the design requires.** A decision that changes the state of a replicated application is made
-once and enters the log as a command, so that every instance applies it at the same point. Timers whose
+once and enters the WAL as a command, so that every instance applies it at the same point. Timers whose
 ringing changes the state (good-till-date expiry, a change of trading phase, a halt) are of the same
-kind: the leader of the log issues them as commands. Timers for a process's own housekeeping (leases,
+kind: the leader of the WAL issues them as commands. Timers for a process's own housekeeping (leases,
 connection retries, metrics) are not, and stay local. This is where the timer design of BUG-0128 and
 the trading phases of [trading_phases.md](../venue/trading_phases.md) meet this one.
 
@@ -175,7 +178,7 @@ above the highest order number in the book, but the report counter, `exec_id_cou
 zero, so an engine that restarts or is promoted issues `ME-EXEC-1`, `ME-EXEC-2` and so on a second time
 that day. Recorded as [BUG-0139](../bug_list.md#bug_0139).
 
-**What the design requires.** An identifier derived from the position in the log: for example, a
+**What the design requires.** An identifier derived from the position in the WAL: for example, a
 report's identifier made from the sequence number of the command that caused it and the report's place
 among that command's reports. It is the same on every instance, so replicas agree, and unique across
 restarts by construction, so no counter has to survive anything.
@@ -185,14 +188,14 @@ restarts by construction, so no counter has to survive anything.
 **What it is for.** Losing the leading engine costs a short pause, not the orders on the book.
 
 **How it is done now.** The follower engine is sent the leading engine's book (`BookUpdate`) and
-discards the commands the sequencer sends it. On promotion it catches up from the log and then cancels
+discards the commands the sequencer sends it. On promotion it catches up from the WAL and then cancels
 or keeps the inherited orders. The design notes considered running both engines in lockstep and left it
 "not built", because it needs every decision the engine makes to be deterministic
 ([wal_and_ha.md](wal_and_ha.md), "What happens to resting orders on promotion").
 
 **What is now known.** The engine does not match: orders rest until cancelled, and nothing is filled,
 so its book changes only by accepting, refusing and cancelling. Its report times already come from the
-log. The obstacles to determinism are the ones in sections 8 and 9: decisions taken by the leader alone,
+WAL. The obstacles to determinism are the ones in sections 8 and 9: decisions taken by the leader alone,
 and the report counter. Both are needed anyway. So lockstep is within reach, and the three ways to run
 the pair are:
 
@@ -212,19 +215,19 @@ cancelling on promotion while keeping one path for reports, which is close to to
 leadership as well, and becomes possible once B has shown in practice that the two engines' outputs
 agree.
 
-## 11. Design area: which applications use the replicated log
+## 11. Design area: which applications use the replicated WAL
 
-**The replicated log is something an application chooses, never something it is given.** The
+**The replicated WAL is something an application chooses, never something it is given.** The
 library's ordinary application thread, the one every component is built on today, knows nothing of a
-log, a pair or a vote, and an application built only on it has none of them. Nothing in this design
+WAL, a pair or a vote, and an application built only on it has none of them. Nothing in this design
 changes that.
 
 **What decides it.** Two things, one in the code and one in the configuration:
 
 - **In the code: whether the application is written as a state machine.** An application that wants
-  the replicated log creates the library's log component and gives it what sections 4 and 5 list: a
+  the replicated WAL creates the library's WAL component and gives it what sections 4 and 5 list: a
   handler for each committed command, and a way to write and read its state together with the position
-  in the log it reflects. An application that does none of this does not use the log, and its code and
+  in the WAL it reflects. An application that does none of this does not use the WAL, and its code and
   configuration are exactly as they would be without this design.
 - **In the configuration: whether it runs as a pair.** An application written as a state machine runs
   either as a pair, with a follower and voters named in its configuration, or as one instance with
@@ -234,20 +237,20 @@ changes that.
 The client's side (section 7) and the voting service (section 2) are chosen in the same way: an
 application uses them by creating them, and one that does not create them has neither.
 
-**What the log is for, and so which applications want it.** It is for state that must be the same on
+**What the WAL is for, and so which applications want it.** It is for state that must be the same on
 two machines, built from commands whose order matters, where losing a command that was answered is not
-allowed. If any of those three is missing, the log costs more than it gives.
+allowed. If any of those three is missing, the WAL costs more than it gives.
 
 **How the venue's components divide.**
 
 | Component | Uses | Why |
 |---|---|---|
-| Sequencer pair | The replicated log | It is the log (section 1). |
-| Matching engine | Follows the log, as a state machine | Its book is built from the commands in the order the log gives them. |
-| Matching engine publisher pair | Follows the log, and the leadership component | It reads committed records in order and sends them to subscribers. Only the leading instance publishes, so it needs to know who leads, but it keeps no state of its own that the other instance must agree with. |
-| Order activity recorder (designed, not built) | Follows the log | It reads committed records in order and sends them outside the venue. |
-| FIX and binary order gateways | The client's side | They send commands and must see every one answered, but the state they hold, each member's session, belongs to the connection, not to the log. |
-| Arbiters and witness | The voting service | They vote on who leads and keep no log. |
+| Sequencer pair | The replicated WAL | It is the WAL (section 1). |
+| Matching engine | Follows the WAL, as a state machine | Its book is built from the commands in the order the WAL gives them. |
+| Matching engine publisher pair | Follows the WAL, and the leadership component | It reads committed records in order and sends them to subscribers. Only the leading instance publishes, so it needs to know who leads, but it keeps no state of its own that the other instance must agree with. |
+| Order activity recorder (designed, not built) | Follows the WAL | It reads committed records in order and sends them outside the venue. |
+| FIX and binary order gateways | The client's side | They send commands and must see every one answered, but the state they hold, each member's session, belongs to the connection, not to the WAL. |
+| Arbiters and witness | The voting service | They vote on who leads and keep no WAL. |
 | Authentication service | None of it | See below. |
 | Admin service | None of it | It is a Java web application outside the framework. |
 
@@ -257,7 +260,7 @@ it is sent by the admin service to both instances, so each instance gets its sta
 neither needs the other's. A logon exchange is complete in itself, nothing about it is kept, and the
 order of two logons from different members does not matter. The two instances both serve at once and
 neither is elected: a gateway uses one and turns to the other if the first dies, and a session already
-logged on is not affected. Putting every logon through a replicated log would add a disk write on two
+logged on is not affected. Putting every logon through a replicated WAL would add a disk write on two
 machines and a round trip to a second machine to each logon, and would protect nothing that is at risk.
 
 ## 12. What moves where, and in what order
@@ -266,33 +269,33 @@ machines and a round trip to a second machine to each logon, and would protect n
 |---|---|---|
 | Lease classes in `applications/fix_common` | The library's leadership component (section 2) | Configuration |
 | Arbiter and witness voting | A voting service the library provides | Configuration |
-| Replication, holding back, trading alone, follower repair, epochs table, in `SequencerThread` | The library's replicated log (section 3) | Nothing |
-| Catch-ups for the engine and the publishers | The library's way of following the log (section 4) | The handler and the starting position |
+| Replication, holding back, trading alone, follower repair, epochs table, in `SequencerThread` | The library's replicated WAL (section 3) | Nothing |
+| Catch-ups for the engine and the publishers | The library's way of following the WAL (section 4) | The handler and the starting position |
 | The engine's open-order region | Stays the engine's snapshot (section 5) | How it writes and reads its state |
-| The three checks against sequencing twice | One check in the library's log (section 6) | Reading a command's identity; the reply to a duplicate |
+| The three checks against sequencing twice | One check in the library's WAL (section 6) | Reading a command's identity; the reply to a duplicate |
 | `UnansweredCommandStore` and resending in each gateway | The library's client side (section 7) | Recognising an answer |
-| Decisions taken by the leading engine alone | Commands in the log (section 8) | What each decision does |
-| Counters for identifiers | Identifiers from the position in the log (section 9) | The identifiers' format |
+| Decisions taken by the leading engine alone | Commands in the WAL (section 8) | What each decision does |
+| Counters for identifiers | Identifiers from the position in the WAL (section 9) | The identifiers' format |
 | `BookUpdate` replication | Removed, under option B (section 10) | Nothing |
 
 **A proposed order, lowest risk first.** This would replace phases 3 to 7 of
-[the plan](../recovery_plan.md): one writer for the follower's log, the remaining locks that belong to
+[the plan](../recovery_plan.md): one writer for the follower's WAL, the remaining locks that belong to
 high availability, dividing the sequencer and the matching engine, and the one check against
 sequencing twice. The framework locks of phase 4 that are not about high availability (the timers,
-BUG-0128; the thread registry, BUG-0129; the log's helper, BUG-0130; the sequencer's allocations,
+BUG-0128; the thread registry, BUG-0129; the WAL's helper, BUG-0130; the sequencer's allocations,
 BUG-0131) are separate and can be done at any point:
 
 1. **Move the lease classes and their messages into the library**, unchanged in behaviour: mostly a
    move, with every high availability scenario as the check.
-2. **Build the library's replicated log with one writing thread**, and move the sequencer onto it. This
+2. **Build the library's replicated WAL with one writing thread**, and move the sequencer onto it. This
    takes in what phase 3 was for: the follower's second writer and its locks go.
-3. **Give the log its way of being followed**, on a thread of its own, and move the engine's and the
+3. **Give the WAL its way of being followed**, on a thread of its own, and move the engine's and the
    publishers' catch-ups onto it. This takes in BUG-0133.
-4. **Make the engine deterministic**: identifiers from the log position (BUG-0139), and the engine's own
-   decisions turned into commands. Test it by running both engines on the same log and comparing every
+4. **Make the engine deterministic**: identifiers from the WAL position (BUG-0139), and the engine's own
+   decisions turned into commands. Test it by running both engines on the same WAL and comparing every
    report.
 5. **Switch the engine pair to option B**, and remove book replication.
-6. **Move the duplicate check into the log** (what phase 7 was for), and the gateways onto the library's
+6. **Move the duplicate check into the WAL** (what phase 7 was for), and the gateways onto the library's
    client side.
 7. **Divide what is left of the sequencer** (what phase 5 was for), which by then is the venue's own
    business: session binding and where reports go.
@@ -301,12 +304,12 @@ BUG-0131) are separate and can be done at any point:
 
 These are separate questions.
 
-1. **Is section 1 the right shape?** The sequencer pair as the library's replicated log, the matching
+1. **Is section 1 the right shape?** The sequencer pair as the library's replicated WAL, the matching
    engine as a deterministic state machine following it, the gateways as clients. **Agreed 12 October
-   2026**, on the understanding that an application uses the log only if it chooses to (section 11).
-2. **Should every decision that changes a replicated application's state enter the log as a command**
+   2026**, on the understanding that an application uses the WAL only if it chooses to (section 11).
+2. **Should every decision that changes a replicated application's state enter the WAL as a command**
    (section 8), including the engine's halt after an absence and any action on promotion? (Yes or no.)
-3. **Should identifiers come from the position in the log** (section 9)? (Yes or no.)
+3. **Should identifiers come from the position in the WAL** (section 9)? (Yes or no.)
 4. **Which way should the engine pair run: A, B or C** (section 10)? The recommendation is B, with C
    later.
 5. **Should the order in section 12 replace phases 3 to 7 of the plan**, with the framework fixes of
