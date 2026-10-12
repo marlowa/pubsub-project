@@ -125,9 +125,21 @@ def test_generator_bytes_field_skip_uses_bytes_len():
 
 def test_generator_bytes_view_in_ifdef_guard():
     code = generate_cpp("message Foo (id=1)\n    bytes payload\nend")
-    guard_start = code.index("PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
+    guard_start = code.index("NS_DSL_SHARED_HELPERS_DEFINED")
     bytes_view_pos = code.index("struct BytesView")
     assert bytes_view_pos > guard_start
+
+
+def test_generator_helpers_guard_is_named_after_the_namespace():
+    # The helpers are defined inside the namespace, so headers generated into two namespaces must
+    # not share a guard: the second header included would otherwise have no helpers of its own.
+    ast = Parser("message Foo (id=1)\n    bytes payload\nend").parse()
+    Validator(ast).validate()
+    first = CppGenerator(namespace="first_space").emit(ast)
+    second = CppGenerator(namespace="second_space").emit(ast)
+    assert "#ifndef FIRST_SPACE_DSL_SHARED_HELPERS_DEFINED" in first
+    assert "#ifndef SECOND_SPACE_DSL_SHARED_HELPERS_DEFINED" in second
+    assert "FIRST_SPACE" not in second
 
 
 # =============================================================================

@@ -5,9 +5,9 @@
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 
-#include <leader_follower.hpp>
+#include <lease_messages.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief How a PairLeaseAgent reaches the other two voters. Implemented by the thread that owns the agent.
@@ -22,16 +22,16 @@ class LeaseLinksInterface {
     virtual ~LeaseLinksInterface() = default;
 
     /// Send @p request to the peer, if it can be reached. A request that cannot be sent is simply not sent.
-    virtual void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) = 0;
+    virtual void send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) = 0;
 
     /// Send @p request to the third voter on every connection that leads to it.
-    virtual void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) = 0;
+    virtual void send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) = 0;
 
     /// Answer a request on the connection it arrived on.
-    virtual void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) = 0;
+    virtual void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) = 0;
 
     /// Answer a request on the connection it arrived on.
-    virtual void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) = 0;
+    virtual void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) = 0;
 };
 
 } // namespaces

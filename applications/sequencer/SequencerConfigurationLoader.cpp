@@ -5,9 +5,9 @@
 
 #include <tuple>
 
-#include <LeaseTiming.hpp>
 #include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
@@ -161,7 +161,7 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
 
             config.peer_listen_port = static_cast<uint16_t>(peer_listen_port);
             config.peer_port = static_cast<uint16_t>(peer_port);
-            config.lease = fix_common::LeaseTiming::load(toml, "SequencerConfigurationLoader");
+            config.lease = pubsub_itc_fw::LeaseTiming::load(toml, "SequencerConfigurationLoader");
 
             int64_t identifiers_reserved = 0;
             toml.get_required_except("commands.identifiers_reserved", identifiers_reserved);

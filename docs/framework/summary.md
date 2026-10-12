@@ -437,7 +437,7 @@ matching engine's announcement of its role.
 | `ArbiterStateRecord` | 400 | The active arbiter tells the passive one the highest epoch granted in each group |
 
 The rules, why each is needed, the failure table and the model checking are in
-[Majority leases](../availability/majority_leases.md); the code is `applications/fix_common/PairLeaseAgent.hpp`
+[Majority leases](../availability/majority_leases.md); the code is `libraries/pubsub_itc_fw/include/pubsub_itc_fw/PairLeaseAgent.hpp`
 and the classes it uses.
 
 ### 13. Authentication Service and SCRAM-SHA-256

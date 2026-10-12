@@ -3,8 +3,8 @@
 
 #include "MatchingEnginePublisherConfigurationLoader.hpp"
 
-#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
@@ -90,7 +90,7 @@ MatchingEnginePublisherConfiguration MatchingEnginePublisherConfigurationLoader:
             validate_port(peer_port, "ha.peer_port");
             config.peer_listen_port = static_cast<uint16_t>(peer_listen_port);
             config.peer_port = static_cast<uint16_t>(peer_port);
-            config.lease = fix_common::LeaseTiming::load(toml, "MatchingEnginePublisherConfigurationLoader");
+            config.lease = pubsub_itc_fw::LeaseTiming::load(toml, "MatchingEnginePublisherConfigurationLoader");
         }
 
         int64_t max_lag_records = 0;

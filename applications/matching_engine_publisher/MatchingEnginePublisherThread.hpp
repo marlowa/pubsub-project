@@ -15,9 +15,9 @@
 #include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
-#include <LeaseLinksInterface.hpp>
-#include <PairLeaseAgent.hpp>
 #include <leader_follower.hpp>
+#include <pubsub_itc_fw/LeaseLinksInterface.hpp>
+#include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <topics.hpp>
 #include <topics_registry.hpp>
 
@@ -107,13 +107,13 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
 
     // How the lease rules reach the other two voters in deciding which publisher leads: the peer
     // publisher, and the arbiter pool on both arbiter connections.
-    class PublisherLeaseLinks : public fix_common::LeaseLinksInterface {
+    class PublisherLeaseLinks : public pubsub_itc_fw::LeaseLinksInterface {
       public:
         explicit PublisherLeaseLinks(MatchingEnginePublisherThread& owner) : owner_(owner) {}
-        void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) override;
-        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) override;
+        void send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) override;
+        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) override;
 
       private:
         MatchingEnginePublisherThread& owner_;
@@ -122,8 +122,8 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
 
     // Decides whether this publisher leads: it does only while a majority of three voters -- itself,
     // its peer and the arbiter pool -- has granted it a lease that has not run out. Constructed at the
-    // initial event when high availability is on. See fix_common/PairLeaseAgent.hpp.
-    std::optional<fix_common::PairLeaseAgent> lease_agent_;
+    // initial event when high availability is on. See pubsub_itc_fw/PairLeaseAgent.hpp.
+    std::optional<pubsub_itc_fw::PairLeaseAgent> lease_agent_;
 
     pubsub_itc_fw::ConnectionID peer_conn_id_;
     pubsub_itc_fw::ConnectionID peer_inbound_conn_id_;
@@ -138,7 +138,7 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
     void adopt_role(pubsub_itc_fw_app::Role new_role);
     /// Changes this publisher's role to follow what the lease rules have just decided.
-    void act_on(fix_common::PairLeaseAgent::Change change);
+    void act_on(pubsub_itc_fw::PairLeaseAgent::Change change);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);

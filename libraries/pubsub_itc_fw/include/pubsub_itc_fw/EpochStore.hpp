@@ -15,7 +15,7 @@
 
 #include <fmt/format.h>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Durable store for the leadership epoch.

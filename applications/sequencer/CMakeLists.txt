@@ -78,13 +78,7 @@ install(TARGETS block_sends_to_ports
 # sequencer that starts and then delivers reports nowhere.
 add_executable(sequencer_tests
         tests/SequencerConfigurationLoaderTest.cpp
-        tests/EpochStoreTest.cpp
-        tests/LeaderEpochTest.cpp
-        tests/LeaseRulesTest.cpp
-        tests/LeaseSimulationTest.cpp
-        tests/PairLeaseAgentTest.cpp
         tests/EngineOrderRoutingTest.cpp
-        tests/LeasePromiseStoreTest.cpp
         tests/KeptReportStoreTest.cpp
         tests/LogEpochTableTest.cpp
         tests/LoggedCommandIdentifiersTest.cpp

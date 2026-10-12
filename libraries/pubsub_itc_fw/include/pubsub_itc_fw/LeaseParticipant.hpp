@@ -8,14 +8,14 @@
 
 #include <fmt/format.h>
 
-#include <LeaderEpoch.hpp>
-#include <LeaderStatement.hpp>
-#include <LeaseHolder.hpp>
-#include <LeaseVoter.hpp>
-#include <PeerStatementsFlag.hpp>
+#include <pubsub_itc_fw/LeaderEpoch.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
+#include <pubsub_itc_fw/LeaseHolder.hpp>
+#include <pubsub_itc_fw/LeaseVoter.hpp>
+#include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief One instance of a pair, which both votes and may lead: its voter and its lease holder, and

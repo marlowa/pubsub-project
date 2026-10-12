@@ -10,7 +10,7 @@
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief How a new leadership epoch is chosen, so that an epoch names exactly one leader.

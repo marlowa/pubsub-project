@@ -8,10 +8,10 @@
 
 #include <fmt/format.h>
 
-#include <LeaderStatement.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief One voter's side of deciding which instance of a pair leads: the promises it has made.

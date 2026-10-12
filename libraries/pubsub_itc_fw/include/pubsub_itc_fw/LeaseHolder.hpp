@@ -11,7 +11,7 @@
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief An instance's own record of the leases it holds, and so whether it may act as leader.

@@ -60,13 +60,17 @@ They stay header-only, as they are now. Code that includes them changes from, fo
 `#include <LeaseHolder.hpp>` to `#include <pubsub_itc_fw/LeaseHolder.hpp>`.
 
 **Where the messages go.** `LeaseRequest`, `LeaseGrant`, `LeaseRefusal` and `LeaseRefusalReason` move
-out of `leader_follower.dsl` into a new file of the library's own, `lease.dsl`, generated into the
-namespace `pubsub_itc_fw`. Their message numbers stay 130, 131 and 132, so nothing on the wire changes.
+out of `leader_follower.dsl` into a new file of the library's own, `lease_messages.dsl`, generated into
+`lease_messages.hpp` in the namespace `pubsub_itc_fw`. Their message numbers stay 130, 131 and 132, so nothing on the wire changes.
+The code generator wraps the helper functions it writes into every header in a guard, so that two
+generated headers can be included together. The guard is named after the namespace, because the
+helpers are defined inside the namespace and each namespace needs its own copy.
 
 **How a message names its pair.** The library cannot name the venue's components, so in the library's
 messages the pair is a plain number, `i32 pair_id`, in place of `ComponentGroup group`. `ComponentGroup`
 stays in `leader_follower.dsl` for the venue's own use, and the venue converts between the two where it
-sends and receives lease messages. The values stay the same (sequencer 1, matching engine 2, matching
+sends and receives lease messages, with `pair_id_of` and `group_of` in
+`applications/fix_common/LeasePairNumbers.hpp`. The values stay the same (sequencer 1, matching engine 2, matching
 engine publisher 3, arbiter 4), and an enumeration in the message definitions is already sent as a
 32-bit number, so the bytes on the wire do not change either. `PairLeaseAgent` takes the pair's number
 in its constructor instead of a `ComponentGroup`.
@@ -141,7 +145,7 @@ So step 2 is mostly a move, like step 1. The one real change is that the pairs a
 `WitnessThread`, the two configurations and their loaders, and the setting up of the reactor, listeners
 and connections now in `Arbiter.cpp` and `Witness.cpp`, all into the namespace `pubsub_itc_fw`, keeping
 their names. Their tests, `ComponentLeaseVotersTest` and `ComponentStatementStoreTest`, move to
-`libraries/pubsub_itc_fw/tests`. `ArbiterStateRecord` moves into the library's `lease.dsl`, with the
+`libraries/pubsub_itc_fw/tests`. `ArbiterStateRecord` moves into the library's `lease_messages.dsl`, with the
 pair given as `i32 pair_id`, as in step 1; its message number stays 400.
 
 **What the venue keeps.** By decision 3 in section 9, the venue keeps the two programs `arbiter` and `witness`, each now a short `main` that reads its

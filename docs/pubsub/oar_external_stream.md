@@ -1167,7 +1167,7 @@ OAR runs as two instances, a primary and a secondary, like the venue's other com
 leader publishes.** Which instance leads is decided the way every other pair in the venue decides
 it: by a majority of three voters granting leases, as
 [majority_leases.md](../availability/majority_leases.md) describes. The voters are OAR's two
-instances and the arbiter pool, and OAR uses the same `fix_common::PairLeaseAgent` as the other
+instances and the arbiter pool, and OAR uses the same `pubsub_itc_fw::PairLeaseAgent` as the other
 components. So which instance publishes needs no mechanism of its own, and no configuration.
 
 The rest of this design depends on there being one publisher at a time: the events on a topic

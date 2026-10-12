@@ -297,7 +297,7 @@ machines and a round trip to a second machine to each logon, and would protect n
 
 | Built today | Where it goes | What stays in the application |
 |---|---|---|
-| Lease classes in `applications/fix_common` | The library's leadership component (section 2) | Configuration |
+| Lease classes | The library's leadership component (section 2) | Configuration |
 | Arbiter and witness voting | A voting service the library provides | Configuration |
 | Replication, holding back, trading alone, follower repair, epochs table, in `SequencerThread` | The library's replicated WAL (section 3) | Nothing |
 | Catch-ups for the engine and the publishers | The library's way of following the WAL (section 4) | The handler and the starting position |

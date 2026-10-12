@@ -16,11 +16,10 @@ is written as a deterministic state machine fed by that WAL. It then lists what 
 
 Measured on 11 October 2026:
 
-- **The lease machinery** is in `applications/fix_common`: `LeaseVoter`, `LeaseHolder`,
+- **The lease machinery** is in the library (`libraries/pubsub_itc_fw/include/pubsub_itc_fw`): `LeaseVoter`, `LeaseHolder`,
   `LeaseParticipant`, `PairLeaseAgent`, `LeasePromiseStore`, `BackgroundPromiseRecorder`, `EpochStore`
   and `LeaderEpoch`, about 1,700 lines. Principle V3 in [design_principles.md](../design_principles.md)
-  already records that these classes know nothing of the component using them. They are library code
-  kept on the applications' side.
+  records that these classes know nothing of the component using them.
 - **The sequencer**, `SequencerThread`, is about 4,800 lines. About a third of its 107 member
   functions are about high availability, judged by their names: peers, followers, leaders, leases,
   epochs, replication, catch-up, repair and running without a follower. Its jobs include replicating its

@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <string>
 
-#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 
 namespace arbiter {
@@ -85,9 +85,9 @@ struct ArbiterConfiguration {
      *        arbiter grants to component instances.
      *
      * Expanded from the environment's [shared] section, because every voter and every instance
-     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
+     * holding a lease must use the same values. See pubsub_itc_fw/LeaseTiming.hpp.
      */
-    fix_common::LeaseTiming lease{};
+    pubsub_itc_fw::LeaseTiming lease{};
 
     /**
      * @brief File in which this arbiter records the promise of its vote in deciding which arbiter is
@@ -95,7 +95,7 @@ struct ArbiterConfiguration {
      *
      * Read at startup. A record written during the same boot of the machine lets an arbiter
      * restarted by its supervisor carry on from it, rather than wait out a lease period while the
-     * other arbiter becomes active. See fix_common/LeasePromiseStore.hpp. Its directory must exist.
+     * other arbiter becomes active. See pubsub_itc_fw/LeasePromiseStore.hpp. Its directory must exist.
      */
     std::string lease_promise_file;
 

@@ -10,7 +10,7 @@
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief The timings of the lease rules that decide which instance of a pair leads.

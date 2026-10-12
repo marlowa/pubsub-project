@@ -25,7 +25,7 @@ period_milliseconds = ${shared_lease_period_milliseconds}
 drift_allowance_milliseconds = ${shared_lease_drift_allowance_milliseconds}
 renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 # Where this arbiter records the promise of its vote, so that a restart by its supervisor does not
-# forget it. Kept under the installation; see fix_common/LeasePromiseStore.hpp.
+# forget it. Kept under the installation; see pubsub_itc_fw/LeasePromiseStore.hpp.
 promise_file = "${arbiter_secondary_lease_promise_file}"
 
 [logging]

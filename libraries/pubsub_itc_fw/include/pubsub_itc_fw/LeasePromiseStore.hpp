@@ -17,11 +17,11 @@
 
 #include <fmt/format.h>
 
-#include <LeaderStatement.hpp>
-#include <LeasePromiseRecord.hpp>
-#include <LeasePromiseRecorderInterface.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
+#include <pubsub_itc_fw/LeasePromiseRecord.hpp>
+#include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Durable record of the promise an instance has made as a voter, valid until the machine reboots.

@@ -9,8 +9,8 @@
 #include <string>
 #include <vector>
 
-#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
 
@@ -143,9 +143,9 @@ struct SequencerConfiguration {
      * @brief The timings of the leases that decide which sequencer leads. Only applies when ha_enabled=true.
      *
      * Expanded from the environment's [shared] section, because every voter and every instance
-     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
+     * holding a lease must use the same values. See pubsub_itc_fw/LeaseTiming.hpp.
      */
-    fix_common::LeaseTiming lease{};
+    pubsub_itc_fw::LeaseTiming lease{};
 
     /**
      * @brief How many command identifiers the record of the identifiers in the log reserves room

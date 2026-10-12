@@ -10,8 +10,8 @@
 
 #include "ComponentStatementStore.hpp"
 
-#include <LeaderStatement.hpp>
 #include <leader_follower.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 
 namespace {
@@ -43,8 +43,8 @@ class ComponentStatementStoreTest : public ::testing::Test {
 TEST_F(ComponentStatementStoreTest, StatementsAreReadBackForEachGroup) {
     const arbiter::ComponentStatementStore store(path_);
     arbiter::ComponentStatementStore::Statements statements;
-    statements[sequencer] = fix_common::LeaderStatement{1, 5, 3, false};
-    statements[matching_engine] = fix_common::LeaderStatement{2, 6, 1, true};
+    statements[sequencer] = pubsub_itc_fw::LeaderStatement{1, 5, 3, false};
+    statements[matching_engine] = pubsub_itc_fw::LeaderStatement{2, 6, 1, true};
     ASSERT_TRUE(store.save(statements));
     const arbiter::ComponentStatementStore::Statements read = store.load();
     ASSERT_EQ(read.size(), 2U);
@@ -71,7 +71,7 @@ TEST_F(ComponentStatementStoreTest, ADamagedLineIsSkippedAndTheRestRead) {
 TEST_F(ComponentStatementStoreTest, WithNoPathNothingIsKept) {
     const arbiter::ComponentStatementStore store("");
     arbiter::ComponentStatementStore::Statements statements;
-    statements[sequencer] = fix_common::LeaderStatement{1, 5, 3, false};
+    statements[sequencer] = pubsub_itc_fw::LeaderStatement{1, 5, 3, false};
     EXPECT_FALSE(store.save(statements));
     EXPECT_TRUE(store.load().empty());
 }

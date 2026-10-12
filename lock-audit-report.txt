@@ -164,7 +164,7 @@ Left out, as asked or because they are not the venue's running code:
 
 ### 4. `BackgroundPromiseRecorder::mutex_` and its two condition variables
 
-- **Where:** `applications/fix_common/BackgroundPromiseRecorder.hpp`. The sequencer, the matching
+- **Where:** `libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp`. The sequencer, the matching
   engine and the arbiter each own one; the matching engine publisher keeps no promise record.
 - **When:**
   - `background_result()` takes the mutex on every lease tick, every 100 milliseconds, through

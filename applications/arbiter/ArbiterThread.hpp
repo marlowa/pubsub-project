@@ -14,11 +14,11 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
-#include <BackgroundPromiseRecorder.hpp>
-#include <LeaseLinksInterface.hpp>
-#include <LeasePromiseStore.hpp>
-#include <PairLeaseAgent.hpp>
 #include <leader_follower.hpp>
+#include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
+#include <pubsub_itc_fw/LeaseLinksInterface.hpp>
+#include <pubsub_itc_fw/LeasePromiseStore.hpp>
+#include <pubsub_itc_fw/PairLeaseAgent.hpp>
 
 #include "ArbiterConfiguration.hpp"
 #include "ComponentLeaseVoters.hpp"
@@ -64,13 +64,13 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
   private:
     // How the lease rules reach the other two voters in deciding which arbiter is active: the peer
     // arbiter and the witness.
-    class PoolLinks : public fix_common::LeaseLinksInterface {
+    class PoolLinks : public pubsub_itc_fw::LeaseLinksInterface {
       public:
         explicit PoolLinks(ArbiterThread& owner) : owner_(owner) {}
-        void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) override;
-        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) override;
+        void send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) override;
+        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) override;
 
       private:
         ArbiterThread& owner_;
@@ -99,18 +99,18 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
 
     // This arbiter's side of the lease rules for deciding which arbiter is active. Constructed at
     // the initial event, because it needs the moment this arbiter started.
-    std::optional<fix_common::PairLeaseAgent> pool_lease_;
+    std::optional<pubsub_itc_fw::PairLeaseAgent> pool_lease_;
 
     // The pool's vote on which instance of each component pair leads, held while this arbiter is active.
     ComponentLeaseVoters component_voters_;
 
     // Where this arbiter's promise in deciding which arbiter is active outlives the process, until the
     // machine reboots.
-    fix_common::LeasePromiseStore lease_promise_store_;
+    pubsub_itc_fw::LeasePromiseStore lease_promise_store_;
     // Writes promise records on a thread of its own, so that refreshing one does not stop this
     // instance answering lease requests while the disk is written (BUG-0107). Declared after the
     // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
-    std::optional<fix_common::BackgroundPromiseRecorder> background_promise_recorder_;
+    std::optional<pubsub_itc_fw::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // The newest statement from each component pair's leader about whether its peer may lead,
     // kept on disk beside the promise record, so that a restart does not forget it.
@@ -124,7 +124,7 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     void adopt_role(pubsub_itc_fw_app::Role new_role);
 
     /// Changes this arbiter's role to follow what the lease rules have just decided.
-    void act_on(fix_common::PairLeaseAgent::Change change);
+    void act_on(pubsub_itc_fw::PairLeaseAgent::Change change);
 
     void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);

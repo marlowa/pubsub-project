@@ -432,7 +432,7 @@ authority beside the voters, such as a supervisor that chose a leader, could dis
 is how two leaders arise. A voter's refusal costs availability, which can be recovered; a wrong grant
 can produce two leaders, or a leader with an incomplete history, which may not be.
 
-**Where it holds.** In the lease classes in `applications/fix_common/`: `LeaseVoter`, `LeaseHolder`,
+**Where it holds.** In the lease classes in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/`: `LeaseVoter`, `LeaseHolder`,
 `LeaseParticipant`, driven by `PairLeaseAgent`. Each component supplies only the connections the agent
 sends on. The lease rules, and which class holds each, are in sections 3 and 10 of
 [majority_leases.md](availability/majority_leases.md).

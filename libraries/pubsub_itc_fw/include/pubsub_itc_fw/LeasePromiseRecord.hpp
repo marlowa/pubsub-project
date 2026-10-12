@@ -6,9 +6,9 @@
 #include <chrono>
 #include <cstdint>
 
-#include <LeaderStatement.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief What an instance keeps on disk about its vote: the promise it has made, and the newest

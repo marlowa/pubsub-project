@@ -7,8 +7,8 @@
 #include <cstdint> // IWYU pragma: keep
 #include <string>
 
-#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
 
 namespace witness {
@@ -42,9 +42,9 @@ struct WitnessConfiguration {
      * @brief The timings of the leases the witness grants when the arbiters decide which of them is active.
      *
      * Expanded from the environment's [shared] section, because every voter and every instance
-     * holding a lease must use the same values. See fix_common/LeaseTiming.hpp.
+     * holding a lease must use the same values. See pubsub_itc_fw/LeaseTiming.hpp.
      */
-    fix_common::LeaseTiming lease{};
+    pubsub_itc_fw::LeaseTiming lease{};
 
     /** @brief Minimum severity written to the application log file. */
     pubsub_itc_fw::FwLogLevel applog_level{pubsub_itc_fw::FwLogLevel::Info};

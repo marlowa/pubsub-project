@@ -457,7 +457,7 @@ finding 1.
 
 **Every epoch names its leader.** So the value of a new epoch records which instance leads in it:
 its remainder on division by 4 is that instance's id. Every issuer takes the next such number above
-every epoch it knows, for the instance it is making leader (`fix_common/LeaderEpoch.hpp`). Two
+every epoch it knows, for the instance it is making leader (`pubsub_itc_fw/LeaderEpoch.hpp`). Two
 different instances then never lead at the same epoch, whoever issued it and however the issuers'
 timing falls, and ordinary integer comparison still orders generations correctly. The two arbiters
 use the same rule for which of them is active.

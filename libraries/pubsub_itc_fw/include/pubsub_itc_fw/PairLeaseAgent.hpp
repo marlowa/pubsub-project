@@ -15,17 +15,17 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
-#include <LeaderStatement.hpp>
-#include <LeaseLinksInterface.hpp>
-#include <LeaseParticipant.hpp>
-#include <LeasePromiseRecord.hpp>
-#include <LeasePromiseRecorderInterface.hpp>
-#include <LeasePromiseStore.hpp>
-#include <LeaseTiming.hpp>
-#include <PeerStatementsFlag.hpp>
-#include <leader_follower.hpp>
+#include <lease_messages.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
+#include <pubsub_itc_fw/LeaseLinksInterface.hpp>
+#include <pubsub_itc_fw/LeaseParticipant.hpp>
+#include <pubsub_itc_fw/LeasePromiseRecord.hpp>
+#include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
+#include <pubsub_itc_fw/LeasePromiseStore.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
+#include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Everything an instance of a pair does to decide whether it leads, apart from reaching the other voters.
@@ -70,7 +70,7 @@ class PairLeaseAgent {
      * @param[in] owner_name The name the owner logs under, such as "SequencerThread".
      * @param[in] logger Where to log.
      * @param[in] links How to reach the other two voters.
-     * @param[in] group The pair this instance belongs to.
+     * @param[in] pair_id The number of the pair this instance belongs to, which every voter in the pair is configured with.
      * @param[in] self_id This instance's id: 1 for the primary, 2 for the secondary.
      * @param[in] peer_id The other instance's id.
      * @param[in] third_voter_id The third voter's id, which appears on its grants and refusals.
@@ -80,13 +80,13 @@ class PairLeaseAgent {
      * @param[in] persisted_epoch The highest epoch this instance knew of when it last stopped, or zero.
      * @param[in] peer_statements Whether this pair's leader says whether its peer may lead: only the sequencer pair's does.
      */
-    PairLeaseAgent(std::string owner_name, pubsub_itc_fw::QuillLogger& logger, LeaseLinksInterface& links, pubsub_itc_fw_app::ComponentGroup group,
-                   int64_t self_id, int64_t peer_id, int64_t third_voter_id, std::string third_voter_name, const LeaseTiming& timing,
-                   Clock::time_point started_at, int32_t persisted_epoch, PeerStatementsFlag peer_statements)
+    PairLeaseAgent(std::string owner_name, pubsub_itc_fw::QuillLogger& logger, LeaseLinksInterface& links, int32_t pair_id, int64_t self_id, int64_t peer_id,
+                   int64_t third_voter_id, std::string third_voter_name, const LeaseTiming& timing, Clock::time_point started_at, int32_t persisted_epoch,
+                   PeerStatementsFlag peer_statements)
         : owner_name_(std::move(owner_name))
         , logger_(logger)
         , links_(links)
-        , group_(group)
+        , pair_id_(pair_id)
         , self_id_(self_id)
         , peer_id_(peer_id)
         , third_voter_id_(third_voter_id)
@@ -221,12 +221,12 @@ class PairLeaseAgent {
                        "{}: could not record the promise of this instance's vote to the peer -- refusing the peer's request rather than making a promise "
                        "a restart would forget",
                        owner_name_);
-            pubsub_itc_fw_app::LeaseRefusal refusal{};
+            pubsub_itc_fw::LeaseRefusal refusal{};
             refusal.voter_instance_id = self_id_;
-            refusal.group = group_;
+            refusal.pair_id = pair_id_;
             refusal.highest_epoch = outcome.answer.highest_epoch;
             refusal.request_id = request_id;
-            refusal.reason = pubsub_itc_fw_app::LeaseRefusalReason::unknown;
+            refusal.reason = pubsub_itc_fw::LeaseRefusalReason::unknown;
             links_.send_refusal(reply_to, refusal);
             return Change::Nothing;
         }
@@ -235,9 +235,9 @@ class PairLeaseAgent {
             reported_no_leader_ = false;
             write_statement_if_needed();
             report_whether_this_instance_may_lead();
-            pubsub_itc_fw_app::LeaseGrant grant{};
+            pubsub_itc_fw::LeaseGrant grant{};
             grant.voter_instance_id = self_id_;
-            grant.group = group_;
+            grant.pair_id = pair_id_;
             grant.epoch = epoch;
             grant.request_id = request_id;
             grant.echoed_statement_number = echoed;
@@ -245,15 +245,15 @@ class PairLeaseAgent {
             return Change::AgreedPeerLeads;
         }
 
-        pubsub_itc_fw_app::LeaseRefusal refusal{};
+        pubsub_itc_fw::LeaseRefusal refusal{};
         refusal.voter_instance_id = self_id_;
-        refusal.group = group_;
+        refusal.pair_id = pair_id_;
         refusal.highest_epoch = outcome.answer.highest_epoch;
         refusal.request_id = request_id;
         refusal.reason = refusal_reason_for(outcome.answer.verdict);
         links_.send_refusal(reply_to, refusal);
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: refused the peer's request to lead at epoch {} ({})", owner_name_, epoch,
-                   pubsub_itc_fw_app::to_string(refusal.reason));
+                   pubsub_itc_fw::to_string(refusal.reason));
         return Change::Nothing;
     }
 
@@ -290,7 +290,7 @@ class PairLeaseAgent {
      * @brief A voter refused one of this instance's requests.
      * @return StoppedLeading when this instance led and has learnt of a newer generation.
      */
-    [[nodiscard]] Change on_refusal(int64_t voter_id, int32_t highest_epoch, int64_t request_id, pubsub_itc_fw_app::LeaseRefusalReason reason,
+    [[nodiscard]] Change on_refusal(int64_t voter_id, int32_t highest_epoch, int64_t request_id, pubsub_itc_fw::LeaseRefusalReason reason,
                                     Clock::time_point now) {
         const bool was_leading = participant_.state() == LeaseHolder::State::Leading;
         const int32_t epoch_before = participant_.epoch();
@@ -302,7 +302,7 @@ class PairLeaseAgent {
         const Clock::duration wait = now < resuming_lead_until_ ? Clock::duration::zero() : Clock::duration{wait_before_asking_again()};
         if (participant_.on_refusal(request_id, highest_epoch, now, wait) != LeaseHolder::Event::NewerEpochKnown) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: {} refused a request ({})", owner_name_, voter_name(voter_id),
-                       pubsub_itc_fw_app::to_string(reason));
+                       pubsub_itc_fw::to_string(reason));
             return Change::Nothing;
         }
         PUBSUB_LOG(logger_, was_leading ? pubsub_itc_fw::FwLogLevel::Warning : pubsub_itc_fw::FwLogLevel::Info,
@@ -562,20 +562,20 @@ class PairLeaseAgent {
         }
     }
 
-    static pubsub_itc_fw_app::LeaseRefusalReason refusal_reason_for(LeaseVoter::Verdict verdict) {
+    static pubsub_itc_fw::LeaseRefusalReason refusal_reason_for(LeaseVoter::Verdict verdict) {
         switch (verdict) {
             case LeaseVoter::Verdict::RefusedWhileRestarting:
-                return pubsub_itc_fw_app::LeaseRefusalReason::restarting;
+                return pubsub_itc_fw::LeaseRefusalReason::restarting;
             case LeaseVoter::Verdict::RefusedPromisedElsewhere:
-                return pubsub_itc_fw_app::LeaseRefusalReason::promised_elsewhere;
+                return pubsub_itc_fw::LeaseRefusalReason::promised_elsewhere;
             case LeaseVoter::Verdict::RefusedEpochBehind:
-                return pubsub_itc_fw_app::LeaseRefusalReason::epoch_behind;
+                return pubsub_itc_fw::LeaseRefusalReason::epoch_behind;
             case LeaseVoter::Verdict::RefusedMayNotLead:
-                return pubsub_itc_fw_app::LeaseRefusalReason::may_not_lead;
+                return pubsub_itc_fw::LeaseRefusalReason::may_not_lead;
             case LeaseVoter::Verdict::Granted:
                 break;
         }
-        return pubsub_itc_fw_app::LeaseRefusalReason::unknown;
+        return pubsub_itc_fw::LeaseRefusalReason::unknown;
     }
 
     [[nodiscard]] std::string voter_name(int64_t voter_id) const {
@@ -588,9 +588,9 @@ class PairLeaseAgent {
     }
 
     void ask_voters(int32_t epoch, Clock::time_point now) {
-        pubsub_itc_fw_app::LeaseRequest request{};
+        pubsub_itc_fw::LeaseRequest request{};
         request.candidate_instance_id = self_id_;
-        request.group = group_;
+        request.pair_id = pair_id_;
         request.epoch = epoch;
         if (participant_.state() == LeaseHolder::State::Leading) {
             const LeaderStatement& statement = participant_.statement();
@@ -608,7 +608,7 @@ class PairLeaseAgent {
     std::string owner_name_;
     pubsub_itc_fw::QuillLogger& logger_;
     LeaseLinksInterface& links_;
-    pubsub_itc_fw_app::ComponentGroup group_;
+    int32_t pair_id_;
     int64_t self_id_;
     int64_t peer_id_;
     int64_t third_voter_id_;

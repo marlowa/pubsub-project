@@ -41,11 +41,11 @@
 #include <fmt/format.h>
 #include <gtest/gtest.h>
 
-#include <LeaderStatement.hpp>
-#include <LeaseHolder.hpp>
-#include <LeaseParticipant.hpp>
-#include <LeaseVoter.hpp>
-#include <PeerStatementsFlag.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
+#include <pubsub_itc_fw/LeaseHolder.hpp>
+#include <pubsub_itc_fw/LeaseParticipant.hpp>
+#include <pubsub_itc_fw/LeaseVoter.hpp>
+#include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 
 namespace {
 
@@ -59,7 +59,7 @@ constexpr milliseconds renewal_interval{1000};
 constexpr milliseconds give_up_asking_after{2000};
 constexpr int64_t arbiter_id = 3;
 // The simulated pair is the sequencer pair, the one whose leader says whether its peer may lead.
-const fix_common::PeerStatementsFlag statements{fix_common::PeerStatementsFlag::SayWhetherPeerMayLead};
+const pubsub_itc_fw::PeerStatementsFlag statements{pubsub_itc_fw::PeerStatementsFlag::SayWhetherPeerMayLead};
 
 struct Options {
     bool failures{true};
@@ -175,8 +175,8 @@ class PairSimulation {
         int32_t epoch{0};
         int64_t request_id{0};
         Clock::time_point deliver_at{};
-        fix_common::LeaderStatement statement{}; ///< on a request from a leader; leader_id is zero otherwise
-        int64_t echoed{0};                       ///< on a grant: the statement number the voter recorded
+        pubsub_itc_fw::LeaderStatement statement{}; ///< on a request from a leader; leader_id is zero otherwise
+        int64_t echoed{0};                          ///< on a grant: the statement number the voter recorded
     };
 
     bool acting(int i) const {
@@ -195,7 +195,7 @@ class PairSimulation {
         if (options_.arbiter_keeps_its_statement) {
             arbiter_->restore_recorded_statement(arbiter_statement_on_disk_);
         } else {
-            arbiter_statement_on_disk_ = fix_common::LeaderStatement{};
+            arbiter_statement_on_disk_ = pubsub_itc_fw::LeaderStatement{};
         }
     }
 
@@ -204,7 +204,7 @@ class PairSimulation {
         if (options_.instances_keep_their_statement) {
             instances_[i]->restore_recorded_statement(stored_statement_[i]);
         } else {
-            stored_statement_[i] = fix_common::LeaderStatement{};
+            stored_statement_[i] = pubsub_itc_fw::LeaderStatement{};
         }
     }
 
@@ -332,10 +332,10 @@ class PairSimulation {
             answer_request(message);
             return;
         }
-        fix_common::LeaseParticipant& instance = *instances_[message.to - 1];
+        pubsub_itc_fw::LeaseParticipant& instance = *instances_[message.to - 1];
         const int i = static_cast<int>(message.to - 1);
         if (message.kind == Kind::Grant) {
-            if (instance.on_grant(message.from, message.request_id, message.epoch, now_) == fix_common::LeaseHolder::Event::BecameLeader) {
+            if (instance.on_grant(message.from, message.request_id, message.epoch, now_) == pubsub_itc_fw::LeaseHolder::Event::BecameLeader) {
                 ++elections_;
                 stored_statement_[i] = instance.recorded_statement();
                 copied_through_[i] = 0;
@@ -355,22 +355,22 @@ class PairSimulation {
     // A voter grants or refuses a request. Granting a leader's request, it records the statement the
     // request carries, durably, before the grant is sent, and the grant echoes the number it holds.
     void answer_request(const Message& message) {
-        fix_common::LeaseVoter::Answer answer;
+        pubsub_itc_fw::LeaseVoter::Answer answer;
         int64_t echoed = 0;
         const bool carries_statement = message.statement.leader_id != 0;
         if (message.to == arbiter_id) {
             answer = arbiter_->consider(message.from, message.epoch, arbiter_now());
-            if (answer.verdict == fix_common::LeaseVoter::Verdict::Granted && carries_statement) {
+            if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted && carries_statement) {
                 arbiter_->record_statement(message.statement);
                 arbiter_statement_on_disk_ = arbiter_->recorded_statement();
                 echoed = arbiter_->holds_statement(message.statement) ? message.statement.number : 0;
             }
         } else {
             const int i = static_cast<int>(message.to - 1);
-            fix_common::LeaseParticipant& voter = *instances_[i];
+            pubsub_itc_fw::LeaseParticipant& voter = *instances_[i];
             answer = voter.on_peer_request(message.from, message.epoch, now_).answer;
             stored_epoch_[i] = voter.highest_epoch();
-            if (answer.verdict == fix_common::LeaseVoter::Verdict::Granted && carries_statement) {
+            if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted && carries_statement) {
                 echoed = voter.record_peer_statement(message.statement);
                 stored_statement_[i] = voter.recorded_statement();
             }
@@ -379,7 +379,7 @@ class PairSimulation {
         reply.from = message.to;
         reply.to = message.from;
         reply.request_id = message.request_id;
-        if (answer.verdict == fix_common::LeaseVoter::Verdict::Granted) {
+        if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted) {
             reply.kind = Kind::Grant;
             reply.epoch = message.epoch;
             reply.echoed = echoed;
@@ -391,7 +391,7 @@ class PairSimulation {
     }
 
     void ask_each_voter(int i, int32_t epoch) {
-        fix_common::LeaseParticipant& instance = *instances_[i];
+        pubsub_itc_fw::LeaseParticipant& instance = *instances_[i];
         const int64_t self = i + 1;
         const int64_t peer = self == 1 ? 2 : 1;
         for (const int64_t voter : {peer, arbiter_id}) {
@@ -401,7 +401,7 @@ class PairSimulation {
             request.to = voter;
             request.epoch = epoch;
             request.request_id = instance.record_request(voter, now_);
-            if (instance.state() == fix_common::LeaseHolder::State::Leading) {
+            if (instance.state() == pubsub_itc_fw::LeaseHolder::State::Leading) {
                 request.statement = instance.statement();
             }
             send(request);
@@ -410,7 +410,7 @@ class PairSimulation {
 
     // The acting leader writes commands, copies its log to its peer, and has the engine act on them.
     void handle_commands(int i) {
-        fix_common::LeaseParticipant& instance = *instances_[i];
+        pubsub_itc_fw::LeaseParticipant& instance = *instances_[i];
         const int peer = 1 - i;
         Log& log = logs_[i];
         if (chance(0.05)) {
@@ -471,7 +471,7 @@ class PairSimulation {
         if (!instances_[i].has_value()) {
             return;
         }
-        fix_common::LeaseParticipant& instance = *instances_[i];
+        pubsub_itc_fw::LeaseParticipant& instance = *instances_[i];
         static_cast<void>(instance.stop_if_lease_ran_out(now_));
         if (instance.acting(now_) && now_ - last_renewal_[i] >= renewal_interval) {
             last_renewal_[i] = now_;
@@ -480,7 +480,7 @@ class PairSimulation {
         if (instance.acting(now_)) {
             handle_commands(i);
         }
-        if (instance.state() == fix_common::LeaseHolder::State::Candidate && now_ - asked_at_[i] > give_up_asking_after) {
+        if (instance.state() == pubsub_itc_fw::LeaseHolder::State::Candidate && now_ - asked_at_[i] > give_up_asking_after) {
             instance.stop(now_, wait_before_asking_again());
         }
         if (instance.may_ask_to_lead(now_) && chance(0.2)) {
@@ -495,14 +495,14 @@ class PairSimulation {
     std::mt19937 random_;
     Options options_;
     Clock::time_point now_{};
-    std::optional<fix_common::LeaseParticipant> instances_[2];
+    std::optional<pubsub_itc_fw::LeaseParticipant> instances_[2];
     int32_t stored_epoch_[2]{0, 0};
     bool kept_down_[2]{false, false};
     Clock::time_point last_renewal_[2]{};
     Clock::time_point asked_at_[2]{};
-    std::optional<fix_common::LeaseVoter> arbiter_;
-    fix_common::LeaderStatement stored_statement_[2]{};
-    fix_common::LeaderStatement arbiter_statement_on_disk_{};
+    std::optional<pubsub_itc_fw::LeaseVoter> arbiter_;
+    pubsub_itc_fw::LeaderStatement stored_statement_[2]{};
+    pubsub_itc_fw::LeaderStatement arbiter_statement_on_disk_{};
     Log logs_[2];
     std::set<int64_t> acted_;
     int64_t last_command_{0};

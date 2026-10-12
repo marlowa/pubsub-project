@@ -30,23 +30,23 @@
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
-#include "BackgroundPromiseRecorder.hpp"
 #include "EngineOrderRouting.hpp"
 #include "EngineReportPosition.hpp"
-#include "EpochStore.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReportStore.hpp"
-#include "LeaseLinksInterface.hpp"
-#include "LeasePromiseStore.hpp"
 #include "LogEpochTable.hpp"
 #include "LogTailIndex.hpp"
 #include "LoggedCommandIdentifiers.hpp"
 #include "LoggedCommandIdentifiersBuilder.hpp"
-#include "PairLeaseAgent.hpp"
 #include "ReplicatedRecordWriter.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
+#include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
+#include <pubsub_itc_fw/EpochStore.hpp>
+#include <pubsub_itc_fw/LeaseLinksInterface.hpp>
+#include <pubsub_itc_fw/LeasePromiseStore.hpp>
+#include <pubsub_itc_fw/PairLeaseAgent.hpp>
 
 namespace sequencer {
 
@@ -254,25 +254,25 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // Where the epoch outlives the process. Read once at startup, rewritten
     // whenever the epoch moves.
-    fix_common::EpochStore epoch_store_;
+    pubsub_itc_fw::EpochStore epoch_store_;
 
     // Where this instance's promises in deciding which instance leads outlive the process, until
     // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
-    fix_common::LeasePromiseStore lease_promise_store_;
+    pubsub_itc_fw::LeasePromiseStore lease_promise_store_;
     // Writes promise records on a thread of its own, so that refreshing one does not stop this
     // instance answering lease requests while the disk is written (BUG-0107). Declared after the
     // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
-    std::optional<fix_common::BackgroundPromiseRecorder> background_promise_recorder_;
+    std::optional<pubsub_itc_fw::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // How the lease rules reach the other two voters in deciding which sequencer leads: the peer
     // sequencer, and the arbiter pool on both arbiter connections.
-    class SequencerLeaseLinks : public fix_common::LeaseLinksInterface {
+    class SequencerLeaseLinks : public pubsub_itc_fw::LeaseLinksInterface {
       public:
         explicit SequencerLeaseLinks(SequencerThread& owner) : owner_(owner) {}
-        void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) override;
-        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) override;
+        void send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) override;
+        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) override;
 
       private:
         SequencerThread& owner_;
@@ -281,8 +281,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // Decides whether this sequencer leads: it does only while a majority of three voters -- itself,
     // its peer and the arbiter pool -- has granted it a lease that has not run out. Constructed at
-    // the initial event when high availability is on. See fix_common/PairLeaseAgent.hpp.
-    std::optional<fix_common::PairLeaseAgent> lease_agent_;
+    // the initial event when high availability is on. See pubsub_itc_fw/PairLeaseAgent.hpp.
+    std::optional<pubsub_itc_fw::PairLeaseAgent> lease_agent_;
 
     // Timer ids (default-constructed = not scheduled); on_timer_event compares
     // a fired timer's id against these to identify it.
@@ -362,7 +362,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void adopt_role(pubsub_itc_fw_app::Role new_role);
     void set_epoch(int32_t new_epoch);
     /// Changes this sequencer's role to follow what the lease rules have just decided.
-    void act_on(fix_common::PairLeaseAgent::Change change);
+    void act_on(pubsub_itc_fw::PairLeaseAgent::Change change);
     void send_status_query(const pubsub_itc_fw::ConnectionID& conn_id);
     void send_status_response(const pubsub_itc_fw::ConnectionID& conn_id);
     void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);

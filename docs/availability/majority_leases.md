@@ -108,7 +108,7 @@ vote of just one other voter: either its peer or the third voter.
    rule 10. That wait keeps two candidates from colliding, and there is no second candidate, because both other voters
    promised their votes to the instance resuming.
 7. **Each voter remembers the highest epoch it has granted, and grants no lower one.** A new leader's epoch records
-   which instance leads in it, as `fix_common/LeaderEpoch.hpp` already does, so no two instances ever lead at the same
+   which instance leads in it, as `pubsub_itc_fw/LeaderEpoch.hpp` already does, so no two instances ever lead at the same
    epoch. A voter that refuses a request says in its refusal what the highest epoch it has granted is.
 8. **An instance that learns of an epoch higher than its own stops leading and asks again above it.** It can learn of
    one from a voter's refusal, or from a receiver on the order path that holds a higher epoch. Section 6 explains why
@@ -259,7 +259,7 @@ nothing has failed.
 
 **Code.**
 
-- The rules are in `applications/fix_common/`: `LeaseVoter.hpp` (rules 1, 6 and 7), `LeaseHolder.hpp` (rule 2),
+- The rules are in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/`: `LeaseVoter.hpp` (rules 1, 6 and 7), `LeaseHolder.hpp` (rule 2),
   `LeaseParticipant.hpp` (rules 4, 5, 9 and 10), and `PairLeaseAgent.hpp`, which drives them for an instance: asking,
   renewing, giving up a request that goes unanswered, answering the peer, and reporting what changed. `LeaseTiming.hpp`
   reads and checks the timings.
@@ -268,7 +268,7 @@ nothing has failed.
 - The arbiter votes for the components through `applications/arbiter/ComponentLeaseVoters.hpp`, which applies rule 6 to
   an arbiter that has just become active, and carries the highest epoch in each group across a change of active arbiter.
 - The witness is a `LeaseVoter`.
-- A component instance keeps its promises in `applications/fix_common/LeasePromiseStore.hpp`. The sequencer's file is
+- A component instance keeps its promises in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeasePromiseStore.hpp`. The sequencer's file is
   `lease_promise.state` in its write-ahead log directory; the matching engine's is its epoch file's name with
   `.lease_promise` added; each arbiter's is `[lease] promise_file` in its configuration. The matching engine
   publisher keeps no record, so it waits after every restart.
@@ -276,15 +276,15 @@ nothing has failed.
 
 **Tests.**
 
-- `applications/sequencer/tests/LeaseRulesTest.cpp`: one or more tests per rule.
-- `applications/sequencer/tests/LeaseSimulationTest.cpp`: a randomised simulation of a pair and its third voter, with
+- `libraries/pubsub_itc_fw/tests/LeaseRulesTest.cpp`: one or more tests per rule.
+- `libraries/pubsub_itc_fw/tests/LeaseSimulationTest.cpp`: a randomised simulation of a pair and its third voter, with
   messages delayed beyond a lease period or lost, links failing, and every party crashing and restarting, checking after
   every step that two instances never act as leader at once. A run in which the third voter's clock gains more than the
   drift allowance must find two leaders, which shows the check can fail.
-- `applications/sequencer/tests/PairLeaseAgentTest.cpp` and `applications/arbiter/tests/ComponentLeaseVotersTest.cpp`.
+- `libraries/pubsub_itc_fw/tests/PairLeaseAgentTest.cpp` and `applications/arbiter/tests/ComponentLeaseVotersTest.cpp`.
   The agent tests restart a leader after its process has been down for 1.5 seconds, with and without its record, and
   show that it keeps the lead only with the record.
-- `applications/sequencer/tests/LeasePromiseStoreTest.cpp`: the record is read back during the same boot, and ignored
+- `libraries/pubsub_itc_fw/tests/LeasePromiseStoreTest.cpp`: the record is read back during the same boot, and ignored
   when it comes from another boot, is missing, or is damaged.
 - `scripts/ha_test.py`, which runs the whole venue. Scenario 8 checks that an arbiter left with only its own vote does
   not become active, scenario 9 the halt of section 7, and scenario 15 each step of a follower being granted the lead.

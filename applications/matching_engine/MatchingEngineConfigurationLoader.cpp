@@ -3,9 +3,9 @@
 
 #include "MatchingEngineConfigurationLoader.hpp"
 
-#include <LeaseTiming.hpp>
 #include <OrderPathMetrics.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
@@ -117,7 +117,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
                 throw pubsub_itc_fw::ConfigurationException("MatchingEngineConfigurationLoader: ha_timing.catch_up_retry_seconds must be >= 1, got " +
                                                             std::to_string(config.catch_up_retry_seconds));
             }
-            config.lease = fix_common::LeaseTiming::load(toml, "MatchingEngineConfigurationLoader");
+            config.lease = pubsub_itc_fw::LeaseTiming::load(toml, "MatchingEngineConfigurationLoader");
         }
 
         std::string applog_level_str;

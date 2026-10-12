@@ -57,7 +57,16 @@ add_executable(pubsub_itc_fw_tests
     WaitingSendQueueTest.cpp
     WalWriterReaderTest.cpp
     WallClockTest.cpp
+    EpochStoreTest.cpp
+    LeaderEpochTest.cpp
+    LeasePromiseStoreTest.cpp
+    LeaseRulesTest.cpp
+    LeaseSimulationTest.cpp
+    PairLeaseAgentTest.cpp
 )
+
+# The lease classes use the lease messages, which are generated from lease_messages.dsl.
+add_dependencies(pubsub_itc_fw_tests lease_messages_generated)
 
 target_link_libraries(pubsub_itc_fw_tests PRIVATE
     pubsub_itc_fw
@@ -67,6 +76,7 @@ target_link_libraries(pubsub_itc_fw_tests PRIVATE
 
 target_include_directories(pubsub_itc_fw_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${FIX_DSL_INCLUDE_DIR}
 )
 
 if(NUMA_FOUND)

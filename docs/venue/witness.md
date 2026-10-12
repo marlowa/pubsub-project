@@ -7,7 +7,7 @@ only while a majority of three voters -- the two arbiters and the witness -- has
 that has not run out. The witness is the voter that is never a candidate: it only answers the
 arbiters' requests. It never interacts with sequencer, matching engine or publisher instances.
 
-It answers each request by the rules every voter follows (`applications/fix_common/LeaseVoter.hpp`):
+It answers each request by the rules every voter follows (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeaseVoter.hpp`):
 
 - It grants a lease to at most one arbiter at a time. Granting one is a promise not to grant a lease
   to the other arbiter until the lease period has passed, counted from the moment of granting.

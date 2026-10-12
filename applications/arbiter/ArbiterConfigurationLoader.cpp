@@ -5,8 +5,8 @@
 
 #include <string>
 
-#include <LeaseTiming.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
+#include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
@@ -66,7 +66,7 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         validate_port(witness_port, "witness.port");
         config.witness_port = static_cast<uint16_t>(witness_port);
 
-        config.lease = fix_common::LeaseTiming::load(toml, "ArbiterConfigurationLoader");
+        config.lease = pubsub_itc_fw::LeaseTiming::load(toml, "ArbiterConfigurationLoader");
         toml.get_required_except("lease.promise_file", config.lease_promise_file);
 
         std::string applog_level_str;

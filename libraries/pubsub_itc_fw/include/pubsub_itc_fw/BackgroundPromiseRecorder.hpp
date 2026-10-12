@@ -10,10 +10,10 @@
 
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
-#include <LeasePromiseRecord.hpp>
-#include <LeasePromiseRecorderInterface.hpp>
+#include <pubsub_itc_fw/LeasePromiseRecord.hpp>
+#include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Writes lease promise records on a thread of its own, so that the thread handling leases need not wait for the disk.

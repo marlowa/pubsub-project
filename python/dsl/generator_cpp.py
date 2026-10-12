@@ -52,9 +52,13 @@ class CppGenerator:
         self._emit_endian_macros(w)
         w("")
         # Guard shared helpers so they compile cleanly when multiple generated
-        # headers are included in the same translation unit.
-        w("#ifndef PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
-        w("#define PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
+        # headers are included in the same translation unit. The guard is named
+        # after the namespace: the helpers are defined inside it, so two headers
+        # generated into different namespaces each need their own copy, and a
+        # guard shared between them would leave the second without one.
+        helpers_guard = self.namespace.replace("::", "_").upper() + "_DSL_SHARED_HELPERS_DEFINED"
+        w(f"#ifndef {helpers_guard}")
+        w(f"#define {helpers_guard}")
         self._emit_endian_helpers(w)
         w("")
         self._emit_list_view(w)
@@ -62,7 +66,7 @@ class CppGenerator:
         self._emit_bytes_view(w)
         w("")
         self._emit_dump_helpers(w)
-        w("#endif // PUBSUB_ITC_FW_APP_DSL_SHARED_HELPERS_DEFINED")
+        w(f"#endif // {helpers_guard}")
         w("")
 
         for decl in ast.declarations:

@@ -7,9 +7,9 @@
 #include <cstdint>
 #include <map>
 
-#include <LeaderStatement.hpp>
-#include <LeaseVoter.hpp>
 #include <leader_follower.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
+#include <pubsub_itc_fw/LeaseVoter.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace arbiter {
@@ -68,13 +68,14 @@ class ComponentLeaseVoters {
      * Only an active arbiter may answer. A passive one stays silent, because a refusal from it would
      * cancel the request the active arbiter is answering with the same id.
      */
-    [[nodiscard]] fix_common::LeaseVoter::Answer consider(pubsub_itc_fw_app::ComponentGroup group, int64_t candidate_id, int32_t epoch, Clock::time_point now) {
+    [[nodiscard]] pubsub_itc_fw::LeaseVoter::Answer consider(pubsub_itc_fw_app::ComponentGroup group, int64_t candidate_id, int32_t epoch,
+                                                             Clock::time_point now) {
         if (!active_) {
             throw pubsub_itc_fw::PreconditionAssertion("ComponentLeaseVoters: only an active arbiter answers a component's request for a lease", __FILE__,
                                                        __LINE__);
         }
-        fix_common::LeaseVoter& voter = voter_for(group);
-        const fix_common::LeaseVoter::Answer answer = voter.consider(candidate_id, epoch, now);
+        pubsub_itc_fw::LeaseVoter& voter = voter_for(group);
+        const pubsub_itc_fw::LeaseVoter::Answer answer = voter.consider(candidate_id, epoch, now);
         learn_epoch(group, answer.highest_epoch);
         return answer;
     }
@@ -110,8 +111,8 @@ class ComponentLeaseVoters {
      *
      * @return The number to echo on the grant if the arbiter now holds the statement, or zero.
      */
-    [[nodiscard]] int64_t record_statement(pubsub_itc_fw_app::ComponentGroup group, const fix_common::LeaderStatement& statement) {
-        fix_common::LeaseVoter& voter = voter_for(group);
+    [[nodiscard]] int64_t record_statement(pubsub_itc_fw_app::ComponentGroup group, const pubsub_itc_fw::LeaderStatement& statement) {
+        pubsub_itc_fw::LeaseVoter& voter = voter_for(group);
         voter.record_statement(statement);
         statements_[group] = voter.recorded_statement();
         return voter.holds_statement(statement) ? statement.number : 0;
@@ -121,8 +122,8 @@ class ComponentLeaseVoters {
      * @brief Take a statement read from disk or sent by the other arbiter, if it is newer than the one held.
      * @return true when it replaced the one held.
      */
-    bool learn_statement(pubsub_itc_fw_app::ComponentGroup group, const fix_common::LeaderStatement& statement) {
-        fix_common::LeaderStatement& held = statements_[group];
+    bool learn_statement(pubsub_itc_fw_app::ComponentGroup group, const pubsub_itc_fw::LeaderStatement& statement) {
+        pubsub_itc_fw::LeaderStatement& held = statements_[group];
         if (!statement.newer_than(held)) {
             return false;
         }
@@ -135,22 +136,22 @@ class ComponentLeaseVoters {
     }
 
     /// The newest statement held for @p group; its leader_id is zero if none is held.
-    [[nodiscard]] fix_common::LeaderStatement statement(pubsub_itc_fw_app::ComponentGroup group) const {
+    [[nodiscard]] pubsub_itc_fw::LeaderStatement statement(pubsub_itc_fw_app::ComponentGroup group) const {
         const auto found = statements_.find(group);
-        return found == statements_.end() ? fix_common::LeaderStatement{} : found->second;
+        return found == statements_.end() ? pubsub_itc_fw::LeaderStatement{} : found->second;
     }
 
     /// Every statement held, to keep on disk and to replay to a peer that has just connected.
-    [[nodiscard]] const std::map<pubsub_itc_fw_app::ComponentGroup, fix_common::LeaderStatement>& statements() const {
+    [[nodiscard]] const std::map<pubsub_itc_fw_app::ComponentGroup, pubsub_itc_fw::LeaderStatement>& statements() const {
         return statements_;
     }
 
   private:
     // The voter for @p group, created when first needed with the highest epoch and the statement held.
-    fix_common::LeaseVoter& voter_for(pubsub_itc_fw_app::ComponentGroup group) {
+    pubsub_itc_fw::LeaseVoter& voter_for(pubsub_itc_fw_app::ComponentGroup group) {
         auto voter = voters_.find(group);
         if (voter == voters_.end()) {
-            voter = voters_.emplace(group, fix_common::LeaseVoter(lease_period_, active_since_, highest_epochs_[group])).first;
+            voter = voters_.emplace(group, pubsub_itc_fw::LeaseVoter(lease_period_, active_since_, highest_epochs_[group])).first;
             const auto statement = statements_.find(group);
             if (statement != statements_.end()) {
                 voter->second.restore_recorded_statement(statement->second);
@@ -162,9 +163,9 @@ class ComponentLeaseVoters {
     Clock::duration lease_period_;
     bool active_{false};
     Clock::time_point active_since_{};
-    std::map<pubsub_itc_fw_app::ComponentGroup, fix_common::LeaseVoter> voters_;
+    std::map<pubsub_itc_fw_app::ComponentGroup, pubsub_itc_fw::LeaseVoter> voters_;
     std::map<pubsub_itc_fw_app::ComponentGroup, int32_t> highest_epochs_;
-    std::map<pubsub_itc_fw_app::ComponentGroup, fix_common::LeaderStatement> statements_;
+    std::map<pubsub_itc_fw_app::ComponentGroup, pubsub_itc_fw::LeaderStatement> statements_;
 };
 
 } // namespaces

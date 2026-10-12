@@ -3,18 +3,20 @@
 
 #include "MatchingEnginePublisherThread.hpp"
 
-#include <LeaderStatement.hpp>
-#include <PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
+#include <LeasePairNumbers.hpp>
+#include <lease_messages.hpp>
 #include <topics.hpp>
 #include <topics_registry.hpp>
 
@@ -101,10 +103,10 @@ void MatchingEnginePublisherThread::on_initial_event() {
         // The publisher keeps no epoch on disk, so it starts knowing none.
         const int64_t self_id = static_cast<int64_t>(config_.instance_id);
         const int64_t peer_id = self_id == 1 ? 2 : 1;
-        lease_agent_.emplace("MepThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher, self_id, peer_id,
-                             arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), 0,
-                             fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::PeerAlwaysMayLead});
-        lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
+        lease_agent_.emplace("MepThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher),
+                             self_id, peer_id, arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), 0,
+                             pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead});
+        lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MepThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms)", config_.lease.period.count());
     }
@@ -204,9 +206,9 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
 
     // Arbiter PDUs: the active arbiter's answers to this publisher's lease requests.
     if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
-        if (message.pdu_id() == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+        if (message.pdu_id() == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
             handle_lease_grant(message);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+        } else if (message.pdu_id() == pubsub_itc_fw::LeaseRefusal::message_pdu_id) {
             handle_lease_refusal(message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unexpected PDU {} from an arbiter -- dropping", message.pdu_id());
@@ -287,44 +289,43 @@ void MatchingEnginePublisherThread::adopt_role(pubsub_itc_fw_app::Role new_role)
     }
 }
 
-void MatchingEnginePublisherThread::act_on(fix_common::PairLeaseAgent::Change change) {
+void MatchingEnginePublisherThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
     epoch_ = lease_agent_->highest_epoch();
     switch (change) {
-        case fix_common::PairLeaseAgent::Change::BecameLeader:
+        case pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader:
             adopt_role(pubsub_itc_fw_app::Role::leader);
             break;
-        case fix_common::PairLeaseAgent::Change::StoppedLeading:
-        case fix_common::PairLeaseAgent::Change::AgreedPeerLeads:
+        case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
+        case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
             adopt_role(pubsub_itc_fw_app::Role::follower);
             break;
-        case fix_common::PairLeaseAgent::Change::Nothing:
+        case pubsub_itc_fw::PairLeaseAgent::Change::Nothing:
             break;
     }
 }
 
-void MatchingEnginePublisherThread::PublisherLeaseLinks::send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) {
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) {
     const pubsub_itc_fw::ConnectionID peer = owner_.peer_active_conn();
     if (peer.is_valid()) {
-        owner_.send_pdu(peer, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+        owner_.send_pdu(peer, pubsub_itc_fw::LeaseRequest::message_pdu_id, 0, request);
     }
 }
 
-void MatchingEnginePublisherThread::PublisherLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) {
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) {
     // Both arbiters: only the active one answers, and which one that is may have changed.
     for (const pubsub_itc_fw::ConnectionID& conn : {owner_.arbiter_primary_conn_id_, owner_.arbiter_secondary_conn_id_}) {
         if (conn.is_valid()) {
-            owner_.send_pdu(conn, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+            owner_.send_pdu(conn, pubsub_itc_fw::LeaseRequest::message_pdu_id, 0, request);
         }
     }
 }
 
-void MatchingEnginePublisherThread::PublisherLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) {
-    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseGrant::message_pdu_id, 0, grant);
 }
 
-void MatchingEnginePublisherThread::PublisherLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id,
-                                                                      const pubsub_itc_fw_app::LeaseRefusal& refusal) {
-    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseRefusal::message_pdu_id, 0, refusal);
+void MatchingEnginePublisherThread::PublisherLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseRefusal::message_pdu_id, 0, refusal);
 }
 
 void MatchingEnginePublisherThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -333,19 +334,19 @@ void MatchingEnginePublisherThread::handle_lease_request(const pubsub_itc_fw::Co
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::LeaseRequestView request{};
-    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+    pubsub_itc_fw::LeaseRequestView request{};
+    if (!pubsub_itc_fw::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode LeaseRequest -- dropping");
         return;
     }
-    if (request.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
+    if (fix_common::group_of(request.pair_id) != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: LeaseRequest for group={} on the peer link -- dropping",
-                   pubsub_itc_fw_app::to_string(request.group));
+                   pubsub_itc_fw_app::to_string(fix_common::group_of(request.pair_id)));
         return;
     }
     act_on(lease_agent_->on_request(
         conn_id, request.candidate_instance_id, request.epoch, request.request_id,
-        fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead},
+        pubsub_itc_fw::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead},
         std::chrono::steady_clock::now()));
 }
 
@@ -355,12 +356,12 @@ void MatchingEnginePublisherThread::handle_lease_grant(const pubsub_itc_fw::Even
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::LeaseGrantView grant{};
-    if (!pubsub_itc_fw_app::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+    pubsub_itc_fw::LeaseGrantView grant{};
+    if (!pubsub_itc_fw::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode LeaseGrant -- dropping");
         return;
     }
-    if (grant.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
+    if (fix_common::group_of(grant.pair_id) != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
         return;
     }
     act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
@@ -372,12 +373,12 @@ void MatchingEnginePublisherThread::handle_lease_refusal(const pubsub_itc_fw::Ev
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::LeaseRefusalView refusal{};
-    if (!pubsub_itc_fw_app::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+    pubsub_itc_fw::LeaseRefusalView refusal{};
+    if (!pubsub_itc_fw::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode LeaseRefusal -- dropping");
         return;
     }
-    if (refusal.group != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
+    if (fix_common::group_of(refusal.pair_id) != pubsub_itc_fw_app::ComponentGroup::matching_engine_publisher || !lease_agent_.has_value()) {
         return;
     }
     act_on(lease_agent_->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, std::chrono::steady_clock::now()));
@@ -385,11 +386,11 @@ void MatchingEnginePublisherThread::handle_lease_refusal(const pubsub_itc_fw::Ev
 
 void MatchingEnginePublisherThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     const auto pdu_id = static_cast<int16_t>(message.pdu_id());
-    if (pdu_id == pubsub_itc_fw_app::LeaseRequest::message_pdu_id) {
+    if (pdu_id == pubsub_itc_fw::LeaseRequest::message_pdu_id) {
         handle_lease_request(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
         handle_lease_grant(message);
-    } else if (pdu_id == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::LeaseRefusal::message_pdu_id) {
         handle_lease_refusal(message);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unknown peer PDU {} -- dropping", pdu_id);

@@ -79,7 +79,7 @@ code as it stands:
 
 | Finding | Where it stands |
 |---------|-----------------|
-| 1 | Addressed. Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`fix_common/LeaderEpoch.hpp`), so two different instances never lead at the same epoch. The lease rules use it for every group and for the arbiters' own epochs. |
+| 1 | Addressed. Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`pubsub_itc_fw/LeaderEpoch.hpp`), so two different instances never lead at the same epoch. The lease rules use it for every group and for the arbiters' own epochs. |
 | 2, 3, 4, 5, 6 | No longer apply. They are about mechanisms the majority design removed: heartbeat timeouts, degraded self-promotion without an arbiter, arbitration rounds, and the arbiter computing leadership from its record. An instance now leads only while a majority grants it a lease, and stops at once when its lease runs out. |
 | 7 and 8 | Resolved by the majority design: the arbiter pool is a genuine majority of the two arbiters and the witness, the witness issues no epochs, and an arbiter becomes active only with a grant. |
 
@@ -100,7 +100,7 @@ rejoining follower's log is repaired to match its leader's
 acted on never leads (rule 11, checked in section 12).
 
 ---------|------------------------|
-| 1 | Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`fix_common/LeaderEpoch.hpp`). Every issuer takes the next such epoch above what it knows, so two different instances never lead at the same epoch. This applies to the sequencer, the matching engine, the arbiter's decisions for every group, and the arbiters' own epochs. |
+| 1 | Every new epoch records which instance leads in it: its remainder on division by 4 is that instance's id (`pubsub_itc_fw/LeaderEpoch.hpp`). Every issuer takes the next such epoch above what it knows, so two different instances never lead at the same epoch. This applies to the sequencer, the matching engine, the arbiter's decisions for every group, and the arbiters' own epochs. |
 | 2 | Heartbeats say whether the sender leads. A sequencer leader that hears its peer leading at a higher epoch, or the same epoch from a lower instance id, stands down and follows it. An active arbiter does the same. The matching engine does not yet, because its peer protocol has not been modelled. |
 | 3 | `SequencerThread::adopt_role` ends any arbitration round in progress whenever a role is adopted, by any route. |
 | 4 | For the sequencer group, when the arbiter confirms a connected leader but the report carries a higher epoch, it confirms that leader in a new generation above the report's epoch. The leader moves above the follower, and the follower accepts its heartbeats again. |

@@ -17,8 +17,8 @@
 
 #include <fmt/format.h>
 
-#include <LeaderStatement.hpp>
 #include <leader_follower.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 
 namespace arbiter {
 
@@ -39,7 +39,7 @@ namespace arbiter {
  */
 class ComponentStatementStore {
   public:
-    using Statements = std::map<pubsub_itc_fw_app::ComponentGroup, fix_common::LeaderStatement>;
+    using Statements = std::map<pubsub_itc_fw_app::ComponentGroup, pubsub_itc_fw::LeaderStatement>;
 
     /// @param[in] path File to hold the record, or empty for none: nothing is then kept.
     explicit ComponentStatementStore(std::string path) : path_(std::move(path)), temp_path_(path_ + ".tmp") {}
@@ -146,7 +146,7 @@ class ComponentStatementStore {
             return;
         }
         statements[static_cast<pubsub_itc_fw_app::ComponentGroup>(group)] =
-            fix_common::LeaderStatement{static_cast<int64_t>(leader), static_cast<int32_t>(epoch), static_cast<int64_t>(number), may_lead == 1};
+            pubsub_itc_fw::LeaderStatement{static_cast<int64_t>(leader), static_cast<int32_t>(epoch), static_cast<int64_t>(number), may_lead == 1};
     }
 
     bool abandon_temp(int fd) const {

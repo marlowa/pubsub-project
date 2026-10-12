@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief What a leader says about its peer: whether the peer may lead.

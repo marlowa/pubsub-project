@@ -11,19 +11,21 @@
 #include <chrono>
 #include <deque>
 
-#include <LeaderEpoch.hpp>
-#include <LeaderStatement.hpp>
+#include <LeasePairNumbers.hpp>
 #include <OrderPathMetrics.hpp>
-#include <PeerStatementsFlag.hpp>
+#include <lease_messages.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LeaderEpoch.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/PduFramer.hpp>
 #include <pubsub_itc_fw/PduParser.hpp>
+#include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -85,7 +87,7 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , arbiter_primary_conn_id_{}
     , arbiter_secondary_conn_id_{}
     , epoch_store_(config.wal_directory + "/epoch.state")
-    , lease_promise_store_(config.wal_directory + "/lease_promise.state", fix_common::LeasePromiseStore::current_boot_id()) {}
+    , lease_promise_store_(config.wal_directory + "/lease_promise.state", pubsub_itc_fw::LeasePromiseStore::current_boot_id()) {}
 
 void SequencerThread::on_initial_event() {
     // The log starts a helper thread to prepare its next segment, and a new thread inherits the
@@ -179,20 +181,20 @@ void SequencerThread::on_initial_event() {
 
     if (!config_.ha_enabled) {
         // Single-node mode: start as leader immediately, no election needed.
-        set_epoch(fix_common::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
+        set_epoch(pubsub_itc_fw::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
         adopt_role(pubsub_itc_fw_app::Role::leader);
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=false -- starting as leader immediately");
     } else {
         // Instance ids are 1 for the primary and 2 for the secondary, so the peer is the other one.
         const int64_t self_id = static_cast<int64_t>(config_.instance_id);
         const int64_t peer_id = self_id == 1 ? 2 : 1;
-        lease_agent_.emplace("SequencerThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::sequencer, self_id, peer_id,
-                             arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
-                             fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::SayWhetherPeerMayLead});
+        lease_agent_.emplace("SequencerThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::sequencer), self_id,
+                             peer_id, arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
+                             pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::SayWhetherPeerMayLead});
         background_promise_recorder_.emplace(lease_promise_store_);
         lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                        std::chrono::steady_clock::now());
-        lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
+        lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
         acknowledgement_watch_timer_id_ = start_recurring_timer(acknowledgement_watch_interval);
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -558,9 +560,9 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     // Arbiter PDUs: the active arbiter's answers to this sequencer's lease requests.
     if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
-        if (message.pdu_id() == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+        if (message.pdu_id() == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
             handle_lease_grant(message);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+        } else if (message.pdu_id() == pubsub_itc_fw::LeaseRefusal::message_pdu_id) {
             handle_lease_refusal(message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unexpected PDU {} from an arbiter -- dropping", message.pdu_id());
@@ -1411,44 +1413,44 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     }
 }
 
-void SequencerThread::act_on(fix_common::PairLeaseAgent::Change change) {
+void SequencerThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
     // Whatever happened, the highest epoch this instance knows may have risen, and it is kept on disk.
     set_epoch(lease_agent_->highest_epoch());
     switch (change) {
-        case fix_common::PairLeaseAgent::Change::BecameLeader:
+        case pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader:
             adopt_role(pubsub_itc_fw_app::Role::leader);
             break;
-        case fix_common::PairLeaseAgent::Change::StoppedLeading:
-        case fix_common::PairLeaseAgent::Change::AgreedPeerLeads:
+        case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
+        case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
             adopt_role(pubsub_itc_fw_app::Role::follower);
             break;
-        case fix_common::PairLeaseAgent::Change::Nothing:
+        case pubsub_itc_fw::PairLeaseAgent::Change::Nothing:
             break;
     }
 }
 
-void SequencerThread::SequencerLeaseLinks::send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) {
+void SequencerThread::SequencerLeaseLinks::send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) {
     const pubsub_itc_fw::ConnectionID peer = owner_.peer_active_conn();
     if (peer.is_valid()) {
-        owner_.send_pdu(peer, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+        owner_.send_pdu(peer, pubsub_itc_fw::LeaseRequest::message_pdu_id, 0, request);
     }
 }
 
-void SequencerThread::SequencerLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) {
+void SequencerThread::SequencerLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) {
     // Both arbiters: only the active one answers, and which one that is may have changed.
     for (const pubsub_itc_fw::ConnectionID& conn : {owner_.arbiter_primary_conn_id_, owner_.arbiter_secondary_conn_id_}) {
         if (conn.is_valid()) {
-            owner_.send_pdu(conn, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+            owner_.send_pdu(conn, pubsub_itc_fw::LeaseRequest::message_pdu_id, 0, request);
         }
     }
 }
 
-void SequencerThread::SequencerLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) {
-    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+void SequencerThread::SequencerLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseGrant::message_pdu_id, 0, grant);
 }
 
-void SequencerThread::SequencerLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) {
-    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseRefusal::message_pdu_id, 0, refusal);
+void SequencerThread::SequencerLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseRefusal::message_pdu_id, 0, refusal);
 }
 
 void SequencerThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -1457,21 +1459,21 @@ void SequencerThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& co
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LeaseRequestView request{};
-    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LeaseRequestView request{};
+    if (!pubsub_itc_fw::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseRequest -- dropping");
         return;
     }
-    if (request.group != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
+    if (fix_common::group_of(request.pair_id) != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: LeaseRequest for group={} on the peer link -- dropping",
-                   pubsub_itc_fw_app::to_string(request.group));
+                   pubsub_itc_fw_app::to_string(fix_common::group_of(request.pair_id)));
         return;
     }
     const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-    const fix_common::PairLeaseAgent::Change change = lease_agent_->on_request(
+    const pubsub_itc_fw::PairLeaseAgent::Change change = lease_agent_->on_request(
         conn_id, request.candidate_instance_id, request.epoch, request.request_id,
-        fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead}, now);
-    if (change == fix_common::PairLeaseAgent::Change::AgreedPeerLeads) {
+        pubsub_itc_fw::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead}, now);
+    if (change == pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads) {
         // The peer now leads, and forwards the engine's reports, until at least a lease period from now.
         last_granted_to_leader_ = now;
     }
@@ -1484,12 +1486,12 @@ void SequencerThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& mess
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LeaseGrantView grant{};
-    if (!pubsub_itc_fw_app::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LeaseGrantView grant{};
+    if (!pubsub_itc_fw::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseGrant -- dropping");
         return;
     }
-    if (grant.group != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
+    if (fix_common::group_of(grant.pair_id) != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
         return;
     }
     act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
@@ -1503,12 +1505,12 @@ void SequencerThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& me
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LeaseRefusalView refusal{};
-    if (!pubsub_itc_fw_app::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LeaseRefusalView refusal{};
+    if (!pubsub_itc_fw::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseRefusal -- dropping");
         return;
     }
-    if (refusal.group != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
+    if (fix_common::group_of(refusal.pair_id) != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
         return;
     }
     act_on(lease_agent_->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, std::chrono::steady_clock::now()));
@@ -1619,11 +1621,11 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
         handle_peer_status_query(conn_id, message);
     } else if (pdu_id == pubsub_itc_fw_app::StatusResponse::message_pdu_id) {
         handle_peer_status_response(message);
-    } else if (pdu_id == pubsub_itc_fw_app::LeaseRequest::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::LeaseRequest::message_pdu_id) {
         handle_lease_request(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
         handle_lease_grant(message);
-    } else if (pdu_id == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::LeaseRefusal::message_pdu_id) {
         handle_lease_refusal(message);
     } else if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         handle_wal_record(conn_id, message);

@@ -502,6 +502,29 @@ add_custom_target(leader_follower_generated ALL
     DEPENDS "${LF_DSL_GENERATED_HPP}"
 )
 
+# The library's lease protocol PDU header (plain integer IDs 130-132; no --pdu-id-enum). Generated into
+# the library's namespace, because the lease classes in the library use these messages.
+set(LEASE_DSL_SOURCE "${CMAKE_SOURCE_DIR}/libraries/pubsub_itc_fw/include/pubsub_itc_fw/lease_messages.dsl")
+set(LEASE_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/lease_messages.hpp")
+
+add_custom_command(
+    OUTPUT "${LEASE_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw
+            "${LEASE_DSL_SOURCE}"
+            --cpp "${LEASE_DSL_GENERATED_HPP}"
+    DEPENDS "${LEASE_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    COMMENT "Generating lease_messages.hpp from lease_messages.dsl"
+    VERBATIM
+)
+add_custom_target(lease_messages_generated ALL
+    DEPENDS "${LEASE_DSL_GENERATED_HPP}"
+)
+# Every user of leader_follower.hpp also sends or receives lease messages, so making the one depend on
+# the other gives each of them lease_messages.hpp without listing it in every CMakeLists.txt.
+add_dependencies(leader_follower_generated lease_messages_generated)
+
 # Authentication service protocol PDU header (plain integer IDs 500-503; no --pdu-id-enum).
 set(AUTH_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/authentication.dsl")
 set(AUTH_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/authentication.hpp")

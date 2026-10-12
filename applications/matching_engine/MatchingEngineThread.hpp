@@ -27,18 +27,18 @@
 #include <leader_follower.hpp>
 #include <matching_engine_replication.hpp>
 
-#include "BackgroundPromiseRecorder.hpp"
-#include "EpochStore.hpp"
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
-#include "LeaseLinksInterface.hpp"
-#include "LeasePromiseStore.hpp"
 #include "MatchingEngineConfiguration.hpp"
 #include "OrderBook.hpp"
 #include "OrderBookMetricsReporter.hpp"
 #include "OrderEntry.hpp"
 #include "OrderKey.hpp"
-#include "PairLeaseAgent.hpp"
+#include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
+#include <pubsub_itc_fw/EpochStore.hpp>
+#include <pubsub_itc_fw/LeaseLinksInterface.hpp>
+#include <pubsub_itc_fw/LeasePromiseStore.hpp>
+#include <pubsub_itc_fw/PairLeaseAgent.hpp>
 
 namespace matching_engine {
 
@@ -356,28 +356,28 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Where the epoch outlives the process. Read once at startup, rewritten
     // whenever the epoch moves.
-    fix_common::EpochStore epoch_store_;
+    pubsub_itc_fw::EpochStore epoch_store_;
 
     // Where this instance's promises in deciding which instance leads outlive the process, until
     // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
-    fix_common::LeasePromiseStore lease_promise_store_;
+    pubsub_itc_fw::LeasePromiseStore lease_promise_store_;
     // Writes promise records on a thread of its own, so that refreshing one does not stop this
     // instance answering lease requests while the disk is written (BUG-0107). Declared after the
     // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
-    std::optional<fix_common::BackgroundPromiseRecorder> background_promise_recorder_;
+    std::optional<pubsub_itc_fw::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // Drives the lease rules that decide whether this instance leads. Recurring.
     pubsub_itc_fw::TimerID lease_tick_timer_id_{};
 
     // How the lease rules reach the other two voters: the peer instance over whichever replication
     // connection is up, and the arbiter pool on both arbiter connections.
-    class EngineLeaseLinks : public fix_common::LeaseLinksInterface {
+    class EngineLeaseLinks : public pubsub_itc_fw::LeaseLinksInterface {
       public:
         explicit EngineLeaseLinks(MatchingEngineThread& owner) : owner_(owner) {}
-        void send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) override;
-        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) override;
-        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) override;
+        void send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) override;
+        void send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) override;
+        void send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) override;
 
       private:
         MatchingEngineThread& owner_;
@@ -386,8 +386,8 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Decides whether this instance leads: it does only while a majority of three voters -- itself,
     // its peer and the arbiter pool -- has granted it a lease that has not run out. Constructed when
-    // the application is ready, if high availability is on. See fix_common/PairLeaseAgent.hpp.
-    std::optional<fix_common::PairLeaseAgent> lease_agent_;
+    // the application is ready, if high availability is on. See pubsub_itc_fw/PairLeaseAgent.hpp.
+    std::optional<pubsub_itc_fw::PairLeaseAgent> lease_agent_;
 
     // Armed while this instance is reconciling, and cancelled by the ack. Only a sequencer
     // that leads serves a catch-up; one that is not leading drops the request without
@@ -506,7 +506,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // The pair's fixed identities. Neither ever changes for the life of a deployment. The only
     // preference between them is that the secondary waits longer before it first asks to lead, so
-    // the primary leads when both start together; see fix_common/PairLeaseAgent.hpp.
+    // the primary leads when both start together; see pubsub_itc_fw/PairLeaseAgent.hpp.
     // Which of them LEADS is a separate question and moves; see docs/availability/design_notes.md#ha_restart_role.
     static constexpr int64_t primary_instance_id = 1;
     static constexpr int64_t secondary_instance_id = 2;
@@ -535,7 +535,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     void enter_follower_state();
     void adopt_leader_role();
     /// Changes what this instance does to follow what the lease rules have just decided.
-    void act_on(fix_common::PairLeaseAgent::Change change);
+    void act_on(pubsub_itc_fw::PairLeaseAgent::Change change);
     void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
     void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);

@@ -5,10 +5,10 @@
 
 #include <gtest/gtest.h>
 
-#include <LeaderEpoch.hpp>
+#include <pubsub_itc_fw/LeaderEpoch.hpp>
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
-using fix_common::LeaderEpoch;
+using pubsub_itc_fw::LeaderEpoch;
 
 namespace {
 

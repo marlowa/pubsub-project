@@ -5,9 +5,9 @@
 
 #include <optional>
 
-#include <LeasePromiseRecord.hpp>
+#include <pubsub_itc_fw/LeasePromiseRecord.hpp>
 
-namespace fix_common {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Somewhere an instance records the promise it has made as a voter, so that a restart does not forget it.

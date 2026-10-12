@@ -10,15 +10,17 @@
 
 #include <fmt/format.h>
 
-#include <LeaderEpoch.hpp>
-#include <LeaderStatement.hpp>
+#include <LeasePairNumbers.hpp>
 #include <OrderPathMetrics.hpp>
-#include <PeerStatementsFlag.hpp>
+#include <lease_messages.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
+#include <pubsub_itc_fw/LeaderEpoch.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
+#include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
@@ -163,7 +165,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
     , sequencer_er_secondary_conn_id_{}
     , order_book_(&book_growth_reporter_)
     , epoch_store_(config.epoch_state_file)
-    , lease_promise_store_(config.epoch_state_file + ".lease_promise", fix_common::LeasePromiseStore::current_boot_id()) {
+    , lease_promise_store_(config.epoch_state_file + ".lease_promise", pubsub_itc_fw::LeasePromiseStore::current_boot_id()) {
     // Wired before the reserve below, so even the initial capacity is reported if it is
     // large. The book is the venue's biggest consumer of memory and was, until this,
     // completely uninstrumented: the pool and slab allocators cover objects with a message
@@ -228,7 +230,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
         // is before anything else happens.
         // Recover the leadership generation before anything can elect. Without this
         // the node starts at zero, and a pair restarted together would agree on a
-        // generation the venue has already used -- see fix_common::EpochStore.
+        // generation the venue has already used -- see pubsub_itc_fw::EpochStore.
         epoch_ = epoch_store_.load();
 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: HA enabled, starting as {} (instance_id={}, configured {}, epoch={})",
@@ -285,13 +287,13 @@ void MatchingEngineThread::on_app_ready_event() {
 
     if (ha_enabled_) {
         const int64_t self_id = static_cast<int64_t>(config_.instance_id);
-        lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, pubsub_itc_fw_app::ComponentGroup::matching_engine, self_id,
-                             peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
-                             fix_common::PeerStatementsFlag{fix_common::PeerStatementsFlag::PeerAlwaysMayLead});
+        lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine),
+                             self_id, peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
+                             pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead});
         background_promise_recorder_.emplace(lease_promise_store_);
         lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                        std::chrono::steady_clock::now());
-        lease_tick_timer_id_ = start_recurring_timer(fix_common::LeaseTiming::tick_interval);
+        lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for during the first "
@@ -444,17 +446,17 @@ void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMe
                message.connection_id().get_value(), pdu_id);
 
     // ---- HA control PDUs (Slice C+D) --------------------------------------
-    if (pdu_id == pubsub_itc_fw_app::LeaseRequest::message_pdu_id) {
+    if (pdu_id == pubsub_itc_fw::LeaseRequest::message_pdu_id) {
         handle_lease_request(message.connection_id(), message);
         release_pdu_payload(message);
         return;
     }
-    if (pdu_id == pubsub_itc_fw_app::LeaseGrant::message_pdu_id) {
+    if (pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
         handle_lease_grant(message);
         release_pdu_payload(message);
         return;
     }
-    if (pdu_id == pubsub_itc_fw_app::LeaseRefusal::message_pdu_id) {
+    if (pdu_id == pubsub_itc_fw::LeaseRefusal::message_pdu_id) {
         handle_lease_refusal(message);
         release_pdu_payload(message);
         return;
@@ -1698,22 +1700,22 @@ void MatchingEngineThread::adopt_leader_role() {
     act_on_pending_halt();
 }
 
-void MatchingEngineThread::act_on(fix_common::PairLeaseAgent::Change change) {
+void MatchingEngineThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
     set_epoch(lease_agent_->highest_epoch());
     switch (change) {
-        case fix_common::PairLeaseAgent::Change::BecameLeader:
+        case pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader:
             // The lease settles the role. Whether this instance must catch up first is a separate
             // question, answered by what it has done so far: a follower was passive and may be
             // behind, while an instance that caught up at its first sequencer connection is current.
             become_leader_when_current();
             break;
-        case fix_common::PairLeaseAgent::Change::StoppedLeading:
+        case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
             // Stops matching at once, whatever it was doing, and tells the sequencers so they stop
             // routing orders here.
             reconciling_to_lead_ = false;
             enter_follower_state();
             break;
-        case fix_common::PairLeaseAgent::Change::AgreedPeerLeads:
+        case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
             if (ha_role_state_ == MeRole::Reconciling && !reconciling_to_lead_) {
                 // Catching up at startup: follow once the catch-up ends.
                 peer_leader_heard_while_reconciling_ = true;
@@ -1723,34 +1725,34 @@ void MatchingEngineThread::act_on(fix_common::PairLeaseAgent::Change change) {
                 static_cast<void>(follow_peer_claiming_leadership(peer_instance_id(), lease_agent_->highest_epoch()));
             }
             break;
-        case fix_common::PairLeaseAgent::Change::Nothing:
+        case pubsub_itc_fw::PairLeaseAgent::Change::Nothing:
             break;
     }
 }
 
-void MatchingEngineThread::EngineLeaseLinks::send_request_to_peer(const pubsub_itc_fw_app::LeaseRequest& request) {
+void MatchingEngineThread::EngineLeaseLinks::send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) {
     const pubsub_itc_fw::ConnectionID peer =
         owner_.outbound_replication_conn_id_.is_valid() ? owner_.outbound_replication_conn_id_ : owner_.inbound_replication_conn_id_;
     if (peer.is_valid()) {
-        owner_.send_pdu(peer, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+        owner_.send_pdu(peer, pubsub_itc_fw::LeaseRequest::message_pdu_id, 0, request);
     }
 }
 
-void MatchingEngineThread::EngineLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw_app::LeaseRequest& request) {
+void MatchingEngineThread::EngineLeaseLinks::send_request_to_third_voter(const pubsub_itc_fw::LeaseRequest& request) {
     // Both arbiters: only the active one answers, and which one that is may have changed.
     for (const pubsub_itc_fw::ConnectionID& conn : {owner_.arbiter_primary_conn_id_, owner_.arbiter_secondary_conn_id_}) {
         if (conn.is_valid()) {
-            owner_.send_pdu(conn, pubsub_itc_fw_app::LeaseRequest::message_pdu_id, 0, request);
+            owner_.send_pdu(conn, pubsub_itc_fw::LeaseRequest::message_pdu_id, 0, request);
         }
     }
 }
 
-void MatchingEngineThread::EngineLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseGrant& grant) {
-    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseGrant::message_pdu_id, 0, grant);
+void MatchingEngineThread::EngineLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseGrant::message_pdu_id, 0, grant);
 }
 
-void MatchingEngineThread::EngineLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw_app::LeaseRefusal& refusal) {
-    owner_.send_pdu(conn_id, pubsub_itc_fw_app::LeaseRefusal::message_pdu_id, 0, refusal);
+void MatchingEngineThread::EngineLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) {
+    owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseRefusal::message_pdu_id, 0, refusal);
 }
 
 void MatchingEngineThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -1759,19 +1761,19 @@ void MatchingEngineThread::handle_lease_request(const pubsub_itc_fw::ConnectionI
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LeaseRequestView request{};
-    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LeaseRequestView request{};
+    if (!pubsub_itc_fw::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode LeaseRequest -- dropping");
         return;
     }
-    if (request.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
+    if (fix_common::group_of(request.pair_id) != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: LeaseRequest for group={} -- dropping",
-                   pubsub_itc_fw_app::to_string(request.group));
+                   pubsub_itc_fw_app::to_string(fix_common::group_of(request.pair_id)));
         return;
     }
     act_on(lease_agent_->on_request(
         conn_id, request.candidate_instance_id, request.epoch, request.request_id,
-        fix_common::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead},
+        pubsub_itc_fw::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead},
         std::chrono::steady_clock::now()));
 }
 
@@ -1781,12 +1783,12 @@ void MatchingEngineThread::handle_lease_grant(const pubsub_itc_fw::EventMessage&
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LeaseGrantView grant{};
-    if (!pubsub_itc_fw_app::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LeaseGrantView grant{};
+    if (!pubsub_itc_fw::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode LeaseGrant -- dropping");
         return;
     }
-    if (grant.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
+    if (fix_common::group_of(grant.pair_id) != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
         return;
     }
     act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
@@ -1798,12 +1800,12 @@ void MatchingEngineThread::handle_lease_refusal(const pubsub_itc_fw::EventMessag
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LeaseRefusalView refusal{};
-    if (!pubsub_itc_fw_app::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LeaseRefusalView refusal{};
+    if (!pubsub_itc_fw::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: failed to decode LeaseRefusal -- dropping");
         return;
     }
-    if (refusal.group != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
+    if (fix_common::group_of(refusal.pair_id) != pubsub_itc_fw_app::ComponentGroup::matching_engine || !lease_agent_.has_value()) {
         return;
     }
     act_on(lease_agent_->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, std::chrono::steady_clock::now()));
