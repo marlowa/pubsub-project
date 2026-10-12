@@ -120,13 +120,12 @@ source and by recording, with `perf`, every time a thread of the running venue w
 for a mutex (`lock-audit-report.txt`). Nothing checks that an order-handling thread does not wait for
 another thread by other means.
 
-**Today: broken in four places.**
+**Today: broken in three places.**
 
 | Lock | Where | Taken | Bug |
 |---|---|---|---|
 | `log_epochs_mutex_` | `SequencerThread` | On every write to the sequencer's log, on the leader and the follower | [BUG-0124](bug_list.md#bug_0124) |
 | The mutex in `ReplicatedRecordWriter` | Following sequencer | On every record the leader sends, which is inside every order's round trip | [BUG-0124](bug_list.md#bug_0124) |
-| The mutex and condition variables in `BackgroundPromiseRecorder` | Sequencer and matching engine application threads | Every 100 milliseconds, at each lease tick; and, rarely, a wait for a disk sync to finish | [BUG-0126](bug_list.md#bug_0126) |
 | The expansion mutex in `ExpandablePoolAllocator` | Every queue between threads, and the gateways' open-order pools | Only when a pool runs out, and then while a new pool is mapped from the operating system | [BUG-0127](bug_list.md#bug_0127) |
 
 The first two exist only because of the two writers described under F1.
@@ -193,7 +192,9 @@ else meanwhile.
 sync per record; a record is safe because it is held on two machines, not because it is on disk
 ([wal_and_ha.md](availability/wal_and_ha.md), "Two levels of commit"). New segments are created ahead
 of time by the log's helper thread, which keeps several segments ready (see below). Lease promises are written and synced by
-`BackgroundPromiseRecorder` on a thread of its own.
+`BackgroundPromiseRecorder` on a thread of its own. The thread that handles orders only starts a write and reads its
+outcome at a later lease tick, without a lock and without waiting; a promise to the peer that the record on disk does not
+yet cover is refused until the write has finished.
 
 **What checks it.** Nothing in the build. Two metrics show whether the log's helper keeps pace:
 `wal_segments_waited_for` counts the times the writing thread had to wait for the helper to finish a
@@ -209,12 +210,8 @@ segments with records. If the helper has failed, the writing thread creates and 
 segment itself. That is the one accepted exception to this principle: it is counted, logged as a
 warning, and treated as an incident.
 
-**Today: broken in two places, both uncommon.**
+**Today: broken in one place, uncommon.**
 
-- `BackgroundPromiseRecorder::record()` writes and syncs a record on the calling thread, which is the
-  sequencer's or the matching engine's application thread, when the record held does not cover the
-  promise about to be made: when an instance first promises its vote to another, or when a background
-  write has not finished within five seconds. Recorded as [BUG-0126](bug_list.md#bug_0126).
 - The log's helper keeps only one segment ready. If it is still filling that segment when the writer
   needs it, the writer waits for it, spinning until it finishes; and the writer creates a segment
   itself, if the helper has failed, without logging a warning. Recorded as

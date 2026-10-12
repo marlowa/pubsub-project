@@ -3,8 +3,6 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <optional>
-
 #include <pubsub_itc_fw/LeasePromiseRecord.hpp>
 
 namespace pubsub_itc_fw {
@@ -20,6 +18,9 @@ namespace pubsub_itc_fw {
  *
  * The record also holds the newest leader's statement the instance holds about which instance may not
  * lead (LeaderStatement), so that a restart does not forget that either.
+ *
+ * record() writes and syncs before it returns, so it can take a long time on a slow disk. A thread that
+ * handles orders never calls it: BackgroundPromiseRecorder calls it on a thread of its own.
  */
 class LeasePromiseRecorderInterface {
   public:
@@ -31,30 +32,6 @@ class LeasePromiseRecorderInterface {
      * @return true when the record reached the disk. When it did not, the caller must not grant the lease.
      */
     [[nodiscard]] virtual bool record(const LeasePromiseRecord& record) = 0;
-
-    /**
-     * @brief Start writing a record without waiting for it, if this recorder can.
-     *
-     * Lets the thread that handles leases refresh a record well before it is needed, so that it does
-     * not stop answering lease requests while the disk is written (BUG-0107). The record must not be
-     * relied on until background_result() has reported it written. A recorder that cannot write in
-     * the background returns false and the caller writes with record() when it must.
-     *
-     * @return true when the write was started; false when it was not, and nothing was asked for.
-     */
-    [[nodiscard]] virtual bool record_in_background(const LeasePromiseRecord& /*record*/) {
-        return false;
-    }
-
-    /**
-     * @brief The outcome of the write record_in_background() started, once it has finished.
-     *
-     * @return std::nullopt while no write has finished since the last call; otherwise true when the
-     *         record reached the disk and false when it did not. Each outcome is reported once.
-     */
-    [[nodiscard]] virtual std::optional<bool> background_result() {
-        return std::nullopt;
-    }
 };
 
 } // namespaces

@@ -15,6 +15,7 @@
 
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
+#include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
@@ -34,6 +35,9 @@ using Clock = std::chrono::steady_clock;
 using std::chrono::milliseconds;
 
 constexpr int64_t arbiter_id = 3;
+
+// The id of the secondary instance, the peer to which the primary sends its requests.
+constexpr int64_t request_peer_id = 2;
 
 // The number the agents under test put on their lease messages for their pair. Any number will do.
 constexpr int32_t test_pair_id = 1;
@@ -83,11 +87,12 @@ struct KeptPromises : public pubsub_itc_fw::LeasePromiseRecorderInterface {
         if (fail) {
             return false;
         }
-        ++records_written;
         promised_to = record.promised_to;
         until = record.until;
         statement = record.statement;
         recorded_anything = true;
+        // Last, so that a test waiting for this count knows the record is complete and the store no longer in use.
+        ++records_written;
         return true;
     }
 
@@ -98,6 +103,61 @@ struct KeptPromises : public pubsub_itc_fw::LeasePromiseRecorderInterface {
         return pubsub_itc_fw::LeasePromiseStore::Record{promised_to, until, statement};
     }
 };
+
+// Writes each record into a KeptPromises as soon as the write is started, on the calling thread, and
+// reports the outcome the next time it is asked. To the agent this looks like a background write that
+// has always finished by its next look, which keeps the tests that use it deterministic. With a delay
+// in the KeptPromises, it is instead a recorder that holds up the calling thread.
+struct RecordsAtOnce : public pubsub_itc_fw::BackgroundPromiseRecorderInterface {
+    explicit RecordsAtOnce(KeptPromises& kept) : kept_(kept) {}
+
+    bool record_in_background(const pubsub_itc_fw::LeasePromiseRecord& record) override {
+        if (outcome_.has_value()) {
+            return false;
+        }
+        outcome_ = kept_.record(record);
+        return true;
+    }
+
+    std::optional<bool> background_result() override {
+        const std::optional<bool> outcome = outcome_;
+        outcome_.reset();
+        return outcome;
+    }
+
+    // Forget a write whose outcome was not read, as a process that dies forgets it.
+    void forget() {
+        outcome_.reset();
+    }
+
+  private:
+    KeptPromises& kept_;
+    std::optional<bool> outcome_;
+};
+
+// How long the slow store in the tests below takes to write each record, as a disk whose sync has stopped
+// answering for a while.
+constexpr std::chrono::milliseconds slow_store_delay{2000};
+
+// Waits up to @p limit for the recorder to report the outcome of its write.
+std::optional<bool> wait_for_outcome(pubsub_itc_fw::BackgroundPromiseRecorder& recorder, std::chrono::milliseconds limit) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    std::optional<bool> outcome;
+    while (!outcome.has_value() && std::chrono::steady_clock::now() < deadline) {
+        outcome = recorder.background_result();
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    return outcome;
+}
+
+// Waits up to @p limit for @p store to have written @p count records, so that a store a writer thread may
+// still be using does not go out of scope under it.
+void wait_for_records(const KeptPromises& store, int count, std::chrono::milliseconds limit) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (store.records_written < count && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+}
 
 class PairLeaseAgentTest : public ::testing::Test {
   protected:
@@ -204,14 +264,15 @@ class PairLeaseAgentTest : public ::testing::Test {
             std::make_unique<pubsub_itc_fw::PairLeaseAgent>("TestThread", logger_, outboxes_[i], test_pair_id, i + 1, i == 0 ? 2 : 1, arbiter_id, "the arbiter",
                                                             timing_, now_, keep_epoch ? agents_[i]->highest_epoch() : 0, peer_statements_);
         if (keep_promises) {
-            agents_[i]->keep_promises_in(kept_[i], kept_[i].as_record(), kept_[i].statement, now_);
+            at_once_[i].forget();
+            agents_[i]->keep_promises_in(at_once_[i], kept_[i].as_record(), kept_[i].statement, now_);
         }
         changes_[i].clear();
     }
 
     void keep_promises() {
         for (int i = 0; i < 2; ++i) {
-            agents_[i]->keep_promises_in(kept_[i], std::nullopt, pubsub_itc_fw::LeaderStatement{}, now_);
+            agents_[i]->keep_promises_in(at_once_[i], std::nullopt, pubsub_itc_fw::LeaderStatement{}, now_);
         }
     }
 
@@ -244,6 +305,7 @@ class PairLeaseAgentTest : public ::testing::Test {
     bool arbiter_up_{true};
     std::vector<pubsub_itc_fw::PairLeaseAgent::Change> changes_[2];
     KeptPromises kept_[2];
+    RecordsAtOnce at_once_[2]{RecordsAtOnce{kept_[0]}, RecordsAtOnce{kept_[1]}};
     bool down_[2]{false, false};
 };
 
@@ -369,7 +431,7 @@ TEST_F(PairLeaseAgentTest, APromiseThatCannotBeRecordedIsNotMade) {
     // The follower refused rather than making a promise it could not keep across a restart, so the
     // primary leads on the arbiter's grant alone.
     EXPECT_TRUE(agents_[0]->acting(now_));
-    EXPECT_TRUE(log_contains("could not record the promise"));
+    EXPECT_TRUE(log_contains("could not write the lease promise record"));
 }
 
 // In the two tests below the leader's process is down for 1.5 seconds before its supervisor starts it
@@ -517,7 +579,13 @@ TEST_F(PairLeaseAgentTest, ALeaderRestartedWithItsRecordButNoEpochKeepsTheLead) 
     EXPECT_GT(agents_[0]->epoch(), epoch_before);
 }
 
-TEST_F(PairLeaseAgentTest, AFormerLeaderRestartedWithItsRecordDoesNotDisturbAPeerThatTookOver) {
+// With the arbiter down, a former leader restarted with a record saying it led asks to lead again at
+// once, and as a candidate refuses its peer's renewals for a lease period, so the peer's lease runs out.
+// The peer asks to lead again at once, and the restarted instance gives way. Its record still names
+// itself, so it first refuses with recording_promise and writes a record naming the peer, and the peer,
+// asking again at its next renewal interval, is granted. The pair is without a leader for about one
+// renewal interval, never has two, and ends with the peer leading.
+TEST_F(PairLeaseAgentTest, WithTheArbiterDownARestartedFormerLeaderLeavesThePeerLeadingAfterAShortGap) {
     keep_promises();
     for (int i = 0; i < 40; ++i) {
         step();
@@ -535,11 +603,24 @@ TEST_F(PairLeaseAgentTest, AFormerLeaderRestartedWithItsRecordDoesNotDisturbAPee
     ASSERT_EQ(kept_[0].promised_to, 1);
     ASSERT_GT(kept_[0].until, now_);
     restart(0, true);
+    Clock::duration longest_gap{};
+    Clock::time_point gap_started{};
+    bool in_gap = false;
     for (int i = 0; i < 100; ++i) {
         step();
-        ASSERT_TRUE(agents_[1]->acting(now_)) << "the peer lost its lead at step " << i;
+        ASSERT_FALSE(agents_[0]->acting(now_) && agents_[1]->acting(now_)) << "both instances acting at step " << i;
+        if (!agents_[1]->acting(now_) && !in_gap) {
+            in_gap = true;
+            gap_started = now_;
+        } else if (agents_[1]->acting(now_) && in_gap) {
+            in_gap = false;
+            longest_gap = std::max(longest_gap, now_ - gap_started);
+        }
     }
+    EXPECT_TRUE(agents_[1]->acting(now_));
     EXPECT_FALSE(agents_[0]->acting(now_));
+    EXPECT_LE(longest_gap, timing_.renewal_interval + pubsub_itc_fw::LeaseTiming::tick_interval) << "the pair was without a leader for too long";
+    EXPECT_EQ(kept_[0].promised_to, 2) << "the restarted instance's record does not name the peer it grants";
 }
 
 // A record that takes 200 ms to write, as on a disk whose sync has slowed. Written in the background,
@@ -555,7 +636,7 @@ TEST_F(PairLeaseAgentTest, ASlowRecordWrittenInTheBackgroundDoesNotHoldUpTheLeas
         pubsub_itc_fw::BackgroundPromiseRecorder background_1(kept_[1]);
         agents_[0]->keep_promises_in(background_0, std::nullopt, pubsub_itc_fw::LeaderStatement{}, now_);
         agents_[1]->keep_promises_in(background_1, std::nullopt, pubsub_itc_fw::LeaderStatement{}, now_);
-        // The first records are written on the lease thread, because nothing is on disk yet.
+        // Long enough for the first records to be written, and the primary to lead.
         for (int i = 0; i < 60; ++i) {
             step();
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
@@ -576,9 +657,10 @@ TEST_F(PairLeaseAgentTest, ASlowRecordWrittenInTheBackgroundDoesNotHoldUpTheLeas
     EXPECT_EQ(std::count(changes_[0].begin(), changes_[0].end(), pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader), 1);
 }
 
-// The same slow record written on the lease thread does hold it up. This is what makes the test above
-// mean something: its measure of the longest step does see a write that blocks.
-TEST_F(PairLeaseAgentTest, WithoutABackgroundWriterASlowRecordHoldsUpTheLeaseThread) {
+// The same slow record, written by a recorder that writes on the calling thread, does hold up the lease
+// thread. This is what makes the test above mean something: its measure of the longest step does see a
+// write that blocks.
+TEST_F(PairLeaseAgentTest, ARecorderThatWritesOnTheCallingThreadHoldsUpTheLeaseThread) {
     kept_[0].delay = std::chrono::milliseconds{200};
     kept_[1].delay = std::chrono::milliseconds{200};
     keep_promises();
@@ -673,7 +755,16 @@ TEST_F(PairLeaseAgentTest, ALeaderMayActWithoutItsPeerOnlyOnceAnotherVoterHasEch
     agents_[0]->begin_running_without_peer(now_);
     EXPECT_FALSE(agents_[0]->may_act_without_peer()) << "the new statement has not been echoed";
     deliver();
-    EXPECT_TRUE(agents_[0]->may_act_without_peer()) << "the requests sent at once carried the new statement, and were granted";
+    // The requests sent at once carried the new statement, and were granted, so it has been echoed.
+    // The leader's own record of it is written in the background. It is known to be on disk at a later
+    // tick: the next one, or the one after if another write was in progress when the statement changed.
+    EXPECT_FALSE(agents_[0]->may_act_without_peer()) << "the leader acted on its statement before learning that it was on disk";
+    int ticks = 0;
+    for (; ticks < 5 && !agents_[0]->may_act_without_peer(); ++ticks) {
+        step();
+    }
+    EXPECT_TRUE(agents_[0]->may_act_without_peer()) << "the statement was echoed, and still the leader may not act after five ticks";
+    EXPECT_LE(ticks, 2);
 }
 
 TEST_F(PairLeaseAgentTest, ALeaderWhoseOwnStatementCannotBeWrittenNeverActsWithoutItsPeer) {
@@ -712,24 +803,138 @@ TEST_F(PairLeaseAgentTest, ARestartedLeaderRefusesAPeerItsRecordSaysMayNotLead) 
     EXPECT_EQ(outboxes_[0].refusals.front().reason, pubsub_itc_fw::LeaseRefusalReason::may_not_lead);
 }
 
-// A record written on the lease thread while a background write is in progress waits for it, and the
-// record it writes is the one left on disk; the background write's outcome is not reported afterwards.
-TEST(BackgroundPromiseRecorderTest, ARecordWrittenAtOnceWaitsForTheBackgroundWriteAndReplacesIt) {
-    KeptPromises store;
-    store.delay = std::chrono::milliseconds{300};
-    {
-        pubsub_itc_fw::BackgroundPromiseRecorder recorder(store);
-        ASSERT_TRUE(recorder.record_in_background(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{std::chrono::seconds{10}}, {}}));
-        EXPECT_FALSE(recorder.record_in_background(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{std::chrono::seconds{11}}, {}}))
-            << "a second background write was started";
-        const auto started = std::chrono::steady_clock::now();
-        ASSERT_TRUE(recorder.record(pubsub_itc_fw::LeasePromiseRecord{1, Clock::time_point{std::chrono::seconds{20}}, {}}));
-        EXPECT_GE(std::chrono::steady_clock::now() - started, std::chrono::milliseconds{500}) << "the write at once did not wait for the background one";
-        EXPECT_FALSE(recorder.background_result().has_value());
+// The first request from the peer, which the record on disk does not cover, is refused with
+// recording_promise, and the write that covers it is started. Neither answering the request nor ticking
+// waits for the store, which takes two seconds. Once the write has finished, the peer's next request is
+// granted, and the record on disk then names the peer.
+TEST_F(PairLeaseAgentTest, APromiseNotYetOnDiskIsRefusedAndGrantedOnceTheSlowWriteFinishes) {
+    kept_[1].delay = slow_store_delay;
+    pubsub_itc_fw::BackgroundPromiseRecorder background(kept_[1]);
+    agents_[1]->keep_promises_in(background, std::nullopt, pubsub_itc_fw::LeaderStatement{}, now_);
+    // Past the first lease period, during which a voter grants nothing.
+    now_ = start_ + timing_.period + milliseconds{500};
+
+    const auto started = std::chrono::steady_clock::now();
+    record(1, agents_[1]->on_request(pubsub_itc_fw::ConnectionID{}, 1, 1, 1, pubsub_itc_fw::LeaderStatement{}, now_));
+    record(1, agents_[1]->on_tick(now_));
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds{100}) << "the lease thread waited for the store";
+    ASSERT_EQ(outboxes_[1].refusals.size(), 1U);
+    EXPECT_TRUE(outboxes_[1].grants.empty());
+    EXPECT_EQ(outboxes_[1].refusals.front().reason, pubsub_itc_fw::LeaseRefusalReason::recording_promise);
+
+    // While the write is in progress, the peer's requests go on being refused, without waiting.
+    outboxes_[1] = Outbox{};
+    const auto asked_again = std::chrono::steady_clock::now();
+    record(1, agents_[1]->on_request(pubsub_itc_fw::ConnectionID{}, 1, 1, 2, pubsub_itc_fw::LeaderStatement{}, now_));
+    EXPECT_LT(std::chrono::steady_clock::now() - asked_again, std::chrono::milliseconds{100}) << "the lease thread waited for the store";
+    ASSERT_EQ(outboxes_[1].refusals.size(), 1U);
+    EXPECT_EQ(outboxes_[1].refusals.front().reason, pubsub_itc_fw::LeaseRefusalReason::recording_promise);
+
+    wait_for_records(kept_[1], 1, slow_store_delay * 2);
+    ASSERT_EQ(kept_[1].records_written, 1);
+    // The outcome is read at a tick. The writer thread stores it just after the store returns.
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+    record(1, agents_[1]->on_tick(now_));
+    outboxes_[1] = Outbox{};
+    record(1, agents_[1]->on_request(pubsub_itc_fw::ConnectionID{}, 1, 1, 3, pubsub_itc_fw::LeaderStatement{}, now_));
+    EXPECT_TRUE(outboxes_[1].refusals.empty());
+    ASSERT_EQ(outboxes_[1].grants.size(), 1U) << "the request was not granted once the promise was on disk";
+    EXPECT_EQ(kept_[1].promised_to, 1);
+    EXPECT_GT(kept_[1].until, now_ + timing_.period);
+}
+
+// A candidate the peer refuses with recording_promise asks the peer again at its next renewal interval,
+// rather than after the lease period it waits after any other refusal.
+TEST_F(PairLeaseAgentTest, ACandidateAsksAgainAtTheNextRenewalIntervalAfterRecordingPromise) {
+    for (int i = 0; i < 200 && outboxes_[0].to_peer.empty(); ++i) {
+        now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
     }
+    ASSERT_EQ(outboxes_[0].to_peer.size(), 1U) << "the primary never asked to lead";
+    const pubsub_itc_fw::LeaseRequest request = outboxes_[0].to_peer.front();
+    const Clock::time_point asked_at = now_;
+    outboxes_[0] = Outbox{};
+    record(0, agents_[0]->on_refusal(request_peer_id, request.epoch, request.request_id, pubsub_itc_fw::LeaseRefusalReason::recording_promise, now_));
+    while (outboxes_[0].to_peer.empty() && now_ < asked_at + timing_.period) {
+        now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
+    }
+    ASSERT_EQ(outboxes_[0].to_peer.size(), 1U) << "the candidate did not ask again within the lease period";
+    EXPECT_EQ(now_ - asked_at, timing_.renewal_interval) << "the candidate did not ask again at its next renewal interval";
+    EXPECT_EQ(outboxes_[0].to_peer.front().epoch, request.epoch);
+}
+
+// The control for the test above: after any other refusal the candidate does not ask again within the
+// renewal interval, so the test above does see the quicker retry.
+TEST_F(PairLeaseAgentTest, ACandidateRefusedForAnyOtherReasonDoesNotAskAgainAtTheNextRenewalInterval) {
+    for (int i = 0; i < 200 && outboxes_[0].to_peer.empty(); ++i) {
+        now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
+    }
+    ASSERT_EQ(outboxes_[0].to_peer.size(), 1U) << "the primary never asked to lead";
+    const pubsub_itc_fw::LeaseRequest request = outboxes_[0].to_peer.front();
+    const Clock::time_point asked_at = now_;
+    outboxes_[0] = Outbox{};
+    record(0, agents_[0]->on_refusal(request_peer_id, request.epoch, request.request_id, pubsub_itc_fw::LeaseRefusalReason::promised_elsewhere, now_));
+    while (now_ < asked_at + timing_.renewal_interval * 2) {
+        now_ += pubsub_itc_fw::LeaseTiming::tick_interval;
+        record(0, agents_[0]->on_tick(now_));
+    }
+    EXPECT_TRUE(outboxes_[0].to_peer.empty()) << "the candidate asked again within two renewal intervals after an ordinary refusal";
+}
+
+// While the store takes two seconds to write, starting a write, reading its outcome, and trying to start a
+// second write all return at once. The outcome is reported once, after the write has finished, and only
+// then may another write start.
+TEST(BackgroundPromiseRecorderTest, NothingTheLeaseThreadCallsWaitsForTheStore) {
+    KeptPromises store;
+    store.delay = slow_store_delay;
+    pubsub_itc_fw::BackgroundPromiseRecorder recorder(store);
+    const auto started = std::chrono::steady_clock::now();
+    ASSERT_TRUE(recorder.record_in_background(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{std::chrono::seconds{10}}, {}}));
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    EXPECT_FALSE(recorder.background_result().has_value()) << "an outcome was reported before the store had finished writing";
+    EXPECT_FALSE(recorder.record_in_background(pubsub_itc_fw::LeasePromiseRecord{2, Clock::time_point{std::chrono::seconds{11}}, {}}))
+        << "a second write was started while the first was in progress";
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::milliseconds{500}) << "a call from the lease thread waited for the store";
+
+    const std::optional<bool> outcome = wait_for_outcome(recorder, slow_store_delay * 2);
+    ASSERT_TRUE(outcome.has_value());
+    EXPECT_TRUE(*outcome);
+    EXPECT_GE(std::chrono::steady_clock::now() - started, slow_store_delay) << "the outcome was reported before the store had finished";
+    EXPECT_FALSE(recorder.background_result().has_value()) << "the outcome was reported twice";
+    EXPECT_EQ(store.records_written, 1);
+    EXPECT_EQ(store.until, Clock::time_point{std::chrono::seconds{10}});
+
+    store.delay = std::chrono::milliseconds{0};
+    ASSERT_TRUE(recorder.record_in_background(pubsub_itc_fw::LeasePromiseRecord{1, Clock::time_point{std::chrono::seconds{20}}, {}}))
+        << "no write could be started after the first had finished";
+    ASSERT_TRUE(wait_for_outcome(recorder, std::chrono::milliseconds{1000}).value_or(false));
     EXPECT_EQ(store.promised_to, 1);
-    EXPECT_EQ(store.until, Clock::time_point{std::chrono::seconds{20}});
     EXPECT_EQ(store.records_written, 2);
+}
+
+// Destroying the recorder while its write is stuck on the store returns after the one second it waits,
+// not when the write finishes.
+TEST(BackgroundPromiseRecorderTest, DestroyingTheRecorderDoesNotWaitForAStuckWrite) {
+    KeptPromises store;
+    store.delay = slow_store_delay * 2;
+    std::chrono::steady_clock::duration destruction_took{};
+    {
+        auto recorder = std::make_unique<pubsub_itc_fw::BackgroundPromiseRecorder>(store);
+        ASSERT_TRUE(recorder->record_in_background(pubsub_itc_fw::LeasePromiseRecord{1, Clock::time_point{std::chrono::seconds{10}}, {}}));
+        // Give the writer thread time to take the record and start writing it.
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        const auto started = std::chrono::steady_clock::now();
+        recorder.reset();
+        destruction_took = std::chrono::steady_clock::now() - started;
+    }
+    EXPECT_GE(destruction_took, std::chrono::milliseconds{900}) << "the destructor did not wait for the write at all";
+    EXPECT_LT(destruction_took, std::chrono::milliseconds{1500}) << "the destructor waited for the stuck write";
+    // The writer thread is still writing into the store. It must finish before the store goes.
+    wait_for_records(store, 1, slow_store_delay * 3);
+    EXPECT_EQ(store.records_written, 1);
 }
 
 // A background write that fails is reported as failed, once.

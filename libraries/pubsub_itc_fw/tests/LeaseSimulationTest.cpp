@@ -22,6 +22,9 @@
  * acted on. A voter here records a statement durably before it grants; the design lets the follower
  * write it in the background, and findings.md section 12.5 describes the risk that leaves.
  *
+ * An instance asked by its peer sometimes refuses a request it would grant, as PairLeaseAgent does
+ * while the promise of its vote is not yet on disk, although its vote is promised in memory.
+ *
  * Some runs are deliberately broken, because a check that cannot fail shows nothing. In one the third
  * voter's clock runs further ahead than the drift allowance covers, so it forgets its promises early,
  * and two leaders must be found acting at once. In others one part of rule 11 is removed, and an
@@ -65,6 +68,10 @@ struct Options {
     bool failures{true};
     bool slow_and_lossy_messages{true};
     bool arbiter_down_for_good{false};
+    // An instance asked by its peer sometimes refuses a request it would grant, because the promise of its
+    // vote is not yet on disk (the refusal reason recording_promise). Its vote is promised in memory all
+    // the same. Refusing is always safe, and this checks that it is.
+    bool peers_refuse_while_recording{true};
     // How far ahead of the instances' clocks the arbiter's clock runs over one lease period. Up to the
     // drift allowance the lease rules absorb it; beyond it, the arbiter forgets promises too early.
     milliseconds arbiter_clock_gain_per_lease{0};
@@ -126,6 +133,11 @@ class PairSimulation {
             last_step_had_leader_ = acting(0) || acting(1);
         }
         return {};
+    }
+
+    /// How many requests an instance refused because the promise of its vote was not yet on disk.
+    int refusals_while_recording() const {
+        return refusals_while_recording_;
     }
 
     int steps_with_a_leader() const {
@@ -357,6 +369,7 @@ class PairSimulation {
     void answer_request(const Message& message) {
         pubsub_itc_fw::LeaseVoter::Answer answer;
         int64_t echoed = 0;
+        bool refused_while_recording = false;
         const bool carries_statement = message.statement.leader_id != 0;
         if (message.to == arbiter_id) {
             answer = arbiter_->consider(message.from, message.epoch, arbiter_now());
@@ -374,12 +387,16 @@ class PairSimulation {
                 echoed = voter.record_peer_statement(message.statement);
                 stored_statement_[i] = voter.recorded_statement();
             }
+            if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted && options_.peers_refuse_while_recording && chance(0.2)) {
+                refused_while_recording = true;
+                ++refusals_while_recording_;
+            }
         }
         Message reply;
         reply.from = message.to;
         reply.to = message.from;
         reply.request_id = message.request_id;
-        if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted) {
+        if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted && !refused_while_recording) {
             reply.kind = Kind::Grant;
             reply.epoch = message.epoch;
             reply.echoed = echoed;
@@ -518,6 +535,7 @@ class PairSimulation {
     std::string violation_;
     int steps_with_a_leader_{0};
     int elections_{0};
+    int refusals_while_recording_{0};
     bool last_step_had_leader_{false};
 };
 
@@ -542,13 +560,16 @@ void expect_a_leader_lacking_an_acted_command(const Options& options) {
 TEST(LeaseSimulationTest, TwoInstancesNeverActAsLeaderAtOnce) {
     int64_t elections = 0;
     int64_t steps_with_a_leader = 0;
+    int64_t refusals_while_recording = 0;
     for (uint32_t seed = 1; seed <= simulation_runs; ++seed) {
         PairSimulation simulation(seed, Options{});
         const std::string violation = simulation.run(steps_per_run);
         ASSERT_TRUE(violation.empty()) << "seed " << seed << ": " << violation;
         elections += simulation.elections();
         steps_with_a_leader += simulation.steps_with_a_leader();
+        refusals_while_recording += simulation.refusals_while_recording();
     }
+    EXPECT_GT(refusals_while_recording, 0) << "no instance refused a request while recording its promise, so the property was not checked with such refusals";
     // The property means something only if leaders exist for much of the time and leadership moves
     // often. Without these, a simulation in which nobody ever led would pass.
     const int64_t total_steps = static_cast<int64_t>(simulation_runs) * steps_per_run;
@@ -601,6 +622,11 @@ TEST(LeaseSimulationTest, WithTheArbiterDownForGoodThePairStillElectsALeader) {
     options.failures = false;
     options.slow_and_lossy_messages = false;
     options.arbiter_down_for_good = true;
+    // Refusing at random tests safety, not availability. The agent refuses a peer only until the
+    // record covering its promise is written, and then grants every renewal for several seconds;
+    // refusing one renewal in five for the whole run, with the arbiter gone, would end leaderships the
+    // agent keeps.
+    options.peers_refuse_while_recording = false;
     for (uint32_t seed = 1; seed <= 50; ++seed) {
         PairSimulation simulation(seed, options);
         ASSERT_TRUE(simulation.run(400).empty());
@@ -615,6 +641,11 @@ TEST(LeaseSimulationTest, WithTheArbiterAndTheLeaderBothGoneNobodyLeads) {
     options.failures = false;
     options.slow_and_lossy_messages = false;
     options.arbiter_down_for_good = true;
+    // Refusing at random tests safety, not availability. The agent refuses a peer only until the
+    // record covering its promise is written, and then grants every renewal for several seconds;
+    // refusing one renewal in five for the whole run, with the arbiter gone, would end leaderships the
+    // agent keeps.
+    options.peers_refuse_while_recording = false;
     for (uint32_t seed = 1; seed <= 50; ++seed) {
         PairSimulation simulation(seed, options);
         ASSERT_TRUE(simulation.run(400).empty());

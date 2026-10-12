@@ -21,10 +21,12 @@
 
 # ------------------------------------------------------------
 #  LeaseRefusalReason
-#  Why a voter refused a LeaseRequest. It changes nothing about
-#  what the asker does -- a refusal is a refusal -- but a log that
-#  says why is what lets someone reading it tell a voter that has
-#  just restarted from one whose vote is taken.
+#  Why a voter refused a LeaseRequest. A log that says why is what
+#  lets someone reading it tell a voter that has just restarted from
+#  one whose vote is taken. Only one reason changes what the asker
+#  does: after recording_promise, a candidate asks again at its next
+#  renewal interval instead of waiting out the lease period, because
+#  the voter is about to grant.
 # ------------------------------------------------------------
 enum LeaseRefusalReason : i32 {
     unknown            = 0
@@ -32,6 +34,7 @@ enum LeaseRefusalReason : i32 {
     promised_elsewhere = 2    # its vote is promised to another instance, or to its own
     epoch_behind       = 3    # it has already granted a higher epoch
     may_not_lead       = 4    # it holds a leader's statement that the asker may not lead, because the asker lacks commands the leader has acted on
+    recording_promise  = 5    # it would grant, but the promise of its vote is not yet on disk; it is being written, and the asker should ask again shortly
 }
 
 # ------------------------------------------------------------

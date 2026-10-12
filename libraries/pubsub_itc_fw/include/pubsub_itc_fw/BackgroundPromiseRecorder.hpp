@@ -3,57 +3,67 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <mutex>
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <thread>
 
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 
+#include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecord.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
 
 namespace pubsub_itc_fw {
 
 /**
- * @brief Writes lease promise records on a thread of its own, so that the thread handling leases need not wait for the disk.
+ * @brief Writes lease promise records on a thread of its own, so that the thread handling leases never waits for the disk.
  *
- * A promise record is written, and synced, before the vote it records is given. Written on the thread
- * that handles leases, a sync that takes seconds stops that instance answering lease requests and
- * renewing for as long as it takes, and the leases of every pair it votes in can run out (BUG-0107).
- * This recorder lets PairLeaseAgent refresh a record well before the record it holds stops covering
- * the promise it is making: the refresh is written here, in the background, and the lease thread only
- * waits for the disk when a record it needs at once has not been written yet.
+ * A promise record is written, and synced, before the vote it records is given. Writing and syncing can
+ * take seconds on a slow disk. The sequencer and the matching engine handle leases on the same thread
+ * that handles orders, and that thread must never wait for the disk or take a lock (principles F2 and
+ * F4 in docs/design_principles.md). So this recorder writes on its own thread, and the thread handling
+ * leases only starts a write and later reads its outcome. Neither ever waits.
  *
- * It wraps the recorder that actually writes, normally a LeasePromiseStore, and calls it from at most
- * one thread at a time: record() waits for any background write to finish before it writes.
+ * How the two threads pass a record and its outcome without a lock: the record goes in one slot, and two
+ * counters say how many writes have been asked for and how many have finished. Each counter is changed
+ * by one thread only. The thread handling leases fills the slot only when the counters are equal, which
+ * means no write is in progress and the writer thread is not reading the slot, and then increases the
+ * count of writes asked for. The writer thread sees that count ahead of the count finished, copies the
+ * slot, writes and syncs the record, stores whether it succeeded, and then increases the count finished.
+ * The thread handling leases learns the outcome by reading the count finished.
+ *
+ * The writer thread looks for a write to do every 10 milliseconds and sleeps in between. It handles no
+ * orders, so sleeping costs nothing. C++17 has no way for one thread to wait for an atomic variable to
+ * change without a lock.
  *
  * Use: one thread, the one that handles leases, calls every member function. The writer thread is
  * started when this is constructed and stopped when it is destroyed.
  */
-class BackgroundPromiseRecorder : public LeasePromiseRecorderInterface {
+class BackgroundPromiseRecorder : public BackgroundPromiseRecorderInterface {
   public:
     /**
      * @brief Stops the writer thread, waiting up to a second for a write in progress to finish.
      *
-     * A write stuck on a disk that has stopped answering does not keep the process from shutting
-     * down: after the wait the thread is left to finish or be ended with the process.
+     * A write stuck on a disk that has stopped answering does not keep the process from shutting down:
+     * after the wait the thread is left to finish or be ended with the process. The counters and the slot
+     * it uses are shared with it, so they outlive this object for as long as the thread needs them. The
+     * store passed to the constructor must too.
      */
     ~BackgroundPromiseRecorder() override {
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-        }
-        wake_.notify_all();
+        shared_->stopping.store(true, std::memory_order_release);
         static_cast<void>(writer_.join_with_timeout(std::chrono::milliseconds{1000}));
     }
 
     /**
      * @brief Starts the writer thread.
-     * @param[in] store The recorder that writes the record to disk. It must outlive this object.
+     * @param[in] store The recorder that writes the record to disk. It must outlive this object, and the
+     *            writer thread if a write is stuck when this object is destroyed.
      */
-    explicit BackgroundPromiseRecorder(LeasePromiseRecorderInterface& store) : store_(store) {
-        writer_.start([this] { write_requests(); });
+    explicit BackgroundPromiseRecorder(LeasePromiseRecorderInterface& store) : shared_(std::make_shared<Shared>()) {
+        writer_.start([shared = shared_, &store] { write_requests(*shared, store); });
     }
 
     BackgroundPromiseRecorder(const BackgroundPromiseRecorder&) = delete;
@@ -62,76 +72,71 @@ class BackgroundPromiseRecorder : public LeasePromiseRecorderInterface {
     BackgroundPromiseRecorder& operator=(BackgroundPromiseRecorder&&) = delete;
 
     /**
-     * @brief Write a record now, on the calling thread, after any background write has finished.
+     * @brief Start a write on the writer thread; false, and nothing asked for, if one is already in progress.
      *
-     * The outcome of a background write this waited for is discarded: the record written here
-     * replaces it.
+     * The outcome of an earlier write that has not been read with background_result() is discarded.
      */
-    [[nodiscard]] bool record(const LeasePromiseRecord& record) override {
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            idle_.wait(lock, [this] { return !request_pending_ && !writing_; });
-            result_.reset();
-        }
-        return store_.record(record);
-    }
-
-    /** @brief Start a write on the writer thread; false, and nothing asked for, if one is already in progress. */
     [[nodiscard]] bool record_in_background(const LeasePromiseRecord& record) override {
-        {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            if (request_pending_ || writing_ || stopping_) {
-                return false;
-            }
-            requested_ = record;
-            request_pending_ = true;
-            result_.reset();
+        const uint64_t started = shared_->requests_started.load(std::memory_order_relaxed);
+        const uint64_t finished = shared_->requests_finished.load(std::memory_order_acquire);
+        if (started != finished) {
+            return false;
         }
-        wake_.notify_all();
+        shared_->slot = record;
+        outcomes_read_ = finished;
+        shared_->requests_started.store(started + 1, std::memory_order_release);
         return true;
     }
 
     /** @brief The outcome of the last background write, once, after it has finished. */
     [[nodiscard]] std::optional<bool> background_result() override {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        std::optional<bool> outcome = result_;
-        result_.reset();
-        return outcome;
+        const uint64_t finished = shared_->requests_finished.load(std::memory_order_acquire);
+        if (finished == outcomes_read_) {
+            return std::nullopt;
+        }
+        outcomes_read_ = finished;
+        return shared_->last_write_succeeded.load(std::memory_order_relaxed);
     }
 
   private:
-    void write_requests() {
-        for (;;) {
-            LeasePromiseRecord request{};
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                wake_.wait(lock, [this] { return stopping_ || request_pending_; });
-                if (stopping_) {
-                    return;
-                }
-                request = requested_;
-                request_pending_ = false;
-                writing_ = true;
+    // What the two threads share. It is held by both, so that it outlives this object while a write that
+    // is stuck on the disk still needs it.
+    struct Shared {
+        // How many writes the thread handling leases has asked for. Changed only by that thread.
+        std::atomic<uint64_t> requests_started{0};
+        // How many writes the writer thread has finished. Changed only by the writer thread, after it has
+        // stored last_write_succeeded.
+        std::atomic<uint64_t> requests_finished{0};
+        std::atomic<bool> last_write_succeeded{false};
+        std::atomic<bool> stopping{false};
+        // The record to write. The thread handling leases fills it only while the two counts are equal, and
+        // the writer thread reads it only while they are not, so the two never use it at the same time.
+        LeasePromiseRecord slot{};
+    };
+
+    // How long the writer thread sleeps between looks for a write to do.
+    static constexpr std::chrono::milliseconds look_for_work_interval{10};
+
+    static void write_requests(Shared& shared, LeasePromiseRecorderInterface& store) {
+        uint64_t finished = 0;
+        while (!shared.stopping.load(std::memory_order_acquire)) {
+            if (shared.requests_started.load(std::memory_order_acquire) == finished) {
+                std::this_thread::sleep_for(look_for_work_interval);
+                continue;
             }
-            const bool written = store_.record(request);
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                writing_ = false;
-                result_ = written;
-            }
-            idle_.notify_all();
+            const LeasePromiseRecord request = shared.slot;
+            const bool written = store.record(request);
+            shared.last_write_succeeded.store(written, std::memory_order_relaxed);
+            ++finished;
+            shared.requests_finished.store(finished, std::memory_order_release);
         }
     }
 
-    LeasePromiseRecorderInterface& store_;
-    std::mutex mutex_;
-    std::condition_variable wake_; ///< The writer waits on this for a request or for the order to stop.
-    std::condition_variable idle_; ///< record() waits on this for a background write to finish.
-    bool stopping_{false};
-    bool request_pending_{false};
-    bool writing_{false};
-    LeasePromiseRecord requested_{};
-    std::optional<bool> result_;
+    std::shared_ptr<Shared> shared_;
+
+    // How many outcomes the thread handling leases has read, or discarded by starting another write.
+    uint64_t outcomes_read_{0};
+
     pubsub_itc_fw::ThreadWithJoinTimeout writer_; ///< Last, so it starts after every member it uses exists and stops first.
 };
 

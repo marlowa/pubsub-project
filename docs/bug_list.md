@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 149 |
+| Bugs recorded | 150 |
 | Open | 64 (45 defects, 19 tasks) |
-| Closed | 85 |
-| Next id | BUG-0150 |
+| Closed | 86 |
+| Next id | BUG-0151 |
 
 ## Open bugs by severity
 
@@ -56,7 +56,6 @@
 | [BUG-0119](#bug_0119) | medium | defect | An application thread still inside a handler when its reactor shuts down goes on using the destroyed reactor |
 | [BUG-0121](#bug_0121) | medium | defect | A restarted sequencer takes longer to start than its peer's lease, so a quick restart always changes the leader |
 | [BUG-0122](#bug_0122) | medium | task | Commands are protected from being sequenced twice only on particular paths, and each new failure case has needed its own mechanism |
-| [BUG-0126](#bug_0126) | medium | defect | The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync |
 | [BUG-0127](#bug_0127) | medium | defect | A queue or open-order pool that runs out takes a mutex and maps a new pool while holding it |
 | [BUG-0128](#bug_0128) | medium | defect | Every timer start creates a new timer and every cancel destroys one, taking a lock and making system calls on the reactor thread |
 | [BUG-0129](#bug_0129) | medium | defect | The stuck-thread check takes a lock it does not need, and reads the handler times without synchronisation |
@@ -70,6 +69,7 @@
 | [BUG-0139](#bug_0139) | medium | defect | A matching engine that restarts or is promoted issues report identifiers that were already used that day |
 | [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
+| [BUG-0150](#bug_0150) | medium | defect | The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -174,6 +174,29 @@ went looking.
 
 ## Open
 
+### BUG-0150: The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` {#bug_0150}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| How | Building the library's tests with ThreadSanitizer (`build-tsan`, `ENABLE_TSAN=ON`) to check the lock-free promise recorder of phase 3 of the recovery plan |
+| Impact | No part of the framework can be checked for data races with ThreadSanitizer. The phases that follow replace more locks with atomic variables, which is exactly the code it checks |
+
+**What was found.** `Reactor::enqueue_command` (`libraries/pubsub_itc_fw/src/Reactor.cpp`, line 800)
+calls `std::atomic_thread_fence(std::memory_order_seq_cst)` between putting a command on the queue and
+reading whether the reactor is polling. GCC 13 reports "'atomic_thread_fence' is not supported with
+'-fsanitize=thread'" as a warning, and the build treats warnings as errors, so `Reactor.cpp` does not
+compile with ThreadSanitizer. ThreadSanitizer does not model a free-standing fence, so even with the
+warning allowed it could report races that the fence prevents, or miss ones it does not.
+
+**What is wanted.** The ThreadSanitizer build compiles and its tests run. For example, the handshake
+between `enqueue_command` and the reactor's loop could be written with sequentially consistent
+operations on the two atomic variables themselves, which gives the same ordering and which
+ThreadSanitizer understands; or, in ThreadSanitizer builds only, the fence could be replaced by such
+operations. Whichever is chosen, its cost on the path that queues a command is measured first.
+
 ### BUG-0149: `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment {#bug_0149}
 
 | | |
@@ -259,8 +282,52 @@ by `append_envelope_to_wal`, which writes the records a leader sequences itself 
 and reports from the matching engine) and does not go through `write_if_next()`. Whether that path ran
 on the follower here, and why, is not established.
 
-**Not yet reproduced.** The damage happened once. In the Debug install at the end of phase 2, scenario
-12 passed.
+**Seen a second time, with two threads writing.** In the run after step 3 of phase 3, scenario 13
+(the matching engine dies with both arbiters and the witness dead, 20,000 orders in flight) damaged the
+secondary sequencer's WAL in the same way. At 21:00:54.08 the follower logged that its WAL agreed with
+the leader's through record 402,000; from 21:00:56.26 it logged "record N was written after record M"
+379 times, starting with "record 402005 was written after record 402005"; at 21:00:57.04 its thread
+stopped with "WalReader: the write-ahead log is damaged" (`wal_000026.log`). Of the 379 messages, 377
+were logged by the `SequencerThread` and **2 by the process's main thread, which runs the reactor**, so
+two threads were writing to the follower's WAL at the same moment. In the first occurrence all 2,052
+messages came from the `SequencerThread`. As before, the scenario failed because the restarted primary
+matching engine waited for its sequencer and did not take the lead within 15 seconds; it had been
+granted its lease at once. The evidence is in `tmp/bug0147/after-step-3`, and the damaged WALs are in
+`/mnt/sda2/mystuff2/var/sequencer_wal.damaged-step3-20261012` and
+`sequencer_secondary_wal.damaged-step3-20261012`.
+
+**A third time, at start-up, with nothing killed.** In the next run, on fresh WALs, scenario 40 (a
+bounded resend, no process killed) damaged the secondary's WAL within three seconds of the venue
+starting. At 21:22:31.49 the follower requested the installation of its "WAL inline handler" for the
+peer connection, which writes replicated records on the reactor's thread; at 21:22:32.15 it logged that
+its WAL agreed with the leader's through record 150,696 and that it was writing the records the leader
+sent from there, on the `SequencerThread`; from 21:22:34.43 it logged 19 records written out of order,
+**14 of them from the reactor's thread** and 5 from the `SequencerThread`, the first being "record
+150699 was written after record 150701"; at 21:22:35.08 it stopped with the WAL damaged. The scenario
+itself reported a pass, because it checks only what the member receives. Every later scenario that
+starts the secondary sequencer then failed at start-up. The evidence is in
+`tmp/bug0147/after-step-3/scenario-40`, and the WALs in
+`/mnt/sda2/mystuff2/var/sequencer_*wal.damaged-step3-scenario40-20261012`.
+
+So two threads write replicated records into the follower's WAL at once: the inline handler on the
+reactor's thread, and the `SequencerThread`. Which of them bypasses `write_if_next()`, or whether the
+check itself is not atomic with the write, is not yet established.
+
+**When it strikes: as the sequencer learns that it follows.** A sequencer whose role is still unknown
+writes gateway orders into its own WAL (`SequencerThread.cpp`, the call to `append_envelope_to_wal`
+after the comment "An instance that has not yet learnt its role appends locally because it may become
+the leader"), while the inline handler is already writing the leader's records. It learns that it
+follows when it first grants its leader a lease. Since step 3 of phase 3 that first grant is usually
+refused with `recording_promise`, and granted at the leader's next renewal, a second later, when orders
+are flowing. In every occurrence after step 3 the writes out of order began within about 110
+milliseconds before the role changed: in scenario 13 at 21:00:56.26, with the role changing at
+21:00:56.28; in scenario 40 at 21:22:34.43 and 21:22:34.44; and in a fourth occurrence, scenario 72 of
+the run that followed, at 21:42:10.54 and 21:42:10.65, one second after the follower first considered
+its leader's request at 21:42:09.59. Scenario 72 failed because 50 orders were never reported accepted.
+Its evidence is in `tmp/bug0147/after-step-3/scenario-72`.
+
+**Not yet reproduced on demand.** It has happened four times, in scenarios 12, 13, 40 and 72; the first
+before step 3. In the Debug install at the end of phase 2, scenario 12 passed.
 
 **The same message in other scenarios, a second pattern.** The message "record N was written after
 record M" also appears in scenarios that pass, in a different pattern, after a follower has discarded
@@ -945,40 +1012,6 @@ earlier one has free slots, because a freed slot returns to the pool it came fro
 **What is wanted.** No lock on the allocation path. Either the pools are sized so that running out
 during a trading day does not happen and is treated as an incident when it does, or expansion is made
 lock-free, with the next pool mapped in advance by another thread. See `lock-audit-report.txt`.
-
-### BUG-0126: The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync {#bug_0126}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-07 |
-| Recorded | 2026-10-07 |
-| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day |
-| Impact | The sequencer's and the matching engine's own thread, which handles every order, takes a mutex every 100 milliseconds, and occasionally waits on a condition variable until a background disk write has finished, then writes and syncs a record itself. While it waits, no order is handled |
-
-**Where.** `BackgroundPromiseRecorder` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp`),
-owned by the sequencer, the matching engine and the arbiter, and driven by `PairLeaseAgent` on the
-component's application thread:
-
-- `background_result()` takes `mutex_` on every lease tick, every 100 milliseconds, through
-  `PairLeaseAgent::on_tick` and `adopt_background_record`, to read whether a background write has
-  finished.
-- `record_in_background()` takes it to hand a write to the writer thread.
-- `record()` takes it and waits on the condition variable `idle_` until any background write has
-  finished, and then writes and syncs the record on the calling thread. `PairLeaseAgent` calls it
-  when the record held does not cover the promise about to be made: when an instance first promises
-  its vote to another, or when a background write has not finished within five seconds.
-
-The tick's lock is held only to read a flag, and is contended only when the writer thread is
-updating its flags at the same moment. The wait in `record()` is the one place found where a thread
-that handles orders can block on another thread, and it lasts as long as a disk sync.
-[BUG-0107](#bug_0107) moved the writes off the lease thread so that a slow sync would not stop
-lease requests being answered; it left this lock and this wait behind.
-
-**What is wanted.** The request and its result passed between the two threads through atomics, one
-writer and one reader on each side, so that the thread handling orders never takes a lock; and a
-decision whether that thread should ever write and sync a record itself. See
-`lock-audit-report.txt`.
 
 ### BUG-0124: Locks are taken on the order path, in a design meant to be free of them {#bug_0124}
 
@@ -3280,6 +3313,58 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0126: The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync {#bug_0126}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-07 |
+| Recorded | 2026-10-07 |
+| Fixed | 2026-10-12 -- the record and its outcome pass between the two threads through atomic counters, and the thread that handles orders never writes a record itself: a promise the record on disk does not yet cover is refused with the reason `recording_promise` |
+| How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day |
+| Impact | The sequencer's and the matching engine's own thread, which handles every order, takes a mutex every 100 milliseconds, and occasionally waits on a condition variable until a background disk write has finished, then writes and syncs a record itself. While it waits, no order is handled |
+
+**Where.** `BackgroundPromiseRecorder` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp`),
+owned by the sequencer, the matching engine and the arbiter, and driven by `PairLeaseAgent` on the
+component's application thread:
+
+- `background_result()` takes `mutex_` on every lease tick, every 100 milliseconds, through
+  `PairLeaseAgent::on_tick` and `adopt_background_record`, to read whether a background write has
+  finished.
+- `record_in_background()` takes it to hand a write to the writer thread.
+- `record()` takes it and waits on the condition variable `idle_` until any background write has
+  finished, and then writes and syncs the record on the calling thread. `PairLeaseAgent` calls it
+  when the record held does not cover the promise about to be made: when an instance first promises
+  its vote to another, or when a background write has not finished within five seconds.
+
+The tick's lock is held only to read a flag, and is contended only when the writer thread is
+updating its flags at the same moment. The wait in `record()` is the one place found where a thread
+that handles orders can block on another thread, and it lasts as long as a disk sync.
+[BUG-0107](#bug_0107) moved the writes off the lease thread so that a slow sync would not stop
+lease requests being answered; it left this lock and this wait behind.
+
+**What is wanted.** The request and its result passed between the two threads through atomics, one
+writer and one reader on each side, so that the thread handling orders never takes a lock; and a
+decision whether that thread should ever write and sync a record itself. See
+`lock-audit-report.txt`.
+
+**How it was fixed** (phase 3 of the recovery plan, step 3; the design is section 6 of
+[lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)).
+
+- `BackgroundPromiseRecorder` passes the record through one slot and two atomic counters, one changed
+  only by the thread handling leases and one only by the writer thread. The writer thread looks for
+  work every 10 milliseconds. It has no mutex and no condition variable, and
+  `scripts/check_standards.py` no longer permits any lock in the file.
+- `record()` is gone. `PairLeaseAgent` keeps its promises through `BackgroundPromiseRecorderInterface`,
+  which has no synchronous write. A promise to the peer that the record on disk does not yet cover is
+  refused with the new reason `recording_promise`, and the write that covers it is started; a candidate
+  refused for that reason asks again at its next renewal interval. The record that an instance leads is
+  written in the background only.
+- Checked by unit tests with a store that takes two seconds to write, each made to fail by a deliberate
+  fault; by the lease simulation, whose peers now refuse at random in this way; by a separate
+  ThreadSanitizer program, because the library's ThreadSanitizer build does not compile
+  ([BUG-0150](#bug_0150)); and by every high availability scenario.
 
 ### BUG-0140: In builds with thread checks, the matching engine stopped on its first order {#bug_0140}
 

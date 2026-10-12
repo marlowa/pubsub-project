@@ -1140,10 +1140,6 @@ _PERMITTED_LOCKS = [
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_reply',
      'breach: BUG-0124, removed in phase 4'),
     ('applications/sequencer/ReplicatedRecordWriter.hpp', 'mutex_', 'breach: BUG-0124, removed in phase 4'),
-    # The lease promise recorder, on the sequencer's and the matching engine's application threads.
-    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp', 'mutex_', 'breach: BUG-0126, removed in phase 3'),
-    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp', 'wake_', 'breach: BUG-0126, removed in phase 3'),
-    ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp', 'idle_', 'breach: BUG-0126, removed in phase 3'),
     # Memory pools.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'expansion_mutex_',
      'breach: BUG-0127, removed by a framework fix done alongside the phases'),

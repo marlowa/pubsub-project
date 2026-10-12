@@ -30,7 +30,9 @@ of them are on the path every order takes:
    this is on every order's round trip. Recorded as BUG-0124.
 4. **`BackgroundPromiseRecorder`**, taken on the sequencer's and the matching engine's own thread,
    the thread that handles orders, at every lease tick (every 100 milliseconds). Usually brief, but
-   it can wait on a condition variable for a disk write to finish. Recorded as BUG-0126.
+   it can wait on a condition variable for a disk write to finish. Recorded as BUG-0126, and fixed
+   on 12 October 2026: the recorder now passes the record and its outcome between the two threads
+   through atomic counters, and the thread that handles orders never writes a record itself.
 5. **`ExpandablePoolAllocator`'s expansion mutex**, taken on the slow path of allocating a node for
    any queue between the reactor and an application thread, and an entry in the gateways' open-order
    pools. It is not taken in steady running with one pool, but it is taken, with a new pool mapped
@@ -181,6 +183,11 @@ Left out, as asked or because they are not the venue's running code:
   wait in `record()` is the one place found where an order-handling thread can block on another
   thread, and it lasts as long as a disk sync.
 - **Recorded?** BUG-0126. BUG-0107 records why the writes were moved to a background thread.
+- **Fixed** on 12 October 2026, in phase 3 of the recovery plan. The record and its outcome pass between
+  the two threads through one slot and two atomic counters, each changed by one thread only; the writer
+  thread looks for work every 10 milliseconds. `record()` is gone: a promise the record on disk does not
+  yet cover is refused with the reason `recording_promise` until the background write has finished.
+  `scripts/check_standards.py` no longer permits any lock in the file.
 
 ### 5. `ExpandablePoolAllocator::expansion_mutex_`
 

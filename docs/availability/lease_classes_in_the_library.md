@@ -285,11 +285,32 @@ settles it: the application thread never writes and syncs a promise record itsel
   in the background, no longer does so. Every program that keeps records (the sequencer, the matching
   engine and the arbiter) uses `BackgroundPromiseRecorder`, so the synchronous path is used only by unit
   tests now, and is removed.
+- **Two interfaces, so that the agent cannot write synchronously.** `PairLeaseAgent` keeps its promises
+  through `BackgroundPromiseRecorderInterface`, which has only `record_in_background()` and
+  `background_result()`. `LeasePromiseRecorderInterface` keeps only the synchronous `record()`, which
+  `LeasePromiseStore` implements and only the recorder's own writer thread calls.
+- **One write at a time.** If a record is needed while another write is in progress, the agent keeps it
+  and starts it at the next tick after that write has finished. The record asked for last is the one
+  kept, because it describes the promise the instance holds now.
 
 **When this costs anything.** A change of leader usually needs only the third voter's grant: when the
 leader has died, its peer asks the arbiter, which grants, and the dead leader cannot be asked anyway.
 The new refusal therefore delays a change of leader only when the third voter is unavailable and the
 peer must grant. In that case the delay is about one renewal interval, one second by default.
+
+Two further costs follow from every record being written in the background:
+
+- **A restarted former leader, with the third voter down.** An instance restarted with a record saying it
+  led asks to lead again at once, and while it asks it refuses its peer's renewals for a lease period, so
+  a peer that took over meanwhile loses its lease. The peer asks to lead again at once, and the restarted
+  instance gives way, but its record still names itself, so it first refuses with `recording_promise`.
+  The pair is without a leader for about one renewal interval. The unit test
+  `WithTheArbiterDownARestartedFormerLeaderLeavesThePeerLeadingAfterAShortGap` measures it. The peer
+  losing its lease comes from the restarted instance asking to lead, not from the new refusal; the
+  refusal only lengthens the time before the peer leads again, from one tick to one renewal interval.
+- **A leader's own statement.** A leader that says its peer may not lead acts on a command its peer lacks
+  only once its own statement is on disk. That is now known one or two ticks after the statement changes,
+  a tenth or two tenths of a second, rather than at once.
 
 ### 6.4 How step 3 is known to be right
 
@@ -299,8 +320,11 @@ peer must grant. In that case the delay is about one renewal interval, one secon
 - **Unit tests of the recorder,** using a store that takes two seconds to write: starting a write and
   reading its outcome both return at once while the store is writing; the outcome is reported once; a
   write is not started while one is in progress; and the destructor returns within its wait while a
-  write is stuck. The same tests run in the ThreadSanitizer build (`build-tsan`), which reports any data
-  race between the two threads.
+  write is stuck. The library's ThreadSanitizer build (`build-tsan`) does not compile, for a reason
+  unrelated to this step ([BUG-0150](../bug_list.md#bug_0150)), so the recorder is checked under
+  ThreadSanitizer by a separate program: three hundred writes passed between the two threads, and a
+  recorder destroyed while its write is stuck. It reports no data race. A copy of the recorder whose
+  atomic operations impose no ordering makes it report races, which shows that it can.
 - **Unit tests of the agent,** with the same slow store: `on_tick` and `on_request` never wait for it; a
   first request from the peer is refused with `recording_promise` and granted once the write finishes;
   the candidate asks again at its next renewal interval after that refusal.
@@ -308,7 +332,10 @@ peer must grant. In that case the delay is about one renewal interval, one secon
   `recording_promise` at random, and must still find no moment with two leaders. The TLA+ model of the
   lease rules, in `docs/availability/tla`, is read to check whether it already allows a voter to refuse
   at any time. If it does, it needs no change; if it does not, it is changed to allow it and checked
-  again. Which of the two was found is stated at the review.
+  again. The model already allows it. In `MajorityLeaseHA.tla` a grant can be lost on the way, and a
+  voter that makes the promise and then refuses looks, to the candidate, exactly like a voter whose grant
+  was lost: the refusal carries the epoch the candidate itself asked for, so it changes nothing the
+  candidate holds. The model is not changed.
 - **The high availability scenarios** pass as they did after step 2, and the time each change of leader
   takes is compared with the run after step 2.
 - **The order's round trip** is measured before and after, by the method in
@@ -381,3 +408,19 @@ programs into programs the library provides is then a small separate change that
 second user of the voting service appears.
 
 **Agreed 12 October 2026: A.**
+
+### Decision 4. How are step 3 and BUG-0147 handled? (Choose A, B or C.)
+
+**Agreed 12 October 2026: A.** Step 3 is committed as designed, and
+[BUG-0147](../bug_list.md#bug_0147) is fixed next, before the phase 3 review.
+
+**Background.** A sequencer whose role is still unknown writes gateway orders into its own WAL, while,
+as a follower, its reactor's thread writes the leader's replicated records into the same WAL; the two
+writers damage it. A sequencer learns that it follows when it first grants its leader a lease. Under
+step 3 that first grant is usually refused with `recording_promise`, because the record on disk does not
+yet cover it, and the leader asks again at its next renewal interval, so the sequencer learns its role
+about a second later, when orders are already flowing. In the high availability scenarios after step 3
+the WAL was damaged twice, in scenarios 13 and 40; it was damaged once before any change, in scenario
+12. The alternatives were B, having a leader refused for this reason ask again at the next tick, which
+narrows the window but leaves the fault; and C, holding step 3 back until the fault is fixed.
+

@@ -16,11 +16,11 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 
 #include <lease_messages.hpp>
+#include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeaseParticipant.hpp>
 #include <pubsub_itc_fw/LeasePromiseRecord.hpp>
-#include <pubsub_itc_fw/LeasePromiseRecorderInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
@@ -44,9 +44,14 @@ namespace pubsub_itc_fw {
  *   - In the sequencer pair, it carries the leader's statement about whether its peer may lead on
  *     every request, records the peer's statement when it grants, echoes it on the grant, and keeps
  *     the statement it holds on disk with its promise (rule 11 in
- *     docs/availability/a_follower_behind_does_not_lead.md). The statement is written in the
- *     background, so the lease thread does not wait for the disk; the leader acts on a command its
- *     peer lacks only once its own statement is on disk and another voter has echoed it.
+ *     docs/availability/a_follower_behind_does_not_lead.md). The leader acts on a command its peer
+ *     lacks only once its own statement is on disk and another voter has echoed it.
+ *
+ * It never writes to the disk itself. In the sequencer and the matching engine it runs on the thread
+ * that handles orders, which must never wait for the disk. Every record is written in the background by
+ * a BackgroundPromiseRecorderInterface, and the agent learns at a later tick that the write has finished.
+ * A promise to the peer that the record on disk does not yet cover is refused with the reason
+ * recording_promise, and granted when the peer asks again after the write has finished.
  *
  * Primary and secondary are only names, but the primary is preferred when both start together and
  * neither has any other claim. The secondary gives it one renewal interval's head start, counted from the end of
@@ -101,7 +106,7 @@ class PairLeaseAgent {
     }
 
     /**
-     * @brief Keep this instance's promises as a voter in @p recorder, and resume with the one it recorded before restarting.
+     * @brief Keep this instance's promises as a voter, written by @p recorder, and resume with the one it recorded before restarting.
      *
      * Called once, straight after construction, by an owner that can keep a record on disk. With a
      * record from this boot of the machine, the instance does not wait out a lease period after
@@ -113,8 +118,8 @@ class PairLeaseAgent {
      * @p kept_statement is the statement the record holds, whichever boot wrote it: unlike a promise,
      * it does not depend on the clock, so it is taken back even when the promise is not.
      */
-    void keep_promises_in(LeasePromiseRecorderInterface& recorder, const std::optional<LeasePromiseStore::Record>& kept, const LeaderStatement& kept_statement,
-                          Clock::time_point now) {
+    void keep_promises_in(BackgroundPromiseRecorderInterface& recorder, const std::optional<LeasePromiseStore::Record>& kept,
+                          const LeaderStatement& kept_statement, Clock::time_point now) {
         recorder_ = &recorder;
         participant_.restore_recorded_statement(kept_statement);
         recorded_statement_ = kept_statement;
@@ -153,6 +158,7 @@ class PairLeaseAgent {
     /// Apply the lease rules. Called every LeaseTiming::tick_interval.
     [[nodiscard]] Change on_tick(Clock::time_point now) {
         adopt_background_record();
+        start_wanted_record();
         write_statement_if_needed();
         report_whether_this_instance_may_lead();
         Change change = Change::Nothing;
@@ -166,6 +172,16 @@ class PairLeaseAgent {
 
         if (participant_.acting(now) && now - last_renewal_ >= timing_.renewal_interval) {
             last_renewal_ = now;
+            ask_voters(participant_.epoch(), now);
+        }
+
+        if (participant_.state() == LeaseHolder::State::Candidate && peer_is_recording_promise_ && now - last_renewal_ >= timing_.renewal_interval) {
+            // The peer refused only because the promise of its vote was not yet on disk. It will grant
+            // once it is, so this instance asks again now rather than waiting out the lease period.
+            peer_is_recording_promise_ = false;
+            last_renewal_ = now;
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: asking again to lead at epoch {}, now that the peer has had time to record its promise",
+                       owner_name_, participant_.epoch());
             ask_voters(participant_.epoch(), now);
         }
 
@@ -188,6 +204,7 @@ class PairLeaseAgent {
         if (participant_.may_ask_to_lead(now)) {
             const int32_t epoch = participant_.begin_asking_to_lead();
             asked_at_ = now;
+            peer_is_recording_promise_ = false;
             last_renewal_ = now;
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: asking the peer and {} to let this instance lead at epoch {}", owner_name_,
                        third_voter_name_, epoch);
@@ -215,23 +232,12 @@ class PairLeaseAgent {
             echoed = participant_.record_peer_statement(statement);
         }
 
-        if (outcome.answer.verdict == LeaseVoter::Verdict::Granted && !promise_recorded(candidate_id)) {
-            // The promise could not be made durable, so it is not made: a restart would forget it.
-            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
-                       "{}: could not record the promise of this instance's vote to the peer -- refusing the peer's request rather than making a promise "
-                       "a restart would forget",
-                       owner_name_);
-            pubsub_itc_fw::LeaseRefusal refusal{};
-            refusal.voter_instance_id = self_id_;
-            refusal.pair_id = pair_id_;
-            refusal.highest_epoch = outcome.answer.highest_epoch;
-            refusal.request_id = request_id;
-            refusal.reason = pubsub_itc_fw::LeaseRefusalReason::unknown;
-            links_.send_refusal(reply_to, refusal);
-            return Change::Nothing;
-        }
+        // A grant the record on disk does not cover is refused, and the record that covers it is
+        // started in the background: a restart would forget a promise that is not on disk. The voter
+        // has made the promise in memory, which only makes it stricter until the promise runs out.
+        const bool covered = outcome.answer.verdict == LeaseVoter::Verdict::Granted && promise_recorded(candidate_id);
 
-        if (outcome.answer.verdict == LeaseVoter::Verdict::Granted) {
+        if (covered) {
             reported_no_leader_ = false;
             write_statement_if_needed();
             report_whether_this_instance_may_lead();
@@ -250,7 +256,8 @@ class PairLeaseAgent {
         refusal.pair_id = pair_id_;
         refusal.highest_epoch = outcome.answer.highest_epoch;
         refusal.request_id = request_id;
-        refusal.reason = refusal_reason_for(outcome.answer.verdict);
+        refusal.reason = outcome.answer.verdict == LeaseVoter::Verdict::Granted ? pubsub_itc_fw::LeaseRefusalReason::recording_promise
+                                                                                : refusal_reason_for(outcome.answer.verdict);
         links_.send_refusal(reply_to, refusal);
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: refused the peer's request to lead at epoch {} ({})", owner_name_, epoch,
                    pubsub_itc_fw::to_string(refusal.reason));
@@ -271,6 +278,7 @@ class PairLeaseAgent {
             return Change::Nothing;
         }
         reported_no_leader_ = false;
+        peer_is_recording_promise_ = false;
         resuming_lead_until_ = Clock::time_point{};
         record_leading();
         if (participant_.statement().leader_id != 0) {
@@ -294,6 +302,9 @@ class PairLeaseAgent {
                                     Clock::time_point now) {
         const bool was_leading = participant_.state() == LeaseHolder::State::Leading;
         const int32_t epoch_before = participant_.epoch();
+        if (reason == pubsub_itc_fw::LeaseRefusalReason::recording_promise && voter_id == peer_id_ && participant_.state() == LeaseHolder::State::Candidate) {
+            peer_is_recording_promise_ = true;
+        }
         // An instance resuming the lead it recorded asks again above a newer epoch at once, rather than
         // after the usual random wait. The wait keeps two candidates from colliding again, and there is
         // no second candidate: both other voters promised their votes to this instance. It matters to an
@@ -381,30 +392,17 @@ class PairLeaseAgent {
     }
 
     /**
-     * @brief Write the record when the statement held is not the one on disk, in the background if the recorder can.
+     * @brief Start writing the record when the statement held is not the one on disk.
      *
-     * The promise in the record is written unchanged. If a write is already in progress, this is tried
-     * again at the next tick, once that write has finished. A recorder that cannot write in the
-     * background declines, and the record is then written on the lease thread.
+     * The promise in the record is written unchanged. If a write is already in progress, or a record
+     * is waiting to be started, this is tried again at the next tick: the record that is written next
+     * carries the statement held at the moment it is started.
      */
     void write_statement_if_needed() {
-        if (recorder_ == nullptr || background_in_flight_ || recorded_statement_.same_as(participant_.recorded_statement())) {
+        if (recorder_ == nullptr || background_in_flight_ || record_wanted_ || recorded_statement_.same_as(participant_.recorded_statement())) {
             return;
         }
-        const LeasePromiseRecord record{recorded_to_, recorded_until_, participant_.recorded_statement()};
-        if (recorder_->record_in_background(record)) {
-            background_in_flight_ = true;
-            background_record_ = record;
-            return;
-        }
-        const bool written = write_promise_record(recorded_to_, recorded_until_);
-        if (!written && !reported_statement_not_written_) {
-            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                       "{}: could not write the statement held about which instance may not lead -- it is held in memory only, and is tried again at "
-                       "every tick",
-                       owner_name_);
-        }
-        reported_statement_not_written_ = !written;
+        start_record(recorded_to_, recorded_until_);
     }
 
     // Says once, when it changes, whether this instance holds a statement that it may not lead.
@@ -426,7 +424,7 @@ class PairLeaseAgent {
     }
 
     /**
-     * @brief Make durable the promise just made to @p candidate_id, when the record does not already cover it.
+     * @brief Whether the record on disk covers the promise just made to @p candidate_id; if it does not, start the write that will.
      *
      * The record is written with an expiry some way beyond the true one, so that a follower granting
      * its leader a renewal every second rewrites it only now and then rather than at every renewal. A
@@ -440,27 +438,60 @@ class PairLeaseAgent {
             return true;
         }
         adopt_background_record();
-        if (recorded_to_ == candidate_id && participant_.promise_expires_at() <= recorded_until_) {
-            refresh_in_background(candidate_id, participant_.promise_expires_at());
+        const Clock::time_point expires_at = participant_.promise_expires_at();
+        if (recorded_to_ == candidate_id && expires_at <= recorded_until_) {
+            refresh_in_background(candidate_id, expires_at);
             return true;
         }
-        const Clock::time_point until = participant_.promise_expires_at() + promise_record_margin;
-        // record() waits for any background write and discards its outcome, so it is forgotten here.
-        background_in_flight_ = false;
-        if (!write_promise_record(candidate_id, until)) {
-            return false;
+        if (!write_in_progress_covers(candidate_id, expires_at)) {
+            start_record(candidate_id, expires_at + promise_record_margin);
         }
-        recorded_to_ = candidate_id;
-        recorded_until_ = until;
-        return true;
+        return false;
+    }
+
+    /**
+     * @brief Start writing a record that names @p promised_to until @p until, with the statement held now.
+     *
+     * Only one write is in progress at a time. If one is, the record is kept and started at the next
+     * tick after that write has finished, replacing any record kept earlier: the record asked for last
+     * is the one that describes the promise this instance holds now.
+     */
+    void start_record(int64_t promised_to, Clock::time_point until) {
+        const LeasePromiseRecord record{promised_to, until, participant_.recorded_statement()};
+        if (!background_in_flight_ && recorder_->record_in_background(record)) {
+            background_in_flight_ = true;
+            background_record_ = record;
+            background_started_at_ = Clock::now();
+            record_wanted_ = false;
+            return;
+        }
+        record_wanted_ = true;
+        wanted_to_ = promised_to;
+        wanted_until_ = until;
+    }
+
+    // Start the record kept by start_record() while another write was in progress, once that write has finished.
+    void start_wanted_record() {
+        if (recorder_ != nullptr && record_wanted_ && !background_in_flight_) {
+            start_record(wanted_to_, wanted_until_);
+        }
+    }
+
+    // Whether the write in progress, or the one waiting to be started, will cover a promise to
+    // @p promised_to that runs out at @p expires_at, so that no other need be asked for.
+    [[nodiscard]] bool write_in_progress_covers(int64_t promised_to, Clock::time_point expires_at) const {
+        if (record_wanted_) {
+            return wanted_to_ == promised_to && expires_at <= wanted_until_;
+        }
+        return background_in_flight_ && background_record_.promised_to == promised_to && expires_at <= background_record_.until;
     }
 
     /**
      * @brief Take the outcome of a background write, if one has finished, as what the record now says.
      *
      * Called at every tick and before the record is consulted, so a finished write is adopted within
-     * one tick. A write that failed leaves the record as it was; the promise is then written on the
-     * lease thread when it is needed, as without a background writer.
+     * one tick. A write that failed leaves the record as it was; a promise it does not cover goes on
+     * being refused, and the write is asked for again the next time it is needed.
      */
     void adopt_background_record() {
         if (!background_in_flight_ || recorder_ == nullptr) {
@@ -471,58 +502,42 @@ class PairLeaseAgent {
             return;
         }
         background_in_flight_ = false;
+        const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - background_started_at_);
+        if (took >= slow_promise_record_write) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
+                       "{}: writing the lease promise record in the background took {} ms -- until it finished, this instance refused any promise the "
+                       "record on disk did not cover",
+                       owner_name_, took.count());
+        }
         if (*outcome) {
             recorded_to_ = background_record_.promised_to;
             recorded_until_ = background_record_.until;
             recorded_statement_ = background_record_.statement;
-        } else {
-            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                       "{}: could not refresh the lease promise record in the background -- it will be written when it is needed", owner_name_);
+            reported_write_failed_ = false;
+            return;
+        }
+        if (!reported_write_failed_) {
+            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Error,
+                       "{}: could not write the lease promise record -- this instance refuses any promise the record on disk does not cover, rather than "
+                       "make a promise a restart would forget, and tries again each time one is needed",
+                       owner_name_);
+            reported_write_failed_ = true;
         }
     }
 
     /**
-     * @brief Start writing a fresh record in the background when the one held is close to no longer covering the promise.
+     * @brief Start writing a fresh record when the one held is close to no longer covering the promise.
      *
      * The record held still covers the promise, so nothing waits for this write. It is started when
      * fewer than refresh_ahead remain between the promise's expiry and the record's, which is half the
      * margin, so that in normal operation the fresh record is on disk seconds before it is needed and
-     * the lease thread never writes it itself. A recorder that cannot write in the background declines,
-     * and the record is then written on the lease thread when it is needed.
+     * no promise is ever refused for want of it.
      */
     void refresh_in_background(int64_t promised_to, Clock::time_point expires_at) {
-        if (background_in_flight_ || recorded_until_ - expires_at > refresh_ahead) {
+        if (background_in_flight_ || record_wanted_ || recorded_until_ - expires_at > refresh_ahead) {
             return;
         }
-        const LeasePromiseRecord record{promised_to, expires_at + promise_record_margin, participant_.recorded_statement()};
-        if (recorder_->record_in_background(record)) {
-            background_in_flight_ = true;
-            background_record_ = record;
-        }
-    }
-
-    /**
-     * @brief Write a promise record, and say so when writing it took long enough to put leases at risk.
-     *
-     * The record is written to disk and synced before the vote it records is given, on the thread
-     * that handles leases, so for as long as the write takes, this instance answers no lease request
-     * and renews nothing. A write slower than slow_promise_record_write is logged with how long it
-     * took, because a write of seconds lets leases run out across the venue (BUG-0107).
-     */
-    [[nodiscard]] bool write_promise_record(int64_t promised_to, Clock::time_point until) {
-        const auto started = Clock::now();
-        const LeasePromiseRecord record{promised_to, until, participant_.recorded_statement()};
-        const bool written = recorder_->record(record);
-        if (written) {
-            recorded_statement_ = record.statement;
-        }
-        const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started);
-        if (took >= slow_promise_record_write) {
-            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                       "{}: writing the lease promise record took {} ms, during which this instance answered no lease request and renewed nothing", owner_name_,
-                       took.count());
-        }
-        return written;
+        start_record(promised_to, expires_at + promise_record_margin);
     }
 
     /**
@@ -534,31 +549,23 @@ class PairLeaseAgent {
      * across the restart (see keep_promises_in()). The record is written with the same margin as a
      * promise to the peer, so a leader renewing every second rewrites it only now and then.
      *
+     * It is written in the background, and nothing waits for it, because it is not needed for safety.
      * Rule 5 means an instance leads only once its promise to its peer has run out, so replacing that
-     * promise in the record loses nothing. A record that cannot be written is not fatal: the record
-     * then holds an older promise, and a restart reading it is stricter than it needs to be, never less
-     * strict.
+     * promise in the record loses nothing. Until the record is written, or if it cannot be, the record
+     * holds an older promise, and a restart reading it is stricter than it needs to be, never less strict.
      */
     void record_leading() {
         if (recorder_ == nullptr || participant_.state() != LeaseHolder::State::Leading) {
             return;
         }
         adopt_background_record();
-        if (recorded_to_ == self_id_ && participant_.lease_expires_at() <= recorded_until_) {
-            refresh_in_background(self_id_, participant_.lease_expires_at());
+        const Clock::time_point expires_at = participant_.lease_expires_at();
+        if (recorded_to_ == self_id_ && expires_at <= recorded_until_) {
+            refresh_in_background(self_id_, expires_at);
             return;
         }
-        const Clock::time_point until = participant_.lease_expires_at() + promise_record_margin;
-        // record() waits for any background write and discards its outcome, so it is forgotten here.
-        background_in_flight_ = false;
-        if (write_promise_record(self_id_, until)) {
-            recorded_to_ = self_id_;
-            recorded_until_ = until;
-        } else {
-            PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
-                       "{}: could not record that this instance leads -- if its process is restarted it will wait longer than it needs to before "
-                       "asking to lead again",
-                       owner_name_);
+        if (!write_in_progress_covers(self_id_, expires_at)) {
+            start_record(self_id_, expires_at + promise_record_margin);
         }
     }
 
@@ -624,16 +631,17 @@ class PairLeaseAgent {
 
     // How close the promise's expiry may come to the record's before a fresh record is written in
     // the background: half the margin, five seconds, which leaves a write that long to finish before
-    // the lease thread would have to write it itself.
+    // a promise would have to be refused for want of it.
     static constexpr std::chrono::seconds refresh_ahead{promise_record_margin / 2};
 
-    // A promise record write slower than this is logged. A write normally takes well under a
-    // millisecond; fifty is long enough that nothing ordinary reaches it and short enough to show
-    // the writes that hold up leases.
-    static constexpr std::chrono::milliseconds slow_promise_record_write{50};
+    // A background write slower than this, from being started to its outcome being read, is logged. A
+    // write normally takes well under a millisecond, and its outcome is read at the next tick, within
+    // a tenth of a second. Half a second is long enough that nothing ordinary reaches it and short
+    // enough to show a disk slow enough to make the peer ask more than once.
+    static constexpr std::chrono::milliseconds slow_promise_record_write{500};
 
-    // Where this instance's promises are kept, or nullptr if they are not kept.
-    LeasePromiseRecorderInterface* recorder_{nullptr};
+    // What writes this instance's promises, or nullptr if they are not kept.
+    BackgroundPromiseRecorderInterface* recorder_{nullptr};
 
     // The instance named in the record, and the expiry recorded. The record covers a promise to that
     // instance that runs out before the expiry.
@@ -643,9 +651,21 @@ class PairLeaseAgent {
     // The statement the record on disk holds.
     LeaderStatement recorded_statement_{};
 
-    // A record being written in the background, and what it will say once written. See refresh_in_background().
+    // A record being written in the background, what it will say once written, and when it was started.
     bool background_in_flight_{false};
     LeasePromiseRecord background_record_{};
+    Clock::time_point background_started_at_{};
+
+    // A record asked for while another write was in progress, to be started once that write has
+    // finished. See start_record().
+    bool record_wanted_{false};
+    int64_t wanted_to_{0};
+    Clock::time_point wanted_until_{};
+
+    // Whether the peer refused this instance's request to lead only because it was still writing the
+    // promise of its vote to disk. While asking to lead, this instance then asks again at the next
+    // renewal interval instead of waiting out the lease period.
+    bool peer_is_recording_promise_{false};
 
     // Until when this instance, restarted while it led, is resuming that lead; see on_refusal().
     Clock::time_point resuming_lead_until_{};
@@ -657,8 +677,8 @@ class PairLeaseAgent {
     // Whether this instance was last reported as holding a statement that it may not lead.
     bool reported_may_not_lead_{false};
 
-    // Whether a failure to write the statement has been reported and has not since been cured.
-    bool reported_statement_not_written_{false};
+    // Whether a failure to write the record has been reported and has not since been cured.
+    bool reported_write_failed_{false};
 };
 
 } // namespaces

@@ -34,7 +34,7 @@ log each process writes about what it is doing is called the Quill log, and is n
 **How it is done now.** The rules live in classes that already know nothing of the component using
 them: `LeaseVoter`, `LeaseHolder`, `LeaseParticipant`, `PairLeaseAgent`, with `LeasePromiseStore`,
 `BackgroundPromiseRecorder`, `EpochStore` and `LeaderEpoch` keeping what must survive a restart. They
-are in `applications/fix_common`. A component supplies the connections they send on, through
+are in the library, `libraries/pubsub_itc_fw`. A component supplies the connections they send on, through
 `LeaseLinksInterface`, and calls the agent every tick. The rules are in
 [majority_leases.md](majority_leases.md).
 
@@ -47,9 +47,11 @@ can use, configured rather than written.
 **What an application would supply.** Which pair it belongs to, its instance's identity, and where
 its voters are: configuration, not code.
 
-**One thing to settle.** The lease classes currently use the disk-sync recorder that principle F4 and
-BUG-0126 say must change (its lock and its occasional wait on the order-handling thread). That change
-is easier made once, in the library, than in each component.
+**The promise recorder.** The lease classes keep their promises on disk through
+`BackgroundPromiseRecorder`, which writes on a thread of its own. The thread that handles orders passes
+it a record and reads the outcome through atomic counters, never takes a lock and never waits for the
+disk, as principles F2 and F4 require. A promise the record on disk does not yet cover is refused with
+the reason `recording_promise` until the write has finished.
 
 ## 3. Design area: the replicated WAL
 

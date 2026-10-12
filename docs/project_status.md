@@ -65,8 +65,9 @@ review at which Andrew decides whether the next starts. Phase 1, agreeing the de
 done. Phase 2, making the build enforce the framework principles, is done. Phases 3 to 9 move the high
 availability machinery from the sequencer and the matching engine into the library, in the order agreed
 in [ha_library_boundary.md](availability/ha_library_boundary.md); phase 3, moving the lease classes and the
-voting service into the library, is next, and its design is
-[lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md), agreed. New features, including pub/sub, the order activity recorder and the trading phases, wait
+voting service into the library, has had its three steps done; its design is
+[lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md). Before its review,
+[BUG-0147](bug_list.md#bug_0147), a following sequencer damaging its write-ahead log, is fixed. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start
