@@ -482,6 +482,9 @@ changes only when it accepts, refuses or cancels an order.
 
 **Recommendation: B now, and C later**, once B has shown in practice that the two engines always agree.
 
+**Agreed 12 October 2026: B.** Way C stays possible as a later step, once B has shown in practice that
+the two engines always produce the same reports.
+
 ### Question 5. Should the order of work in section 12 replace phases 3 to 7 of the recovery plan? (Yes or no.)
 
 **Background.** [The recovery plan](../recovery_plan.md) puts the work that follows phase 2 in this
