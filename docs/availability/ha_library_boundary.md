@@ -399,6 +399,9 @@ connection retries and metrics, are not affected; they stay local to the process
 **Recommendation: yes.** Without it, the two engines can only be kept in step by copying the book from
 one to the other, which is how it is done now and is the source of several open defects.
 
+**Agreed 12 October 2026: yes.** How the absence rule is measured, the third point against, is still to
+be designed.
+
 ### Question 3. Should identifiers be made from the position in the WAL? (Yes or no.)
 
 **What happens now.** The matching engine issues identifiers such as `OrderID` and `ExecID` from
