@@ -1,8 +1,8 @@
 # Phase 3: the lease classes and the voting service in the library {#lease_classes_in_the_library}
 
-> **Status: draft for review, not agreed.** This is the design for phase 3 of
-> [the recovery plan](../recovery_plan.md). All three decisions in section 9 were agreed on 12 October
-> 2026. Nothing in the code is to change on the strength of this page until Andrew agrees it as a whole.
+> **Status: agreed, 12 October 2026.** This is the design for phase 3 of
+> [the recovery plan](../recovery_plan.md). Andrew agreed it as a whole, with the three decisions in
+> section 9.
 
 ## 1. What phase 3 does
 

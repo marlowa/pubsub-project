@@ -215,8 +215,8 @@ thread that handles orders ([BUG-0126](bug_list.md#bug_0126)).
 **Finished when:** every high availability scenario passes after each of the three steps, and the
 promise recorder's locks are removed from the phase 2 list of exceptions.
 
-**Design:** [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md), a draft for
-review.
+**Design:** [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md), agreed 12
+October 2026.
 
 ### Phase 4. The library's replicated WAL, with one writing thread
 

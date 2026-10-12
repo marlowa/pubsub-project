@@ -17,7 +17,7 @@ different time budgets, and conflating them is the subject of a bug entry ([BUG-
 - [follower_log_repair.md](follower_log_repair.md) — how a sequencer follower's log is made a copy of its leader's again when it rejoins: the epoch on each record, finding the last record the two logs agree on, discarding after it and sending what it missed
 - [ha_in_the_library.md](ha_in_the_library.md) — why most of the high availability machinery is in the applications rather than the library, and the agreed direction for moving it: a replicated, sequenced log in the library, and applications written as deterministic state machines
 - [ha_library_boundary.md](ha_library_boundary.md) — the design, area by area, of what the library provides for high availability and what each application supplies, with the order of work that phases 3 to 9 of the recovery plan follow (agreed)
-- [lease_classes_in_the_library.md](lease_classes_in_the_library.md) — the design for phase 3: moving the lease classes and their messages into the library, then the arbiter and the witness as a voting service, then removing the lock and the disk waits from the promise recorder (draft for review)
+- [lease_classes_in_the_library.md](lease_classes_in_the_library.md) — the design for phase 3: moving the lease classes and their messages into the library, then the arbiter and the witness as a voting service, then removing the lock and the disk waits from the promise recorder (agreed)
 - [tla/findings.md](tla/findings.md) — the HA design specified in TLA+ and model checked: what held, eight findings with counterexamples, directions for fixing, and the checks of the majority-lease design and of rule 11
 
 ---
