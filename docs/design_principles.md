@@ -76,9 +76,15 @@ threads, such as the log's segment helper (`WalWriter`), the identifier builder
 (`LoggedCommandIdentifiersBuilder`) and the FIX capture writer (`FixCapture`), own their own state and
 hand results back through atomics written by one side only.
 
-**What checks it.** Only the one-writer check in `SingleWriterHistogram` and in
-`IncrementalRehashMap`, compiled into Debug, AddressSanitizer and coverage builds. Nothing checks the
-principle in general.
+**What checks it.** In Debug, AddressSanitizer and coverage builds, `ThreadConfinementCheck` refuses a
+second thread on the log writer, the slab allocator, the ring buffer, the incremental rehash map, the
+sequencer's table of epochs, the gateways' unanswered commands and session tables, and the reactor's
+handler and connection tables, and on `SingleWriterHistogram`, the histogram one thread records into
+without a lock. State that is handed
+from one thread to another, such as the matching engine's order book, which is filled on the main
+thread and then used by the engine's thread, is handed over explicitly. The known second writer of the
+follower's log, below, is counted rather than refused, published as a metric, and warned about once.
+State outside those classes is not checked. Release builds check nothing.
 
 **Today: broken in one place.** On a following sequencer, the sequencer's log has two writers. The
 reactor thread writes the records the leader sends, through a handler that the sequencer installs on
@@ -105,9 +111,14 @@ justify.
 **Where it is meant to hold.** In the choice of structures: `LockFreeMessageQueue` between threads,
 compare-and-swap in the pool allocators, and single-writer state under F1.
 
-**What checks it.** Nothing in the build. The locks taken today were found by a search of the source
-and by recording, with `perf`, every time a thread of the running venue went to sleep waiting for a
-mutex (`lock-audit-report.txt`).
+**What checks it.** `scripts/check_standards.py` refuses any lock in venue code that its table
+`_PERMITTED_LOCKS` does not list. Each entry names the lock or function it permits and gives the
+reason: start-up or shutdown only, a thread that handles no orders, an error path, or a breach naming
+its bug and the phase of [the plan](recovery_plan.md) that removes it. An entry covering a whole file is
+refused, and so is an entry that no longer matches a lock. The locks were first found by a search of the
+source and by recording, with `perf`, every time a thread of the running venue went to sleep waiting
+for a mutex (`lock-audit-report.txt`). Nothing checks that an order-handling thread does not wait for
+another thread by other means.
 
 **Today: broken in four places.**
 
@@ -328,8 +339,8 @@ twice the shutdown timeout for each thread. The log's helper thread is given up 
 because it may be in the middle of writing a segment. A thread that does not join is recorded, and
 `abort_if_thread_abandoned` ends the process.
 
-**What checks it.** Not checked in the build. Phase 2 of [the plan](recovery_plan.md) adds a check to
-`scripts/check_standards.py` that refuses a raw `std::thread` in a venue component.
+**What checks it.** `scripts/check_standards.py` refuses a raw `std::thread` in a venue component.
+Nothing checks the shutdown order or the timeouts.
 
 **Today: broken in one known place.** No venue component creates a raw `std::thread`; the only ones
 are in two benchmark programs and the binary gateway's load-test client. [BUG-0119](bug_list.md#bug_0119) records an application thread that can

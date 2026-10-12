@@ -2,7 +2,9 @@
 
 > **Status: agreed, 9 October 2026.** Each phase ends with a review at which Andrew decides whether
 > the next one starts. Phase 1, agreeing the design principles, is finished: Andrew agreed them on
-> 11 October 2026. Phase 2's three parts are built, and await the review that ends it.
+> 11 October 2026. Phase 2, making the build enforce the framework principles, is finished: Andrew
+> agreed its results on 12 October 2026. Phase 3 has not started; phases 3 to 7 are to be revised
+> first or not, as Andrew decides (see the note at the end of phase 2).
 
 ## In one page
 
@@ -161,10 +163,10 @@ component (F8). At first these checks fail on the code as it stands. That is int
 list of failures is the list of work for phases 3 and 4.
 
 **Finished when:** the checks exist, have been shown to fail on the known breaches, and those breaches
-are listed as the only permitted exceptions, each with the phase that removes it.
+are listed as the only permitted exceptions, each with the phase that removes it. Done: agreed 12
+October 2026.
 
-**Where it stands.** All three parts are built and have been reviewed with Andrew; the phase ends when he
-agrees the results below.
+**What it built.**
 
 - `scripts/check_standards.py` refuses any lock in venue code that its table `_PERMITTED_LOCKS` does not
   list, with the reason for each (start-up or shutdown only, a thread that handles no orders, an error
@@ -299,3 +301,4 @@ those that remain, with Andrew. Each fix from then on follows the same way of wo
   before this plan was written.
 - The code is tagged `pre-recovery-2026-10-09`.
 - Phase 1: the design principles, [design_principles.md](design_principles.md), agreed 11 October 2026.
+- Phase 2: the build enforces the framework principles about locks and threads, agreed 12 October 2026.
