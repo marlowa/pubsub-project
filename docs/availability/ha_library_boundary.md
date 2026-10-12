@@ -183,6 +183,10 @@ report's identifier made from the sequence number of the command that caused it 
 among that command's reports. It is the same on every instance, so replicas agree, and unique across
 restarts by construction, so no counter has to survive anything.
 
+The identifier members see is scrambled, so that it does not reveal the sequence number: the
+sequence number and the report's place are passed through a reversible cipher with a key fixed for the
+trading day and shared by both engines. Question 3 of section 13 gives the reason.
+
 ## 10. Design area: the matching engine pair
 
 **What it is for.** Losing the leading engine costs a short pause, not the orders on the book.
@@ -434,6 +438,14 @@ for way A of question 4, because under ways B and C two engines would also have 
 counter's value.
 
 **Recommendation: yes.**
+
+**Agreed 12 October 2026: yes, with the identifiers scrambled.** Members are not shown the sequence
+number. The sequence number and the report's place are passed through a reversible cipher whose key is
+fixed for the trading day and is the same on both engines. The result is still unique for the day and
+still the same on both engines, but the difference between two identifiers no longer tells a member how
+many commands the venue sequenced between them, which would reveal the venue's total message rate.
+Support staff turn an identifier back into its sequence number with a small tool that holds the day's
+key. Still to be designed: the cipher, and how the day's key is created and given to both engines.
 
 ### Question 4. Which way should the two matching engines run: A, B or C? (Choose one.)
 
