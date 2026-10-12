@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 145 |
-| Open | 60 (41 defects, 19 tasks) |
+| Bugs recorded | 146 |
+| Open | 61 (42 defects, 19 tasks) |
 | Closed | 85 |
-| Next id | BUG-0146 |
+| Next id | BUG-0147 |
 
 ## Open bugs by severity
 
-15 high, 39 medium, 6 low.
+16 high, 39 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -28,6 +28,7 @@
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
+| [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -169,6 +170,47 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0146: A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout {#bug_0146}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| How | Reading the code while discussing with Andrew what a restarted matching engine should do. Not yet reproduced |
+| Impact | A standby engine that was down for more than `absence_limit_seconds` (300 seconds in every environment), for example while its machine was repaired, empties its own book and halts itself when it comes back. If it is later promoted, it refuses every order. Whether the members are also sent its cancel reports is not yet established. A loss of resilience becomes a risk to service, against principle V11 |
+
+**What the rule is for.** Requirement R-0117: when the whole venue has been unable to trade for longer
+than `[order_book] absence_limit_seconds`, because no matching engine was running, the orders on the
+book are cancelled, each member is told, and trading halts. The members were locked out of their
+orders while the market moved, so the orders may be priced for a market that has gone.
+
+**What happens.** Each engine instance has its own book file on its own machine
+(`[order_book] region_path`), and while it runs it writes the current time into that file every so
+often, whether it leads or follows. When it restarts it subtracts the last time in its own file from
+the current time (`MatchingEngineThread::recover_open_orders`). That is how long **this instance** was
+down, not how long the venue could not trade. If it is more than the limit and the book holds orders,
+the engine sets `cancel_and_halt_pending_`. `act_on_pending_halt` then cancels every order and halts
+once the engine has a sequencer connection and is not catching up. It is called when the sequencer's
+connection comes up, when a catch-up finishes and when the engine takes the lead, and none of these
+checks whether another engine was leading while this one was down. The log line then says "the venue
+was unable to match for N s", which is not what was measured.
+
+**What is wanted.** Agreed with Andrew on 12 October 2026:
+
+- An engine that restarts and carries on as a follower never cancels an order, however long it was
+  down. Its absence is a loss of resilience, nothing more.
+- The rule applies only when no engine at all could trade. When that lasted longer than the limit, the
+  open orders are cancelled, each member is told, and trading halts, as today.
+- The limit stays configurable. 300 seconds is a reasonable figure.
+- The log line says what was actually measured.
+
+One engine's own file cannot tell whether any engine was leading while it was down. That is known to
+the leadership machinery and to the sequencer. How the venue measures a whole-venue absence, and where
+the decision is taken, belongs with question 2 of section 13 of
+[ha_library_boundary.md](availability/ha_library_boundary.md), which proposes that such a decision is
+made once and written to the WAL as a command.
 
 ### BUG-0145: Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding {#bug_0145}
 
