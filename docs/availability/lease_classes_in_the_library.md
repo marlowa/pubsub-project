@@ -60,7 +60,8 @@ They stay header-only, as they are now. Code that includes them changes from, fo
 `#include <LeaseHolder.hpp>` to `#include <pubsub_itc_fw/LeaseHolder.hpp>`.
 
 **Where the messages go.** `LeaseRequest`, `LeaseGrant`, `LeaseRefusal` and `LeaseRefusalReason` move
-out of `leader_follower.dsl` into a new file of the library's own, `lease_messages.dsl`, generated into
+out of `leader_follower.dsl` into a new file of the library's own, `lease_messages.dsl`. The library
+generates every message definition file in its directory into its own namespace, so this one becomes
 `lease_messages.hpp` in the namespace `pubsub_itc_fw`. Their message numbers stay 130, 131 and 132, so nothing on the wire changes.
 The code generator wraps the helper functions it writes into every header in a guard, so that two
 generated headers can be included together. The guard is named after the namespace, because the
