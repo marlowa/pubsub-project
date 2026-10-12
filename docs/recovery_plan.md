@@ -201,17 +201,19 @@ that the ownership checks ran inside the real venue. 67 of the 72 scenarios pass
   [BUG-0144](bug_list.md#bug_0144) (`ha_test.py` misses a log line split between two reads) and
   [BUG-0145](bug_list.md#bug_0145) (scenarios 59 and 62 stop the leader before it has their orders).
 
-### Phase 3. Move the lease classes into the library
+### Phase 3. Move the lease classes and the voting service into the library
 
-**For:** the first piece of high availability machinery in the library, moved with the least risk.
+**For:** the first pieces of high availability machinery in the library, moved with the least risk.
 
-**Involves:** moving the lease classes and their messages from `applications/fix_common` into the
-library, without changing how they behave. Then, as a second step, replacing the lock in the lease
-promise recorder with a hand-over between threads that needs no lock, and keeping its disk sync off
-the threads that handle orders ([BUG-0126](bug_list.md#bug_0126)).
+**Involves:** three steps. First, moving the lease classes and their messages from
+`applications/fix_common` into the library, without changing how they behave. Second, moving what the
+arbiter and the witness do into the library as a voting service, with the pairs they vote in set by
+configuration, again without changing how they behave. Third, replacing the lock in the lease promise
+recorder with a hand-over between threads that needs no lock, and never writing a promise record on a
+thread that handles orders ([BUG-0126](bug_list.md#bug_0126)).
 
-**Finished when:** every high availability scenario passes after the move and again after the change to
-the promise recorder, and the promise recorder's locks are removed from the phase 2 list of exceptions.
+**Finished when:** every high availability scenario passes after each of the three steps, and the
+promise recorder's locks are removed from the phase 2 list of exceptions.
 
 **Design:** [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md), a draft for
 review.
