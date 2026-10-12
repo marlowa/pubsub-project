@@ -1,9 +1,8 @@
 # Phase 3: the lease classes and the voting service in the library {#lease_classes_in_the_library}
 
 > **Status: draft for review, not agreed.** This is the design for phase 3 of
-> [the recovery plan](../recovery_plan.md). Decisions 1 and 2 in section 9 were agreed on 12 October
-> 2026; decision 3 is still to be answered. Nothing in the code is to change on the strength of this
-> page until Andrew agrees it as a whole.
+> [the recovery plan](../recovery_plan.md). All three decisions in section 9 were agreed on 12 October
+> 2026. Nothing in the code is to change on the strength of this page until Andrew agrees it as a whole.
 
 ## 1. What phase 3 does
 
@@ -145,8 +144,7 @@ their names. Their tests, `ComponentLeaseVotersTest` and `ComponentStatementStor
 `libraries/pubsub_itc_fw/tests`. `ArbiterStateRecord` moves into the library's `lease.dsl`, with the
 pair given as `i32 pair_id`, as in step 1; its message number stays 400.
 
-**What the venue keeps.** Decision 3 in section 9 is about this. If the answer is A, as recommended,
-the venue keeps the two programs `arbiter` and `witness`, each now a short `main` that reads its
+**What the venue keeps.** By decision 3 in section 9, the venue keeps the two programs `arbiter` and `witness`, each now a short `main` that reads its
 configuration file and starts the library's voting service. Their names, their configuration files,
 how they are deployed and how `ha_test.py` starts and stops them do not change.
 
@@ -368,3 +366,5 @@ files.
 **Recommendation: A for phase 3.** It keeps step 2 a move that changes no scripts. Turning the two short
 programs into programs the library provides is then a small separate change that can be made whenever a
 second user of the voting service appears.
+
+**Agreed 12 October 2026: A.**
