@@ -327,15 +327,172 @@ BUG-0131) are separate and can be done at any point:
 
 ## 13. Decisions needed
 
-These are separate questions.
+There are five questions. Questions 1, 2, 3 and 5 are each answered yes or no. Question 4 is a choice
+of one among three ways, A, B and C. The questions are not independent: ways B and C of question 4
+are possible only if the answers to questions 2 and 3 are both yes. If either answer is no, the only
+way left in question 4 is A.
 
-1. **Is section 1 the right shape?** The sequencer pair as the library's replicated WAL, the matching
-   engine as a deterministic state machine following it, the gateways as clients. **Agreed 12 October
-   2026**, on the understanding that an application uses the WAL only if it chooses to (section 11).
-2. **Should every decision that changes a replicated application's state enter the WAL as a command**
-   (section 8), including the engine's halt after an absence and any action on promotion? (Yes or no.)
-3. **Should identifiers come from the position in the WAL** (section 9)? (Yes or no.)
-4. **Which way should the engine pair run: A, B or C** (section 10)? The recommendation is B, with C
-   later.
-5. **Should the order in section 12 replace phases 3 to 7 of the plan**, with the framework fixes of
-   phase 4 that are not about high availability done separately? (Yes or no.)
+Each question below carries its own background, so that it can be answered without reading the rest
+of this page first.
+
+### Question 1. Is the overall shape right?
+
+The library provides a replicated write-ahead log (WAL). The sequencer pair is that WAL. The matching
+engine is an application that follows the WAL as a deterministic state machine. The gateways are
+clients of the WAL.
+
+**Agreed 12 October 2026**, on the understanding that an application uses the replicated WAL only if
+it chooses to, as section 11 describes. The authentication service, for example, does not use it.
+
+### Question 2. Should every decision that changes the matching engine's book enter the WAL as a command? (Yes or no.)
+
+**What happens now.** Three things change the engine's book without any command in the WAL telling
+it to:
+
+- **Halting after an absence.** If no engine could trade for longer than the configured limit
+  (`absence_limit_seconds`, 300 seconds by default), the engine cancels every order and halts.
+- **Acting on promotion.** When the follower engine takes over as leader, it cancels every order it
+  inherited, if `open_orders_on_promotion = "cancel"` is configured.
+- **Refusing orders while halted.**
+
+The engine that leads makes each of these decisions alone, from its own clock and its own view of
+its circumstances. The follower engine does not apply the commands in the WAL at all; it is sent a
+copy of the leading engine's book.
+
+**What "yes" means.** Each engine no longer decides these things for itself. Something still makes
+each decision, but only once, and the decision is then written into the WAL as a command, in the same
+way as an order or a cancel, at a definite position among the other commands. Every engine applies
+it at that same position. For halts and changes of trading phase, the leading sequencer, which is the
+leader of the WAL, issues the command. Timers that serve only a process's own upkeep, such as leases,
+connection retries and metrics, are not affected; they stay local to the process.
+
+**For "yes":**
+
+1. **Both engines end up with exactly the same book.** An order that arrives just before a halt falls
+   on the same side of the halt in both engines, because the WAL puts every command, the halt
+   included, into one order. This is what makes ways B and C of question 4 possible.
+2. **An engine can no longer change its book because of something only it saw**, such as how long it
+   was itself down. That is the cause of
+   [BUG-0146](../bug_list.md#bug_0146), where a restarted follower engine cancels its book after five
+   minutes down although the other engine traded throughout. An engine replaying the WAL after a
+   restart meets the halt at the position where it happened, and nowhere else.
+3. **The decision is recorded.** The WAL shows when the venue halted and which orders came before and
+   after the halt. Replaying the WAL gives the same result every time, so these behaviours can be
+   tested by replaying a WAL.
+4. **Members receive one set of cancel reports for each decision**, not one from each engine.
+
+**Against "yes":**
+
+1. **A decision takes slightly longer to take effect**, because it has to be sequenced and written to
+   the WAL before anything applies it. The extra time is the usual round trip of an order through the
+   sequencer, well under a millisecond.
+2. **More machinery.** The WAL needs new kinds of command, and each kind needs a defined answer to the
+   question of which process issues it. If the sequencer issues them, it has to know rules such as
+   the absence limit, which ties it more closely to the venue's rules than it is now.
+3. **The absence rule needs designing again.** "No engine could trade for longer than the limit" has
+   to be measured by a process that was running throughout, or, if the whole venue was down, by the
+   first leader of the WAL to start. This does not follow automatically from the change.
+4. **It is work.** It touches the timer design recorded in
+   [BUG-0128](../bug_list.md#bug_0128) and the trading phases in
+   [trading_phases.md](../venue/trading_phases.md).
+
+**Recommendation: yes.** Without it, the two engines can only be kept in step by copying the book from
+one to the other, which is how it is done now and is the source of several open defects.
+
+### Question 3. Should identifiers be made from the position in the WAL? (Yes or no.)
+
+**What happens now.** The matching engine issues identifiers such as `OrderID` and `ExecID` from
+counters it keeps in memory. After a restart, the order counter is set above the highest order number
+in the book, but the report counter, `exec_id_counter_`, starts again at zero. So an engine that
+restarts or is promoted issues `ME-EXEC-1`, `ME-EXEC-2` and so on a second time in the same day, and
+members can receive two different reports with the same identifier. This is recorded as
+[BUG-0139](../bug_list.md#bug_0139).
+
+**What "yes" means.** Each identifier is built from the sequence number of the command that caused it
+and its place among that command's reports. For example, the second report caused by command 81,234
+gets an identifier made from 81,234 and 2.
+
+**For "yes":**
+
+1. **The identifier is unique for the day by construction**, because no two commands have the same
+   sequence number. No counter has to survive a restart.
+2. **It is the same on both engines**, because both apply the same commands in the same order. Ways B
+   and C of question 4 need this.
+
+**Against "yes":**
+
+1. **The identifiers look different from the current ones**, so anything that parses them or expects
+   their current form, such as tests and tools downstream, has to change.
+2. **The identifiers reveal sequence numbers to members.** This is probably harmless, but it is a
+   choice to make knowingly.
+
+**The other way to fix BUG-0139** is to restore the report counter after a restart. That works only
+for way A of question 4, because under ways B and C two engines would also have to agree on the
+counter's value.
+
+**Recommendation: yes.**
+
+### Question 4. Which way should the two matching engines run: A, B or C? (Choose one.)
+
+**Background.** The venue runs two matching engines so that losing one costs a short pause, not the
+orders on the book. The engine never fills anything: orders rest until they are cancelled. So its book
+changes only when it accepts, refuses or cancels an order.
+
+**A. As now.**
+
+- The follower engine ignores the commands the sequencer sends it, and is sent copies of the leading
+  engine's book (`BookUpdate` messages) instead.
+- On promotion, it catches up from the WAL, then cancels or keeps the inherited orders according to
+  `open_orders_on_promotion`.
+- It needs neither question 2 nor question 3 to be answered yes.
+- The copying of the book, the reconciliation on promotion and the cancel-on-promotion setting all
+  stay, and so do their open defects.
+
+**B. Both engines apply every command; only the leading engine's reports are sent on.**
+
+- Both engines build the same book from the WAL, so the copying of the book is removed.
+- On promotion the follower's book is already exact, so there is nothing to reconcile and no reason to
+  cancel the inherited orders.
+- Reports still flow along one path, as they do now.
+- It needs yes to both question 2 and question 3.
+
+**C. Both engines apply every command, and both send their reports.**
+
+- The sequencer passes on the first copy of each report, recognised by the identifier of question 3,
+  and discards the second copy.
+- There is no engine leadership at all, and losing an engine costs no pause.
+- It doubles the number of reports sent to the sequencer.
+- Every report must be identical on both engines, which is harder to test than way B.
+- It needs yes to both question 2 and question 3.
+
+**Recommendation: B now, and C later**, once B has shown in practice that the two engines always agree.
+
+### Question 5. Should the order of work in section 12 replace phases 3 to 7 of the recovery plan? (Yes or no.)
+
+**Background.** [The recovery plan](../recovery_plan.md) puts the work that follows phase 2 in this
+order:
+
+- phase 3: one writing thread for the follower's WAL;
+- phase 4: removing the remaining locks;
+- phase 5: dividing the sequencer into parts;
+- phase 6: dividing the matching engine into parts;
+- phase 7: one check against sequencing a command twice.
+
+Section 12 proposes a different order, in which the high availability machinery moves into the library
+step by step. Each step of section 12 takes in the purpose of one or more of those phases. For example,
+building the library's replicated WAL with one writing thread does what phase 3 was for, and moving the
+duplicate check into the WAL does what phase 7 was for. Doing phases 3 to 7 as written, and then moving
+everything into the library, would change the same code twice.
+
+**What "yes" means.** Section 12's order replaces phases 3 to 7. The locks of phase 4 that have nothing
+to do with high availability are done separately, at any point: the timers
+([BUG-0128](../bug_list.md#bug_0128)), the thread registry ([BUG-0129](../bug_list.md#bug_0129)), the
+WAL's helper thread ([BUG-0130](../bug_list.md#bug_0130)) and the sequencer's allocations
+([BUG-0131](../bug_list.md#bug_0131)).
+
+**What "no" means.** Phases 3 to 7 are done as written, and moving high availability into the library
+is planned afterwards.
+
+**Recommendation: yes.** Section 12's order assumes way B in question 4. If the answer to question 4 is
+A or C, steps 4 and 5 of section 12 change, and the order is revised to match before it replaces the
+phases.
