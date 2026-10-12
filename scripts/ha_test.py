@@ -4583,6 +4583,24 @@ def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
     return int(last.group(2)), int(last.group(4))
 
 
+# What a sequencer logs when it writes a record out of order, and when it finds its write-ahead log damaged.
+_WAL_OUT_OF_ORDER = "was written after record"
+_WAL_DAMAGED = "write-ahead log is damaged"
+
+
+def check_write_ahead_logs_in_order(log_dir: Path) -> None:
+    """Fail the scenario if either sequencer wrote a record out of order or found its write-ahead log damaged."""
+    for name in ("sequencer_primary", "sequencer_secondary"):
+        sequencer_log = log_dir / f"{name}.log"
+        out_of_order = count_log_marker(sequencer_log, _WAL_OUT_OF_ORDER)
+        damaged = count_log_marker(sequencer_log, _WAL_DAMAGED)
+        if out_of_order or damaged:
+            die(f"{name} wrote {out_of_order} record(s) out of order and reported its write-ahead log damaged "
+                f"{damaged} time(s) -- see '{_WAL_OUT_OF_ORDER}' in {sequencer_log}. Its log now holds records "
+                "twice or out of order, and every later scenario starts from it (BUG-0147).")
+    log("  write-ahead logs: neither sequencer wrote a record out of order -- OK")
+
+
 def count_log_marker(log_path: Path, marker: str, from_byte: int = 0) -> int:
     """Count lines containing `marker` in log_path beyond from_byte (0 if absent)."""
     if not log_path.is_file():
@@ -9775,6 +9793,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
             faults = raw_client_module.FixRawClient.all_receive_numbering_faults
             die("the venue's message numbering to a member was broken: " + "; ".join(faults[:5]) +
                 (f"; and {len(faults) - 5} more" if len(faults) > 5 else ""))
+
+        # A sequencer that wrote records out of order, or found its write-ahead log damaged, has left
+        # a log that holds records twice, or out of order, whatever the member saw. Every later
+        # scenario then starts from that log, so it is a failure of this one (BUG-0147).
+        check_write_ahead_logs_in_order(log_dir)
 
         result_pass = True
         log("")

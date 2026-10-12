@@ -428,6 +428,11 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     bool keep_until_answered(const pubsub_itc_fw_app::WalRecord& envelope, std::string_view comp_id, std::string_view cl_ord_id);
     // Sends again, marked as sent again, every command still unanswered: a new sequencer leads.
     void send_unanswered_commands_again(int32_t new_epoch);
+
+    // Whether any command sent to the sequencers is still waiting for its answer.
+    [[nodiscard]] bool holds_unanswered_commands() const {
+        return unanswered_commands_.has_value() && unanswered_commands_->unanswered() > 0;
+    }
     // Sends again, marked as sent again, every command still unanswered, on one sequencer connection
     // that has been established again. Commands that were waiting to be sent on the connection it
     // replaces were discarded when that connection was closed (docs/bug_list.md, BUG-0118).

@@ -677,14 +677,18 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         const bool gateway_has_two_connections = note_command_connection(message.connection_id(), inbound);
 
         // A follower writes its log only from its leader's records, so that the two logs stay
-        // identical, and numbers nothing itself. It discards the gateway's copy here, before a
+        // identical, and numbers nothing itself. So does an instance that has not yet learnt its role:
+        // it may already be receiving its leader's records, and a record it numbered itself would
+        // take a place in its log that the leader's record of that number needs (BUG-0147). If it
+        // turns out to lead, the gateways send again every command still unanswered when it announces
+        // its epoch. It discards the gateway's copy here, before a
         // number is taken: counting these copies in next_sequence_number_ is what left a newly
         // promoted follower numbering below records its log already held (BUG-0105).
-        if (role_ == pubsub_itc_fw_app::Role::follower) {
+        if (role_ != pubsub_itc_fw_app::Role::leader) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                       "SequencerThread: order envelope on connection {} inner_pdu_id={} -- follower, discarding the gateway's copy; the log is "
+                       "SequencerThread: order envelope on connection {} inner_pdu_id={} -- {}, discarding the gateway's copy; the log is "
                        "written from the leader's records",
-                       message.connection_id().get_value(), inner_pdu_id);
+                       message.connection_id().get_value(), inner_pdu_id, pubsub_itc_fw_app::to_string(role_));
             release_pdu_payload(message);
             return;
         }
@@ -766,9 +770,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.has_gateway_ingress_ns = inbound.has_gateway_ingress_ns;
         envelope.gateway_ingress_ns = inbound.gateway_ingress_ns;
 
-        // WAL commit: the leader appends from the direct gateway PDU. A follower has already
-        // returned above. An instance that has not yet learnt its role appends locally because
-        // it may become the leader.
+        // WAL commit: the leader appends from the direct gateway PDU. Every other instance has
+        // already returned above.
         append_envelope_to_wal(envelope);
         note_logged_command(envelope.has_sender_comp_id ? envelope.sender_comp_id : std::string_view{},
                             envelope.has_origin_gateway_id ? envelope.origin_gateway_id : gateway_ids::default_when_absent, inner_pdu_id,
@@ -776,12 +779,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
                    message.connection_id().get_value(), inner_pdu_id, seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
-
-        if (role_ != pubsub_itc_fw_app::Role::leader) {
-            // Follower/unknown: do not forward to ME.
-            release_pdu_payload(message);
-            return;
-        }
 
         // Record seq_no -> the session that placed this order, so its execution reports can
         // be routed back to it. seq_no is globally unique, unlike a ClOrdID.
@@ -1980,6 +1977,10 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
     });
     if (keep_through < last_before) {
         highest_replicated_seq_no_.store(keep_through, std::memory_order_release);
+        // A record this instance numbered itself, while it led, may be among those discarded. Its next
+        // number follows the last record kept, so that if it leads again it does not number past a gap
+        // (BUG-0147); taking the lead raises it above every record replicated since.
+        next_sequence_number_ = keep_through + 1;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: discarded records {} to {} from this instance's log -- the leader does not hold them. They were never acted on, "
                    "because the matching engine is sent an order only once both logs hold it",

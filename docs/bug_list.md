@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 150 |
-| Open | 64 (45 defects, 19 tasks) |
-| Closed | 86 |
+| Open | 63 (44 defects, 19 tasks) |
+| Closed | 87 |
 | Next id | BUG-0151 |
 
 ## Open bugs by severity
 
-18 high, 39 medium, 7 low.
+17 high, 39 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,7 +29,6 @@
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
-| [BUG-0147](#bug_0147) | high | defect | A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it |
 | [BUG-0148](#bug_0148) | high | defect | A bounded resend sometimes returns the wrong orders under the right numbers again, the fault BUG-0053 fixed |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
@@ -248,114 +247,6 @@ established.
 
 **Evidence kept.** The logs of the three runs are in `tmp/bug0148`: `run1-fail`, `run2-pass` and
 `run3-fail`.
-
-### BUG-0147: A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it {#bug_0147}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-12 |
-| Recorded | 2026-10-12 |
-| How | Running every high availability scenario against the Release install, to record which pass before phase 3 of the recovery plan changes anything. Scenario 12 damaged the secondary sequencer's write-ahead log (WAL), and every scenario after it then failed at start-up |
-| Impact | The secondary sequencer stopped, so the venue lost its standby. Its WAL is damaged in the middle, so it refuses to start again until the WAL is moved aside, and the WAL no longer holds every record once and in order |
-
-**What was found.** In scenario 12, with 20,000 orders in flight, the secondary sequencer was the
-follower. At 16:05:36.19 it logged that its WAL agreed with the leader's through record 1,732,404 and
-that it was writing the records the leader sent from there. At 16:05:37.42, before any process had been
-killed, it began logging, from `SequencerThread::append_to_wal`, that records were being written out of
-order: first "record 1732405 was written after record 1732405", the same record written twice, then
-"record 1732411 was written after record 1732416", and so on, 2,052 times in half a second, until
-16:05:37.90. At 16:05:37.97 the sequencer's thread stopped with "WalReader: the write-ahead log is
-damaged -- .../sequencer_secondary_wal/wal_000129.log has an entry at byte 2646488 that is not valid,
-followed by a valid entry at byte 2646707". In every later scenario the secondary refused the WAL at
-start-up, and the scenario failed. Scenario 12 itself failed because the restarted primary matching
-engine did not take the lead within 15 seconds.
-
-Just before the first record out of order, at 16:05:37.39, a gateway's order connection and the
-secondary matching engine's standby connection to this sequencer were established.
-
-**Why it should not happen.** [BUG-0123](#bug_0123) found the same kind of damage and was fixed by
-making every write of a replicated record go through `ReplicatedRecordWriter::write_if_next()`, which,
-under one lock, writes a record only if it is the next one. A record written twice, or written after a
-later one, means some write reached the WAL without passing that check. `append_to_wal` is also called
-by `append_envelope_to_wal`, which writes the records a leader sequences itself (orders from gateways
-and reports from the matching engine) and does not go through `write_if_next()`. Whether that path ran
-on the follower here, and why, is not established.
-
-**Seen a second time, with two threads writing.** In the run after step 3 of phase 3, scenario 13
-(the matching engine dies with both arbiters and the witness dead, 20,000 orders in flight) damaged the
-secondary sequencer's WAL in the same way. At 21:00:54.08 the follower logged that its WAL agreed with
-the leader's through record 402,000; from 21:00:56.26 it logged "record N was written after record M"
-379 times, starting with "record 402005 was written after record 402005"; at 21:00:57.04 its thread
-stopped with "WalReader: the write-ahead log is damaged" (`wal_000026.log`). Of the 379 messages, 377
-were logged by the `SequencerThread` and **2 by the process's main thread, which runs the reactor**, so
-two threads were writing to the follower's WAL at the same moment. In the first occurrence all 2,052
-messages came from the `SequencerThread`. As before, the scenario failed because the restarted primary
-matching engine waited for its sequencer and did not take the lead within 15 seconds; it had been
-granted its lease at once. The evidence is in `tmp/bug0147/after-step-3`, and the damaged WALs are in
-`/mnt/sda2/mystuff2/var/sequencer_wal.damaged-step3-20261012` and
-`sequencer_secondary_wal.damaged-step3-20261012`.
-
-**A third time, at start-up, with nothing killed.** In the next run, on fresh WALs, scenario 40 (a
-bounded resend, no process killed) damaged the secondary's WAL within three seconds of the venue
-starting. At 21:22:31.49 the follower requested the installation of its "WAL inline handler" for the
-peer connection, which writes replicated records on the reactor's thread; at 21:22:32.15 it logged that
-its WAL agreed with the leader's through record 150,696 and that it was writing the records the leader
-sent from there, on the `SequencerThread`; from 21:22:34.43 it logged 19 records written out of order,
-**14 of them from the reactor's thread** and 5 from the `SequencerThread`, the first being "record
-150699 was written after record 150701"; at 21:22:35.08 it stopped with the WAL damaged. The scenario
-itself reported a pass, because it checks only what the member receives. Every later scenario that
-starts the secondary sequencer then failed at start-up. The evidence is in
-`tmp/bug0147/after-step-3/scenario-40`, and the WALs in
-`/mnt/sda2/mystuff2/var/sequencer_*wal.damaged-step3-scenario40-20261012`.
-
-So two threads write replicated records into the follower's WAL at once: the inline handler on the
-reactor's thread, and the `SequencerThread`. Which of them bypasses `write_if_next()`, or whether the
-check itself is not atomic with the write, is not yet established.
-
-**When it strikes: as the sequencer learns that it follows.** A sequencer whose role is still unknown
-writes gateway orders into its own WAL (`SequencerThread.cpp`, the call to `append_envelope_to_wal`
-after the comment "An instance that has not yet learnt its role appends locally because it may become
-the leader"), while the inline handler is already writing the leader's records. It learns that it
-follows when it first grants its leader a lease. Since step 3 of phase 3 that first grant is usually
-refused with `recording_promise`, and granted at the leader's next renewal, a second later, when orders
-are flowing. In every occurrence after step 3 the writes out of order began within about 110
-milliseconds before the role changed: in scenario 13 at 21:00:56.26, with the role changing at
-21:00:56.28; in scenario 40 at 21:22:34.43 and 21:22:34.44; and in a fourth occurrence, scenario 72 of
-the run that followed, at 21:42:10.54 and 21:42:10.65, one second after the follower first considered
-its leader's request at 21:42:09.59. Scenario 72 failed because 50 orders were never reported accepted.
-Its evidence is in `tmp/bug0147/after-step-3/scenario-72`.
-
-**Not yet reproduced on demand.** It has happened four times, in scenarios 12, 13, 40 and 72; the first
-before step 3. In the Debug install at the end of phase 2, scenario 12 passed.
-
-**The same message in other scenarios, a second pattern.** The message "record N was written after
-record M" also appears in scenarios that pass, in a different pattern, after a follower has discarded
-records its leader does not hold and then taken the lead:
-
-- In scenario 1 of the same Release run, at 16:16:36.92 the secondary sequencer discarded records 2,001
-  to 45,000 from its WAL, because the leader did not hold them, and agreed with the leader through
-  record 2,000. It then wrote what the leader sent, up to record 4,000. At 16:16:43.01 it took the
-  lead, and the first record it sequenced was numbered 45,001, logged as "record 45001 was written after
-  record 4000", 4,478 times in all.
-- In scenario 49 of the Debug run at the end of phase 2, the secondary discarded records 1,263,971 to
-  1,267,970, took the lead, and numbered its first record 1,267,971, logged as "written after record
-  1265970".
-
-In both, the first number used after taking the lead is one more than the highest record the instance
-held before it discarded any, not one more than the highest it holds now, so its WAL has a gap of
-records that never existed. The scenarios pass because nothing they check reads that WAL afterwards.
-The out-of-order writing while following, which led to the damage above, also appears in scenario 72 of
-the Debug run (three records). Whether the two patterns have one cause is not established.
-
-**Evidence kept.** The damaged WAL is `sequencer_secondary_wal.damaged-20261012`, and the leader's WAL
-at the same moment is `sequencer_wal.with-damaged-secondary-20261012`, both beside the live WAL
-directories. The logs are in `tmp/bug0147`: scenarios 1 and 12 of the Release run, and scenarios 49 and
-72 of the Debug run.
-
-**Where it belongs.** Phase 4 of [the recovery plan](recovery_plan.md) replaces the follower's two
-writing threads with one, which removes the conditions BUG-0123's lock was added for. This entry is
-evidence that the lock did not close them, and is to be checked again when phase 4 is done.
 
 ### BUG-0146: A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout {#bug_0146}
 
@@ -3313,6 +3204,138 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0147: A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it {#bug_0147}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| Fixed | 2026-10-12 -- only the leader numbers a gateway's command and writes it to its WAL; a gateway sends its held commands again on the first leader it hears of; a follower that discards records numbers on from the last one kept |
+| How | Running every high availability scenario against the Release install, to record which pass before phase 3 of the recovery plan changes anything. Scenario 12 damaged the secondary sequencer's write-ahead log (WAL), and every scenario after it then failed at start-up |
+| Impact | The secondary sequencer stopped, so the venue lost its standby. Its WAL is damaged in the middle, so it refuses to start again until the WAL is moved aside, and the WAL no longer holds every record once and in order |
+
+**What was found.** In scenario 12, with 20,000 orders in flight, the secondary sequencer was the
+follower. At 16:05:36.19 it logged that its WAL agreed with the leader's through record 1,732,404 and
+that it was writing the records the leader sent from there. At 16:05:37.42, before any process had been
+killed, it began logging, from `SequencerThread::append_to_wal`, that records were being written out of
+order: first "record 1732405 was written after record 1732405", the same record written twice, then
+"record 1732411 was written after record 1732416", and so on, 2,052 times in half a second, until
+16:05:37.90. At 16:05:37.97 the sequencer's thread stopped with "WalReader: the write-ahead log is
+damaged -- .../sequencer_secondary_wal/wal_000129.log has an entry at byte 2646488 that is not valid,
+followed by a valid entry at byte 2646707". In every later scenario the secondary refused the WAL at
+start-up, and the scenario failed. Scenario 12 itself failed because the restarted primary matching
+engine did not take the lead within 15 seconds.
+
+Just before the first record out of order, at 16:05:37.39, a gateway's order connection and the
+secondary matching engine's standby connection to this sequencer were established.
+
+**Why it should not happen.** [BUG-0123](#bug_0123) found the same kind of damage and was fixed by
+making every write of a replicated record go through `ReplicatedRecordWriter::write_if_next()`, which,
+under one lock, writes a record only if it is the next one. A record written twice, or written after a
+later one, means some write reached the WAL without passing that check. `append_to_wal` is also called
+by `append_envelope_to_wal`, which writes the records a leader sequences itself (orders from gateways
+and reports from the matching engine) and does not go through `write_if_next()`. Whether that path ran
+on the follower here, and why, is not established.
+
+**Seen a second time, with two threads writing.** In the run after step 3 of phase 3, scenario 13
+(the matching engine dies with both arbiters and the witness dead, 20,000 orders in flight) damaged the
+secondary sequencer's WAL in the same way. At 21:00:54.08 the follower logged that its WAL agreed with
+the leader's through record 402,000; from 21:00:56.26 it logged "record N was written after record M"
+379 times, starting with "record 402005 was written after record 402005"; at 21:00:57.04 its thread
+stopped with "WalReader: the write-ahead log is damaged" (`wal_000026.log`). Of the 379 messages, 377
+were logged by the `SequencerThread` and **2 by the process's main thread, which runs the reactor**, so
+two threads were writing to the follower's WAL at the same moment. In the first occurrence all 2,052
+messages came from the `SequencerThread`. As before, the scenario failed because the restarted primary
+matching engine waited for its sequencer and did not take the lead within 15 seconds; it had been
+granted its lease at once. The evidence is in `tmp/bug0147/after-step-3`, and the damaged WALs are in
+`/mnt/sda2/mystuff2/var/sequencer_wal.damaged-step3-20261012` and
+`sequencer_secondary_wal.damaged-step3-20261012`.
+
+**A third time, at start-up, with nothing killed.** In the next run, on fresh WALs, scenario 40 (a
+bounded resend, no process killed) damaged the secondary's WAL within three seconds of the venue
+starting. At 21:22:31.49 the follower requested the installation of its "WAL inline handler" for the
+peer connection, which writes replicated records on the reactor's thread; at 21:22:32.15 it logged that
+its WAL agreed with the leader's through record 150,696 and that it was writing the records the leader
+sent from there, on the `SequencerThread`; from 21:22:34.43 it logged 19 records written out of order,
+**14 of them from the reactor's thread** and 5 from the `SequencerThread`, the first being "record
+150699 was written after record 150701"; at 21:22:35.08 it stopped with the WAL damaged. The scenario
+itself reported a pass, because it checks only what the member receives. Every later scenario that
+starts the secondary sequencer then failed at start-up. The evidence is in
+`tmp/bug0147/after-step-3/scenario-40`, and the WALs in
+`/mnt/sda2/mystuff2/var/sequencer_*wal.damaged-step3-scenario40-20261012`.
+
+So two threads write replicated records into the follower's WAL at once: the inline handler on the
+reactor's thread, and the `SequencerThread`. Which of them bypasses `write_if_next()`, or whether the
+check itself is not atomic with the write, is not yet established.
+
+**When it strikes: as the sequencer learns that it follows.** A sequencer whose role is still unknown
+writes gateway orders into its own WAL (`SequencerThread.cpp`, the call to `append_envelope_to_wal`
+after the comment "An instance that has not yet learnt its role appends locally because it may become
+the leader"), while the inline handler is already writing the leader's records. It learns that it
+follows when it first grants its leader a lease. Since step 3 of phase 3 that first grant is usually
+refused with `recording_promise`, and granted at the leader's next renewal, a second later, when orders
+are flowing. In every occurrence after step 3 the writes out of order began within about 110
+milliseconds before the role changed: in scenario 13 at 21:00:56.26, with the role changing at
+21:00:56.28; in scenario 40 at 21:22:34.43 and 21:22:34.44; and in a fourth occurrence, scenario 72 of
+the run that followed, at 21:42:10.54 and 21:42:10.65, one second after the follower first considered
+its leader's request at 21:42:09.59. Scenario 72 failed because 50 orders were never reported accepted.
+Its evidence is in `tmp/bug0147/after-step-3/scenario-72`.
+
+**Not yet reproduced on demand.** It has happened four times, in scenarios 12, 13, 40 and 72; the first
+before step 3. In the Debug install at the end of phase 2, scenario 12 passed.
+
+**The same message in other scenarios, a second pattern.** The message "record N was written after
+record M" also appears in scenarios that pass, in a different pattern, after a follower has discarded
+records its leader does not hold and then taken the lead:
+
+- In scenario 1 of the same Release run, at 16:16:36.92 the secondary sequencer discarded records 2,001
+  to 45,000 from its WAL, because the leader did not hold them, and agreed with the leader through
+  record 2,000. It then wrote what the leader sent, up to record 4,000. At 16:16:43.01 it took the
+  lead, and the first record it sequenced was numbered 45,001, logged as "record 45001 was written after
+  record 4000", 4,478 times in all.
+- In scenario 49 of the Debug run at the end of phase 2, the secondary discarded records 1,263,971 to
+  1,267,970, took the lead, and numbered its first record 1,267,971, logged as "written after record
+  1265970".
+
+In both, the first number used after taking the lead is one more than the highest record the instance
+held before it discarded any, not one more than the highest it holds now, so its WAL has a gap of
+records that never existed. The scenarios pass because nothing they check reads that WAL afterwards.
+The out-of-order writing while following, which led to the damage above, also appears in scenario 72 of
+the Debug run (three records). Whether the two patterns have one cause is not established.
+
+**Evidence kept.** The damaged WAL is `sequencer_secondary_wal.damaged-20261012`, and the leader's WAL
+at the same moment is `sequencer_wal.with-damaged-secondary-20261012`, both beside the live WAL
+directories. The logs are in `tmp/bug0147`: scenarios 1 and 12 of the Release run, and scenarios 49 and
+72 of the Debug run.
+
+**Where it belongs.** Phase 4 of [the recovery plan](recovery_plan.md) replaces the follower's two
+writing threads with one, which removes the conditions BUG-0123's lock was added for. This entry is
+evidence that the lock did not close them, and is to be checked again when phase 4 is done.
+
+**How it was fixed.** Two faults, one for each pattern.
+
+- **Two writers on a follower.** A sequencer that did not yet know whether it led numbered each
+  gateway command itself and wrote it to its WAL, while its reactor's thread was already writing its
+  leader's records there; a record of its own took the place a leader's record of that number needed.
+  Now only the leader numbers a gateway's command: an instance that is not leading discards the
+  gateway's copy, as a follower always did (`SequencerThread.cpp`). Because a gateway accepts commands
+  from the moment it starts, it may send some before any leader has announced itself, so both gateways
+  now send again the commands they hold on the first leader epoch they hear of, as they already did on
+  every later one. The leader checks a command sent again against its WAL, so none is sequenced twice.
+  The design is updated in section 3.2 of
+  [commands_during_a_change_of_leader.md](availability/commands_during_a_change_of_leader.md).
+- **Numbering past a gap.** A follower that discarded records its leader did not hold kept the next
+  number it had used while it led, and on leading again numbered from there. It now numbers on from the
+  last record it kept.
+
+**Checked.** `ha_test.py` now fails any scenario in which either sequencer logs a record written out of
+order or a damaged WAL; on the saved logs of scenario 40 it fails, and on those of scenario 39 it passes.
+Every high availability scenario was then run on fresh WALs: 71 of 72 pass, and none wrote a record out
+of order, including scenarios 1 and 49, which showed the second pattern before. Scenario 40 failed on
+[BUG-0148](#bug_0148).
+
 
 ### BUG-0126: The thread that handles orders takes the promise recorder's mutex every lease tick, and can wait for a disk sync {#bug_0126}
 

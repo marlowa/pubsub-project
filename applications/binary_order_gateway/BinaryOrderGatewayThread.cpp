@@ -852,12 +852,13 @@ void BinaryOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::Even
         return;
     }
     // A higher epoch than any before means a new sequencer instance leads. The commands still held
-    // unanswered may never have reached any log, so each is sent again. The first epoch seen only
-    // sets the mark: a gateway that has just started holds nothing.
+    // unanswered may never have reached any log, so each is sent again. That includes the first epoch
+    // seen, when commands are held: this gateway accepts commands before any leader has announced
+    // itself, and a sequencer that does not yet lead discards them, as a follower does.
     if (view.has_leader_epoch && view.leader_epoch > highest_leader_epoch_seen_) {
         const bool first_seen = highest_leader_epoch_seen_ == 0;
         highest_leader_epoch_seen_ = view.leader_epoch;
-        if (!first_seen) {
+        if (!first_seen || holds_unanswered_commands()) {
             send_unanswered_commands_again(view.leader_epoch);
         }
     }

@@ -6,9 +6,9 @@
 > agreed its results on 12 October 2026. Phases 3 to 9 follow the order of work in
 > [ha_library_boundary.md](availability/ha_library_boundary.md), which Andrew agreed on 12 October 2026:
 > the high availability machinery moves from the applications into the library, one step at a time.
-> Phase 3's three steps are done. Before its review, [BUG-0147](bug_list.md#bug_0147) is fixed: step 3
-> makes the following sequencer's fault strike more often, by delaying the moment it learns it follows
-> (decision 4 in [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)).
+> Phase 3's three steps are done, and [BUG-0147](bug_list.md#bug_0147), which step 3 made strike more
+> often, is fixed (decision 4 in [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)).
+> The order's round trip is still to be measured before phase 3's review.
 
 ## In one page
 

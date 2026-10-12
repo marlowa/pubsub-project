@@ -88,8 +88,12 @@ field: the leader's epoch.
 A gateway remembers the highest epoch it has seen. When an `OrderAcceptance` arrives with a higher
 one, it sends every command it is still holding to both sequencers, in the order they were first sent,
 each with a new field on the envelope, `sent_again`, set to true. The first `OrderAcceptance` a
-gateway receives after it starts sets the epoch without sending anything again, because a gateway
-that has just started holds nothing.
+gateway receives after it starts does the same if the gateway holds any command. A gateway accepts
+commands from the moment it starts, so it can send some before any leader has announced itself, and
+neither sequencer acts on them: only the leader numbers a gateway's command and writes it to its WAL.
+A follower, and an instance that does not yet know whether it leads, discards the gateway's copy,
+because it may already be receiving its leader's records, and a record it numbered itself would take
+the place in its WAL that the leader's record of that number needs.
 
 Both gateways, FIX and binary, do this the same way.
 
