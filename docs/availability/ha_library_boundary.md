@@ -1,11 +1,12 @@
 # High availability in the library: where the line falls {#ha_library_boundary}
 
-> **Status: draft for review, not agreed.** This is the design asked for in section 8 of
-> [ha_in_the_library.md](ha_in_the_library.md), which sets out why most of the high availability
-> machinery should move from the applications into the library and the direction agreed for it. This
-> page says, one design area at a time, what the library would provide, what an application would
-> supply, and how the pieces built today map onto it. Nothing in the code is to change on the strength
-> of this page until it is agreed. Section 13 lists the decisions it needs.
+> **Status: agreed, 12 October 2026.** Andrew agreed all five decisions in section 13. This is the
+> design asked for in section 8 of [ha_in_the_library.md](ha_in_the_library.md), which sets out why
+> most of the high availability machinery should move from the applications into the library and the
+> direction agreed for it. This page says, one design area at a time, what the library provides, what
+> an application supplies, and how the pieces built today map onto it. The detail within each design
+> area is designed at the start of the phase of [the recovery plan](../recovery_plan.md) that builds
+> it, and agreed before any code is written.
 
 ## 1. The shape in one paragraph
 
@@ -514,3 +515,5 @@ is planned afterwards.
 **Recommendation: yes.** Section 12's order assumes way B in question 4. If the answer to question 4 is
 A or C, steps 4 and 5 of section 12 change, and the order is revised to match before it replaces the
 phases.
+
+**Agreed 12 October 2026: yes.** Section 12's order replaces phases 3 to 7 of the recovery plan.
