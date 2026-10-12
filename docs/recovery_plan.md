@@ -213,6 +213,9 @@ the threads that handle orders ([BUG-0126](bug_list.md#bug_0126)).
 **Finished when:** every high availability scenario passes after the move and again after the change to
 the promise recorder, and the promise recorder's locks are removed from the phase 2 list of exceptions.
 
+**Design:** [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md), a draft for
+review.
+
 ### Phase 4. The library's replicated WAL, with one writing thread
 
 **For:** the order path back to its intended design: one thread owns the sequencer's WAL.

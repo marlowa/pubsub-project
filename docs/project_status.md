@@ -42,8 +42,9 @@ matter first, by design area:
   registry still take locks, each recorded under principle F2 in
   [design_principles.md](design_principles.md) with the phase of the plan that removes it.
 - **High availability is built in the applications, not the library.** Moving it is the direction
-  agreed in [ha_in_the_library.md](availability/ha_in_the_library.md); the design of the boundary is a
-  draft for review ([ha_library_boundary.md](availability/ha_library_boundary.md)). Open defects
+  agreed in [ha_in_the_library.md](availability/ha_in_the_library.md); the design of the boundary,
+  [ha_library_boundary.md](availability/ha_library_boundary.md), is agreed, and phases 3 to 9 of the
+  plan carry it out. Open defects
   include failover into a condition both instances share ([BUG-0010](bug_list.md#bug_0010)), a
   process death on the same host handled as a machine death ([BUG-0029](bug_list.md#bug_0029)), and a
   venue running without a standby saying so too quietly ([BUG-0134](bug_list.md#bug_0134)).
@@ -64,7 +65,9 @@ review at which Andrew decides whether the next starts. Phase 1, agreeing the de
 done. Phase 2, making the build enforce the framework principles, is done. Phases 3 to 9 move the high
 availability machinery from the sequencer and the matching engine into the library, in the order agreed
 in [ha_library_boundary.md](availability/ha_library_boundary.md); phase 3, moving the lease classes into
-the library, is next. New features, including pub/sub, the order activity recorder and the trading phases, wait
+the library, is next, and its design is
+[lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md), a draft for review. New
+features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start
