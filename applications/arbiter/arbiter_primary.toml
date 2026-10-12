@@ -18,6 +18,28 @@ port                             = ${arbiter_primary_peer_port}
 host                       = "${arbiter_primary_witness_host}"
 port                       = ${arbiter_primary_witness_port}
 
+# The pairs this arbiter votes in, as the third voter. Each has the name the Quill log uses for it and
+# the number its two instances put on every lease message they send; the components' numbers are
+# set in their code (fix_common/LeasePairNumbers.hpp). The names are the ones ha_test.py looks for in
+# the log, so change them only together with it.
+[[voting_pair]]
+name    = "sequencer"
+pair_id = 1
+
+[[voting_pair]]
+name    = "matching_engine"
+pair_id = 2
+
+[[voting_pair]]
+name    = "matching_engine_publisher"
+pair_id = 3
+
+# The pair the two arbiters form, to decide which of them is active. The witness is configured with
+# the same number.
+[own_pair]
+name    = "arbiter"
+pair_id = 4
+
 # How long a lease lasts, how much shorter an arbiter takes a lease it holds to be, and how often
 # it renews. Shared across the venue, because every voter must agree; see environments/*.toml.
 [lease]

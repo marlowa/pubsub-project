@@ -1,16 +1,15 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "Arbiter.hpp"
-#include "ArbiterConfiguration.hpp"
-#include "ArbiterConfigurationLoader.hpp"
-#include "ArbiterThread.hpp"
+#include <pubsub_itc_fw/Arbiter.hpp>
 
 #include <chrono>
-#include <iostream>
 #include <utility>
 
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
+#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
+#include <pubsub_itc_fw/ArbiterConfigurationLoader.hpp>
+#include <pubsub_itc_fw/ArbiterThread.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileOpenMode.hpp>
@@ -21,7 +20,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-namespace arbiter {
+namespace pubsub_itc_fw {
 
 Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_fw::QuillLogger> logger) : config_(config), logger_(std::move(logger)) {
     reactor_configuration_.connect_timeout = std::chrono::seconds{5};
@@ -45,7 +44,7 @@ Arbiter::Arbiter(const ArbiterConfiguration& config, std::unique_ptr<pubsub_itc_
 
     reactor_ = std::make_unique<pubsub_itc_fw::Reactor>(reactor_configuration_, service_registry_, *logger_);
 
-    // Inbound listener for components (sequencer pair, ME pair).
+    // Inbound listener for the instances of the pairs this arbiter votes in.
     reactor_->register_inbound_listener(pubsub_itc_fw::NetworkEndpointConfiguration{config_.listen_host, config_.listen_port}, pubsub_itc_fw::ThreadID{1},
                                         pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0);
 
@@ -79,72 +78,3 @@ int Arbiter::run() const {
 }
 
 } // namespaces
-
-int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: arbiter <logfile> <config.toml>\n";
-        return 1;
-    }
-
-    const std::string log_file = argv[1];
-    const std::string config_file = argv[2];
-
-    const std::string writable_error = pubsub_itc_fw::QuillLogger::ensure_log_file_writable(log_file);
-    if (!writable_error.empty()) {
-        std::cerr << "Arbiter: " << writable_error << "\n";
-        return 1;
-    }
-
-    pubsub_itc_fw::QuillLogger::block_signals_before_construction();
-
-    auto logger = std::make_unique<pubsub_itc_fw::QuillLogger>(log_file, pubsub_itc_fw::FileOpenMode{pubsub_itc_fw::FileOpenMode::Truncate},
-                                                               pubsub_itc_fw::FwLogLevel::Info, pubsub_itc_fw::FwLogLevel::Info);
-    pubsub_itc_fw::ApplicationAnnouncer::announce(*logger, "arbiter");
-
-    arbiter::ArbiterConfiguration config;
-    try {
-        config = arbiter::ArbiterConfigurationLoader::load(config_file);
-    } catch (const pubsub_itc_fw::ConfigurationException& ex) {
-        PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "Arbiter: configuration error: {}", ex.what());
-        return 1;
-    }
-
-    logger->set_log_level(config.applog_level);
-    logger->set_syslog_level(config.syslog_level);
-
-    // Refuse to run in a venue that has disowned high availability. Not launching this component
-    // is what devenv.py already does; refusing is what protects the case it does not cover -- a
-    // hand-started process, or a supervisor with a stale manifest. With high availability off there is one instance of everything and no role to assign.
-    //
-    // An operator who sees arbiter running will believe the venue has the mechanism it
-    // names. Being present and idle is the failure worth preventing here, not being absent.
-    // See docs/bug_list.md, BUG-0061.
-    if (!config.ha_enabled) {
-        PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Error,
-                       "Arbiter: refusing to start -- this venue has [ha] enabled = false in its environment, so there is nothing to "
-                       "arbitrate. Set [ha] enabled = true and redeploy, or do not start this component.");
-        return 1;
-    }
-
-    // Background by default: mask the whole process to the shared tier before it
-    // creates any thread, so every thread inherits it and the Reactor only has to
-    // promote the few that were allocated dedicated cores.
-    if (config.cpu_pinning_enabled) {
-        const auto [masked, mask_error] = pubsub_itc_fw::apply_background_affinity(config.cpu_layout_file, config.cpu_layout_component);
-        if (!masked) {
-            PUBSUB_LOG((*logger), pubsub_itc_fw::FwLogLevel::Error, "CPU pinning: {}", mask_error);
-            return 1;
-        }
-    }
-
-    try {
-        const arbiter::Arbiter app{config, std::move(logger)};
-        return app.run();
-    } catch (const std::exception& ex) {
-        std::cerr << "Arbiter: fatal exception: " << ex.what() << "\n";
-        return 1;
-    } catch (...) {
-        std::cerr << "Arbiter: unknown fatal exception\n";
-        return 1;
-    }
-}

@@ -52,7 +52,8 @@
 #  becomes active grants nothing to any component for one lease
 #  period, because it does not know what the previously active
 #  arbiter promised. The active arbiter tells the passive one the
-#  highest epoch granted in each group with ArbiterStateRecord.
+#  highest epoch granted in each group with ArbiterStateRecord
+#  (lease_messages.dsl).
 #
 #  The witness keeps nothing. It answers the arbiters' lease requests
 #  and never becomes leader, follower, active or passive.
@@ -73,16 +74,11 @@ enum Role : i32 {
 
 # ------------------------------------------------------------
 #  ComponentGroup
-#  Identifies which HA pair a component belongs to. The arbiter
-#  pool is shared by several independent HA pairs (the sequencer
-#  pair, the matching-engine pair, ...), each of which numbers its
-#  own members instance_id 1 (primary) and 2 (secondary). Without
-#  a group the two pairs alias onto the same {1,2} slots and one
-#  pair's election contaminates the other's leadership state. The
-#  arbiter keys its leadership-state and connection maps by
-#  (group, instance_id); components stamp every ArbitrationReport,
-#  ArbitrationDecision, Heartbeat and ArbiterStateRecord with their
-#  group and reject decisions addressed to a different group.
+#  The venue's pairs. The library's lease messages (lease_messages.dsl)
+#  name a pair by a plain number, pair_id, and the venue's number for
+#  each pair is its value here (fix_common/LeasePairNumbers.hpp). The
+#  arbiters and the witness are configured with the same numbers, as
+#  [[voting_pair]], [own_pair] and [voting_pair].
 # ------------------------------------------------------------
 enum ComponentGroup : i32 {
     unknown                   = 0
@@ -789,34 +785,3 @@ message OrderAcceptance (id=127, version=1)
     # (docs/availability/commands_during_a_change_of_leader.md, section 3.2).
     optional i32 leader_epoch
 end
-
-# ------------------------------------------------------------
-#  400 — ArbiterStateRecord
-#  Sent by an arbiter to its peer to say the highest epoch granted in
-#  one component group: whenever the active arbiter grants a higher
-#  one, and for every group when the peer link comes up.
-#
-#  An arbiter that becomes active knows nothing of what the previous
-#  one promised, and waits out one lease period for that reason. It
-#  would also not know the highest epoch granted, and could grant a
-#  lower one, which receivers then ignore. This record is what it
-#  knows instead.
-#
-#  It also carries the newest statement the arbiter holds from the
-#  group's leader about whether the leader's peer may lead, and is
-#  sent whenever that changes. Unlike a promise, a statement must not
-#  be forgotten when the active arbiter changes: it is what keeps an
-#  instance lacking commands the matching engine acted on from
-#  leading.
-# ------------------------------------------------------------
-message ArbiterStateRecord (id=400, version=1)
-    i64 component_instance_id    # the instance that leads in the epoch: its remainder on division by 4
-    i64 leader_instance_id       # the same
-    i32 epoch                    # the highest epoch granted in the group
-    ComponentGroup group         # the component pair
-    i64 statement_leader_id # the leader that made the newest statement held, or zero for none
-    i32 statement_epoch # the epoch of the leadership that made it
-    i64 statement_number # its number within that leadership
-    bool peer_may_lead # false: the leader's peer may not lead
-end
-

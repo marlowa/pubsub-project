@@ -63,6 +63,10 @@ add_executable(pubsub_itc_fw_tests
     LeaseRulesTest.cpp
     LeaseSimulationTest.cpp
     PairLeaseAgentTest.cpp
+    ComponentLeaseVotersTest.cpp
+    ComponentStatementStoreTest.cpp
+    ArbiterConfigurationLoaderTest.cpp
+    WitnessConfigurationLoaderTest.cpp
 )
 
 target_link_libraries(pubsub_itc_fw_tests PRIVATE

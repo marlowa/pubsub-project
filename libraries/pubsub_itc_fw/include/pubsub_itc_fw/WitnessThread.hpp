@@ -13,12 +13,12 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
-#include <leader_follower.hpp>
+#include <lease_messages.hpp>
 #include <pubsub_itc_fw/LeaseVoter.hpp>
 
-#include "WitnessConfiguration.hpp"
+#include <pubsub_itc_fw/WitnessConfiguration.hpp>
 
-namespace witness {
+namespace pubsub_itc_fw {
 
 /**
  * @brief ApplicationThread subclass implementing the witness: the third voter in deciding which arbiter is active.
@@ -32,7 +32,7 @@ namespace witness {
  * It keeps nothing on disk. Waiting out one lease period at startup is what makes that safe: any
  * promise it made before it stopped has run out by the time it grants again.
  *
- * The witness never interacts with sequencer or matching engine instances.
+ * The witness votes in no other pair.
  *
  * Threading: ThreadID 1.
  */

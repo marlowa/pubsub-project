@@ -7,6 +7,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -14,25 +15,35 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
 
-#include <leader_follower.hpp>
+#include <lease_messages.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 
-#include "ArbiterConfiguration.hpp"
-#include "ComponentLeaseVoters.hpp"
-#include "ComponentStatementStore.hpp"
+#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
+#include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
+#include <pubsub_itc_fw/ComponentStatementStore.hpp>
 
-namespace arbiter {
+namespace pubsub_itc_fw {
+
+/**
+ * @brief Whether an arbiter is active (leader) or passive (follower), or has not yet been decided (unknown).
+ *
+ * to_string() gives these three names, which the Quill log prints on every change of role.
+ */
+enum class ArbiterRole { unknown, leader, follower };
+
+/// The name of @p role as the Quill log prints it: "unknown", "leader" or "follower".
+[[nodiscard]] std::string_view to_string(ArbiterRole role);
 
 /**
  * @brief ApplicationThread subclass implementing the arbiter.
  *
- * The arbiter pool is the third voter in deciding which instance of each component pair leads: the
- * sequencers, the matching engines and the matching engine publishers. An instance leads only while
- * a majority of three voters -- itself, its peer and the arbiter pool -- has granted it a lease that
- * has not run out. See docs/availability/majority_leases.md.
+ * The arbiter pool is the third voter in deciding which instance of each pair leads, for every pair
+ * the configuration lists in ArbiterConfiguration::voting_pairs. An instance leads only while a
+ * majority of three voters -- itself, its peer and the arbiter pool -- has granted it a lease that has
+ * not run out. See docs/availability/majority_leases.md.
  *
  * Two arbiters form the pool, and it votes through whichever of them is active. An arbiter is active
  * only while a majority of three other voters -- the two arbiters and the witness -- has granted it a
@@ -79,7 +90,7 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     const ArbiterConfiguration& config_;
 
     // Whether this arbiter is active, as last decided by the lease rules, and the epoch it is active in.
-    pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
+    ArbiterRole role_{ArbiterRole::unknown};
     int32_t epoch_{0};
 
     // Drives the lease rules. Recurring, every LeaseTiming::tick_interval.
@@ -116,12 +127,18 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // kept on disk beside the promise record, so that a restart does not forget it.
     ComponentStatementStore component_statement_store_;
 
-    // The instance last granted a lease in each group, so that a change of leader is logged and a
+    // The instance last granted a lease in each pair, so that a change of leader is logged and a
     // renewal is not.
-    std::map<pubsub_itc_fw_app::ComponentGroup, int64_t> last_granted_to_;
+    std::map<int32_t, int64_t> last_granted_to_;
 
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
-    void adopt_role(pubsub_itc_fw_app::Role new_role);
+    void adopt_role(ArbiterRole new_role);
+
+    /// Whether @p pair_id is one of the pairs this arbiter votes in, from configuration.
+    [[nodiscard]] bool votes_in(int32_t pair_id) const;
+
+    /// The configured name of @p pair_id, as the Quill log prints it; "unknown" for a pair not configured.
+    [[nodiscard]] std::string pair_name(int32_t pair_id) const;
 
     /// Changes this arbiter's role to follow what the lease rules have just decided.
     void act_on(pubsub_itc_fw::PairLeaseAgent::Change change);
@@ -133,9 +150,9 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     /// A component instance asks the arbiter pool for a lease.
     void handle_component_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
-    /// Tells the peer arbiter the highest epoch granted in @p group, and the newest statement held from its leader, so that
+    /// Tells the peer arbiter the highest epoch granted in @p pair_id, and the newest statement held from its leader, so that
     /// neither is forgotten if the peer becomes active.
-    void send_group_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, pubsub_itc_fw_app::ComponentGroup group);
+    void send_group_state_to_peer(const pubsub_itc_fw::ConnectionID& conn_id, int32_t pair_id);
 
     /// Writes every statement held to disk. Logs, and returns false, when it cannot.
     [[nodiscard]] bool save_component_statements();

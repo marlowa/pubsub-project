@@ -106,3 +106,32 @@ message LeaseRefusal (id=132, version=1)
     i64 request_id              # echoed from the request
     LeaseRefusalReason reason
 end
+
+# ------------------------------------------------------------
+#  400 -- ArbiterStateRecord
+#  Sent by an arbiter to its peer to say the highest epoch granted in
+#  one pair it votes in: whenever the active arbiter grants a higher
+#  one, and for every pair when the peer link comes up.
+#
+#  An arbiter that becomes active knows nothing of what the previous
+#  one promised, and waits out one lease period for that reason. It
+#  would also not know the highest epoch granted, and could grant a
+#  lower one, which receivers then ignore. This record is what it
+#  knows instead.
+#
+#  It also carries the newest statement the arbiter holds from the
+#  group's leader about whether the leader's peer may lead, and is
+#  sent whenever that changes. Unlike a promise, a statement must not
+#  be forgotten when the active arbiter changes: it is what keeps an
+#  instance lacking commands its leader acted on from leading.
+# ------------------------------------------------------------
+message ArbiterStateRecord (id=400, version=1)
+    i64 component_instance_id    # the instance that leads in the epoch: its remainder on division by 4
+    i64 leader_instance_id       # the same
+    i32 epoch                    # the highest epoch granted in the group
+    i32 pair_id                  # the pair, as its instances put it on their lease messages
+    i64 statement_leader_id # the leader that made the newest statement held, or zero for none
+    i32 statement_epoch # the epoch of the leadership that made it
+    i64 statement_number # its number within that leadership
+    bool peer_may_lead # false: the leader's peer may not lead
+end

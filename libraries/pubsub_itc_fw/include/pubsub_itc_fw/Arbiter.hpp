@@ -10,17 +10,17 @@
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 
-#include "ArbiterConfiguration.hpp"
-#include "ArbiterThread.hpp"
+#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
+#include <pubsub_itc_fw/ArbiterThread.hpp>
 
-namespace arbiter {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Top-level application class for the arbiter process.
  *
- * The arbiter manages the leadership-state map for component pairs
- * (sequencer pair, ME pair). It runs as a primary/secondary HA pair;
- * the witness resolves ties in the arbiter's own active/passive election.
+ * The arbiter is the third voter in deciding which instance of each configured pair leads. Two
+ * arbiters run as a pair of their own, and the pool votes through whichever is active; the witness
+ * is the third voter in deciding which arbiter that is. See ArbiterThread.
  */
 class Arbiter {
   public:

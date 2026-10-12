@@ -6,12 +6,14 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
+#include <pubsub_itc_fw/VotingPair.hpp>
 
-namespace arbiter {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Configuration for the arbiter process.
@@ -28,7 +30,7 @@ namespace arbiter {
  * See pubsub_itc_fw_topology.puml for the authoritative topology.
  */
 struct ArbiterConfiguration {
-    // Inbound -- component connections (sequencer pair, ME pair)
+    // Inbound -- connections from the instances of the pairs this arbiter votes in
 
     /** @brief Host address on which the arbiter listens for component connections. */
     std::string listen_host{"127.0.0.1"};
@@ -79,6 +81,20 @@ struct ArbiterConfiguration {
 
     /** @brief TCP port of the witness process. */
     uint16_t witness_port{7100};
+
+    /**
+     * @brief The pairs this arbiter votes in as the third voter, from the `[[voting_pair]]` tables.
+     *
+     * A request for a lease in a pair not listed here is dropped and logged.
+     */
+    std::vector<VotingPair> voting_pairs;
+
+    /**
+     * @brief The pair the two arbiters form, to decide which of them is active, from the `[own_pair]` table.
+     *
+     * The witness must be configured with the same number.
+     */
+    VotingPair own_pair;
 
     /**
      * @brief The timings of the leases that decide which arbiter is active, and that the active

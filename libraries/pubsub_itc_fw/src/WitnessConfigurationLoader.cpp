@@ -1,14 +1,15 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WitnessConfigurationLoader.hpp"
+#include <pubsub_itc_fw/WitnessConfigurationLoader.hpp>
 
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
+#include <pubsub_itc_fw/VotingPair.hpp>
 
-namespace witness {
+namespace pubsub_itc_fw {
 
 WitnessConfiguration WitnessConfigurationLoader::load(const std::string& file_path) {
     pubsub_itc_fw::TomlConfiguration toml;
@@ -18,11 +19,16 @@ WitnessConfiguration WitnessConfigurationLoader::load(const std::string& file_pa
         throw pubsub_itc_fw::ConfigurationException("WitnessConfigurationLoader: failed to load '" + file_path + "': " + err);
     }
 
+    return load(toml);
+}
+
+WitnessConfiguration WitnessConfigurationLoader::load(const pubsub_itc_fw::TomlConfiguration& toml) {
     WitnessConfiguration config;
 
     try {
         toml.get_required_except("ha.enabled", config.ha_enabled);
         config.lease = pubsub_itc_fw::LeaseTiming::load(toml, "WitnessConfigurationLoader");
+        config.voting_pair = pubsub_itc_fw::load_voting_pair(toml, "voting_pair", "WitnessConfigurationLoader");
         toml.get_required_except("network.listen_host", config.listen_host);
 
         int32_t listen_port = 0;

@@ -59,12 +59,19 @@ The witness logs when the arbiter it grants to changes, not at every renewal.
 | Key | Purpose |
 |-----|---------|
 | `[network] listen_port` | Inbound arbiter connections. Required; the environment files set 11100 |
+| `[voting_pair] name / pair_id` | The pair the witness votes in: the two arbiters, `arbiter` 4, the same number as the arbiters' `[own_pair]`. A request for any other pair is dropped and logged |
 | `[ha] enabled` | Must be true. With high availability off there are no arbiters to vote on, so the witness logs an error and refuses to start rather than run idle |
 | `[lease] period_milliseconds` | How long a grant lasts, and how long the witness grants nothing after starting |
 | `[lease] drift_allowance_milliseconds`, `renewal_interval_milliseconds` | Read so the configuration can be checked for consistency; the witness holds no lease itself |
 
 The `[lease]` values are expanded from the environment's `[shared]` section, because every voter
 must use the same values.
+
+## Code
+
+The witness is part of the voting service in the library: `Witness`, `WitnessThread` and
+`WitnessConfigurationLoader`, in `libraries/pubsub_itc_fw`. The venue's `witness` program,
+`applications/witness/main.cpp`, reads its configuration file and runs the library's `Witness`.
 
 ---
 

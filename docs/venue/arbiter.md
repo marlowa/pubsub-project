@@ -42,7 +42,7 @@ In memory it holds:
 
 - its own lease, and whether it is active;
 - while active, one voter per component group: the promise it has made in that group, if any, and
-  the highest epoch it has granted. See `applications/arbiter/ComponentLeaseVoters.hpp`;
+  the highest epoch it has granted. See `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentLeaseVoters.hpp`;
 - the highest epoch granted in each group, whether by this arbiter or, as its peer reports, by the
   other one;
 - the newest leader statement for each group, as above.
@@ -141,6 +141,8 @@ Key `arbiter_primary.toml` / `arbiter_secondary.toml` sections:
 | `[peer] listen_port` | Arbiter-to-arbiter listener port |
 | `[peer] host / port` | Peer arbiter's peer listener endpoint |
 | `[witness] host / port` | Witness endpoint |
+| `[[voting_pair]] name / pair_id` | One table for each pair the arbiter votes in: the name the Quill log uses for it, and the number its instances put on their lease messages. The venue lists `sequencer` 1, `matching_engine` 2 and `matching_engine_publisher` 3. A request for a pair not listed is dropped and logged |
+| `[own_pair] name / pair_id` | The pair the two arbiters form, `arbiter` 4; the witness is configured with the same number |
 | `[lease] period_milliseconds` | How long a grant lasts, and how long a voter that has just started grants nothing |
 | `[lease] drift_allowance_milliseconds` | How much shorter than the period an instance takes a lease it holds to be |
 | `[lease] renewal_interval_milliseconds` | How often a leader renews |
@@ -148,6 +150,17 @@ Key `arbiter_primary.toml` / `arbiter_secondary.toml` sections:
 
 The three `[lease]` values are expanded from the environment's `[shared]` section, because every
 voter and every instance holding a lease must use the same values.
+
+The loader refuses a configuration with no `[[voting_pair]]`, with a number or a name given to two
+pairs, with a number that is not positive, or with the arbiters' own pair listed among the pairs they
+vote in.
+
+## Code
+
+The arbiter is part of the voting service in the library: `Arbiter`, `ArbiterThread`,
+`ArbiterConfigurationLoader`, `ComponentLeaseVoters` and `ComponentStatementStore`, in
+`libraries/pubsub_itc_fw`. The venue's `arbiter` program, `applications/arbiter/main.cpp`, reads its
+configuration file and runs the library's `Arbiter`.
 
 ---
 

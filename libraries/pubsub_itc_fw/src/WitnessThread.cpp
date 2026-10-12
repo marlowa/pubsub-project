@@ -1,11 +1,10 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WitnessThread.hpp"
+#include <pubsub_itc_fw/WitnessThread.hpp>
 
 #include <chrono>
 
-#include <LeasePairNumbers.hpp>
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThreadConfiguration.hpp>
@@ -15,7 +14,7 @@
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
-namespace witness {
+namespace pubsub_itc_fw {
 
 namespace {
 
@@ -113,9 +112,10 @@ void WitnessThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "WitnessThread: failed to decode LeaseRequest -- dropping");
         return;
     }
-    if (fix_common::group_of(request.pair_id) != pubsub_itc_fw_app::ComponentGroup::arbiter) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "WitnessThread: LeaseRequest for group={} -- dropping, the witness votes only on arbiters",
-                   pubsub_itc_fw_app::to_string(fix_common::group_of(request.pair_id)));
+    if (request.pair_id != config_.voting_pair.pair_id) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "WitnessThread: LeaseRequest for pair {} -- dropping, the witness votes only in pair {} ({})", request.pair_id, config_.voting_pair.pair_id,
+                   config_.voting_pair.name);
         return;
     }
 
@@ -124,7 +124,7 @@ void WitnessThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn
     if (answer.verdict == pubsub_itc_fw::LeaseVoter::Verdict::Granted) {
         pubsub_itc_fw::LeaseGrant grant{};
         grant.voter_instance_id = witness_voter_id;
-        grant.pair_id = fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::arbiter);
+        grant.pair_id = config_.voting_pair.pair_id;
         grant.epoch = request.epoch;
         grant.request_id = request.request_id;
         send_pdu(conn_id, pubsub_itc_fw::LeaseGrant::message_pdu_id, 0, grant);
@@ -139,7 +139,7 @@ void WitnessThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn
 
     pubsub_itc_fw::LeaseRefusal refusal{};
     refusal.voter_instance_id = witness_voter_id;
-    refusal.pair_id = fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::arbiter);
+    refusal.pair_id = config_.voting_pair.pair_id;
     refusal.highest_epoch = answer.highest_epoch;
     refusal.request_id = request.request_id;
     refusal.reason = refusal_reason_for(answer.verdict);

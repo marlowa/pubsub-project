@@ -5,9 +5,10 @@
 
 #include <string>
 
-#include "ArbiterConfiguration.hpp"
+#include <pubsub_itc_fw/ArbiterConfiguration.hpp>
+#include <pubsub_itc_fw/TomlConfiguration.hpp>
 
-namespace arbiter {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Loads ArbiterConfiguration from a TOML file.
@@ -16,9 +17,15 @@ class ArbiterConfigurationLoader {
   public:
     /**
      * @brief Load configuration from the given TOML file path.
-     * @throws pubsub_itc_fw::ConfigurationException on any error.
+     * Throws ConfigurationException on any error.
      */
     static ArbiterConfiguration load(const std::string& file_path);
+
+    /**
+     * @brief Load configuration already read into @p toml.
+     * Throws ConfigurationException on any error.
+     */
+    static ArbiterConfiguration load(const pubsub_itc_fw::TomlConfiguration& toml);
 };
 
 } // namespaces

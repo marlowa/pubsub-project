@@ -10,16 +10,16 @@
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
 
-#include "WitnessConfiguration.hpp"
-#include "WitnessThread.hpp"
+#include <pubsub_itc_fw/WitnessConfiguration.hpp>
+#include <pubsub_itc_fw/WitnessThread.hpp>
 
-namespace witness {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Top-level application class for the witness process.
  *
  * The witness has no involvement in the order flow. It listens for inbound
- * PDU connections from sequencer instances and implements the witness side
+ * PDU connections from the two arbiters and implements the witness side
  * of the leader-follower protocol only.
  */
 class Witness {

@@ -6,6 +6,12 @@ listen_port = ${witness_network_listen_port}
 # The venue-wide switch. The witness refuses to start when it is false; see BUG-0061.
 enabled = ${ha_enabled}
 
+# The pair the witness votes in: the two arbiters, deciding which of them is active. The arbiters are
+# configured with the same number, as their [own_pair].
+[voting_pair]
+name    = "arbiter"
+pair_id = 4
+
 # How long a lease the witness grants lasts. Shared across the venue, because every voter must
 # agree; see environments/*.toml. The witness holds no lease itself, but it needs all three to
 # check the configuration is consistent.

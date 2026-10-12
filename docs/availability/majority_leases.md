@@ -265,7 +265,7 @@ nothing has failed.
   reads and checks the timings.
 - The sequencer, the matching engine, the matching engine publisher and the arbiter each own a `PairLeaseAgent`, and
   supply only the connections it sends on. An instance that stops leading stops acting at once.
-- The arbiter votes for the components through `applications/arbiter/ComponentLeaseVoters.hpp`, which applies rule 6 to
+- The arbiter votes for the components through `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ComponentLeaseVoters.hpp`, which applies rule 6 to
   an arbiter that has just become active, and carries the highest epoch in each group across a change of active arbiter.
 - The witness is a `LeaseVoter`.
 - A component instance keeps its promises in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/LeasePromiseStore.hpp`. The sequencer's file is
@@ -281,7 +281,7 @@ nothing has failed.
   messages delayed beyond a lease period or lost, links failing, and every party crashing and restarting, checking after
   every step that two instances never act as leader at once. A run in which the third voter's clock gains more than the
   drift allowance must find two leaders, which shows the check can fail.
-- `libraries/pubsub_itc_fw/tests/PairLeaseAgentTest.cpp` and `applications/arbiter/tests/ComponentLeaseVotersTest.cpp`.
+- `libraries/pubsub_itc_fw/tests/PairLeaseAgentTest.cpp` and `libraries/pubsub_itc_fw/tests/ComponentLeaseVotersTest.cpp`.
   The agent tests restart a leader after its process has been down for 1.5 seconds, with and without its record, and
   show that it keeps the lead only with the record.
 - `libraries/pubsub_itc_fw/tests/LeasePromiseStoreTest.cpp`: the record is read back during the same boot, and ignored

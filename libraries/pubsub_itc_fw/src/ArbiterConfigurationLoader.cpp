@@ -1,7 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ArbiterConfigurationLoader.hpp"
+#include <pubsub_itc_fw/ArbiterConfigurationLoader.hpp>
 
 #include <string>
 
@@ -9,8 +9,9 @@
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
+#include <pubsub_itc_fw/VotingPair.hpp>
 
-namespace arbiter {
+namespace pubsub_itc_fw {
 
 ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_path) {
     pubsub_itc_fw::TomlConfiguration toml;
@@ -20,6 +21,10 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: failed to load '" + file_path + "': " + err);
     }
 
+    return load(toml);
+}
+
+ArbiterConfiguration ArbiterConfigurationLoader::load(const pubsub_itc_fw::TomlConfiguration& toml) {
     ArbiterConfiguration config;
 
     try {
@@ -65,6 +70,23 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const std::string& file_pa
         toml.get_required_except("witness.port", witness_port);
         validate_port(witness_port, "witness.port");
         config.witness_port = static_cast<uint16_t>(witness_port);
+
+        const size_t pair_count = toml.array_size("voting_pair");
+        if (pair_count == 0) {
+            throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: no [[voting_pair]] is configured, so this arbiter would vote in no pair");
+        }
+        for (size_t i = 0; i < pair_count; ++i) {
+            config.voting_pairs.push_back(pubsub_itc_fw::load_voting_pair(toml, "voting_pair[" + std::to_string(i) + "]", "ArbiterConfigurationLoader"));
+        }
+        pubsub_itc_fw::refuse_repeated_voting_pairs(config.voting_pairs, "ArbiterConfigurationLoader");
+        config.own_pair = pubsub_itc_fw::load_voting_pair(toml, "own_pair", "ArbiterConfigurationLoader");
+        for (const pubsub_itc_fw::VotingPair& pair : config.voting_pairs) {
+            if (pair.pair_id == config.own_pair.pair_id || pair.name == config.own_pair.name) {
+                throw pubsub_itc_fw::ConfigurationException("ArbiterConfigurationLoader: [own_pair] '" + config.own_pair.name +
+                                                            "' is also listed in [[voting_pair]]; the arbiters' own pair is decided by the arbiters "
+                                                            "and the witness, not voted in by the arbiter pool");
+            }
+        }
 
         config.lease = pubsub_itc_fw::LeaseTiming::load(toml, "ArbiterConfigurationLoader");
         toml.get_required_except("lease.promise_file", config.lease_promise_file);

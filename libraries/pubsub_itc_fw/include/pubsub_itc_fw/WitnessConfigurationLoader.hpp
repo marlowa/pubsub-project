@@ -5,9 +5,10 @@
 
 #include <string>
 
-#include "WitnessConfiguration.hpp"
+#include <pubsub_itc_fw/TomlConfiguration.hpp>
+#include <pubsub_itc_fw/WitnessConfiguration.hpp>
 
-namespace witness {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Loads a WitnessConfiguration from a TOML file.
@@ -19,9 +20,15 @@ class WitnessConfigurationLoader {
     /**
      * @param[in] file_path Path to the TOML configuration file.
      * @return Populated WitnessConfiguration.
-     * @throws pubsub_itc_fw::ConfigurationException on any error.
+     * Throws ConfigurationException on any error.
      */
     static WitnessConfiguration load(const std::string& file_path);
+
+    /**
+     * @brief Load configuration already read into @p toml.
+     * Throws ConfigurationException on any error.
+     */
+    static WitnessConfiguration load(const pubsub_itc_fw::TomlConfiguration& toml);
 };
 
 } // namespaces

@@ -159,26 +159,32 @@ the pair the two arbiters themselves form. The witness's configuration names the
 example, in `arbiter_primary.toml`:
 
 ```toml
-# The pairs this arbiter votes in, as the third voter. Each has the name the Quill log uses for it and
-# the number its two instances put on every lease message they send.
-[voting]
-pair_names = ["sequencer", "matching_engine", "matching_engine_publisher"]
-pair_ids   = [1, 2, 3]
-# The pair the two arbiters form, to decide which of them is active.
-own_pair_name = "arbiter"
-own_pair_id   = 4
+[[voting_pair]]
+name    = "sequencer"
+pair_id = 1
+
+[[voting_pair]]
+name    = "matching_engine"
+pair_id = 2
+
+[[voting_pair]]
+name    = "matching_engine_publisher"
+pair_id = 3
+
+[own_pair]
+name    = "arbiter"
+pair_id = 4
 ```
 
 and in `witness.toml`:
 
 ```toml
-# The pair the witness votes in: the two arbiters, deciding which of them is active.
-[voting]
-pair_name = "arbiter"
-pair_id   = 4
+[voting_pair]
+name    = "arbiter"
+pair_id = 4
 ```
 
-The exact layout follows what `TomlConfiguration` can read, and is settled when the loader is written.
+The shared type is `VotingPair`, in `libraries/pubsub_itc_fw/include/pubsub_itc_fw/VotingPair.hpp`.
 A request for a pair not listed is dropped and logged, as a request for an unknown group is now. The
 loader refuses a configuration in which a number or a name appears twice, or in which the arbiter's
 own pair is also listed among the pairs it votes in.
@@ -189,7 +195,9 @@ follower, leader) becomes an enumeration of the library's own, with the same thr
 
 **What does not change.** Who votes in which pair, the voter numbers on grants and refusals (3 for the
 arbiter pool and for the witness), the promise file and the statements file and their formats, and every
-message on the wire.
+message on the wire. The statements file is read as before, except that a line is accepted for any positive pair
+number rather than only the venue's three, and the arbiter ignores a statement for a pair it is not
+configured to vote in.
 
 **How step 2 is known to be right.**
 

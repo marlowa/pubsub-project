@@ -10,8 +10,9 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
+#include <pubsub_itc_fw/VotingPair.hpp>
 
-namespace witness {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Configuration for the witness process.
@@ -37,6 +38,13 @@ struct WitnessConfiguration {
      * operator will later trust. See docs/bug_list.md, BUG-0061.
      */
     bool ha_enabled{true};
+
+    /**
+     * @brief The pair the witness votes in, from the `[voting_pair]` table: the two arbiters, deciding which of them is active.
+     *
+     * The arbiters must be configured with the same number, as their `[own_pair]`.
+     */
+    VotingPair voting_pair;
 
     /**
      * @brief The timings of the leases the witness grants when the arbiters decide which of them is active.
