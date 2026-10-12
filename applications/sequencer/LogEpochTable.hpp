@@ -31,7 +31,7 @@ namespace sequencer {
  * below an epoch already led in (docs/availability/tla/findings.md, section 11.5).
  *
  * One thread, the sequencer's, is meant to call every member function (principle F1). On a follower
- * the reactor thread's inline handler calls it as well, the known breach BUG-0124 removed in phase 3,
+ * the reactor thread's inline handler calls it as well, the known breach BUG-0124 removed in phase 4,
  * which the sequencer marks with mark_second_thread_known_breach() so that builds with thread checks
  * count those calls instead of refusing them.
  */

@@ -308,12 +308,10 @@ machines and a round trip to a second machine to each logon, and would protect n
 | Counters for identifiers | Identifiers from the position in the WAL (section 9) | The identifiers' format |
 | `BookUpdate` replication | Removed, under option B (section 10) | Nothing |
 
-**A proposed order, lowest risk first.** This would replace phases 3 to 7 of
-[the plan](../recovery_plan.md): one writer for the follower's WAL, the remaining locks that belong to
-high availability, dividing the sequencer and the matching engine, and the one check against
-sequencing twice. The framework locks of phase 4 that are not about high availability (the timers,
+**The order, lowest risk first.** Phases 3 to 9 of [the plan](../recovery_plan.md) follow these seven
+steps, one phase for each. The framework fixes that are not about high availability (the timers,
 BUG-0128; the thread registry, BUG-0129; the WAL's helper, BUG-0130; the sequencer's allocations,
-BUG-0131) are separate and can be done at any point:
+BUG-0131; the memory pools, BUG-0127) are separate and can be done at any point:
 
 1. **Move the lease classes and their messages into the library**, unchanged in behaviour: mostly a
    move, with every high availability scenario as the check.

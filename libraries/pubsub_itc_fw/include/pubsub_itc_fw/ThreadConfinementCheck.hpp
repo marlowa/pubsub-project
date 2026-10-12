@@ -57,7 +57,7 @@ class ThreadConfinementCheck {
      *        rather than refused.
      *
      * @param[in] bug_and_phase The bug that records the breach and the phase that removes it, for
-     *            example "BUG-0124, removed in phase 3". Must outlive this object; a string
+     *            example "BUG-0124, removed in phase 4". Must outlive this object; a string
      *            literal does.
      *
      * Called by the code that owns the state, before the state is first used.

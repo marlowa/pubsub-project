@@ -105,12 +105,12 @@ void SequencerThread::on_initial_event() {
 
     // On a follower, the reactor thread's inline handler appends replicated records to the log as
     // well as this thread: a second writer, which principle F1 forbids, recorded as BUG-0124 and
-    // removed in phase 3 of docs/recovery_plan.md. Marked so that builds with thread checks count
+    // removed in phase 4 of docs/recovery_plan.md. Marked so that builds with thread checks count
     // the second writer's appends instead of refusing them; the count is published and warned about
     // in on_timer_event. Delete this call when the second writer is removed.
     if (config_.ha_enabled) {
-        wal_.mark_second_writer_known_breach("BUG-0124, removed in phase 3");
-        log_epochs_.mark_second_thread_known_breach("BUG-0124, removed in phase 3");
+        wal_.mark_second_writer_known_breach("BUG-0124, removed in phase 4");
+        log_epochs_.mark_second_thread_known_breach("BUG-0124, removed in phase 4");
     }
 
     if (config_.replay_mode) {
@@ -273,11 +273,11 @@ void SequencerThread::on_initial_event() {
     wal_second_writer_appends_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "wal_second_writer_appends",
         "Appends to the log by a second thread, the known breach BUG-0124, counted only in builds with thread checks. Expected to be 0 once "
-        "phase 3 removes the second writer");
+        "phase 4 removes the second writer");
     log_epochs_second_thread_calls_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "log_epochs_second_thread_calls",
         "Uses of the table of epochs in the log by a second thread, the known breach BUG-0124, counted only in builds with thread checks. "
-        "Expected to be 0 once phase 3 removes the second writer");
+        "Expected to be 0 once phase 4 removes the second writer");
     running_alone_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_running_alone",
         "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
@@ -1250,7 +1250,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             second_writer_warned_ = true;
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "SequencerThread: a second thread has used the log ({} append(s)) and its table of epochs ({} call(s)) so far, the known "
-                       "breach of principle F1 recorded as BUG-0124 and removed in phase 3. Counted, not refused; the metrics "
+                       "breach of principle F1 recorded as BUG-0124 and removed in phase 4. Counted, not refused; the metrics "
                        "wal_second_writer_appends and log_epochs_second_thread_calls follow it. Not logged again",
                        second_writer_appends, second_thread_epoch_calls);
         }

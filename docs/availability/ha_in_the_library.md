@@ -1,9 +1,9 @@
 # Moving high availability into the library {#ha_in_the_library}
 
-> **Status: the diagnosis and the direction are agreed with Andrew, 11 October 2026. The design of the
-> boundary between the library and the applications is still to be written.** Nothing in the code is to
-> change on the strength of this page until that design is agreed. It is part of
-> [the plan for restoring the design](../recovery_plan.md), and it changes the shape of phases 3 to 6.
+> **Status: the diagnosis and the direction are agreed with Andrew, 11 October 2026.** The design of the
+> boundary between the library and the applications is [ha_library_boundary.md](ha_library_boundary.md),
+> agreed 12 October 2026. Phases 3 to 9 of [the plan for restoring the design](../recovery_plan.md)
+> carry it out.
 
 ## 1. What this page covers
 
@@ -125,19 +125,19 @@ These are to be settled in the design of the boundary, not here.
 
 ## 7. What this changes in the plan
 
-- **Phase 2**, making the build enforce the framework principles, is unaffected and goes ahead as
-  planned.
-- **Phases 3 and 5**, one writer for the follower's WAL and dividing the sequencer into parts, become
-  moving the replicated WAL out of the sequencer and into the library. Dividing the sequencer is easier
-  once most of what is in it has left.
-- **Phase 6**, the matching engine, depends on question 1 above.
-- **The lease classes are the first and least risky step.** They are already independent of the
-  component using them, so moving them into the library is mostly a move.
+Phases 3 to 9 of [the plan](../recovery_plan.md) move the high availability machinery into the library
+in the order set out in section 12 of [ha_library_boundary.md](ha_library_boundary.md):
+
+- **The lease classes are the first and least risky step** (phase 3). They are already independent of
+  the component using them, so moving them into the library is mostly a move.
+- **The replicated WAL leaves the sequencer for the library** (phases 4 and 5), with one writing thread.
+- **The matching engine becomes deterministic and runs in lockstep with its follower** (phases 6 and 7).
+- **Dividing the sequencer and the matching engine into parts comes last** (phase 9), because it is
+  easier once most of what is in them has left.
 
 ## 8. Next steps
 
-1. Phase 2 goes ahead.
-2. Meanwhile, the design of the boundary is written: what the library offers, what an application
-   supplies, how each of today's pieces maps onto it, and answers to the questions in section 6. No code.
-   A draft is in [ha_library_boundary.md](ha_library_boundary.md).
-3. Once Andrew has agreed it, phases 3 to 6 of [the plan](../recovery_plan.md) are revised to match.
+The design of the boundary, [ha_library_boundary.md](ha_library_boundary.md), says what the library
+offers, what an application supplies, how each of the pieces built so far maps onto it, and answers the
+questions in section 6. The work is phase 3 onwards of [the plan](../recovery_plan.md), each phase
+starting with its own design, agreed before any code is written.

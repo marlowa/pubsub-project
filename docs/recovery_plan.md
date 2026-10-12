@@ -3,8 +3,10 @@
 > **Status: agreed, 9 October 2026.** Each phase ends with a review at which Andrew decides whether
 > the next one starts. Phase 1, agreeing the design principles, is finished: Andrew agreed them on
 > 11 October 2026. Phase 2, making the build enforce the framework principles, is finished: Andrew
-> agreed its results on 12 October 2026. Phase 3 has not started; phases 3 to 7 are to be revised
-> first or not, as Andrew decides (see the note at the end of phase 2).
+> agreed its results on 12 October 2026. Phases 3 to 9 follow the order of work in
+> [ha_library_boundary.md](availability/ha_library_boundary.md), which Andrew agreed on 12 October 2026:
+> the high availability machinery moves from the applications into the library, one step at a time.
+> Phase 3 has not started.
 
 ## In one page
 
@@ -29,8 +31,9 @@ again.
 
 **The plan.** Stop adding features and fixing bugs. Write the design principles down and agree them.
 Make the build enforce the principles it can. Then repair the design in a fixed order, one phase at a time,
-starting with the order path, each phase reviewed before the next begins. Only after that, go back
-to the bug list, judging each entry against the principles.
+by moving the high availability machinery out of the sequencer and the matching engine and into the
+library, each phase reviewed before the next begins. Only after that, go back to the bug list, judging
+each entry against the principles.
 
 ---
 
@@ -140,13 +143,14 @@ is broken today.
 **What it found.** Checking each principle against the code found breaches not recorded before, now in
 the bug list:
 
-- breaches of the framework principles, taken in phase 4: [BUG-0128](bug_list.md#bug_0128) (every timer
+- breaches of the framework principles, taken in the framework fixes done alongside the phases, except
+  BUG-0133, which phase 5 removes: [BUG-0128](bug_list.md#bug_0128) (every timer
   start creates a timer and every cancel destroys one, under a lock), [BUG-0129](bug_list.md#bug_0129)
   (the check for stuck threads takes a lock it does not need, and reads two values without
   synchronisation), [BUG-0130](bug_list.md#bug_0130) (the log's helper keeps only one segment ready),
   [BUG-0131](bug_list.md#bug_0131) (the leading sequencer allocates from the heap for every order) and
   [BUG-0133](bug_list.md#bug_0133) (catch-ups read the log on the thread that sequences orders);
-- gaps in the venue principles, to be ordered with the rest of the bug list in phase 9 unless Andrew
+- gaps in the venue principles, to be ordered with the rest of the bug list in phase 11 unless Andrew
   brings one forward: [BUG-0132](bug_list.md#bug_0132) (orders open at the end of the day are never
   cancelled), [BUG-0134](bug_list.md#bug_0134) to [BUG-0136](bug_list.md#bug_0136) (a venue running
   without a standby) and [BUG-0137](bug_list.md#bug_0137) (no start-of-day or end-of-day procedure).
@@ -160,7 +164,7 @@ again unnoticed.
 shut-down code; and adding checks, in Debug and sanitizer builds, that each important piece of state is
 changed by only one thread; and making the standards check reject a raw `std::thread` in a venue
 component (F8). At first these checks fail on the code as it stands. That is intended: the
-list of failures is the list of work for phases 3 and 4.
+list of failures is part of the list of work for the later phases.
 
 **Finished when:** the checks exist, have been shown to fail on the known breaches, and those breaches
 are listed as the only permitted exceptions, each with the phase that removes it. Done: agreed 12
@@ -197,90 +201,136 @@ that the ownership checks ran inside the real venue. 67 of the 72 scenarios pass
   [BUG-0144](bug_list.md#bug_0144) (`ha_test.py` misses a log line split between two reads) and
   [BUG-0145](bug_list.md#bug_0145) (scenarios 59 and 62 stop the leader before it has their orders).
 
-> **Phases 3 to 7 are to be revised.** On 11 October 2026 Andrew agreed the direction in
-> [ha_in_the_library.md](availability/ha_in_the_library.md): most of the high availability machinery
-> moves from the applications into the library, as a replicated, sequenced log. Phases 3 and 5 then
-> become moving that machinery out of the sequencer, phase 6 depends on whether the matching engine
-> is deterministic, and phase 7's one check against sequencing twice moves into the library's log. The
-> draft of the boundary, [ha_library_boundary.md](availability/ha_library_boundary.md), proposes the
-> revised order. Phase 2 is unaffected.
+### Phase 3. Move the lease classes into the library
 
-### Phase 3. One writer for the follower's log
+**For:** the first piece of high availability machinery in the library, moved with the least risk.
 
-**For:** the order path back to its intended design: one thread owns the sequencer's log.
+**Involves:** moving the lease classes and their messages from `applications/fix_common` into the
+library, without changing how they behave. Then, as a second step, replacing the lock in the lease
+promise recorder with a hand-over between threads that needs no lock, and keeping its disk sync off
+the threads that handle orders ([BUG-0126](bug_list.md#bug_0126)).
 
-**Involves:** writing the leader's records on the follower by the sequencer's own thread only; removing
-the handler that runs component code on the reactor thread, and the framework facility that allows it;
-removing the two locks and the two coordinating flags that existed only for the second writer. Some of
-the follower's delay may return; Andrew has accepted that, and it is measured.
+**Finished when:** every high availability scenario passes after the move and again after the change to
+the promise recorder, and the promise recorder's locks are removed from the phase 2 list of exceptions.
 
-**Finished when:** no lock is taken for each order in the sequencer; its exception is removed from the
-phase 2 list; the high-availability scenarios pass; and the round trip has been measured before and
-after.
+### Phase 4. The library's replicated WAL, with one writing thread
 
-### Phase 4. The remaining locks
+**For:** the order path back to its intended design: one thread owns the sequencer's WAL.
 
-**For:** no lock or wait left on any order-handling thread.
+**Involves:** building the library's replicated WAL, in which one thread writes every record, and moving
+the sequencer onto it. On the follower, the leader's records are then written by that one thread only.
+The handler that runs component code on the reactor thread is removed, with the framework facility that
+allows it, and so are the two locks and the two coordinating flags that exist only for a second writing
+thread ([BUG-0124](bug_list.md#bug_0124)). Some of the follower's delay may return; Andrew has accepted
+that, and it is measured.
 
-**Involves:** replacing the lease promise recorder's lock with a hand-over between two threads that
-needs none, and keeping its disk sync off the order-handling threads (BUG-0126); making sure memory
-pools do not run out during a trading day (BUG-0127); the reactor's two locks, which phase 1 decided
-are not allowed: the timer lock, removed by creating timers at start-up and only starting and stopping
-them afterwards (BUG-0128), and the thread registry lock (BUG-0129); and the other breaches of the
-framework principles phase 1 found: the log's helper keeping only one segment ready (BUG-0130), the
-leading sequencer's heap allocations (BUG-0131), and catch-ups reading the log on the thread that
-sequences orders (BUG-0133).
+**Finished when:** no lock is taken for each order in the sequencer; its exceptions are removed from the
+phase 2 list; the high availability scenarios pass; and the order's round trip has been measured before
+and after.
 
-**Finished when:** the phase 2 list of exceptions holds only what Andrew has agreed to keep.
+### Phase 5. Following the WAL
 
-### Phase 5. Divide the sequencer into parts
+**For:** one way, provided by the library, for an application to read the WAL in order and catch up.
 
-**For:** a sequencer a reader can understand, and where a change to one job cannot disturb another.
+**Involves:** giving the library's WAL its own way of being followed, on a thread of its own, and moving
+the catch-ups of the matching engine and of the publishers onto it, so that catch-ups no longer read the
+WAL on the thread that sequences orders ([BUG-0133](bug_list.md#bug_0133)).
 
-**Involves:** dividing `SequencerThread` into parts, each with one job and its own state, all still run
-by the same single thread, so no new threads and no locks. Where a part's situation is now spread
-across several true-or-false members, it becomes one explicit state with the moves between states
-written down. Behaviour does not change: this is a restructuring only, done in small steps, with the
-whole test suite passing after each.
+**Finished when:** the matching engine and the publishers catch up through the library, no catch-up runs
+on the sequencer's thread, and the high availability scenarios pass.
+
+### Phase 6. Make the matching engine deterministic
+
+**For:** a matching engine that, given the same commands in the same order, always produces the same
+book and the same reports.
+
+**Involves:**
+
+- making identifiers from the position of the command in the WAL, scrambled with a reversible cipher
+  whose key is fixed for the trading day and shared by both engines
+  ([BUG-0139](bug_list.md#bug_0139)); this includes designing the cipher and how the day's key is
+  created and given to both engines;
+- turning the decisions the leading engine now takes alone into commands in the WAL: halting after an
+  absence, acting on promotion, and refusing orders while halted. This includes designing how the
+  absence rule is measured, so that a restarted engine never cancels its book because of its own
+  downtime ([BUG-0146](bug_list.md#bug_0146)).
+
+**Finished when:** both engines, run on the same WAL, produce identical reports, and the high
+availability scenarios pass.
+
+### Phase 7. Run the matching engine pair in lockstep
+
+**For:** losing the leading engine costs a short pause and nothing else, without copying the book from
+one engine to the other.
+
+**Involves:** both engines apply every committed command, and only the leading engine's reports are sent
+on (way B in [ha_library_boundary.md](availability/ha_library_boundary.md)). The copying of the book
+(`BookUpdate`), the reconciliation on promotion and the cancelling of inherited orders on promotion are
+removed.
+
+**Finished when:** the follower engine's book is built from the WAL alone, book copying is removed, and
+the high availability scenarios that promote an engine pass.
+
+### Phase 8. One check against sequencing a command twice, and the gateways as clients
+
+**For:** the principle "a command is sequenced at most once" enforced in one place, for every command,
+however it arrived; and one way for a gateway to send commands and recognise their answers.
+
+**Involves:** replacing the separate checks with one check in the library's WAL, on every command
+([BUG-0122](bug_list.md#bug_0122)), and making the same check refuse a member who reuses an identifier,
+as the specification requires ([BUG-0114](bug_list.md#bug_0114)); moving the gateways' record of
+unanswered commands and their resending onto the library's client side. Measure the check's cost on the
+order path.
+
+**Finished when:** the separate checks are gone, the high availability scenarios that test repeated
+commands pass, and the cost is measured.
+
+### Phase 9. Divide what is left of the sequencer and the matching engine
+
+**For:** a sequencer and a matching engine a reader can understand, and where a change to one job cannot
+disturb another.
+
+**Involves:** dividing what remains of `SequencerThread` and `MatchingEngineThread`, once phases 3 to 8
+have moved the high availability machinery into the library, into parts, each with one job and its own
+state, all still run by the same single thread, so no new threads and no locks. By then the sequencer
+holds the venue's own business: which session a member is bound to, and where reports go. Where a
+part's situation is spread across several true-or-false members, it becomes one explicit state with the
+moves between states written down. Behaviour does not change: this is a restructuring only, done in
+small steps, with the whole test suite passing after each.
 
 **Finished when:** each part has one job, its states are written down, and the tests pass.
 
-### Phase 6. Divide the matching engine into parts
+### Framework fixes done alongside the phases
 
-**For:** the same, for `MatchingEngineThread`.
+**For:** the breaches of the framework principles that have nothing to do with high availability.
 
-**Involves:** as phase 5.
+**Involves:** these can be done at any point, each with its own design agreed first:
 
-**Finished when:** as phase 5.
+- the reactor's timer lock, removed by creating timers at start-up and only starting and stopping them
+  afterwards ([BUG-0128](bug_list.md#bug_0128));
+- the reactor's thread registry lock, taken during the trading day ([BUG-0129](bug_list.md#bug_0129));
+- the WAL's helper thread keeping only one segment ready ([BUG-0130](bug_list.md#bug_0130));
+- the leading sequencer's heap allocations ([BUG-0131](bug_list.md#bug_0131));
+- making sure memory pools do not run out during a trading day ([BUG-0127](bug_list.md#bug_0127)).
 
-### Phase 7. One check against sequencing a command twice
+**Finished when:** each is fixed and its exceptions are removed from the phase 2 list.
 
-**For:** the principle "a command is sequenced at most once" enforced in one place, for every command,
-however it arrived.
-
-**Involves:** replacing the separate checks with one check on every command (BUG-0122), and making the
-same check refuse a member who reuses an identifier, as the specification requires (BUG-0114). Measure
-the check's cost on the order path.
-
-**Finished when:** the separate checks are gone, the high-availability scenarios that test repeated
-commands pass, and the cost is measured.
-
-### Phase 8. Check the models and documents against the principles
+### Phase 10. Check the models and documents against the principles
 
 **For:** the written descriptions agreeing with the repaired code.
 
 **Involves:** checking the TLA+ models against the agreed principles; bringing the high-availability, sequencer
 and matching engine documents up to date with the code, as part of the documentation audit already
-under way; removing descriptions of mechanisms that phases 3 to 7 removed.
+under way; removing descriptions of mechanisms that phases 3 to 9 removed.
 
 **Finished when:** the documentation audit marks those documents done.
 
-### Phase 9. Return to the bug list
+### Phase 11. Return to the bug list
 
 **For:** the remaining defects, now fixed against a design that is written down.
 
 **Involves:** going through every open entry and deciding, against the principles, whether it is already
-fixed by phases 3 to 7, is a breach of a principle, or is a new requirement. Then agreeing an order for
+fixed by phases 3 to 9 or the framework fixes, is a breach of a principle, or is a new requirement. Then agreeing an order for
 those that remain, with Andrew. Each fix from then on follows the same way of working as above.
 
 **Finished when:** every open entry has been judged and the order agreed.
@@ -291,7 +341,7 @@ those that remain, with Andrew. Each fix from then on follows the same way of wo
 
 - **OAR**, the external publishing of the venue's events, whose design is otherwise ready.
 - **New features of any kind.**
-- **The bug list**, except as phase 9 describes.
+- **The bug list**, except as phase 11 describes.
 - **The documentation audit of documents the plan does not touch**, which can carry on alongside,
   since it changes no code.
 

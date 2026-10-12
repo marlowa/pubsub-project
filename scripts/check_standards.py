@@ -1102,7 +1102,7 @@ _ERROR_PATH = 'taken only on an error path'
 # Each entry: (path relative to the project root, where, why). For a .cpp file, `where` is the
 # function holding the lock, as Class::function. For a header, `where` is a name that appears on
 # the line, or '*' for every lock in the file. `why` is one of the three reasons above, or, for a
-# breach, a sentence naming the bug and the phase that removes it.
+# breach, a sentence naming the bug and the phase of docs/recovery_plan.md that removes it.
 _PERMITTED_LOCKS = [
     # The reactor's registry of threads: filled at start-up and emptied at shutdown.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/Reactor.hpp', 'thread_registry_mutex_', _START_UP_AND_SHUTDOWN),
@@ -1115,38 +1115,38 @@ _PERMITTED_LOCKS = [
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_all_timer_fds_for_thread', _START_UP_AND_SHUTDOWN),
     # The thread registry lock taken during the trading day.
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::route_message',
-     'breach: BUG-0129, removed in phase 4'),
+     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::check_for_exited_threads',
-     'breach: BUG-0129, removed in phase 4'),
+     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::check_for_stuck_threads',
-     'breach: BUG-0129, removed in phase 4'),
+     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::get_thread_name_from_id',
-     'breach: BUG-0129, removed in phase 4'),
+     'breach: BUG-0129, removed by a framework fix done alongside the phases'),
     # The reactor's timer lock: every timer start creates a timer and every cancel destroys one.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/Reactor.hpp', 'timer_registry_mutex_',
-     'breach: BUG-0128, removed in phase 4'),
-    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::allocate_timer_id', 'breach: BUG-0128, removed in phase 4'),
-    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::create_timer_fd', 'breach: BUG-0128, removed in phase 4'),
-    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_timer_fd', 'breach: BUG-0128, removed in phase 4'),
+     'breach: BUG-0128, removed by a framework fix done alongside the phases'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::allocate_timer_id', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::create_timer_fd', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
+    ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_timer_fd', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
     # The follower's second writer of the sequencer's log.
-    ('applications/sequencer/SequencerThread.hpp', 'log_epochs_mutex_', 'breach: BUG-0124, removed in phase 3'),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::append_to_wal', 'breach: BUG-0124, removed in phase 3'),
+    ('applications/sequencer/SequencerThread.hpp', 'log_epochs_mutex_', 'breach: BUG-0124, removed in phase 4'),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::append_to_wal', 'breach: BUG-0124, removed in phase 4'),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::write_replicated_record',
-     'breach: BUG-0124, removed in phase 3'),
+     'breach: BUG-0124, removed in phase 4'),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_log_position_request',
-     'breach: BUG-0124, removed in phase 3'),
+     'breach: BUG-0124, removed in phase 4'),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_request',
-     'breach: BUG-0124, removed in phase 3'),
+     'breach: BUG-0124, removed in phase 4'),
     ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_reply',
-     'breach: BUG-0124, removed in phase 3'),
-    ('applications/sequencer/ReplicatedRecordWriter.hpp', 'mutex_', 'breach: BUG-0124, removed in phase 3'),
+     'breach: BUG-0124, removed in phase 4'),
+    ('applications/sequencer/ReplicatedRecordWriter.hpp', 'mutex_', 'breach: BUG-0124, removed in phase 4'),
     # The lease promise recorder, on the sequencer's and the matching engine's application threads.
-    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'mutex_', 'breach: BUG-0126, removed in phase 4'),
-    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'wake_', 'breach: BUG-0126, removed in phase 4'),
-    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'idle_', 'breach: BUG-0126, removed in phase 4'),
+    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'mutex_', 'breach: BUG-0126, removed in phase 3'),
+    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'wake_', 'breach: BUG-0126, removed in phase 3'),
+    ('applications/fix_common/BackgroundPromiseRecorder.hpp', 'idle_', 'breach: BUG-0126, removed in phase 3'),
     # Memory pools.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'expansion_mutex_',
-     'breach: BUG-0127, removed in phase 4'),
+     'breach: BUG-0127, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'callback_mutex_', _ERROR_PATH),
     # Metrics: registration happens at start-up, and the scrape runs on the endpoint's own thread.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/PrometheusEndpoint.hpp', 'mutex_', _NOT_ORDER_HANDLING),

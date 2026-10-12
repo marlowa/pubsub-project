@@ -61,9 +61,10 @@ matter first, by design area:
 
 The order is set by [the plan for restoring the design](recovery_plan.md), and each phase ends with a
 review at which Andrew decides whether the next starts. Phase 1, agreeing the design principles, is
-done. Phase 2, making the build enforce the framework principles, is done. Phases 3 to 7 are to be
-revised once the design of the boundary between the library and the applications for high availability is
-agreed. New features, including pub/sub, the order activity recorder and the trading phases, wait
+done. Phase 2, making the build enforce the framework principles, is done. Phases 3 to 9 move the high
+availability machinery from the sequencer and the matching engine into the library, in the order agreed
+in [ha_library_boundary.md](availability/ha_library_boundary.md); phase 3, moving the lease classes into
+the library, is next. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start
