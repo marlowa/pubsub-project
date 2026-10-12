@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 146 |
-| Open | 61 (42 defects, 19 tasks) |
+| Bugs recorded | 147 |
+| Open | 62 (43 defects, 19 tasks) |
 | Closed | 85 |
-| Next id | BUG-0147 |
+| Next id | BUG-0148 |
 
 ## Open bugs by severity
 
-16 high, 39 medium, 6 low.
+17 high, 39 medium, 6 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,6 +29,7 @@
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
+| [BUG-0147](#bug_0147) | high | defect | A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -170,6 +171,70 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0147: A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it {#bug_0147}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| How | Running every high availability scenario against the Release install, to record which pass before phase 3 of the recovery plan changes anything. Scenario 12 damaged the secondary sequencer's write-ahead log (WAL), and every scenario after it then failed at start-up |
+| Impact | The secondary sequencer stopped, so the venue lost its standby. Its WAL is damaged in the middle, so it refuses to start again until the WAL is moved aside, and the WAL no longer holds every record once and in order |
+
+**What was found.** In scenario 12, with 20,000 orders in flight, the secondary sequencer was the
+follower. At 16:05:36.19 it logged that its WAL agreed with the leader's through record 1,732,404 and
+that it was writing the records the leader sent from there. At 16:05:37.42, before any process had been
+killed, it began logging, from `SequencerThread::append_to_wal`, that records were being written out of
+order: first "record 1732405 was written after record 1732405", the same record written twice, then
+"record 1732411 was written after record 1732416", and so on, 2,052 times in half a second, until
+16:05:37.90. At 16:05:37.97 the sequencer's thread stopped with "WalReader: the write-ahead log is
+damaged -- .../sequencer_secondary_wal/wal_000129.log has an entry at byte 2646488 that is not valid,
+followed by a valid entry at byte 2646707". In every later scenario the secondary refused the WAL at
+start-up, and the scenario failed. Scenario 12 itself failed because the restarted primary matching
+engine did not take the lead within 15 seconds.
+
+Just before the first record out of order, at 16:05:37.39, a gateway's order connection and the
+secondary matching engine's standby connection to this sequencer were established.
+
+**Why it should not happen.** [BUG-0123](#bug_0123) found the same kind of damage and was fixed by
+making every write of a replicated record go through `ReplicatedRecordWriter::write_if_next()`, which,
+under one lock, writes a record only if it is the next one. A record written twice, or written after a
+later one, means some write reached the WAL without passing that check. `append_to_wal` is also called
+by `append_envelope_to_wal`, which writes the records a leader sequences itself (orders from gateways
+and reports from the matching engine) and does not go through `write_if_next()`. Whether that path ran
+on the follower here, and why, is not established.
+
+**Not yet reproduced.** The damage happened once. In the Debug install at the end of phase 2, scenario
+12 passed.
+
+**The same message in other scenarios, a second pattern.** The message "record N was written after
+record M" also appears in scenarios that pass, in a different pattern, after a follower has discarded
+records its leader does not hold and then taken the lead:
+
+- In scenario 1 of the same Release run, at 16:16:36.92 the secondary sequencer discarded records 2,001
+  to 45,000 from its WAL, because the leader did not hold them, and agreed with the leader through
+  record 2,000. It then wrote what the leader sent, up to record 4,000. At 16:16:43.01 it took the
+  lead, and the first record it sequenced was numbered 45,001, logged as "record 45001 was written after
+  record 4000", 4,478 times in all.
+- In scenario 49 of the Debug run at the end of phase 2, the secondary discarded records 1,263,971 to
+  1,267,970, took the lead, and numbered its first record 1,267,971, logged as "written after record
+  1265970".
+
+In both, the first number used after taking the lead is one more than the highest record the instance
+held before it discarded any, not one more than the highest it holds now, so its WAL has a gap of
+records that never existed. The scenarios pass because nothing they check reads that WAL afterwards.
+The out-of-order writing while following, which led to the damage above, also appears in scenario 72 of
+the Debug run (three records). Whether the two patterns have one cause is not established.
+
+**Evidence kept.** The damaged WAL is `sequencer_secondary_wal.damaged-20261012`, and the leader's WAL
+at the same moment is `sequencer_wal.with-damaged-secondary-20261012`, both beside the live WAL
+directories. The logs are in `tmp/bug0147`: scenarios 1 and 12 of the Release run, and scenarios 49 and
+72 of the Debug run.
+
+**Where it belongs.** Phase 4 of [the recovery plan](recovery_plan.md) replaces the follower's two
+writing threads with one, which removes the conditions BUG-0123's lock was added for. This entry is
+evidence that the lock did not close them, and is to be checked again when phase 4 is done.
 
 ### BUG-0146: A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout {#bug_0146}
 
@@ -837,7 +902,7 @@ lock-free, with the next pool mapped in advance by another thread. See `lock-aud
 | How | Searching the code for every mutex and lock, to check the rule that the hot paths take none during the trading day |
 | Impact | The sequencer's and the matching engine's own thread, which handles every order, takes a mutex every 100 milliseconds, and occasionally waits on a condition variable until a background disk write has finished, then writes and syncs a record itself. While it waits, no order is handled |
 
-**Where.** `BackgroundPromiseRecorder` (`applications/fix_common/BackgroundPromiseRecorder.hpp`),
+**Where.** `BackgroundPromiseRecorder` (`libraries/pubsub_itc_fw/include/pubsub_itc_fw/BackgroundPromiseRecorder.hpp`),
 owned by the sequencer, the matching engine and the arbiter, and driven by `PairLeaseAgent` on the
 component's application thread:
 
@@ -4559,7 +4624,7 @@ at least one other voter granting that generation. Every voter refuses a generat
 highest it has granted and says in its refusal what that is, so an instance that asks too low
 learns the right generation and asks again above it. Scenario 57, which was written against this
 entry and relied on the self-promotion, is retired; scenario 24 and
-`applications/sequencer/tests/PairLeaseAgentTest.cpp` cover a restarted instance deferring to the
+`libraries/pubsub_itc_fw/tests/PairLeaseAgentTest.cpp` cover a restarted instance deferring to the
 peer that leads.
 
 The generation can still go backwards in one case, which is a different defect: see
