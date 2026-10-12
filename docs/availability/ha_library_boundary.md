@@ -212,11 +212,53 @@ cancelling on promotion while keeping one path for reports, which is close to to
 leadership as well, and becomes possible once B has shown in practice that the two engines' outputs
 agree.
 
-## 11. Design area: using the library without high availability
+## 11. Design area: which applications use the replicated log
 
-Not every use of the library wants a replicated log. An application chooses it; one that runs a single
-instance gets the same interfaces (commands in, committed commands out, a handler and a snapshot) with
-no peer, no voters and no replication, so moving to a pair later changes configuration, not code.
+**The replicated log is something an application chooses, never something it is given.** The
+library's ordinary application thread, the one every component is built on today, knows nothing of a
+log, a pair or a vote, and an application built only on it has none of them. Nothing in this design
+changes that.
+
+**What decides it.** Two things, one in the code and one in the configuration:
+
+- **In the code: whether the application is written as a state machine.** An application that wants
+  the replicated log creates the library's log component and gives it what sections 4 and 5 list: a
+  handler for each committed command, and a way to write and read its state together with the position
+  in the log it reflects. An application that does none of this does not use the log, and its code and
+  configuration are exactly as they would be without this design.
+- **In the configuration: whether it runs as a pair.** An application written as a state machine runs
+  either as a pair, with a follower and voters named in its configuration, or as one instance with
+  neither. Both give it the same interfaces (commands in, committed commands out, a handler and a
+  snapshot), so moving from one instance to a pair changes configuration, not code.
+
+The client's side (section 7) and the voting service (section 2) are chosen in the same way: an
+application uses them by creating them, and one that does not create them has neither.
+
+**What the log is for, and so which applications want it.** It is for state that must be the same on
+two machines, built from commands whose order matters, where losing a command that was answered is not
+allowed. If any of those three is missing, the log costs more than it gives.
+
+**How the venue's components divide.**
+
+| Component | Uses | Why |
+|---|---|---|
+| Sequencer pair | The replicated log | It is the log (section 1). |
+| Matching engine | Follows the log, as a state machine | Its book is built from the commands in the order the log gives them. |
+| Matching engine publisher pair | Follows the log, and the leadership component | It reads committed records in order and sends them to subscribers. Only the leading instance publishes, so it needs to know who leads, but it keeps no state of its own that the other instance must agree with. |
+| Order activity recorder (designed, not built) | Follows the log | It reads committed records in order and sends them outside the venue. |
+| FIX and binary order gateways | The client's side | They send commands and must see every one answered, but the state they hold, each member's session, belongs to the connection, not to the log. |
+| Arbiters and witness | The voting service | They vote on who leads and keep no log. |
+| Authentication service | None of it | See below. |
+| Admin service | None of it | It is a Java web application outside the framework. |
+
+**Why the authentication service does not use it.** It holds one piece of state, the map from comp id
+to stored credential. That map is loaded at startup from an export of the database, and each change to
+it is sent by the admin service to both instances, so each instance gets its state from outside and
+neither needs the other's. A logon exchange is complete in itself, nothing about it is kept, and the
+order of two logons from different members does not matter. The two instances both serve at once and
+neither is elected: a gateway uses one and turns to the other if the first dies, and a session already
+logged on is not affected. Putting every logon through a replicated log would add a disk write on two
+machines and a round trip to a second machine to each logon, and would protect nothing that is at risk.
 
 ## 12. What moves where, and in what order
 
@@ -260,7 +302,8 @@ BUG-0131) are separate and can be done at any point:
 These are separate questions.
 
 1. **Is section 1 the right shape?** The sequencer pair as the library's replicated log, the matching
-   engine as a deterministic state machine following it, the gateways as clients. (Yes or no.)
+   engine as a deterministic state machine following it, the gateways as clients. **Agreed 12 October
+   2026**, on the understanding that an application uses the log only if it chooses to (section 11).
 2. **Should every decision that changes a replicated application's state enter the log as a command**
    (section 8), including the engine's halt after an absence and any action on promotion? (Yes or no.)
 3. **Should identifiers come from the position in the log** (section 9)? (Yes or no.)
