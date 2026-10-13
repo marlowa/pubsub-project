@@ -1344,42 +1344,6 @@ size_t Reactor::process_control_commands(size_t max_commands) {
                 }
                 break;
             }
-
-            case ReactorControlCommand::InstallInlinePduHandler: {
-                if (!command.inline_handler_installer_) {
-                    break;
-                }
-                const ConnectionID cid = command.connection_id_;
-                PduParser* parser = nullptr;
-                PduFramer* framer = nullptr;
-
-                auto* outbound = outbound_manager_.find_by_id(cid);
-                if (outbound && outbound->parser()) {
-                    parser = outbound->parser();
-                    framer = outbound->framer();
-                }
-
-                if (!parser) {
-                    auto* inbound = inbound_manager_.find_by_id(cid);
-                    if (inbound) {
-                        auto* pdu_handler = dynamic_cast<PduProtocolHandler*>(inbound->handler());
-                        if (pdu_handler) {
-                            parser = pdu_handler->parser();
-                            framer = pdu_handler->framer();
-                        }
-                    }
-                }
-
-                if (parser && framer) {
-                    command.inline_handler_installer_(parser, framer);
-                    PUBSUB_LOG(logger_, FwLogLevel::Debug, "Reactor: inline PDU handler installed on connection {}", cid.get_value());
-                } else {
-                    PUBSUB_LOG(logger_, FwLogLevel::Warning,
-                               "Reactor::process_control_commands: connection {} not found or not a PDU connection for InstallInlinePduHandler",
-                               cid.get_value());
-                }
-                break;
-            }
         }
     }
 

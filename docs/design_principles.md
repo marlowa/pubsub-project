@@ -82,17 +82,12 @@ sequencer's table of epochs, the gateways' unanswered commands and session table
 handler and connection tables, and on `SingleWriterHistogram`, the histogram one thread records into
 without a lock. State that is handed
 from one thread to another, such as the matching engine's order book, which is filled on the main
-thread and then used by the engine's thread, is handed over explicitly. The known second writer of the
-follower's log, below, is counted rather than refused, published as a metric, and warned about once.
-State outside those classes is not checked. Release builds check nothing.
+thread and then used by the engine's thread, is handed over explicitly. State outside those classes is
+not checked. Release builds check nothing.
 
-**Today: broken in one place.** On a following sequencer, the sequencer's log has two writers. The
-reactor thread writes the records the leader sends, through a handler that the sequencer installs on
-the peer connection (`SequencerThread::install_peer_wal_inline_handler`). The sequencer's own thread
-writes records the handler passes on to it. The table of epochs in the log has the same two writers.
-Two locks were added to keep the two writers apart (see F2), and two atomic variables
-(`replicated_records_queued_` and `follower_log_agreed_`) exist only to coordinate them. Recorded as
-[BUG-0124](bug_list.md#bug_0124).
+**Today: holds.** The sequencer's thread is the only thread that writes the sequencer's log and its
+table of epochs, on the leader and on the follower alike. On a follower, each record the leader sends
+reaches the sequencer's thread as an ordinary message.
 
 ### F2. Fast paths take no locks, and no order-handling thread waits for another thread
 
@@ -120,15 +115,11 @@ source and by recording, with `perf`, every time a thread of the running venue w
 for a mutex (`lock-audit-report.txt`). Nothing checks that an order-handling thread does not wait for
 another thread by other means.
 
-**Today: broken in three places.**
+**Today: broken in one place.**
 
 | Lock | Where | Taken | Bug |
 |---|---|---|---|
-| `log_epochs_mutex_` | `SequencerThread` | On every write to the sequencer's log, on the leader and the follower | [BUG-0124](bug_list.md#bug_0124) |
-| The mutex in `ReplicatedRecordWriter` | Following sequencer | On every record the leader sends, which is inside every order's round trip | [BUG-0124](bug_list.md#bug_0124) |
 | The expansion mutex in `ExpandablePoolAllocator` | Every queue between threads, and the gateways' open-order pools | Only when a pool runs out, and then while a new pool is mapped from the operating system | [BUG-0127](bug_list.md#bug_0127) |
-
-The first two exist only because of the two writers described under F1.
 
 Two more locks are taken during the trading day, but not for each order.
 
@@ -160,12 +151,10 @@ serves. It also hides from the reader of a component which thread is running whi
 **Where it is meant to hold.** In `Reactor` and `ApplicationThread`: the reactor turns network data
 into events on an application thread's queue.
 
-**What checks it.** Nothing; the framework offers a way round it.
+**What checks it.** The framework offers no way for a component to run its code on the reactor
+thread: every complete message is put on an application thread's queue.
 
-**Today: broken in one place.** `ApplicationThread::install_inline_pdu_handler` lets a component run
-its own handler on the reactor thread, inside the parser. Only the sequencer uses it, for the follower
-writing the leader's records (F1). When the sequencer no longer uses it, `install_inline_pdu_handler`
-is removed from the framework, so that the framework no longer offers a way round this principle.
+**Today: holds.**
 
 ### F4. No order-handling thread waits for the disk
 
@@ -258,14 +247,8 @@ the slab chunk, and in the hand-over of that chunk to the application thread
 
 **What checks it.** Nothing.
 
-**Today: holds in the framework; broken in the sequencer in two places.**
-
-- Execution reports that wait for the follower are copied, as described under F5. Recorded as
-  [BUG-0131](bug_list.md#bug_0131).
-- The following sequencer sends its acknowledgement of the leader's records with `PduFramer::send`,
-  which copies the payload into a buffer inside the framer. It does so from the inline handler on the
-  reactor thread, which is removed under F1 and F3 ([BUG-0124](bug_list.md#bug_0124)); when it is,
-  nothing uses `PduFramer::send` on the order path.
+**Today: holds in the framework; broken in the sequencer in one place.** Execution reports that wait
+for the follower are copied, as described under F5. Recorded as [BUG-0131](bug_list.md#bug_0131).
 
 ### F7. Threads stay on their cores
 
@@ -712,13 +695,9 @@ in `SequencerThread`.
 **What checks it.** `ha_test.py` scenario 62, and the scenarios in section 8 of the repair design, each
 of which was made to fail with the repair disabled.
 
-**Today: holds, with two reservations.**
-
-- The repair is where the two writers of F1 meet: on a follower, the reactor thread's handler and the
-  sequencer thread both write the log, kept apart by the lock in `ReplicatedRecordWriter`
-  ([BUG-0124](bug_list.md#bug_0124)). It is to be checked again when the second writer is removed.
-- The leader reads the records the follower missed on the thread that sequences orders, so orders wait
-  while it does, for seconds after a long absence: [BUG-0133](bug_list.md#bug_0133).
+**Today: holds, with one reservation.** The leader reads the records the follower missed on the
+thread that sequences orders, so orders wait while it does, for seconds after a long absence:
+[BUG-0133](bug_list.md#bug_0133).
 
 ### V11. A fault in the standby is a loss of resilience, not a loss of service
 

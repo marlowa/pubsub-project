@@ -13,7 +13,9 @@
 > [BUG-0148](bug_list.md#bug_0148), which made scenario 40 fail at random, to be fixed before phase 4
 > starts, so that every later phase starts from a run in which every high availability scenario passes.
 > It is fixed, and all 73 scenarios pass. Phase 4's design,
-> [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), waits for Andrew's review.
+> [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), was agreed on
+> 13 October 2026. Its first step is done: the sequencer's thread is the only one that writes its WAL,
+> and the two locks of [BUG-0124](bug_list.md#bug_0124) are gone. All 74 scenarios pass.
 
 ## In one page
 
@@ -187,8 +189,6 @@ October 2026.
 - In Debug and sanitizer builds, `ThreadConfinementCheck` refuses a second thread on the log writer,
   the slab allocator, the ring buffer, the incremental rehash map, the sequencer's table of epochs, the
   gateways' unanswered commands and session tables, and the reactor's handler and connection tables.
-  The known second writer of the follower's log (BUG-0124) is counted rather than refused, published as
-  a metric, and warned about once.
 
 Each check was made to fail on purpose before it was relied on.
 
@@ -240,8 +240,8 @@ that, and it is measured.
 phase 2 list; the high availability scenarios pass; and the order's round trip has been measured before
 and after.
 
-**Design:** [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), a draft
-for Andrew's review.
+**Design:** [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), agreed
+13 October 2026.
 
 ### Phase 5. Following the WAL
 

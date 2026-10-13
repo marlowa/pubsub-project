@@ -3,11 +3,9 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <atomic>
 #include <chrono>
 #include <cstdint> // IWYU pragma: keep
 #include <map>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -38,7 +36,6 @@
 #include "LogTailIndex.hpp"
 #include "LoggedCommandIdentifiers.hpp"
 #include "LoggedCommandIdentifiersBuilder.hpp"
-#include "ReplicatedRecordWriter.hpp"
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
@@ -110,29 +107,19 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     int64_t next_sequence_number_{1};
 
     // The highest sequence number of any record this instance has written as a follower, from its
-    // leader's replication stream. Atomic because two threads write it: the inline handler on the
-    // reactor's thread (install_peer_wal_inline_handler) and handle_wal_record on this thread, which
-    // takes the records the inline handler passes on. Read on this thread when the instance takes
-    // the lead, so that it numbers new records above every record its log holds.
-    std::atomic<int64_t> highest_replicated_seq_no_{0};
+    // leader's replication stream. Read when the instance takes the lead, so that it numbers new
+    // records above every record its log holds.
+    int64_t highest_replicated_seq_no_{0};
 
     // Repairing a follower's log when it rejoins: docs/availability/follower_log_repair.md.
     //
-    // Which leadership wrote each record of this instance's log. Guarded by its mutex, because a
-    // follower's records are written on the reactor's thread by the inline handler as well as on
-    // this one.
+    // Which leadership wrote each record of this instance's log. This thread is the only one that
+    // writes the log, on the leader and the follower alike, so the table is used on this thread only.
     LogEpochTable log_epochs_;
-    mutable std::mutex log_epochs_mutex_;
 
     // As a follower: whether this log and the leader's are known to agree, so that the records the
-    // leader sends may be written. Until then they are discarded. Set and cleared on this thread,
-    // read by the inline handler.
-    std::atomic<bool> follower_log_agreed_{false};
-
-    // As a follower: replicated records the inline handler passed to this thread that this thread
-    // has not yet written or discarded. The inline handler writes a record itself only while this is
-    // zero, so that records are written in order and by one thread at a time.
-    std::atomic<int64_t> replicated_records_queued_{0};
+    // leader sends may be written. Until then they are discarded.
+    bool follower_log_agreed_{false};
 
     // As a leader: whether the follower's log is known to agree with this one, so that live records
     // are sent to it. Until then it is sent none: written after a gap, they would be out of place.
@@ -190,11 +177,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // before the sequencer begins accepting connections.
     /// Commits one record to the log and records how long it took. Every append goes through
     /// here, so there is one place that knows what a commit costs.
-    ///
-    /// The time is recorded into the histogram the caller names, which must be the one for the
-    /// thread the caller is running on: each histogram has exactly one thread that records into it.
-    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch,
-                       pubsub_itc_fw::HistogramHandle& wal_append_histogram);
+    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
 
     /// Opens the log, builds the table of epochs, and discards everything after the first gap, if there is one.
     void open_wal_trusting_it_up_to_any_gap();
@@ -205,21 +188,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // worth measuring: a commit that blocks is a sequencer that has stopped sequencing, and until
     // this existed the only sign of it was the reactor's stall watchdog saying a callback had not
     // finished -- a log line, correlated by hand.
-    //
-    // Two children of one metric, because a histogram has exactly one thread that records into
-    // it and two threads write to the log. This one is for every write made on the sequencer's
-    // own thread, which is every write on the leader and the records a follower's inline handler
-    // passes on. The other is for the records the inline handler writes itself, on the reactor's
-    // thread, which happens only on a follower.
     pubsub_itc_fw::HistogramHandle wal_append_histogram_;
-    pubsub_itc_fw::HistogramHandle wal_append_reactor_thread_histogram_;
     pubsub_itc_fw::GaugeHandle wal_segments_filled_inline_gauge_;
     pubsub_itc_fw::GaugeHandle wal_segments_waited_for_gauge_;
-    // Uses of the log and of its table of epochs by a second thread, counted under the known breach
-    // BUG-0124 in builds with thread checks, and whether the one warning about them has been logged.
-    pubsub_itc_fw::GaugeHandle wal_second_writer_appends_gauge_;
-    pubsub_itc_fw::GaugeHandle log_epochs_second_thread_calls_gauge_;
-    bool second_writer_warned_{false};
 
     // Four points on the order's journey, each recording how much of the round trip had
     // already elapsed when it got here. The sequencer contributes four of the family's
@@ -400,7 +371,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope);
     void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
-    void install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id);
 
     /// As a follower: asks the leader where their logs agree, unless they already do.
     void send_log_position_request();
@@ -410,15 +380,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void handle_log_position_reply(const pubsub_itc_fw::EventMessage& message);
     /// The two logs no longer known to agree, because a peer connection or this instance's role changed.
     void forget_log_agreement();
-    /// As a follower: whether a replicated record is the next one this log needs. A record already held is not; one that would leave
-    /// a gap is not either, and the logs are then no longer taken to agree. Called on either thread that writes replicated records.
-    // Writes a record the leader sent if it is the next one this log needs, from whichever thread
-    // delivers it; on finding one missing, stops writing until the logs are found to agree again.
-    ReplicatedRecordWriter::Outcome write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch,
-                                                            pubsub_itc_fw::HistogramHandle& wal_append_histogram);
-    // Every write of a replicated record, and every change to the log while they may arrive, goes
-    // through this, under one lock (docs/bug_list.md, BUG-0123).
-    ReplicatedRecordWriter replicated_record_writer_;
+    // What became of a record the leader sent.
+    enum class ReplicatedWrite {
+        // It was the next record the log needed, and was written.
+        written,
+        // The log already holds a record with this number; nothing was written.
+        already_held,
+        // A record before it is missing; nothing was written, and the logs are no longer taken to agree.
+        gap
+    };
+    // As a follower: writes a record the leader sent if it is the next one this log needs; on finding
+    // one missing, stops writing until the logs are found to agree again.
+    ReplicatedWrite write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
 
     // ---- Sending an order to the matching engine only once the follower holds it -------------
     //
@@ -572,9 +545,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // The identifiers of the commands this instance's log holds, so that a command a gateway sends
     // again after a change of leader is not sequenced twice (LoggedCommandIdentifiers, and
     // docs/availability/commands_during_a_change_of_leader.md, section 3.4). Built in the background
-    // when HA is on, by identifiers_builder_, and touched only by this thread once taken from it. While
-    // leading, each command is noted as it is written; while following, the records the reactor thread
-    // wrote are read from the log once a second, and the rest on taking the lead.
+    // when HA is on, by identifiers_builder_, and touched only by this thread once taken from it. Each
+    // command is noted as it is written, whether this instance leads or follows.
     std::optional<LoggedCommandIdentifiers> logged_identifiers_;
     bool identifiers_full_reported_{false};
     // While the record is being built: the identifiers of the commands noted meanwhile, added to the
@@ -583,10 +555,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     bool identifiers_building_{false};
     std::vector<uint64_t> identifiers_noted_while_building_;
     LoggedCommandIdentifiersBuilder identifiers_builder_;
-    // Where the next read of the log for identifiers starts: just after the last record read.
-    pubsub_itc_fw::WalPosition identifiers_read_position_{};
-    std::chrono::steady_clock::time_point identifiers_read_at_{};
-    static constexpr std::chrono::milliseconds identifiers_read_interval{1000};
+    // As a follower: when the kept reports the leader has said it forwarded were last discarded.
+    std::chrono::steady_clock::time_point kept_reports_discarded_at_{};
+    static constexpr std::chrono::milliseconds kept_reports_discard_interval{1000};
 
     // Starts building the record of identifiers in the background from the segments of the log as it
     // stands once opened.
@@ -599,7 +570,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void note_logged_identifier(uint64_t id);
     // Adds an identifier to the record, reporting once if it is full.
     void record_identifier(uint64_t id);
-    void read_identifiers_from_log();
 
     // An exact index of the end of the log, built when the first command is sent again after a
     // change of leader and discarded a minute after the last, or when this instance stops leading.
@@ -686,9 +656,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // sequence number sent with it. The caller keeps @p bytes valid until this returns.
     void forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source);
 
-    // Raise highest_replicated_seq_no_ to seq_no if it is lower. Called from both threads that
-    // write replicated records, so it never lowers the value whichever runs last.
-    void note_replicated_record(int64_t seq_no);
     void flush_pending_er();
     void forward_pending_er(const PendingEr& pending);
 

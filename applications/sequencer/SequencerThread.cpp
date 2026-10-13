@@ -105,16 +105,6 @@ void SequencerThread::on_initial_event() {
                    "SequencerThread: could not read the CPU layout, so the log's helper thread stays where it lands: {}", helper_layout_error);
     }
 
-    // On a follower, the reactor thread's inline handler appends replicated records to the log as
-    // well as this thread: a second writer, which principle F1 forbids, recorded as BUG-0124 and
-    // removed in phase 4 of docs/recovery_plan.md. Marked so that builds with thread checks count
-    // the second writer's appends instead of refusing them; the count is published and warned about
-    // in on_timer_event. Delete this call when the second writer is removed.
-    if (config_.ha_enabled) {
-        wal_.mark_second_writer_known_breach("BUG-0124, removed in phase 4");
-        log_epochs_.mark_second_thread_known_breach("BUG-0124, removed in phase 4");
-    }
-
     if (config_.replay_mode) {
         // Replay mode: open WAL with a buffering callback that accumulates all
         // records into replay_buffer_.  dispatch_replay_records() sends them to
@@ -205,14 +195,9 @@ void SequencerThread::on_initial_event() {
 
     // Registered here rather than at ready, matching the gateways. The handle is a no-op when
     // metrics are disabled, and the application and component tokens come from configuration.
-    // Two children, told apart by scope, which names the thread that made the write: see the
-    // members' declaration. The help text is shared by both, so it does not name a thread.
     if (!config_.wal_append_buckets.empty()) {
-        const char* const wal_append_help = "Nanoseconds spent committing one record to the write-ahead log; the scope names the thread that wrote it";
-        wal_append_histogram_ =
-            get_reactor().metrics().register_histogram("sequencer_thread", "wal_append_nanoseconds", wal_append_help, config_.wal_append_buckets);
-        wal_append_reactor_thread_histogram_ =
-            get_reactor().metrics().register_histogram("reactor_thread", "wal_append_nanoseconds", wal_append_help, config_.wal_append_buckets);
+        wal_append_histogram_ = get_reactor().metrics().register_histogram(
+            "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log", config_.wal_append_buckets);
     }
 
     // One family, four children, told apart by scope. Registered together so that a
@@ -272,14 +257,6 @@ void SequencerThread::on_initial_event() {
         "Log segments the writer created itself instead of adopting one prepared ahead of it. Expected to be 1, for the first segment");
     wal_segments_waited_for_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "wal_segments_waited_for", "Segment rolls that had to wait for a preparation still in progress. Expected to be 0");
-    wal_second_writer_appends_gauge_ = get_reactor().metrics().register_gauge(
-        "sequencer_thread", "wal_second_writer_appends",
-        "Appends to the log by a second thread, the known breach BUG-0124, counted only in builds with thread checks. Expected to be 0 once "
-        "phase 4 removes the second writer");
-    log_epochs_second_thread_calls_gauge_ = get_reactor().metrics().register_gauge(
-        "sequencer_thread", "log_epochs_second_thread_calls",
-        "Uses of the table of epochs in the log by a second thread, the known breach BUG-0124, counted only in builds with thread checks. "
-        "Expected to be 0 once phase 4 removes the second writer");
     running_alone_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_running_alone",
         "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
@@ -290,8 +267,7 @@ void SequencerThread::on_initial_event() {
         "was full. Expected to be 0");
 }
 
-void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch,
-                                    pubsub_itc_fw::HistogramHandle& wal_append_histogram) {
+void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch) {
     // Every append goes through here so there is one place that knows what a commit costs.
     //
     // It is worth measuring because it is the one thing on the order path that touches a
@@ -303,9 +279,8 @@ void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_
     const auto started = std::chrono::steady_clock::now();
     wal_.append(seq_no, pdu_id, payload, size, wall_time_ns);
     const auto elapsed = std::chrono::steady_clock::now() - started;
-    wal_append_histogram.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+    wal_append_histogram_.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
 
-    const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
     if (seq_no != log_epochs_.last_seq_no() + 1) {
         // Records are numbered without a break; one that is not means the table of epochs no longer
         // describes the log, and a rejoining follower could be told the logs agree when they do not.
@@ -362,10 +337,7 @@ void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
                    first_after_gap, last_before_gap, last_before_gap + 1, recovered_seq);
         wal_.truncate_after(last_before_gap);
     }
-    highest_replicated_seq_no_.store(wal_.last_seq_no(), std::memory_order_release);
-    // Everything the log holds has been read, and its commands are recorded by the builder started next;
-    // a follower reads on from where the log now ends.
-    identifiers_read_position_ = wal_.scan_start_for(wal_.last_seq_no() + 1);
+    highest_replicated_seq_no_ = wal_.last_seq_no();
 }
 
 void SequencerThread::on_app_ready_event() {
@@ -447,7 +419,6 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         peer_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
-        install_peer_wal_inline_handler(id);
         send_status_query(id);
         forget_log_agreement();
         send_log_position_request();
@@ -455,7 +426,6 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         peer_inbound_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
-        install_peer_wal_inline_handler(id);
         send_status_query(id);
         forget_log_agreement();
         send_log_position_request();
@@ -1219,8 +1189,8 @@ void SequencerThread::keep_report_from_engine(const pubsub_itc_fw::EventMessage&
 
 void SequencerThread::forward_kept_reports() {
     kept_reports_.discard_received_before(kept_reports_needed_from());
-    // read_identifiers_from_log, called just before on taking the lead, has read every record and
-    // discarded what the old leader said it forwarded; this says how many.
+    // adopt_role, just before this on taking the lead, discarded what the old leader said it
+    // forwarded; this says how many.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: taking the lead -- {} kept report(s) discarded because the old leader said it had forwarded them",
                kept_reports_discarded_as_forwarded_);
@@ -1241,18 +1211,6 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         // segment, which is seconds apart, so there is nothing to gain from the order path.
         wal_segments_filled_inline_gauge_.set(static_cast<double>(wal_.segments_filled_inline()));
         wal_segments_waited_for_gauge_.set(static_cast<double>(wal_.segments_waited_for()));
-        const int64_t second_writer_appends = wal_.second_writer_appends();
-        const int64_t second_thread_epoch_calls = log_epochs_.second_thread_calls();
-        wal_second_writer_appends_gauge_.set(static_cast<double>(second_writer_appends));
-        log_epochs_second_thread_calls_gauge_.set(static_cast<double>(second_thread_epoch_calls));
-        if ((second_writer_appends > 0 || second_thread_epoch_calls > 0) && !second_writer_warned_) {
-            second_writer_warned_ = true;
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: a second thread has used the log ({} append(s)) and its table of epochs ({} call(s)) so far, the known "
-                       "breach of principle F1 recorded as BUG-0124 and removed in phase 4. Counted, not refused; the metrics "
-                       "wal_second_writer_appends and log_epochs_second_thread_calls follow it. Not logged again",
-                       second_writer_appends, second_thread_epoch_calls);
-        }
 
         try {
             wal_.take_snapshot();
@@ -1290,7 +1248,7 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         act_on(lease_agent_->on_tick(now));
         release_if_confirmed();
         say_follower_may_lead_if_it_holds_everything();
-        if (!follower_log_agreed_.load(std::memory_order_acquire) && now - last_position_request_at_ >= std::chrono::seconds{1}) {
+        if (!follower_log_agreed_ && now - last_position_request_at_ >= std::chrono::seconds{1}) {
             send_log_position_request();
         }
         return;
@@ -1302,8 +1260,9 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
         if (awaiting_engine_position_ && now - engine_position_asked_at_ >= engine_position_ask_interval) {
             ask_engine_for_position();
         }
-        if (role_ != pubsub_itc_fw_app::Role::leader && now - identifiers_read_at_ >= identifiers_read_interval) {
-            read_identifiers_from_log();
+        if (role_ != pubsub_itc_fw_app::Role::leader && now - kept_reports_discarded_at_ >= kept_reports_discard_interval) {
+            kept_reports_discarded_at_ = now;
+            discard_kept_reports_the_leader_forwarded();
         }
         take_record_of_identifiers_if_built();
         if (log_tail_index_.has_value() && now - log_tail_index_used_at_ >= log_tail_index_idle_limit) {
@@ -1338,16 +1297,16 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     forget_log_agreement();
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
-        // The record of identifiers must hold every command in the log before a command sent again
-        // is checked against it. A follower reads the records it was sent once a second; this reads
-        // the rest. From here this instance writes every record itself and notes each as it writes it.
-        read_identifiers_from_log();
+        // Every record this instance wrote while it followed was noted as it was written, so the record
+        // of identifiers already holds every command in the log. What the old leader said it forwarded
+        // is acted on now, so that the kept reports forwarded below are only those it may not have.
+        discard_kept_reports_the_leader_forwarded();
 
         // Number new records above every record the log holds. Records replicated while this
         // instance followed were written under its leader's numbers and did not move
         // next_sequence_number_, so without this the new leader would give new records numbers
         // its log already holds (BUG-0105).
-        const int64_t highest_replicated = highest_replicated_seq_no_.load(std::memory_order_acquire);
+        const int64_t highest_replicated = highest_replicated_seq_no_;
         if (highest_replicated >= next_sequence_number_) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: taking the lead -- numbering new records from {}, above the highest replicated record {} (was {})",
@@ -1385,10 +1344,6 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         if (log_tail_index_.has_value()) {
             discard_log_tail_index("this instance has stopped leading");
         }
-        // Every record the log holds now was noted as it was written or read. The reactor thread
-        // writes nothing until this log and the leader's are found to agree, so the end of the log
-        // does not move under this read of it.
-        identifiers_read_position_ = wal_.scan_start_for(wal_.last_seq_no() + 1);
         discard_held_orders();
         first_unheld_seq_ = 0;
         pause_or_resume_order_reading();
@@ -1755,7 +1710,7 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
         return;
     }
     append_to_wal(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), static_cast<int>(bytes_written),
-                  envelope.wall_time_ns, envelope.has_leader_epoch ? envelope.leader_epoch : 0, wal_append_histogram_);
+                  envelope.wall_time_ns, envelope.has_leader_epoch ? envelope.leader_epoch : 0);
 }
 
 void SequencerThread::send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope) {
@@ -1769,17 +1724,8 @@ void SequencerThread::send_wal_record(const pubsub_itc_fw_app::WalRecord& envelo
 }
 
 void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    // Every record reaching this thread was passed on by the inline handler, which counted it, or
-    // arrived before the handler was installed. Uncounting it after it is written or discarded is
-    // what lets the inline handler write again, once nothing is left here to write before it.
-    struct UncountOnExit {
-        std::atomic<int64_t>& queued;
-        ~UncountOnExit() {
-            int64_t current = queued.load(std::memory_order_acquire);
-            while (current > 0 && !queued.compare_exchange_weak(current, current - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {}
-        }
-    } uncount{replicated_records_queued_};
-
+    // Every record the leader sends is written here, on this thread, which is the only thread that
+    // writes the log (principle F1).
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
@@ -1792,7 +1738,7 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
         return;
     }
 
-    if (role_ == pubsub_itc_fw_app::Role::leader || !follower_log_agreed_.load(std::memory_order_acquire)) {
+    if (role_ == pubsub_itc_fw_app::Role::leader || !follower_log_agreed_) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "SequencerThread: WalRecord seq={} discarded -- this log and the leader's are not yet known to agree", view.seq_no);
         return;
@@ -1803,10 +1749,16 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
     // Option B: the received WalRecord bytes are stored verbatim under the WalRecord pdu, so the follower
     // WAL is byte-identical to the leader's. (view is decoded only to read seq_no + wall_time_ns for the
     // append header and the WalAck.)
-    if (write_replicated_record(view.seq_no, message.payload(), message.payload_size(), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0,
-                                wal_append_histogram_) != ReplicatedRecordWriter::Outcome::written) {
+    if (write_replicated_record(view.seq_no, message.payload(), message.payload_size(), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0) !=
+        ReplicatedWrite::written) {
         return;
     }
+    // Noted as it is written, as the leader notes the records it writes: the command it holds, so
+    // that a command sent again after a change of leader is checked against it, and the position up
+    // to which the leader had forwarded the engine's reports, so that the kept copies of those
+    // reports can be discarded.
+    note_logged_command(view);
+    note_forwarded_sample(view.wall_time_ns, view);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: WalRecord seq={} inner_pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
                wal_.record_count());
@@ -1817,7 +1769,7 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
 }
 
 void SequencerThread::forget_log_agreement() {
-    follower_log_agreed_.store(false, std::memory_order_release);
+    follower_log_agreed_ = false;
     follower_log_matches_ = false;
     // A leader that stops sending live records says so, or its follower, still believing the logs
     // agree, would wait for records that never come.
@@ -1829,43 +1781,35 @@ void SequencerThread::forget_log_agreement() {
     }
 }
 
-ReplicatedRecordWriter::Outcome SequencerThread::write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns,
-                                                                         int32_t leader_epoch, pubsub_itc_fw::HistogramHandle& wal_append_histogram) {
-    int64_t last = 0;
-    const ReplicatedRecordWriter::Outcome outcome = replicated_record_writer_.write_if_next(
-        seq_no,
-        [this, &last] {
-            const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
-            last = log_epochs_.last_seq_no();
-            return last;
-        },
-        [&] {
-            append_to_wal(seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, size, wall_time_ns, leader_epoch, wal_append_histogram);
-            note_replicated_record(seq_no);
-        });
-    if (outcome == ReplicatedRecordWriter::Outcome::gap) {
+SequencerThread::ReplicatedWrite SequencerThread::write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns,
+                                                                          int32_t leader_epoch) {
+    const int64_t last = log_epochs_.last_seq_no();
+    if (seq_no <= last) {
+        return ReplicatedWrite::already_held;
+    }
+    if (seq_no > last + 1) {
         // A record is missing. Writing this one would leave a gap, so nothing more is written until
         // the leader has been asked again where the logs agree, which the lease timer does.
-        follower_log_agreed_.store(false, std::memory_order_release);
+        follower_log_agreed_ = false;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: replicated record {} arrived after record {} -- one is missing, so this log and the leader's are no longer "
                    "known to agree; asking again",
                    seq_no, last);
+        return ReplicatedWrite::gap;
     }
-    return outcome;
+    append_to_wal(seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, size, wall_time_ns, leader_epoch);
+    highest_replicated_seq_no_ = std::max(highest_replicated_seq_no_, seq_no);
+    return ReplicatedWrite::written;
 }
 
 void SequencerThread::send_log_position_request() {
     const pubsub_itc_fw::ConnectionID target = peer_active_conn();
-    if (!config_.ha_enabled || role_ == pubsub_itc_fw_app::Role::leader || !target.is_valid() || follower_log_agreed_.load(std::memory_order_acquire)) {
+    if (!config_.ha_enabled || role_ == pubsub_itc_fw_app::Role::leader || !target.is_valid() || follower_log_agreed_) {
         return;
     }
     pubsub_itc_fw_app::LogPositionRequest request{};
-    {
-        const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
-        request.last_seq_no = log_epochs_.last_seq_no();
-        request.last_epoch = log_epochs_.last_epoch();
-    }
+    request.last_seq_no = log_epochs_.last_seq_no();
+    request.last_epoch = log_epochs_.last_epoch();
     last_position_request_at_ = std::chrono::steady_clock::now();
     send_pdu(target, pubsub_itc_fw_app::LogPositionRequest::message_pdu_id, 0, request);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
@@ -1887,11 +1831,7 @@ void SequencerThread::handle_log_position_request(const pubsub_itc_fw::EventMess
         return;
     }
 
-    LogEpochTable::PositionAnswer answer{};
-    {
-        const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
-        answer = log_epochs_.answer_position(request.last_seq_no, request.last_epoch);
-    }
+    const LogEpochTable::PositionAnswer answer = log_epochs_.answer_position(request.last_seq_no, request.last_epoch);
     pubsub_itc_fw_app::LogPositionReply reply{};
     reply.seq_no = answer.seq_no;
     reply.epoch = answer.epoch;
@@ -1943,40 +1883,25 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
         return;
     }
     if (reply.ask_again) {
-        follower_log_agreed_.store(false, std::memory_order_release);
+        follower_log_agreed_ = false;
         send_log_position_request();
         return;
     }
-    if (follower_log_agreed_.load(std::memory_order_acquire)) {
+    if (follower_log_agreed_) {
         return;
     }
 
-    // The inline handler passes every record on while the logs are not known to agree, but a record it
-    // had begun to write before they stopped being known to agree may still be being written, so the
-    // log is changed only under the writer's lock.
-    int64_t last_before = 0;
-    int64_t keep_through = 0;
-    bool agreed = false;
-    // Under the lock every replicated record is written under, taken before the lock on the table of
-    // epochs as the writing does, so that no record is being written while records are discarded.
-    replicated_record_writer_.change_log([&] {
-        const std::lock_guard<std::mutex> lock(log_epochs_mutex_);
-        last_before = log_epochs_.last_seq_no();
-        const LogEpochTable::FollowerStep step = log_epochs_.follower_step(LogEpochTable::PositionAnswer{reply.seq_no, reply.epoch});
-        keep_through = step.keep_through;
-        agreed = reply.agreed && step.agreed && keep_through == last_before;
-        if (keep_through < last_before) {
-            wal_.truncate_after(keep_through);
-            log_epochs_.truncate_after(keep_through);
-            // The records after keep_through are gone, and the leader sends others under the same
-            // numbers, so the record of identifiers reads on from where the log now ends. Identifiers
-            // of the discarded records stay in it; a command that matches one of them is checked
-            // against the log exactly, and not found, so it is sequenced as new.
-            identifiers_read_position_ = wal_.scan_start_for(keep_through + 1);
-        }
-    });
+    // Nothing writes the log but this thread, so no record is being written while records are discarded.
+    const int64_t last_before = log_epochs_.last_seq_no();
+    const LogEpochTable::FollowerStep step = log_epochs_.follower_step(LogEpochTable::PositionAnswer{reply.seq_no, reply.epoch});
+    const int64_t keep_through = step.keep_through;
+    const bool agreed = reply.agreed && step.agreed && keep_through == last_before;
     if (keep_through < last_before) {
-        highest_replicated_seq_no_.store(keep_through, std::memory_order_release);
+        wal_.truncate_after(keep_through);
+        log_epochs_.truncate_after(keep_through);
+        // Identifiers of the discarded records stay in the record of identifiers; a command that matches
+        // one of them is checked against the log exactly, and not found, so it is sequenced as new.
+        highest_replicated_seq_no_ = keep_through;
         // A record this instance numbered itself, while it led, may be among those discarded. Its next
         // number follows the last record kept, so that if it leads again it does not number past a gap
         // (BUG-0147); taking the lead raises it above every record replicated since.
@@ -1987,19 +1912,12 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
                    keep_through + 1, last_before);
     }
     if (agreed) {
-        follower_log_agreed_.store(true, std::memory_order_release);
+        follower_log_agreed_ = true;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: this log agrees with the leader's through record {} -- writing the records it sends from here", keep_through);
         return;
     }
     send_log_position_request();
-}
-
-void SequencerThread::note_replicated_record(int64_t seq_no) {
-    int64_t highest = highest_replicated_seq_no_.load(std::memory_order_relaxed);
-    while (seq_no > highest && !highest_replicated_seq_no_.compare_exchange_weak(highest, seq_no, std::memory_order_release, std::memory_order_relaxed)) {
-        // compare_exchange_weak has reloaded highest; try again while seq_no is still the larger.
-    }
 }
 
 void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message) {
@@ -2038,71 +1956,6 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
     }
     pending_er_.erase(pending_er_.begin(), covered_end);
     say_follower_may_lead_if_it_holds_everything();
-}
-
-void SequencerThread::install_peer_wal_inline_handler(const pubsub_itc_fw::ConnectionID& conn_id) {
-    if (!config_.ha_enabled) {
-        return;
-    }
-
-    install_inline_pdu_handler(conn_id, [this](pubsub_itc_fw::PduParser* parser, pubsub_itc_fw::PduFramer* framer) {
-        parser->set_inline_handler([this, framer](int16_t pdu_id, int64_t /*seq_no*/, const uint8_t* payload, size_t size) -> bool {
-            if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
-                return false;
-            }
-            // A record this handler does not write is passed to the sequencer thread, and counted,
-            // so that this handler writes nothing until every record passed on has been written or
-            // discarded there: records are then written in order, and by one thread at a time. While
-            // this log and the leader's are not known to agree, every record is passed on, and the
-            // sequencer thread discards it (docs/availability/follower_log_repair.md, 4.3).
-            if (framer->has_pending_data() || !follower_log_agreed_.load(std::memory_order_acquire) ||
-                replicated_records_queued_.load(std::memory_order_acquire) > 0) {
-                replicated_records_queued_.fetch_add(1, std::memory_order_acq_rel);
-                return false;
-            }
-
-            std::array<uint8_t, 4096> arena_buffer;
-            pubsub_itc_fw::BumpAllocator arena(arena_buffer.data(), arena_buffer.size());
-            size_t arena_bytes_needed = 0;
-            size_t bytes_consumed = 0;
-            pubsub_itc_fw_app::WalRecordView view{};
-
-            if (!pubsub_itc_fw_app::decode(view, payload, size, bytes_consumed, arena, arena_bytes_needed)) {
-                PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread (inline): failed to decode WalRecord -- falling back to ITC");
-                replicated_records_queued_.fetch_add(1, std::memory_order_acq_rel);
-                return false;
-            }
-
-            // A record already held is not written twice; one that would leave a gap is passed to the
-            // sequencer thread, which discards it, the logs no longer being known to agree.
-            //
-            // Option B: the received WalRecord bytes are persisted verbatim (record pdu_id = WalRecord)
-            // so leader and follower WALs stay byte-identical.
-            // On the reactor's thread, so into the histogram that thread alone records into.
-            if (write_replicated_record(view.seq_no, payload, static_cast<int>(size), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0,
-                                        wal_append_reactor_thread_histogram_) != ReplicatedRecordWriter::Outcome::written) {
-                replicated_records_queued_.fetch_add(1, std::memory_order_acq_rel);
-                return false;
-            }
-
-            pubsub_itc_fw_app::WalAck wal_ack{};
-            wal_ack.seq_no = view.seq_no;
-            std::array<uint8_t, 8> ack_buffer;
-            pubsub_itc_fw_app::encode_fast(wal_ack, ack_buffer.data());
-
-            auto [ok, err] = framer->send(pubsub_itc_fw_app::WalAck::message_pdu_id, 0, 0, ack_buffer.data(), static_cast<uint32_t>(ack_buffer.size()));
-            if (!ok) {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread (inline): WalAck send failed for seq={}: {}", view.seq_no, err);
-            } else {
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread (inline): WalRecord seq={} written and WalAck sent", view.seq_no);
-            }
-
-            return true;
-        });
-    });
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL inline handler installation requested for peer connection {}",
-               conn_id.get_value());
 }
 
 void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message) {
@@ -2400,41 +2253,6 @@ void SequencerThread::discard_log_tail_index(const char* reason) {
     log_tail_index_.reset();
     sent_again_already_logged_ = 0;
     sent_again_sequenced_ = 0;
-}
-
-void SequencerThread::read_identifiers_from_log() {
-    identifiers_read_at_ = std::chrono::steady_clock::now();
-    if (!config_.ha_enabled) {
-        return;
-    }
-    // Only records whose checksum is complete are read, so a record the reactor thread is part way
-    // through writing is not read until the next time. Records already noted are noted again
-    // harmlessly.
-    identifiers_read_position_ =
-        pubsub_itc_fw::WalReader::replay(config_.wal_directory, identifiers_read_position_, [this](int64_t /*record_id*/, const void* payload, size_t size) {
-            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (size <= header_size) {
-                return;
-            }
-            int16_t pdu_id{};
-            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
-            if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
-                return;
-            }
-            auto& arena_buf = decode_arena_buffer();
-            pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-            size_t arena_bytes_needed = 0;
-            size_t bytes_consumed = 0;
-            pubsub_itc_fw_app::WalRecordView view{};
-            if (pubsub_itc_fw_app::decode(view, static_cast<const uint8_t*>(payload) + header_size, size - header_size, bytes_consumed, arena,
-                                          arena_bytes_needed)) {
-                note_logged_command(view);
-                int64_t written_ns{};
-                std::memcpy(&written_ns, payload, sizeof(int64_t));
-                note_forwarded_sample(written_ns, view);
-            }
-        });
-    discard_kept_reports_the_leader_forwarded();
 }
 
 std::optional<EngineReportPosition> SequencerThread::reports_forwarded_through() const {

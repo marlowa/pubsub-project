@@ -863,6 +863,10 @@ class Scenario(NamedTuple):
     # once. See run_scenario's "commands sent again" block, and section 3.4 of
     # docs/availability/commands_during_a_change_of_leader.md.
     assert_sent_again_sequenced_once: bool = False
+    # With assert_sent_again_sequenced_once: kill the leading sequencer after the first order is accepted, and
+    # send the command again to the follower once it leads. The follower holds the order only because its
+    # leader replicated it, so this checks that a follower notes the commands in the records it writes.
+    sent_again_after_change_of_leader: bool = False
     # When True, a member sends orders at a steady rate from before the leading sequencer is killed
     # until after the follower has taken the lead, and every order must be answered, and none applied
     # twice. See run_scenario's "orders during a change of leader" block, and
@@ -3819,6 +3823,28 @@ _SCENARIOS: list[Scenario] = [
         orders_after_override=0,
         assert_bounded_resend=True,
         bounded_resend_with_leader_killed=True,
+        steps=[],
+    ),
+
+    # 74 -- a command sent again to a follower that has just taken the lead, which holds it only because
+    # its old leader replicated it.
+    #
+    # The new leader must recognise the command as already in its log, so it must have noted the commands
+    # in the records it wrote while it followed. An order is sent and accepted, the leading sequencer is
+    # killed, and once the follower leads the same order is sent to it again, marked as sent again, with a
+    # second order marked as sent again that was never sent before. Checked exactly as in scenario 67.
+    Scenario(
+        number=74,
+        short_name="sent_again_after_change_of_leader",
+        description="A command sent again to a new leader is not sequenced twice when the new leader holds it from replication",
+        expected_outcome=(
+            "the order sent before the change of leader and sent again afterwards is applied once and never refused as a "
+            "duplicate; the order marked as sent again that was never sent before is applied once"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_sent_again_sequenced_once=True,
+        sent_again_after_change_of_leader=True,
         steps=[],
     ),
 ]
@@ -8434,11 +8460,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Commands sent again ───────────────────────────────────────────────
         if scenario.assert_sent_again_sequenced_once:
             log("=== A command sent again is sequenced only if the leader's log does not already hold it ===")
-            primary_log = log_dir / "sequencer_primary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            leader_log = log_dir / "sequencer_primary.log"
+            if not poll_log_for(leader_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
                 die("sent again: sequencer_primary is not leading.")
             primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
             order_port = installed_toml_section_value(primary_config, "network", "listen_port")
+            # How long to wait for the engine to act on an order: longer after a change of leader, when the new
+            # leader first asks the engine how far it has got.
+            engine_wait = _RAW_REPLY_TIMEOUT
             run_tag = datetime.now().strftime("%H%M%S")
 
             def inject_sent_again_test(cl_ord_id: str, *extra: str) -> None:
@@ -8460,11 +8489,30 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("sent again: the matching engine never accepted the first order.")
             log("  an order is sent and accepted")
 
-            check_from = file_end(primary_log)
+            if scenario.sent_again_after_change_of_leader:
+                # The leader sends an order to the engine only once its follower has acknowledged it, so the
+                # engine's acceptance means the follower holds it.
+                follower_log = log_dir / "sequencer_secondary.log"
+                follower_from = file_end(follower_log)
+                old_leader = proc_by_name.get("sequencer_primary")
+                if old_leader is None or old_leader.poll() is not None:
+                    die("sent again: sequencer_primary is not running, so it cannot be killed.")
+                log(f"  SIGKILL -> sequencer_primary (PID {old_leader.pid}), which holds the order and has replicated it")
+                old_leader.kill()
+                old_leader.wait()
+                if not poll_log_for(follower_log, _SEQ_ROLE, _TO_LEADER, timeout=_RESEND_TIMEOUT, from_byte=follower_from)[0]:
+                    die("sent again: sequencer_secondary did not take the lead after sequencer_primary was killed.")
+                log("  sequencer_secondary leads; the order is in its log only because its leader replicated it")
+                leader_log = follower_log
+                secondary_config = prefix / "etc" / "sequencer" / "sequencer_secondary.toml"
+                order_port = installed_toml_section_value(secondary_config, "network", "listen_port")
+                engine_wait = _RESEND_TIMEOUT
+
+            check_from = file_end(leader_log)
             inject_sent_again_test(held, "--sent-again")
             never_sent = f"again-{run_tag}-new"
             inject_sent_again_test(never_sent, "--sent-again")
-            if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={never_sent} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=started_from)[0]:
+            if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={never_sent} ", timeout=engine_wait, from_byte=started_from)[0]:
                 die(f"sent again: the order {never_sent}, marked as sent again but never sent before, was not applied. Nothing ever "
                     "acted on it, so it must be sequenced as a new command.")
             time.sleep(1.0)
@@ -8474,7 +8522,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "The leader's log already held it, so it must not be sequenced twice.")
             if accepted_by_engine(never_sent, started_from) != 1:
                 die(f"sent again: the engine accepted {never_sent} {accepted_by_engine(never_sent, started_from)} times, not once.")
-            if not poll_log_for(primary_log, "commands that may already be in the log are arriving", timeout=1.0, from_byte=check_from)[0]:
+            if not poll_log_for(leader_log, "commands that may already be in the log are arriving", timeout=1.0, from_byte=check_from)[0]:
                 die("sent again: the leader never built its index of the end of the log, so the check above did not run as designed.")
             log("  the order sent again was not sequenced twice, and the order sent again for the first time was applied once -- OK")
 

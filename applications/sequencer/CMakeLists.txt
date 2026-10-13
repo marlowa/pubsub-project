@@ -84,7 +84,6 @@ add_executable(sequencer_tests
         tests/LoggedCommandIdentifiersTest.cpp
         tests/LoggedCommandIdentifiersBuilderTest.cpp
         tests/LogTailIndexTest.cpp
-        tests/ReplicatedRecordWriterTest.cpp
         tests/WalRecordEncodingTest.cpp
         SequencerConfigurationLoader.cpp
 )

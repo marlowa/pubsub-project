@@ -1398,17 +1398,6 @@ TEST_F(ApplicationThreadTest, GetPthreadIdBeforeStartThrows) {
     EXPECT_THROW({ [[maybe_unused]] const pthread_t id = thread->get_pthread_id(); }, PreconditionAssertion);
 }
 
-TEST_F(ApplicationThreadTest, InstallInlinePduHandlerEnqueuesControlCommand) {
-    auto thread = ApplicationThread::create<BaseCallbackThread>(logger_with_sink_.logger, *reactor_, "InlineHandler", ThreadID(64), make_queue_config(),
-                                                                make_allocator_config());
-
-    // Enqueues an InstallInlinePduHandler command onto the reactor; this does not
-    // require the reactor to be running.
-    thread->install_inline_pdu_handler(ConnectionID{9, "svc"}, [](PduParser*, PduFramer*) {});
-
-    SUCCEED();
-}
-
 // Spin-before-block: polling an empty queue instead of blocking on it immediately.
 //
 // The mechanism is a latency optimisation with no visible effect on behaviour, which is

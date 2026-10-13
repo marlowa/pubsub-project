@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <cstdint>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -140,3 +141,23 @@ TEST(LogEpochTableTest, AFollowerWhoseRecordsAreFromALaterEpochThanTheLeadersJum
     EXPECT_EQ(repair(follower, leader, rounds), 100);
     EXPECT_LE(rounds, 2);
 }
+
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+// The sequencer's thread is the only one that uses the table (principle F1 in docs/design_principles.md).
+// A second thread that uses it is refused.
+TEST(LogEpochTableTest, ASecondThreadIsRefused) {
+    sequencer::LogEpochTable table;
+    table.note_record(1, 1);
+
+    bool refused = false;
+    std::thread second_thread([&table, &refused]() {
+        try {
+            table.note_record(2, 1);
+        } catch (const pubsub_itc_fw::PreconditionAssertion&) {
+            refused = true;
+        }
+    });
+    second_thread.join();
+    EXPECT_TRUE(refused) << "a second thread was allowed to use the table of epochs";
+}
+#endif

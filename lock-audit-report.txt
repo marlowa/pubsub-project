@@ -24,10 +24,10 @@ of them are on the path every order takes:
    which takes no lock (docs/framework/single_writer_histogram.md). Under the same load, with
    Prometheus scraping, no thread in any of those processes waited on a mutex.
 2. **`SequencerThread::log_epochs_mutex_`**, taken on every write to the sequencer's log, on the
-   leader and the follower. Recorded as BUG-0124.
+   leader and the follower. Recorded as BUG-0124. Fixed on 13 October 2026: the sequencer's thread is the only one that writes the log, on the leader and the follower alike, and the lock is gone.
 3. **`ReplicatedRecordWriter`**, taken on the follower for every record the leader sends. The leader
    sends an order to the matching engine only once the follower has written and acknowledged it, so
-   this is on every order's round trip. Recorded as BUG-0124.
+   this is on every order's round trip. Recorded as BUG-0124. Fixed on 13 October 2026: the sequencer's thread is the only one that writes the log, on the leader and the follower alike, and the lock is gone.
 4. **`BackgroundPromiseRecorder`**, taken on the sequencer's and the matching engine's own thread,
    the thread that handles orders, at every lease tick (every 100 milliseconds). Usually brief, but
    it can wait on a condition variable for a disk write to finish. Recorded as BUG-0126, and fixed
@@ -151,7 +151,7 @@ Left out, as asked or because they are not the venue's running code:
   four run when a follower rejoins.
 - **Contended?** On the follower, the reactor thread and the sequencer thread can both take it. On
   the leader only the sequencer thread does, so it is uncontended there.
-- **Recorded?** Yes, BUG-0124, decided on 6 October to stay until the log has one owning thread.
+- **Recorded?** Yes, BUG-0124. Fixed on 13 October 2026: the sequencer's thread is the only one that writes the log, on the leader and the follower alike, and the lock is gone.
 
 ### 3. `ReplicatedRecordWriter::mutex_`
 
@@ -162,7 +162,7 @@ Left out, as asked or because they are not the venue's running code:
 - **Why it is on the order path:** with a follower keeping up, the leader holds each order until the
   follower has written and acknowledged it, so the follower's write, and this lock, are inside every
   order's round trip.
-- **Recorded?** Yes, BUG-0124.
+- **Recorded?** Yes, BUG-0124. Fixed on 13 October 2026: the sequencer's thread is the only one that writes the log, on the leader and the follower alike, and the lock is gone.
 
 ### 4. `BackgroundPromiseRecorder::mutex_` and its two condition variables
 
@@ -265,9 +265,9 @@ Item 1, the histogram mutexes, was fixed on 7 October 2026 (BUG-0125) and is no 
 | Process | Locks taken for every order |
 |---|---|
 | FIX and binary gateways | The allocator's expansion mutex only if a pool runs out (item 5) |
-| Leading sequencer | `log_epochs_mutex_` on each write to its log (item 2); the promise recorder's mutex every 100 ms on the same thread (item 4) |
-| Following sequencer | `log_epochs_mutex_` and `ReplicatedRecordWriter` on each record (items 2 and 3) |
-| Leading matching engine | The promise recorder's mutex every 100 ms on the same thread (item 4) |
+| Leading sequencer | None: items 2 and 4 are fixed |
+| Following sequencer | None: items 2 and 3 are fixed |
+| Leading matching engine | None: item 4 is fixed |
 
 ## Possible remedies, for discussion
 

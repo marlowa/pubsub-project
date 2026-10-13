@@ -30,10 +30,8 @@ namespace sequencer {
  * Epochs usually rise from one run to the next, but are not assumed to: a new leader can briefly lead
  * below an epoch already led in (docs/availability/tla/findings.md, section 11.5).
  *
- * One thread, the sequencer's, is meant to call every member function (principle F1). On a follower
- * the reactor thread's inline handler calls it as well, the known breach BUG-0124 removed in phase 4,
- * which the sequencer marks with mark_second_thread_known_breach() so that builds with thread checks
- * count those calls instead of refusing them.
+ * One thread, the sequencer's, calls every member function (principle F1). In builds with thread
+ * checks, a call from any other thread is refused.
  */
 class LogEpochTable {
   public:
@@ -154,28 +152,6 @@ class LogEpochTable {
             runs_.pop_back();
         }
         last_seq_no_ = seq_no;
-    }
-
-    /**
-     * @brief Says that a second thread is known to use this table, so that it is counted rather than
-     *        refused. Does nothing in a build without thread checks.
-     */
-    void mark_second_thread_known_breach([[maybe_unused]] const char* bug_and_phase) {
-#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-        owning_thread_.mark_known_breach(bug_and_phase);
-#endif
-    }
-
-    /**
-     * @brief How many calls a second thread has made under a known breach. Always zero in a build
-     *        without thread checks.
-     */
-    [[nodiscard]] int64_t second_thread_calls() const {
-#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
-        return owning_thread_.known_breach_count();
-#else
-        return 0;
-#endif
     }
 
   private:

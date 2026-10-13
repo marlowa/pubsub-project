@@ -88,10 +88,8 @@ Segmentation:
 The WAL is **single-writer**. Exactly one thread appends to a given WAL, so no locking is
 needed on the append path and `seq_no` is trivially monotonic and gap-free. Who that writer
 *is* can change (a follower is promoted; a publisher gains leadership), but at any instant
-there is one. The one place this does not hold today is a following sequencer, where the
-reactor thread and the sequencer thread both write the replicated records, kept apart by a
-lock: the known breach [BUG-0124](../bug_list.md#bug_0124), which builds with thread checks
-count (`WalWriter::second_writer_appends`).
+there is one. On a following sequencer, too, the sequencer's thread writes every record the
+leader sends. Builds with thread checks refuse an append from any other thread.
 
 **`seq_no` continues across a change of writer; it does not restart.** A follower moves its
 counter past every record it writes, and a sequencer that takes the lead numbers from the

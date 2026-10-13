@@ -471,6 +471,21 @@ sitting on exactly those cores, while another unpinned run had 155.
 What the client's freedom produces is variance rather than a penalty, which is why pinning it is
 part of the method and not a finding about the venue.
 
+### Writing the follower's records on the reactor's thread
+
+The leader holds each order until its follower has written and acknowledged it, so the follower's
+write is inside every order's round trip. A follower can write each record on the reactor's thread as
+it arrives and send the acknowledgement straight back, saving two hand-overs between threads; or it can
+hand the record to the sequencer's thread, which writes it and hands the acknowledgement back. The first
+breaks principles F1 and F3 in [design_principles.md](../design_principles.md) and needs two locks.
+
+Measured with the method above, the primary matching engine leading in every arm, the build that wrote
+on the reactor's thread gave medians of 124.3 to 124.9 microseconds and, measured again later, 124.6 to
+127.6; the build that writes on the sequencer's thread gave 124.6 to 128.7. The two measurements of the
+same build differ by as much as the two builds do, so writing on the reactor's thread saves nothing that
+can be measured, and the follower now writes on the sequencer's thread
+([replicated_wal_in_the_library.md](../availability/replicated_wal_in_the_library.md), section 3.2).
+
 ---
 
 ## Unexplained

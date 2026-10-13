@@ -1128,18 +1128,6 @@ _PERMITTED_LOCKS = [
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::allocate_timer_id', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::create_timer_fd', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
     ('libraries/pubsub_itc_fw/src/Reactor.cpp', 'Reactor::cancel_timer_fd', 'breach: BUG-0128, removed by a framework fix done alongside the phases'),
-    # The follower's second writer of the sequencer's log.
-    ('applications/sequencer/SequencerThread.hpp', 'log_epochs_mutex_', 'breach: BUG-0124, removed in phase 4'),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::append_to_wal', 'breach: BUG-0124, removed in phase 4'),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::write_replicated_record',
-     'breach: BUG-0124, removed in phase 4'),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_log_position_request',
-     'breach: BUG-0124, removed in phase 4'),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_request',
-     'breach: BUG-0124, removed in phase 4'),
-    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_log_position_reply',
-     'breach: BUG-0124, removed in phase 4'),
-    ('applications/sequencer/ReplicatedRecordWriter.hpp', 'mutex_', 'breach: BUG-0124, removed in phase 4'),
     # Memory pools.
     ('libraries/pubsub_itc_fw/include/pubsub_itc_fw/ExpandablePoolAllocator.hpp', 'expansion_mutex_',
      'breach: BUG-0127, removed by a framework fix done alongside the phases'),

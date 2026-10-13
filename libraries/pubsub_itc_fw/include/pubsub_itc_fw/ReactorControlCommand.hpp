@@ -5,7 +5,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <string>
 
 #include <fmt/format.h>
@@ -17,11 +16,6 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #include <pubsub_itc_fw/TimerType.hpp>
-
-namespace pubsub_itc_fw {
-class PduParser;
-class PduFramer;
-} // namespaces
 
 namespace pubsub_itc_fw {
 
@@ -68,8 +62,6 @@ class ReactorControlCommand {
         SendRaw,                     ///< Request the reactor to send raw bytes on a raw-bytes connection.
         CommitRawBytes,              ///< Notify the reactor that the application has consumed N bytes from
                                      ///< the MirroredBuffer of a RawBytesProtocolHandler connection.
-        InstallInlinePduHandler,     ///< Install a reactor-thread inline PDU handler on a connection's
-                                     ///< PduParser, bypassing the ITC dispatch path for matching PDUs.
         RequestWritableNotification, ///< Request a one-shot ConnectionWritable event when the connection
                                      ///< can accept another outbound frame (connection_id_).
         PauseReading,                ///< Stop watching a connection for incoming data (connection_id_).
@@ -129,9 +121,6 @@ class ReactorControlCommand {
         }
         if (tag_ == CommitRawBytes) {
             return "CommitRawBytes";
-        }
-        if (tag_ == InstallInlinePduHandler) {
-            return "InstallInlinePduHandler";
         }
         if (tag_ == RequestWritableNotification) {
             return "RequestWritableNotification";
@@ -307,20 +296,6 @@ class ReactorControlCommand {
      * time the command is processed.
      */
     int64_t bytes_consumed_{0};
-
-    // InstallInlinePduHandler payload fields
-
-    /**
-     * @brief Installer called by the reactor with (PduParser*, PduFramer*) for the
-     *        connection identified by connection_id_.
-     *
-     * The installer is expected to call parser->set_inline_handler(...), capturing
-     * the supplied PduFramer* for reply sends. The reactor supplies the framer so
-     * that application code never holds a raw PduFramer pointer directly.
-     *
-     * connection_id_ (shared with Disconnect/SendPdu/etc.) identifies the target.
-     */
-    std::function<void(PduParser*, PduFramer*)> inline_handler_installer_;
 
   private:
     CommandTag tag_{AddTimer};

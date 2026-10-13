@@ -747,13 +747,6 @@ void ApplicationThread::enqueue_send_pdu_command(const ConnectionID& conn_id, Sl
     reactor_.enqueue_control_command(cmd);
 }
 
-void ApplicationThread::install_inline_pdu_handler(ConnectionID conn_id, std::function<void(PduParser*, PduFramer*)> installer) {
-    ReactorControlCommand cmd(ReactorControlCommand::CommandTag::InstallInlinePduHandler);
-    cmd.connection_id_ = std::move(conn_id);
-    cmd.inline_handler_installer_ = std::move(installer);
-    reactor_.enqueue_control_command(std::move(cmd));
-}
-
 void ApplicationThread::release_pdu_payload(const EventMessage& message) const {
     reactor_.inbound_slab_allocator().deallocate(message.slab_id(), const_cast<uint8_t*>(message.payload()));
 }

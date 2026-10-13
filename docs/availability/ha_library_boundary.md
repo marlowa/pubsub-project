@@ -62,8 +62,8 @@ copy of its leader's (V10).
 **How it is done now.** Inside `SequencerThread`, mixed with the sequencer's business: writing the WAL,
 sending each record to the follower, holding commands back from the matching engine until the follower
 confirms them, trading without a follower, the statement that the follower may not take over, the
-table of epochs in the WAL, and the repair of a rejoining follower. On a follower two threads write the
-WAL, which breaks F1 and is kept safe by locks (BUG-0124).
+table of epochs in the WAL, and the repair of a rejoining follower. One thread writes the WAL, the
+sequencer's own, on the leader and on the follower alike.
 
 **What the library would provide.** A WAL component owned by one thread, which:
 

@@ -88,31 +88,9 @@ Both modes share `continue_send()` and `has_pending_data()` for partial-send han
 
 On completion, dispatches `EventMessage::create_framework_pdu_message(payload, size, slab_id)` to the target thread's ITC queue.
 
-### Inline PDU Handler
-
-For latency-critical paths where the ITC queue hop is undesirable, `PduParser` supports an
-optional `InlinePduHandler`:
-
-```cpp
-using InlinePduHandler = std::function<bool(int16_t pdu_id, int64_t seq_no,
-                                             const uint8_t* payload, size_t size)>;
-void set_inline_handler(InlinePduHandler handler);
-```
-
-In `dispatch_pdu()`, if the inline handler is installed and returns `true`, the slab chunk
-is freed immediately and no `EventMessage` is enqueued — the PDU is handled entirely on the
-reactor thread. If it returns `false`, the normal ITC path is used as fallback (e.g. when
-the framer has pending data and backpressure applies).
-
-The handler is installed via `InstallInlinePduHandler` reactor control command; the
-application thread calls `install_inline_pdu_handler(connection_id, installer_fn)`.
-
-The installer function receives both the `PduParser*` and the `PduFramer*`, giving access
-to the outbound channel on the same connection (e.g. to send acks in-line).
-
-**Use in sequencer:** a follower sequencer installs an inline handler on its connection to the
-leader, which writes each incoming `WalRecord` to the local log and sends the `WalAck` straight back,
-without a turn of the sequencer thread. See [Sequencer Design](../venue/sequencer.md).
+Every complete message goes to the application thread this way. The reactor's thread runs no
+component's code: it reads, frames and hands over, and the component handles the message on its own
+thread (principle F3 in [design_principles.md](../design_principles.md)).
 
 ### PDU Ownership
 

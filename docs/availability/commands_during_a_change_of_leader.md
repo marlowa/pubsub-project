@@ -147,15 +147,9 @@ thread, which it checks. The sequencer thread keeps it, and it is built **only f
 from the copies a follower receives from the gateways, because a copy a follower received may never
 have been written to any log, and treating it as held would lose it.
 
-- While leading, the sequencer thread writes every record itself, and adds each command's identifier
-  as it writes it.
-- While following, most records are written by the reactor thread, as they arrive from the leader.
-  The sequencer thread reads the records written since it last looked, once a second, from the log
-  itself (`read_identifiers_from_log`), and adds their identifiers. It reads only records whose
-  checksum is complete, so a record the reactor thread is part way through writing is read the next
-  time, and a record already noted is noted again harmlessly. On taking the lead it reads the rest
-  before it handles any command sent again, so the record is complete before it is used. That read is
-  at most about a second of records.
+- The sequencer thread is the only thread that writes the log, while leading and while following,
+  and it adds each command's identifier as it writes the record that holds it. So the record of
+  identifiers is complete whenever this instance takes the lead, without reading the log again.
 - At startup, the sequencer already reads its whole log, to build the table of epochs and to find a
   gap. The identifiers are added during the same read.
 - Each command's `ClOrdID` is copied onto its envelope by the gateway, and the leader logs it, so that

@@ -182,15 +182,13 @@ it ends. The log keeps all of its history: nothing is removed from it during the
 ([BUG-0048](../bug_list.md#bug_0048)). See
 [The write-ahead log](../durability/wal.md) and [WAL and High Availability](../availability/wal_and_ha.md).
 
-**The follower's log is written on two threads.** The reactor's thread writes each record as it
-arrives on the connection to the leader, through a handler installed on that connection
-(`install_peer_wal_inline_handler`), and sends the acknowledgement straight back, so neither needs a
-turn of the sequencer's thread. A record that handler does not write, because the connection has
-data waiting to be sent, or the two logs are not yet known to agree, or records passed on earlier
-have not all been dealt with, is passed to the sequencer's thread instead. Every write goes through
-`ReplicatedRecordWriter`, which writes a record only if it is the next one the log needs, under a
-lock, so the log holds every record once and in order whichever thread delivers it. The leader
-writes its own log on its own thread alone.
+**One thread writes the log, on the leader and the follower alike** (principle F1 in
+[design_principles.md](../design_principles.md)). On the follower, each record the leader sends
+arrives on the sequencer's thread as an ordinary message. The sequencer writes it if it is the next
+record the log needs, notes the command it holds and the position of forwarded reports it carries,
+and sends the acknowledgement. A record the log already holds is not written again, and one that
+would leave a gap stops the writing until the follower has asked its leader again where their logs
+agree ([follower_log_repair.md](../availability/follower_log_repair.md)).
 
 ---
 
@@ -211,4 +209,4 @@ metrics.
 - [WAL and High Availability](../availability/wal_and_ha.md) — the commit and replication rules, and failover
 - [Change of sequencer leader](../availability/change_of_sequencer_leader.md) — what a new leader does
 - [Follower log repair](../availability/follower_log_repair.md) — bringing a rejoining follower's log into agreement with its leader's
-- [Socket Communications](../framework/socket_comms.md) — the inline handler mechanism
+- [Socket Communications](../framework/socket_comms.md) — how messages reach the sequencer's thread

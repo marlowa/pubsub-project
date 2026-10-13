@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -761,5 +762,27 @@ TEST_F(WalClassTest, TruncateAfterARecordNotInTheLogIsRefused) {
     EXPECT_THROW(wal.truncate_after(11), PreconditionAssertion);
     EXPECT_THROW(wal.truncate_after(-1), PreconditionAssertion);
 }
+
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+// One thread owns a log, and only that thread appends to it (principle F1 in docs/design_principles.md).
+// A second thread that appends is refused; nothing offers a way to count it instead.
+TEST_F(WalClassTest, ASecondThreadThatAppendsIsRefused) {
+    Wal wal;
+    wal.open(dir_, segment_size);
+    const uint8_t payload[] = {0x01};
+    wal.append(1, 1000, payload, 1, 0);
+
+    bool refused = false;
+    std::thread second_writer([&wal, &payload, &refused]() {
+        try {
+            wal.append(2, 1000, payload, 1, 0);
+        } catch (const PreconditionAssertion&) {
+            refused = true;
+        }
+    });
+    second_writer.join();
+    EXPECT_TRUE(refused) << "a second thread was allowed to append to the log";
+}
+#endif
 
 } // namespaces

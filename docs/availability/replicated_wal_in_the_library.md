@@ -1,8 +1,9 @@
 # Phase 4: the replicated WAL in the library, with one writing thread {#replicated_wal_in_the_library}
 
-> **Status: draft for review.** This is the design for phase 4 of [the recovery plan](../recovery_plan.md).
-> It follows section 3 of [ha_library_boundary.md](ha_library_boundary.md), which Andrew agreed on
-> 12 October 2026. Nothing in it is built until Andrew has agreed it, with the decisions in section 8.
+> **Status: agreed, 13 October 2026.** This is the design for phase 4 of
+> [the recovery plan](../recovery_plan.md). It follows section 3 of
+> [ha_library_boundary.md](ha_library_boundary.md). Andrew agreed it as a whole, with the decisions in
+> section 8.
 
 Throughout this page, WAL means the write-ahead log, the file of sequenced records on disk. The text
 log each process writes about what it is doing is called the Quill log.
@@ -149,15 +150,38 @@ lever available: letting the sequencer's application thread spin for a configure
 as its reactor already does, which keeps it awake between orders at the cost of the processor time it
 spins for.
 
+**Measured: no cost that can be told apart from the difference between runs.** Each arm was started on
+fresh state with the primary matching engine leading, and sent five runs of 6,000 orders at 100 a
+second with nine in ten cancelled, from a load client pinned to processors 0 and 1, the first run
+discarded. Because the figures drift during a day, the build before this step was measured twice, once
+before and once after the build with it:
+
+| Build | Median round trip in each of four runs, microseconds |
+|---|---|
+| Before step 1 | 124.9, 124.3, 124.5, 124.8 |
+| After step 1 | 128.7, 127.9, 124.6, 124.8 |
+| Before step 1, measured again | 127.6, 127.1, 127.3, 124.6 |
+
+The two measurements of the same build differ from each other by as much as either differs from the
+build after the step. The step took effect: the following sequencer's queue carried about 55,300
+messages a run after it and 31,300 before, the difference being the leader's records, which reach its
+thread through the queue instead of being written on the reactor's thread. The mean of the hop into the
+FIX gateway's application thread was 2.7 to 2.8 microseconds in every run of every arm.
+
 ### 3.3 How step 1 is known to be right
 
 - **The build refuses the old code:** with the permissions removed and the old code still in place,
-  `scripts/check_standards.py` fails.
-- **A second writer is refused:** a test that writes the WAL from a second thread fails in a build with
-  thread checks, and is seen to fail before it is expected to.
-- **The follower's records are noted without reading the WAL back:** a test of the sequencer's record of
-  identifiers, on a follower, finds a command written moments earlier, with the once-a-second read gone.
-- **Every high availability scenario** passes, on fresh WALs, as all 73 do now.
+  `scripts/check_standards.py` reports nine locks it does not permit; with the new code, none.
+- **A second thread is refused:** two tests, one for the WAL and one for the table of epochs, use each
+  from a second thread in a build with thread checks and expect a refusal. With the checks switched off
+  in the code, both fail.
+- **The follower's records are noted without reading the WAL back:** `ha_test.py` scenario 74 sends an
+  order, kills the leading sequencer once the order is accepted, and sends the same order again to the
+  follower once it leads, marked as sent again. The follower holds the order only because its leader
+  replicated it, so the scenario fails unless the follower noted the command when it wrote the record.
+  With the noting removed from the code, the order is sequenced a second time and the scenario fails,
+  in two runs of two.
+- **Every high availability scenario** passes, on fresh WALs.
 - **The order's round trip** is measured before and after, as section 3.2 says.
 
 ## 4. Step 2: the library's replicated WAL
@@ -330,6 +354,8 @@ These are separate questions, each answered on its own.
 
 ### Decision 1. How does the library learn each record's leadership epoch? (Choose A or B.)
 
+**Agreed 13 October 2026: A.**
+
 **Background.** Section 4.3. The library needs each record's epoch to repair a rejoining follower's
 WAL. Today the epoch is held only inside the venue's `WalRecord` envelope, which the library cannot read
 without knowing the venue's messages.
@@ -360,6 +386,8 @@ only.
 
 ### Decision 2. Which thread owns the replicated WAL? (Choose A or B.)
 
+**Agreed 13 October 2026: A.**
+
 **Background.** Section 4.1. Principle F1 needs one thread to own the WAL; it does not say which.
 
 **A. The application thread that holds the `ReplicatedWal`.** For the sequencer, that is the thread that
@@ -385,6 +413,8 @@ replicated logs are built, Aeron Cluster's consensus module among them.
 **The reply wanted:** "A" or "B".
 
 ### Decision 3. Is the design as a whole right to build, in the order of section 1? (Yes or no.)
+
+**Agreed 13 October 2026: yes.**
 
 **Background.** Sections 1 to 7: three steps, the one that changes behaviour first and measured on its
 own, then the library's class built and tested alone, then the sequencer moved onto it.

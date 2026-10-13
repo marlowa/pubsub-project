@@ -111,16 +111,10 @@ One it already holds, sent again after the logs were found to agree, is acknowle
 twice. One that would leave a gap is not written; the follower stops writing, as when the logs are not
 known to agree, and asks again.
 
-**Which thread writes.** A follower's replicated records are written by the handler on the reactor
-thread when it can, and otherwise passed to the sequencer thread. The handler counts every record it
-passes on, the sequencer thread counts each one back when it has written or discarded it, and the
-handler writes a record itself only while that count is zero, so records are written in the order
-they arrived. The count alone did not stop the two threads writing at the same moment: a follower's
-log was found with one entry blank and the next record written twice
-([BUG-0123](../bug_list.md#bug_0123)). So every write of a replicated record goes through
-`ReplicatedRecordWriter::write_if_next`, which decides whether the record is the next one the log
-needs and writes it in one step under a lock, and every other change to the log while records may be
-arriving, such as discarding records (4.4), goes through `change_log` under the same lock.
+**Which thread writes.** The sequencer thread is the only thread that writes the log, on the leader and
+the follower alike (principle F1 in [design_principles.md](../design_principles.md)). Each record the
+leader sends reaches it as an ordinary message, in the order the leader sent them, and it writes the
+record only if it is the next one the log needs.
 
 ### 4.4 The follower discards the records after that point
 
@@ -131,8 +125,8 @@ older entry beyond it can be read again once new records are appended; deletes e
 the snapshot, which may point beyond the new end; and reopens the writer at that point. The sequencer
 trims its table of epochs to match.
 Only a follower calls it, and only before it writes anything the leader sends it. It runs on the
-sequencer thread, inside `ReplicatedRecordWriter::change_log`, while the reactor thread's handler is
-declining every record (4.3), so the two never write the log at the same time.
+sequencer thread, which is the only thread that writes the log, so nothing is written while records are
+discarded.
 
 Discarding is safe. A record the follower holds that its leader does not was written by an old leader
 and never reached a majority. Under part 4.2's option A the matching engine never acted on it, and no

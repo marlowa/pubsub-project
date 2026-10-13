@@ -245,33 +245,12 @@ old.
 **A newer prometheus-cpp.** The mutex is part of prometheus-cpp's histogram design, which allows any
 number of threads to record into one histogram, so no later version can be relied on to remove it.
 
-## 6. The one histogram with two writers
+## 6. The write-ahead log's histogram has one writer
 
-On the following sequencer, `wal_append_nanoseconds` is recorded by two threads.
-`SequencerThread::write_replicated_record` calls `append_to_wal` both from the inline handler, which
-runs on the reactor's thread when a record arrives from the leader (`SequencerThread.cpp`, line 2043),
-and from the sequencer's own thread for records the inline handler passed on to it (line 1772). Today
-`ReplicatedRecordWriter`'s mutex makes the two take turns, so no update is lost even under
-`SingleWriterHistogram`. But the check in section 4.5 would throw in a test build, and BUG-0124 plans
-to remove that mutex.
-
-The help text also says the time is measured "on the reactor thread". That is true of records the
-inline handler writes on the follower, and not of anything the leader writes, which happens on the
-sequencer's thread.
-
-Two ways to resolve it:
-
-- **(a) Two children of the same metric, one for each thread.** The sequencer registers
-  `wal_append_nanoseconds` under scope `sequencer_thread`, as now, and again under scope
-  `reactor_thread`, and the inline handler records into the second. The help text becomes neutral
-  about the thread, since both children must share it. The Grafana panel sums by component, so it
-  shows the same figure as today without change. A new view becomes possible: how long a write takes
-  on each thread.
-- **(b) Keep one histogram and exempt it from the check.** This relies on `ReplicatedRecordWriter`'s
-  mutex for correctness. It stops being correct when BUG-0124 removes that mutex, and nothing would
-  report it.
-
-**Decided: (a).**
+`wal_append_nanoseconds` is recorded by the sequencer's thread alone, under scope `sequencer_thread`.
+That thread is the only one that writes the sequencer's write-ahead log, on the leader and on the
+follower alike (principle F1 in [design_principles.md](../design_principles.md)), so the check in
+section 4.5 holds for it as for every other histogram.
 
 ## 7. Tests
 
@@ -322,8 +301,7 @@ change with a separate measurement, and it is not part of BUG-0125.
 
 1. **The design in section 4 is agreed**, including that a scrape reads the counts one at a time and
    is not one instantaneous picture (section 4.3), in exchange for nothing at all on the writer's side.
-2. **The follower's two writers are resolved by (a)** in section 6: `wal_append_nanoseconds` has two
-   children, scope `sequencer_thread` and scope `reactor_thread`.
+2. **`wal_append_nanoseconds` has one writer**, the sequencer's thread (section 6).
 
 ## 10. Order of the work
 
@@ -356,9 +334,8 @@ change with a separate measurement, and it is not part of BUG-0125.
   recorded with its stack for 30 seconds without Prometheus and 30 seconds with it scraping every
   process every 5 seconds. No thread in any of them waited on a mutex, in either period.
 - **Test 7.** The scrape returns the same metric names, labels and buckets. Every checkpoint of
-  `order_path_elapsed_nanoseconds` recorded 200,000 observations. The two children of
-  `wal_append_nanoseconds` recorded 400,000 writes each: on the leader all on the sequencer's thread,
-  on the follower all on the reactor's thread, written by the inline handler. With Prometheus
+  `order_path_elapsed_nanoseconds` recorded 200,000 observations, and `wal_append_nanoseconds`
+  recorded 400,000 writes on each sequencer, each write recorded by one thread. With Prometheus
   scraping, the round trip's 99th percentile, taken every 5 seconds over 20-second windows, was
   between 127 and 145 microseconds. That run was made with the machine's power-saving settings on,
   so the figure is not comparable with measurements made with them off.

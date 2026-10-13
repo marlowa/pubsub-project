@@ -269,20 +269,6 @@ class Wal {
         return writer_.segments_waited_for();
     }
 
-    /**
-     * @brief Says that a second thread is known to append to this log. See WalWriter.
-     */
-    void mark_second_writer_known_breach(const char* bug_and_phase) {
-        writer_.mark_second_writer_known_breach(bug_and_phase);
-    }
-
-    /**
-     * @brief How many appends a second thread has made under a known breach. See WalWriter.
-     */
-    [[nodiscard]] int64_t second_writer_appends() const {
-        return writer_.second_writer_appends();
-    }
-
   private:
     static constexpr size_t snapshot_checksum_offset = 40;
 
