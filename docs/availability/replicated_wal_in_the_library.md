@@ -303,7 +303,9 @@ writing past a missing record; committing without a voter confirming the stateme
 keeping records its leader does not hold; and a new leader numbering its records without rising above
 those it holds. The randomised test lost no committed record in any run. It found one defect, in the lease
 rules rather than in this class: an instance holding an older statement that its peer may not lead never
-grants that peer, even after the peer leads at a higher epoch ([BUG-0152](../bug_list.md#bug_0152)).
+granted that peer, even after the peer led at a higher epoch ([BUG-0152](../bug_list.md#bug_0152)). With that
+fixed, the randomised test also requires, once everything is restored, that one instance leads and the
+other follows.
 
 ## 5. Step 3: the sequencer on the library's replicated WAL
 

@@ -803,6 +803,59 @@ TEST_F(PairLeaseAgentTest, ARestartedLeaderRefusesAPeerItsRecordSaysMayNotLead) 
     EXPECT_EQ(outboxes_[0].refusals.front().reason, pubsub_itc_fw::LeaseRefusalReason::may_not_lead);
 }
 
+// A restarted former leader still holds the statement it made that its peer may not lead. Meanwhile the
+// peer has become leader at a higher epoch, which it could do only with a voter that never held that
+// statement, and its requests carry its own, newer statement. The restarted instance takes the newer
+// statement in place of its own and grants, rather than refusing the leader for ever (BUG-0152).
+TEST_F(PairLeaseAgentTest, ARestartedLeaderGrantsAPeerLeadingAtAHigherEpochWhoseRequestCarriesANewerStatement) {
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    arbiter_up_ = false;
+    crash(0);
+    for (int i = 0; i < 200; ++i) {
+        step();
+    }
+    restart(0, true);
+    ASSERT_EQ(kept_[0].statement.instance_that_may_not_lead(), 2) << "the restarted leader does not hold the statement this test is about";
+    const pubsub_itc_fw::LeaderStatement newer{2, 1000, 1, true};
+    ASSERT_TRUE(newer.newer_than(kept_[0].statement));
+
+    // The first request may be refused because the promise is not yet on disk; the next is granted.
+    for (int64_t request_id = 99; request_id < 103 && outboxes_[0].grants.empty(); ++request_id) {
+        outboxes_[0].refusals.clear();
+        record(0, agents_[0]->on_request(pubsub_itc_fw::ConnectionID{}, 2, 1000, request_id, newer, now_));
+        if (!outboxes_[0].refusals.empty()) {
+            EXPECT_NE(outboxes_[0].refusals.front().reason, pubsub_itc_fw::LeaseRefusalReason::may_not_lead)
+                << "the restarted leader refused a peer leading at a higher epoch because of its own older statement";
+        }
+        record(0, agents_[0]->on_tick(now_));
+    }
+    EXPECT_FALSE(outboxes_[0].grants.empty()) << "the restarted leader never granted the peer leading at a higher epoch";
+}
+
+// The control for the test above: a statement older than the one held does not replace it, so the
+// restarted leader still refuses the peer it says may not lead.
+TEST_F(PairLeaseAgentTest, AStatementOlderThanTheOneHeldDoesNotReplaceIt) {
+    make_statements();
+    keep_promises();
+    ASSERT_TRUE(step_until_the_primary_leads());
+    arbiter_up_ = false;
+    crash(0);
+    for (int i = 0; i < 200; ++i) {
+        step();
+    }
+    restart(0, true);
+    const pubsub_itc_fw::LeaderStatement older{2, kept_[0].statement.epoch - 1, 1, true};
+    ASSERT_FALSE(older.newer_than(kept_[0].statement));
+    outboxes_[0].refusals.clear();
+    outboxes_[0].grants.clear();
+    record(0, agents_[0]->on_request(pubsub_itc_fw::ConnectionID{}, 2, 1000, 99, older, now_));
+    EXPECT_TRUE(outboxes_[0].grants.empty());
+    ASSERT_EQ(outboxes_[0].refusals.size(), 1U);
+    EXPECT_EQ(outboxes_[0].refusals.front().reason, pubsub_itc_fw::LeaseRefusalReason::may_not_lead);
+}
+
 // The first request from the peer, which the record on disk does not cover, is refused with
 // recording_promise, and the write that covers it is started. Neither answering the request nor ticking
 // waits for the store, which takes two seconds. Once the write has finished, the peer's next request is

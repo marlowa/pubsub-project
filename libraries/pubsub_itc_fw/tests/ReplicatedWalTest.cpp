@@ -615,10 +615,37 @@ TEST(ReplicatedWalTest, ARecordTheFollowerWroteButTheLeaderNeverSawAcknowledgedS
     EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
 }
 
+// A leader cut off from its follower and from the arbiter states that the follower may not lead, and no
+// voter echoes the statement. It dies; the follower takes over, as it may, because no voter holds the
+// statement. When the old leader restarts it still holds its own statement, and it must take the new
+// leader's newer one in its place and follow, rather than refusing the new leader for ever (BUG-0152).
+TEST(ReplicatedWalTest, AFormerLeaderHoldingAStatementNoVoterEchoedFollowsTheLeaderThatTookOver) {
+    Pair pair("replicated_wal_stale_statement");
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    ASSERT_TRUE(pair.step_until_follower_may_lead(0));
+
+    pair.arbiter_up_ = false;
+    pair.disconnect();
+    pair.deliver();
+    ASSERT_TRUE(pair.log_contains("saying the follower may not lead"));
+    pair.crash(0);
+    pair.arbiter_up_ = true;
+    ASSERT_TRUE(pair.step_until(1, ReplicaRole::leader));
+
+    pair.start(0);
+    pair.connect();
+    EXPECT_TRUE(pair.step_until(0, ReplicaRole::follower)) << "the old leader never agreed that the new one leads";
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(1));
+    EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
+}
+
 // Many runs of random events: records written, messages delayed, the connection lost and restored,
 // instances crashing and restarting, the arbiter stopping and starting. After every change of leader,
 // the new leader's WAL must hold every record any leader committed, with the same epoch and bytes; and
-// once everything is restored, one instance must lead and the two WALs must be the same.
+// once everything is restored, one instance must lead, the other must follow, and the two WALs must be
+// the same.
 TEST(ReplicatedWalTest, InRandomRunsNoCommittedRecordIsLostAndTheTwoWalsEndTheSame) {
     constexpr int runs = 20;
     constexpr int steps = 400;
@@ -707,20 +734,16 @@ TEST(ReplicatedWalTest, InRandomRunsNoCommittedRecordIsLostAndTheTwoWalsEndTheSa
         pair.arbiter_up_ = true;
         pair.disconnect();
         pair.connect();
-        // One instance leads. The other is not required to have become follower: an instance holding an
-        // older statement that its peer may not lead goes on refusing the peer's renewals, so it never
-        // agrees that the peer leads (docs/bug_list.md, BUG-0152). Its WAL is kept up to date all the same,
-        // because replication does not wait for its role.
         int leader = -1;
         for (int n = 0; n < 300 && leader < 0; ++n) {
             pair.step();
             for (int i = 0; i < 2; ++i) {
-                if (pair.wals_[i]->role() == ReplicaRole::leader && pair.wals_[1 - i]->role() != ReplicaRole::leader) {
+                if (pair.wals_[i]->role() == ReplicaRole::leader && pair.wals_[1 - i]->role() == ReplicaRole::follower) {
                     leader = i;
                 }
             }
         }
-        ASSERT_GE(leader, 0) << "run " << run << ": no instance led once everything was restored";
+        ASSERT_GE(leader, 0) << "run " << run << ": no instance led with the other following once everything was restored";
         ASSERT_TRUE(pair.step_until_follower_holds_everything(leader, 300)) << "run " << run;
         EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1])) << "run " << run << ": the two WALs differ";
         const auto final_records = read_wal(pair.directories_[leader]);

@@ -96,7 +96,8 @@ Each `LeaseRequest` from a leader gains two fields:
 - **A number for that statement,** which goes up by one every time the leader changes it. A voter keeps
   only the statement with the highest number it has seen from that group at that epoch or a later one,
   so a delayed message cannot undo a newer statement. Without it, an old "yes" arriving late, after a
-  newer "no", would wrongly let the follower lead again.
+  newer "no", would wrongly let the follower lead again. A voter takes a newer statement from every
+  request that carries one, before it decides the request, whether it then grants or refuses.
 
 Each `LeaseGrant` gains one field: the number of the statement the voter recorded before granting. The
 leader treats a statement as recorded only when a grant echoes its number.
@@ -106,7 +107,12 @@ that the statement survives the voter's own restart:
 
 - **The leader** writes its own statement to its record on disk before it sends it, in the same file
   as its lease promise record. An instance whose record says its peer may not lead refuses that peer's
-  requests to lead, whether it has restarted or its lease has simply run out.
+  requests to lead, whether it has restarted or its lease has simply run out, until a request carries a
+  newer statement. That happens when no voter echoed the old leader's statement, so the peer could become
+  leader at a higher epoch: its requests then carry its own statement, which replaces the old one, and the
+  old leader grants and follows. Adopting a newer statement is safe, because an instance could lead at a
+  later epoch only with a majority that honoured the statements then current. This matches the TLA+
+  model, `FollowerBehindHA.tla`, in which a voter records any newer statement it receives.
 - **The follower** records it in memory at once and grants, and writes it to disk and syncs it on its
   background thread, in the same way as its lease promise record (`BackgroundPromiseRecorder` and
   `LeasePromiseStore`). It does not wait for the disk before granting, for the reason given in 4.5.

@@ -219,14 +219,25 @@ class PairLeaseAgent {
      */
     [[nodiscard]] Change on_request(const pubsub_itc_fw::ConnectionID& reply_to, int64_t candidate_id, int32_t epoch, int64_t request_id,
                                     const LeaderStatement& statement, Clock::time_point now) {
+        // A statement newer than the one held replaces it before the request is decided, whether or not
+        // the request is then granted. A request carries a statement only while its sender leads, and a
+        // statement made at a later epoch was made by an instance that led at that epoch, which it could do
+        // only with a majority that honoured the statements then current; so adopting it cannot let an
+        // instance that lacks commands the engine acted on lead. Without this, an instance holding an older
+        // statement that its peer may not lead would refuse that peer for ever, even once the peer leads
+        // at a higher epoch, and so never learn the peer's newer statement (docs/bug_list.md, BUG-0152).
+        if (statement.leader_id != 0 && statement.newer_than(participant_.recorded_statement())) {
+            static_cast<void>(participant_.record_peer_statement(statement));
+        }
         const LeaseParticipant::PeerRequestOutcome outcome = participant_.on_peer_request(candidate_id, epoch, now);
         if (outcome.gave_up_asking_to_lead) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                        "{}: the peer asks to lead at epoch {}, above the epoch this instance asked for -- giving way to it", owner_name_, epoch);
         }
 
-        // The peer's statement is recorded in memory before the grant, and reaches the disk in the
-        // background; the grant does not wait for it (docs/availability/a_follower_behind_does_not_lead.md, 4.5).
+        // The peer's statement, recorded in memory above or here, reaches the disk in the background; the
+        // grant does not wait for it (docs/availability/a_follower_behind_does_not_lead.md, 4.5). A grant
+        // echoes it only if it is the statement now held.
         int64_t echoed = 0;
         if (outcome.answer.verdict == LeaseVoter::Verdict::Granted && statement.leader_id != 0) {
             echoed = participant_.record_peer_statement(statement);

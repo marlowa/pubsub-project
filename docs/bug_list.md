@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 152 |
-| Open | 63 (45 defects, 18 tasks) |
-| Closed | 89 |
+| Open | 62 (44 defects, 18 tasks) |
+| Closed | 90 |
 | Next id | BUG-0153 |
 
 ## Open bugs by severity
 
-15 high, 41 medium, 7 low.
+15 high, 40 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -68,7 +68,6 @@
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0150](#bug_0150) | medium | defect | The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
-| [BUG-0152](#bug_0152) | medium | defect | An instance holding an older statement that its peer may not lead never grants that peer, even after the peer leads at a higher epoch |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -172,46 +171,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0152: An instance holding an older statement that its peer may not lead never grants that peer, even after the peer leads at a higher epoch {#bug_0152}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-13 |
-| Recorded | 2026-10-13 |
-| How | The randomised test of the library's replicated WAL, `ReplicatedWalTest.InRandomRunsNoCommittedRecordIsLostAndTheTwoWalsEndTheSame`, written for phase 4 of the recovery plan |
-| Impact | The instance never agrees that its peer leads, so the leader keeps its lease on the arbiter's vote alone. If the arbiter is then unavailable, the leader loses its lease although both instances are healthy, and the pair changes leader. The instance's WAL is still kept up to date, so resilience is not lost, but the pair is one fault from a change of leader it should not need |
-
-**What was found.** In run 5 of the randomised test, once everything had been restored, instance 2 led
-with the arbiter's vote and instance 1 never became follower. The Quill log at Debug showed why. Each
-time instance 2 asked instance 1 to renew its lease, instance 1 refused: with `promised_elsewhere` while
-it was itself asking to lead, and with `may_not_lead` in the gaps between its attempts. Instance 1 held a
-statement it had made itself, as leader at an earlier epoch, that instance 2 may not lead. No voter had
-echoed that statement, so nothing had acted on it, and instance 2 had since become leader at a higher
-epoch. The same happened, more simply, to a former leader restarted within its own lease period after
-stating, just before it stopped, that its peer may not lead.
-
-**Why.** `PairLeaseAgent::on_request` records the statement a peer's request carries only when it
-grants the request. A refused request's statement is dropped. So an instance whose held statement says
-its peer may not lead refuses that peer, and never learns the peer's newer statement, which would let
-it grant.
-
-**How it can happen in the venue.** A leader that loses its connection to its follower states that the
-follower may not lead (rule 11, [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md)),
-and writes the statement to disk. If it is cut off from the arbiter at the same time, no voter echoes
-the statement. The follower and the arbiter then make the follower leader at a higher epoch, which is
-allowed, because neither holds the statement. When the old leader can reach its peer again, it is in
-the position above.
-
-**What is wanted.** A statement from a later leadership replaces an older one wherever it is seen,
-including on a request that is refused, and is recorded before the request is decided. A statement
-made at a higher epoch than the one held was made by an instance that led at that epoch, which it could
-do only with a majority that honoured the statements then current, so adopting it cannot let an
-instance lacking committed records lead. The change is to the lease rules, so it is checked against the
-TLA+ models in `docs/availability/tla` (`FollowerBehindHA.tla` and `MajorityLeaseHA.tla`) before it is
-made. Once it is, the randomised test's last phase can require that the other instance becomes follower,
-which it does not require now.
 
 ### BUG-0151: The order's round trip is about 20 microseconds slower when the secondary matching engine leads {#bug_0151}
 
@@ -3283,6 +3242,70 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0152: An instance holding an older statement that its peer may not lead never grants that peer, even after the peer leads at a higher epoch {#bug_0152}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-13 |
+| Recorded | 2026-10-13 |
+| Fixed | 2026-10-13 -- the lease agent takes a newer statement from every request that carries one, before it decides the request |
+| How | The randomised test of the library's replicated WAL, `ReplicatedWalTest.InRandomRunsNoCommittedRecordIsLostAndTheTwoWalsEndTheSame`, written for phase 4 of the recovery plan |
+| Impact | The instance never agrees that its peer leads, so the leader keeps its lease on the arbiter's vote alone. If the arbiter is then unavailable, the leader loses its lease although both instances are healthy, and the pair changes leader. The instance's WAL is still kept up to date, so resilience is not lost, but the pair is one fault from a change of leader it should not need |
+
+**What was found.** In run 5 of the randomised test, once everything had been restored, instance 2 led
+with the arbiter's vote and instance 1 never became follower. The Quill log at Debug showed why. Each
+time instance 2 asked instance 1 to renew its lease, instance 1 refused: with `promised_elsewhere` while
+it was itself asking to lead, and with `may_not_lead` in the gaps between its attempts. Instance 1 held a
+statement it had made itself, as leader at an earlier epoch, that instance 2 may not lead. No voter had
+echoed that statement, so nothing had acted on it, and instance 2 had since become leader at a higher
+epoch. The same happened, more simply, to a former leader restarted within its own lease period after
+stating, just before it stopped, that its peer may not lead.
+
+**Why.** `PairLeaseAgent::on_request` records the statement a peer's request carries only when it
+grants the request. A refused request's statement is dropped. So an instance whose held statement says
+its peer may not lead refuses that peer, and never learns the peer's newer statement, which would let
+it grant.
+
+**How it can happen in the venue.** A leader that loses its connection to its follower states that the
+follower may not lead (rule 11, [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md)),
+and writes the statement to disk. If it is cut off from the arbiter at the same time, no voter echoes
+the statement. The follower and the arbiter then make the follower leader at a higher epoch, which is
+allowed, because neither holds the statement. When the old leader can reach its peer again, it is in
+the position above.
+
+**What is wanted.** A statement from a later leadership replaces an older one wherever it is seen,
+including on a request that is refused, and is recorded before the request is decided. A statement
+made at a higher epoch than the one held was made by an instance that led at that epoch, which it could
+do only with a majority that honoured the statements then current, so adopting it cannot let an
+instance lacking committed records lead. The change is to the lease rules, so it is checked against the
+TLA+ models in `docs/availability/tla` (`FollowerBehindHA.tla` and `MajorityLeaseHA.tla`) before it is
+made. Once it is, the randomised test's last phase can require that the other instance becomes follower,
+which it does not require now.
+
+**How it was fixed.** `PairLeaseAgent::on_request` takes a statement newer than the one held from every
+request that carries one, before it decides the request, whether it then grants or refuses. A request
+carries a statement only while its sender leads, and a statement from a later epoch was made by an
+instance that led at that epoch, which it could do only with a majority that honoured the statements
+then current; so adopting it cannot let an instance lacking commands the engine acted on lead.
+[a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md), section 4.2, says
+so.
+
+**Checked.**
+
+- A new test of the lease agent, `ARestartedLeaderGrantsAPeerLeadingAtAHigherEpochWhoseRequestCarriesANewerStatement`,
+  failed before the change, refusing with `may_not_lead` every time, and passes after it. Its control,
+  `AStatementOlderThanTheOneHeldDoesNotReplaceIt`, shows that an older statement still does not replace
+  the one held.
+- A new test of the replicated WAL, `AFormerLeaderHoldingAStatementNoVoterEchoedFollowsTheLeaderThatTookOver`,
+  goes through the case above, and the randomised test's last phase again requires the other instance
+  to follow. With the change taken out, both fail, with the lease agent test; with it, all 1,070 of the
+  library's tests pass.
+- The TLA+ model of rule 11 already lets a voter record any newer statement it receives, whether or not
+  it grants, so the model is unchanged. Checked again with TLC: about 38.8 million distinct states, and
+  the invariant that a leader holds every command the engine has acted on holds.
+- Every high availability scenario, all 74, passes on fresh WALs with the change.
 
 ### BUG-0124: Locks are taken on the order path, in a design meant to be free of them {#bug_0124}
 
