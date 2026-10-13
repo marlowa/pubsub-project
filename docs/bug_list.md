@@ -2130,6 +2130,71 @@ its own headroom would, in run 8, have **wrongly declined** a promotion it went 
 complete successfully, because the headroom it needed did not exist until the moment the
 primary died.
 
+#### A line of attack, proposed 13 October 2026 and not yet designed in detail
+
+The systemic conditions this entry names fall into three kinds, and each needs a different answer:
+running out of memory; a command that reaches the same bug on both matching engines, called here a
+poison command; and a dependency or a mistake both machines share. The first can be removed. The second
+cannot be prevented outright, but it can be made to cost one command instead of the venue. The third
+is a matter of deployment.
+
+**Memory: make it a question answered when the engine starts, not one discovered during the day.**
+
+- **The engine refuses to start without the memory it will need.** Its memory is mostly its fixed
+  capacities: the open-order region (`order_book_region_capacity`, 2,000,000 orders in every
+  environment), the order book's table, and the pools behind its queues. A configured figure for
+  the memory needed is a start, but it can drift away from those capacities, so the figure is either
+  computed from them or checked against them, and the engine refuses to start if it is too low.
+- **The memory is reserved and touched at start-up, not looked up.** The kernel's figure for the
+  memory available is an estimate at one moment, and Linux lends memory it may not have: a process
+  can pass a check at the start of the day and be killed hours later, when its pages are first
+  touched. An engine that allocates and touches every page of its capacity when it starts, as the
+  open-order region already does when it is created, either gets the memory then or fails then. On
+  failure it logs at Critical and stops, and its launcher (`scripts/launch.py`) gives up on it after
+  its allowed restarts. One engine left is a loss of resilience, reported loudly; none is a failed
+  venue, known at the start of the day instead of in the middle of it.
+- **A full book refuses orders instead of growing.** This is what removes the shared condition. Both
+  incidents above are the book's table growing by doubling until the machine ran out
+  ([BUG-0028](#bug_0028)). A book that cannot grow past the size it reserved, and that rejects a new
+  order with a reason when it is full, gives the same answer on both engines and kills neither.
+- **Why this answers the last point above.** A promoted engine that checked its headroom at the moment
+  of promotion would have declined in run 8, wrongly, because the memory it needed was freed only by
+  the primary's death. With the memory reserved at the start of the day, both engines already hold
+  everything they will ever use, and neither needs any headroom when it is promoted.
+
+This part does not depend on the recovery plan. It needs the book's table reserved instead of grown
+(BUG-0028) and the queues' pools fixed in size ([BUG-0127](#bug_0127)).
+
+**A poison command: limit what it costs, because the standby cannot be relied on to survive it.**
+Once the two engines are deterministic and both apply the WAL, which is phases 6 and 7 of the recovery
+plan, a command that crashes one crashes the other at the same point.
+
+1. **Catch what can be caught, and reject the command.** Many faults show themselves as an exception
+   or a failed precondition check rather than a crash. If the engine catches at the point where it
+   applies one command, it rejects that command to its member and goes on. Both engines reject it
+   alike, because both are deterministic.
+2. **A crash on a command costs that command.** Before applying command N, the engine records N in a
+   small persisted slot. On restart, finding that it died applying N, it does not simply catch up and
+   apply N again, which would kill it again until its launcher gave up. It asks for N to be voided, and
+   the void is written into the WAL as a command of its own, so both engines skip N alike and its
+   member is sent a rejection. That follows the rule agreed in question 2 of
+   [ha_library_boundary.md](availability/ha_library_boundary.md): every decision that changes the book
+   enters the WAL as a command. The rule that makes it safe: a command is voided only if no running
+   engine has applied it. If the other engine applied N without harm, N did not cause the crash, and the
+   engine that crashed takes the survivor's state instead of skipping anything. A stronger form voids
+   the command and halts trading in its instrument, which keeps a damaged book to one symbol; that
+   needs a trading halt ([BUG-0065](#bug_0065)).
+3. **Make poison commands rarer.** Fuzz the engine's handling of commands: random but well-formed
+   commands applied to the matching code, with the book's invariants checked after each one. Keep the
+   gateways' strict checks of each field, so that a malformed order never reaches the engine.
+
+Parts 1 and 3 fit phase 6, making the engine deterministic, where fuzzing and running both engines on
+one WAL are natural tests. Part 2 needs phases 6 and 7.
+
+**A shared dependency or a shared mistake**, such as one disk serving both machines or the same wrong
+configuration on both, is not covered by either of the above. The answers are deployment practice, and
+start-up checks that refuse a configuration the program can see is wrong.
+
 ### BUG-0014: Python style warnings across the top-level scripts, and a lint gate that ignores them {#bug_0014}
 
 | | |
