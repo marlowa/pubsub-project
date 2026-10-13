@@ -75,6 +75,7 @@ set(PUBSUB_ITC_FW_SRC
         src/RawBytesProtocolHandler.cpp
         src/Crc32.cpp
         src/Wal.cpp
+        src/ReplicatedWal.cpp
         src/WalWriter.cpp
         src/WalReader.cpp
         src/WalCursor.cpp

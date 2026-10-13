@@ -295,6 +295,16 @@ Under that recommendation:
   `docs/availability/tla`, are read against the class. The rules are unchanged, so the models should
   need no change; if the class does anything the models do not allow, that is a fault in the class.
 
+**Checked.** The class is `libraries/pubsub_itc_fw/include/pubsub_itc_fw/ReplicatedWal.hpp`, and its tests
+are `ReplicatedWalTest.cpp`: seven tests of a pair, each named for what it checks, and the randomised
+test, 20 runs of 400 steps each. All eight pass. Five deliberate faults in the class were each seen to
+make at least one test fail: committing a record before the follower acknowledged it; the follower
+writing past a missing record; committing without a voter confirming the statement; a rejoining follower
+keeping records its leader does not hold; and a new leader numbering its records without rising above
+those it holds. The randomised test lost no committed record in any run. It found one defect, in the lease
+rules rather than in this class: an instance holding an older statement that its peer may not lead never
+grants that peer, even after the peer leads at a higher epoch ([BUG-0152](../bug_list.md#bug_0152)).
+
 ## 5. Step 3: the sequencer on the library's replicated WAL
 
 ### 5.1 What changes
