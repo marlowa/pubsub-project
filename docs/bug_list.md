@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 150 |
-| Open | 63 (44 defects, 19 tasks) |
+| Bugs recorded | 151 |
+| Open | 64 (45 defects, 19 tasks) |
 | Closed | 87 |
-| Next id | BUG-0151 |
+| Next id | BUG-0152 |
 
 ## Open bugs by severity
 
-17 high, 39 medium, 7 low.
+17 high, 40 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -69,6 +69,7 @@
 | [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0150](#bug_0150) | medium | defect | The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` |
+| [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -172,6 +173,45 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0151: The order's round trip is about 20 microseconds slower when the secondary matching engine leads {#bug_0151}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-13 |
+| Recorded | 2026-10-13 |
+| How | Measuring the order's round trip before and after step 3 of phase 3 of the recovery plan, by the method in `docs/operations/latency_findings.md` |
+| Impact | After the primary matching engine fails and the secondary takes over, every order takes about a sixth longer, for as long as the secondary leads. Which matching engine leads is also not controlled when the venue starts, so a latency measurement can compare two different order paths without anyone noticing |
+
+**What was found.** Five runs of 6,000 orders at 100 a second, from a FIX load client pinned to
+processors 0 and 1, the first run discarded, against a venue started on fresh state:
+
+| Matching engine leading | Median round trip in each run, microseconds |
+|---|---|
+| the primary (`matching_engine`, metrics port 9205) | 109.2, 109.5, 112.7, 113.0 |
+| the secondary (`matching_engine_secondary`, metrics port 9206) | 135.0, 132.6, 134.2, 133.1 |
+
+Both rows are the same build, commit `623115c`. A build from before that commit, with the primary
+leading, gave 112.4 to 118.3. The secondary led in one of the nine starts made for these measurements,
+and the primary in the other eight.
+
+**The likely cause, not yet confirmed.** `environments/dev.toml` gives the primary matching engine
+`reactor_spin_before_block = "50ms"`, with the comment "on the order round trip", and the secondary
+`reactor_spin_before_block = "0s"`, with the comment "a standby, so it should not hold a core
+waiting". At 100 orders a second an order arrives every 10 milliseconds, so the primary's reactor is
+still spinning when the next one arrives, and the secondary's has gone to sleep. `latency_findings.md`
+measures a sleeping thread as costing about 20 microseconds a hop to start again, which is about the
+difference. The setting follows the instance's name, primary or secondary, when what matters is its
+role, leader or follower, and either instance can lead. The two sequencers are both configured at 50
+milliseconds, so they do not have this difference.
+
+**What is wanted.** Confirm the cause first, by starting the venue with the secondary leading and its
+setting changed to 50 milliseconds, and seeing whether the round trip falls back to about 112
+microseconds. If it does, either give both matching engines the same setting, or make the reactor
+spin only while its instance leads, which would keep a follower from holding a core it does not need.
+Separately, a latency measurement should say which matching engine led, and refuse to compare runs in
+which different ones did.
 
 ### BUG-0150: The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` {#bug_0150}
 

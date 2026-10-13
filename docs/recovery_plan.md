@@ -8,7 +8,8 @@
 > the high availability machinery moves from the applications into the library, one step at a time.
 > Phase 3's three steps are done, and [BUG-0147](bug_list.md#bug_0147), which step 3 made strike more
 > often, is fixed (decision 4 in [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)).
-> The order's round trip is still to be measured before phase 3's review.
+> The order's round trip is unchanged by phase 3, measured before and after (section 6.4 of that design).
+> Phase 3 waits for Andrew's review.
 
 ## In one page
 

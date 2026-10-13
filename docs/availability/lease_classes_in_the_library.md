@@ -340,7 +340,21 @@ Two further costs follow from every record being written in the background:
   takes is compared with the run after step 2.
 - **The order's round trip** is measured before and after, by the method in
   `docs/operations/latency_findings.md`. No change is expected, because the lock removed is taken once a
-  tick and is almost never contended; the measurement confirms it.
+  tick and is almost never contended. Each build was started on fresh state and sent five runs of 6,000
+  orders at 100 a second with nine in ten cancelled, from a load client pinned to processors 0 and 1;
+  the first run of each was discarded. The build before step 3 gave a median round trip of 118.3, 113.3,
+  113.0 and 112.4 microseconds in its four runs, and the build after step 3 and the fix for
+  [BUG-0147](../bug_list.md#bug_0147) gave 109.2, 109.5, 112.7 and 113.0. The two ranges overlap, and
+  the difference between them is no larger than the difference between runs of one build. The hop into
+  the FIX gateway's application thread had a mean of 2.7 microseconds in every run of both builds, over
+  23,469 to 23,531 observations a run. There is no change.
+
+  The comparison holds only when the same matching engine leads in both builds. In one start of the
+  build after step 3 the secondary matching engine led, and the median round trip was 133 to 135
+  microseconds, about 20 more. The secondary is configured as a standby whose reactor blocks as soon as
+  it has nothing to do, instead of spinning for 50 milliseconds first as the primary's does, and that is
+  the likely reason. It is recorded as [BUG-0151](../bug_list.md#bug_0151). It is not a cost of step 3:
+  the primary led in each of three further starts of each build.
 
 ## 7. What phase 3 does not do
 
