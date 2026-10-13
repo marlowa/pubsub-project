@@ -75,6 +75,30 @@ covered numbers within it. Those above the range are recent, so they are always 
 range in the middle of a session's history therefore gets the reports that were sent on those
 numbers, not the most recent ones; neither side needs to know the other's numbering.
 
+### Which sequencer answers
+
+The gateway does not know which sequencer leads, so it sends the request to both. **Only the leading
+sequencer answers.** A sequencer that does not lead, including one whose role is not yet known, sends
+back a `SessionReplayComplete` with `declined` set, no records, and reads nothing from its write-ahead
+log (WAL). There are two reasons:
+
+- A follower's WAL may not yet hold the newest reports. Counting back *s* reports from its newest
+  would then find different reports from the ones that were sent.
+- Two answers cannot be placed together. The gateway places records on the member's numbers in the
+  order they arrive, so records from two answers that interleave put the wrong orders on the right
+  numbers, and nothing on the member's side can tell.
+
+The gateway takes the whole answer from one connection: the first record or completion for a request,
+other than a decline, chooses it, and anything for the same request on the other connection is ignored
+and logged as a warning.
+
+A request that reaches no leader, because none leads at that moment or because the leader stops before
+it has finished answering, is not left waiting for ever. When a new leader announces itself with a
+higher leader epoch, the gateway asks it again, under a new request identifier, for the reports on the
+numbers from where the resend has reached to the end of the range. The reports already placed are not
+asked for again, so the member never receives a number twice, and anything still arriving for the
+earlier request is ignored because it carries the old identifier.
+
 ### Placing the reports
 
 The gateway walks the requested range once, with the reports in the order the sequencer sent them:

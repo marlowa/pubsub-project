@@ -919,6 +919,24 @@ FixSession* FixOrderGatewayThread::find_session_by_comp_id(std::string_view comp
     return nullptr;
 }
 
+bool FixOrderGatewayThread::takes_replay_answer_from(FixSession& session, const pubsub_itc_fw::ConnectionID& from) {
+    // The first record or completion for the current request chooses the connection. Only the
+    // leading sequencer answers, so a second connection answering means two instances believed
+    // they led at once; mixing their records on the member's numbers would send it the wrong
+    // orders under the right numbers (BUG-0148), so the second answer is ignored.
+    if (!session.replay_answer_from.is_valid()) {
+        session.replay_answer_from = pubsub_itc_fw::ConnectionID{from.get_value()};
+        return true;
+    }
+    if (session.replay_answer_from == from) {
+        return true;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "FixOrderGatewayThread: connection {} resend request_id={} answered on sequencer connection {} as well as {} -- ignoring the second answer",
+               session.conn_id.get_value(), session.replay_request_id, from.get_value(), session.replay_answer_from.get_value());
+    return false;
+}
+
 FixSession* FixOrderGatewayThread::find_session_by_replay_request(int64_t request_id) {
     if (request_id == 0) {
         return nullptr;
@@ -1462,13 +1480,21 @@ void FixOrderGatewayThread::handle_resend_request(FixSession& session, const Par
 
     session.outbound_seq_num = begin_seq;
     session.replay_in_progress = true;
-    session.replay_request_id = ++next_replay_request_id_;
+    send_replay_request(session);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} comp_id='{}' ResendRequest BeginSeqNo={} EndSeqNo={} -- requesting this session's reports from the "
                "sequencer (request_id={}, resending {}..{}, {} of those numbers held a report, will resume at {})",
                session.conn_id.get_value(), session.client_comp_id, begin_seq, end_seq, session.replay_request_id, begin_seq, session.replay_end_seq_num,
                fix_common::seq_num_ranges::count_in(session.report_seq_nums, begin_seq, session.replay_end_seq_num), session.replay_resume_seq_num);
+}
+
+void FixOrderGatewayThread::send_replay_request(FixSession& session) {
+    // A new identifier each time, so that records and completions still arriving for an earlier
+    // request -- one sent before a change of leader -- find no session and are ignored.
+    session.replay_request_id = ++next_replay_request_id_;
+    session.replay_answer_from = pubsub_itc_fw::ConnectionID{};
+    const int first_wanted = session.outbound_seq_num;
 
     pubsub_itc_fw_app::SessionReplayRequest request{};
     request.request_id = session.replay_request_id;
@@ -1490,7 +1516,11 @@ void FixOrderGatewayThread::handle_resend_request(FixSession& session, const Par
     // heartbeat, the member counts every message it is handed, and the two sides come out of
     // the resend one apart for each. What the record covers is what the venue can replay, and
     // the rest is gap-filled during placement.
-    const int wanted = fix_common::seq_num_ranges::count_in(session.report_seq_nums, begin_seq, session.replay_end_seq_num);
+    //
+    // Counted from where the resend has reached, not from where it began. When this asks again
+    // after a change of leader, the reports already placed on the member's numbers are not asked
+    // for a second time, so the member never receives a number twice.
+    const int wanted = fix_common::seq_num_ranges::count_in(session.report_seq_nums, first_wanted, session.replay_end_seq_num);
     request.max_records = wanted > 0 ? wanted : 1;
 
     // And which reports those are, rather than trusting the sequencer to guess the end of the
@@ -1500,6 +1530,26 @@ void FixOrderGatewayThread::handle_resend_request(FixSession& session, const Par
     // numbers asked for -- BUG-0053.
     request.skip_most_recent = fix_common::seq_num_ranges::count_in(session.report_seq_nums, session.replay_end_seq_num + 1, session.replay_resume_seq_num - 1);
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionReplayRequest::message_pdu_id, request);
+}
+
+void FixOrderGatewayThread::send_waiting_replay_requests_again(int32_t new_epoch) {
+    // Only the leader answers a request. One sent while no instance led was declined by every
+    // sequencer, and one sent to a leader that stopped before finishing its answer will never be
+    // finished, so each resend still waiting asks the new leader for what it has not yet placed.
+    // A resend whose first request is still on its way to this same leader is asked for again as
+    // well; the answer to the first request is then ignored, because it carries the old identifier.
+    for (auto& [conn_id, session] : sessions_) {
+        if (!session.replay_in_progress) {
+            continue;
+        }
+        const int64_t previous_request_id = session.replay_request_id;
+        send_replay_request(session);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} comp_id='{}' a new sequencer leads (epoch {}) while a resend waits -- asking it for {}..{} "
+                   "(request_id={}, replacing request_id={})",
+                   session.conn_id.get_value(), session.client_comp_id, new_epoch, session.outbound_seq_num, session.replay_end_seq_num,
+                   session.replay_request_id, previous_request_id);
+    }
 }
 
 void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMessage& message) {
@@ -1525,6 +1575,7 @@ void FixOrderGatewayThread::handle_order_acceptance(const pubsub_itc_fw::EventMe
         if (!first_seen || holds_unanswered_commands()) {
             send_unanswered_commands_again(view.leader_epoch);
         }
+        send_waiting_replay_requests_again(view.leader_epoch);
     }
 
     if (view.accepting == venue_accepting_orders_) {
@@ -1653,7 +1704,11 @@ void FixOrderGatewayThread::handle_session_replay_record(const pubsub_itc_fw::Ev
 
     FixSession* session = find_session_by_replay_request(view.request_id);
     if (session == nullptr) {
-        // The session ended while its own replay was in flight. Nothing to deliver to.
+        // The session ended while its own replay was in flight, or the request was replaced by one
+        // sent to a new leader. Nothing to deliver to.
+        return;
+    }
+    if (!takes_replay_answer_from(*session, message.connection_id())) {
         return;
     }
 
@@ -1709,6 +1764,24 @@ void FixOrderGatewayThread::handle_session_replay_complete(const pubsub_itc_fw::
     }
     FixSession& session = *session_ptr;
 
+    // A sequencer that does not lead sends no records, only this. The resend goes on waiting for
+    // the leader's answer, and if no instance leads, for the next leader to announce itself.
+    if (view.declined) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "FixOrderGatewayThread: connection {} resend request_id={} declined on sequencer connection {}, which does not lead -- waiting for the "
+                   "leader's answer",
+                   session.conn_id.get_value(), view.request_id, message.connection_id().get_value());
+        return;
+    }
+    if (!takes_replay_answer_from(session, message.connection_id())) {
+        return;
+    }
+    finish_replay(session, view.record_count, view.truncated, view.last_seq_no);
+}
+
+void FixOrderGatewayThread::finish_replay(FixSession& session, int32_t record_count, bool truncated, int64_t last_seq_no) {
+    auto& arena_buffer = decode_arena_buffer();
+
     // Close the gap. The replayed reports have consumed sequence numbers from the start of
     // the gap; whatever is still missing between here and where the session had reached was
     // administrative traffic -- heartbeats, and the session-level messages the venue is not
@@ -1728,21 +1801,22 @@ void FixOrderGatewayThread::handle_session_replay_complete(const pubsub_itc_fw::
         session.outbound_seq_num = session.replay_resume_seq_num;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: connection {} resend complete -- {} report(s) resent, gap-filled {}..{} (administrative traffic)",
-                   session.conn_id.get_value(), view.record_count, gap_from, session.replay_resume_seq_num);
+                   session.conn_id.get_value(), record_count, gap_from, session.replay_resume_seq_num);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} resend complete -- {} report(s) resent, no gap left",
-                   session.conn_id.get_value(), view.record_count);
+                   session.conn_id.get_value(), record_count);
     }
 
-    if (view.truncated) {
+    if (truncated) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixOrderGatewayThread: comp_id='{}' resend was truncated at the sequencer's record cap (last_seq_no={}) -- "
                    "the member has been sent what fitted and gap-filled the rest",
-                   session.client_comp_id, view.last_seq_no);
+                   session.client_comp_id, last_seq_no);
     }
 
     session.replay_in_progress = false;
     session.replay_request_id = 0;
+    session.replay_answer_from = pubsub_itc_fw::ConnectionID{};
 
     // Live reports that arrived mid-resend, now delivered in order behind it.
     std::vector<FixSession::DeferredReport> deferred;

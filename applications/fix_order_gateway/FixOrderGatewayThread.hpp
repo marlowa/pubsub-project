@@ -585,6 +585,24 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void handle_session_replay_record(const pubsub_itc_fw::EventMessage& message);
     void handle_session_replay_complete(const pubsub_itc_fw::EventMessage& message);
 
+    // Asks the sequencers for the reports on the numbers from where the session's resend has reached
+    // to the end of its range, under a new request identifier, so that anything still arriving for an
+    // earlier request is ignored. Used to start a resend, and to ask again when a new leader
+    // announces itself while a resend is still waiting.
+    void send_replay_request(FixSession& session);
+
+    // A new sequencer leads: every resend still waiting asks it for the reports it has not yet placed.
+    // Only the leader answers a request, so one sent while no instance led, or to a leader that has
+    // since stopped, would otherwise never be answered (BUG-0148).
+    void send_waiting_replay_requests_again(int32_t new_epoch);
+
+    // Whether a record or completion that arrived on this sequencer connection belongs to the answer the
+    // session's resend is taking. The first one for the current request chooses the connection.
+    [[nodiscard]] bool takes_replay_answer_from(FixSession& session, const pubsub_itc_fw::ConnectionID& from);
+
+    // Ends a resend: gap-fills what is left of the range, then delivers the live reports held while it ran.
+    void finish_replay(FixSession& session, int32_t record_count, bool truncated, int64_t last_seq_no);
+
     /**
      * @brief Encodes one ExecutionReport and sends it to a session. False if it would not fit.
      *

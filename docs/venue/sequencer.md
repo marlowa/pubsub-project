@@ -123,7 +123,7 @@ session with these messages, sent on the order connection:
 | `SessionUnbound` | The session has gone from this connection |
 | `SessionSequenceUpdate` | How far the session's numbering has got. Never lowered, so a late update from the instance that has just lost the session cannot wind it backwards |
 | `UndeliveredReportsRequest` | Send again the reports produced while the session was connected nowhere |
-| `SessionReplayRequest` | Send the session's reports from a point in its history, to answer a member's resend request; the reply ends with `SessionReplayComplete` |
+| `SessionReplayRequest` | Send the session's reports from a point in its history, to answer a member's resend request; the reply ends with `SessionReplayComplete`. Only the leader answers; a sequencer that does not lead sends a `SessionReplayComplete` marked as declined, with no records |
 
 See [Gateway High Availability](../availability/gateway_ha.md) and
 [Session binding](../availability/session_binding.md).

@@ -666,6 +666,16 @@ end
 #
 #  truncated = true means max_records was reached and more remain
 #  after last_seq_no. The gateway can ask again from there.
+#
+#  declined = true means the sequencer that sent it does not lead,
+#  so it has sent no records and read nothing from its WAL. The
+#  gateway sends every request to both sequencers, because it does
+#  not know which one leads, and only the leader answers: a
+#  follower's WAL may not yet hold the newest reports, so counting
+#  back through it from the newest would find the wrong ones, and
+#  two answers placed on the same numbers as they arrive would mix
+#  (BUG-0148). A gateway that has only been declined asks again
+#  when a new leader announces itself.
 # ------------------------------------------------------------
 
 message SessionReplayComplete (id=125, version=1)
@@ -673,6 +683,7 @@ message SessionReplayComplete (id=125, version=1)
     i32    record_count            # records sent in this reply
     i64    last_seq_no             # WAL sequence of the last record sent, or from_seq_no if none
     bool   truncated               # more records remain beyond last_seq_no
+    bool   declined                # the sender does not lead, and has sent no records
 end
 
 # ------------------------------------------------------------

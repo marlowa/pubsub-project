@@ -3290,6 +3290,28 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     // every other property of the reply being correct.
     const int32_t skip_most_recent = view.skip_most_recent > 0 ? view.skip_most_recent : 0;
 
+    // Only the leader answers. The gateway sends every request to both sequencers, because it does
+    // not know which one leads. A follower's WAL may not yet hold the newest reports, so counting
+    // back from its newest would find the wrong ones; and when both answered, the gateway placed the
+    // two answers' records on the member's numbers in the order they arrived, so the member was sent
+    // the wrong orders under the right numbers (BUG-0148). An instance whose role is not yet known
+    // declines too. The decline is sent rather than left unsaid so that the gateway can tell it
+    // from an answer still coming; a gateway that is only declined asks again when a new leader
+    // announces itself.
+    if (role_ != pubsub_itc_fw_app::Role::leader) {
+        pubsub_itc_fw_app::SessionReplayComplete declined{};
+        declined.request_id = view.request_id;
+        declined.record_count = 0;
+        declined.last_seq_no = from_seq_no;
+        declined.truncated = false;
+        declined.declined = true;
+        send_pdu(conn_id, pubsub_itc_fw_app::SessionReplayComplete::message_pdu_id, 0, declined);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: SessionReplayRequest id={} comp_id='{}' declined -- this instance is {}, and only the leader answers", view.request_id,
+                   identity.comp_id_view(), pubsub_itc_fw_app::to_string(role_));
+        return;
+    }
+
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: SessionReplayRequest id={} comp_id='{}' protocol={} from_seq_no={} max_records={} skip_most_recent={}", view.request_id,
                identity.comp_id_view(), identity.protocol, from_seq_no, max_records, skip_most_recent);

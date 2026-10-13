@@ -907,6 +907,11 @@ class Scenario(NamedTuple):
     # history, and what comes back is compared against what it was originally sent under those
     # very numbers. See run_scenario's "bounded resend" block.
     assert_bounded_resend: bool = False
+    # With assert_bounded_resend: kill the leading sequencer just before the member asks, so the
+    # request reaches only the follower, which declines it because it does not lead. The gateway must
+    # ask again when the follower takes over and announces itself, and the answer must still be the
+    # messages that occupied the numbers asked for (BUG-0148).
+    bounded_resend_with_leader_killed: bool = False
     # When True, the venue's inbound sequence checking is driven with scripts/fix_raw_client.py --
     # a client with no session layer, which will send what a conforming engine will not. See
     # run_scenario's "inbound sequence" block and docs/fix/inbound_sequence_checking.md.
@@ -3791,6 +3796,31 @@ _SCENARIOS: list[Scenario] = [
         assert_engine_holds_reports_without_connection=True,
         steps=[],
     ),
+
+    # 73 -- a bounded resend asked for while no sequencer leads.
+    #
+    # Only the leading sequencer answers a request for a session's reports; a sequencer that does
+    # not lead declines it. So a request that arrives while no instance leads is declined by every
+    # sequencer that receives it, and the gateway has to ask again once a leader exists. The
+    # leading sequencer is killed just before the member asks, so the request reaches only the
+    # follower, which declines; when the follower takes over it announces itself, and the gateway
+    # asks it again. What comes back is checked exactly as in scenario 40: the messages that
+    # occupied the numbers asked for, and nothing outside them. Without asking again the resend is
+    # never answered, and the session holds every live report from then on.
+    Scenario(
+        number=73,
+        short_name="bounded_resend_with_no_leader",
+        description="A member asks for a bounded range at the moment the leading sequencer dies",
+        expected_outcome=(
+            "the follower declines the request because it does not lead, the gateway asks again when the "
+            "follower takes over, and the venue resends exactly the messages that occupied the requested numbers"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_bounded_resend=True,
+        bounded_resend_with_leader_killed=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4586,6 +4616,12 @@ def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
 # What a sequencer logs when it writes a record out of order, and when it finds its write-ahead log damaged.
 _WAL_OUT_OF_ORDER = "was written after record"
 _WAL_DAMAGED = "write-ahead log is damaged"
+# What a sequencer logs when it answers a gateway's request for a session's reports, and when it
+# declines one because it does not lead. Scenario 40 expects exactly one of each (BUG-0148).
+_REPLAY_ANSWERED = "SequencerThread: SessionReplayComplete id="
+_REPLAY_DECLINED = "declined -- this instance is"
+# What the FIX gateway logs when it asks a new leader again for a resend that is still waiting.
+_REPLAY_ASKED_AGAIN = "a new sequencer leads"
 
 
 def check_write_ahead_logs_in_order(log_dir: Path) -> None:
@@ -9185,6 +9221,22 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # rather than after a reconnect, because nothing here is about recovery: it is about
             # whether the venue sends what was asked for.
             log(f"=== Asking for a bounded resend of {_BOUNDED_RESEND_BEGIN}..{_BOUNDED_RESEND_END} ===")
+            sequencer_logs = {name: log_dir / f"{name}.log" for name in ("sequencer_primary", "sequencer_secondary")}
+            sequencer_positions = {name: file_end(path) for name, path in sequencer_logs.items()}
+            if scenario.bounded_resend_with_leader_killed:
+                # The primary leads in this scenario because it is started first. Checked rather than
+                # assumed, because killing the follower instead would test nothing.
+                primary_log = sequencer_logs["sequencer_primary"]
+                if count_log_marker(primary_log, _SEQ_ROLE) == 0 or count_log_marker(primary_log, _TO_LEADER) == 0:
+                    die("bounded resend: sequencer_primary never logged becoming leader, so killing it would not leave the "
+                        "venue without a leader.")
+                leader = proc_by_name.get("sequencer_primary")
+                if leader is None or leader.poll() is not None:
+                    die("bounded resend: sequencer_primary is not running, so it cannot be killed.")
+                log(f"  SIGKILL -> sequencer_primary (PID {leader.pid}), just before the member asks")
+                leader.kill()
+                leader.wait()
+                log("  sequencer_primary confirmed dead")
             for keystroke, prompt in (("R", "Enter BeginSeqNo"),
                                       (str(_BOUNDED_RESEND_BEGIN), "Enter EndSeqNo"),
                                       (str(_BOUNDED_RESEND_END), None)):
@@ -9211,6 +9263,32 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if not found:
                 die("bounded resend: the gateway never finished the resend.")
             log(f"  bounded resend: the venue answered ({elapsed:.1f}s)")
+
+            # 0. Exactly one sequencer answered, and the other declined. The gateway sends the request
+            #    to both, because it does not know which one leads. When both answered, it placed the
+            #    two answers' records on the member's numbers in the order they arrived, and the
+            #    member was sent the wrong orders under the right numbers whenever the two
+            #    interleaved -- BUG-0148, which made this scenario fail at random.
+            for name, path in sequencer_logs.items():
+                poll_log_for(path, _REPLAY_DECLINED, timeout=_BOUNDED_RESEND_SETTLE, from_byte=sequencer_positions[name])
+            answered = {name: count_log_marker(path, _REPLAY_ANSWERED, sequencer_positions[name]) for name, path in sequencer_logs.items()}
+            declined = {name: count_log_marker(path, _REPLAY_DECLINED, sequencer_positions[name]) for name, path in sequencer_logs.items()}
+            if sum(answered.values()) != 1 or sum(declined.values()) != 1:
+                die(f"bounded resend: the sequencers answered {answered} and declined {declined}; exactly one answer, from "
+                    "the leader, and one decline, from the follower, were expected. Two answers are mixed by the gateway "
+                    "on the member's numbers (BUG-0148).")
+            log(f"  bounded resend: one sequencer answered and the other declined ({answered}, {declined}) -- OK")
+            if scenario.bounded_resend_with_leader_killed:
+                # The decline and the answer both came from the secondary: first as the follower,
+                # then as the leader it became. In between, the gateway asked again.
+                if answered["sequencer_secondary"] != 1 or declined["sequencer_secondary"] != 1:
+                    die(f"bounded resend: expected sequencer_secondary to decline the request and then answer it, but it "
+                        f"answered {answered['sequencer_secondary']} and declined {declined['sequencer_secondary']}.")
+                found, _, _ = poll_log_for(gw_log, _REPLAY_ASKED_AGAIN, timeout=0.0, from_byte=gw_pos)
+                if not found:
+                    die(f"bounded resend: the gateway never logged '{_REPLAY_ASKED_AGAIN}', so the answer did not come from "
+                        "asking the new leader again.")
+                log("  bounded resend: the follower declined, took over, and answered when the gateway asked again -- OK")
 
             time.sleep(_BOUNDED_RESEND_SETTLE)
             resent = {int(msg["MsgSeqNum"]): msg.get("ClOrdID", "")

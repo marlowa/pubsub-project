@@ -291,6 +291,11 @@ struct FixSession {
      */
     bool replay_in_progress{false};
     int64_t replay_request_id{0};
+    /// The sequencer connection whose answer the resend is taking, set by the first record or
+    /// completion for the current request that is not a decline. Records and completions for the
+    /// same request on any other connection are ignored, so two answers can never be mixed on the
+    /// member's numbers (BUG-0148). Not valid until an answer has begun.
+    pubsub_itc_fw::ConnectionID replay_answer_from{};
     /// The outbound number the session had reached before the resend began; where to resume.
     int replay_resume_seq_num{1};
     /// The last number the member asked for: EndSeqNo when it named one, otherwise the last

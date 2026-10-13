@@ -9,7 +9,10 @@
 > Phase 3's three steps are done, and [BUG-0147](bug_list.md#bug_0147), which step 3 made strike more
 > often, is fixed (decision 4 in [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md)).
 > The order's round trip is unchanged by phase 3, measured before and after (section 6.4 of that design).
-> Phase 3 waits for Andrew's review.
+> Phase 3 is finished: Andrew reviewed it on 13 October 2026 and asked for
+> [BUG-0148](bug_list.md#bug_0148), which made scenario 40 fail at random, to be fixed before phase 4
+> starts, so that every later phase starts from a run in which every high availability scenario passes.
+> It is fixed, and all 73 scenarios pass. Phase 4 starts with its design.
 
 ## In one page
 

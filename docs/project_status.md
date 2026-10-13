@@ -21,7 +21,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 72 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 73 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, and a member's open orders surviving a
   restart of the matching engine.
 - **The FIX session layer.** Resend requests are answered with the real execution reports, a
@@ -65,9 +65,9 @@ review at which Andrew decides whether the next starts. Phase 1, agreeing the de
 done. Phase 2, making the build enforce the framework principles, is done. Phases 3 to 9 move the high
 availability machinery from the sequencer and the matching engine into the library, in the order agreed
 in [ha_library_boundary.md](availability/ha_library_boundary.md); phase 3, moving the lease classes and the
-voting service into the library, has had its three steps done; its design is
-[lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md). The order's round trip,
-measured before and after, is unchanged, and phase 3 waits for Andrew's review. New features, including pub/sub, the order activity recorder and the trading phases, wait
+voting service into the library, is finished; its design is
+[lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md). Phase 4, the library's
+replicated WAL with one writing thread, starts with its design. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start

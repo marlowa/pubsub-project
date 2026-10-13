@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 151 |
-| Open | 64 (45 defects, 19 tasks) |
-| Closed | 87 |
+| Open | 63 (44 defects, 19 tasks) |
+| Closed | 88 |
 | Next id | BUG-0152 |
 
 ## Open bugs by severity
 
-17 high, 40 medium, 7 low.
+16 high, 40 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,7 +29,6 @@
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
-| [BUG-0148](#bug_0148) | high | defect | A bounded resend sometimes returns the wrong orders under the right numbers again, the fault BUG-0053 fixed |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -259,34 +258,6 @@ between listing the directory and reading the file, or it reads the WAL only onc
 finished changing it.
 
 **Evidence kept.** The scenario's output and logs are in `tmp/bug0149/scenario-62`.
-
-### BUG-0148: A bounded resend sometimes returns the wrong orders under the right numbers again, the fault BUG-0053 fixed {#bug_0148}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-12 |
-| Recorded | 2026-10-12 |
-| How | Running every high availability scenario against the Release install, to record which pass before phase 3 of the recovery plan changes anything |
-| Impact | A member that asks for a range of messages out of the middle of its history is sent messages with the right sequence numbers and the wrong contents, and nothing on its side can tell. This is the fault [BUG-0053](#bug_0053) describes |
-
-**What was found.** `ha_test.py` scenario 40 asks for messages 100 to 149 out of a thousand-order
-session, and compares what comes back, by ClOrdID, with what the member was originally sent under
-those numbers. In the Release install it failed in two runs of three. In the first failing run, 50
-messages came back, none outside the range, but 44 of them carried a different order from the one
-originally sent under that number: for example, number 106 was sent as `ord105` and resent as `ord99`,
-and number 107 was sent as `ord106` and resent as `ord100`. The third run failed the same way, and the
-second passed. In the Debug install at the end of phase 2, scenario 40 passed.
-
-**Why it should not happen.** BUG-0053 was fixed on 2026-08-27 by recording which outbound number each
-report went out on, so that a bounded resend returns the reports that occupied the numbers asked for.
-A failure in some runs and not others suggests that the record of outbound numbers is sometimes
-incomplete or out of step with what the member received, for example when reports and the numbers
-they went out on are recorded in a different order from the one in which they were sent. This is not
-established.
-
-**Evidence kept.** The logs of the three runs are in `tmp/bug0148`: `run1-fail`, `run2-pass` and
-`run3-fail`.
 
 ### BUG-0146: A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout {#bug_0146}
 
@@ -3244,6 +3215,73 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0148: A bounded resend sometimes returns the wrong orders under the right numbers again, the fault BUG-0053 fixed {#bug_0148}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| Fixed | 2026-10-13 -- only the leading sequencer answers a request for a session's reports, and any other declines; the gateway takes one answer only, and asks a new leader again for a resend still waiting |
+| How | Running every high availability scenario against the Release install, to record which pass before phase 3 of the recovery plan changes anything |
+| Impact | A member that asks for a range of messages out of the middle of its history is sent messages with the right sequence numbers and the wrong contents, and nothing on its side can tell. This is the fault [BUG-0053](#bug_0053) describes |
+
+**What was found.** `ha_test.py` scenario 40 asks for messages 100 to 149 out of a thousand-order
+session, and compares what comes back, by ClOrdID, with what the member was originally sent under
+those numbers. In the Release install it failed in two runs of three. In the first failing run, 50
+messages came back, none outside the range, but 44 of them carried a different order from the one
+originally sent under that number: for example, number 106 was sent as `ord105` and resent as `ord99`,
+and number 107 was sent as `ord106` and resent as `ord100`. The third run failed the same way, and the
+second passed. In the Debug install at the end of phase 2, scenario 40 passed.
+
+**Why it should not happen.** BUG-0053 was fixed on 2026-08-27 by recording which outbound number each
+report went out on, so that a bounded resend returns the reports that occupied the numbers asked for.
+A failure in some runs and not others suggests that the record of outbound numbers is sometimes
+incomplete or out of step with what the member received, for example when reports and the numbers
+they went out on are recorded in a different order from the one in which they were sent. This is not
+established.
+
+**Evidence kept.** The logs of the three runs are in `tmp/bug0148`: `run1-fail`, `run2-pass` and
+`run3-fail`.
+
+**The cause.** The FIX gateway does not know which sequencer leads, so it sends every
+`SessionReplayRequest` to both, and both answered. Each sent the same records, and the gateway placed
+replay records on the member's numbers in the order they arrived, whichever connection they came on.
+When one answer arrived wholly before the other, it filled the range, and the other was ignored once
+the resend had ended, so the scenario passed. When the two interleaved, the member was sent the wrong
+orders. Reproduced in two runs of three with Debug logging: both sequencers logged an answer of 50
+records to request 1, and the member received `ord99` to `ord110` on numbers 100 to 111 and then
+`ord99` onwards again from number 112, two copies of the same answer merged. The record of outbound
+numbers suspected above was correct.
+
+**How it was fixed.**
+
+- **Only the leading sequencer answers.** A sequencer that does not lead, including one whose role is
+  not yet known, sends back a `SessionReplayComplete` with the new field `declined` set, sends no
+  records, and reads nothing from its WAL (`SequencerThread::handle_session_replay_request`). Answering
+  from a follower is wrong in any case: its WAL may not yet hold the newest reports, so counting back
+  from its newest finds different ones.
+- **The gateway takes one answer only.** The first record or completion for a request that is not a
+  decline chooses the connection, and anything for the same request on the other connection is ignored
+  and logged as a warning (`FixOrderGatewayThread::takes_replay_answer_from`). A decline is logged and
+  otherwise ignored.
+- **The gateway asks again when a new leader announces itself.** A replay ended only when an answer
+  completed, so a request that reached no leader would have left the session holding its live reports
+  for ever. When a higher leader epoch arrives, every resend still waiting asks the new leader, under a
+  new request identifier, for the reports on the numbers from where it has reached to the end of its
+  range (`send_waiting_replay_requests_again`). Reports already placed are not asked for again, so the
+  member never receives a number twice, and anything still arriving for the earlier request is ignored.
+- `docs/availability/resend_provenance.md` has a section, "Which sequencer answers", saying all this.
+
+**Checked.** Scenario 40 now also fails unless exactly one sequencer answered and the other declined.
+A new scenario, 73, kills the leading sequencer just before the member asks for the same range, and
+fails unless the follower declines, takes over, and answers when the gateway asks again, with the
+same checks on the messages that come back. Each check was seen to fail: with the sequencer allowed to
+answer when not leading, scenario 40 failed twice out of two, reporting both sequencers answering; with
+the gateway's second request removed, scenario 73 failed with the resend never finished. With the fix,
+scenarios 40 and 73 each passed three runs out of three, and every one of the 73 scenarios passed on
+fresh WALs, with no WAL written out of order in any of them.
 
 ### BUG-0147: A following sequencer wrote replicated records out of order under load and damaged its write-ahead log, although BUG-0123's lock was meant to prevent it {#bug_0147}
 

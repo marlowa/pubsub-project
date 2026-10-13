@@ -175,7 +175,9 @@ So it asks the sequencer, whose write-ahead log already holds every execution re
 session it belongs to stamped on it. `SessionReplayRequest` (123) names the session and how many
 reports are wanted; the reports come back as `SessionReplayRecord` (124) PDUs; `SessionReplayComplete`
 (125) ends it, and is sent even when nothing matched, because otherwise the gateway could not tell
-"nothing to send" from "still coming".
+"nothing to send" from "still coming". The gateway sends the request to both sequencers, and only the
+leader answers; the other sends a `SessionReplayComplete` marked as declined. Why, and what the
+gateway does when no sequencer leads, is in [Resend provenance](resend_provenance.md).
 
 **The WAL holds reports and nothing else.** Every other message the member was sent — the Logon,
 the heartbeats, the rejects — also took an outbound sequence number, and none of them can be
