@@ -46,6 +46,7 @@
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 #include <leader_follower.hpp>
+#include <replication_messages.hpp>
 
 using pubsub_itc_fw::tests_common::LoggerWithSink;
 using pubsub_itc_fw::tests_common::make_allocator_config;
@@ -83,7 +84,7 @@ class StreamingSenderThread : public ApplicationThread {
 
   private:
     void send_next() {
-        pubsub_itc_fw_app::WalAck record{};
+        pubsub_itc_fw::WalAck record{};
         record.seq_no = next_seq_no_;
         send_pdu(connection_id_, pdu_id_stream_record, next_seq_no_, record);
         ++next_seq_no_;
@@ -125,8 +126,8 @@ class SlowReceiverThread : public ApplicationThread {
         BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
         size_t consumed = 0;
         size_t arena_needed = 0;
-        pubsub_itc_fw_app::WalAckView view{};
-        if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        pubsub_itc_fw::WalAckView view{};
+        if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
             return;
         }
         received_seq_nos.push_back(view.seq_no);

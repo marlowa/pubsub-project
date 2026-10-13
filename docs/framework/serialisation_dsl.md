@@ -288,7 +288,9 @@ with pybind11, so they need pybind11 available to CMake.
 
 | File | Namespace | Contents |
 |------|-----------|---------|
-| `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl` | `pubsub_itc_fw_app` (and `pubsub_itc_fw` through the framework glob) | The messages between instances of a pair and their voters: `StatusQuery` (100), `StatusResponse` (101), `LeaseRequest` (130), `LeaseGrant` (131), `LeaseRefusal` (132), `ArbiterStateRecord` (400); the log's `WalRecord` (103), `WalAck` (104), `WalSubscribeRequest` (105), `WalSubscribeAck` (106), `LogPositionRequest` (107) and `LogPositionReply` (108); the matching engine's catch-up (`MePositionRequest` 115, `MePositionAck` 116), `RoleAnnouncement` (117) and `EnginePositionQuery`/`EnginePosition` (118/119); the session messages (120-126), `OrderAcceptance` (127) and `UndeliveredReportsRequest` (128) |
+| `libraries/pubsub_itc_fw/include/pubsub_itc_fw/leader_follower.dsl` | `pubsub_itc_fw_app` (and `pubsub_itc_fw` through the framework glob) | The venue's messages between its components: `StatusQuery` (100), `StatusResponse` (101); the WAL's envelope `WalRecord` (103), `WalSubscribeRequest` (105) and `WalSubscribeAck` (106); the matching engine's catch-up (`MePositionRequest` 115, `MePositionAck` 116), `RoleAnnouncement` (117) and `EnginePositionQuery`/`EnginePosition` (118/119); the session messages (120-126), `OrderAcceptance` (127) and `UndeliveredReportsRequest` (128) |
+| `libraries/pubsub_itc_fw/include/pubsub_itc_fw/lease_messages.dsl` | `pubsub_itc_fw` | The library's lease messages between the instances of a pair and their voters: `LeaseRequest` (130), `LeaseGrant` (131), `LeaseRefusal` (132), and the arbiter's `ArbiterStateRecord` (400) |
+| `libraries/pubsub_itc_fw/include/pubsub_itc_fw/replication_messages.dsl` | `pubsub_itc_fw` | The library's replicated WAL messages between the two instances of a pair: `WalAck` (104), `LogPositionRequest` (107), `LogPositionReply` (108) and `ReplicatedRecord` (133) |
 | `fix_orders.dsl`, generated in `build/generated_dsl/` | `pubsub_itc_fw_app` | `NewOrderSingle` (1000), `OrderCancelRequest` (1001), `ExecutionReport` (1002), `OrderCancelReject` (1003), with ids from the `PduId` enum |
 | `applications/authentication.dsl` | `pubsub_itc_fw_app` | SCRAM PDUs 500–503 (`AuthenticationRequest`, `AuthenticationChallenge`, `AuthenticationProof`, `AuthenticationResult`); plus `SetCredentialRequest/Result` (510/511), `RemoveCredentialRequest/Result` (512/513), `RestoreCredentialRequest/Result` (514/515) |
 | `applications/binary_session.dsl` | `pubsub_itc_fw_app` | The binary gateway's session messages: `Logon` (700), `LogonAck` (701) |
@@ -298,7 +300,7 @@ with pybind11, so they need pybind11 available to CMake.
 | `libraries/pubsub_itc_fw/integration_tests/variable_length_test_protocol.dsl`, `libraries/pubsub_itc_fw/performance/DslBenchProtocol.dsl` | `pubsub_itc_fw` | Test and benchmark messages only |
 
 Pdu ids are not unique across files: 107 and 108 are both `LogPositionRequest`/`LogPositionReply`
-in `leader_follower.dsl` and `TopicSubscribeRequest`/`TopicSubscribeAck` in `topics.dsl`. A
+in `replication_messages.dsl` and `TopicSubscribeRequest`/`TopicSubscribeAck` in `topics.dsl`. A
 receiver interprets a pdu id according to the protocol it expects on that connection; the
 sequencer handles the first pair and the topic publisher and subscriber classes the second.
 

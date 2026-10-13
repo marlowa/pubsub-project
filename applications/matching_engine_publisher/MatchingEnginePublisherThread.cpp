@@ -428,9 +428,9 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
     sequencer_cursor_ = view.seq_no;
 
     // Ack immediately.
-    pubsub_itc_fw_app::WalAck ack{};
+    pubsub_itc_fw::WalAck ack{};
     ack.seq_no = view.seq_no;
-    send_pdu(conn_id, pubsub_itc_fw_app::WalAck::message_pdu_id, 0, ack);
+    send_pdu(conn_id, pubsub_itc_fw::WalAck::message_pdu_id, 0, ack);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: WalRecord seq={} pdu_id={} written to MEP WAL, WalAck sent", view.seq_no,
                view.pdu_id);

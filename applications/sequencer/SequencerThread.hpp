@@ -24,6 +24,7 @@
 
 #include <fix_orders.hpp>
 #include <leader_follower.hpp>
+#include <replication_messages.hpp>
 
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/Wal.hpp>

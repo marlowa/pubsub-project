@@ -558,7 +558,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     if (svc == wal_subscriber_inbound_svc_) {
         if (message.pdu_id() == pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id) {
             handle_wal_subscribe_request(conn_id, message);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::WalAck::message_pdu_id) {
+        } else if (message.pdu_id() == pubsub_itc_fw::WalAck::message_pdu_id) {
             handle_external_wal_ack(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
@@ -1569,11 +1569,11 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
         handle_lease_refusal(message);
     } else if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         handle_wal_record(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw_app::WalAck::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::WalAck::message_pdu_id) {
         handle_wal_ack(message);
-    } else if (pdu_id == pubsub_itc_fw_app::LogPositionRequest::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::LogPositionRequest::message_pdu_id) {
         handle_log_position_request(message);
-    } else if (pdu_id == pubsub_itc_fw_app::LogPositionReply::message_pdu_id) {
+    } else if (pdu_id == pubsub_itc_fw::LogPositionReply::message_pdu_id) {
         handle_log_position_reply(message);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown peer PDU id {} -- dropping", pdu_id);
@@ -1751,9 +1751,9 @@ void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_
                "SequencerThread: WalRecord seq={} inner_pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
                wal_.record_count());
 
-    pubsub_itc_fw_app::WalAck wal_ack{};
+    pubsub_itc_fw::WalAck wal_ack{};
     wal_ack.seq_no = view.seq_no;
-    send_pdu(conn_id, pubsub_itc_fw_app::WalAck::message_pdu_id, 0, wal_ack);
+    send_pdu(conn_id, pubsub_itc_fw::WalAck::message_pdu_id, 0, wal_ack);
 }
 
 void SequencerThread::forget_log_agreement() {
@@ -1763,9 +1763,9 @@ void SequencerThread::forget_log_agreement() {
     // agree, would wait for records that never come.
     const pubsub_itc_fw::ConnectionID target = peer_active_conn();
     if (config_.ha_enabled && role_ == pubsub_itc_fw_app::Role::leader && target.is_valid()) {
-        pubsub_itc_fw_app::LogPositionReply reply{};
+        pubsub_itc_fw::LogPositionReply reply{};
         reply.ask_again = true;
-        send_pdu(target, pubsub_itc_fw_app::LogPositionReply::message_pdu_id, 0, reply);
+        send_pdu(target, pubsub_itc_fw::LogPositionReply::message_pdu_id, 0, reply);
     }
 }
 
@@ -1795,11 +1795,11 @@ void SequencerThread::send_log_position_request() {
     if (!config_.ha_enabled || role_ == pubsub_itc_fw_app::Role::leader || !target.is_valid() || follower_log_agreed_) {
         return;
     }
-    pubsub_itc_fw_app::LogPositionRequest request{};
+    pubsub_itc_fw::LogPositionRequest request{};
     request.last_seq_no = log_epochs_.last_seq_no();
     request.last_epoch = log_epochs_.last_epoch();
     last_position_request_at_ = std::chrono::steady_clock::now();
-    send_pdu(target, pubsub_itc_fw_app::LogPositionRequest::message_pdu_id, 0, request);
+    send_pdu(target, pubsub_itc_fw::LogPositionRequest::message_pdu_id, 0, request);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                "SequencerThread: asking the leader where its log and this one agree (last record {} from epoch {})", request.last_seq_no, request.last_epoch);
 }
@@ -1809,8 +1809,8 @@ void SequencerThread::handle_log_position_request(const pubsub_itc_fw::EventMess
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LogPositionRequestView request{};
-    if (!pubsub_itc_fw_app::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LogPositionRequestView request{};
+    if (!pubsub_itc_fw::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LogPositionRequest -- dropping");
         return;
     }
@@ -1820,13 +1820,13 @@ void SequencerThread::handle_log_position_request(const pubsub_itc_fw::EventMess
     }
 
     const pubsub_itc_fw::LogEpochTable::PositionAnswer answer = log_epochs_.answer_position(request.last_seq_no, request.last_epoch);
-    pubsub_itc_fw_app::LogPositionReply reply{};
+    pubsub_itc_fw::LogPositionReply reply{};
     reply.seq_no = answer.seq_no;
     reply.epoch = answer.epoch;
     reply.agreed = answer.seq_no == request.last_seq_no && (answer.seq_no == 0 || answer.epoch == request.last_epoch);
     // On the connection the records go on, so that the follower has the answer before the records
     // that follow it.
-    send_pdu(target, pubsub_itc_fw_app::LogPositionReply::message_pdu_id, 0, reply);
+    send_pdu(target, pubsub_itc_fw::LogPositionReply::message_pdu_id, 0, reply);
     if (!reply.agreed) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: the follower's log ends at record {} from epoch {}; it agrees with this one at most through record {} -- told to "
@@ -1861,8 +1861,8 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::LogPositionReplyView reply{};
-    if (!pubsub_itc_fw_app::decode(reply, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw::LogPositionReplyView reply{};
+    if (!pubsub_itc_fw::decode(reply, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LogPositionReply -- dropping");
         return;
     }
@@ -1913,9 +1913,9 @@ void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message)
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::WalAckView view{};
+    pubsub_itc_fw::WalAckView view{};
 
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode WalAck -- dropping");
         return;
     }
@@ -3388,9 +3388,9 @@ void SequencerThread::handle_external_wal_ack(const pubsub_itc_fw::ConnectionID&
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::WalAckView view{};
+    pubsub_itc_fw::WalAckView view{};
 
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode external WalAck -- dropping");
         return;
     }

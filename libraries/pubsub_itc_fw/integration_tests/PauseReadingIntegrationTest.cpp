@@ -49,6 +49,7 @@
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 #include <leader_follower.hpp>
+#include <replication_messages.hpp>
 
 using pubsub_itc_fw::tests_common::LoggerWithSink;
 using pubsub_itc_fw::tests_common::make_allocator_config;
@@ -131,10 +132,10 @@ class BurstSender : public ApplicationThread {
   private:
     // Sends the PDUs from next_ up to `last`, or up to count_ if that is fewer.
     void send_up_to(int last) {
-        pubsub_itc_fw_app::WalAck message{};
+        pubsub_itc_fw::WalAck message{};
         for (; next_ <= last && next_ <= count_; ++next_) {
             message.seq_no = next_;
-            send_pdu(connection_, pubsub_itc_fw_app::WalAck::message_pdu_id, static_cast<int64_t>(next_), message);
+            send_pdu(connection_, pubsub_itc_fw::WalAck::message_pdu_id, static_cast<int64_t>(next_), message);
         }
         if (next_ > count_ && !burst_sent.load(std::memory_order_relaxed)) {
             if (per_tick_ != 0) {

@@ -55,6 +55,7 @@
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 #include <leader_follower.hpp>
+#include <replication_messages.hpp>
 
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 
@@ -63,9 +64,9 @@ using pubsub_itc_fw::tests_common::make_allocator_config;
 using pubsub_itc_fw::tests_common::make_queue_config;
 namespace pubsub_itc_fw {
 
+using pubsub_itc_fw::WalAck;
+using pubsub_itc_fw::WalAckView;
 using pubsub_itc_fw_app::decode;
-using pubsub_itc_fw_app::WalAck;
-using pubsub_itc_fw_app::WalAckView;
 using pubsub_itc_fw_app::WalRecord;
 using pubsub_itc_fw_app::WalRecordView;
 using pubsub_itc_fw_app::WalSubscribeAck;
@@ -140,7 +141,7 @@ class WalPublisherThread : public ApplicationThread {
             });
 
             all_records_streamed.store(true, std::memory_order_release);
-        } else if (msg.pdu_id() == pubsub_itc_fw_app::WalAck::message_pdu_id) {
+        } else if (msg.pdu_id() == pubsub_itc_fw::WalAck::message_pdu_id) {
             WalAckView ack_view{};
             if (!decode(ack_view, payload, size, consumed, arena, arena_needed)) {
                 return;
@@ -234,7 +235,7 @@ class WalSubscriberThread : public ApplicationThread {
 
             WalAck ack{};
             ack.seq_no = record_view.seq_no;
-            send_pdu(conn_id_, pubsub_itc_fw_app::WalAck::message_pdu_id, 0, ack);
+            send_pdu(conn_id_, pubsub_itc_fw::WalAck::message_pdu_id, 0, ack);
 
             if (count == expected_record_count_) {
                 all_records_received.store(true, std::memory_order_release);

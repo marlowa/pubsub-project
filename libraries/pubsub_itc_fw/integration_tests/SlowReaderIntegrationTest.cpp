@@ -55,6 +55,7 @@
 #include <pubsub_itc_fw/tests_common/TestConfigurations.hpp>
 
 #include <leader_follower.hpp>
+#include <replication_messages.hpp>
 
 using pubsub_itc_fw::tests_common::LoggerWithSink;
 using pubsub_itc_fw::tests_common::make_allocator_config;
@@ -146,14 +147,14 @@ class RoundRobinSender : public ApplicationThread {
         }
         const int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - started_at_).count() + 1;
         const int64_t due = std::min<int64_t>(count_, elapsed_ms * rounds_per_ms_);
-        pubsub_itc_fw_app::WalAck message{};
+        pubsub_itc_fw::WalAck message{};
         pubsub_itc_fw_app::UndeliveredReportsRequest padded{};
         padded.comp_id = padding_;
         for (; next_ <= due; ++next_) {
             message.seq_no = next_;
             for (const ConnectionID& connection : live_) {
                 if (padding_.empty()) {
-                    send_pdu(connection, pubsub_itc_fw_app::WalAck::message_pdu_id, static_cast<int64_t>(next_), message);
+                    send_pdu(connection, pubsub_itc_fw::WalAck::message_pdu_id, static_cast<int64_t>(next_), message);
                 } else {
                     send_pdu(connection, pubsub_itc_fw_app::UndeliveredReportsRequest::message_pdu_id, static_cast<int64_t>(next_), padded);
                 }
@@ -225,9 +226,9 @@ class PacedSender : public ApplicationThread {
         if (next > count_) {
             return;
         }
-        pubsub_itc_fw_app::WalAck message{};
+        pubsub_itc_fw::WalAck message{};
         message.seq_no = next;
-        send_pdu(connection_, pubsub_itc_fw_app::WalAck::message_pdu_id, static_cast<int64_t>(next), message);
+        send_pdu(connection_, pubsub_itc_fw::WalAck::message_pdu_id, static_cast<int64_t>(next), message);
         sent.store(next);
         request_writable_notification(connection_);
     }

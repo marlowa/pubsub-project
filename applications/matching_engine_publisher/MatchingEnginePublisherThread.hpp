@@ -18,6 +18,7 @@
 #include <leader_follower.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
+#include <replication_messages.hpp>
 #include <topics.hpp>
 #include <topics_registry.hpp>
 
