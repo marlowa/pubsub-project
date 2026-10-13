@@ -12,7 +12,8 @@
 > Phase 3 is finished: Andrew reviewed it on 13 October 2026 and asked for
 > [BUG-0148](bug_list.md#bug_0148), which made scenario 40 fail at random, to be fixed before phase 4
 > starts, so that every later phase starts from a run in which every high availability scenario passes.
-> It is fixed, and all 73 scenarios pass. Phase 4 starts with its design.
+> It is fixed, and all 73 scenarios pass. Phase 4's design,
+> [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), waits for Andrew's review.
 
 ## In one page
 
@@ -238,6 +239,9 @@ that, and it is measured.
 **Finished when:** no lock is taken for each order in the sequencer; its exceptions are removed from the
 phase 2 list; the high availability scenarios pass; and the order's round trip has been measured before
 and after.
+
+**Design:** [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), a draft
+for Andrew's review.
 
 ### Phase 5. Following the WAL
 
