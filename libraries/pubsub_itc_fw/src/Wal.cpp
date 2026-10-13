@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,24 +47,15 @@ int64_t Wal::open(const std::string& directory, size_t segment_size, ReplayCallb
     WalReader::EntryCallback fw_cb;
     if (replay_cb) {
         fw_cb = [this, &replay_cb](int64_t record_id, const void* payload, size_t size) {
-            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (size < header_size) {
+            const std::optional<WalEntryContents> contents = read_wal_entry_contents(payload, size);
+            if (!contents.has_value()) {
                 return;
             }
-
-            int64_t wall_time_ns{};
-            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-
-            int16_t pdu_id{};
-            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
-
-            const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
-            const size_t pdu_size = size - header_size;
 
             ++record_count_;
             last_seq_no_ = record_id;
 
-            replay_cb(record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns);
+            replay_cb(record_id, contents->pdu_id, contents->bytes, contents->size, contents->wall_time_ns, contents->leader_epoch);
         };
     } else {
         fw_cb = [this](int64_t record_id, const void* /*payload*/, size_t /*size*/) {
@@ -149,12 +141,12 @@ void Wal::take_snapshot() {
     }
 }
 
-void Wal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns) {
+void Wal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch) {
     constexpr int stack_buffer_size = 512;
     uint8_t stack_buffer[stack_buffer_size];
     std::vector<uint8_t> heap_buffer;
 
-    const size_t total = sizeof(int64_t) + sizeof(int16_t) + static_cast<size_t>(size);
+    const size_t total = wal_entry_header_size + static_cast<size_t>(size);
     uint8_t* payload_buffer;
     if (total <= stack_buffer_size) {
         payload_buffer = stack_buffer;
@@ -163,9 +155,8 @@ void Wal::append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int siz
         payload_buffer = heap_buffer.data();
     }
 
-    std::memcpy(payload_buffer, &wall_time_ns, sizeof(int64_t));
-    std::memcpy(payload_buffer + sizeof(int64_t), &pdu_id, sizeof(int16_t));
-    std::memcpy(payload_buffer + sizeof(int64_t) + sizeof(int16_t), payload, static_cast<size_t>(size));
+    write_wal_entry_header(payload_buffer, wall_time_ns, leader_epoch, pdu_id);
+    std::memcpy(payload_buffer + wal_entry_header_size, payload, static_cast<size_t>(size));
 
     writer_.append(seq_no, payload_buffer, total);
 

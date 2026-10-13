@@ -58,7 +58,7 @@ class LogTailIndexTest : public ::testing::Test {
         static_cast<void>(pubsub_itc_fw_app::encode(record, nullptr, 0, bytes_written, bytes_needed));
         std::vector<uint8_t> buffer(bytes_needed);
         ASSERT_TRUE(pubsub_itc_fw_app::encode(record, buffer.data(), buffer.size(), bytes_written, bytes_needed));
-        wal_->append(record.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, buffer.data(), static_cast<int>(bytes_written), wall_time_ns);
+        wal_->append(record.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, buffer.data(), static_cast<int>(bytes_written), wall_time_ns, 0);
     }
 
     // One command a second, numbered from 1, so that the log spans many segments.

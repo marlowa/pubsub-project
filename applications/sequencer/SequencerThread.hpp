@@ -32,7 +32,6 @@
 #include "EngineReportPosition.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReportStore.hpp"
-#include "LogEpochTable.hpp"
 #include "LogTailIndex.hpp"
 #include "LoggedCommandIdentifiers.hpp"
 #include "LoggedCommandIdentifiersBuilder.hpp"
@@ -43,6 +42,7 @@
 #include <pubsub_itc_fw/EpochStore.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
+#include <pubsub_itc_fw/LogEpochTable.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 
 namespace sequencer {
@@ -115,7 +115,7 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     //
     // Which leadership wrote each record of this instance's log. This thread is the only one that
     // writes the log, on the leader and the follower alike, so the table is used on this thread only.
-    LogEpochTable log_epochs_;
+    pubsub_itc_fw::LogEpochTable log_epochs_;
 
     // As a follower: whether this log and the leader's are known to agree, so that the records the
     // leader sends may be written. Until then they are discarded.

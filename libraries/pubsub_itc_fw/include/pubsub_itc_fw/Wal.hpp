@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
 namespace pubsub_itc_fw {
@@ -107,8 +108,10 @@ class Wal {
      * @param payload_size Number of PDU payload bytes (excludes the header prefix).
      * @param wall_time_ns Wall time at which the leader sequenced this record (nanoseconds
      *                     since the Unix epoch).
+     * @param leader_epoch The epoch of the leadership that numbered the record, or zero.
      */
-    using ReplayCallback = std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns)>;
+    using ReplayCallback =
+        std::function<void(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns, int32_t leader_epoch)>;
 
     ~Wal() = default;
 
@@ -139,16 +142,17 @@ class Wal {
     /**
      * @brief Appends one record to the WAL.
      *
-     * Payload stored: wall_time_ns (8 bytes) | pdu_id (2 bytes) | raw PDU payload bytes.
-     * The framework WalWriter handles segmentation, mmap, and CRC.
+     * What is stored is described in WalEntryContents.hpp, which also reads it back. The framework
+     * WalWriter handles segmentation, mmap, and CRC.
      *
      * @param[in] seq_no       Stamped sequence number (stored as record_id).
      * @param[in] pdu_id       DSL message type.
      * @param[in] payload      Raw inbound PDU payload bytes.
      * @param[in] size         Number of payload bytes.
      * @param[in] wall_time_ns Wall time at which this record is being sequenced.
+     * @param[in] leader_epoch The epoch of the leadership that numbered the record, or zero where there is none.
      */
-    void append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns);
+    void append(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
 
     /**
      * @brief Writes a snapshot then deletes superseded WAL segments.

@@ -64,7 +64,7 @@ class LoggedCommandIdentifiersBuilderTest : public ::testing::Test {
         static_cast<void>(pubsub_itc_fw_app::encode(record, nullptr, 0, bytes_written, bytes_needed));
         std::vector<uint8_t> buffer(bytes_needed);
         ASSERT_TRUE(pubsub_itc_fw_app::encode(record, buffer.data(), buffer.size(), bytes_written, bytes_needed));
-        wal_->append(record.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, buffer.data(), static_cast<int>(bytes_written), last_seq_no_);
+        wal_->append(record.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, buffer.data(), static_cast<int>(bytes_written), last_seq_no_, 0);
     }
 
     std::vector<std::string> segment_paths() const {

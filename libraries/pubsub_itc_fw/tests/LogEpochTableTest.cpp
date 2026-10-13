@@ -6,14 +6,14 @@
 
 #include <gtest/gtest.h>
 
-#include "LogEpochTable.hpp"
+#include <pubsub_itc_fw/LogEpochTable.hpp>
 
 #include <pubsub_itc_fw/PreconditionAssertion.hpp>
 
 namespace {
 
 // Appends records first..last, all from one epoch.
-void append(sequencer::LogEpochTable& table, int64_t first, int64_t last, int32_t epoch) {
+void append(pubsub_itc_fw::LogEpochTable& table, int64_t first, int64_t last, int32_t epoch) {
     for (int64_t seq_no = first; seq_no <= last; ++seq_no) {
         table.note_record(seq_no, epoch);
     }
@@ -21,7 +21,7 @@ void append(sequencer::LogEpochTable& table, int64_t first, int64_t last, int32_
 
 // Runs the exchange between a follower and its leader until they agree, as the sequencers do, and
 // returns the record the follower keeps its log through. Counts the rounds it took.
-int64_t repair(sequencer::LogEpochTable& follower, const sequencer::LogEpochTable& leader, int& rounds) {
+int64_t repair(pubsub_itc_fw::LogEpochTable& follower, const pubsub_itc_fw::LogEpochTable& leader, int& rounds) {
     rounds = 0;
     for (;;) {
         ++rounds;
@@ -37,7 +37,7 @@ int64_t repair(sequencer::LogEpochTable& follower, const sequencer::LogEpochTabl
 } // un-named namespace
 
 TEST(LogEpochTableTest, TheEpochOfEachRecordIsKnown) {
-    sequencer::LogEpochTable table;
+    pubsub_itc_fw::LogEpochTable table;
     append(table, 1, 100, 1);
     append(table, 101, 150, 6);
     EXPECT_EQ(table.epoch_of(1), 1);
@@ -50,15 +50,15 @@ TEST(LogEpochTableTest, TheEpochOfEachRecordIsKnown) {
 }
 
 TEST(LogEpochTableTest, ARecordOutOfOrderIsRefused) {
-    sequencer::LogEpochTable table;
+    pubsub_itc_fw::LogEpochTable table;
     append(table, 1, 10, 1);
     EXPECT_THROW(table.note_record(12, 1), pubsub_itc_fw::PreconditionAssertion);
 }
 
 TEST(LogEpochTableTest, AFollowerThatIsMerelyBehindKeepsEverything) {
-    sequencer::LogEpochTable leader;
+    pubsub_itc_fw::LogEpochTable leader;
     append(leader, 1, 500, 5);
-    sequencer::LogEpochTable follower;
+    pubsub_itc_fw::LogEpochTable follower;
     append(follower, 1, 200, 5);
     int rounds = 0;
     EXPECT_EQ(repair(follower, leader, rounds), 200);
@@ -68,10 +68,10 @@ TEST(LogEpochTableTest, AFollowerThatIsMerelyBehindKeepsEverything) {
 TEST(LogEpochTableTest, AnOldLeaderDiscardsTheRecordsItWroteThatTheNewLeaderDoesNotHave) {
     // The old leader wrote 101-200 at epoch 5 that never reached its follower; the follower then led at
     // epoch 6 and wrote its own 101-150.
-    sequencer::LogEpochTable leader;
+    pubsub_itc_fw::LogEpochTable leader;
     append(leader, 1, 100, 5);
     append(leader, 101, 150, 6);
-    sequencer::LogEpochTable old_leader;
+    pubsub_itc_fw::LogEpochTable old_leader;
     append(old_leader, 1, 200, 5);
     int rounds = 0;
     EXPECT_EQ(repair(old_leader, leader, rounds), 100);
@@ -80,11 +80,11 @@ TEST(LogEpochTableTest, AnOldLeaderDiscardsTheRecordsItWroteThatTheNewLeaderDoes
 }
 
 TEST(LogEpochTableTest, ADivergenceAcrossTwoChangesOfLeaderIsFound) {
-    sequencer::LogEpochTable leader;
+    pubsub_itc_fw::LogEpochTable leader;
     append(leader, 1, 50, 1);
     append(leader, 51, 80, 6);
     append(leader, 81, 120, 9);
-    sequencer::LogEpochTable follower;
+    pubsub_itc_fw::LogEpochTable follower;
     append(follower, 1, 50, 1);
     append(follower, 51, 90, 5);
     append(follower, 91, 95, 7);
@@ -94,9 +94,9 @@ TEST(LogEpochTableTest, ADivergenceAcrossTwoChangesOfLeaderIsFound) {
 }
 
 TEST(LogEpochTableTest, AnEmptyFollowerAgreesAtNothing) {
-    sequencer::LogEpochTable leader;
+    pubsub_itc_fw::LogEpochTable leader;
     append(leader, 1, 10, 2);
-    sequencer::LogEpochTable follower;
+    pubsub_itc_fw::LogEpochTable follower;
     int rounds = 0;
     EXPECT_EQ(repair(follower, leader, rounds), 0);
 }
@@ -105,10 +105,10 @@ TEST(LogEpochTableTest, AnEpochThatWentBackwardsStillEndsInAgreement) {
     // The follower holds a record at 61 from epoch 9 where the leader's 61 is from epoch 7 after the
     // leader's epoch went back from 9 to 7: the answer lands on a record from a different epoch, and the
     // follower steps back until the logs agree.
-    sequencer::LogEpochTable leader;
+    pubsub_itc_fw::LogEpochTable leader;
     append(leader, 1, 60, 9);
     append(leader, 61, 70, 7);
-    sequencer::LogEpochTable follower;
+    pubsub_itc_fw::LogEpochTable follower;
     append(follower, 1, 60, 9);
     append(follower, 61, 62, 10);
     int rounds = 0;
@@ -116,7 +116,7 @@ TEST(LogEpochTableTest, AnEpochThatWentBackwardsStillEndsInAgreement) {
 }
 
 TEST(LogEpochTableTest, TruncatingRemovesTheRunsAfterThePoint) {
-    sequencer::LogEpochTable table;
+    pubsub_itc_fw::LogEpochTable table;
     append(table, 1, 100, 1);
     append(table, 101, 150, 6);
     table.truncate_after(100);
@@ -130,11 +130,11 @@ TEST(LogEpochTableTest, AFollowerWhoseRecordsAreFromALaterEpochThanTheLeadersJum
     // The follower led at epoch 8 and wrote 101-500; the leader, whose log lacked them, led again at
     // epoch 9 holding its own 101-450 from epoch 6. The follower's records from epoch 8 are all
     // discarded in one step, not one record at a time.
-    sequencer::LogEpochTable leader;
+    pubsub_itc_fw::LogEpochTable leader;
     append(leader, 1, 100, 5);
     append(leader, 101, 450, 6);
     append(leader, 451, 460, 9);
-    sequencer::LogEpochTable follower;
+    pubsub_itc_fw::LogEpochTable follower;
     append(follower, 1, 100, 5);
     append(follower, 101, 500, 8);
     int rounds = 0;
@@ -146,7 +146,7 @@ TEST(LogEpochTableTest, AFollowerWhoseRecordsAreFromALaterEpochThanTheLeadersJum
 // The sequencer's thread is the only one that uses the table (principle F1 in docs/design_principles.md).
 // A second thread that uses it is refused.
 TEST(LogEpochTableTest, ASecondThreadIsRefused) {
-    sequencer::LogEpochTable table;
+    pubsub_itc_fw::LogEpochTable table;
     table.note_record(1, 1);
 
     bool refused = false;

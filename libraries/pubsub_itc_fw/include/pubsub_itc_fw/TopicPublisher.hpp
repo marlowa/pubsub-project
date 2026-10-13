@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +17,7 @@
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/WalCursor.hpp>
+#include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 
 #include <topics.hpp>
@@ -69,7 +71,7 @@ class TopicPublisherHost {
  * path, so a live record must be in the WAL before notify_record_appended(). The
  * backlog for a slow subscriber lives in the WAL (a cursor position), not in memory.
  *
- * WAL record framing (on disk): [wall_time_ns : int64][pdu_id : int16][payload...].
+ * What each WAL entry holds is described in WalEntryContents.hpp, which reads it.
  *
  * Not thread-safe: all calls must come from the owning ApplicationThread.
  */
@@ -77,8 +79,6 @@ class TopicPublisher {
   public:
     // Returns true if a pdu id belongs to this publisher's topic.
     using MembershipPredicate = std::function<bool(int16_t pdu_id)>;
-
-    static constexpr size_t wal_record_header_size = sizeof(int64_t) + sizeof(int16_t);
 
     // A page batches at most this many records (also bounded by max_batch_payload_bytes).
     static constexpr size_t default_max_records_per_page = 256;
@@ -405,19 +405,18 @@ class TopicPublisher {
             }
             reopened = false;
 
-            if (size < wal_record_header_size) {
+            const std::optional<WalEntryContents> contents = read_wal_entry_contents(data, size);
+            if (!contents.has_value()) {
                 continue; // malformed record; skip
             }
-            int64_t wall_time_ns = 0;
-            int16_t pdu_id = 0;
-            std::memcpy(&wall_time_ns, data, sizeof(int64_t));
-            std::memcpy(&pdu_id, data + sizeof(int64_t), sizeof(int16_t));
+            const int64_t wall_time_ns = contents->wall_time_ns;
+            const int16_t pdu_id = contents->pdu_id;
             if (record_id <= stream.from_seq_no || !is_member_(pdu_id)) {
                 continue; // already past, or not this topic; skip
             }
 
-            const uint8_t* pdu_payload = data + wal_record_header_size;
-            const size_t pdu_payload_size = size - wal_record_header_size;
+            const uint8_t* pdu_payload = contents->bytes;
+            const size_t pdu_payload_size = contents->size;
 
             const size_t offset = batch_scratch_.size();
             batch_scratch_.insert(batch_scratch_.end(), pdu_payload, pdu_payload + pdu_payload_size);

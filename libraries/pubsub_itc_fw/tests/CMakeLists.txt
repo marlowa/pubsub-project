@@ -58,6 +58,7 @@ add_executable(pubsub_itc_fw_tests
     WalWriterReaderTest.cpp
     WallClockTest.cpp
     EpochStoreTest.cpp
+    LogEpochTableTest.cpp
     LeaderEpochTest.cpp
     LeasePromiseStoreTest.cpp
     LeaseRulesTest.cpp

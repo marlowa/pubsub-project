@@ -111,7 +111,7 @@ void SequencerThread::on_initial_event() {
         // the ME once the ME connection is established.
         const int64_t recovered_seq = wal_.open(
             config_.wal_directory, config_.wal_segment_size,
-            [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns) {
+            [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns, int32_t /*leader_epoch*/) {
                 ReplayRecord rec;
                 rec.seq_no = seq_no;
                 rec.pdu_id = pdu_id;
@@ -277,7 +277,7 @@ void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_
     // noticing a callback had overrun, and the figure it prints is how long the callback had
     // taken SO FAR, which understates the wait.
     const auto started = std::chrono::steady_clock::now();
-    wal_.append(seq_no, pdu_id, payload, size, wall_time_ns);
+    wal_.append(seq_no, pdu_id, payload, size, wall_time_ns, leader_epoch);
     const auto elapsed = std::chrono::steady_clock::now() - started;
     wal_append_histogram_.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
 
@@ -300,8 +300,8 @@ void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
     int64_t first_after_gap = 0;
     const int64_t recovered_seq = wal_.open(
         config_.wal_directory, config_.wal_segment_size,
-        [this, &expected, &last_before_gap, &first_after_gap](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size,
-                                                              int64_t /*wall_time_ns*/) {
+        [this, &expected, &last_before_gap, &first_after_gap](int64_t seq_no, int16_t /*pdu_id*/, const uint8_t* /*payload*/, size_t /*payload_size*/,
+                                                              int64_t /*wall_time_ns*/, int32_t leader_epoch) {
             if (last_before_gap >= 0) {
                 return;
             }
@@ -310,20 +310,8 @@ void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
                 first_after_gap = seq_no;
                 return;
             }
-            int32_t epoch = 0;
-            if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
-                auto& arena_buf = decode_arena_buffer();
-                pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-                size_t arena_bytes_needed = 0;
-                size_t bytes_consumed = 0;
-                pubsub_itc_fw_app::WalRecordView view{};
-                if (pubsub_itc_fw_app::decode(view, payload, payload_size, bytes_consumed, arena, arena_bytes_needed)) {
-                    if (view.has_leader_epoch) {
-                        epoch = view.leader_epoch;
-                    }
-                }
-            }
-            log_epochs_.note_record(seq_no, epoch);
+            // The epoch is in the entry's header, written there by append_to_wal.
+            log_epochs_.note_record(seq_no, leader_epoch);
             ++expected;
         },
         pubsub_itc_fw::WalOpenMode{pubsub_itc_fw::WalOpenMode::IgnoreSnapshot});
@@ -1831,7 +1819,7 @@ void SequencerThread::handle_log_position_request(const pubsub_itc_fw::EventMess
         return;
     }
 
-    const LogEpochTable::PositionAnswer answer = log_epochs_.answer_position(request.last_seq_no, request.last_epoch);
+    const pubsub_itc_fw::LogEpochTable::PositionAnswer answer = log_epochs_.answer_position(request.last_seq_no, request.last_epoch);
     pubsub_itc_fw_app::LogPositionReply reply{};
     reply.seq_no = answer.seq_no;
     reply.epoch = answer.epoch;
@@ -1854,12 +1842,11 @@ void SequencerThread::handle_log_position_request(const pubsub_itc_fw::EventMess
     const int64_t after = request.last_seq_no;
     [[maybe_unused]] const auto end_position = pubsub_itc_fw::WalReader::replay(
         config_.wal_directory, wal_.scan_start_for(after + 1), [this, &target, after, &sent](int64_t record_id, const void* payload, size_t size) {
-            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (record_id <= after || size <= header_size) {
+            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+            if (record_id <= after || !contents.has_value() || contents->size == 0) {
                 return;
             }
-            const auto* envelope = static_cast<const uint8_t*>(payload) + header_size;
-            send_pdu_payload(target, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, envelope, size - header_size);
+            send_pdu_payload(target, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, contents->bytes, contents->size);
             ++sent;
         });
     peer_acked_through_ = after;
@@ -1893,7 +1880,7 @@ void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessag
 
     // Nothing writes the log but this thread, so no record is being written while records are discarded.
     const int64_t last_before = log_epochs_.last_seq_no();
-    const LogEpochTable::FollowerStep step = log_epochs_.follower_step(LogEpochTable::PositionAnswer{reply.seq_no, reply.epoch});
+    const pubsub_itc_fw::LogEpochTable::FollowerStep step = log_epochs_.follower_step(pubsub_itc_fw::LogEpochTable::PositionAnswer{reply.seq_no, reply.epoch});
     const int64_t keep_through = step.keep_through;
     const bool agreed = reply.agreed && step.agreed && keep_through == last_before;
     if (keep_through < last_before) {
@@ -2067,17 +2054,15 @@ void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
     int64_t sent = 0;
     [[maybe_unused]] const auto end_position = pubsub_itc_fw::WalReader::replay(
         config_.wal_directory, wal_.scan_start_for(first), [this, &engine, first, through, &sent](int64_t record_id, const void* payload, size_t size) {
-            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (record_id < first || record_id > through || size <= header_size) {
+            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+            if (record_id < first || record_id > through || !contents.has_value() || contents->size == 0) {
                 return;
             }
-            int64_t wall_time_ns{};
-            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-            int16_t pdu_id{};
-            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
-            const auto* record = static_cast<const uint8_t*>(payload) + header_size;
+            const int64_t wall_time_ns = contents->wall_time_ns;
+            const int16_t pdu_id = contents->pdu_id;
+            const uint8_t* record = contents->bytes;
             if (engine.is_valid()) {
-                if (stream_wal_record_to_me(engine, record_id, pdu_id, record, size - header_size, wall_time_ns)) {
+                if (stream_wal_record_to_me(engine, record_id, pdu_id, record, contents->size, wall_time_ns)) {
                     ++sent;
                 }
                 return;
@@ -2090,7 +2075,7 @@ void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
             size_t bytes_consumed = 0;
             pubsub_itc_fw_app::WalRecordView view{};
             if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id &&
-                pubsub_itc_fw_app::decode(view, record, size - header_size, bytes_consumed, arena, arena_bytes_needed) &&
+                pubsub_itc_fw_app::decode(view, record, contents->size, bytes_consumed, arena, arena_bytes_needed) &&
                 (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) ||
                  view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest))) {
                 note_order_deferred(record_id);
@@ -2970,8 +2955,8 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
                 if (first_in_segment == 0) {
                     first_in_segment = record_id;
                 }
-                constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-                if (record_id <= after || record_id > through || size <= header_size) {
+                const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+                if (record_id <= after || record_id > through || !contents.has_value() || contents->size == 0) {
                     return;
                 }
                 std::array<uint8_t, 64 * 1024> record_arena_buffer{};
@@ -2979,8 +2964,7 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
                 size_t record_consumed = 0;
                 size_t record_needed = 0;
                 pubsub_itc_fw_app::WalRecordView stored{};
-                if (!pubsub_itc_fw_app::decode(stored, static_cast<const uint8_t*>(payload) + header_size, size - header_size, record_consumed, record_arena,
-                                               record_needed)) {
+                if (!pubsub_itc_fw_app::decode(stored, contents->bytes, contents->size, record_consumed, record_arena, record_needed)) {
                     return;
                 }
                 if (stored.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::ExecutionReport) || !stored.has_sender_comp_id ||
@@ -3194,14 +3178,13 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
                 if (record_id <= from_seq_no) {
                     return;
                 }
-                constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-                if (size < header_size) {
+                const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+                if (!contents.has_value()) {
                     return;
                 }
-                int64_t wall_time_ns{};
-                std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-                const auto* record_payload = static_cast<const uint8_t*>(payload) + header_size;
-                const size_t record_size = size - header_size;
+                const int64_t wall_time_ns = contents->wall_time_ns;
+                const uint8_t* record_payload = contents->bytes;
+                const size_t record_size = contents->size;
 
                 // Every stored record is a WalRecord envelope; decode it to read who it belonged
                 // to and what it was. A separate arena from the caller's: this runs inside the
@@ -3378,16 +3361,14 @@ void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::Connecti
             if (record_id <= from_seq_no) {
                 return;
             }
-            constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-            if (size < header_size) {
+            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+            if (!contents.has_value()) {
                 return;
             }
-            int64_t wall_time_ns{};
-            std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-            int16_t pdu_id{};
-            std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
-            const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
-            const size_t pdu_size = size - header_size;
+            const int64_t wall_time_ns = contents->wall_time_ns;
+            const int16_t pdu_id = contents->pdu_id;
+            const uint8_t* pdu_payload = contents->bytes;
+            const size_t pdu_size = contents->size;
 
             pubsub_itc_fw_app::WalRecord wal_record{};
             wal_record.seq_no = record_id;
@@ -3570,26 +3551,20 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // the engine lacks, not at the start of the log: reading the whole log on this thread stopped the
     // venue sequencing orders for as long as it took (docs/bug_list.md, BUG-0113).
     const int64_t earliest_retained = wal_.first_seq_no();
-    [[maybe_unused]] auto end_pos =
-        pubsub_itc_fw::WalReader::replay(config_.wal_directory, wal_.scan_start_for(last_seq_no + 1),
-                                         [this, &conn_id, last_seq_no, wal_head, &streamed](int64_t record_id, const void* payload, size_t size) {
-                                             if (record_id <= last_seq_no || record_id > wal_head) {
-                                                 return;
-                                             }
-                                             constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-                                             if (size < header_size) {
-                                                 return;
-                                             }
-                                             int64_t wall_time_ns{};
-                                             std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-                                             int16_t pdu_id{};
-                                             std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
-                                             const auto* pdu_payload = static_cast<const uint8_t*>(payload) + header_size;
-                                             const size_t pdu_size = size - header_size;
-                                             if (stream_wal_record_to_me(conn_id, record_id, pdu_id, pdu_payload, pdu_size, wall_time_ns)) {
-                                                 ++streamed;
-                                             }
-                                         });
+    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
+        config_.wal_directory, wal_.scan_start_for(last_seq_no + 1),
+        [this, &conn_id, last_seq_no, wal_head, &streamed](int64_t record_id, const void* payload, size_t size) {
+            if (record_id <= last_seq_no || record_id > wal_head) {
+                return;
+            }
+            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+            if (!contents.has_value()) {
+                return;
+            }
+            if (stream_wal_record_to_me(conn_id, record_id, contents->pdu_id, contents->bytes, contents->size, contents->wall_time_ns)) {
+                ++streamed;
+            }
+        });
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed,
                conn_id.get_value());

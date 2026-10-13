@@ -247,7 +247,7 @@ class BenchPublisherThread : public ApplicationThread, public TopicPublisherHost
     void append_and_notify(int seq) {
         const int64_t send_ns = steady_now_ns();
         std::memcpy(payload_buffer_.data(), &send_ns, sizeof(send_ns));
-        wal_.append(static_cast<int64_t>(seq), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, payload_buffer_.data(), payload_size_, send_ns);
+        wal_.append(static_cast<int64_t>(seq), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, payload_buffer_.data(), payload_size_, send_ns, 0);
         publisher_.notify_record_appended(static_cast<int64_t>(seq), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id);
     }
 

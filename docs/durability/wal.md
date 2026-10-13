@@ -153,11 +153,14 @@ The WAL frame carries opaque payloads. `Wal::append`, which both the sequencer a
 matching engine publisher use, puts a small header at the front of every record's payload:
 
 ```
-[ wall_time_ns : int64 ][ pdu_id : int16 ][ pdu payload... ]
+[ wall_time_ns : int64 ][ leader_epoch : int32 ][ pdu_id : int16 ][ pdu payload... ]
 ```
 
 so a subscriber's page can carry the record's publish timestamp and its message type without
-a separate catalog lookup. The DSL-encoded PDU follows. A reader that only wants to skip a
+a separate catalog lookup, and so that the library knows which leadership numbered each record
+without reading the application's message. `WalEntryContents.hpp` is the one place that knows
+this layout: every reader of the log calls `read_wal_entry_contents` instead of counting out the
+header itself. The DSL-encoded PDU follows. A reader that only wants to skip a
 record needs nothing but the WAL frame's `length`; a reader that wants to *route* it reads
 this header. For the sequencer, the PDU is the `WalRecord` envelope around an order, a cancel
 or an execution report.

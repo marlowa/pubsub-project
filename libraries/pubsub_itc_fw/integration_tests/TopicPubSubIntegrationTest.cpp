@@ -50,6 +50,7 @@
 #include <pubsub_itc_fw/TopicSubscriberChannel.hpp>
 #include <pubsub_itc_fw/TopicSubscriberThread.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
+#include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalPosition.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
@@ -285,7 +286,7 @@ class TopicPublisherThread : public ApplicationThread, public TopicPublisherHost
         uint8_t payload[sizeof(uint32_t)];
         std::memcpy(payload, &value, sizeof(value));
         wal_.append(static_cast<int64_t>(i), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id, payload, static_cast<int>(sizeof(payload)),
-                    static_cast<int64_t>(i) * 1000);
+                    static_cast<int64_t>(i) * 1000, 0);
         publisher_.notify_record_appended(static_cast<int64_t>(i), pubsub_itc_fw_app::NewOrderSingle::message_pdu_id);
     }
 
@@ -603,16 +604,15 @@ class TopicPubSubTest : public ::testing::Test {
         return cfg;
     }
 
-    // One WAL record for the "orders" topic, in the on-disk framing the publisher
-    // expects: [wall_time_ns : int64][pdu_id : int16][payload : uint32].
+    // One WAL record for the "orders" topic, as Wal::append stores it (WalEntryContents.hpp),
+    // holding a four-byte payload.
     static std::vector<uint8_t> encode_wal_record(int i) {
-        std::vector<uint8_t> buffer(TopicPublisher::wal_record_header_size + sizeof(uint32_t));
+        std::vector<uint8_t> buffer(wal_entry_header_size + sizeof(uint32_t));
         const int64_t wall_time_ns = static_cast<int64_t>(i) * 1000;
         const int16_t pdu_id = pubsub_itc_fw_app::NewOrderSingle::message_pdu_id;
         const uint32_t payload = static_cast<uint32_t>(i * 100);
-        std::memcpy(buffer.data(), &wall_time_ns, sizeof(wall_time_ns));
-        std::memcpy(buffer.data() + sizeof(int64_t), &pdu_id, sizeof(pdu_id));
-        std::memcpy(buffer.data() + TopicPublisher::wal_record_header_size, &payload, sizeof(payload));
+        write_wal_entry_header(buffer.data(), wall_time_ns, 0, pdu_id);
+        std::memcpy(buffer.data() + wal_entry_header_size, &payload, sizeof(payload));
         return buffer;
     }
 

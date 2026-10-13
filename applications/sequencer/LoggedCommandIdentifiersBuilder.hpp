@@ -17,6 +17,7 @@
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
+#include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 
 #include <fix_orders.hpp>
@@ -165,23 +166,18 @@ class LoggedCommandIdentifiersBuilder {
         finished_.store(true, std::memory_order_release);
     }
 
-    // A record on disk is [written at : int64][pdu id : int16][payload].
+    // What a record on disk holds is described in pubsub_itc_fw/WalEntryContents.hpp.
     void note_record(const uint8_t* record, size_t size) {
         ++records_read_;
-        constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-        if (size <= header_size) {
-            return;
-        }
-        int16_t pdu_id{};
-        std::memcpy(&pdu_id, record + sizeof(int64_t), sizeof(int16_t));
-        if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+        const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(record, size);
+        if (!contents.has_value() || contents->size == 0 || contents->pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
             return;
         }
         pubsub_itc_fw::BumpAllocator arena(arena_.data(), arena_.size());
         size_t bytes_consumed = 0;
         size_t arena_bytes_needed = 0;
         pubsub_itc_fw_app::WalRecordView view{};
-        if (!pubsub_itc_fw_app::decode(view, record + header_size, size - header_size, bytes_consumed, arena, arena_bytes_needed)) {
+        if (!pubsub_itc_fw_app::decode(view, contents->bytes, contents->size, bytes_consumed, arena, arena_bytes_needed)) {
             return;
         }
         const std::optional<uint64_t> id = command_identifier(view);

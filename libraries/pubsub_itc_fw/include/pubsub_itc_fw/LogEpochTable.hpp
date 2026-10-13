@@ -14,7 +14,7 @@
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
 
-namespace sequencer {
+namespace pubsub_itc_fw {
 
 /**
  * @brief Which leadership wrote each record of a sequencer's write-ahead log, held as the record at

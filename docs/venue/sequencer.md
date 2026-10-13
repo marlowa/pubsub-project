@@ -167,11 +167,12 @@ The log is the framework's write-ahead log (`Wal`, `WalWriter` and `WalReader` i
 [ header (24 bytes) | payload | CRC32 (4 bytes) ]
 
 header:  magic 0xFEEDFACE (4) | payload_size (4) | record_id (8) | filler (8)
-payload: wall_time_ns (8) | pdu_id (2) | PDU payload
+payload: wall_time_ns (8) | leader_epoch (4) | pdu_id (2) | PDU payload
 ```
 
-`record_id` is the sequence number. For the sequencer, `pdu_id` is always that of `WalRecord`, and
-the PDU payload is the encoded envelope. The CRC32 covers the header and the payload. Nothing calls
+`record_id` is the sequence number. `leader_epoch` is the epoch of the leadership that numbered the
+record, which the table of epochs is built from when the log is opened. For the sequencer, `pdu_id` is
+always that of `WalRecord`, and the PDU payload is the encoded envelope. The CRC32 covers the header and the payload. Nothing calls
 `fsync` on each write: the operating system writes the mapped pages to disk in the background, which
 survives the death of the process but not of the machine. The copy in the follower's log is what
 survives the loss of a machine.

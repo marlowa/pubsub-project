@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -24,6 +25,7 @@
 #include <fix_orders.hpp>
 #include <leader_follower.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 #include <pubsub_itc_fw/WalWriter.hpp>
 
@@ -148,24 +150,19 @@ class LogTailIndex {
 
     void add_record(const void* payload, size_t size) {
         ++records_read_;
-        constexpr size_t header_size = sizeof(int64_t) + sizeof(int16_t);
-        if (size <= header_size) {
+        const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+        if (!contents.has_value() || contents->size == 0) {
             return;
         }
-        int64_t wall_time_ns{};
-        int16_t pdu_id{};
-        std::memcpy(&wall_time_ns, payload, sizeof(int64_t));
-        std::memcpy(&pdu_id, static_cast<const uint8_t*>(payload) + sizeof(int64_t), sizeof(int16_t));
-        oldest_read_ns_ = std::min(oldest_read_ns_, wall_time_ns);
-        if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
+        oldest_read_ns_ = std::min(oldest_read_ns_, contents->wall_time_ns);
+        if (contents->pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
             return;
         }
         pubsub_itc_fw::BumpAllocator arena(arena_buffer_.data(), arena_buffer_.size());
         size_t bytes_consumed = 0;
         size_t arena_bytes_needed = 0;
         pubsub_itc_fw_app::WalRecordView view{};
-        if (!pubsub_itc_fw_app::decode(view, static_cast<const uint8_t*>(payload) + header_size, size - header_size, bytes_consumed, arena,
-                                       arena_bytes_needed)) {
+        if (!pubsub_itc_fw_app::decode(view, contents->bytes, contents->size, bytes_consumed, arena, arena_bytes_needed)) {
             return;
         }
         if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&

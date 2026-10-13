@@ -423,7 +423,8 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
         return;
     }
 
-    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns);
+    wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns,
+                view.has_leader_epoch ? view.leader_epoch : 0);
     sequencer_cursor_ = view.seq_no;
 
     // Ack immediately.

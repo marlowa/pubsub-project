@@ -80,7 +80,6 @@ add_executable(sequencer_tests
         tests/SequencerConfigurationLoaderTest.cpp
         tests/EngineOrderRoutingTest.cpp
         tests/KeptReportStoreTest.cpp
-        tests/LogEpochTableTest.cpp
         tests/LoggedCommandIdentifiersTest.cpp
         tests/LoggedCommandIdentifiersBuilderTest.cpp
         tests/LogTailIndexTest.cpp
