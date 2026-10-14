@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 155 |
-| Open | 64 (46 defects, 18 tasks) |
+| Bugs recorded | 156 |
+| Open | 65 (47 defects, 18 tasks) |
 | Closed | 91 |
-| Next id | BUG-0156 |
+| Next id | BUG-0157 |
 
 ## Open bugs by severity
 
-16 high, 41 medium, 7 low.
+17 high, 41 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -24,6 +24,7 @@
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
 | [BUG-0155](#bug_0155) | high | defect | A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up |
+| [BUG-0156](#bug_0156) | high | defect | A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
@@ -173,6 +174,41 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| How | The second measurement of step 1 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)), `tmp/phase5/stall_no_repair.sh`, with both sequencers running throughout |
+| Impact | Restarting a matching engine publisher with an empty WAL, late in a day, changes the sequencers' leader and slows every order for seconds. A publisher is not on the order path, and nothing it does should be able to do either |
+
+**What was measured.** With both sequencers running and about 1.2 million records in the WAL, the
+follower publisher was started with an empty WAL while orders arrived at 200 a second. Before, the
+longest wait for an order's first report was 5.2 milliseconds; in the ten seconds after, the median was
+106 milliseconds, the longest 2.6 seconds, and 1,035 of 1,979 orders waited more than 50 milliseconds.
+Every order was answered.
+
+**What happens, from the sequencers' Quill logs.**
+
+1. The publisher subscribes to both sequencers from record 0. Both answer, whatever their role
+   ([BUG-0153](#bug_0153)), each reading and sending every record on its own thread: the framework
+   reports the leader's thread busy for 971 milliseconds.
+2. Nothing paces the sending, so once 65,536 sends are waiting the framework closes the publisher's
+   connection as not reading what is sent to it.
+3. The publisher connects again and subscribes from the last record it wrote, and the same happens
+   again, every two or three seconds.
+4. With its thread repeatedly busy for about a second, the leader fails to renew its lease: "lease ran
+   out ... stops leading (epoch=1)", and the pair changes leader to epoch 5.
+
+**What is wanted.** The same as for [BUG-0155](#bug_0155) and [BUG-0133](#bug_0133): the reading on a
+thread of its own, paced by the connection, and only the leader serving. Step 4 of phase 5 repeats this
+measurement, and the phase is not finished until a publisher can subscribe from the start without
+affecting the order path.
+
+**Principles.** V11, F4.
 
 ### BUG-0155: A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up {#bug_0155}
 
