@@ -3,7 +3,7 @@
 > **Status: agreed, 13 October 2026.** This is the design for phase 4 of
 > [the recovery plan](../recovery_plan.md). It follows section 3 of
 > [ha_library_boundary.md](ha_library_boundary.md). Andrew agreed it as a whole, with the decisions in
-> section 8.
+> section 8. All three steps are built.
 
 Throughout this page, WAL means the write-ahead log, the file of sequenced records on disk. The text
 log each process writes about what it is doing is called the Quill log.
@@ -334,6 +334,34 @@ the catch-ups of the matching engine and the publishers (phase 5 moves those); a
   same work is done on the same thread; the measurement confirms it.
 - **The size of `SequencerThread`** falls by the lines that moved, which is the point of the phase, and
   the move is checked by reading the diff for anything that changed rather than moved.
+
+**Checked.** `SequencerThread` holds a `ReplicatedWal` and is told of role changes, commits, records
+written as follower and grants to its peer; about 620 lines left it, its header and its source falling
+from 4,611 lines to about 4,000. All 74 high availability scenarios pass on fresh WALs, with no WAL
+written out of order in any of them. The sequencer's 52 tests and the library's pass.
+
+The order's round trip was measured by the method in [latency_findings.md](../operations/latency_findings.md),
+with the primary matching engine leading in every arm. The first build of this step was slower:
+
+| Build | Median round trip in each of four runs, microseconds |
+|---|---|
+| Before step 3 | 128.4, 123.7, 123.5, 123.5 |
+| After step 3, first build | 130.0, 131.3, 131.0, 132.5 |
+| Before step 3, measured again | 122.8, 122.8, 123.1, 122.8 |
+
+The two measurements of the earlier build agree with each other and not with the step 3 build, so the
+step had cost about 8 microseconds. The one difference in how messages travelled was the follower's
+acknowledgement: it went on whichever connection to the leader the follower chose, which was not the
+one the leader's records arrived on, so the records and their acknowledgements crossed on two
+connections. With the acknowledgement sent on the connection the record arrived on, as
+`ReplicationLinksInterface::send_ack_to_peer` now requires:
+
+| Build | Median round trip in each of four runs, microseconds |
+|---|---|
+| After step 3, acknowledging on the record's connection | 125.2, 125.2, 125.0, 122.5 |
+| Before step 3, measured straight after | 128.8, 128.5, 125.1, 125.6 |
+
+The step costs nothing that can be measured.
 
 ## 6. What phase 4 does not do
 

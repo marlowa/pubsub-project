@@ -143,8 +143,8 @@ sequencer in the same way (`handle_wal_subscribe_request`, `handle_me_position_r
 of the same kind: the sequencer thread reads the log, and the order path waits while it does. Section 6
 gives the cost and section 7 the open question about it.
 
-The follower acknowledges each record as now. On answering, the leader sets `peer_acked_through_` to the
-agreed record, replacing whatever it held from an earlier connection. From then on it is again "every
+The follower acknowledges each record as now. On answering, the leader takes the agreed record as the
+highest the follower has acknowledged, replacing whatever it held from an earlier connection. From then on it is again "every
 record up to here", because records arrive in order on one connection. Until the follower's
 acknowledgements reach the leader's latest record, the leader treats the follower as behind: under part
 4.2 it runs as if alone after 100 milliseconds without an acknowledgement, and under rule 11 it goes on

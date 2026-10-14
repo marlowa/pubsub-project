@@ -301,11 +301,11 @@ those names, and stores neither on disk. This is what stands in for each.
 two instances and the arbiter, so a majority is the leader and one other. The leader has the matching
 engine act on an order in one of two cases:
 
-- **The follower holds it.** The follower has acknowledged the order's record: it is at or below
-  `peer_acked_through_` (`SequencerThread.hpp`), the highest record the follower has acknowledged. The
-  follower's log is repaired when it rejoins ([follower_log_repair.md](follower_log_repair.md)), so
-  "acknowledged through N" means the follower holds exactly the leader's records 1 to N.
-  `release_held_orders_through()` sends the orders an acknowledgement covers. This is option A of 4.2.
+- **The follower holds it.** The follower has acknowledged the order's record, so the library's
+  replicated WAL (`ReplicatedWal`) counts it as committed. The follower's log is repaired when it
+  rejoins ([follower_log_repair.md](follower_log_repair.md)), so "acknowledged through N" means the
+  follower holds exactly the leader's records 1 to N. `release_held_orders_through()` sends the orders
+  a commit covers. This is option A of 4.2.
 - **The follower does not, and a voter has recorded that it may not lead.** When no follower keeps up,
   the leader acts on an order its follower lacks only once a voter other than itself has echoed its
   statement that the follower may not lead
@@ -458,8 +458,8 @@ field.
 | Part | Where | Bug |
 |---|---|---|
 | 4.1 numbering, and the engine's guard | `SequencerThread` on taking the lead; `MatchingEngineThread::sequence_goes_backwards` | [BUG-0105](../bug_list.md#bug_0105) |
-| 4.2 option A, and running as if alone | `SequencerThread::hold_until_acknowledged`, `release_if_confirmed`, `start_running_alone` | [BUG-0103](../bug_list.md#bug_0103) |
-| Open question 2, a follower that is behind does not lead | The lease classes, the lease agent, the arbiter, and `SequencerThread::may_act_without_follower` ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md)) | |
+| 4.2 option A, and running as if alone | `ReplicatedWal` in the library, which commits records and runs as if alone; `SequencerThread::hold_until_acknowledged` | [BUG-0103](../bug_list.md#bug_0103) |
+| Open question 2, a follower that is behind does not lead | The lease classes, the lease agent, the arbiter, and `ReplicatedWal` ([a_follower_behind_does_not_lead.md](a_follower_behind_does_not_lead.md)) | |
 | 4.3 the gateway keeping commands, and the record of identifiers | `UnansweredCommandStore` in each gateway; `LoggedCommandIdentifiers` in the sequencer ([commands_during_a_change_of_leader.md](commands_during_a_change_of_leader.md)) | [BUG-0103](../bug_list.md#bug_0103), [BUG-0115](../bug_list.md#bug_0115) |
 | 4.4 the follower keeping reports | `KeptReportStore` | [BUG-0103](../bug_list.md#bug_0103) |
 | 4.5 the rejoin | [follower_log_repair.md](follower_log_repair.md) | [BUG-0097](../bug_list.md#bug_0097) |

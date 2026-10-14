@@ -80,7 +80,8 @@ The log's format, its segments, the single-writer rule and replay are described 
 | **Held on both machines** | The following sequencer has received the record, written it to its own log, and acknowledged it (`WalAck`) | The command is sent on to the matching engine, and the reports that depend on it to the member's gateway |
 
 The leader holds back each command from the matching engine until the follower has acknowledged its
-record (`SequencerThread::hold_until_acknowledged` and `release_if_confirmed`). So the matching engine
+record: the library's replicated WAL (`ReplicatedWal`) commits the record once the follower has
+acknowledged it, and the sequencer holds the command until then (`SequencerThread::hold_until_acknowledged`). So the matching engine
 never acts on, and a member is never told about, an order that only one machine holds: if the leader's
 machine died, the follower would still have every order the engine had acted on, and would take over
 with it (principle V5 in [design_principles.md](../design_principles.md)). The one exception is a

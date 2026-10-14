@@ -20,12 +20,7 @@
 #include <pubsub_itc_fw/CpuLayout.hpp>
 #include <pubsub_itc_fw/FileSystemUtils.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
-#include <pubsub_itc_fw/LeaderEpoch.hpp>
-#include <pubsub_itc_fw/LeaderStatement.hpp>
 #include <pubsub_itc_fw/LoggingMacros.hpp>
-#include <pubsub_itc_fw/PduFramer.hpp>
-#include <pubsub_itc_fw/PduParser.hpp>
-#include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/ReactorControlCommand.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
@@ -85,9 +80,7 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , peer_conn_id_{}
     , peer_inbound_conn_id_{}
     , arbiter_primary_conn_id_{}
-    , arbiter_secondary_conn_id_{}
-    , epoch_store_(config.wal_directory + "/epoch.state")
-    , lease_promise_store_(config.wal_directory + "/lease_promise.state", pubsub_itc_fw::LeasePromiseStore::current_boot_id()) {}
+    , arbiter_secondary_conn_id_{} {}
 
 void SequencerThread::on_initial_event() {
     // The log starts a helper thread to prepare its next segment, and a new thread inherits the
@@ -98,106 +91,94 @@ void SequencerThread::on_initial_event() {
     // opening it is what starts the helper. See BUG-0093.
     pubsub_itc_fw::CpuLayout helper_layout;
     const auto [helper_layout_loaded, helper_layout_error] = helper_layout.load(config_.cpu_layout_file, config_.cpu_layout_component);
-    if (helper_layout_loaded) {
-        wal_.set_helper_cores(helper_layout.background_cores());
-    } else {
+    if (!helper_layout_loaded) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "SequencerThread: could not read the CPU layout, so the log's helper thread stays where it lands: {}", helper_layout_error);
     }
 
     if (config_.replay_mode) {
-        // Replay mode: open WAL with a buffering callback that accumulates all
-        // records into replay_buffer_.  dispatch_replay_records() sends them to
-        // the ME once the ME connection is established.
-        const int64_t recovered_seq = wal_.open(
-            config_.wal_directory, config_.wal_segment_size,
-            [this](int64_t seq_no, int16_t pdu_id, const uint8_t* payload, size_t payload_size, int64_t wall_time_ns, int32_t /*leader_epoch*/) {
+        // Replay mode: read every record of the WAL into replay_buffer_, and write nothing.
+        // dispatch_replay_records() sends them to the ME once the ME connection is established.
+        int64_t recovered_seq = 0;
+        static_cast<void>(pubsub_itc_fw::WalReader::replay(
+            config_.wal_directory, pubsub_itc_fw::WalPosition{0, 0}, [this, &recovered_seq](int64_t seq_no, const void* payload, size_t size) {
+                const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
+                if (!contents.has_value()) {
+                    return;
+                }
                 ReplayRecord rec;
                 rec.seq_no = seq_no;
-                rec.pdu_id = pdu_id;
-                rec.wall_time_ns = wall_time_ns;
-                rec.payload.assign(payload, payload + payload_size);
+                rec.pdu_id = contents->pdu_id;
+                rec.wall_time_ns = contents->wall_time_ns;
+                rec.payload.assign(contents->bytes, contents->bytes + contents->size);
                 replay_buffer_.push_back(std::move(rec));
-            },
-            pubsub_itc_fw::WalOpenMode{pubsub_itc_fw::WalOpenMode::IgnoreSnapshot});
-        next_sequence_number_ = recovered_seq > 0 ? recovered_seq + 1 : 1;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: replay mode -- WAL read complete: {} record(s), last seq_no={}, "
-                   "next_sequence_number={}",
-                   replay_buffer_.size(), recovered_seq, next_sequence_number_);
-        // Start as leader so that send_pdu paths are active. Assign directly
-        // rather than through set_epoch(): replay is an offline tool run against
-        // a copy of the WAL, and it shares the WAL directory with the live
-        // sequencer. Persisting from here would overwrite the epoch of a node
-        // that is entitled to it.
-        epoch_ = 1;
-        adopt_role(pubsub_itc_fw_app::Role::leader);
+                recovered_seq = seq_no;
+            }));
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: replay mode -- WAL read complete: {} record(s), last seq_no={}",
+                   replay_buffer_.size(), recovered_seq);
+        // Start as leader so that send_pdu paths are active. Replay is an offline tool run against a
+        // copy of the WAL, sharing the WAL directory with the live sequencer, so it records no epoch: it
+        // uses epoch 1, and has no replicated WAL.
+        on_role_changed(pubsub_itc_fw_app::Role::leader, current_epoch());
         return;
     }
 
-    // Normal mode: WAL replay is used only to recover next_sequence_number_.
-    // The routing map is intentionally not rebuilt: by the time the sequencer
-    // restarts, the ME has almost certainly already sent ERs for any in-flight
-    // orders from the previous run, and those ERs will not be re-sent.
-    // Populating the routing map from WAL replay would leave entries that are
-    // never erased, causing unbounded heap growth under high throughput.
-    // ERs for unroutable seq_nos are handled gracefully by the "not in
-    // routing map" fallback in on_framework_pdu_message().
-    open_wal_trusting_it_up_to_any_gap();
+    // Registered before the replicated WAL is made, because it is given the handles. Each is a no-op
+    // when metrics are disabled, and the application and component tokens come from configuration.
+    if (!config_.wal_append_buckets.empty()) {
+        wal_append_histogram_ = get_reactor().metrics().register_histogram(
+            "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log", config_.wal_append_buckets);
+    }
+    running_alone_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_running_alone",
+        "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
+        "resilience. Expected to be 0");
+
+    // The WAL, kept on both instances of the pair, and the deciding of which instance leads. Opening it
+    // reads every record, discards any after a gap, and recovers the epoch; with HA off, this instance
+    // leads before open() returns. The routing map is intentionally not rebuilt from the WAL: by the
+    // time the sequencer restarts, the ME has almost certainly already sent ERs for any in-flight orders
+    // from the previous run, and those ERs will not be re-sent. ERs for unroutable seq_nos are handled
+    // by the "not in routing map" fallback in on_framework_pdu_message().
+    pubsub_itc_fw::ReplicatedWalConfiguration wal_configuration;
+    wal_configuration.owner_name = "SequencerThread";
+    wal_configuration.wal_directory = config_.wal_directory;
+    wal_configuration.wal_segment_size = config_.wal_segment_size;
+    if (helper_layout_loaded) {
+        wal_configuration.helper_cores = helper_layout.background_cores();
+    }
+    wal_configuration.ha_enabled = config_.ha_enabled;
+    wal_configuration.pair_id = fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::sequencer);
+    wal_configuration.instance_id = static_cast<int64_t>(config_.instance_id);
+    wal_configuration.third_voter_id = arbiter_pool_voter_id;
+    wal_configuration.third_voter_name = "the arbiter";
+    wal_configuration.lease = config_.lease;
+    wal_configuration.wal_append_histogram = wal_append_histogram_;
+    wal_configuration.running_alone_gauge = running_alone_gauge_;
+    replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_);
+    const int64_t recovered_seq = replicated_wal_->open(std::chrono::steady_clock::now());
     start_building_record_of_identifiers();
-    const int64_t recovered_seq = wal_.last_seq_no();
     if (recovered_seq > 0) {
-        next_sequence_number_ = recovered_seq + 1;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: WAL open complete: recovered seq_no={}, record_count={}, "
-                   "next_sequence_number={}",
-                   recovered_seq, wal_.record_count(), next_sequence_number_);
+                   "SequencerThread: WAL open complete: recovered seq_no={}, record_count={}, next_sequence_number={}", recovered_seq,
+                   replicated_wal_->wal().record_count(), replicated_wal_->next_seq_no());
     } else {
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL is fresh (no prior records), starting from seq_no=1");
-    }
-
-    // Recover the leadership generation before any lease is asked for. Without
-    // this the node starts at zero, and a pair restarted together would agree a
-    // generation the venue has already spent -- see EpochStore.
-    epoch_ = epoch_store_.load();
-    if (epoch_ > 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: recovered epoch={} from {}", epoch_, epoch_store_.path());
-    } else {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: no stored epoch at {} -- starting from epoch 0", epoch_store_.path());
     }
 
     wal_snapshot_timer_id_ = start_recurring_timer(std::chrono::seconds(config_.snapshot_interval_seconds));
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot timer started (interval={}s)", config_.snapshot_interval_seconds);
 
     if (!config_.ha_enabled) {
-        // Single-node mode: start as leader immediately, no election needed.
-        set_epoch(pubsub_itc_fw::LeaderEpoch::next_for(epoch_, static_cast<int64_t>(config_.instance_id)));
-        adopt_role(pubsub_itc_fw_app::Role::leader);
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=false -- starting as leader immediately");
     } else {
-        // Instance ids are 1 for the primary and 2 for the secondary, so the peer is the other one.
-        const int64_t self_id = static_cast<int64_t>(config_.instance_id);
-        const int64_t peer_id = self_id == 1 ? 2 : 1;
-        lease_agent_.emplace("SequencerThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::sequencer), self_id,
-                             peer_id, arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
-                             pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::SayWhetherPeerMayLead});
-        background_promise_recorder_.emplace(lease_promise_store_);
-        lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
-                                       std::chrono::steady_clock::now());
         lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
-        acknowledgement_watch_timer_id_ = start_recurring_timer(acknowledgement_watch_interval);
+        acknowledgement_watch_timer_id_ = start_recurring_timer(pubsub_itc_fw::ReplicatedWal::acknowledgement_watch_interval);
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for "
                    "during the first period",
                    config_.lease.period.count());
-    }
-
-    // Registered here rather than at ready, matching the gateways. The handle is a no-op when
-    // metrics are disabled, and the application and component tokens come from configuration.
-    if (!config_.wal_append_buckets.empty()) {
-        wal_append_histogram_ = get_reactor().metrics().register_histogram(
-            "sequencer_thread", "wal_append_nanoseconds", "Nanoseconds spent committing one record to the write-ahead log", config_.wal_append_buckets);
     }
 
     // One family, four children, told apart by scope. Registered together so that a
@@ -257,75 +238,10 @@ void SequencerThread::on_initial_event() {
         "Log segments the writer created itself instead of adopting one prepared ahead of it. Expected to be 1, for the first segment");
     wal_segments_waited_for_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "wal_segments_waited_for", "Segment rolls that had to wait for a preparation still in progress. Expected to be 0");
-    running_alone_gauge_ = get_reactor().metrics().register_gauge(
-        "sequencer_thread", "sequencer_running_alone",
-        "1 while a follower is connected but too far behind and the leader sends orders to the matching engine without waiting for it; a loss of "
-        "resilience. Expected to be 0");
     kept_reports_lost_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_kept_reports_lost",
         "Reports from the matching engine, kept in case this instance takes the lead, that were overwritten while still needed because the store "
         "was full. Expected to be 0");
-}
-
-void SequencerThread::append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch) {
-    // Every append goes through here so there is one place that knows what a commit costs.
-    //
-    // It is worth measuring because it is the one thing on the order path that touches a
-    // disk. On 2026-08-31 this thread was measured in uninterruptible sleep for up to 557 ms
-    // at a stretch, with no time on the run queue at all -- so it was waiting for I/O rather
-    // than for a cpu. Nothing reported that: the only sign was the reactor's stall watchdog
-    // noticing a callback had overrun, and the figure it prints is how long the callback had
-    // taken SO FAR, which understates the wait.
-    const auto started = std::chrono::steady_clock::now();
-    wal_.append(seq_no, pdu_id, payload, size, wall_time_ns, leader_epoch);
-    const auto elapsed = std::chrono::steady_clock::now() - started;
-    wal_append_histogram_.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
-
-    if (seq_no != log_epochs_.last_seq_no() + 1) {
-        // Records are numbered without a break; one that is not means the table of epochs no longer
-        // describes the log, and a rejoining follower could be told the logs agree when they do not.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "SequencerThread: record {} was written after record {} -- the log has a gap, and the table of epochs is not extended past it", seq_no,
-                   log_epochs_.last_seq_no());
-        return;
-    }
-    log_epochs_.note_record(seq_no, leader_epoch);
-}
-
-void SequencerThread::open_wal_trusting_it_up_to_any_gap() {
-    // The whole log is read, rather than from the snapshot onwards, because the table of epochs needs
-    // every record's epoch, and the check for a gap needs every record's number.
-    int64_t expected = 1;
-    int64_t last_before_gap = -1;
-    int64_t first_after_gap = 0;
-    const int64_t recovered_seq = wal_.open(
-        config_.wal_directory, config_.wal_segment_size,
-        [this, &expected, &last_before_gap, &first_after_gap](int64_t seq_no, int16_t /*pdu_id*/, const uint8_t* /*payload*/, size_t /*payload_size*/,
-                                                              int64_t /*wall_time_ns*/, int32_t leader_epoch) {
-            if (last_before_gap >= 0) {
-                return;
-            }
-            if (seq_no != expected) {
-                last_before_gap = expected - 1;
-                first_after_gap = seq_no;
-                return;
-            }
-            // The epoch is in the entry's header, written there by append_to_wal.
-            log_epochs_.note_record(seq_no, leader_epoch);
-            ++expected;
-        },
-        pubsub_itc_fw::WalOpenMode{pubsub_itc_fw::WalOpenMode::IgnoreSnapshot});
-
-    if (last_before_gap >= 0) {
-        // Records after a gap were sent by a leader, which still holds them and sends them again once
-        // this instance's log and its leader's agree (docs/availability/follower_log_repair.md, 4.2).
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: the write-ahead log has a gap -- record {} follows record {}. Discarding every record from {} to {}; the leader "
-                   "sends them again",
-                   first_after_gap, last_before_gap, last_before_gap + 1, recovered_seq);
-        wal_.truncate_after(last_before_gap);
-    }
-    highest_replicated_seq_no_ = wal_.last_seq_no();
 }
 
 void SequencerThread::on_app_ready_event() {
@@ -408,15 +324,17 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: outbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
         send_status_query(id);
-        forget_log_agreement();
-        send_log_position_request();
+        if (replicated_wal_.has_value()) {
+            replicated_wal_->on_peer_connection_established(std::chrono::steady_clock::now());
+        }
     } else if (svc == peer_inbound_svc) {
         peer_inbound_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound peer connection {} established -- sending StatusQuery",
                    id.get_value());
         send_status_query(id);
-        forget_log_agreement();
-        send_log_position_request();
+        if (replicated_wal_.has_value()) {
+            replicated_wal_->on_peer_connection_established(std::chrono::steady_clock::now());
+        }
     } else if (svc == "inbound:" + std::to_string(config_.listen_port)) {
         // A gateway's connection for orders. While reading from the gateways is paused, a gateway that
         // connects is paused too.
@@ -480,13 +398,15 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: outbound peer connection {} lost: {}", id.get_value(), reason);
-        forget_log_agreement();
-        flush_pending_er();
+        if (replicated_wal_.has_value()) {
+            replicated_wal_->on_peer_connection_lost(std::chrono::steady_clock::now());
+        }
     } else if (id == peer_inbound_conn_id_) {
         peer_inbound_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: inbound peer connection {} lost: {}", id.get_value(), reason);
-        forget_log_agreement();
-        flush_pending_er();
+        if (replicated_wal_.has_value()) {
+            replicated_wal_->on_peer_connection_lost(std::chrono::steady_clock::now());
+        }
     } else if (const auto order_connection = std::find(order_connection_ids_.begin(), order_connection_ids_.end(), id);
                order_connection != order_connection_ids_.end()) {
         order_connection_ids_.erase(order_connection);
@@ -518,10 +438,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     // Arbiter PDUs: the active arbiter's answers to this sequencer's lease requests.
     if (conn_id == arbiter_primary_conn_id_ || conn_id == arbiter_secondary_conn_id_) {
-        if (message.pdu_id() == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
-            handle_lease_grant(message);
-        } else if (message.pdu_id() == pubsub_itc_fw::LeaseRefusal::message_pdu_id) {
-            handle_lease_refusal(message);
+        const auto pdu_id = static_cast<int16_t>(message.pdu_id());
+        const bool lease_answer = pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id || pdu_id == pubsub_itc_fw::LeaseRefusal::message_pdu_id;
+        if (lease_answer && replicated_wal_.has_value()) {
+            static_cast<void>(replicated_wal_->handle_message(conn_id, pdu_id, message.payload(), static_cast<size_t>(message.payload_size()),
+                                                              std::chrono::steady_clock::now()));
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unexpected PDU {} from an arbiter -- dropping", message.pdu_id());
         }
@@ -640,7 +561,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         // take a place in its log that the leader's record of that number needs (BUG-0147). If it
         // turns out to lead, the gateways send again every command still unanswered when it announces
         // its epoch. It discards the gateway's copy here, before a
-        // number is taken: counting these copies in next_sequence_number_ is what left a newly
+        // number is taken: counting these copies in the numbering is what left a newly
         // promoted follower numbering below records its log already held (BUG-0105).
         if (role_ != pubsub_itc_fw_app::Role::leader) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
@@ -676,7 +597,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             ++sent_again_sequenced_;
         }
 
-        const int64_t seq = next_sequence_number_++;
+        const int64_t seq = replicated_wal_->next_seq_no();
         const int64_t wall_time_ns = config_.wall_clock->now_ns();
 
         // The first checkpoint this process contributes, reusing the sequencing stamp rather
@@ -700,7 +621,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         envelope.payload = inbound.payload;
         envelope.wall_time_ns = wall_time_ns;
         envelope.has_leader_epoch = true;
-        envelope.leader_epoch = epoch_;
+        envelope.leader_epoch = current_epoch();
         envelope.has_gateway_session_conn_id = inbound.has_gateway_session_conn_id;
         envelope.gateway_session_conn_id = inbound.gateway_session_conn_id;
         envelope.has_sender_comp_id = inbound.has_sender_comp_id;
@@ -736,7 +657,7 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                             envelope.has_cl_ord_id ? envelope.cl_ord_id : std::string_view{});
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "SequencerThread: order envelope on connection {} inner_pdu_id={} seq={} -- WAL append ok (wal_size={}) role={}",
-                   message.connection_id().get_value(), inner_pdu_id, seq, wal_.record_count(), pubsub_itc_fw_app::to_string(role_));
+                   message.connection_id().get_value(), inner_pdu_id, seq, replicated_wal_->wal().record_count(), pubsub_itc_fw_app::to_string(role_));
 
         // Record seq_no -> the session that placed this order, so its execution reports can
         // be routed back to it. seq_no is globally unique, unlike a ClOrdID.
@@ -767,85 +688,34 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
                        seq);
         }
 
-        // With a follower connected and keeping up, the order goes to the matching engine only once
-        // the follower has acknowledged its record, so the engine never acts on an order the follower
-        // does not hold (docs/availability/change_of_sequencer_leader.md, part 4.2). If the storage
-        // for held orders is full the follower is too far behind, and the leader runs as if alone.
-        if (needs_wal_ack() && (held_orders_.full() || first_unheld_seq_ != 0)) {
-            start_running_alone("its storage for orders waiting on the follower is full");
+        // The order goes to the matching engine once its record is committed: once the follower has
+        // acknowledged it, with a follower connected and keeping up, so that the engine never acts on an
+        // order the follower does not hold (docs/availability/change_of_sequencer_leader.md, part 4.2); or,
+        // with no follower keeping up, once a voter has confirmed that the follower may not lead (rule 11,
+        // docs/availability/a_follower_behind_does_not_lead.md); or at once with HA off. It never goes
+        // ahead of an order already waiting. Until then it waits, in the storage for held orders, or in
+        // the log once that is full, in which case the follower is too far behind and the leader runs as
+        // if alone.
+        if (replicated_wal_->waits_for_follower() && (held_orders_.full() || first_unheld_seq_ != 0)) {
+            replicated_wal_->follower_too_far_behind("its storage for orders waiting on the follower is full", std::chrono::steady_clock::now());
         }
 
-        // Without a follower that keeps up, the leader acts on an order its follower lacks only once a
-        // voter has confirmed its statement that the follower may not lead (rule 11,
-        // docs/availability/a_follower_behind_does_not_lead.md), and never ahead of an order already
-        // waiting. Until then the order is replicated and published at once and waits: in the storage
-        // for held orders, or in the log once that is full.
-        if (config_.ha_enabled &&
-            (needs_wal_ack() || !may_act_without_follower() || !held_orders_.empty() || first_unheld_seq_ != 0 || awaiting_engine_position_)) {
-            if (!needs_wal_ack()) {
-                say_follower_may_not_lead();
-            }
-            send_wal_record(envelope);
-            stream_wal_record_to_external_subscribers(envelope);
-            hold_until_acknowledged(envelope, message);
-            pause_or_resume_order_reading();
-            release_if_confirmed();
-            return; // The payload is released when the held order is sent on, or at once if it waits in the log.
-        }
-
-        // Sent at once: HA is off, or no follower keeps up and a voter has confirmed that it may not lead.
-        if (engine_routing_.active().is_valid()) {
-            // Reachable again. Anything deferred is recovered by the catch-up the arriving engine
-            // performs before it acts, and an operator wants one line saying what the outage cost.
-            note_matching_engine_reachable();
-
-            // A member is waiting for this: it is the order on its way to be matched. The
-            // replication and subscriber sends below are deliberately not marked -- nobody is
-            // waiting on a client connection for any of them.
-            send_pdu(engine_routing_.active(), pubsub_itc_fw_app::WalRecord::message_pdu_id, seq, envelope,
-                     pubsub_itc_fw::MemberIsWaitingFlag{pubsub_itc_fw::MemberIsWaitingFlag::MemberIsWaiting});
-
-            // Immediately after the send rather than before it, so that order_in to order_out
-            // covers everything this component did with the order, the write-ahead log commit
-            // included.
-            if (inner_pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle)) {
-                order_path_metrics::observe_checkpoint(order_out_elapsed_histogram_, inbound.has_gateway_ingress_ns, inbound.gateway_ingress_ns,
-                                                       config_.wall_clock->now_ns());
-            }
-        } else {
-            // The order is already durably WAL-committed above; we simply cannot forward it right
-            // now because no matching engine is connected. The forward is deferred rather than the
-            // order lost: whichever engine acts next reports the position it has reached and is
-            // sent everything after it, which includes this order.
-            //
-            // That holds however the next engine arrives. A promoting follower knows its position
-            // from the replica it was maintaining and a starting one from the region it recovered,
-            // and both catch up before they act. A start used to skip the catch-up, so an order
-            // deferred while every engine was down was applied by nobody and answered to nobody --
-            // BUG-0064, and the reason this comment once carried a warning instead of a
-            // reassurance.
-            //
-            // It costs the venue nothing to defer -- the payload is released here and the WAL is
-            // the whole mechanism. It costs the MEMBER a great deal: it has been acknowledged, so
-            // it believes the order is live, and it cannot cancel it because a cancel needs the
-            // same matching engine. That is the asymmetry BUG-0009 is about, and why this is
-            // reported by how long it has gone on rather than once per order.
-            note_order_deferred(seq);
-        }
-
-        // Replicated whether or not an engine took it: a deferred order must reach the follower's log
-        // as much as any other.
-        if (config_.ha_enabled) {
-            send_wal_record(envelope);
-        }
-
-        // Stream to external WAL subscribers (MEP primary and secondary), which
-        // unwrap the envelope and publish the inner DD-derived PDU on its topic.
+        // Streamed to the external WAL subscribers (MEP primary and secondary), which unwrap the
+        // envelope and publish the inner DD-derived PDU on its topic. Before the order is held, because
+        // the envelope points into the inbound message, which is released at once if the order waits in
+        // the log.
         stream_wal_record_to_external_subscribers(envelope);
-
-        release_pdu_payload(message);
+        hold_until_acknowledged(envelope, message);
+        release_held_orders_through(replicated_wal_->committed_through());
+        return; // The payload is released when the held order is sent on, or at once if it waits in the log.
 
     } else if (is_er_pdu) {
+        if (!replicated_wal_.has_value()) {
+            // Replay mode: the matching engine's reports to the replayed orders are not recorded, because
+            // replay writes nothing to the WAL it reads.
+            release_pdu_payload(message);
+            return;
+        }
         if (role_ != pubsub_itc_fw_app::Role::leader) {
             // Kept in case this instance takes the lead before the leader has forwarded it.
             keep_report_from_engine(message);
@@ -1013,7 +883,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     // missing from the new leader's WAL (an execution_reports-topic gap at the seam).
     // Full two-tier commit of ordinary ERs is still a follow-up; ERs with no
     // originating order sequence already gate on their own record, see below.
-    const int64_t er_wal_seq = next_sequence_number_++;
+    const int64_t er_wal_seq = replicated_wal_->next_seq_no();
     const int64_t er_wall_time_ns = config_.wall_clock->now_ns();
 
     pubsub_itc_fw_app::WalRecord envelope{};
@@ -1022,7 +892,7 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     envelope.payload = inbound.payload;
     envelope.wall_time_ns = er_wall_time_ns;
     envelope.has_leader_epoch = true;
-    envelope.leader_epoch = epoch_;
+    envelope.leader_epoch = current_epoch();
     envelope.has_gateway_session_conn_id = has_routing_conn;
     envelope.gateway_session_conn_id = routing_conn_id;
     envelope.has_origin_gateway_id = has_routing_conn;
@@ -1054,7 +924,6 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     stamp_reports_forwarded_through(envelope);
 
     append_envelope_to_wal(envelope);
-    send_wal_record(envelope);
     stream_wal_record_to_external_subscribers(envelope);
 
     // Which WalAck releases this ER to the gateway.
@@ -1091,15 +960,17 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     const bool gate_on_own_record = (er_seq_no == 0) || possible_repeat;
     const int64_t gate_seq_no = gate_on_own_record ? er_wal_seq : er_seq_no;
 
-    if (!needs_wal_ack()) {
+    // With no follower keeping up, a report is forwarded at once, as it always has been; otherwise once
+    // the record it depends on is committed.
+    if (!replicated_wal_->waits_for_follower()) {
         send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
         note_report_forwarded(routing_identity);
         if (erase_routing_entry) {
             seq_no_to_session_.erase(er_seq_no);
         }
     } else {
-        if (gate_seq_no <= peer_acked_through_) {
-            // The follower has already acknowledged the record this report depends on.
+        if (gate_seq_no <= replicated_wal_->committed_through()) {
+            // The record this report depends on is committed.
             send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
             note_report_forwarded(routing_identity);
             if (erase_routing_entry) {
@@ -1177,7 +1048,7 @@ void SequencerThread::keep_report_from_engine(const pubsub_itc_fw::EventMessage&
 
 void SequencerThread::forward_kept_reports() {
     kept_reports_.discard_received_before(kept_reports_needed_from());
-    // adopt_role, just before this on taking the lead, discarded what the old leader said it
+    // on_role_changed, just before this on taking the lead, discarded what the old leader said it
     // forwarded; this says how many.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: taking the lead -- {} kept report(s) discarded because the old leader said it had forwarded them",
@@ -1197,14 +1068,18 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     if (id == wal_snapshot_timer_id_) {
         // Published on the snapshot timer rather than per append: both change at most once per
         // segment, which is seconds apart, so there is nothing to gain from the order path.
-        wal_segments_filled_inline_gauge_.set(static_cast<double>(wal_.segments_filled_inline()));
-        wal_segments_waited_for_gauge_.set(static_cast<double>(wal_.segments_waited_for()));
+        if (!replicated_wal_.has_value()) {
+            return;
+        }
+        const pubsub_itc_fw::Wal& wal = replicated_wal_->wal();
+        wal_segments_filled_inline_gauge_.set(static_cast<double>(wal.segments_filled_inline()));
+        wal_segments_waited_for_gauge_.set(static_cast<double>(wal.segments_waited_for()));
 
         try {
-            wal_.take_snapshot();
+            replicated_wal_->take_snapshot();
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: WAL snapshot taken: last_seq_no={}, record_count={}, peer acknowledged through {}", wal_.last_seq_no(),
-                       wal_.record_count(), peer_acked_through_);
+                       "SequencerThread: WAL snapshot taken: last_seq_no={}, record_count={}, committed through {}", wal.last_seq_no(), wal.record_count(),
+                       replicated_wal_->committed_through());
 
             // Nothing is reclaimed here, and that is deliberate.
             //
@@ -1219,11 +1094,11 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
             // session goes. Deleting on a timer instead of on those positions is what the
             // original defect was. So the log grows until they exist, which is a bounded and
             // visible problem where silent loss was neither. See docs/bug_list.md BUG-0048.
-            if (wal_.record_count() > wal_growth_warning_records) {
+            if (wal.record_count() > wal_growth_warning_records) {
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "SequencerThread: the WAL holds {} records and nothing is reclaiming it -- retention cannot be anchored until "
                            "every component publishes the position it may ask from (docs/bug_list.md BUG-0048)",
-                           wal_.record_count());
+                           wal.record_count());
             }
         } catch (const std::exception& ex) {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "SequencerThread: WAL snapshot failed: {}", ex.what());
@@ -1232,19 +1107,13 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     }
 
     if (id == lease_tick_timer_id_) {
-        const auto now = std::chrono::steady_clock::now();
-        act_on(lease_agent_->on_tick(now));
-        release_if_confirmed();
-        say_follower_may_lead_if_it_holds_everything();
-        if (!follower_log_agreed_ && now - last_position_request_at_ >= std::chrono::seconds{1}) {
-            send_log_position_request();
-        }
+        replicated_wal_->on_lease_tick(std::chrono::steady_clock::now());
         return;
     }
 
     if (id == acknowledgement_watch_timer_id_) {
-        check_follower_acknowledgements();
         const auto now = std::chrono::steady_clock::now();
+        replicated_wal_->on_acknowledgement_watch(now);
         if (awaiting_engine_position_ && now - engine_position_asked_at_ >= engine_position_ask_interval) {
             ask_engine_for_position();
         }
@@ -1271,7 +1140,7 @@ pubsub_itc_fw::ConnectionID SequencerThread::peer_active_conn() const {
     return peer_inbound_conn_id_;
 }
 
-void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
+void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t epoch) {
     if (new_role == role_) {
         return;
     }
@@ -1279,28 +1148,15 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
     const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), transition_level, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
-               pubsub_itc_fw_app::to_string(new_role), epoch_);
+               pubsub_itc_fw_app::to_string(new_role), epoch);
 
     role_ = new_role;
-    forget_log_agreement();
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
         // Every record this instance wrote while it followed was noted as it was written, so the record
         // of identifiers already holds every command in the log. What the old leader said it forwarded
         // is acted on now, so that the kept reports forwarded below are only those it may not have.
         discard_kept_reports_the_leader_forwarded();
-
-        // Number new records above every record the log holds. Records replicated while this
-        // instance followed were written under its leader's numbers and did not move
-        // next_sequence_number_, so without this the new leader would give new records numbers
-        // its log already holds (BUG-0105).
-        const int64_t highest_replicated = highest_replicated_seq_no_;
-        if (highest_replicated >= next_sequence_number_) {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                       "SequencerThread: taking the lead -- numbering new records from {}, above the highest replicated record {} (was {})",
-                       highest_replicated + 1, highest_replicated, next_sequence_number_);
-            next_sequence_number_ = highest_replicated + 1;
-        }
 
         // The previous leader may have died holding reports it had not forwarded. This instance
         // kept every report the engine sent it, so it forwards them all now
@@ -1324,7 +1180,7 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         // acknowledged them, and the previous leader died before the acknowledgement reached it.
         // Ask the engine how far it has got, and send it the rest before anything new
         // (docs/availability/commands_during_a_change_of_leader.md, section 3.5).
-        if (config_.ha_enabled) {
+        if (config_.ha_enabled && replicated_wal_.has_value()) {
             ask_engine_for_position();
         }
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
@@ -1335,11 +1191,6 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         discard_held_orders();
         first_unheld_seq_ = 0;
         pause_or_resume_order_reading();
-        send_log_position_request();
-        if (running_alone_) {
-            running_alone_ = false;
-            running_alone_gauge_.set(0.0);
-        }
         // A follower forwards nothing to a matching engine, so it defers nothing. Clearing the
         // bookkeeping matters for what happens if this instance leads AGAIN: a deferral begun in
         // a previous leadership would otherwise still be open, because the recovery that would
@@ -1350,22 +1201,6 @@ void SequencerThread::adopt_role(pubsub_itc_fw_app::Role new_role) {
         deferring_orders_ = false;
         deferred_order_count_ = 0;
         accepting_orders_ = true;
-    }
-}
-
-void SequencerThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
-    // Whatever happened, the highest epoch this instance knows may have risen, and it is kept on disk.
-    set_epoch(lease_agent_->highest_epoch());
-    switch (change) {
-        case pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader:
-            adopt_role(pubsub_itc_fw_app::Role::leader);
-            break;
-        case pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading:
-        case pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads:
-            adopt_role(pubsub_itc_fw_app::Role::follower);
-            break;
-        case pubsub_itc_fw::PairLeaseAgent::Change::Nothing:
-            break;
     }
 }
 
@@ -1393,104 +1228,93 @@ void SequencerThread::SequencerLeaseLinks::send_refusal(const pubsub_itc_fw::Con
     owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseRefusal::message_pdu_id, 0, refusal);
 }
 
-void SequencerThread::handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw::LeaseRequestView request{};
-    if (!pubsub_itc_fw::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseRequest -- dropping");
-        return;
-    }
-    if (fix_common::group_of(request.pair_id) != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: LeaseRequest for group={} on the peer link -- dropping",
-                   pubsub_itc_fw_app::to_string(fix_common::group_of(request.pair_id)));
-        return;
-    }
-    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-    const pubsub_itc_fw::PairLeaseAgent::Change change = lease_agent_->on_request(
-        conn_id, request.candidate_instance_id, request.epoch, request.request_id,
-        pubsub_itc_fw::LeaderStatement{request.statement_leader_id, request.statement_epoch, request.statement_number, request.peer_may_lead}, now);
-    if (change == pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads) {
-        // The peer now leads, and forwards the engine's reports, until at least a lease period from now.
-        last_granted_to_leader_ = now;
-    }
-    act_on(change);
+bool SequencerThread::SequencerReplicationLinks::peer_connected() const {
+    return owner_.peer_active_conn().is_valid();
 }
 
-void SequencerThread::handle_lease_grant(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw::LeaseGrantView grant{};
-    if (!pubsub_itc_fw::decode(grant, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseGrant -- dropping");
-        return;
+void SequencerThread::SequencerReplicationLinks::send_record_to_peer(const pubsub_itc_fw::ReplicatedRecord& record) {
+    const pubsub_itc_fw::ConnectionID peer = owner_.peer_active_conn();
+    if (peer.is_valid()) {
+        owner_.send_pdu(peer, pubsub_itc_fw::ReplicatedRecord::message_pdu_id, record.seq_no, record);
     }
-    if (fix_common::group_of(grant.pair_id) != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
-        return;
-    }
-    act_on(lease_agent_->on_grant(grant.voter_instance_id, grant.epoch, grant.request_id, grant.echoed_statement_number, std::chrono::steady_clock::now()));
-    // A grant may carry the echo that confirms the leader's statement, which releases what waits on it.
-    release_if_confirmed();
 }
 
-void SequencerThread::handle_lease_refusal(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw::LeaseRefusalView refusal{};
-    if (!pubsub_itc_fw::decode(refusal, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LeaseRefusal -- dropping");
-        return;
+void SequencerThread::SequencerReplicationLinks::send_ack_to_peer(const pubsub_itc_fw::ConnectionID& on, const pubsub_itc_fw::WalAck& ack) {
+    if (on.is_valid()) {
+        owner_.send_pdu(on, pubsub_itc_fw::WalAck::message_pdu_id, 0, ack);
     }
-    if (fix_common::group_of(refusal.pair_id) != pubsub_itc_fw_app::ComponentGroup::sequencer || !lease_agent_.has_value()) {
-        return;
-    }
-    act_on(lease_agent_->on_refusal(refusal.voter_instance_id, refusal.highest_epoch, refusal.request_id, refusal.reason, std::chrono::steady_clock::now()));
 }
 
-void SequencerThread::set_epoch(int32_t new_epoch) {
-    if (new_epoch < epoch_) {
-        // Nothing should ask for this. Refusing keeps the counter monotonic even
-        // if some future caller gets it wrong, because an epoch that moves
-        // backwards silently disarms every downstream check at once.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: refusing to move epoch backwards ({} -> {}) -- keeping {}", epoch_,
-                   new_epoch, epoch_);
-        return;
+void SequencerThread::SequencerReplicationLinks::send_position_request_to_peer(const pubsub_itc_fw::LogPositionRequest& request) {
+    const pubsub_itc_fw::ConnectionID peer = owner_.peer_active_conn();
+    if (peer.is_valid()) {
+        owner_.send_pdu(peer, pubsub_itc_fw::LogPositionRequest::message_pdu_id, 0, request);
     }
-    if (new_epoch == epoch_) {
-        return;
-    }
+}
 
-    const int32_t previous = epoch_;
-    epoch_ = new_epoch;
+void SequencerThread::SequencerReplicationLinks::send_position_reply_to_peer(const pubsub_itc_fw::LogPositionReply& reply) {
+    const pubsub_itc_fw::ConnectionID peer = owner_.peer_active_conn();
+    if (peer.is_valid()) {
+        owner_.send_pdu(peer, pubsub_itc_fw::LogPositionReply::message_pdu_id, 0, reply);
+    }
+}
 
-    // Written before the new epoch is acted on, so a crash in the gap cannot
-    // bring the node back believing it still owns a generation it has spent.
-    if (!epoch_store_.store(epoch_)) {
-        // Carry on in the new generation regardless. Stopping would take out a
-        // sequencer that is otherwise healthy, and the in-memory epoch is still
-        // correct for as long as this process lives. What is lost is the
-        // guarantee across a restart, and that is worth an alert.
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
-                   "SequencerThread: epoch advanced {} -> {} but could not be written to {} -- a restart from here may reuse a spent generation", previous,
-                   epoch_, epoch_store_.path());
+void SequencerThread::SequencerReplicatedWalEvents::role_changed(pubsub_itc_fw::ReplicaRole /*from*/, pubsub_itc_fw::ReplicaRole to, int32_t epoch) {
+    switch (to) {
+        case pubsub_itc_fw::ReplicaRole::leader:
+            owner_.on_role_changed(pubsub_itc_fw_app::Role::leader, epoch);
+            break;
+        case pubsub_itc_fw::ReplicaRole::follower:
+            owner_.on_role_changed(pubsub_itc_fw_app::Role::follower, epoch);
+            break;
+        case pubsub_itc_fw::ReplicaRole::unknown:
+            owner_.on_role_changed(pubsub_itc_fw_app::Role::unknown, epoch);
+            break;
+    }
+}
+
+void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t seq_no) {
+    // The orders and the reports waiting for these records may now go: the orders to the matching
+    // engine, in order, and the reports to their gateways.
+    owner_.release_held_orders_through(seq_no);
+    owner_.forward_pending_er_through(seq_no);
+}
+
+void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry) {
+    // Noted as it is written, as the leader notes the records it writes: the command it holds, so that
+    // a command sent again after a change of leader is checked against it, and the position up to which
+    // the leader had forwarded the engine's reports, so that the kept copies of those reports can be
+    // discarded.
+    if (entry.pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         return;
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: epoch advanced {} -> {} (recorded)", previous, epoch_);
+    auto& arena_buf = owner_.decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    size_t arena_bytes_needed = 0;
+    size_t bytes_consumed = 0;
+    pubsub_itc_fw_app::WalRecordView view{};
+    if (!pubsub_itc_fw_app::decode(view, entry.bytes, entry.size, bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: a replicated record did not decode as a WalRecord");
+        return;
+    }
+    owner_.note_logged_command(view);
+    owner_.note_forwarded_sample(entry.wall_time_ns, view);
+}
+
+void SequencerThread::SequencerReplicatedWalEvents::discarded_after(int64_t /*seq_no*/) {
+    // Identifiers of the discarded records stay in the record of identifiers; a command that matches one
+    // of them is checked against the log exactly, and not found, so it is sequenced as new.
+}
+
+void SequencerThread::SequencerReplicatedWalEvents::granted_lease_to_peer(std::chrono::steady_clock::time_point at) {
+    // The peer now leads, and forwards the engine's reports, until at least a lease period from now.
+    owner_.last_granted_to_leader_ = at;
 }
 
 void SequencerThread::send_status_query(const pubsub_itc_fw::ConnectionID& conn_id) {
     pubsub_itc_fw_app::StatusQuery sq{};
     sq.instance_id = static_cast<int64_t>(config_.instance_id);
-    sq.epoch = epoch_;
+    sq.epoch = current_epoch();
     send_pdu(conn_id, pubsub_itc_fw_app::StatusQuery::message_pdu_id, 0, sq);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusQuery sent on connection {} (instance_id={} epoch={})",
                conn_id.get_value(), sq.instance_id, sq.epoch);
@@ -1500,12 +1324,12 @@ void SequencerThread::send_status_response(const pubsub_itc_fw::ConnectionID& co
     pubsub_itc_fw_app::StatusResponse sr{};
     sr.self_instance_id = static_cast<int64_t>(config_.instance_id);
     sr.peer_instance_id = 0; // we don't know the peer's ID here; it's in the query
-    sr.epoch = epoch_;
+    sr.epoch = current_epoch();
     sr.current_role = role_;
-    sr.next_sequence_number = next_sequence_number_;
+    sr.next_sequence_number = replicated_wal_.has_value() ? replicated_wal_->next_seq_no() : 0;
     send_pdu(conn_id, pubsub_itc_fw_app::StatusResponse::message_pdu_id, 0, sr);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: StatusResponse sent on connection {} (role={} epoch={} next_seq={})",
-               conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), epoch_, next_sequence_number_);
+               conn_id.get_value(), pubsub_itc_fw_app::to_string(role_), sr.epoch, sr.next_sequence_number);
 }
 
 void SequencerThread::handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -1561,20 +1385,9 @@ void SequencerThread::handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id
         handle_peer_status_query(conn_id, message);
     } else if (pdu_id == pubsub_itc_fw_app::StatusResponse::message_pdu_id) {
         handle_peer_status_response(message);
-    } else if (pdu_id == pubsub_itc_fw::LeaseRequest::message_pdu_id) {
-        handle_lease_request(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw::LeaseGrant::message_pdu_id) {
-        handle_lease_grant(message);
-    } else if (pdu_id == pubsub_itc_fw::LeaseRefusal::message_pdu_id) {
-        handle_lease_refusal(message);
-    } else if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
-        handle_wal_record(conn_id, message);
-    } else if (pdu_id == pubsub_itc_fw::WalAck::message_pdu_id) {
-        handle_wal_ack(message);
-    } else if (pdu_id == pubsub_itc_fw::LogPositionRequest::message_pdu_id) {
-        handle_log_position_request(message);
-    } else if (pdu_id == pubsub_itc_fw::LogPositionReply::message_pdu_id) {
-        handle_log_position_reply(message);
+    } else if (replicated_wal_.has_value() && replicated_wal_->handle_message(conn_id, pdu_id, message.payload(), static_cast<size_t>(message.payload_size()),
+                                                                              std::chrono::steady_clock::now())) {
+        // The lease rules and the replicated WAL: handled there.
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unknown peer PDU id {} -- dropping", pdu_id);
     }
@@ -1674,10 +1487,6 @@ void SequencerThread::dispatch_replay_records() {
 
 // WAL replication helpers (Slice 7)
 
-bool SequencerThread::needs_wal_ack() const {
-    return config_.ha_enabled && peer_active_conn().is_valid() && follower_log_matches_ && !running_alone_;
-}
-
 void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope) {
     // Option B: the WAL stores the WalRecord envelope itself (record pdu_id =
     // WalRecord), so the persisted bytes are byte-identical to the replication and
@@ -1697,252 +1506,15 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
                    "SequencerThread: failed to encode envelope for seq={} ({} bytes needed) -- record NOT persisted", envelope.seq_no, bytes_needed);
         return;
     }
-    append_to_wal(envelope.seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), static_cast<int>(bytes_written),
-                  envelope.wall_time_ns, envelope.has_leader_epoch ? envelope.leader_epoch : 0);
-}
-
-void SequencerThread::send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope) {
-    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
-    if (!target.is_valid() || !follower_log_matches_) {
-        return;
+    // The replicated WAL numbers the record itself, with the number the envelope was stamped with, writes
+    // it, sends it to the follower, and commits it when it may.
+    const int64_t written_as = replicated_wal_->append(pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), bytes_written,
+                                                       envelope.wall_time_ns, std::chrono::steady_clock::now());
+    if (written_as != envelope.seq_no) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
+                   "SequencerThread: the envelope was stamped seq={} but the replicated WAL wrote the record as {} -- the two numberings differ",
+                   envelope.seq_no, written_as);
     }
-    send_pdu(target, pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope.seq_no, envelope);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord sent to follower seq={} inner_pdu_id={}", envelope.seq_no,
-               envelope.pdu_id);
-}
-
-void SequencerThread::handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    // Every record the leader sends is written here, on this thread, which is the only thread that
-    // writes the log (principle F1).
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::WalRecordView view{};
-
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode WalRecord -- dropping");
-        return;
-    }
-
-    if (role_ == pubsub_itc_fw_app::Role::leader || !follower_log_agreed_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "SequencerThread: WalRecord seq={} discarded -- this log and the leader's are not yet known to agree", view.seq_no);
-        return;
-    }
-    // A record this log already holds, sent again after the logs were found to agree, is not written
-    // twice; one that would leave a gap is not written at all.
-    //
-    // Option B: the received WalRecord bytes are stored verbatim under the WalRecord pdu, so the follower
-    // WAL is byte-identical to the leader's. (view is decoded only to read seq_no + wall_time_ns for the
-    // append header and the WalAck.)
-    if (write_replicated_record(view.seq_no, message.payload(), message.payload_size(), view.wall_time_ns, view.has_leader_epoch ? view.leader_epoch : 0) !=
-        ReplicatedWrite::written) {
-        return;
-    }
-    // Noted as it is written, as the leader notes the records it writes: the command it holds, so
-    // that a command sent again after a change of leader is checked against it, and the position up
-    // to which the leader had forwarded the engine's reports, so that the kept copies of those
-    // reports can be discarded.
-    note_logged_command(view);
-    note_forwarded_sample(view.wall_time_ns, view);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "SequencerThread: WalRecord seq={} inner_pdu_id={} written to follower WAL (wal_size={}) -- sending WalAck", view.seq_no, view.pdu_id,
-               wal_.record_count());
-
-    pubsub_itc_fw::WalAck wal_ack{};
-    wal_ack.seq_no = view.seq_no;
-    send_pdu(conn_id, pubsub_itc_fw::WalAck::message_pdu_id, 0, wal_ack);
-}
-
-void SequencerThread::forget_log_agreement() {
-    follower_log_agreed_ = false;
-    follower_log_matches_ = false;
-    // A leader that stops sending live records says so, or its follower, still believing the logs
-    // agree, would wait for records that never come.
-    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
-    if (config_.ha_enabled && role_ == pubsub_itc_fw_app::Role::leader && target.is_valid()) {
-        pubsub_itc_fw::LogPositionReply reply{};
-        reply.ask_again = true;
-        send_pdu(target, pubsub_itc_fw::LogPositionReply::message_pdu_id, 0, reply);
-    }
-}
-
-SequencerThread::ReplicatedWrite SequencerThread::write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns,
-                                                                          int32_t leader_epoch) {
-    const int64_t last = log_epochs_.last_seq_no();
-    if (seq_no <= last) {
-        return ReplicatedWrite::already_held;
-    }
-    if (seq_no > last + 1) {
-        // A record is missing. Writing this one would leave a gap, so nothing more is written until
-        // the leader has been asked again where the logs agree, which the lease timer does.
-        follower_log_agreed_ = false;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: replicated record {} arrived after record {} -- one is missing, so this log and the leader's are no longer "
-                   "known to agree; asking again",
-                   seq_no, last);
-        return ReplicatedWrite::gap;
-    }
-    append_to_wal(seq_no, pubsub_itc_fw_app::WalRecord::message_pdu_id, payload, size, wall_time_ns, leader_epoch);
-    highest_replicated_seq_no_ = std::max(highest_replicated_seq_no_, seq_no);
-    return ReplicatedWrite::written;
-}
-
-void SequencerThread::send_log_position_request() {
-    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
-    if (!config_.ha_enabled || role_ == pubsub_itc_fw_app::Role::leader || !target.is_valid() || follower_log_agreed_) {
-        return;
-    }
-    pubsub_itc_fw::LogPositionRequest request{};
-    request.last_seq_no = log_epochs_.last_seq_no();
-    request.last_epoch = log_epochs_.last_epoch();
-    last_position_request_at_ = std::chrono::steady_clock::now();
-    send_pdu(target, pubsub_itc_fw::LogPositionRequest::message_pdu_id, 0, request);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-               "SequencerThread: asking the leader where its log and this one agree (last record {} from epoch {})", request.last_seq_no, request.last_epoch);
-}
-
-void SequencerThread::handle_log_position_request(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw::LogPositionRequestView request{};
-    if (!pubsub_itc_fw::decode(request, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LogPositionRequest -- dropping");
-        return;
-    }
-    const pubsub_itc_fw::ConnectionID target = peer_active_conn();
-    if (role_ != pubsub_itc_fw_app::Role::leader || !target.is_valid()) {
-        return;
-    }
-
-    const pubsub_itc_fw::LogEpochTable::PositionAnswer answer = log_epochs_.answer_position(request.last_seq_no, request.last_epoch);
-    pubsub_itc_fw::LogPositionReply reply{};
-    reply.seq_no = answer.seq_no;
-    reply.epoch = answer.epoch;
-    reply.agreed = answer.seq_no == request.last_seq_no && (answer.seq_no == 0 || answer.epoch == request.last_epoch);
-    // On the connection the records go on, so that the follower has the answer before the records
-    // that follow it.
-    send_pdu(target, pubsub_itc_fw::LogPositionReply::message_pdu_id, 0, reply);
-    if (!reply.agreed) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: the follower's log ends at record {} from epoch {}; it agrees with this one at most through record {} -- told to "
-                   "discard the rest",
-                   request.last_seq_no, request.last_epoch, answer.seq_no);
-        return;
-    }
-
-    // The logs agree through the follower's last record. Send it every record after that, then live
-    // records. Nothing is appended while this runs, because this thread is the one that appends, so
-    // the live records follow without a gap.
-    int64_t sent = 0;
-    const int64_t after = request.last_seq_no;
-    [[maybe_unused]] const auto end_position = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, wal_.scan_start_for(after + 1), [this, &target, after, &sent](int64_t record_id, const void* payload, size_t size) {
-            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
-            if (record_id <= after || !contents.has_value() || contents->size == 0) {
-                return;
-            }
-            send_pdu_payload(target, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, contents->bytes, contents->size);
-            ++sent;
-        });
-    peer_acked_through_ = after;
-    follower_log_matches_ = true;
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: the follower's log agrees with this one through record {} -- sent it the {} record(s) after that; live records follow", after,
-               sent);
-}
-
-void SequencerThread::handle_log_position_reply(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw::LogPositionReplyView reply{};
-    if (!pubsub_itc_fw::decode(reply, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode LogPositionReply -- dropping");
-        return;
-    }
-    if (role_ == pubsub_itc_fw_app::Role::leader) {
-        return;
-    }
-    if (reply.ask_again) {
-        follower_log_agreed_ = false;
-        send_log_position_request();
-        return;
-    }
-    if (follower_log_agreed_) {
-        return;
-    }
-
-    // Nothing writes the log but this thread, so no record is being written while records are discarded.
-    const int64_t last_before = log_epochs_.last_seq_no();
-    const pubsub_itc_fw::LogEpochTable::FollowerStep step = log_epochs_.follower_step(pubsub_itc_fw::LogEpochTable::PositionAnswer{reply.seq_no, reply.epoch});
-    const int64_t keep_through = step.keep_through;
-    const bool agreed = reply.agreed && step.agreed && keep_through == last_before;
-    if (keep_through < last_before) {
-        wal_.truncate_after(keep_through);
-        log_epochs_.truncate_after(keep_through);
-        // Identifiers of the discarded records stay in the record of identifiers; a command that matches
-        // one of them is checked against the log exactly, and not found, so it is sequenced as new.
-        highest_replicated_seq_no_ = keep_through;
-        // A record this instance numbered itself, while it led, may be among those discarded. Its next
-        // number follows the last record kept, so that if it leads again it does not number past a gap
-        // (BUG-0147); taking the lead raises it above every record replicated since.
-        next_sequence_number_ = keep_through + 1;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: discarded records {} to {} from this instance's log -- the leader does not hold them. They were never acted on, "
-                   "because the matching engine is sent an order only once both logs hold it",
-                   keep_through + 1, last_before);
-    }
-    if (agreed) {
-        follower_log_agreed_ = true;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: this log agrees with the leader's through record {} -- writing the records it sends from here", keep_through);
-        return;
-    }
-    send_log_position_request();
-}
-
-void SequencerThread::handle_wal_ack(const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw::WalAckView view{};
-
-    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode WalAck -- dropping");
-        return;
-    }
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalAck received seq={}", view.seq_no);
-
-    // Everything at or below this is on both machines. Acks arrive in the order the records
-    // were streamed, so the highest is also the highest contiguous; std::max is belt and
-    // braces against a reordering that would otherwise let the floor run ahead of the facts.
-    peer_acked_through_ = std::max(peer_acked_through_, view.seq_no);
-    last_acknowledgement_at_ = std::chrono::steady_clock::now();
-
-    // The orders this acknowledgement covers are now on both machines, so they may be acted on.
-    release_held_orders_through(view.seq_no);
-
-    // A follower that has acknowledged every record this leader has written has caught up.
-    if (running_alone_ && peer_acked_through_ >= next_sequence_number_ - 1) {
-        stop_running_alone("it has acknowledged every record this leader has written");
-    }
-
-    // Every report waiting on a record this acknowledgement covers may now go.
-    const auto covered_end = pending_er_.upper_bound(peer_acked_through_);
-    for (auto it = pending_er_.begin(); it != covered_end; ++it) {
-        forward_pending_er(it->second);
-    }
-    pending_er_.erase(pending_er_.begin(), covered_end);
-    say_follower_may_lead_if_it_holds_everything();
 }
 
 void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message) {
@@ -1992,95 +1564,49 @@ void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
     // Every held order is numbered below the first that waits in the log, so these follow them.
     if (first_unheld_seq_ != 0 && first_unheld_seq_ <= acknowledged_seq_no) {
         send_logged_orders(first_unheld_seq_, acknowledged_seq_no);
-        first_unheld_seq_ = acknowledged_seq_no >= next_sequence_number_ - 1 ? 0 : acknowledged_seq_no + 1;
+        first_unheld_seq_ = acknowledged_seq_no >= replicated_wal_->last_seq_no() ? 0 : acknowledged_seq_no + 1;
     }
     pause_or_resume_order_reading();
 }
 
 void SequencerThread::release_all_held_orders() {
-    release_held_orders_through(next_sequence_number_ - 1);
-}
-
-bool SequencerThread::may_act_without_follower() const {
-    return !config_.ha_enabled || !lease_agent_.has_value() || lease_agent_->may_act_without_peer();
-}
-
-void SequencerThread::say_follower_may_not_lead() {
-    const auto now = std::chrono::steady_clock::now();
-    if (!lease_agent_.has_value() || role_ != pubsub_itc_fw_app::Role::leader || !lease_agent_->acting(now) || !lease_agent_->says_peer_may_lead()) {
-        return;
-    }
-    lease_agent_->begin_running_without_peer(now);
-    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: saying the follower may not lead -- orders it does not hold wait until a voter confirms that statement");
-}
-
-void SequencerThread::say_follower_may_lead_if_it_holds_everything() {
-    const auto now = std::chrono::steady_clock::now();
-    if (!lease_agent_.has_value() || role_ != pubsub_itc_fw_app::Role::leader || !lease_agent_->acting(now) || lease_agent_->says_peer_may_lead()) {
-        return;
-    }
-    // In this order: the leader waits for the follower's acknowledgements again, nothing waits, and the
-    // follower has acknowledged every record; only then is it true that the follower holds everything
-    // the engine has acted on.
-    if (!needs_wal_ack() || !held_orders_.empty() || first_unheld_seq_ != 0 || peer_acked_through_ < next_sequence_number_ - 1) {
-        return;
-    }
-    lease_agent_->peer_holds_everything(now);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: the follower holds every record through {} -- saying it may lead again",
-               peer_acked_through_);
-}
-
-void SequencerThread::release_if_confirmed() {
-    if (role_ != pubsub_itc_fw_app::Role::leader || needs_wal_ack() || !may_act_without_follower()) {
-        return;
-    }
-    if (!held_orders_.empty() || first_unheld_seq_ != 0) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: a voter has confirmed that the follower may not lead -- sending the {} held order(s){} to the matching engine",
-                   held_orders_.size(), first_unheld_seq_ != 0 ? " and the orders waiting in the log" : "");
-        release_all_held_orders();
-    }
-    if (!pending_er_.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: no follower keeps up -- forwarding {} buffered ERs to their gateways without waiting for it", pending_er_.size());
-        forward_all_pending_er();
-    }
-    pause_or_resume_order_reading();
+    release_held_orders_through(replicated_wal_->last_seq_no());
 }
 
 void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
     const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
     int64_t sent = 0;
-    [[maybe_unused]] const auto end_position = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, wal_.scan_start_for(first), [this, &engine, first, through, &sent](int64_t record_id, const void* payload, size_t size) {
-            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
-            if (record_id < first || record_id > through || !contents.has_value() || contents->size == 0) {
-                return;
-            }
-            const int64_t wall_time_ns = contents->wall_time_ns;
-            const int16_t pdu_id = contents->pdu_id;
-            const uint8_t* record = contents->bytes;
-            if (engine.is_valid()) {
-                if (stream_wal_record_to_me(engine, record_id, pdu_id, record, contents->size, wall_time_ns)) {
-                    ++sent;
-                }
-                return;
-            }
-            // No engine: an order is deferred, as one sent from the storage would be, and recovered
-            // by the catch-up whichever engine acts next performs.
-            auto& arena_buf = decode_arena_buffer();
-            pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-            size_t arena_bytes_needed = 0;
-            size_t bytes_consumed = 0;
-            pubsub_itc_fw_app::WalRecordView view{};
-            if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id &&
-                pubsub_itc_fw_app::decode(view, record, contents->size, bytes_consumed, arena, arena_bytes_needed) &&
-                (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) ||
-                 view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest))) {
-                note_order_deferred(record_id);
-            }
-        });
+    [[maybe_unused]] const auto end_position =
+        pubsub_itc_fw::WalReader::replay(config_.wal_directory, replicated_wal_->wal().scan_start_for(first),
+                                         [this, &engine, first, through, &sent](int64_t record_id, const void* payload, size_t size) {
+                                             const std::optional<pubsub_itc_fw::WalEntryContents> contents =
+                                                 pubsub_itc_fw::read_wal_entry_contents(payload, size);
+                                             if (record_id < first || record_id > through || !contents.has_value() || contents->size == 0) {
+                                                 return;
+                                             }
+                                             const int64_t wall_time_ns = contents->wall_time_ns;
+                                             const int16_t pdu_id = contents->pdu_id;
+                                             const uint8_t* record = contents->bytes;
+                                             if (engine.is_valid()) {
+                                                 if (stream_wal_record_to_me(engine, record_id, pdu_id, record, contents->size, wall_time_ns)) {
+                                                     ++sent;
+                                                 }
+                                                 return;
+                                             }
+                                             // No engine: an order is deferred, as one sent from the storage would be, and recovered
+                                             // by the catch-up whichever engine acts next performs.
+                                             auto& arena_buf = decode_arena_buffer();
+                                             pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+                                             size_t arena_bytes_needed = 0;
+                                             size_t bytes_consumed = 0;
+                                             pubsub_itc_fw_app::WalRecordView view{};
+                                             if (pdu_id == pubsub_itc_fw_app::WalRecord::message_pdu_id &&
+                                                 pubsub_itc_fw_app::decode(view, record, contents->size, bytes_consumed, arena, arena_bytes_needed) &&
+                                                 (view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) ||
+                                                  view.pdu_id == static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest))) {
+                                                 note_order_deferred(record_id);
+                                             }
+                                         });
     if (engine.is_valid()) {
         note_matching_engine_reachable();
     }
@@ -2093,8 +1619,8 @@ void SequencerThread::start_building_record_of_identifiers() {
         return;
     }
     std::vector<std::string> segment_paths;
-    for (const uint64_t segment : wal_.segments_on_disk()) {
-        segment_paths.push_back(wal_.segment_path(segment));
+    for (const uint64_t segment : replicated_wal_->wal().segments_on_disk()) {
+        segment_paths.push_back(replicated_wal_->wal().segment_path(segment));
     }
     identifiers_building_ = true;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
@@ -2310,7 +1836,7 @@ void SequencerThread::ask_engine_for_position() {
     }
     if (!awaiting_engine_position_) {
         awaiting_engine_position_ = true;
-        held_at_takeover_ = next_sequence_number_ - 1;
+        held_at_takeover_ = replicated_wal_->last_seq_no();
         engine_position_asks_ = 0;
     }
     ++engine_position_request_id_;
@@ -2370,14 +1896,9 @@ void SequencerThread::stop_awaiting_engine_position(const char* reason) {
 }
 
 void SequencerThread::release_orders_that_waited_for_the_engine() {
-    // The orders that arrived meanwhile now go the way they would have gone: once the follower
-    // acknowledges them, or once a voter has confirmed that the follower may not lead.
-    if (needs_wal_ack()) {
-        release_held_orders_through(peer_acked_through_);
-    } else {
-        release_if_confirmed();
-    }
-    pause_or_resume_order_reading();
+    // The orders that arrived meanwhile now go the way they would have gone: once their records are
+    // committed, which may already be the case.
+    release_held_orders_through(replicated_wal_->committed_through());
 }
 
 int64_t SequencerThread::released_through() const {
@@ -2387,12 +1908,12 @@ int64_t SequencerThread::released_through() const {
     if (first_unheld_seq_ != 0) {
         return first_unheld_seq_ - 1;
     }
-    return next_sequence_number_ - 1;
+    return replicated_wal_.has_value() ? replicated_wal_->last_seq_no() : 0;
 }
 
 void SequencerThread::pause_or_resume_order_reading() {
     const bool waiting_for_confirmation =
-        role_ == pubsub_itc_fw_app::Role::leader && ((!needs_wal_ack() && !may_act_without_follower()) || awaiting_engine_position_);
+        role_ == pubsub_itc_fw_app::Role::leader && ((replicated_wal_.has_value() && replicated_wal_->waits_for_confirmation()) || awaiting_engine_position_);
     if (!order_reading_paused_) {
         if (waiting_for_confirmation && (held_orders_.size() >= pause_order_reading_at || first_unheld_seq_ != 0)) {
             for (const pubsub_itc_fw::ConnectionID& id : order_connection_ids_) {
@@ -2433,65 +1954,13 @@ void SequencerThread::discard_held_orders() {
     }
 }
 
-void SequencerThread::start_running_alone(const char* reason) {
-    if (running_alone_) {
-        return;
+void SequencerThread::forward_pending_er_through(int64_t seq_no) {
+    // Every report waiting on a record committed through seq_no may now go, in the order of the records.
+    const auto covered_end = pending_er_.upper_bound(seq_no);
+    for (auto it = pending_er_.begin(); it != covered_end; ++it) {
+        forward_pending_er(it->second);
     }
-    running_alone_ = true;
-    running_alone_since_ = std::chrono::steady_clock::now();
-    running_alone_gauge_.set(1.0);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "SequencerThread: the follower is too far behind -- {}. Running as if alone: once a voter confirms that the follower may not lead, "
-               "orders go to the matching engine without waiting for it and reports are forwarded, so resilience is reduced until the follower "
-               "catches up. {} order(s) held; the follower has acknowledged through {} of {}",
-               reason, held_orders_.size(), peer_acked_through_, next_sequence_number_ - 1);
-    say_follower_may_not_lead();
-    release_if_confirmed();
-}
-
-void SequencerThread::stop_running_alone(const char* reason) {
-    if (!running_alone_) {
-        return;
-    }
-    running_alone_ = false;
-    running_alone_gauge_.set(0.0);
-    const auto alone_for = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - running_alone_since_);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: the follower is keeping up again -- {}. Waiting for its acknowledgements again after {} ms running as if alone", reason,
-               alone_for.count());
-}
-
-void SequencerThread::check_follower_acknowledgements() {
-    if (held_orders_.empty() || !needs_wal_ack()) {
-        return;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    const auto waiting_since = std::max(last_acknowledgement_at_, held_orders_.front().held_at);
-    if (now - waiting_since >= follower_acknowledgement_timeout) {
-        start_running_alone("no acknowledgement from it for at least 100 ms while orders were waiting");
-    }
-}
-
-void SequencerThread::forward_all_pending_er() {
-    for (auto& [seq_no, pending] : pending_er_) {
-        forward_pending_er(pending);
-    }
-    pending_er_.clear();
-}
-
-void SequencerThread::flush_pending_er() {
-    if (running_alone_) {
-        stop_running_alone("it has disconnected, and the leader runs alone as it does with no follower");
-    }
-    // Held orders and buffered reports go once a voter confirms that the follower, now gone, may not
-    // lead; with HA off they go at once.
-    if (!config_.ha_enabled) {
-        release_all_held_orders();
-        forward_all_pending_er();
-        return;
-    }
-    say_follower_may_not_lead();
-    release_if_confirmed();
+    pending_er_.erase(pending_er_.begin(), covered_end);
 }
 
 void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope,
@@ -2654,7 +2123,7 @@ void SequencerThread::send_order_acceptance(const pubsub_itc_fw::ConnectionID& c
         deferring_orders_ ? static_cast<int32_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - deferral_began_).count())
                           : 0;
     state.has_leader_epoch = true;
-    state.leader_epoch = epoch_;
+    state.leader_epoch = current_epoch();
     send_pdu(conn_id, pubsub_itc_fw_app::OrderAcceptance::message_pdu_id, 0, state);
 }
 
@@ -2806,7 +2275,7 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
         // Reports logged from here on are forwarded live to the new binding; those logged before,
         // after the last one the member was delivered, are what its gateway asks for once the
         // session is established.
-        stored.bound_at_log_seq_no = next_sequence_number_ - 1;
+        stored.bound_at_log_seq_no = replicated_wal_->last_seq_no();
         stored.delivered_figure_may_be_behind = previous_session_died;
     }
 
@@ -2946,12 +2415,13 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
     };
     std::vector<Undelivered> found;
     std::vector<Undelivered> in_segment;
-    const std::vector<uint64_t> segments = wal_.segments_on_disk();
+    const std::vector<uint64_t> segments = replicated_wal_->wal().segments_on_disk();
     for (auto segment = segments.rbegin(); segment != segments.rend(); ++segment) {
         in_segment.clear();
         int64_t first_in_segment = 0;
         static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
-            wal_.segment_path(*segment), 0, [&identity, after, through, &in_segment, &first_in_segment](int64_t record_id, const void* payload, size_t size) {
+            replicated_wal_->wal().segment_path(*segment), 0,
+            [&identity, after, through, &in_segment, &first_in_segment](int64_t record_id, const void* payload, size_t size) {
                 if (first_in_segment == 0) {
                     first_in_segment = record_id;
                 }
@@ -3165,12 +2635,12 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     // newest first, once the segment has been read.
     std::vector<ReplayMatch> in_segment;
     size_t segments_read = 0;
-    const std::vector<uint64_t> segments = wal_.segments_on_disk();
+    const std::vector<uint64_t> segments = replicated_wal_->wal().segments_on_disk();
     for (auto segment = segments.rbegin(); segment != segments.rend() && window.size() < window_capacity; ++segment) {
         in_segment.clear();
         int64_t first_in_segment = 0;
         static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
-            wal_.segment_path(*segment), 0,
+            replicated_wal_->wal().segment_path(*segment), 0,
             [&identity, from_seq_no, &in_segment, &total_matched, &first_in_segment](int64_t record_id, const void* payload, size_t size) {
                 if (first_in_segment == 0) {
                     first_in_segment = record_id;
@@ -3342,7 +2812,7 @@ void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::Connecti
 
     wal_subscriber_conn_ids_.insert(conn_id);
 
-    const int64_t accepted_from_seq_no = (from_seq_no == -1) ? wal_.last_seq_no() : from_seq_no;
+    const int64_t accepted_from_seq_no = (from_seq_no == -1) ? replicated_wal_->wal().last_seq_no() : from_seq_no;
 
     pubsub_itc_fw_app::WalSubscribeAck ack{};
     ack.accepted_from_seq_no = accepted_from_seq_no;
@@ -3550,9 +3020,9 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // to the first record of the day (R-0123). Reading starts at the segment holding the first record
     // the engine lacks, not at the start of the log: reading the whole log on this thread stopped the
     // venue sequencing orders for as long as it took (docs/bug_list.md, BUG-0113).
-    const int64_t earliest_retained = wal_.first_seq_no();
+    const int64_t earliest_retained = replicated_wal_->wal().first_seq_no();
     [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, wal_.scan_start_for(last_seq_no + 1),
+        config_.wal_directory, replicated_wal_->wal().scan_start_for(last_seq_no + 1),
         [this, &conn_id, last_seq_no, wal_head, &streamed](int64_t record_id, const void* payload, size_t size) {
             if (record_id <= last_seq_no || record_id > wal_head) {
                 return;

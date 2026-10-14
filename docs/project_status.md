@@ -67,8 +67,10 @@ availability machinery from the sequencer and the matching engine into the libra
 in [ha_library_boundary.md](availability/ha_library_boundary.md); phase 3, moving the lease classes and the
 voting service into the library, is finished; its design is
 [lease_classes_in_the_library.md](availability/lease_classes_in_the_library.md). Phase 4, the library's
-replicated WAL with one writing thread, has had its first step done: the sequencer's thread is the only
-one that writes its WAL. Its design is [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md). New features, including pub/sub, the order activity recorder and the trading phases, wait
+replicated WAL with one writing thread, has had its three steps done: the sequencer keeps its WAL
+through the library's `ReplicatedWal`, whose thread is the only one that writes it. Its design is
+[replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), and it waits for
+Andrew's review. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start

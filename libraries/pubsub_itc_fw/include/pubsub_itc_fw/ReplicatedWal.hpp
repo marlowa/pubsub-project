@@ -51,8 +51,10 @@ class ReplicationLinksInterface {
     [[nodiscard]] virtual bool peer_connected() const = 0;
     /// As the leader: one record, to the follower.
     virtual void send_record_to_peer(const ReplicatedRecord& record) = 0;
-    /// As the follower: that a record has been written.
-    virtual void send_ack_to_peer(const WalAck& ack) = 0;
+    /// As the follower: that a record has been written. Sent on the connection the record arrived on, so
+    /// that the leader's records and their acknowledgements travel on one connection, as a request and
+    /// its answer do.
+    virtual void send_ack_to_peer(const ConnectionID& on, const WalAck& ack) = 0;
     /// As the follower: where its WAL ends, so that the leader can say where the two agree.
     virtual void send_position_request_to_peer(const LogPositionRequest& request) = 0;
     /// As the leader: where the two WALs agree, or that the follower must ask again.
@@ -245,6 +247,12 @@ class ReplicatedWal {
     /// follower is connected, its WAL agrees with this one, and it keeps up.
     [[nodiscard]] bool waits_for_follower() const;
 
+    /// As the leader: whether records the follower lacks wait for a voter to confirm that the follower may
+    /// not lead, because no follower keeps up and no voter has yet echoed that statement.
+    [[nodiscard]] bool waits_for_confirmation() const {
+        return configuration_.ha_enabled && !waits_for_follower() && !may_commit_without_follower();
+    }
+
     // ---- Messages from the peer and the voters ----------------------------------------------------
 
     /**
@@ -254,7 +262,7 @@ class ReplicatedWal {
      */
     bool handle_message(const ConnectionID& from, int16_t pdu_id, const uint8_t* payload, size_t size, Clock::time_point now);
 
-    void handle_record(const ReplicatedRecordView& record, Clock::time_point now);
+    void handle_record(const ConnectionID& from, const ReplicatedRecordView& record, Clock::time_point now);
     void handle_ack(int64_t seq_no, Clock::time_point now);
     void handle_position_request(int64_t last_seq_no, int32_t last_epoch, Clock::time_point now);
     void handle_position_reply(const LogPositionReplyView& reply, Clock::time_point now);

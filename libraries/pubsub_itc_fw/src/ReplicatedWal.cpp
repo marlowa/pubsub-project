@@ -252,7 +252,7 @@ bool ReplicatedWal::handle_message(const ConnectionID& from, int16_t pdu_id, con
         if (!decode(view, payload, size, consumed, arena, needed)) {
             return refuse("ReplicatedRecord");
         }
-        handle_record(view, now);
+        handle_record(from, view, now);
         return true;
     }
     if (pdu_id == WalAck::message_pdu_id) {
@@ -306,7 +306,7 @@ bool ReplicatedWal::handle_message(const ConnectionID& from, int16_t pdu_id, con
     return false;
 }
 
-void ReplicatedWal::handle_record(const ReplicatedRecordView& record, Clock::time_point /*now*/) {
+void ReplicatedWal::handle_record(const ConnectionID& from, const ReplicatedRecordView& record, Clock::time_point /*now*/) {
     if (role_ == ReplicaRole::leader || !follower_wal_agreed_) {
         PUBSUB_LOG(logger_, FwLogLevel::Debug, "{}: replicated record {} discarded -- this log and the leader's are not yet known to agree",
                    configuration_.owner_name, record.seq_no);
@@ -332,7 +332,7 @@ void ReplicatedWal::handle_record(const ReplicatedRecordView& record, Clock::tim
 
     WalAck ack{};
     ack.seq_no = record.seq_no;
-    links_.send_ack_to_peer(ack);
+    links_.send_ack_to_peer(from, ack);
 
     WalEntryContents entry;
     entry.wall_time_ns = record.wall_time_ns;

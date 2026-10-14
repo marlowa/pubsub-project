@@ -85,7 +85,7 @@ struct PeerOutbox : public ReplicationLinksInterface {
             messages.push_back(encode_message(record));
         }
     }
-    void send_ack_to_peer(const WalAck& ack) override {
+    void send_ack_to_peer(const ConnectionID& /*on*/, const WalAck& ack) override {
         if (connected) {
             messages.push_back(encode_message(ack));
         }

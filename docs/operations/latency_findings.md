@@ -350,6 +350,19 @@ lower processor cost per order and far less variation, not a faster end-to-end r
 
 ---
 
+### A reply goes on the connection the request arrived on
+
+The leading sequencer holds each order until its follower has acknowledged the order's record, so the
+follower's acknowledgement is inside every order's round trip. When the follower sent its
+acknowledgements on one of its two connections to the leader and the leader's records arrived on the
+other, so that records and acknowledgements crossed on two connections, the round trip's median was
+about 8 microseconds higher than with both on one connection: 130.0 to 132.5 microseconds against 122.8
+to 128.4 for the build before, measured either side of it, with the primary matching engine leading
+throughout. Sending each acknowledgement on the connection its record arrived on removed the difference:
+122.5 to 125.2 against 125.1 to 128.8. Why two connections cost more than one is not established; the
+measurement is the reason the library's replicated WAL answers on the arriving connection
+([replicated_wal_in_the_library.md](../availability/replicated_wal_in_the_library.md), section 5.2).
+
 ## Ruled out by measurement
 
 ### Looking for work more often

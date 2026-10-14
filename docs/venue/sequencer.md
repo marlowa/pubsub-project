@@ -183,13 +183,20 @@ it ends. The log keeps all of its history: nothing is removed from it during the
 ([BUG-0048](../bug_list.md#bug_0048)). See
 [The write-ahead log](../durability/wal.md) and [WAL and High Availability](../availability/wal_and_ha.md).
 
+**The log is the library's replicated WAL** (`ReplicatedWal`, described in
+[replicated_wal_in_the_library.md](../availability/replicated_wal_in_the_library.md)). It decides which
+sequencer leads, numbers and writes each record on the leader, sends it to the follower, and counts it
+as committed once the follower has acknowledged it, or, with no follower keeping up, once a voter has
+confirmed that the follower may not lead. The sequencer gives it each order and report to write, holds
+each order until its record is committed, and forwards each report once the record it depends on is.
+
 **One thread writes the log, on the leader and the follower alike** (principle F1 in
-[design_principles.md](../design_principles.md)). On the follower, each record the leader sends
-arrives on the sequencer's thread as an ordinary message. The sequencer writes it if it is the next
-record the log needs, notes the command it holds and the position of forwarded reports it carries,
-and sends the acknowledgement. A record the log already holds is not written again, and one that
-would leave a gap stops the writing until the follower has asked its leader again where their logs
-agree ([follower_log_repair.md](../availability/follower_log_repair.md)).
+[design_principles.md](../design_principles.md)): the sequencer's, which owns the replicated WAL. On the
+follower, each record the leader sends arrives on that thread as an ordinary message. The replicated
+WAL writes it if it is the next record the log needs, and acknowledges it; the sequencer is told, and
+notes the command the record holds and the position of forwarded reports it carries. A record the log
+already holds is not written again, and one that would leave a gap stops the writing until the follower
+has asked its leader again where their logs agree ([follower_log_repair.md](../availability/follower_log_repair.md)).
 
 ---
 

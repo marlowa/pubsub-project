@@ -123,7 +123,7 @@ instance against its log, marked or not, until the older connection has been rea
 On taking the lead, the new leader forwards the reports it kept (part 4.4) **before** it sends
 `OrderAcceptance`. Both go to each gateway on the same connection, in the order sent, so a gateway
 receives the answers to commands it is holding before it is told to send them again, and sends again
-only commands that are still unanswered: `adopt_role` forwards the kept reports and then sends
+only commands that are still unanswered: `on_role_changed` forwards the kept reports and then sends
 `OrderAcceptance`. Sending a command again that has in fact been answered is harmless, because section 3.4
 recognises it, so this is to avoid needless work, not to make the design correct.
 

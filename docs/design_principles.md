@@ -480,8 +480,8 @@ the voters. This is rule 11 in [majority_leases.md](availability/majority_leases
 
 **Where it holds.** In the lease classes (the statement that the follower may not lead travels on the
 lease requests and is recorded by the voters), and in the leading sequencer, which acts on a command
-its follower does not hold only once another voter has recorded that statement
-(`SequencerThread::may_act_without_follower`). Design:
+its follower does not hold only once another voter has recorded that statement: the library's
+replicated WAL commits such a record only then (`ReplicatedWal`). Design:
 [a_follower_behind_does_not_lead.md](availability/a_follower_behind_does_not_lead.md).
 
 **What checks it.** `ha_test.py` scenarios 61, 63 and 64; `LeaseRulesTest`; the simulation; the
@@ -514,8 +514,10 @@ would hold an order, and members might have reports for it, that no surviving re
 ever accepted. The venue could not account for it, rebuild it after a restart, or answer a member who
 asked about it.
 
-**Where it holds.** In the leading sequencer: `hold_until_acknowledged`, `release_if_confirmed` and
-the running-alone logic in `SequencerThread`.
+**Where it holds.** In the library's replicated WAL (`ReplicatedWal`), which commits a record only once
+the follower has acknowledged it, or a voter has confirmed that the follower may not lead, and which
+decides when the leader runs as if alone; and in the leading sequencer, which holds each order
+(`hold_until_acknowledged`) until its record is committed.
 
 **What checks it.** `ha_test.py` scenario 59, in which the leading sequencer dies holding orders its
 follower never received.

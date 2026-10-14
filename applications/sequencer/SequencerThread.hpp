@@ -27,6 +27,7 @@
 #include <replication_messages.hpp>
 
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
+#include <pubsub_itc_fw/ReplicatedWal.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 
 #include "EngineOrderRouting.hpp"
@@ -39,12 +40,7 @@
 #include "SeqNumRanges.hpp"
 #include "SequencerConfiguration.hpp"
 #include "SessionIdentity.hpp"
-#include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
-#include <pubsub_itc_fw/EpochStore.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
-#include <pubsub_itc_fw/LeasePromiseStore.hpp>
-#include <pubsub_itc_fw/LogEpochTable.hpp>
-#include <pubsub_itc_fw/PairLeaseAgent.hpp>
 
 namespace sequencer {
 
@@ -100,35 +96,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     const std::string er_inbound_svc_;
     const std::string wal_subscriber_inbound_svc_;
 
-    // The number the next record this instance writes as leader will carry. Orders and the
-    // execution reports the leader logs are numbered from it alike. Set from the log's last
-    // record at startup, and moved past every record replicated to this instance when it takes
-    // the lead (adopt_role), because a follower writes its leader's records under the leader's
-    // numbers and does not use this counter for them. BUG-0105.
-    int64_t next_sequence_number_{1};
-
-    // The highest sequence number of any record this instance has written as a follower, from its
-    // leader's replication stream. Read when the instance takes the lead, so that it numbers new
-    // records above every record its log holds.
-    int64_t highest_replicated_seq_no_{0};
-
-    // Repairing a follower's log when it rejoins: docs/availability/follower_log_repair.md.
-    //
-    // Which leadership wrote each record of this instance's log. This thread is the only one that
-    // writes the log, on the leader and the follower alike, so the table is used on this thread only.
-    pubsub_itc_fw::LogEpochTable log_epochs_;
-
-    // As a follower: whether this log and the leader's are known to agree, so that the records the
-    // leader sends may be written. Until then they are discarded.
-    bool follower_log_agreed_{false};
-
-    // As a leader: whether the follower's log is known to agree with this one, so that live records
-    // are sent to it. Until then it is sent none: written after a gap, they would be out of place.
-    bool follower_log_matches_{false};
-
-    // As a follower: when this instance last asked its leader where their logs agree.
-    std::chrono::steady_clock::time_point last_position_request_at_{};
-
     // Outbound gateway connections for ER forwarding, keyed by (protocol, instance).
     //
     // More than one gateway feeds the same book -- the ASCII FIX one and the binary one --
@@ -174,17 +141,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // instance_id of the peer sequencer, learned from StatusQuery/StatusResponse.
     int64_t peer_instance_id_{0};
 
-    // mmap'd on-disk write-ahead log. Opened in on_initial_event()
-    // before the sequencer begins accepting connections.
-    /// Commits one record to the log and records how long it took. Every append goes through
-    /// here, so there is one place that knows what a commit costs.
-    void append_to_wal(int64_t seq_no, int16_t pdu_id, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
-
-    /// Opens the log, builds the table of epochs, and discards everything after the first gap, if there is one.
-    void open_wal_trusting_it_up_to_any_gap();
-
-    pubsub_itc_fw::Wal wal_;
-
     // How long committing one record to the log takes. On the order path, which is why it is
     // worth measuring: a commit that blocks is a sequencer that has stopped sequencing, and until
     // this existed the only sign of it was the reactor's stall watchdog saying a callback had not
@@ -216,25 +172,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::ExternalWalSubscriberRegistry external_wal_subscriber_registry_;
     std::unordered_set<pubsub_itc_fw::ConnectionID> wal_subscriber_conn_ids_;
 
-    // Leader-follower state machine (slice 6).
+    // This instance's role, as the replicated WAL last said it changed.
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
-
-    // The leadership generation. Never assign to this directly: go through
-    // set_epoch(), which also writes it to disk. A restart that forgets the
-    // epoch lets this node claim a generation the venue has already used.
-    int32_t epoch_{0};
-
-    // Where the epoch outlives the process. Read once at startup, rewritten
-    // whenever the epoch moves.
-    pubsub_itc_fw::EpochStore epoch_store_;
-
-    // Where this instance's promises in deciding which instance leads outlive the process, until
-    // the machine reboots. It lets a process restarted by its supervisor keep the lead it held.
-    pubsub_itc_fw::LeasePromiseStore lease_promise_store_;
-    // Writes promise records on a thread of its own, so that refreshing one does not stop this
-    // instance answering lease requests while the disk is written (BUG-0107). Declared after the
-    // store it writes to, so it is destroyed first. Constructed only when there is a lease agent.
-    std::optional<pubsub_itc_fw::BackgroundPromiseRecorder> background_promise_recorder_;
 
     // How the lease rules reach the other two voters in deciding which sequencer leads: the peer
     // sequencer, and the arbiter pool on both arbiter connections.
@@ -251,10 +190,45 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     };
     SequencerLeaseLinks lease_links_{*this};
 
-    // Decides whether this sequencer leads: it does only while a majority of three voters -- itself,
-    // its peer and the arbiter pool -- has granted it a lease that has not run out. Constructed at
-    // the initial event when high availability is on. See pubsub_itc_fw/PairLeaseAgent.hpp.
-    std::optional<pubsub_itc_fw::PairLeaseAgent> lease_agent_;
+    // How the replicated WAL sends to the peer sequencer: on whichever peer connection is open.
+    class SequencerReplicationLinks : public pubsub_itc_fw::ReplicationLinksInterface {
+      public:
+        explicit SequencerReplicationLinks(SequencerThread& owner) : owner_(owner) {}
+        [[nodiscard]] bool peer_connected() const override;
+        void send_record_to_peer(const pubsub_itc_fw::ReplicatedRecord& record) override;
+        void send_ack_to_peer(const pubsub_itc_fw::ConnectionID& on, const pubsub_itc_fw::WalAck& ack) override;
+        void send_position_request_to_peer(const pubsub_itc_fw::LogPositionRequest& request) override;
+        void send_position_reply_to_peer(const pubsub_itc_fw::LogPositionReply& reply) override;
+
+      private:
+        SequencerThread& owner_;
+    };
+    SequencerReplicationLinks replication_links_{*this};
+
+    // What the replicated WAL tells this sequencer.
+    class SequencerReplicatedWalEvents : public pubsub_itc_fw::ReplicatedWalEventsInterface {
+      public:
+        explicit SequencerReplicatedWalEvents(SequencerThread& owner) : owner_(owner) {}
+        void role_changed(pubsub_itc_fw::ReplicaRole from, pubsub_itc_fw::ReplicaRole to, int32_t epoch) override;
+        void committed_through(int64_t seq_no) override;
+        void written_as_follower(int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry) override;
+        void discarded_after(int64_t seq_no) override;
+        void granted_lease_to_peer(std::chrono::steady_clock::time_point at) override;
+
+      private:
+        SequencerThread& owner_;
+    };
+    SequencerReplicatedWalEvents replicated_wal_events_{*this};
+
+    // The sequencer's write-ahead log, kept on both instances of the pair, and the deciding of which
+    // instance leads: the library's replicated WAL (docs/availability/replicated_wal_in_the_library.md).
+    // Constructed at the initial event, except in replay mode, which reads the log and writes nothing.
+    std::optional<pubsub_itc_fw::ReplicatedWal> replicated_wal_;
+
+    // The epoch the sequencer stamps on what it sends: the replicated WAL's, or 1 in replay mode.
+    [[nodiscard]] int32_t current_epoch() const {
+        return replicated_wal_.has_value() ? replicated_wal_->epoch() : 1;
+    }
 
     // Timer ids (default-constructed = not scheduled); on_timer_event compares
     // a fired timer's id against these to identify it.
@@ -311,13 +285,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // it covers from the front. More than one report may wait on one record.
     std::multimap<int64_t, PendingEr> pending_er_;
 
-    // The highest sequence number the follower has acknowledged. Only ever advances. The follower
-    // acknowledges records in the order it receives them, so everything at or below this is on two
-    // machines, and a report whose record is at or below it can be forwarded at once. That is why no
-    // record of individual acknowledgements is kept (BUG-0111). It is the first of the positions the log's retention will
-    // be anchored to -- see the snapshot timer for why nothing is reclaimed yet.
-    int64_t peer_acked_through_{0};
-
     // Warn when the log has grown past this without anything having been reclaimed. Not a
     // limit: nothing is deleted on reaching it. It exists because the venue currently cannot
     // establish what is safe to discard, so the log grows for as long as it runs, and an
@@ -331,18 +298,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // Leader-follower helpers.
     pubsub_itc_fw::ConnectionID peer_active_conn() const;
-    void adopt_role(pubsub_itc_fw_app::Role new_role);
-    void set_epoch(int32_t new_epoch);
-    /// Changes this sequencer's role to follow what the lease rules have just decided.
-    void act_on(pubsub_itc_fw::PairLeaseAgent::Change change);
+    /// Does what this sequencer must on a change of role, after the replicated WAL has done its part.
+    void on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t epoch);
     void send_status_query(const pubsub_itc_fw::ConnectionID& conn_id);
     void send_status_response(const pubsub_itc_fw::ConnectionID& conn_id);
     void handle_peer_status_query(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_peer_status_response(const pubsub_itc_fw::EventMessage& message);
     void handle_peer_pdu(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_lease_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
-    void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);
 
     // Replay mode helpers.
     //
@@ -361,38 +323,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void try_dispatch_replay();         // dispatches once both flags are set
     void dispatch_replay_records();
 
-    // WAL storage / replication helpers (peer follower).
+    // WalRecord doubles as the pipeline envelope (Option B): the WAL, the follower's copy of it and the
+    // external-subscriber stream all carry the stamped WalRecord, so leader and follower WALs stay
+    // byte-identical and every reader decodes envelope-then-payload. See docs/fix/pdu_generation.md.
     //
-    // WalRecord doubles as the pipeline envelope (Option B): the WAL, the follower
-    // replication stream and the external-subscriber stream all carry the stamped
-    // WalRecord, so leader and follower WALs stay byte-identical and every reader
-    // decodes envelope-then-payload. See docs/fix/pdu_generation.md.
-    [[nodiscard]] bool needs_wal_ack() const;
+    // Writes a record through the replicated WAL, which numbers it, sends it to the follower and
+    // commits it. The envelope must already carry the number the replicated WAL gives next.
     void append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord& envelope);
-    void send_wal_record(const pubsub_itc_fw_app::WalRecord& envelope);
-    void handle_wal_record(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_wal_ack(const pubsub_itc_fw::EventMessage& message);
-
-    /// As a follower: asks the leader where their logs agree, unless they already do.
-    void send_log_position_request();
-    /// As a leader: answers a follower, and once the logs agree sends it every record after its last.
-    void handle_log_position_request(const pubsub_itc_fw::EventMessage& message);
-    /// As a follower: discards what the leader's answer says it does not hold, and asks again or starts writing.
-    void handle_log_position_reply(const pubsub_itc_fw::EventMessage& message);
-    /// The two logs no longer known to agree, because a peer connection or this instance's role changed.
-    void forget_log_agreement();
-    // What became of a record the leader sent.
-    enum class ReplicatedWrite {
-        // It was the next record the log needed, and was written.
-        written,
-        // The log already holds a record with this number; nothing was written.
-        already_held,
-        // A record before it is missing; nothing was written, and the logs are no longer taken to agree.
-        gap
-    };
-    // As a follower: writes a record the leader sent if it is the next one this log needs; on finding
-    // one missing, stops writing until the logs are found to agree again.
-    ReplicatedWrite write_replicated_record(int64_t seq_no, const uint8_t* payload, int size, int64_t wall_time_ns, int32_t leader_epoch);
 
     // ---- Sending an order to the matching engine only once the follower holds it -------------
     //
@@ -415,20 +352,10 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // How many orders the leader holds at most while waiting for the follower. When it is full the
     // follower is treated as too far behind and the leader runs as if alone. At the highest rate
     // measured on this venue, about 34,000 orders a second, this is about half a second of orders,
-    // well beyond the acknowledgement timeout below, so in practice the timeout is what notices a
-    // follower that has stopped, and this only bounds the storage. Each slot holds the envelope and a
+    // well beyond the replicated WAL's acknowledgement timeout, so in practice the timeout is what
+    // notices a follower that has stopped, and this only bounds the storage. Each slot holds the envelope and a
     // pointer, so the storage is a few megabytes, allocated once when the sequencer starts.
     static constexpr size_t held_order_capacity = 16384;
-
-    // How long the leader waits, while it holds orders, for any acknowledgement from the follower
-    // before it treats the follower as too far behind. A follower on the same network acknowledges
-    // in tens of microseconds, so a tenth of a second without one means it has stalled, and members
-    // are not kept waiting longer than that for a fault in the backup.
-    static constexpr std::chrono::milliseconds follower_acknowledgement_timeout{100};
-
-    // How often the timeout above is checked. A tenth of the timeout, so a stalled follower is
-    // noticed between 100 and 110 milliseconds after its last acknowledgement.
-    static constexpr std::chrono::milliseconds acknowledgement_watch_interval{10};
 
     pubsub_itc_fw::FixedCapacityRingBuffer<HeldOrder> held_orders_{held_order_capacity};
 
@@ -449,24 +376,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     static constexpr size_t pause_order_reading_at = held_order_capacity * 3 / 4;
     static constexpr size_t resume_order_reading_at = held_order_capacity / 4;
 
-    // True while a follower is connected but has fallen too far behind, and the leader is sending
-    // orders to the engine at once and forwarding reports without waiting, as it does with no
-    // follower connected. A loss of resilience, not of service.
-    bool running_alone_{false};
-    std::chrono::steady_clock::time_point running_alone_since_{};
-    std::chrono::steady_clock::time_point last_acknowledgement_at_{};
+    // 1 while the leader carries on without waiting for a follower that is connected but too far
+    // behind. Registered here and set by the replicated WAL.
     pubsub_itc_fw::GaugeHandle running_alone_gauge_;
 
     void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);
-    /// Whether the leader may send the engine an order its follower does not hold: HA is off, or a voter has confirmed that the follower
-    /// may not lead.
-    [[nodiscard]] bool may_act_without_follower() const;
-    /// Says, if it does not already, that the follower may not lead, before acting on orders the follower lacks.
-    void say_follower_may_not_lead();
-    /// Says that the follower may lead again, once it holds every record and the leader waits for its acknowledgements again.
-    void say_follower_may_lead_if_it_holds_everything();
-    /// Sends the engine every waiting order and every waiting report, once acting without the follower is confirmed.
-    void release_if_confirmed();
     /// Sends the engine, in order, the orders numbered from first to through that waited in the log rather than the storage.
     void send_logged_orders(int64_t first, int64_t through);
     /// The last order released to the engine: everything numbered at or below it has been sent or deferred, and nothing above it.
@@ -477,10 +391,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     void release_held_orders_through(int64_t acknowledged_seq_no);
     void release_all_held_orders();
     void discard_held_orders();
-    void start_running_alone(const char* reason);
-    void stop_running_alone(const char* reason);
-    void check_follower_acknowledgements();
-    void forward_all_pending_er();
+    /// Forwards every waiting report whose record is committed through @p seq_no.
+    void forward_pending_er_through(int64_t seq_no);
 
     // The reports from the matching engine kept while this instance is not leading, so that it can
     // forward them if it takes the lead (docs/availability/change_of_sequencer_leader.md, section 4.4).
@@ -657,7 +569,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // sequence number sent with it. The caller keeps @p bytes valid until this returns.
     void forward_report_from_engine(const uint8_t* bytes, size_t size, int64_t er_seq_no, ReportSource source);
 
-    void flush_pending_er();
     void forward_pending_er(const PendingEr& pending);
 
     /**

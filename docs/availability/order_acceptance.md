@@ -81,7 +81,7 @@ unanswered ([Commands during a change of leader](commands_during_a_change_of_lea
 **Only the leader sends it.** A gateway holds a connection to both sequencers and cannot tell which
 leads. A follower sends nothing to a matching engine, so it never defers, and if it answered it would
 say "accepting" on a venue with no matching engine at all. Two things follow, both in
-`SequencerThread::adopt_role`:
+`SequencerThread::on_role_changed`:
 
 - **An instance that takes the lead sends `OrderAcceptance` at once,** because the gateways may be
   holding what the previous leader said before it died, and silence would leave a refusal in place

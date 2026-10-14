@@ -14,8 +14,10 @@
 > starts, so that every later phase starts from a run in which every high availability scenario passes.
 > It is fixed, and all 73 scenarios pass. Phase 4's design,
 > [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md), was agreed on
-> 13 October 2026. Its first step is done: the sequencer's thread is the only one that writes its WAL,
-> and the two locks of [BUG-0124](bug_list.md#bug_0124) are gone. All 74 scenarios pass.
+> 13 October 2026. Its three steps are done: the sequencer's thread is the only one that writes its WAL,
+> and the two locks of [BUG-0124](bug_list.md#bug_0124) are gone; the library's replicated WAL is built
+> and tested on its own; and the sequencer uses it. All 74 scenarios pass, and the order's round trip is
+> unchanged. Phase 4 waits for Andrew's review.
 
 ## In one page
 
