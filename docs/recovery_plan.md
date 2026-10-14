@@ -19,7 +19,7 @@
 > and tested on its own; and the sequencer uses it. All 74 scenarios pass, and the order's round trip is
 > unchanged. Phase 4 is finished: Andrew reviewed it on 14 October 2026 and asked for phase 5's design
 > next. Phase 5's design, [following_the_wal.md](availability/following_the_wal.md), was agreed on
-> 14 October 2026.
+> 14 October 2026. Its step 1 is built: the library's way of following a WAL, tested on its own.
 
 ## In one page
 

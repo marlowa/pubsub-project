@@ -3,7 +3,8 @@
 > **Status: agreed, 14 October 2026.** This is the design for phase 5 of
 > [the recovery plan](../recovery_plan.md). It follows section 4 of
 > [ha_library_boundary.md](ha_library_boundary.md), "Design area: following the WAL". Andrew agreed it
-> as a whole, with the decisions recorded in section 8. Nothing in it is built yet.
+> as a whole, with the decisions recorded in section 8. Step 1 is built: the library's way of following
+> a WAL exists and is tested on its own (section 5.1, "What step 1 built"); no component uses it yet.
 
 Throughout this page, WAL means the write-ahead log, the file of sequenced records on disk. The text
 log each process writes about what it is doing is called the Quill log.
@@ -352,6 +353,35 @@ without the venue:
   record before the hand-over; the hand-over made without comparing the positions; the reading thread
   reading past the published position; a record sent above the follower's limit; the follower side
   accepting a record that does not follow the last.
+
+**What step 1 built.** The measurements are recorded in section 2.2 and in
+[BUG-0155](../bug_list.md#bug_0155) and [BUG-0156](../bug_list.md#bug_0156). The library's way of following a
+WAL is in `WalFollowing.hpp`, `WalReadingThread`, `WalFollowerService` and `WalFollowerClient`, with the four
+messages in `replication_messages.dsl`, and the two framework facilities in `ApplicationThreadConfiguration`
+and `ApplicationThread`. Its tests are `WalFollowerClientTest`, `WalFollowerServiceTest` and
+`WalFollowingIntegrationTest`. Repairing the ThreadSanitizer build found three defects in the framework,
+[BUG-0157](../bug_list.md#bug_0157), [BUG-0158](../bug_list.md#bug_0158) and
+[BUG-0159](../bug_list.md#bug_0159), all fixed, and it now checks the real lock-free queue
+([BUG-0160](../bug_list.md#bug_0160)). Four things differ from what is written above:
+
+- **The integration test covers two kinds of follower, not three:** one served up to the last record
+  written and one up to the last committed. Serving up to a position the application publishes is the same
+  code with a different position, and is tested with the matching engine in step 3. Losing a connection and
+  making it again happens in the test only incidentally, and stopping and taking the lead again is tested
+  in the service's unit tests rather than with real threads; both are tested with real instances in steps 2
+  and 4, where the scenarios do them.
+- **The fault of the owning thread sending a record before the hand-over** is a fault in the application,
+  which decides when to send, not in the library, and is checked when the sequencer uses it, in step 3.
+- **The fault of reading past the published position** could not be seen in normal running. The reading
+  thread opens its cursor again at its own position when it runs out of segment files, and a cursor's
+  position moves only when it returns a record, so even a cursor that wandered past the end of what was
+  written is put back. And ThreadSanitizer cannot see the reading thread and the writing thread touch the
+  same bytes, because each maps the files itself, at different addresses. The rule is kept, because without
+  it the reading thread could read bytes still being written; it is checked by a test of its own, in which
+  the owner publishes a write position behind the limit and the reading thread must stop at it.
+- **A batch also ends after 4,096 records examined,** sent or passed over, so that a follower whose
+  converter passes over most records, as a matching engine's passes over every execution report, does not
+  hold the reading thread for long.
 
 ### 5.2 Step 2: the repair
 
