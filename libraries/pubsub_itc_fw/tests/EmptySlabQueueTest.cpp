@@ -93,10 +93,11 @@ TEST_F(EmptySlabQueueTest, EnqueueNullptrThrows) {
  *
  *   - SlabAllocator::deallocate refuses to enqueue while the slab is the
  *     current slab. The current slab uses inline self-reclaim instead.
- *   - SlabAllocator::try_claim_enqueue is a one-shot CAS on the slab's
- *     is_enqueued_ flag; a slab's node can therefore only ever be enqueued
- *     once per slab lifetime. After dequeue and reclamation the slab is
- *     destroyed; a new slab gets a fresh node and a fresh flag.
+ *   - A slab's count reaches zero exactly once in its life, because the owner
+ *     holds one count while the slab is current, and only the thread that takes
+ *     it to zero enqueues the node; a slab's node can therefore only ever be
+ *     enqueued once per slab lifetime. After dequeue and reclamation the slab is
+ *     destroyed; a new slab gets a fresh node.
  *
  * This test exercises the queue directly to demonstrate that the underlying
  * hazard still exists. It is SKIPPED because the production code paths above
@@ -120,7 +121,7 @@ TEST_F(EmptySlabQueueTest, ReEnqueueOfSameNodeDoesNotCauseInfiniteSpin) {
     ASSERT_EQ(slab_id, 7);
 
     // Re-enqueue the same node. This is the workload pattern that the
-    // production caller constraints (is_enqueued_ one-shot CAS) now prevent.
+    // production callers cannot produce: a slab's count reaches zero only once.
     queue.enqueue(&node);
 
     // After the queue is hardened, the next try_dequeue should either return

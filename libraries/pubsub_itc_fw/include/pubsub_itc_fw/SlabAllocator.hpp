@@ -11,27 +11,32 @@
  *   - allocate() must only be called from the reactor thread.
  *   - deallocate() may be called from any thread.
  *
- * Empty-slab notification (decoupled from current-slab status):
+ * Empty-slab notification, and who may touch the slab last:
  *   Each slab is in one of two states: current or not-current. Only non-current
- *   slabs participate in the EmptySlabQueue. While a slab is current the owner
- *   thread holds a direct pointer to it; there is no benefit to notifying
- *   through the queue, and doing so would risk re-enqueueing the same node
- *   while a previous notification is still being processed.
+ *   slabs are put on the EmptySlabQueue. While a slab is current the owner
+ *   thread holds a direct pointer to it and resets it in place when it empties.
  *
- *   - At construction the slab is current. Deallocators never enqueue.
- *   - The owner clears is_current_ when it switches away from this slab
- *     (see ExpandableSlabAllocator::append_new_slab). From that moment on,
- *     the next deallocator that drives the outstanding count to zero will
- *     atomically claim and perform the single one-shot enqueue (is_enqueued_
- *     CAS). If the count is already zero at the moment the owner clears
- *     is_current_, the owner performs the enqueue itself.
- *   - A reclaimed slab is destroyed; its node never returns to the queue.
+ *   The slab keeps one count, references_: the chunks allocated and not yet
+ *   freed, plus one held by the owner for as long as the slab is current. The
+ *   count therefore cannot reach zero while the slab is current, and whichever
+ *   party takes it to zero is the last party that will ever touch the slab:
+ *
+ *   - A deallocator that takes it to zero puts the slab on the queue, and
+ *     touches nothing of the slab after that but its queue node.
+ *   - The owner, switching away, gives up its hold with stop_being_current();
+ *     if that takes the count to zero, no chunk is outstanding and the owner
+ *     puts the slab on the queue itself.
+ *
+ *   Exactly one party puts the slab on the queue, and it is the last to touch
+ *   it, so the owner can destroy the slab once the queue gives it back without
+ *   any deallocator still reading it. A reclaimed slab is destroyed; its node
+ *   never returns to the queue.
  *
  * Self-reclaim of the current slab:
- *   The owner thread may also reset a current slab's bump pointer inline if
- *   it observes outstanding_allocations_count_ == 0. This is safe because the
- *   owner is the sole allocator; a zero count means no deallocator is active
- *   for this slab. See ExpandableSlabAllocator::allocate().
+ *   The owner thread may reset a current slab's bump pointer inline when
+ *   outstanding_count() is zero, meaning only its own hold remains. This is safe
+ *   because the owner is the sole allocator; no chunk is outstanding, so no
+ *   deallocator is active for this slab. See ExpandableSlabAllocator::allocate().
  *
  * Alignment:
  *   All allocations are aligned to alignof(std::max_align_t).
@@ -88,8 +93,8 @@ class SlabAllocator {
      * @brief Bump-allocates a chunk of at least size bytes from this slab.
      *
      * Aligns the allocation to alignof(std::max_align_t).
-     * Must only be called from the reactor thread.
-     * Increments outstanding_allocations_count_.
+     * Must only be called from the owner thread.
+     * Adds one to references_.
      *
      * @param[in] size Number of bytes to allocate. Must be greater than zero.
      * @return Pointer to the allocated chunk, or nullptr if the slab is full.
@@ -99,9 +104,10 @@ class SlabAllocator {
     /**
      * @brief Frees a chunk previously allocated from this slab.
      *
-     * May be called from any thread. Decrements outstanding_allocations_count_.
-     * If the count transitions to zero, enqueues this slab's node into
-     * notify_queue_ so the reactor can reclaim it.
+     * May be called from any thread. Takes one from references_. If that takes
+     * it to zero, the slab is no longer current and this was its last chunk, so
+     * this call puts the slab's node on notify_queue_ for the owner to reclaim,
+     * and touches the slab no further.
      *
      * @param[in] ptr Pointer previously returned by allocate(). Must not be nullptr.
      */
@@ -132,18 +138,17 @@ class SlabAllocator {
     /**
      * @brief Resets the slab for reuse in place.
      *
-     * Resets the bump pointer to zero and zeroes the outstanding allocation
-     * count. Used by the reactor when a current slab has been fully drained
-     * (outstanding count is zero) and the reactor wants to keep using the
-     * same slab for further allocations rather than chaining a new one.
+     * Resets the bump pointer to zero. Used by the owner when the current slab
+     * has no chunk outstanding and the owner wants to keep using the same slab
+     * rather than chaining a new one. references_ is left holding the owner's
+     * one count, which is all it holds when no chunk is outstanding.
      *
      * Preconditions enforced by the caller:
      *   - The slab is the current slab (is_current() returns true).
      *   - outstanding_count() is zero.
      *
-     * Must only be called by the reactor thread. The is_enqueued_ flag is
-     * left untouched: a current slab's node has never been enqueued, so
-     * the flag is already false.
+     * Must only be called by the owner thread. A current slab's node has never
+     * been put on the queue.
      *
      * Does NOT touch queue_node_.next. That field is structural state owned
      * by EmptySlabQueue. After dequeue, head_ points to this node as the
@@ -163,11 +168,10 @@ class SlabAllocator {
     [[nodiscard]] size_t bytes_used() const;
 
     /**
-     * @brief Returns the current outstanding allocation count.
+     * @brief Returns the number of chunks allocated and not yet freed.
      *
-     * Reactor-thread query used to decide whether the slab is safe to
-     * self-reclaim inline (bump pointer reset) or to enqueue at switch-away
-     * time.
+     * The owner's own hold on a current slab is not counted. Owner-thread
+     * query, used to decide whether the current slab may be reset in place.
      */
     [[nodiscard]] int outstanding_count() const;
 
@@ -177,30 +181,19 @@ class SlabAllocator {
     [[nodiscard]] bool is_current() const;
 
     /**
-     * @brief Clears the is_current flag.
+     * @brief The owner switches away from this slab, and gives up its hold on it.
      *
      * Called by ExpandableSlabAllocator::append_new_slab on the slab being
-     * switched away from. From this point on, the next deallocator that
-     * drives the count to zero will enqueue the slab's notification node.
-     * Must be called from the reactor (owner) thread only.
+     * switched away from. From this point on, the deallocator that frees the
+     * last outstanding chunk puts the slab on the queue.
+     *
+     * Must be called from the owner thread only, once.
+     *
+     * @return true if no chunk was outstanding, so that giving up the hold took
+     *         references_ to zero: no deallocator will ever put the slab on the
+     *         queue, and the owner must do it itself. False otherwise.
      */
-    void clear_is_current();
-
-    /**
-     * @brief Attempts to claim the one-shot enqueue right.
-     *
-     * Atomically CAS is_enqueued_ from false to true.
-     *
-     * Used by:
-     *   - SlabAllocator::deallocate when the count transitions to zero AND
-     *     is_current is false, to ensure exactly one enqueue happens.
-     *   - ExpandableSlabAllocator::append_new_slab after clearing is_current,
-     *     if the count was already zero at that moment.
-     *
-     * @return true if this call won the claim; false if some other code path
-     *         had already claimed it.
-     */
-    [[nodiscard]] bool try_claim_enqueue();
+    [[nodiscard]] bool stop_being_current();
 
     /**
      * @brief Returns a pointer to the embedded queue node.
@@ -217,9 +210,12 @@ class SlabAllocator {
     void* memory_{MAP_FAILED};
     size_t bump_{0};
 
-    std::atomic<int> outstanding_allocations_count_{0};
-    std::atomic<bool> is_current_{true};
-    std::atomic<bool> is_enqueued_{false};
+    // The chunks allocated and not yet freed, plus one held by the owner while
+    // the slab is current. See the class description for why the owner's hold
+    // is counted here.
+    std::atomic<int> references_{1};
+    // Written only by the owner thread, and read only by it.
+    bool is_current_{true};
 
     EmptySlabQueueNode queue_node_;
 };

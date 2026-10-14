@@ -247,17 +247,23 @@ chunk is aligned to `alignof(std::max_align_t)`. There is no per-chunk metadata.
 `ExpandableSlabAllocator` (see below for which thread that is). `deallocate()` may be called
 from any thread.
 
-**Outstanding count:** an atomic counter records how many chunks are currently allocated from
-the slab. `allocate()` increments it and `deallocate()` decrements it.
+**The count:** an atomic counter records how many chunks are currently allocated from the
+slab, plus one held by the owner for as long as the slab is current. `allocate()` adds one and
+`deallocate()` takes one away. Because of the owner's one, the count cannot reach zero while
+the slab is current, and whichever thread takes it to zero is the last that will ever touch the
+slab.
 
 **Current and not current.** A slab starts out as the *current* slab, the one its owner is
 allocating from. While a slab is current, nothing is sent through `EmptySlabQueue` when its
 count reaches zero: the owner already holds a pointer to it, and instead resets its bump
 pointer the next time it allocates and sees a count of zero, so the same memory is reused.
-When the owner moves on to a new slab, it clears the old slab's `is_current_` flag. From
-then on, whichever thread drives the outstanding count to zero enqueues the slab's slot
-number on `EmptySlabQueue` so that the owner can destroy it. If the count is already zero
-when the owner clears the flag, the owner enqueues it itself.
+When the owner moves on to a new slab, it gives up its hold on the old one
+(`stop_being_current()`). From then on, the thread that frees the last outstanding chunk takes
+the count to zero and enqueues the slab's slot number on `EmptySlabQueue`, so that the owner can
+destroy it. If no chunk is outstanding when the owner gives up its hold, that takes the count to
+zero and the owner enqueues the slab itself. Either way exactly one thread enqueues the slab, and
+it touches the slab no further, so the owner never destroys a slab that another thread is still
+reading.
 
 ---
 
@@ -396,14 +402,15 @@ owning thread that a slab which is no longer current has become empty.
 **Intrusive:** one `EmptySlabQueueNode` is embedded directly in each `SlabAllocator`. No
 separate allocation is needed for queue membership.
 
-**Producers:** any thread that calls `deallocate` and drives a non-current slab's outstanding
-count to zero, and the owning thread itself in the case described under `SlabAllocator`.
+**Producers:** the thread whose `deallocate` takes a non-current slab's count to zero, and the
+owning thread itself in the case described under `SlabAllocator`.
 
 **Consumer:** the owning thread only, in `drain_empty_slab_queue`.
 
-**One-shot enqueue:** `SlabAllocator::try_claim_enqueue()` uses a one-shot CAS on an
-`is_enqueued_` flag. Only the thread that wins the CAS enqueues the node. This prevents
-double-enqueue even if multiple threads concurrently decrement the outstanding count to zero.
+**One enqueue for each slab:** the count reaches zero exactly once in a slab's life, because
+the owner's hold keeps it above zero while the slab is current and no chunk is allocated from a
+slab that is no longer current. Only the thread that takes it to zero enqueues the node, so a
+node is never enqueued twice.
 
 ### No Reset of the Queue
 

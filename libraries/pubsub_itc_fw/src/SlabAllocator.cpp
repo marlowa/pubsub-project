@@ -46,7 +46,7 @@ void* SlabAllocator::allocate(size_t size) {
         return nullptr;
     }
 
-    outstanding_allocations_count_.fetch_add(1, std::memory_order_relaxed);
+    references_.fetch_add(1, std::memory_order_relaxed);
     bump_ = new_bump;
 
     return static_cast<uint8_t*>(memory_) + aligned_bump;
@@ -57,31 +57,18 @@ void SlabAllocator::deallocate(void* ptr) {
         throw PreconditionAssertion("SlabAllocator::deallocate: ptr must not be nullptr", __FILE__, __LINE__);
     }
 
-    const int old = outstanding_allocations_count_.fetch_sub(1, std::memory_order_acq_rel);
-
+    const int old = references_.fetch_sub(1, std::memory_order_acq_rel);
     if (old != 1) {
-        return; // Not the last outstanding chunk.
+        return; // A chunk is still outstanding, or the slab is still current.
     }
 
-    // Count has just transitioned to zero. The slab will be reclaimed via
-    // the empty-slab queue only if it is no longer the current slab. The
-    // current slab is held directly by the owner and is reset inline, not
-    // through the queue.
-    //
-    // Reading is_current_ AFTER the fetch_sub establishes the ordering we
-    // need: if the owner clears is_current_ before this load, we will see
-    // false here and proceed to enqueue. If the owner clears is_current_
-    // after this load, the owner's switch-away path will itself check the
-    // count, see zero, and perform the enqueue. The try_claim_enqueue CAS
-    // ensures exactly one of the two paths wins.
-    if (is_current_.load(std::memory_order_acquire)) {
-        return;
-    }
-
-    if (try_claim_enqueue()) {
-        queue_node_.next.store(nullptr, std::memory_order_relaxed);
-        notify_queue_.enqueue(&queue_node_);
-    }
+    // The count has reached zero. The owner's hold has gone, so the slab is no
+    // longer current, and this was its last chunk: nobody else will touch the
+    // slab again until the owner takes it off the queue. Only the queue node is
+    // touched from here on, and the owner destroys the slab only after the queue
+    // has handed the node back, which happens after this enqueue completes.
+    queue_node_.next.store(nullptr, std::memory_order_relaxed);
+    notify_queue_.enqueue(&queue_node_);
 }
 
 bool SlabAllocator::contains(const void* ptr) const {
@@ -92,7 +79,7 @@ bool SlabAllocator::contains(const void* ptr) const {
 }
 
 bool SlabAllocator::is_empty() const {
-    return outstanding_allocations_count_.load(std::memory_order_acquire) == 0;
+    return outstanding_count() == 0;
 }
 
 bool SlabAllocator::is_full() const {
@@ -107,7 +94,7 @@ int SlabAllocator::slab_id() const {
 
 void SlabAllocator::reset() {
     bump_ = 0;
-    outstanding_allocations_count_.store(0, std::memory_order_release);
+    // Nothing to change in references_: with no chunk outstanding it holds only the owner's one count.
     // queue_node_.next is owned by EmptySlabQueue and must not be touched here.
     // After dequeue, head_ points to this node as the new dummy; zeroing next
     // would sever any link the queue has already established through it.
@@ -123,20 +110,19 @@ size_t SlabAllocator::bytes_used() const {
 }
 
 int SlabAllocator::outstanding_count() const {
-    return outstanding_allocations_count_.load(std::memory_order_acquire);
+    return references_.load(std::memory_order_acquire) - (is_current_ ? 1 : 0);
 }
 
 bool SlabAllocator::is_current() const {
-    return is_current_.load(std::memory_order_acquire);
+    return is_current_;
 }
 
-void SlabAllocator::clear_is_current() {
-    is_current_.store(false, std::memory_order_release);
-}
-
-bool SlabAllocator::try_claim_enqueue() {
-    bool expected = false;
-    return is_enqueued_.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_relaxed);
+bool SlabAllocator::stop_being_current() {
+    if (!is_current_) {
+        throw PreconditionAssertion("SlabAllocator::stop_being_current: the slab is not current", __FILE__, __LINE__);
+    }
+    is_current_ = false;
+    return references_.fetch_sub(1, std::memory_order_acq_rel) == 1;
 }
 
 EmptySlabQueueNode& SlabAllocator::queue_node() {

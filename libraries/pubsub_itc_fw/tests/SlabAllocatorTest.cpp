@@ -61,7 +61,7 @@ TEST_F(SlabAllocatorTest, EmptySlabQueueNotifiedWhenLastChunkFreed) {
     void* ptr = slab.allocate(64);
     // Under the new design, deallocators only enqueue when the slab is no
     // longer the current slab. Simulate the owner having switched away.
-    slab.clear_is_current();
+    EXPECT_FALSE(slab.stop_being_current()); // chunks are outstanding, so a deallocator queues it
     slab.deallocate(ptr);
 
     int slab_id = -1;
@@ -70,13 +70,60 @@ TEST_F(SlabAllocatorTest, EmptySlabQueueNotifiedWhenLastChunkFreed) {
     EXPECT_EQ(slab_id, 5);
 }
 
+// The owner's own hold on a current slab is not an outstanding chunk.
+TEST_F(SlabAllocatorTest, TheOwnersHoldIsNotCountedAsAnOutstandingChunk) {
+    SlabAllocator slab(slab_size, 0, queue_);
+    EXPECT_EQ(slab.outstanding_count(), 0);
+    void* ptr = slab.allocate(64);
+    EXPECT_EQ(slab.outstanding_count(), 1);
+    slab.deallocate(ptr);
+    EXPECT_EQ(slab.outstanding_count(), 0);
+
+    // Freeing the last chunk of a current slab queues nothing: the owner's hold keeps the count above zero.
+    int slab_id = -1;
+    EXPECT_EQ(queue_.try_dequeue(slab_id), DequeueResult::Empty);
+}
+
+// When no chunk is outstanding as the owner switches away, no deallocator will ever queue the slab,
+// so giving up the hold must tell the owner to queue it, and the slab must then be empty.
+TEST_F(SlabAllocatorTest, StoppingBeingCurrentWithNothingOutstandingTellsTheOwnerToQueueIt) {
+    SlabAllocator slab(slab_size, 3, queue_);
+    void* ptr = slab.allocate(64);
+    slab.deallocate(ptr);
+
+    EXPECT_TRUE(slab.stop_being_current());
+    EXPECT_FALSE(slab.is_current());
+    EXPECT_TRUE(slab.is_empty());
+}
+
+// When a chunk is outstanding as the owner switches away, the owner does not queue the slab, and the
+// deallocator that frees the last chunk queues it exactly once.
+TEST_F(SlabAllocatorTest, StoppingBeingCurrentWithAChunkOutstandingLeavesTheQueueingToTheLastDeallocator) {
+    SlabAllocator slab(slab_size, 4, queue_);
+    void* ptr = slab.allocate(64);
+
+    EXPECT_FALSE(slab.stop_being_current());
+    int slab_id = -1;
+    EXPECT_EQ(queue_.try_dequeue(slab_id), DequeueResult::Empty);
+
+    slab.deallocate(ptr);
+    EXPECT_EQ(queue_.try_dequeue(slab_id), DequeueResult::GotItem);
+    EXPECT_EQ(slab_id, 4);
+}
+
+TEST_F(SlabAllocatorTest, StoppingBeingCurrentTwiceIsRefused) {
+    SlabAllocator slab(slab_size, 0, queue_);
+    static_cast<void>(slab.stop_being_current());
+    EXPECT_THROW(static_cast<void>(slab.stop_being_current()), PreconditionAssertion);
+}
+
 TEST_F(SlabAllocatorTest, QueueNotNotifiedUntilLastChunkFreed) {
     SlabAllocator slab(slab_size, 0, queue_);
     void* ptr1 = slab.allocate(64);
     void* ptr2 = slab.allocate(64);
 
     // Under the new design, only non-current slabs notify the queue.
-    slab.clear_is_current();
+    EXPECT_FALSE(slab.stop_being_current()); // chunks are outstanding, so a deallocator queues it
 
     slab.deallocate(ptr1);
 
@@ -161,7 +208,7 @@ TEST_F(SlabAllocatorTest, CrossThreadDeallocation) {
     }
 
     // Under the new design, only non-current slabs notify the queue.
-    slab.clear_is_current();
+    EXPECT_FALSE(slab.stop_being_current()); // chunks are outstanding, so a deallocator queues it
 
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
@@ -240,7 +287,7 @@ TEST_F(SlabAllocatorTest, OnlyOneNotificationEnqueuedUnderConcurrency) {
     }
 
     // Under the new design, only non-current slabs notify the queue.
-    slab.clear_is_current();
+    EXPECT_FALSE(slab.stop_being_current()); // chunks are outstanding, so a deallocator queues it
 
     std::vector<std::thread> threads;
     threads.reserve(num_threads);
@@ -282,9 +329,9 @@ TEST_F(SlabAllocatorTest, RepeatedResetAndReuse) {
         slab.deallocate(ptr);
 
         // Drain any notification. Under the new design the slab remains
-        // current throughout (clear_is_current is never called), so deallocate
+        // current throughout (stop_being_current is never called), so deallocate
         // does not enqueue. The drain is a no-op but kept for the case where
-        // a future test variant clears is_current.
+        // a future test variant stops it being current.
         int slab_id = -1;
         [[maybe_unused]] DequeueResult drain = queue_.try_dequeue(slab_id);
 
@@ -323,7 +370,7 @@ TEST_F(SlabAllocatorTest, ConcurrentDeallocationsAcrossMultipleSlabs) {
 
     // Under the new design, only non-current slabs notify the queue.
     for (int i = 0; i < num_slabs; ++i) {
-        slabs[i]->clear_is_current();
+        EXPECT_FALSE(slabs[i]->stop_being_current());
     }
 
     // Each thread frees from a different slab.

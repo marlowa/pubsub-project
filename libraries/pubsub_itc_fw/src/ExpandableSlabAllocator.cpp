@@ -320,24 +320,19 @@ void ExpandableSlabAllocator::drain_empty_slab_queue() {
 }
 
 SlabAllocator* ExpandableSlabAllocator::append_new_slab() {
-    // Switch the previously-current slab (if any) to non-current. From this
-    // point on, deallocators that drive its count to zero will enqueue the
-    // empty notification. If the slab's count is already zero now, the owner
-    // thread must do the enqueue itself: no future deallocator will run on it.
-    //
-    // Either way, the try_claim_enqueue CAS ensures exactly one path performs
-    // the enqueue (the deallocator that brought the count to zero, OR the
-    // owner here).
+    // Switch the previously-current slab (if any) to non-current, giving up this
+    // thread's hold on it. From this point on, the deallocator that frees its last
+    // outstanding chunk puts it on the empty-slab queue. If no chunk is
+    // outstanding, giving up the hold takes its count to zero, no deallocator will
+    // ever run on it, and this thread puts it on the queue itself. Exactly one
+    // party does, and that party is the last to touch the slab, so no deallocator
+    // can still be reading it when it is destroyed (see SlabAllocator).
     if (current_slab_slot_ >= 0) {
         SlabAllocator* old_current = load_slab_reactor(current_slab_slot_);
         if (old_current != nullptr) {
-            old_current->clear_is_current();
-
-            if (old_current->outstanding_count() == 0) {
-                if (old_current->try_claim_enqueue()) {
-                    old_current->queue_node().next.store(nullptr, std::memory_order_relaxed);
-                    empty_slab_queue_.enqueue(&old_current->queue_node());
-                }
+            if (old_current->stop_being_current()) {
+                old_current->queue_node().next.store(nullptr, std::memory_order_relaxed);
+                empty_slab_queue_.enqueue(&old_current->queue_node());
             }
         }
     }

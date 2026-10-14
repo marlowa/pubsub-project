@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 156 |
+| Bugs recorded | 157 |
 | Open | 65 (47 defects, 18 tasks) |
-| Closed | 91 |
-| Next id | BUG-0157 |
+| Closed | 92 |
+| Next id | BUG-0158 |
 
 ## Open bugs by severity
 
@@ -3370,6 +3370,37 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0157: A thread freeing a slab's last chunk could read the slab after its owner had destroyed it {#bug_0157}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-14 -- the owner holds one count on its current slab, so the thread that takes the count to zero is always the last to touch the slab |
+| How | The first ThreadSanitizer run of the library's tests, made possible by the work on [BUG-0150](#bug_0150) for phase 5 of the recovery plan: a data race between `operator delete` in `ExpandableSlabAllocator::drain_empty_slab_queue` and a compare-and-exchange in `SlabAllocator::try_claim_enqueue` |
+| Impact | The reactor frees every application thread's outbound messages, and every inbound one is freed by the thread that handled it, so a thread could read freed memory in the slab allocator. It needs the freeing thread to be pre-empted between two adjacent steps for as long as the owner takes to fill a slab, switch and drain its queue twice, so it is rare; it is shown by ThreadSanitizer and by reading the code, not by a crash in the venue |
+
+**What happened.** A slab is freed into from any thread, and destroyed by its owner once it is no longer
+current and has no chunk outstanding. `SlabAllocator::deallocate` took the count of outstanding chunks
+to zero, then read `is_current_`, then tried to claim the right to put the slab on the queue with a
+compare-and-exchange on `is_enqueued_`. The owner, switching away, cleared `is_current_` and, if it saw
+the count already at zero, made the same claim. The claim made sure only one of them put the slab on
+the queue, but not that the loser had finished with the slab: a freeing thread pre-empted after taking
+the count to zero could resume after the owner had claimed the slab, queued it, drained the queue twice
+and destroyed it, and then read `is_current_` and `is_enqueued_` in freed memory.
+
+**The fix.** The count now holds the chunks outstanding plus one held by the owner for as long as the
+slab is current (`references_`). It cannot reach zero while the slab is current, and whichever thread
+takes it to zero is the last that will ever touch the slab, and alone puts it on the queue: a freeing
+thread, by freeing the last chunk; or the owner, by giving up its hold with `stop_being_current()` when
+no chunk is outstanding. `is_enqueued_` and the claim are gone, and `is_current_` is now read and
+written only by the owner. Four unit tests cover the owner's hold.
+
+**How it was checked.** Under ThreadSanitizer, the library's 70 allocator tests reported the race in
+four runs of five with the old code, and in none of five with the fix. All 1,074 library tests pass in
+the normal build.
 
 ### BUG-0154: `devenv.py --fresh-wal` kept lease records and arbiters' statements from the run before, so a leader could never trade without its follower {#bug_0154}
 
