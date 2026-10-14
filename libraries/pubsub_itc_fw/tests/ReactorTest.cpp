@@ -298,6 +298,23 @@ class FakeThread : public ApplicationThread {
     void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {}
 };
 
+// A thread that either takes a hot-path core of its own or stays on the background cores, as it is told.
+class PlacedThread : public ApplicationThread {
+  public:
+    PlacedThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, const std::string& name, ThreadID id, const QueueConfiguration& qc,
+                 const AllocatorConfiguration& ac, bool stays_on_background_cores)
+        : ApplicationThread(token, logger, reactor, name, id, qc, ac, configuration(stays_on_background_cores)) {}
+
+    void on_itc_message([[maybe_unused]] const EventMessage& event_message) override {}
+
+  private:
+    static ApplicationThreadConfiguration configuration(bool stays_on_background_cores) {
+        ApplicationThreadConfiguration configuration;
+        configuration.stays_on_background_cores = stays_on_background_cores;
+        return configuration;
+    }
+};
+
 } // namespaces
 
 TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown) {
@@ -1112,4 +1129,21 @@ TEST_F(ReactorTest, LapMeasurementRespondsToHowLongTheReactorSpinsBetweenLooks) 
     EXPECT_GT(idle_lap, busy_lap * 4.0) << "spinning 4096 times between looks gave a mean lap of " << idle_lap << "ns against " << busy_lap
                                         << "ns for spinning once. The lap measurement is not responding to the one "
                                         << "thing known to change it, so it is not measuring what it claims";
+}
+
+// A thread that stays on the background cores takes no hot-path core, so the CPU layout need not be sized
+// for it; every other registered thread takes one, and so does the reactor's own thread.
+TEST_F(ReactorTest, AThreadKeptOnTheBackgroundCoresNeedsNoHotPathCore) {
+    EXPECT_EQ(reactor_->hot_path_threads_needed(), 1U);
+
+    auto hot = ApplicationThread::create<PlacedThread>(logger_with_sink_.logger, *reactor_, "HotThread", ThreadID(1), make_queue_config(),
+                                                       make_allocator_config(), false);
+    auto background = ApplicationThread::create<PlacedThread>(logger_with_sink_.logger, *reactor_, "BackgroundThread", ThreadID(2), make_queue_config(),
+                                                              make_allocator_config(), true);
+    reactor_->register_thread(hot);
+    reactor_->register_thread(background);
+
+    EXPECT_FALSE(hot->stays_on_background_cores());
+    EXPECT_TRUE(background->stays_on_background_cores());
+    EXPECT_EQ(reactor_->hot_path_threads_needed(), 2U);
 }

@@ -82,6 +82,7 @@ ApplicationThread::ApplicationThread(ConstructorToken, QuillLogger& logger, Reac
     , thread_id_(thread_id)
     , thread_(nullptr) {
     spin_before_block_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(thread_config.spin_before_block).count();
+    stays_on_background_cores_ = thread_config.stays_on_background_cores;
     if (spin_before_block_ns_ < 0) {
         throw PreconditionAssertion(fmt::format("ApplicationThread {}: spin_before_block must not be negative", thread_name_), __FILE__, __LINE__);
     }

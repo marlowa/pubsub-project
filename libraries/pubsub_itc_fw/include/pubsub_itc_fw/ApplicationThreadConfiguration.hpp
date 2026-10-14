@@ -135,5 +135,21 @@ struct ApplicationThreadConfiguration {
      *     configuration.spin_before_block = std::chrono::microseconds{40};
      */
     std::chrono::microseconds spin_before_block{0};
+
+    /**
+     * @brief Whether this thread stays on the component's background cores rather than taking a hot-path
+     *        core of its own.
+     *
+     * When CPU pinning is on, the reactor gives each registered application thread a core of its own on
+     * the hot path. That is right for a thread that handles orders. A thread that handles none, and
+     * spends most of its time blocked -- such as the thread that reads a WAL for a follower that is
+     * catching up -- would waste that core, and the CPU layout would have to be sized for it. Such a
+     * thread sets this, and the reactor neither counts it among the component's hot-path threads nor
+     * pins it to one: it is given the background cores, as the extra threads an application thread
+     * starts are.
+     *
+     * Default: false.
+     */
+    bool stays_on_background_cores{false};
 };
 } // namespaces

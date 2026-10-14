@@ -620,19 +620,29 @@ bool Reactor::initialize_threads() {
     return true;
 }
 
+size_t Reactor::hot_path_threads_needed() const {
+    // The reactor thread plus one core per registered ApplicationThread that does not stay on the
+    // background cores. Threads registered through register_extra_thread() are excluded on purpose:
+    // they are background by default, and counting them would make a component's core demand vary
+    // with configuration -- FixOrderGatewayThread registers FixCaptureWriter only when
+    // fix_capture_enabled is set.
+    size_t needed = 1;
+    for (const auto& [name, thread] : threads_) {
+        if (thread != nullptr && !thread->stays_on_background_cores()) {
+            ++needed;
+        }
+    }
+    return needed;
+}
+
 std::tuple<bool, std::string> Reactor::verify_hot_path_thread_count(size_t allocated_core_count) const {
-    // The reactor thread plus one core per registered ApplicationThread. Threads
-    // registered through register_extra_thread() are excluded on purpose: they
-    // are background by default, and counting them would make a component's core
-    // demand vary with configuration -- FixOrderGatewayThread registers
-    // FixCaptureWriter only when fix_capture_enabled is set.
-    const size_t registered_demand = 1 + threads_.size();
+    const size_t registered_demand = hot_path_threads_needed();
 
     if (allocated_core_count < registered_demand) {
         return {false, fmt::format("this component registered {} hot-path thread(s) (reactor thread + {} ApplicationThread(s)) but the CPU layout allocated "
                                    "only {} core(s). The layout was sized from the count reported by --hot-path-thread-count, so that declared constant no "
                                    "longer matches the registrations. Update it and re-run deploy.py",
-                                   registered_demand, threads_.size(), allocated_core_count)};
+                                   registered_demand, registered_demand - 1, allocated_core_count)};
     }
     return {true, ""};
 }
@@ -761,6 +771,21 @@ bool Reactor::pin_registered_threads() {
     ++next_core;
 
     for (auto& [name, thread] : threads_) {
+        if (thread->stays_on_background_cores()) {
+            // Not a hot-path thread: given the background cores, and no core of its own.
+            if (background_cores_.empty()) {
+                PUBSUB_LOG(logger_, FwLogLevel::Warning,
+                           "CPU pinning: thread '{}' stays off the hot path, but the layout names no background cores -- left unpinned", name);
+                continue;
+            }
+            if (!apply_affinity_mask(thread->get_pthread_id(), background_cores_)) {
+                PUBSUB_LOG(logger_, FwLogLevel::Error, "CPU pinning: failed to put thread '{}' on the background cores {}: {}", name,
+                           format_cpu_list(background_cores_), StringUtils::get_errno_string());
+                return false;
+            }
+            PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' stays on the background cores {}", name, format_cpu_list(background_cores_));
+            continue;
+        }
         const CpuId core_id = hot_path_cores[next_core];
         if (pin_thread_to_core(thread->get_pthread_id(), core_id)) {
             PUBSUB_LOG(logger_, FwLogLevel::Info, "CPU pinning: thread '{}' pinned to CPU {}", name, core_id.get_value());

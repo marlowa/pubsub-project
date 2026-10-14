@@ -435,6 +435,14 @@ class Reactor : public ThreadLookupInterface {
      */
     std::string get_shutdown_reason() const;
 
+    /**
+     * @brief How many hot-path cores this component needs: one for the reactor's thread, and one for each
+     *        registered application thread that does not stay on the background cores.
+     *
+     * Extra threads an application thread starts are not counted: they are background by default.
+     */
+    [[nodiscard]] size_t hot_path_threads_needed() const;
+
   protected:
     std::atomic<ReactorLifecycleState::Tag> lifecycle_{ReactorLifecycleState::NotStarted};
 

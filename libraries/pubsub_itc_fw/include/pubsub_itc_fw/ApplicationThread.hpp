@@ -219,6 +219,11 @@ class ApplicationThread {
         return waits_blocked_.load(std::memory_order_relaxed);
     }
 
+    /// Whether this thread stays on the background cores; see ApplicationThreadConfiguration::stays_on_background_cores.
+    [[nodiscard]] bool stays_on_background_cores() const {
+        return stays_on_background_cores_;
+    }
+
     /**
      * @brief Returns the collection of extra threads registered by this subclass.
      *
@@ -896,6 +901,7 @@ class ApplicationThread {
     // Held as a plain integer rather than a duration because the run loop compares it against
     // a clock reading on every iteration of a spin. See ApplicationThreadConfiguration.
     int64_t spin_before_block_ns_ = 0;
+    bool stays_on_background_cores_ = false;
 
     // Backing store for BumpAllocator when decoding variable-length inbound PDUs.
     // Reserved once at construction to inbound_decode_arena_size bytes and reused
