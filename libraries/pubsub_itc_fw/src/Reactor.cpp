@@ -233,8 +233,11 @@ int Reactor::run() {
 #endif
     inbound_manager_.hand_over_ownership();
     outbound_manager_.hand_over_ownership();
-    lifecycle_.store(ReactorLifecycleState::Running, std::memory_order_release);
-    shutdown_reason_ = "";
+    // From not started to running, unless a shutdown was requested before this thread got here, in
+    // which case the request stands: the event loop then finishes at once. The reason is not touched
+    // here, because only the caller that claims the shutdown writes it (see shutdown()).
+    ReactorLifecycleState::Tag not_started = ReactorLifecycleState::NotStarted;
+    static_cast<void>(lifecycle_.compare_exchange_strong(not_started, ReactorLifecycleState::Running, std::memory_order_acq_rel));
 
     if (!initialize_threads()) {
         lifecycle_.store(ReactorLifecycleState::FinalizingThreads, std::memory_order_release);
@@ -270,16 +273,29 @@ int Reactor::run() {
 }
 
 void Reactor::shutdown(const std::string& reason) {
-    auto prev = lifecycle_.exchange(ReactorLifecycleState::ShutdownRequested);
-    if (prev == ReactorLifecycleState::ShutdownRequested || prev == ReactorLifecycleState::FinalizingThreads || prev == ReactorLifecycleState::Finished) {
+    // Any thread may call this, and the reactor's thread reads the reason once it sees the request.
+    // So the one caller that claims the shutdown writes the reason first and only then publishes the
+    // request, with a release store: a thread that sees the request with an acquire load also sees the
+    // whole reason. The claim is separate from the lifecycle state so that the state is published
+    // only once the reason is complete.
+    if (shutdown_claimed_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    shutdown_reason_ = reason;
+
+    // Only from not started or running: a reactor already finalizing or finished stays so.
+    ReactorLifecycleState::Tag current = lifecycle_.load(std::memory_order_acquire);
+    while (current == ReactorLifecycleState::NotStarted || current == ReactorLifecycleState::Running) {
+        if (lifecycle_.compare_exchange_weak(current, ReactorLifecycleState::ShutdownRequested, std::memory_order_release, std::memory_order_acquire)) {
+            break;
+        }
+    }
+    if (current == ReactorLifecycleState::FinalizingThreads || current == ReactorLifecycleState::Finished) {
         return;
     }
 
     PUBSUB_LOG(logger_, FwLogLevel::Info, "Reactor::shutdown entered. Reason: {}", reason);
-
-    lifecycle_.store(ReactorLifecycleState::ShutdownRequested, std::memory_order_release);
     PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::shutdown is requested, event_loop will finish");
-    shutdown_reason_ = reason;
 
     if (wake_fd_ == -1) {
         PUBSUB_LOG_STR(logger_, FwLogLevel::Info, "Reactor::shutdown wake_fd == -1");
@@ -544,7 +560,15 @@ bool Reactor::initialize_threads() {
         const std::lock_guard<std::mutex> lock(thread_registry_mutex_);
         for (auto& [name, thread] : threads_) {
             if (thread != nullptr) {
-                thread->start();
+                // A thread that does not start is a failed start-up, reported and followed by the
+                // orderly shutdown every other start-up failure gets, rather than an exception that
+                // escapes run() and ends the process.
+                try {
+                    thread->start();
+                } catch (const std::exception& ex) {
+                    PUBSUB_LOG(logger_, FwLogLevel::Error, "Reactor: could not start thread {}: {}", name, ex.what());
+                    return false;
+                }
             }
         }
     }
@@ -797,7 +821,16 @@ void Reactor::enqueue_control_command(ReactorControlCommand command) {
     // command: the read would see a reactor that was still polling when in truth it had stopped
     // looking before the command arrived. See the note on Reactor::polling_for_work_ for the
     // whole handshake and why both sides need one.
+#if defined(__SANITIZE_THREAD__)
+    // ThreadSanitizer does not model a free-standing fence, and GCC refuses to compile one with
+    // it. A sequentially consistent read-modify-write is the same full barrier on this processor
+    // (a locked instruction), and ThreadSanitizer understands it. The barrier orders only the
+    // decision whether to wake the reactor; the command itself reaches the reactor through the
+    // queue's own release and acquire, which is what ThreadSanitizer checks.
+    static_cast<void>(fence_stand_in_for_thread_sanitizer_.fetch_add(0, std::memory_order_seq_cst));
+#else
     std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
     if (polling_for_work_.load(std::memory_order_relaxed)) {
         return;
     }
@@ -904,6 +937,11 @@ void Reactor::deregister_handler(int fd) {
 }
 
 std::string Reactor::get_shutdown_reason() const {
+    // Written once, before the request is published; empty until a shutdown has been requested.
+    const ReactorLifecycleState::Tag state = lifecycle_.load(std::memory_order_acquire);
+    if (state == ReactorLifecycleState::NotStarted || state == ReactorLifecycleState::Running) {
+        return {};
+    }
     return shutdown_reason_;
 }
 

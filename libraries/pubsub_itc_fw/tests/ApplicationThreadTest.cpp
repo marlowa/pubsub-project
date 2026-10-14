@@ -720,7 +720,7 @@ TEST_F(ApplicationThreadTest, ExceptionLoggingContainsThreadMetadata) {
     // 3. Wait until everything logged so far has been delivered to the sink
     logger_with_sink_.logger.flush();
 
-    const auto& records = logger_with_sink_.records;
+    const std::vector<std::string> records = logger_with_sink_.records();
     ASSERT_FALSE(records.empty());
 
     bool found = false;
@@ -1030,8 +1030,13 @@ TEST_F(ApplicationThreadTest, InterThreadRoutingDeliversMessage) {
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait until Reactor has started the threads and they are Operational
-    for (int i = 0; i < 200 && (thread_a->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational ||
-                                thread_b->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational || !reactor_->is_initialized());
+#ifdef USING_VALGRIND
+    const int max_waits = 5000; // ThreadSanitizer and Valgrind builds start many times more slowly
+#else
+    const int max_waits = 200;
+#endif
+    for (int i = 0; i < max_waits && (thread_a->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational ||
+                                      thread_b->get_lifecycle_state().as_tag() < ThreadLifecycleState::Operational || !reactor_->is_initialized());
          ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -1472,6 +1477,11 @@ TEST_F(ApplicationThreadTest, SpinningThreadStillShutsDownPromptly) {
 }
 
 TEST_F(ApplicationThreadTest, EveryWaitHasExactlyOneOutcome) {
+#ifdef USING_VALGRIND
+    // Polling before blocking is compiled out of Valgrind and ThreadSanitizer builds (see
+    // ApplicationThread::run_internal), so there is nothing here to check.
+    GTEST_SKIP() << "polling before blocking is compiled out of this build";
+#endif
     // The identity that makes the other numbers worth reading: a thread that polls before
     // blocking either finds work during the poll or goes on to block, never both and never
     // neither. If this ever fails, the counting is wrong and nothing else here means anything.
@@ -1506,6 +1516,11 @@ TEST_F(ApplicationThreadTest, EveryWaitHasExactlyOneOutcome) {
 }
 
 TEST_F(ApplicationThreadTest, PollingFindsWorkThatWouldOtherwiseHaveBlocked) {
+#ifdef USING_VALGRIND
+    // Polling before blocking is compiled out of Valgrind and ThreadSanitizer builds (see
+    // ApplicationThread::run_internal), so there is nothing here to check.
+    GTEST_SKIP() << "polling before blocking is compiled out of this build";
+#endif
     // What the setting claims to do. Messages are posted with a gap well inside the polling
     // window, so a working poll catches some of them without the thread ever blocking.
     //

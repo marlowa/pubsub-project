@@ -686,6 +686,12 @@ class Reactor : public ThreadLookupInterface {
      */
     std::atomic<bool> polling_for_work_{false};
 
+#if defined(__SANITIZE_THREAD__)
+    /// In ThreadSanitizer builds only, the variable whose read-modify-write stands in for the fence in
+    /// enqueue_control_command, which ThreadSanitizer cannot model.
+    std::atomic<int> fence_stand_in_for_thread_sanitizer_{0};
+#endif
+
     /**
      * @brief How long a command waited between an application thread enqueueing it and this
      *        reactor picking it up.
@@ -776,7 +782,10 @@ class Reactor : public ThreadLookupInterface {
     /** @brief Whether the two members above have been registered yet. */
     bool command_latency_metrics_registered_{false};
 
+    // Written once, by the caller that claims the shutdown, before the request is published in
+    // lifecycle_; read only by a thread that has seen the request. See shutdown().
     std::string shutdown_reason_;
+    std::atomic<bool> shutdown_claimed_{false};
 
     // Set by finalize_threads_after_shutdown() when a join times out and the thread is detached.
     // The thread itself rather than its name, so that abort_if_thread_abandoned() can ask whether

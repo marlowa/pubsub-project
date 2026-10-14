@@ -4,7 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <chrono>
+#include <memory>
 #include <thread>
+#include <vector>
 
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationThread.hpp>
@@ -16,6 +18,21 @@
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace pubsub_itc_fw::tests_common {
+
+/**
+ * @brief Keeps a thread the reactor abandoned alive until the process ends.
+ *
+ * NeverStartingThread and RogueITCThread never stop, by design, and the reactor leaves them running
+ * once its wait for them runs out. Destroying the object of a thread that is still running inside one
+ * of its member functions is a data race and undefined behaviour, which ThreadSanitizer reports. Once
+ * in their endless loops these threads only sleep, touching neither the reactor nor the logger, so the
+ * reactor and the logger may be destroyed around them; only their own object must outlive them. It is
+ * held in a store that is never destroyed, not even when the process exits.
+ */
+inline void keep_abandoned_thread_alive(std::shared_ptr<ApplicationThread> thread) {
+    static auto* const kept = new std::vector<std::shared_ptr<ApplicationThread>>();
+    kept->push_back(std::move(thread));
+}
 
 // A thread that never reaches Started (blocks forever in on_initial_event).
 class NeverStartingThread : public ApplicationThread {

@@ -310,6 +310,7 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown) {
     auto bad_thread = ApplicationThread::create<NeverStartingThread>(logger_with_sink_.logger, *reactor_, "BadThread", ThreadID(99), make_queue_config(),
                                                                      make_allocator_config());
     reactor_->register_thread(bad_thread);
+    keep_abandoned_thread_alive(bad_thread);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait for Reactor to detect timeout and shut down.
@@ -318,7 +319,12 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown) {
         auto start = MillisecondClock::now();
 
         while (!reactor_->is_finished()) {
-            if (MillisecondClock::now() - start > MillisecondClock::duration{200}) {
+#ifdef USING_VALGRIND
+            const MillisecondClock::duration budget{3000}; // ThreadSanitizer and Valgrind builds run many times more slowly
+#else
+            const MillisecondClock::duration budget{200};
+#endif
+            if (MillisecondClock::now() - start > budget) {
                 FAIL() << "Reactor did not shut down after initialization timeout";
             }
             backoff.pause();
@@ -435,6 +441,7 @@ TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown) {
     auto rogue = ApplicationThread::create<RogueITCThread>(logger_with_sink_.logger, *reactor_, "RogueThread", ThreadID{777}, make_queue_config(),
                                                            make_allocator_config());
     reactor_->register_thread(rogue);
+    keep_abandoned_thread_alive(rogue);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait for initialization to complete, give it 2s.
@@ -477,6 +484,7 @@ TEST_F(ReactorTest, AbandonedRogueThreadIsRecordedAsStillRunning) {
     auto rogue = ApplicationThread::create<RogueITCThread>(logger_with_sink_.logger, *reactor_, "RogueThread", ThreadID{779}, make_queue_config(),
                                                            make_allocator_config());
     reactor_->register_thread(rogue);
+    keep_abandoned_thread_alive(rogue);
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     {

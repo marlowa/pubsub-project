@@ -165,28 +165,15 @@ void ApplicationThread::start() {
     thread_ = std::make_unique<ThreadWithJoinTimeout>();
     thread_->start([this]() { run(); });
 
-    // Wait for the thread to enter its run loop, but with a bounded number of iterations.
+    // Wait for the thread to enter its run loop, for a bounded time. Normally it takes microseconds. The
+    // bound is a time, not a number of waits: how long a wait lasts depends on the build and on how busy
+    // the machine is, so a count of them gave a different limit in each, and ran out on a slow build.
     BackoffWithYield backoff;
-
-    // Instrumentation-aware iteration bound.
-    // These values are chosen to be:
-    // - deterministic
-    // - extremely fast in normal builds
-    // - generous enough under TSAN/Valgrind
-    constexpr int max_iterations =
-#if defined(USING_TSAN)
-        200000; // TSAN is slow
-#elif defined(USING_VALGRIND)
-        500000; // Valgrind is slower
-#else
-        20000; // normal builds
-#endif
-
-    int iterations = 0;
-
+    const auto deadline = std::chrono::steady_clock::now() + thread_start_timeout;
     while (get_lifecycle_state().as_tag() < ThreadLifecycleState::Started) {
-        if (++iterations > max_iterations) {
-            throw PubSubItcException(fmt::format("Thread {} failed to reach Started state (startup timeout)", thread_name_));
+        if (std::chrono::steady_clock::now() > deadline) {
+            throw PubSubItcException(fmt::format("Thread {} failed to reach Started state within {} seconds (startup timeout)", thread_name_,
+                                                 std::chrono::duration_cast<std::chrono::seconds>(thread_start_timeout).count()));
         }
         backoff.pause();
     }

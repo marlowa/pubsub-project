@@ -882,6 +882,9 @@ class ApplicationThread {
   private:
     QuillLogger& logger_;
     Reactor& reactor_;
+    /// How long start() waits for the new thread to enter its run loop, which normally takes microseconds.
+    static constexpr std::chrono::seconds thread_start_timeout{10};
+
     ExpandableSlabAllocator outbound_allocator_;
 
     // eventfd used to wake the ApplicationThread immediately when a message is

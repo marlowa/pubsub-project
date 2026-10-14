@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 157 |
-| Open | 65 (47 defects, 18 tasks) |
-| Closed | 92 |
-| Next id | BUG-0158 |
+| Bugs recorded | 160 |
+| Open | 65 (46 defects, 19 tasks) |
+| Closed | 95 |
+| Next id | BUG-0161 |
 
 ## Open bugs by severity
 
@@ -68,7 +68,7 @@
 | [BUG-0139](#bug_0139) | medium | defect | A matching engine that restarts or is promoted issues report identifiers that were already used that day |
 | [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
-| [BUG-0150](#bug_0150) | medium | defect | The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` |
+| [BUG-0160](#bug_0160) | medium | task | The ThreadSanitizer build checks the mutex variant of the queue between threads, not the lock-free one the venue runs |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
@@ -174,6 +174,27 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0160: The ThreadSanitizer build checks the mutex variant of the queue between threads, not the lock-free one the venue runs {#bug_0160}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| How | Finding why two polling tests failed in the ThreadSanitizer build, while closing [BUG-0150](#bug_0150) |
+| Impact | ThreadSanitizer does not check the lock-free queue every message between threads goes through, which is the code it is most needed for, and the queue phase 5's reading thread will use |
+
+**What happens.** The top-level `CMakeLists.txt` defines `USING_VALGRIND` in ThreadSanitizer builds as well
+as in Valgrind builds. That switches `LockFreeMessageQueue` to its variant that takes a mutex, and
+compiles out an application thread's polling before it blocks. So the ThreadSanitizer runs check the
+mutex variant, which needs no checking, and not the lock-free one the venue runs.
+
+**What is wanted.** Find why ThreadSanitizer builds define `USING_VALGRIND` (the lock-free queue's 16-byte
+compare-and-exchange, `-mcx16`, is one likely reason), and make the ThreadSanitizer build use the lock-free
+queue and the polling, with whatever ThreadSanitizer needs to understand them. Then run the library's tests
+under it, clean, as for [BUG-0150](#bug_0150).
 
 ### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
 
@@ -337,29 +358,6 @@ which different ones did.
 instance holding a record that it led asks to lead at once, without waiting a lease period, so the
 instance that led last could lead again. Whether that is what made the secondary lead in the one start
 of nine has not been checked.
-
-### BUG-0150: The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` {#bug_0150}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-12 |
-| Recorded | 2026-10-12 |
-| How | Building the library's tests with ThreadSanitizer (`build-tsan`, `ENABLE_TSAN=ON`) to check the lock-free promise recorder of phase 3 of the recovery plan |
-| Impact | No part of the framework can be checked for data races with ThreadSanitizer. The phases that follow replace more locks with atomic variables, which is exactly the code it checks |
-
-**What was found.** `Reactor::enqueue_command` (`libraries/pubsub_itc_fw/src/Reactor.cpp`, line 800)
-calls `std::atomic_thread_fence(std::memory_order_seq_cst)` between putting a command on the queue and
-reading whether the reactor is polling. GCC 13 reports "'atomic_thread_fence' is not supported with
-'-fsanitize=thread'" as a warning, and the build treats warnings as errors, so `Reactor.cpp` does not
-compile with ThreadSanitizer. ThreadSanitizer does not model a free-standing fence, so even with the
-warning allowed it could report races that the fence prevents, or miss ones it does not.
-
-**What is wanted.** The ThreadSanitizer build compiles and its tests run. For example, the handshake
-between `enqueue_command` and the reactor's loop could be written with sequentially consistent
-operations on the two atomic variables themselves, which gives the same ordering and which
-ThreadSanitizer understands; or, in ThreadSanitizer builds only, the fence could be replaced by such
-operations. Whichever is chosen, its cost on the path that queues a command is measured first.
 
 ### BUG-0149: `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment {#bug_0149}
 
@@ -3370,6 +3368,99 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0159: A thread that was slow to start ended the whole process, because the wait for it was counted in waits, not time, and its failure was not caught {#bug_0159}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-14 -- a thread has ten seconds to start, by the clock, and a thread that does not start is a start-up failure followed by an orderly shutdown |
+| How | The first ThreadSanitizer runs of the library's tests ([BUG-0150](#bug_0150)): `TimerTest.SlowHandlerCoalescesExpirations` ended the test run with "Thread SlowHandlerThread failed to reach Started state (startup timeout)" in two runs of five |
+| Impact | A component started on a heavily loaded machine could end at once, with a core dump rather than a reported start-up failure. Seen only in the slow builds, but the normal build had the same flaw with a larger count |
+
+**What happened.** `ApplicationThread::start` waited for the new thread to enter its run loop for a fixed
+number of waits: 20,000 in a normal build, 500,000 in Valgrind and ThreadSanitizer builds, where each wait
+is only a yield. How long a wait lasts depends on the build and on how busy the machine is, so the limit
+was a different length of time in each, and well under a second on a busy slow build. The exception it
+threw was not caught in `Reactor::initialize_threads`, so it left `Reactor::run` and ended the process.
+
+**The fix.** The wait is bounded by time: ten seconds (`ApplicationThread::thread_start_timeout`), where
+starting normally takes microseconds. `Reactor::initialize_threads` catches a thread's failure to start,
+logs it as an Error, and returns failure, after which `run` shuts down in order as for every other start-up
+failure. Clean in the two runs recorded under [BUG-0150](#bug_0150); all 1,074 library tests pass.
+
+### BUG-0158: The reactor's shutdown reason could be read on its own thread while another thread was still writing it {#bug_0158}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-14 -- the caller that claims the shutdown writes the reason before publishing the request |
+| How | The first ThreadSanitizer runs of the library's tests ([BUG-0150](#bug_0150)): seven reports of `Reactor::finalize_threads_after_shutdown` reading a string that another thread had written in `Reactor::shutdown` |
+| Impact | Any thread may ask the reactor to shut down, and an application thread that is shutting down does. The reactor's thread could read the reason while it was still being assigned, which for a `std::string` can give garbage or a crash. Only at shutdown, and only in a window of a few instructions |
+
+**What happened.** `Reactor::shutdown` set the lifecycle state to `ShutdownRequested` first and wrote
+`shutdown_reason_` afterwards. The reactor's thread, seeing the request, read the reason to pass to each
+application thread. `Reactor::run` also stored `Running` unconditionally and cleared the reason, so a
+shutdown requested just before `run` started could be lost, and `get_shutdown_reason` read the string
+from any thread.
+
+**The fix.** A separate atomic claim decides which caller's shutdown counts. That caller writes the reason
+and only then publishes `ShutdownRequested`, with a release store, and only from not started or running,
+so the state never goes backwards. `run` moves from not started to running with a compare-and-exchange,
+keeping a request already made, and no longer touches the reason. `get_shutdown_reason` returns the reason
+only once an acquire load shows the request. The seven reports are gone from the two clean runs recorded
+under [BUG-0150](#bug_0150), and all 1,074 library tests pass.
+
+### BUG-0150: The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` {#bug_0150}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-12 |
+| Recorded | 2026-10-12 |
+| Fixed | 2026-10-14 -- in ThreadSanitizer builds only, a sequentially consistent read-modify-write stands in for the fence; the library's tests run clean under ThreadSanitizer |
+| How | Building the library's tests with ThreadSanitizer (`build-tsan`, `ENABLE_TSAN=ON`) to check the lock-free promise recorder of phase 3 of the recovery plan |
+| Impact | No part of the framework can be checked for data races with ThreadSanitizer. The phases that follow replace more locks with atomic variables, which is exactly the code it checks |
+
+**What was found.** `Reactor::enqueue_command` (`libraries/pubsub_itc_fw/src/Reactor.cpp`, line 800)
+calls `std::atomic_thread_fence(std::memory_order_seq_cst)` between putting a command on the queue and
+reading whether the reactor is polling. GCC 13 reports "'atomic_thread_fence' is not supported with
+'-fsanitize=thread'" as a warning, and the build treats warnings as errors, so `Reactor.cpp` does not
+compile with ThreadSanitizer. ThreadSanitizer does not model a free-standing fence, so even with the
+warning allowed it could report races that the fence prevents, or miss ones it does not.
+
+**What is wanted.** The ThreadSanitizer build compiles and its tests run. For example, the handshake
+between `enqueue_command` and the reactor's loop could be written with sequentially consistent
+operations on the two atomic variables themselves, which gives the same ordering and which
+ThreadSanitizer understands; or, in ThreadSanitizer builds only, the fence could be replaced by such
+operations. Whichever is chosen, its cost on the path that queues a command is measured first.
+
+**The fix.** In ThreadSanitizer builds only (`__SANITIZE_THREAD__`), `Reactor::enqueue_control_command`
+replaces the fence with a sequentially consistent `fetch_add` on a variable of its own, which on this
+processor is the same full barrier (a locked instruction) and which ThreadSanitizer understands. The
+fence orders only the decision whether to wake the reactor; the command reaches the reactor through the
+queue's own release and acquire, which is what ThreadSanitizer checks. The production build is unchanged,
+so its cost did not need measuring again. The tests must be run with address randomisation turned off
+for the process (`setarch -R`), or ThreadSanitizer stops at once with "unexpected memory mapping" on this
+kernel.
+
+**What the first runs found.** Three defects in the framework, all fixed: [BUG-0157](#bug_0157) (a
+thread freeing a slab's last chunk could read the slab after it was destroyed), [BUG-0158](#bug_0158)
+(the reactor's shutdown reason was read while it was being written) and [BUG-0159](#bug_0159) (a
+thread's start-up wait was bounded by a count of waits, and a failure ended the process). And races in
+the tests themselves: the test logger was read while Quill's backend thread wrote it, now a store with no
+lock that the backend thread publishes into; tests destroyed threads they had deliberately abandoned while
+those threads still ran, now kept alive until the process ends; two tests checked polling that these
+builds compile out, now skipped there; two waits were too short for these builds, now longer there.
+
+**Checked.** Two full runs of the library's tests under ThreadSanitizer: 1,065 passed, 7 skipped (the two
+above and five skipped there before), no failure and no data race reported. The ThreadSanitizer build still
+checks the mutex variant of the queue between threads rather than the lock-free one; that is
+[BUG-0160](#bug_0160).
 
 ### BUG-0157: A thread freeing a slab's last chunk could read the slab after its owner had destroyed it {#bug_0157}
 
