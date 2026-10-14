@@ -229,6 +229,16 @@ class Wal {
     /// The sequence number of the first record the log holds, or zero if it holds none.
     [[nodiscard]] int64_t first_seq_no() const;
 
+    /**
+     * @brief The position just after the last record written: where the next record will begin.
+     *
+     * A reader on another thread that never reads at or past this position reads only records that are
+     * completely written. See WalFollowingPositions, which publishes it.
+     */
+    [[nodiscard]] WalPosition write_position() const {
+        return writer_.current_position();
+    }
+
     [[nodiscard]] size_t record_count() const {
         return record_count_;
     }

@@ -1,7 +1,9 @@
 # CMakeLists.txt for pubsub_itc_fw integration tests
 
-if(ENABLE_ASAN OR ENABLE_TSAN)
-    message(STATUS "Integration tests disabled (coverage/sanitizer build)")
+# Built under ThreadSanitizer, which is the check made for the threads that share memory in
+# WalFollowingIntegrationTest; not under AddressSanitizer.
+if(ENABLE_ASAN)
+    message(STATUS "Integration tests disabled (AddressSanitizer build)")
     return()
 endif()
 
@@ -22,6 +24,7 @@ add_executable(pubsub_itc_fw_integration_tests
     VariableLengthPduTest.cpp
     WalExternalSubscriberIntegrationTest.cpp
     WritableNotificationIntegrationTest.cpp
+    WalFollowingIntegrationTest.cpp
 )
 
 add_dependencies(pubsub_itc_fw_integration_tests
@@ -45,9 +48,18 @@ target_include_directories(pubsub_itc_fw_integration_tests PRIVATE
 )
 
 include(GoogleTest)
-gtest_discover_tests(pubsub_itc_fw_integration_tests
-    PROPERTIES DEPENDS pubsub_itc_fw_tests
-)
+# Under ThreadSanitizer the binary cannot be run at build time to list its tests (it needs address
+# randomisation turned off, with setarch -R), so the listing waits until the tests are run.
+if(ENABLE_TSAN)
+    gtest_discover_tests(pubsub_itc_fw_integration_tests
+        DISCOVERY_MODE PRE_TEST
+        PROPERTIES DEPENDS pubsub_itc_fw_tests
+    )
+else()
+    gtest_discover_tests(pubsub_itc_fw_integration_tests
+        PROPERTIES DEPENDS pubsub_itc_fw_tests
+    )
+endif()
 
 message(STATUS "  Added integration test: OutboundConnectionRetryIntegrationTest")
 message(STATUS "  Added integration test: PduBurstIntegrationTest")

@@ -77,6 +77,9 @@ set(PUBSUB_ITC_FW_SRC
         src/Wal.cpp
         src/ReplicatedWal.cpp
         src/WalWriter.cpp
+        src/WalReadingThread.cpp
+        src/WalFollowerService.cpp
+        src/WalFollowerClient.cpp
         src/WalReader.cpp
         src/WalCursor.cpp
         src/TlsContext.cpp

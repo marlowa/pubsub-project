@@ -76,3 +76,59 @@ message ReplicatedRecord (id=133, version=1)
     i16 pdu_id # the type of the message in bytes
     bytes payload # the record's bytes, exactly as the application gave them
 end
+
+# ============================================================
+#  Following the WAL
+#
+#  A component that follows the WAL -- a matching engine, a
+#  publisher -- asks for every record after the last it holds, and
+#  is sent them by the leading instance, read from the WAL on a
+#  thread of its own, then is handed over to new records as they
+#  come. The design is docs/availability/following_the_wal.md.
+#  The records themselves are sent as the application's own
+#  messages; these four are the library's.
+# ============================================================
+
+# ------------------------------------------------------------
+#  134 -- WalFollowRequest
+#  Sent by a follower of the WAL to each instance of the pair, which
+#  it cannot tell apart: to start following, again when told the
+#  leader has changed, and again after a gap.
+# ------------------------------------------------------------
+message WalFollowRequest (id=134, version=1)
+    string follower_name # who is asking, for the Quill log
+    i64 last_seq_no # the last record the follower holds; -1 to be placed at the newest record and sent nothing older
+    bool wants_new_records # true: once caught up, go on sending new records as they come
+end
+
+# ------------------------------------------------------------
+#  135 -- WalFollowDeclined
+#  An instance that does not lead declines a request. It remembers
+#  the request, and if it takes the lead it sends WalLeaderChanged.
+# ------------------------------------------------------------
+message WalFollowDeclined (id=135, version=1)
+    i64 last_seq_no # the position the request named, echoed
+end
+
+# ------------------------------------------------------------
+#  136 -- WalFollowCaughtUp
+#  Sent by the leading instance once it has sent every record the
+#  follower may be sent. The follower checks it received exactly
+#  records_sent records since its request. If it asked for new
+#  records, they follow.
+# ------------------------------------------------------------
+message WalFollowCaughtUp (id=136, version=1)
+    i64 last_seq_no # the last record sent
+    i64 records_sent # how many records were sent since the request
+    i64 first_seq_no_held # the earliest record this instance's WAL holds, or zero if none
+end
+
+# ------------------------------------------------------------
+#  137 -- WalLeaderChanged
+#  Sent by an instance that has taken the lead, on every connection
+#  whose follower it declined or was serving. The follower asks
+#  again, naming the last record it holds.
+# ------------------------------------------------------------
+message WalLeaderChanged (id=137, version=1)
+    i32 epoch # the leadership epoch now in force
+end
