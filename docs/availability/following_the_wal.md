@@ -1,9 +1,9 @@
 # Phase 5: following the WAL, through the library, on a thread of its own {#following_the_wal}
 
-> **Status: draft, 14 October 2026, for Andrew's review.** This is the design for phase 5 of
+> **Status: agreed, 14 October 2026.** This is the design for phase 5 of
 > [the recovery plan](../recovery_plan.md). It follows section 4 of
-> [ha_library_boundary.md](ha_library_boundary.md), "Design area: following the WAL". Nothing in it is
-> built. The decisions it needs are in section 8.
+> [ha_library_boundary.md](ha_library_boundary.md), "Design area: following the WAL". Andrew agreed it
+> as a whole, with the decisions recorded in section 8. Nothing in it is built yet.
 
 Throughout this page, WAL means the write-ahead log, the file of sequenced records on disk. The text
 log each process writes about what it is doing is called the Quill log.
@@ -394,8 +394,8 @@ order's round trip is measured before and after, as in phase 4.
 
 ## 8. Decisions
 
-These are separate decisions. Decision 1 is a choice between two alternatives; decisions 2, 3 and 4 are
-each answered yes or no on their own.
+Four separate decisions, all taken by Andrew on 14 October 2026. Decision 1 was a choice between two
+alternatives; decisions 2, 3 and 4 were each answered yes or no on their own.
 
 ### Decision 1. How is a follower handed over from records read by the reading thread to new records? (Choose A or B.)
 
@@ -423,7 +423,7 @@ connection, and the sequencer a second port for each instance, in every configur
 price is a pause of a few microseconds that happens only when a steady stream keeps a hand-over from
 finishing.
 
-**The reply wanted:** "A" or "B".
+**Decided: A**, by Andrew on 14 October 2026.
 
 ### Decision 2. Do the matching engine and the publishers move onto the library's own messages? (Yes or no.)
 
@@ -445,7 +445,7 @@ the part of BUG-0153 that lives on the follower's side.
 follow the WAL, and BUG-0153 shows what happens when each follower has its own: the publishers' way
 lacked what the engine's had.
 
-**The reply wanted:** "yes" or "no".
+**Decided: yes**, by Andrew on 14 October 2026.
 
 ### Decision 3. Do resends and undelivered reports stay on the sequencer's thread in phase 5? (Yes or no.)
 
@@ -466,7 +466,7 @@ built.
 **Recommendation: yes.** They are not part of what phase 5 is for, they are bounded already, and moving
 them twice is the kind of change on top of a change that the plan is meant to avoid.
 
-**The reply wanted:** "yes" or "no".
+**Decided: yes**, by Andrew on 14 October 2026.
 
 ### Decision 4. Is the design as a whole right to build, in the order of section 1? (Yes or no.)
 
@@ -477,4 +477,4 @@ the check made for it.
 
 **Recommendation: yes.**
 
-**The reply wanted:** "yes" or "no", with anything to change.
+**Decided: yes**, by Andrew on 14 October 2026.

@@ -18,8 +18,8 @@
 > and the two locks of [BUG-0124](bug_list.md#bug_0124) are gone; the library's replicated WAL is built
 > and tested on its own; and the sequencer uses it. All 74 scenarios pass, and the order's round trip is
 > unchanged. Phase 4 is finished: Andrew reviewed it on 14 October 2026 and asked for phase 5's design
-> next. Phase 5's design, [following_the_wal.md](availability/following_the_wal.md), waits for his
-> review.
+> next. Phase 5's design, [following_the_wal.md](availability/following_the_wal.md), was agreed on
+> 14 October 2026.
 
 ## In one page
 
@@ -260,8 +260,7 @@ WAL on the thread that sequences orders ([BUG-0133](bug_list.md#bug_0133)).
 **Finished when:** the matching engine and the publishers catch up through the library, no catch-up runs
 on the sequencer's thread, and the high availability scenarios pass.
 
-**Design:** [following_the_wal.md](availability/following_the_wal.md), a draft written on 14 October
-2026, which waits for Andrew's review.
+**Design:** [following_the_wal.md](availability/following_the_wal.md), agreed 14 October 2026.
 
 ### Phase 6. Make the matching engine deterministic
 

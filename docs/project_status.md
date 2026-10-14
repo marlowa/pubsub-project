@@ -70,8 +70,8 @@ voting service into the library, is finished; its design is
 replicated WAL with one writing thread, is finished: the sequencer keeps its WAL through the library's
 `ReplicatedWal`, whose thread is the only one that writes it. Its design is
 [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md). Phase 5, following
-the WAL, has a draft design, [following_the_wal.md](availability/following_the_wal.md), which waits for
-Andrew's review. New features, including pub/sub, the order activity recorder and the trading phases, wait
+the WAL, has an agreed design, [following_the_wal.md](availability/following_the_wal.md), and is being
+built. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start

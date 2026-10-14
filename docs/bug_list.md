@@ -695,7 +695,7 @@ seconds with the files already in memory. Not measured on a catch-up.
 records at the exact point where that thread stops, so that there is no gap and no record is sent
 twice; the same for the publishers' catch-ups. The sequencer thread then does no reading of its log on
 behalf of anyone else. Designed for phase 5 of the recovery plan in
-[following_the_wal.md](availability/following_the_wal.md), which waits for Andrew's review.
+[following_the_wal.md](availability/following_the_wal.md), agreed on 14 October 2026.
 
 **Principle.** F4 in `docs/design_principles.md`: an order-handling thread doing work that can wait for
 the disk.
