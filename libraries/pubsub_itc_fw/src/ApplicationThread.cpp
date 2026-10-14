@@ -494,7 +494,7 @@ void ApplicationThread::run_internal() {
         //
         // The producer has already signalled notify_fd_, so the counter is non-zero and a
         // later epoll_wait returns at once. That costs one spurious wakeup and no messages.
-#ifndef USING_VALGRIND
+#ifndef VALGRIND_BUILD
         if (keep_running && !any_processed && spin_before_block_ns_ > 0 && message_queue_ != nullptr) {
             spins_entered_.fetch_add(1, std::memory_order_relaxed);
             const int64_t spin_deadline_ns = HighResolutionClock::now().time_since_epoch().count() + spin_before_block_ns_;

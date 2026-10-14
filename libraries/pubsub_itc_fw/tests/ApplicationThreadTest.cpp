@@ -1477,9 +1477,9 @@ TEST_F(ApplicationThreadTest, SpinningThreadStillShutsDownPromptly) {
 }
 
 TEST_F(ApplicationThreadTest, EveryWaitHasExactlyOneOutcome) {
-#ifdef USING_VALGRIND
-    // Polling before blocking is compiled out of Valgrind and ThreadSanitizer builds (see
-    // ApplicationThread::run_internal), so there is nothing here to check.
+#ifdef VALGRIND_BUILD
+    // Polling before blocking is compiled out of Valgrind builds (see ApplicationThread::run_internal),
+    // so there is nothing here to check.
     GTEST_SKIP() << "polling before blocking is compiled out of this build";
 #endif
     // The identity that makes the other numbers worth reading: a thread that polls before
@@ -1516,9 +1516,9 @@ TEST_F(ApplicationThreadTest, EveryWaitHasExactlyOneOutcome) {
 }
 
 TEST_F(ApplicationThreadTest, PollingFindsWorkThatWouldOtherwiseHaveBlocked) {
-#ifdef USING_VALGRIND
-    // Polling before blocking is compiled out of Valgrind and ThreadSanitizer builds (see
-    // ApplicationThread::run_internal), so there is nothing here to check.
+#ifdef VALGRIND_BUILD
+    // Polling before blocking is compiled out of Valgrind builds (see ApplicationThread::run_internal),
+    // so there is nothing here to check.
     GTEST_SKIP() << "polling before blocking is compiled out of this build";
 #endif
     // What the setting claims to do. Messages are posted with a gap well inside the polling

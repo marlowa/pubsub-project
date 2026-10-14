@@ -250,7 +250,7 @@ Left out, as asked or because they are not the venue's running code:
 
 | Lock | Where | Why excluded |
 |---|---|---|
-| `LockFreeMessageQueue::mutex_` | `LockFreeMessageQueue.hpp` | Inside `#ifdef USING_VALGRIND`: Valgrind and ThreadSanitizer builds only |
+| `LockFreeMessageQueue::mutex_` | `LockFreeMessageQueue.hpp` | Inside `#ifdef VALGRIND_BUILD`: Valgrind builds only |
 | `FixedSizeMemoryPool::mutex_` | `FixedSizeMemoryPool.hpp` | Inside `#ifdef USING_VALGRIND` |
 | `Reactor::thread_registry_mutex_` in `register_thread`, `initialize_threads`, `wait_for_all_threads`, `broadcast_reactor_event`, `finalize_threads_after_shutdown` | `Reactor.cpp` | Start-up and shutdown only |
 | `Reactor::timer_registry_mutex_` in `cancel_all_timer_fds_for_thread` | `Reactor.cpp`, line 439 | Shutdown only |

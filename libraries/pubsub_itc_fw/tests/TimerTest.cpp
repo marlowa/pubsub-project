@@ -576,6 +576,10 @@ TEST_F(TimerTest, RepeatedlyRearmedOneOffTimerLeaksNoDescriptors) {
 }
 
 TEST_F(TimerTest, AFiredOneOffTimerReleasesItsTimerDescriptor) {
+    // Counted before the one-off exists: the reactor's own backstop timer, and any timer descriptor that
+    // something else in this process holds. Earlier tests may leave some open on purpose -- a reactor
+    // kept alive because a test abandoned a thread keeps its backstop -- so the count is not assumed.
+    const size_t timer_descriptors_before = open_timer_descriptors();
     auto t = ApplicationThread::create<OneOffTimerThread>(logger_->logger, *reactor_);
     reactor_->register_thread(t);
     start_reactor();
@@ -584,8 +588,8 @@ TEST_F(TimerTest, AFiredOneOffTimerReleasesItsTimerDescriptor) {
 
     // The reactor's own backstop timer is recurring and stays. Nothing else should:
     // the one-off has fired, so its descriptor is disarmed and must have been closed.
-    ASSERT_TRUE(wait_for([&] { return open_timer_descriptors() <= 1; }))
-        << open_timer_descriptors() << " timer descriptors still open after the one-off fired; only the reactor's backstop should remain";
+    ASSERT_TRUE(wait_for([&] { return open_timer_descriptors() <= timer_descriptors_before; }))
+        << open_timer_descriptors() << " timer descriptors still open after the one-off fired, against " << timer_descriptors_before << " before it was armed";
 }
 
 TEST_F(TimerTest, SlowHandlerCoalescesExpirations) {

@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 160 |
-| Open | 65 (46 defects, 19 tasks) |
-| Closed | 95 |
+| Open | 64 (46 defects, 18 tasks) |
+| Closed | 96 |
 | Next id | BUG-0161 |
 
 ## Open bugs by severity
 
-17 high, 41 medium, 7 low.
+17 high, 40 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -68,7 +68,6 @@
 | [BUG-0139](#bug_0139) | medium | defect | A matching engine that restarts or is promoted issues report identifiers that were already used that day |
 | [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
-| [BUG-0160](#bug_0160) | medium | task | The ThreadSanitizer build checks the mutex variant of the queue between threads, not the lock-free one the venue runs |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
@@ -174,27 +173,6 @@ went looking.
 ---
 
 ## Open
-
-### BUG-0160: The ThreadSanitizer build checks the mutex variant of the queue between threads, not the lock-free one the venue runs {#bug_0160}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | 2026-10-14 |
-| Recorded | 2026-10-14 |
-| How | Finding why two polling tests failed in the ThreadSanitizer build, while closing [BUG-0150](#bug_0150) |
-| Impact | ThreadSanitizer does not check the lock-free queue every message between threads goes through, which is the code it is most needed for, and the queue phase 5's reading thread will use |
-
-**What happens.** The top-level `CMakeLists.txt` defines `USING_VALGRIND` in ThreadSanitizer builds as well
-as in Valgrind builds. That switches `LockFreeMessageQueue` to its variant that takes a mutex, and
-compiles out an application thread's polling before it blocks. So the ThreadSanitizer runs check the
-mutex variant, which needs no checking, and not the lock-free one the venue runs.
-
-**What is wanted.** Find why ThreadSanitizer builds define `USING_VALGRIND` (the lock-free queue's 16-byte
-compare-and-exchange, `-mcx16`, is one likely reason), and make the ThreadSanitizer build use the lock-free
-queue and the polling, with whatever ThreadSanitizer needs to understand them. Then run the library's tests
-under it, clean, as for [BUG-0150](#bug_0150).
 
 ### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
 
@@ -3368,6 +3346,47 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0160: The ThreadSanitizer build checks the mutex variant of the queue between threads, not the lock-free one the venue runs {#bug_0160}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-14 -- Valgrind builds alone take the mutex variant of the queue and leave out the polling; ThreadSanitizer checks the real ones |
+| How | Finding why two polling tests failed in the ThreadSanitizer build, while closing [BUG-0150](#bug_0150) |
+| Impact | ThreadSanitizer does not check the lock-free queue every message between threads goes through, which is the code it is most needed for, and the queue phase 5's reading thread will use |
+
+**What happens.** The top-level `CMakeLists.txt` defines `USING_VALGRIND` in ThreadSanitizer builds as well
+as in Valgrind builds. That switches `LockFreeMessageQueue` to its variant that takes a mutex, and
+compiles out an application thread's polling before it blocks. So the ThreadSanitizer runs check the
+mutex variant, which needs no checking, and not the lock-free one the venue runs.
+
+**What is wanted.** Find why ThreadSanitizer builds define `USING_VALGRIND` (the lock-free queue's 16-byte
+compare-and-exchange, `-mcx16`, is one likely reason), and make the ThreadSanitizer build use the lock-free
+queue and the polling, with whatever ThreadSanitizer needs to understand them. Then run the library's tests
+under it, clean, as for [BUG-0150](#bug_0150).
+
+**Why.** `USING_VALGRIND` did two jobs. `FixedSizeMemoryPool`, which allocates the queue's nodes, uses a
+lock-free stack built on a 16-byte compare-and-exchange (`CMPXCHG16B`), which neither Valgrind nor
+ThreadSanitizer can model, so it needs its mutex path in both. But the same macro also switched the queue,
+an ordinary lock-free queue on 8-byte atomics that ThreadSanitizer checks perfectly well, and compiled out
+the polling, which Valgrind needs because it runs one thread at a time and ThreadSanitizer does not.
+
+**The fix.** A second macro, `VALGRIND_BUILD`, defined in Valgrind builds only, now decides the queue's
+variant and the polling. `USING_VALGRIND` keeps its other meanings in both instrumented builds: the memory
+pool's mutex path, and smaller workloads and longer waits in the tests. `check_standards.py` treats code
+under either macro as instrumented-build code, as before.
+
+**Checked.** In the ThreadSanitizer build the two polling tests, skipped while polling was compiled out,
+run and pass, which shows the real queue and polling are in it. Checking them found no race in the queue
+or the polling. It found two mistakes in the tests' own handling of abandoned threads: such a thread had
+read the reactor before it stuck, so the reactor is now kept alive with it; and a timer test that counted
+every timer descriptor in the process now counts against its own starting point, because those kept
+reactors hold one each. The library's tests then ran clean under ThreadSanitizer: 1,067 passed, 5 skipped,
+no failure, no data race. All 1,074 pass in the normal build.
 
 ### BUG-0159: A thread that was slow to start ended the whole process, because the wait for it was counted in waits, not time, and its failure was not caught {#bug_0159}
 

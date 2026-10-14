@@ -1166,13 +1166,14 @@ def _relative_to_project(path: Path) -> str:
 
 
 def _valgrind_only_lines(lines: list[str]) -> set:
-    """Line indices compiled only when USING_VALGRIND is defined: the Valgrind and ThreadSanitizer
-    builds, which replace the lock-free structures with simpler locked ones."""
+    """Line indices compiled only when USING_VALGRIND or VALGRIND_BUILD is defined: the instrumented
+    builds, which replace lock-free structures with simpler locked ones (the memory pool in Valgrind and
+    ThreadSanitizer builds, the message queue in Valgrind builds only)."""
     result: set = set()
     stack: list[str] = []  # one entry per open #if: 'valgrind', 'not_valgrind' or 'other'
     for i, line in enumerate(lines):
         directive = line.strip()
-        if directive.startswith('#ifdef USING_VALGRIND') or directive.startswith('#if defined(USING_VALGRIND)'):
+        if directive.startswith(('#ifdef USING_VALGRIND', '#if defined(USING_VALGRIND)', '#ifdef VALGRIND_BUILD', '#if defined(VALGRIND_BUILD)')):
             stack.append('valgrind')
             continue
         if directive.startswith('#if'):

@@ -25,13 +25,26 @@ namespace pubsub_itc_fw::tests_common {
  * NeverStartingThread and RogueITCThread never stop, by design, and the reactor leaves them running
  * once its wait for them runs out. Destroying the object of a thread that is still running inside one
  * of its member functions is a data race and undefined behaviour, which ThreadSanitizer reports. Once
- * in their endless loops these threads only sleep, touching neither the reactor nor the logger, so the
- * reactor and the logger may be destroyed around them; only their own object must outlive them. It is
- * held in a store that is never destroyed, not even when the process exits.
+ * in their endless loops these threads only sleep, but they read the reactor before they got there, so
+ * the reactor must outlive them as well (keep_abandoned_reactor_alive). The thread's object is held in a
+ * store that is never destroyed, not even when the process exits.
  */
 inline void keep_abandoned_thread_alive(std::shared_ptr<ApplicationThread> thread) {
     static auto* const kept = new std::vector<std::shared_ptr<ApplicationThread>>();
     kept->push_back(std::move(thread));
+}
+
+/**
+ * @brief Keeps the reactor of a thread it abandoned alive until the process ends.
+ *
+ * An abandoned thread read the reactor's state in its run loop before it reached its endless loop.
+ * Destroying the reactor afterwards is not ordered after that read, which ThreadSanitizer reports as a
+ * data race, so a test that abandons a thread keeps the reactor as well as the thread. Held in a store
+ * that is never destroyed, not even when the process exits.
+ */
+inline void keep_abandoned_reactor_alive(std::unique_ptr<Reactor> reactor) {
+    static auto* const kept = new std::vector<std::unique_ptr<Reactor>>();
+    kept->push_back(std::move(reactor));
 }
 
 // A thread that never reaches Started (blocks forever in on_initial_event).

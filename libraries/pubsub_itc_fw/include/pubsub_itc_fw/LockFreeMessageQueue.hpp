@@ -12,7 +12,7 @@
 
 /** @ingroup queue_subsystem */
 
-#ifdef USING_VALGRIND
+#ifdef VALGRIND_BUILD
 #include <deque>
 #include <mutex>
 #endif
@@ -23,14 +23,15 @@
 
 namespace pubsub_itc_fw {
 
-#ifdef USING_VALGRIND
+#ifdef VALGRIND_BUILD
 
 /**
  * @brief Valgrind-compatible MPSC queue using mutex.
  *
- * When USING_VALGRIND is defined, we use a simple mutex-protected std::deque
+ * In Valgrind builds (VALGRIND_BUILD defined), we use a simple mutex-protected std::deque
  * instead of lock-free atomics. This allows Valgrind's tools (Helgrind, DRD)
  * to properly analyze the code without getting confused by lock-free algorithms.
+ * ThreadSanitizer builds use the lock-free queue below, which ThreadSanitizer checks.
  */
 template <typename T> class LockFreeMessageQueue {
     static_assert(std::is_move_constructible_v<T>, "LockFreeMessageQueue requires a move-constructible element type.");
@@ -118,7 +119,7 @@ template <typename T> class LockFreeMessageQueue {
     bool is_high_watermark_breached_{false};
 };
 
-#else // !USING_VALGRIND
+#else // !VALGRIND_BUILD
 
 /**
  * @brief Lock-free MPSC queue using Vyukov's algorithm.
@@ -356,6 +357,6 @@ template <typename T> class LockFreeMessageQueue {
     std::atomic<bool> shutting_down_{false};
 };
 
-#endif // check for is or is not USING_VALGRIND
+#endif // check for is or is not VALGRIND_BUILD
 
 } // namespaces

@@ -132,6 +132,11 @@ class ReactorTest : public ::testing::Test {
         if (reactor_thread_) {
             join_reactor_or_die(std::chrono::seconds(2));
         }
+        if (abandons_a_thread_) {
+            // The abandoned thread still runs and read the reactor before it stuck; see keep_abandoned_reactor_alive.
+            keep_abandoned_reactor_alive(std::move(reactor_));
+            return;
+        }
         reactor_.reset();
     }
 
@@ -148,6 +153,8 @@ class ReactorTest : public ::testing::Test {
     ReactorConfiguration reactor_configuration_;
     ServiceRegistry service_registry_;
     std::unique_ptr<Reactor> reactor_;
+    // Set by a test that abandons a thread, so that TearDown keeps the reactor rather than destroying it.
+    bool abandons_a_thread_{false};
     std::unique_ptr<ThreadWithJoinTimeout> reactor_thread_;
 };
 
@@ -311,6 +318,7 @@ TEST_F(ReactorTest, InitializationTimeoutTriggersShutdown) {
                                                                      make_allocator_config());
     reactor_->register_thread(bad_thread);
     keep_abandoned_thread_alive(bad_thread);
+    abandons_a_thread_ = true;
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait for Reactor to detect timeout and shut down.
@@ -442,6 +450,7 @@ TEST_F(ReactorTest, RogueThreadBlocksInITCMessageReactorStillShutsDown) {
                                                            make_allocator_config());
     reactor_->register_thread(rogue);
     keep_abandoned_thread_alive(rogue);
+    abandons_a_thread_ = true;
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     // Wait for initialization to complete, give it 2s.
@@ -485,6 +494,7 @@ TEST_F(ReactorTest, AbandonedRogueThreadIsRecordedAsStillRunning) {
                                                            make_allocator_config());
     reactor_->register_thread(rogue);
     keep_abandoned_thread_alive(rogue);
+    abandons_a_thread_ = true;
     reactor_thread_ = std::make_unique<ThreadWithJoinTimeout>([this] { reactor_->run(); });
 
     {

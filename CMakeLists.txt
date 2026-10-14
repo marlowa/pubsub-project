@@ -47,7 +47,12 @@ option(ENABLE_TSAN "Build with ThreadSanitizer" OFF)
 
 if(ENABLE_VALGRIND)
     message(STATUS "Valgrind mode enabled")
-    add_compile_definitions(USING_VALGRIND)
+    # USING_VALGRIND: an instrumented build, slow, in which FixedSizeMemoryPool takes its mutex path because
+    # the instrumentation cannot model its 16-byte compare-and-exchange. Defined for ThreadSanitizer too.
+    # VALGRIND_BUILD: Valgrind only. LockFreeMessageQueue takes its mutex variant and application threads do
+    # not poll before blocking, because Valgrind runs one thread at a time and cannot model the lock-free queue.
+    # ThreadSanitizer can, so it checks the real queue and the polling.
+    add_compile_definitions(USING_VALGRIND VALGRIND_BUILD)
 else()
     message(STATUS "Valgrind mode disabled")
     if(NOT ENABLE_TSAN)
