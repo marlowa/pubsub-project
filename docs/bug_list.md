@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 152 |
-| Open | 62 (44 defects, 18 tasks) |
+| Bugs recorded | 153 |
+| Open | 63 (45 defects, 18 tasks) |
 | Closed | 90 |
-| Next id | BUG-0153 |
+| Next id | BUG-0154 |
 
 ## Open bugs by severity
 
-15 high, 40 medium, 7 low.
+15 high, 41 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -68,6 +68,7 @@
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0150](#bug_0150) | medium | defect | The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
+| [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -171,6 +172,45 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0153: A matching engine publisher can be sent records that are never committed, and the same record twice {#bug_0153}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| How | Reading how the sequencer serves the matching engine publishers, while designing phase 5 of the recovery plan ([following_the_wal.md](availability/following_the_wal.md)). Found by reading the code; not yet shown by a run |
+| Impact | A publisher can publish an order or an execution report that the venue's record does not hold, and can publish the same record twice. Its subscribers, such as the order activity recorder once it is built, would then hold activity the venue never committed, or hold it twice |
+
+**What happens.** Each matching engine publisher connects to both sequencers and sends each a
+`WalSubscribeRequest` naming the last record it holds (`MatchingEnginePublisherThread::on_connection_established`).
+Three things in the sequencer combine badly with that.
+
+1. **Records go to the publishers before they are committed.** The leading sequencer sends each record
+   to its publishers as soon as it has written it (`stream_wal_record_to_external_subscribers`, called
+   in `SequencerThread::on_framework_pdu_message` and `forward_report_from_engine`), before its follower
+   has acknowledged it. If the leader then dies before the follower holds the record, the follower takes
+   over without it and gives the same sequence number to a different record. The publisher has already
+   written the first record into its own WAL and published it.
+2. **Both sequencers answer a subscription.** `SequencerThread::handle_wal_subscribe_request` does not
+   look at the instance's role. Each sequencer sends the publisher every record after the position it
+   named, read from its own WAL from the first segment. A publisher that subscribes from a position below
+   the end of the day's record, as one that restarts during the day does, is sent those records by both,
+   and writes each into its own WAL twice (`handle_wal_record_from_sequencer` appends whatever arrives,
+   and `Wal::append` does not refuse a number already written).
+3. **Nothing is sent again at a change of leader.** Only the leader sends live records, and the
+   follower sends nothing while it follows. A publisher therefore depends on the old leader having sent
+   it everything up to the moment of the change, which, by point 1, it may have done and more.
+
+**What is wanted.** A publisher is sent only committed records, only by the leading sequencer, each
+exactly once and in order; at a change of leader it is sent, by the new leader, every committed record
+after the last it holds. A publisher refuses a record that does not follow the last it wrote. Phase 5
+of the recovery plan does this, by moving the publishers onto the library's way of following the WAL,
+and shows the defect with a scenario before fixing it.
+
+**Principle.** V2 in `docs/design_principles.md`: the log is the record. A publisher's subscribers are
+told of activity the record does not hold.
 
 ### BUG-0151: The order's round trip is about 20 microseconds slower when the secondary matching engine leads {#bug_0151}
 
@@ -654,7 +694,8 @@ seconds with the files already in memory. Not measured on a catch-up.
 **What is wanted.** Read and send the missed records from a thread of their own, and hand over to live
 records at the exact point where that thread stops, so that there is no gap and no record is sent
 twice; the same for the publishers' catch-ups. The sequencer thread then does no reading of its log on
-behalf of anyone else. To be designed and agreed before code.
+behalf of anyone else. Designed for phase 5 of the recovery plan in
+[following_the_wal.md](availability/following_the_wal.md), which waits for Andrew's review.
 
 **Principle.** F4 in `docs/design_principles.md`: an order-handling thread doing work that can wait for
 the disk.
