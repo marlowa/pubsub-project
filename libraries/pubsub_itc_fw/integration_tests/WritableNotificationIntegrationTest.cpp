@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <string>
@@ -143,6 +144,79 @@ class SlowReceiverThread : public ApplicationThread {
     int expected_count_;
 };
 
+// Owns the sender's end of the connection, and hands it to PacingThread to send on. It sends nothing
+// itself, so it must never be told the connection is writable.
+class ConnectionOwnerThread : public ApplicationThread {
+  public:
+    std::atomic<int> writable_callbacks{0};
+
+    ConnectionOwnerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor)
+        : ApplicationThread(token, logger, reactor, "ConnectionOwnerThread", ThreadID{2}, make_queue_config(), make_allocator_config("OwnerPool"),
+                            ApplicationThreadConfiguration{}) {}
+
+  protected:
+    void on_connection_established(ConnectionID id) override {
+        // The message carries a pointer to its data, not a copy, so the number is kept here.
+        connection_value_ = id.get_value();
+        post_message(ThreadID{3}, EventMessage::create_itc_message(get_thread_id(), reinterpret_cast<const uint8_t*>(&connection_value_),
+                                                                   static_cast<int>(sizeof(connection_value_))));
+    }
+
+    void on_connection_writable(ConnectionID) override {
+        writable_callbacks.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    void on_framework_pdu_message(const EventMessage&) override {}
+    void on_itc_message(const EventMessage&) override {}
+
+  private:
+    int connection_value_{0};
+};
+
+// Streams records on a connection another thread owns, paced by writable notifications it asks for itself.
+class PacingThread : public ApplicationThread {
+  public:
+    std::atomic<bool> all_sent{false};
+    std::atomic<int> writable_callbacks{0};
+
+    PacingThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, int record_count)
+        : ApplicationThread(token, logger, reactor, "PacingThread", ThreadID{3}, make_queue_config(), make_allocator_config("PacerPool"),
+                            ApplicationThreadConfiguration{})
+        , record_count_(record_count) {}
+
+  protected:
+    void on_itc_message(const EventMessage& message) override {
+        int value = 0;
+        std::memcpy(&value, message.payload(), sizeof(value));
+        connection_id_ = ConnectionID{value};
+        send_next();
+    }
+
+    void on_connection_writable(ConnectionID) override {
+        writable_callbacks.fetch_add(1, std::memory_order_acq_rel);
+        send_next();
+    }
+
+    void on_framework_pdu_message(const EventMessage&) override {}
+
+  private:
+    void send_next() {
+        pubsub_itc_fw::WalAck record{};
+        record.seq_no = next_seq_no_;
+        send_pdu(connection_id_, pdu_id_stream_record, next_seq_no_, record);
+        ++next_seq_no_;
+        if (next_seq_no_ <= record_count_) {
+            request_writable_notification_for_connection_owned_elsewhere(connection_id_);
+        } else {
+            all_sent.store(true, std::memory_order_release);
+        }
+    }
+
+    int record_count_;
+    int64_t next_seq_no_ = 1;
+    ConnectionID connection_id_;
+};
+
 class WritableNotificationTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -210,6 +284,50 @@ TEST_F(WritableNotificationTest, PacedStreamDeliversAllRecordsInOrder) {
     // --- The writable callback drove the stream: one per record after the first ---
     EXPECT_TRUE(wait_for([&]() { return sender_thread->all_sent.load(std::memory_order_acquire); })) << "Sender did not finish";
     EXPECT_EQ(sender_thread->writable_callbacks.load(std::memory_order_acquire), record_count - 1);
+
+    receiver_reactor->shutdown("test complete");
+    sender_reactor->shutdown("test complete");
+    if (receiver_reactor_thread.joinable()) {
+        receiver_reactor_thread.join();
+    }
+    if (sender_reactor_thread.joinable()) {
+        sender_reactor_thread.join();
+    }
+}
+
+// A thread that sends on a connection another thread owns can pace itself: it is told when the
+// connection can take more, and the owner, which asked for nothing, is told nothing.
+TEST_F(WritableNotificationTest, AThreadPacingSendsOnAConnectionItDoesNotOwnIsToldAndTheOwnerIsNot) {
+    static constexpr int record_count = 100;
+
+    const ServiceRegistry sender_registry;
+    auto sender_reactor = std::make_unique<Reactor>(make_reactor_config(), sender_registry, logger_->logger);
+    sender_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, ThreadID{2});
+    auto owner_thread = ApplicationThread::create<ConnectionOwnerThread>(logger_->logger, *sender_reactor);
+    auto pacing_thread = ApplicationThread::create<PacingThread>(logger_->logger, *sender_reactor, record_count);
+    sender_reactor->register_thread(owner_thread);
+    sender_reactor->register_thread(pacing_thread);
+    ThreadWithJoinTimeout sender_reactor_thread([&]() { sender_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return sender_reactor->is_initialized(); })) << "Sender reactor did not initialize";
+    const uint16_t listen_port = sender_reactor->get_inbound_listener_port(0);
+    ASSERT_NE(listen_port, 0U);
+
+    ServiceRegistry receiver_registry;
+    receiver_registry.add("sender", NetworkEndpointConfiguration{"127.0.0.1", listen_port}, NetworkEndpointConfiguration{});
+    auto receiver_reactor = std::make_unique<Reactor>(make_reactor_config(), receiver_registry, logger_->logger);
+    auto receiver_thread = ApplicationThread::create<SlowReceiverThread>(logger_->logger, *receiver_reactor, record_count);
+    receiver_reactor->register_thread(receiver_thread);
+    ThreadWithJoinTimeout receiver_reactor_thread([&]() { receiver_reactor->run(); });
+
+    EXPECT_TRUE(wait_for([&]() { return receiver_thread->all_received.load(std::memory_order_acquire); })) << "Receiver did not receive all records";
+    ASSERT_EQ(static_cast<int>(receiver_thread->received_seq_nos.size()), record_count);
+    for (int i = 0; i < record_count; ++i) {
+        EXPECT_EQ(receiver_thread->received_seq_nos[static_cast<size_t>(i)], i + 1) << "Out of order at index " << i;
+    }
+
+    EXPECT_TRUE(wait_for([&]() { return pacing_thread->all_sent.load(std::memory_order_acquire); })) << "Pacing thread did not finish";
+    EXPECT_EQ(pacing_thread->writable_callbacks.load(std::memory_order_acquire), record_count - 1);
+    EXPECT_EQ(owner_thread->writable_callbacks.load(std::memory_order_acquire), 0);
 
     receiver_reactor->shutdown("test complete");
     sender_reactor->shutdown("test complete");

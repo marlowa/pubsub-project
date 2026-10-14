@@ -482,6 +482,26 @@ class ApplicationThread {
     void request_writable_notification(const ConnectionID& conn_id);
 
     /**
+     * @brief Requests a one-shot on_connection_writable() callback, on this thread, for a connection
+     *        another thread owns.
+     *
+     * For a thread that sends on a connection it does not own and must pace those sends, such as the
+     * thread that reads a WAL and sends the records a follower lacks on the follower's own connection.
+     * It works as request_writable_notification() does, except that the connection need not belong to
+     * this thread, and the notification comes to this thread rather than to the owner.
+     *
+     * A connection remembers one thread to tell. Only one thread may wait for a connection's
+     * notification at a time: the owner and this thread must agree between themselves which of them is
+     * sending on it, as the hand-over in docs/availability/following_the_wal.md, section 3.4, does.
+     * A request for a connection that no longer exists is ignored.
+     *
+     * Must be called from within this thread's callback context.
+     *
+     * @param[in] conn_id The ConnectionID to be notified about. Owned by some other thread.
+     */
+    void request_writable_notification_for_connection_owned_elsewhere(const ConnectionID& conn_id);
+
+    /**
      * @brief Schedules a high-resolution timer.
      * @param [in] interval The delay or interval before the timer rings.
      * @param [in] type Whether the timer is single-shot or recurring.

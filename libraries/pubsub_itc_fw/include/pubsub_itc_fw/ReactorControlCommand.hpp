@@ -41,6 +41,7 @@ namespace pubsub_itc_fw {
  *   CommitRawBytes -- connection_id_, bytes_consumed_
  *   PauseReading   -- connection_id_
  *   ResumeReading  -- connection_id_
+ *   RequestWritableNotification -- connection_id_, requesting_thread_id_ (zero for the connection's owner)
  *
  * SendPdu vs SendRaw:
  *   SendPdu is for framework-native PDU connections (PduProtocolHandler). The
@@ -184,12 +185,15 @@ class ReactorControlCommand {
     // Connect payload fields
 
     /**
-     * @brief The thread to notify with ConnectionEstablished or ConnectionFailed.
+     * @brief The thread to notify.
      *
-     * The reactor delivers an EventMessage of type ConnectionEstablished
-     * (carrying the assigned ConnectionID) or ConnectionFailed (carrying a
-     * reason string) to this thread's queue once the non-blocking connect
-     * attempt completes.
+     * For Connect: the thread told ConnectionEstablished (carrying the assigned
+     * ConnectionID) or ConnectionFailed (carrying a reason string) once the
+     * non-blocking connect attempt completes.
+     *
+     * For RequestWritableNotification: the thread told ConnectionWritable. Left at
+     * zero, it is the connection's owner; a thread pacing its sends on a connection
+     * another thread owns names itself here.
      */
     ThreadID requesting_thread_id_{};
 

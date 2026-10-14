@@ -322,6 +322,14 @@ void ApplicationThread::request_writable_notification(const ConnectionID& conn_i
     reactor_.enqueue_control_command(command);
 }
 
+void ApplicationThread::request_writable_notification_for_connection_owned_elsewhere(const ConnectionID& conn_id) {
+    ReactorControlCommand command(ReactorControlCommand::CommandTag::RequestWritableNotification);
+    command.connection_id_ = conn_id;
+    // Names this thread, so that the notification comes here rather than to the connection's owner.
+    command.requesting_thread_id_ = thread_id_;
+    reactor_.enqueue_control_command(command);
+}
+
 void ApplicationThread::send_raw(const ConnectionID& conn_id, const void* data, uint32_t size) {
     if (active_connection_ids_.find(conn_id) == active_connection_ids_.end()) {
         throw PreconditionAssertion(fmt::format("ApplicationThread::send_raw: ConnectionID {} "

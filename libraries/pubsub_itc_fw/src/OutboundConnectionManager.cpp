@@ -420,7 +420,10 @@ bool OutboundConnectionManager::process_writable_notification_command(const Reac
     }
 
     OutboundConnection& conn = *it->second;
-    conn.want_writable_notification();
+    // A request that names no thread comes from the connection's owner, which is then the thread told.
+    // One that names a thread comes from a thread pacing its sends on a connection another thread owns.
+    const ThreadID thread_to_tell = command.requesting_thread_id_.get_value() == 0 ? conn.requesting_thread_id() : command.requesting_thread_id_;
+    conn.want_writable_notification(thread_to_tell);
     deliver_owed_writable_notification(conn);
     return true;
 }
@@ -432,7 +435,7 @@ void OutboundConnectionManager::deliver_owed_writable_notification(OutboundConne
     if (!conn.is_established() || conn.has_pending_send() || !conn.waiting_sends().empty() || !conn.take_writable_notification_wanted()) {
         return;
     }
-    auto* thread = thread_lookup_.get_fast_path_thread(conn.requesting_thread_id());
+    auto* thread = thread_lookup_.get_fast_path_thread(conn.writable_notification_thread_id());
     if (thread != nullptr) {
         thread->enqueue(EventMessage::create_connection_writable_event(ConnectionID{conn.id().get_value(), conn.service_name()}));
     }

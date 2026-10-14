@@ -187,8 +187,9 @@ class InboundConnection {
      * send, at a moment when it could not: it was still writing, or had sends waiting. The connection
      * manager tells the application once everything waiting has been written.
      */
-    void want_writable_notification() {
+    void want_writable_notification(ThreadID thread_to_tell) {
         writable_notification_wanted_ = true;
+        writable_notification_thread_id_ = thread_to_tell;
     }
 
     /// Whether a writable notification is owed, clearing the record of it.
@@ -196,6 +197,11 @@ class InboundConnection {
         const bool wanted = writable_notification_wanted_;
         writable_notification_wanted_ = false;
         return wanted;
+    }
+
+    /// The thread the owed writable notification goes to: the one that asked for it.
+    [[nodiscard]] ThreadID writable_notification_thread_id() const {
+        return writable_notification_thread_id_;
     }
 
   private:
@@ -211,6 +217,7 @@ class InboundConnection {
     bool reading_paused_by_application_{false};
     WaitingSendQueue waiting_sends_;
     bool writable_notification_wanted_{false};
+    ThreadID writable_notification_thread_id_{};
 };
 
 } // namespaces
