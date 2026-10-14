@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 160 |
-| Open | 64 (46 defects, 18 tasks) |
+| Bugs recorded | 161 |
+| Open | 65 (46 defects, 19 tasks) |
 | Closed | 96 |
-| Next id | BUG-0161 |
+| Next id | BUG-0162 |
 
 ## Open bugs by severity
 
-17 high, 40 medium, 7 low.
+17 high, 41 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -70,6 +70,7 @@
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
+| [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -173,6 +174,42 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0161: The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send {#bug_0161}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| How | Andrew, reading `ApplicationThread` on GitHub, and a review of it |
+| Impact | The framework cannot be reused without the venue's vocabulary, and the same idea goes by three names in it. Nothing behaves wrongly |
+
+**What is there.** A send is tagged with whether a member is waiting for it, so that the reactor can
+file the send's timing in one of two histograms (`reactor_command_latency_nanoseconds` and
+`reactor_send_path_nanoseconds`). The mechanism belongs in the framework; the words do not. The
+framework names them in five of its files: `MemberIsWaitingFlag.hpp` (the class, its values, and its
+description in terms of sequencers and replication), the `send_pdu` description in
+`ApplicationThread.hpp` ("towards the matching engine"), `ApplicationThread.cpp`,
+`ReactorControlCommand::on_order_path_`, and the metric scope `"order_path"` and its two help strings in
+`Reactor.cpp` ("whether a member was waiting"). Member is waiting, on the order path and `order_path` are
+three names for one idea.
+
+**What is wanted.** A neutral framework type, `SendLatencyClass` with two values, waited and background,
+with a neutral field in the command and the scope labels `waited` and `background` (the names are a
+suggestion, to be confirmed when the work is done). The applications keep the meaning: each call site
+that today says a member is waiting says the send is waited for, through a small helper of the
+application's if that reads better. Two classes are enough: the measurement that introduced the split
+found the remaining error comes from the sequencer's two different sends on the path, which further
+classes would not explain.
+
+**What has to change with it.** The scope label is read by `grafana/dashboards/pubsub-venue-latency.json`,
+the script that generates it (`scripts/make_grafana_dashboard.py`), `docs/operations/metrics.md` and
+`docs/operations/latency_findings.md`; they change in the same commit, or the panels go blank. Series
+already stored under the old label do not join up with the new one.
+
+**When.** After step 1 of phase 5 of the recovery plan, which is changing the same files.
 
 ### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
 
