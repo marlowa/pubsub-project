@@ -36,7 +36,7 @@ Phase 5 has five steps, each tested before the next starts, in the same way as p
 1. **Make the stall visible, then build the library's way of following the WAL and test it on its own.**
    First a measurement that shows how long the leading sequencer stops sequencing while it serves a
    catch-up today. Then the reading thread, the part that runs on the writing thread, the follower's
-   side and their messages, tested without the venue. The framework gains one small facility
+   side and their messages, tested without the venue. The framework gains two small facilities
    (section 3.2), and the ThreadSanitizer build is repaired so that the new code runs under it
    ([BUG-0150](../bug_list.md#bug_0150)).
 2. **The follower sequencer's repair** moves onto it, inside the library's `ReplicatedWal`.
@@ -75,8 +75,14 @@ engine that catches up from far back, or a publisher that restarts during the da
 publisher's subscription is the worst of these today, because it reads from the first segment of the
 WAL whatever position it asked for.
 
-None of this has been measured as a stall in the running venue. Step 1 starts by measuring it
-(section 5.1), so that the change can be shown to remove it.
+**Measured, 14 October 2026.** With the follower sequencer stopped while 300,000 orders were taken,
+about 1.2 million WAL records, and then started again while orders arrived at 200 a second, the venue
+stopped answering orders altogether: the follower never caught up, and no order sent after it restarted
+was answered for the rest of the run. Before the restart the longest wait for an order's first report
+was 5.2 milliseconds. The causes, which go beyond the reading itself, are in
+[BUG-0155](../bug_list.md#bug_0155). The publisher's subscription and the engine's catch-up could not be
+measured in that run, because the venue was no longer answering by the time they happened; they are
+measured separately, without the follower's repair, in step 1.
 
 ### 2.3 What is wrong with the way the publishers follow the WAL
 
@@ -157,12 +163,19 @@ must not be read into memory faster than the network can carry it, or its backlo
 reactor's queue rather than in the WAL. So the reading thread sends a batch of records each time the
 follower's connection can take more, as the publishers' `TopicPublisher` already does. Today the
 reactor tells only the thread that owns a connection when it can take more. The framework gains one
-facility: a request for that notification may name the thread to be told. That is the only framework
-change phase 5 makes.
+facility: a request for that notification may name the thread to be told. With the facility below for
+placing the thread, these are the only framework changes phase 5 makes.
 
 When the reading thread reaches the end of the segments it knows of, it opens its cursor again at its
 position, which finds any new segment. Between catch-ups it has no work and blocks on its queue, so it
-needs no core of its own.
+needs no core of its own. The framework today gives every application thread a core of its own on the
+hot path, so the framework gains a second small facility: an application thread may ask to stay on the
+background cores, as the extra threads an application thread starts already do.
+
+Segments are created ahead of the writer and filled with zeros, and `WalCursor` treats zeros at its
+position as the end of a finished segment and moves to the next. A cursor that reached the unwritten end
+of the segment being written would therefore skip the records written there later. The rule above, never
+to read past the published position, is what prevents it, and step 1 tests that case.
 
 ### 3.3 How far each follower is served
 
@@ -259,10 +272,19 @@ leader does not hold. What changes is what happens once they agree. Instead of r
 record on its own thread, the leader asks its reading thread to send them, served up to the last record
 written, and hands the follower over to new records when the reading thread has finished.
 
-Until the hand-over, the follower is not keeping up, and the leader carries on as it does while the
-follower is absent: it commits a record once a voter has confirmed that the follower may not lead, as
-rule 11 requires. Once handed over, the follower acknowledges records as they arrive, and when it has
-acknowledged every record the leader holds, the leader says it may lead again, as it does now. No rule
+Until the follower has acknowledged every record up to the hand-over position, it is not keeping up,
+and the leader carries on as it does while the follower is absent: it commits a record once a voter has
+confirmed that the follower may not lead, as rule 11 requires. Being handed over is not enough, because
+the records the reading thread sent may still be on their way to the follower or waiting to be written
+there, and new records would wait behind all of them. Once the follower has acknowledged through the
+hand-over position, the leader waits for its acknowledgements again, and when it has acknowledged every
+record the leader holds, the leader says it may lead again, as it does now.
+
+The follower asks where the two WALs agree on each of its connections to the leader, and the leader
+answers only the first request for each time the follower connects: one repair at a time, never two.
+[BUG-0155](../bug_list.md#bug_0155) shows both of these mattering: after the follower missed 1.2 million
+records the leader sent them twice, and counted the follower as keeping up from the moment it began, so
+new orders waited behind the whole repair. No rule
 of replication, committing or repair changes; only the thread that reads the missing records.
 
 ### 4.2 The matching engine
@@ -314,7 +336,8 @@ same measurement is repeated after steps 2, 3 and 4, and the phase is not finish
 gone.
 
 **Then the library.** `WalReadingThread`, the part on the owning thread (`WalFollowerService`),
-`WalFollowerClient`, the four messages, and the framework's notification to a named thread. Tested
+`WalFollowerClient`, the four messages, the framework's notification to a named thread, and an
+application thread kept on the background cores. Tested
 without the venue:
 
 - tests of each part on its own, named for what each checks;

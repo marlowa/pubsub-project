@@ -165,6 +165,10 @@ class FixSession:
         self.inbound = b""
         self.last_sent = 0.0
         self.latencies = []
+        # With --answer-times: for each new order still unanswered, when it was sent, on the wall clock
+        # and on the monotonic clock; and, once answered, the wall-clock send time with the delay.
+        self.unanswered_since = {}
+        self.answer_times = []
 
     # ── session ────────────────────────────────────────────────────────────────
     def header(self, msg_type):
@@ -256,6 +260,9 @@ class FixSession:
                 cl_ord_id = field(message, CL_ORD_ID)
                 if cl_ord_id and not cl_ord_id.endswith("-CANCEL"):
                     self.resting.append(cl_ord_id)
+                    sent = self.unanswered_since.pop(cl_ord_id, None)
+                    if sent is not None:
+                        self.answer_times.append((sent[0], time.monotonic() - sent[1], cl_ord_id))
             yield msg_type, message
 
     def heartbeat_if_due(self):
@@ -316,8 +323,22 @@ class FixSession:
         return fields
 
     def send_order(self, cl_ord_id):
+        if self.options.answer_times:
+            self.unanswered_since[cl_ord_id] = (time.time(), time.monotonic())
         self.send(self.order_fields(cl_ord_id))
         self.orders_sent += 1
+
+    def write_answer_times(self, path):
+        """Write one line per new order: when it was sent, on the wall clock, and how long its first report took.
+
+        An order never answered is written with an empty delay, so that it is seen rather than left out.
+        """
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("sent_wall_clock_seconds,first_report_after_milliseconds,cl_ord_id\n")
+            rows = [(sent, f"{delay * 1000.0:.3f}", cl_ord_id) for sent, delay, cl_ord_id in self.answer_times]
+            rows += [(sent[0], "", cl_ord_id) for cl_ord_id, sent in self.unanswered_since.items()]
+            for sent, delay, cl_ord_id in sorted(rows):
+                handle.write(f"{sent:.6f},{delay},{cl_ord_id}\n")
 
     def send_cancel(self, target):
         fields = self.header(MSG_ORDER_CANCEL_REQUEST) + [
@@ -432,6 +453,12 @@ def run(options):
     verdict = "PASS -- every message earned a report" if session.reports_received >= expected \
         else f"INCOMPLETE -- {expected - session.reports_received} message(s) unreported"
     print(f"  RESULT         {verdict}")
+    if options.answer_times:
+        session.write_answer_times(options.answer_times)
+        delays = sorted(delay for _, delay, _ in session.answer_times)
+        if delays:
+            print(f"  first report   median {delays[len(delays) // 2] * 1000.0:.3f} ms, longest {delays[-1] * 1000.0:.3f} ms, "
+                  f"{len(session.unanswered_since)} order(s) never answered -- every order in {options.answer_times}")
     session.logout()
     return 0 if session.reports_received >= expected else 1
 
@@ -459,6 +486,10 @@ def main(argv=None):
     parser.add_argument("--first-cl-ord-id", type=int, default=None,
                         help="starting ClOrdID; defaults to something derived from the clock, because a "
                              "ClOrdID the matching engine has seen before is rejected as a duplicate")
+    parser.add_argument("--answer-times", default=None, metavar="FILE",
+                        help="write, for every new order, when it was sent and how long its first execution report "
+                             "took to arrive, to FILE as comma-separated values. For finding the moments when the venue "
+                             "stopped answering, and for how long")
     parser.add_argument("--cancel-with-order-qty", action="store_true",
                         help="add OrderQty to cancels; omitted by default, matching the binary load client")
     parser.add_argument("--cancel-ratio", type=float, default=0.0,

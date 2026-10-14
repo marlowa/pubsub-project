@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 154 |
-| Open | 63 (45 defects, 18 tasks) |
+| Bugs recorded | 155 |
+| Open | 64 (46 defects, 18 tasks) |
 | Closed | 91 |
-| Next id | BUG-0155 |
+| Next id | BUG-0156 |
 
 ## Open bugs by severity
 
-15 high, 41 medium, 7 low.
+16 high, 41 medium, 7 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -23,6 +23,7 @@
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
+| [BUG-0155](#bug_0155) | high | defect | A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
@@ -172,6 +173,50 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0155: A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up {#bug_0155}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| How | The measurement that starts step 1 of phase 5 ([following_the_wal.md](availability/following_the_wal.md), section 5.1), run with `tmp/phase5/stall.sh` |
+| Impact | A fault in the standby becomes a loss of service, against principle V11. After the follower sequencer was away while 300,000 orders were taken, about 1.2 million WAL records, which at 50 million orders a day is a few minutes of average trading, no order was answered for the rest of the run, more than two minutes, and the follower never caught up |
+
+**What was measured.** The venue was started fresh, the follower sequencer stopped, and 300,000 orders
+sent at 4,000 a second, every one answered. Orders were then sent at 200 a second, and the time to each
+order's first execution report recorded. Before anything else happened the longest was 5.2 milliseconds.
+Then the follower was started again. Of the 1,979 orders sent in the next ten seconds, 1,645 were never
+answered, and nothing sent after that was answered either.
+
+**What happens, from the two sequencers' Quill logs.**
+
+1. The follower asks where the two WALs agree, once on each of its two connections to the leader, and
+   the leader answers each by reading every record the follower lacks and sending it on its own thread:
+   1.2 million records, twice. Each takes the leader's thread several seconds, during which it handles
+   no order and sends no lease message ([BUG-0133](#bug_0133)).
+2. Nothing paces the sending. All the records are queued for the peer connection at once; the reactor's
+   pools of commands and buffers grow by 1.5 million objects at a time; and once 65,536 sends are
+   waiting, the framework closes the connection as "not reading what is sent to it".
+3. The follower, newly started and hearing no lease messages while the leader's thread is busy, asks to
+   lead; it then discards the 186,240 records it had written, as records the leader does not hold.
+4. The connection is made again, the follower asks again, and the leader starts the whole repair from
+   the first record. This repeats for as long as the run lasted. Meanwhile the leader counts the
+   follower as keeping up, so new orders wait for acknowledgements that never come.
+5. Every record queued for a connection already closed writes a Warning to the Quill log
+   ("unknown connection id ... for SendPdu"): 48.9 million lines, and a Quill log of 10 GB in three
+   minutes.
+
+**What is wanted.** Each part has its place in phase 5's design: the reading moves to a thread of its
+own; the reading thread sends only as fast as the connection takes the records; the follower is handed
+over to new records at an exact position, and is not waited for until it has acknowledged up to that
+position; the repair is answered once, not once for each connection. Separately, the reactor should
+report sends to a connection that no longer exists once for each connection, not once for each send.
+Step 2 of phase 5 repeats this measurement, and the phase is not finished until the follower catches up
+while orders go on being answered.
+
+**Principles.** V11 (a fault in the standby is a loss of resilience, not a loss of service) and F4.
 
 ### BUG-0153: A matching engine publisher can be sent records that are never committed, and the same record twice {#bug_0153}
 
