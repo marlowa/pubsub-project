@@ -640,6 +640,54 @@ def _durable_paths(env: dict, install_dir: Path, section: str, key: str) -> list
     return sorted(set(found))
 
 
+def _deployed_values(env: dict, install_dir: Path, key: str) -> list[Path]:
+    """Every path named by `key`, in any table, across the deployed component configs.
+
+    Only for key names specific enough that a match anywhere is the thing meant, unlike the WAL's
+    `directory`, which is why that one is addressed by section as well.
+    """
+    def values_in(table: dict) -> list[str]:
+        out = [str(value) for name, value in table.items() if name == key and isinstance(value, str) and value]
+        for value in table.values():
+            if isinstance(value, dict):
+                out += values_in(value)
+        return out
+
+    found: list[Path] = []
+    for comp in env["components"].values():
+        if "config" not in comp:
+            continue
+        config_path = (install_dir / comp["config"]).resolve()
+        if not config_path.is_file():
+            continue
+        try:
+            with config_path.open("rb") as handle:
+                config = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        for value in values_in(config):
+            raw = Path(value)
+            found.append(raw if raw.is_absolute() else (install_dir / raw).resolve())
+    return sorted(set(found))
+
+
+def _lease_records(env: dict, install_dir: Path) -> list[Path]:
+    """The lease records that belong to the same trading day as the write-ahead logs.
+
+    Each arbiter keeps the promise of its vote in its promise file, and beside it, with
+    ".component_statements" added, the statements component leaders have made about whether their
+    peers may lead. Each matching engine keeps its promise beside its epoch file, with ".lease_promise"
+    added. The sequencers and the publishers keep theirs in their write-ahead log directories, which
+    are cleared with the logs.
+    """
+    records: list[Path] = []
+    for promise_file in _deployed_values(env, install_dir, "promise_file"):
+        records += [promise_file, Path(f"{promise_file}.component_statements")]
+    for epoch_file in _deployed_values(env, install_dir, "epoch_state_file"):
+        records.append(Path(f"{epoch_file}.lease_promise"))
+    return records
+
+
 def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh_wal: bool) -> None:
     """Remove the open-order regions and/or write-ahead logs before anything starts.
 
@@ -665,6 +713,20 @@ def clear_durable_state(env: dict, install_dir: Path, *, fresh_book: bool, fresh
                 size = path.stat().st_size
                 path.unlink()
                 print(f"  removed {path} ({size / 1e6:.0f} MB)")
+            else:
+                print(f"  {path} (absent already)")
+    # A fresh write-ahead log starts a new trading day, and the epochs start again with it. Records
+    # of lease promises and of statements kept from the earlier day would outlive it: an arbiter
+    # holding a statement from a higher epoch of that day treats every statement of the new day as
+    # older, never echoes one, and so the leader can never act without its follower; and a statement
+    # that an instance may not lead keeps it from leading. scripts/ha_test.py clears the same records
+    # before each scenario, in clear_lease_promise_records.
+    if fresh_wal:
+        print("=== clearing lease promise records and arbiters' statements ===")
+        for path in _lease_records(env, install_dir):
+            if path.exists():
+                path.unlink()
+                print(f"  removed {path}")
             else:
                 print(f"  {path} (absent already)")
 
@@ -909,8 +971,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--fresh-wal", action="store_true",
-        help="delete the write-ahead logs before starting. Separate from --fresh-book and never implied "
-             "by it: this discards the record of what the venue did, not merely what it was holding",
+        help="delete the write-ahead logs before starting, and with them the records of lease promises and "
+             "the arbiters' records of leaders' statements, which belong to the same trading day. Separate from "
+             "--fresh-book and never implied by it: this discards the record of what the venue did, not merely "
+             "what it was holding",
     )
     parser.add_argument(
         "--no-prometheus", action="store_true",

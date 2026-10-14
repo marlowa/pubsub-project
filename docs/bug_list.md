@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Bugs recorded | 153 |
+| Bugs recorded | 154 |
 | Open | 63 (45 defects, 18 tasks) |
-| Closed | 90 |
-| Next id | BUG-0154 |
+| Closed | 91 |
+| Next id | BUG-0155 |
 
 ## Open bugs by severity
 
@@ -250,6 +250,12 @@ microseconds. If it does, either give both matching engines the same setting, or
 spin only while its instance leads, which would keep a follower from holding a core it does not need.
 Separately, a latency measurement should say which matching engine led, and refuse to compare runs in
 which different ones did.
+
+**Why the secondary can lead after a fresh start.** Until [BUG-0154](#bug_0154) was fixed,
+`scripts/devenv.py --fresh-wal` left in place the records of lease promises from the run before. An
+instance holding a record that it led asks to lead at once, without waiting a lease period, so the
+instance that led last could lead again. Whether that is what made the secondary lead in the one start
+of nine has not been checked.
 
 ### BUG-0150: The ThreadSanitizer build does not compile, because GCC refuses the fence in `Reactor::enqueue_command` {#bug_0150}
 
@@ -3283,6 +3289,42 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0154: `devenv.py --fresh-wal` kept lease records and arbiters' statements from the run before, so a leader could never trade without its follower {#bug_0154}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-14 -- `--fresh-wal` also removes the lease promise records and the arbiters' records of statements |
+| How | Preparing the measurement in step 1 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)): with the follower sequencer stopped, the leader answered no order at all |
+| Impact | In the developer environment only. After a fresh start, a leader whose follower stopped held every order and answered none, for as long as the follower was away; and an instance the arbiters held a stale statement about could not lead. Every measurement made on a venue started with `--fresh-wal` ran with the arbiters holding the statements of an earlier run |
+
+**What was found.** With the venue started by `scripts/devenv.py --fresh-wal` and the follower sequencer
+stopped, ten orders sent twenty seconds later were never answered. The leader said the follower may
+not lead, and its WAL snapshot still showed nothing committed half a minute later. The arbiters never
+logged the statement. Each arbiter's record of statements, written at 00:59 the night before, held a
+statement by the sequencer at epoch 314 that its peer, instance 1, may not lead.
+
+**Why.** `--fresh-wal` removes the write-ahead logs, and with them the sequencers' epochs, which start
+again at 1 or 2. It left the arbiters' records of statements, and every instance's record of its lease
+promise. An arbiter records a statement only if it is newer than the one it holds, judged by epoch
+first, so every statement the new day's leader made was older than the one from the night before, was
+never recorded, and was never echoed. The leader may act without its follower only once a voter other
+than itself has echoed its statement, so it never could. `scripts/ha_test.py` clears these records
+before each scenario (`clear_lease_promise_records`), which is why no scenario showed it.
+
+**The fix.** A fresh WAL starts a new trading day, and the lease records belong to the same day, so
+`--fresh-wal` now removes each arbiter's promise file, the record of statements beside it, and each
+matching engine's lease promise record beside its epoch file; the sequencers' and publishers' records
+are in their WAL directories, which were already removed. Checked by repeating the run: before the
+change no order was answered, after it all ten were, and the arbiter logged each statement.
+
+**What it says about production.** Nothing has gone wrong there, because there is no production; but
+the same must hold of the start-of-day procedure that does not yet exist
+([BUG-0137](#bug_0137)): the arbiters' records of statements are part of the day, and must be archived
+and cleared with the WALs.
 
 ### BUG-0152: An instance holding an older statement that its peer may not lead never grants that peer, even after the peer leads at a higher epoch {#bug_0152}
 
