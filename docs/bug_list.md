@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 166 |
-| Open | 68 (48 defects, 20 tasks) |
+| Bugs recorded | 167 |
+| Open | 69 (49 defects, 20 tasks) |
 | Closed | 98 |
-| Next id | BUG-0167 |
+| Next id | BUG-0168 |
 
 ## Open bugs by severity
 
-16 high, 43 medium, 9 low.
+16 high, 44 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -72,6 +72,7 @@
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0162](#bug_0162) | medium | task | The lock-free allocators and queues have no model checked by TLA+, as the high availability rules have |
 | [BUG-0164](#bug_0164) | medium | defect | The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread |
+| [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -177,6 +178,36 @@ went looking.
 ---
 
 ## Open
+
+### BUG-0167: A lease promise record can take longer to write than a lease period, and the leader then loses its lease {#bug_0167}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-15 |
+| Recorded | 2026-10-15 |
+| How | The full scenario runs for step 2 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)). Scenario 26 failed when the leading sequencer's lease ran out as a write of its lease promise record finished after 4,601 ms; the scenario passed five times of five when run again |
+| Impact | On a disk that is slow to make a write durable, a leader can lose its lease with nothing wrong with it, its peer or the arbiters, and the pair changes leader. Three failures in the week to 15 October 2026 of scenarios that passed when run again, scenarios 33, 6 and 26, had this cause |
+
+**What was measured.** Each instance that grants or asks for a lease first writes the promise to disk
+(`PairLeaseAgent`, written in the background), and until the write has finished it refuses any promise the
+record on disk does not already cover. A write taking 500 milliseconds or more is reported in the Quill log.
+In one full run of the 74 scenarios on this machine, 45 writes were reported, from sequencers, matching
+engines and arbiters alike: the median 708 milliseconds, one in ten above 1,299, and two above the lease
+period of 3,000 milliseconds, the longest 4,601. In five further runs of scenario 26 alone, on an otherwise
+quiet machine, the longest were 2,317, 4,058 and 4,076 milliseconds. The disk is a CT4000BX500, a low-cost
+solid-state disk; the WALs share it.
+
+**What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
+or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
+kind a production machine would have compares.
+
+**What is wanted.** First a measurement: how long the write and its `fsync` take on this disk while idle and
+while the venue writes its WALs. Then a decision on whether a leader should keep its lease through one slow
+write. Every way to make it do so changes the rules for which instance leads, which the TLA+ models in
+`docs/availability/tla/` check, so any change is made to the model first.
+
+**Principles.** V11.
 
 ### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
 
@@ -314,7 +345,7 @@ the script that generates it (`scripts/make_grafana_dashboard.py`), `docs/operat
 `docs/operations/latency_findings.md`; they change in the same commit, or the panels go blank. Series
 already stored under the old label do not join up with the new one.
 
-**When.** After step 1 of phase 5 of the recovery plan, which is changing the same files.
+**When.** After phase 5 of the recovery plan is finished, because steps 3 and 4 add more code that uses these names, and the renaming is then done once. Andrew agreed on 15 October 2026.
 
 ### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
 
