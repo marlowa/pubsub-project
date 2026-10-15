@@ -281,12 +281,21 @@ there, and new records would wait behind all of them. Once the follower has ackn
 hand-over position, the leader waits for its acknowledgements again, and when it has acknowledged every
 record the leader holds, the leader says it may lead again, as it does now.
 
-The follower asks where the two WALs agree on each of its connections to the leader, and the leader
-answers only the first request for each time the follower connects: one repair at a time, never two.
-[BUG-0155](../bug_list.md#bug_0155) shows both of these mattering: after the follower missed 1.2 million
-records the leader sent them twice, and counted the follower as keeping up from the moment it began, so
-new orders waited behind the whole repair. No rule
-of replication, committing or repair changes; only the thread that reads the missing records.
+There is only ever one repair at a time. The follower asks where the two WALs agree on each of its
+connections to the leader, so the same request can arrive twice. While the reading thread is sending the
+records after a position, a second request from that same position is not answered, or the follower would
+be sent every record twice. A request from any other position means the follower no longer agrees with
+what it is being sent, for example because a record arrived out of order: the leader tells the reading
+thread to stop, and does not answer until the reading thread has confirmed that it has stopped. Every
+record the reading thread was still sending is then queued on the connection ahead of the answer, so the
+follower discards them before it takes up from the answer, rather than seeing them after it as a gap and
+asking again. The leader answers as soon as the reading thread has confirmed, without waiting for the
+follower to ask again. This matters because a follower asks again every time its role changes, and a
+newly started follower changes role from unknown to follower within its first few seconds, usually while
+its first catch-up is still running. [BUG-0155](../bug_list.md#bug_0155) shows why these rules matter: after the
+follower missed 1.2 million records the leader sent them twice, and counted the follower as keeping up from
+the moment it began, so new orders waited behind the whole repair. No rule of replication, committing or
+repair changes; only the thread that reads the missing records.
 
 ### 4.2 The matching engine
 
@@ -389,6 +398,42 @@ The scenarios that restart or rejoin a follower sequencer (among them 3, 30, 60,
 `ReplicatedWalTest`, including its randomised test, must pass; the randomised test is extended so that
 records are written while a follower is being repaired. The stall measurement for a rejoining follower
 must show no stall.
+
+**What step 2 built.** The leader's `ReplicatedWal` no longer reads the missing records itself when the
+application gives it a `PeerCatchUpInterface` (`use_peer_catch_up`): it asks for them to be sent, and is told
+when the follower has been handed over (`on_peer_caught_up`) and when the sending has stopped
+(`on_peer_catch_up_stopped`). It publishes its write position and its last committed record to
+`WalFollowingPositions` (`publish_positions_to`). New records wait for the follower again only once it has
+acknowledged every record up to the hand-over. The sequencer implements the interface with a
+`WalReadingThread` and a `WalFollowerService`, serving the follower up to the last record written, and stops
+reading orders from the gateways if a hand-over falls short three times in a row. An instance that has
+stopped leading, and must discard records its new leader does not hold, waits to cut its WAL back until its
+reading thread has stopped sending what it was sending while it led.
+
+The tests are three new tests in `ReplicatedWalTest`: a rejoining follower sent what it lacks through the
+catch-up and then new records; new records not waiting for a follower until it has acknowledged through the
+hand-over; and a request from a new position answered only once the running catch-up has stopped, without
+the follower asking again. `ReplicatedWalTest`'s pairs now run with a stand-in for the reading thread
+(`SimulatedCatchUp`) as well as without, and the randomised test runs both ways. Each new test was made to
+fail by a deliberate fault before it was trusted.
+
+**How it was measured.** The measurement of section 5.1 was repeated with `tmp/phase5/stall.sh`, with the
+WAL holding 1.2 million records. While the follower was repaired, orders went on being answered: of 1,978
+orders sent at 200 a second in the ten seconds after it started, the longest wait for a first report was
+10.2 milliseconds, against 5.2 before the event, and none went unanswered. The follower was sent 1.2
+million records in 8.4 seconds and handed over. Before step 2, the same measurement left 1,645 of 1,979
+orders unanswered and the venue answering nothing more. The two later events of the measurement, a
+publisher subscribing from the start and an engine catching up, still stop the leader for seconds, and
+change the leader: they are [BUG-0156](../bug_list.md#bug_0156) and the engine's catch-up, which steps 4 and
+3 move.
+
+All 74 scenarios passed, but for scenario 26, whose leading sequencer lost its lease when writing a lease
+promise record took 4.6 seconds on this machine's disk; it passed five times of five when run again. Two
+defects found on the way are recorded and fixed: [BUG-0163](../bug_list.md#bug_0163), a starting sequencer
+ending when a repair cut its WAL back while it was still reading it; and the ordering of a restarted
+catch-up, in which records the reading thread was still sending reached the follower after the answer that
+restarted it, so that it saw them as a gap, asked again, and was never answered. Two more are recorded, not
+fixed: [BUG-0164](../bug_list.md#bug_0164) and [BUG-0165](../bug_list.md#bug_0165).
 
 ### 5.3 Step 3: the matching engine
 

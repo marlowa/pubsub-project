@@ -91,6 +91,7 @@ class WalReadingThread : public ApplicationThread {
         WalCursor cursor;
         int64_t last_sent_seq_no{0}; ///< The follower holds or has been sent every record up to here.
         int64_t records_sent{0};
+        uint64_t serving{0};
         bool sending{false};
         /// A record read and found above the limit, held until the limit passes it. Its bytes stay
         /// valid because nothing more is read from the cursor while it is held.

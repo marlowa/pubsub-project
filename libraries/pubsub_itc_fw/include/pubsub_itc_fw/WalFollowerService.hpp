@@ -19,6 +19,10 @@
 
 namespace pubsub_itc_fw {
 
+/// Whether a follower is sent WalFollowCaughtUp when it is handed over: a follower that asked with
+/// WalFollowRequest is; the follower sequencer, whose replicated WAL starts its catch-up, is not.
+enum class CaughtUpMessage : int8_t { Send, DoNotSend };
+
 /// How WalFollowerService reaches the reading thread and the followers. Implemented by the owning thread.
 class WalFollowerLinksInterface {
   public:
@@ -101,6 +105,15 @@ class WalFollowerService {
      */
     [[nodiscard]] bool on_inter_thread_message(const EventMessage& message);
 
+    /**
+     * @brief Start sending @p connection every record after @p after_seq_no, up to its limit, then hand
+     *        it over; for a follower that does not ask with WalFollowRequest, such as the follower
+     *        sequencer, whose replicated WAL starts its catch-up itself.
+     *
+     * A connection already being served is served afresh, from @p after_seq_no.
+     */
+    void serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message);
+
     /// The connection has gone: the reading thread stops sending to it, and the service forgets it.
     void on_connection_lost(const ConnectionID& connection);
 
@@ -128,6 +141,7 @@ class WalFollowerService {
         bool tell_when_caught_up{false};
         bool handed_over{false};
         int short_rounds{0};
+        uint64_t serving{0};
     };
 
     void hand_over(Follower& follower, int64_t through, int64_t records_sent);
@@ -141,6 +155,7 @@ class WalFollowerService {
     // Connections whose follower was declined, kept so that they are told when this instance leads.
     std::unordered_map<int, ConnectionID> declined_;
     bool stop_pending_{false};
+    uint64_t next_serving_{1};
 };
 
 } // namespaces

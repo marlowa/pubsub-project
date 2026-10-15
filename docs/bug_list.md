@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 162 |
-| Open | 66 (46 defects, 20 tasks) |
-| Closed | 96 |
-| Next id | BUG-0163 |
+| Bugs recorded | 166 |
+| Open | 68 (48 defects, 20 tasks) |
+| Closed | 98 |
+| Next id | BUG-0167 |
 
 ## Open bugs by severity
 
-17 high, 42 medium, 7 low.
+16 high, 43 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -23,13 +23,12 @@
 | [BUG-0066](#bug_0066) | high | defect | A flapping matching engine resets the deferral clock, so the venue never stops accepting |
 | [BUG-0068](#bug_0068) | high | task | The specification states behaviour that almost nothing tests |
 | [BUG-0090](#bug_0090) | high | defect | A restarted gateway silently stops honouring cancel-on-disconnect |
-| [BUG-0155](#bug_0155) | high | defect | A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up |
-| [BUG-0156](#bug_0156) | high | defect | A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader |
 | [BUG-0113](#bug_0113) | high | defect | Every resend request reads the whole day's log on the thread that sequences orders |
 | [BUG-0137](#bug_0137) | high | task | There is no start-of-day or end-of-day procedure, and a file left from an earlier day is taken as a restart |
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
+| [BUG-0156](#bug_0156) | high | defect | A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -72,6 +71,7 @@
 | [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0162](#bug_0162) | medium | task | The lock-free allocators and queues have no model checked by TLA+, as the high availability rules have |
+| [BUG-0164](#bug_0164) | medium | defect | The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -79,6 +79,8 @@
 | [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
 | [BUG-0145](#bug_0145) | low | defect | Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding |
 | [BUG-0149](#bug_0149) | low | defect | `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment |
+| [BUG-0165](#bug_0165) | low | defect | The raw-bytes burst test can count the same frames twice, and so fails now and then |
+| [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
 
 ---
 
@@ -176,6 +178,72 @@ went looking.
 
 ## Open
 
+### BUG-0166: The reactor writes a Warning for every send to a connection that has gone, not one for each connection {#bug_0166}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-15 |
+| How | The measurement for [BUG-0155](#bug_0155): every record queued for a peer connection already closed wrote "Reactor::process_control_commands: unknown connection id ... for SendPdu" |
+| Impact | 48.9 million Warning lines, and a Quill log of 10 GB in three minutes, when a thread had queued many sends for a connection that then closed. With the reading thread now paced by its connection, few sends are ever waiting, so this is now unlikely, but any thread that queues sends without pacing can still cause it |
+
+**What is wanted.** One Warning for each connection that sends arrive for after it has gone, with a count
+of the sends dropped, written when the count stops growing or at a fixed interval; not one line for each send.
+
+**Principles.** None; how much the Quill log says.
+
+### BUG-0165: The raw-bytes burst test can count the same frames twice, and so fails now and then {#bug_0165}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-15 |
+| Recorded | 2026-10-15 |
+| How | `scripts/devsetup.sh` stopped in `RawBytesProtocolHandlerIntegrationTest.BurstDelivery`: "received_payloads.size() Which is: 6, expected_count Which is: 5", followed by "terminate called without an active exception". The test then passed 30 times in a row |
+| Impact | In the tests only: the developer loop stops now and then for no fault in the framework. The framework's handling of raw bytes is not affected |
+
+**What happens.** The test's listener (`BurstListenerThread::on_raw_socket_message`) remembers how far into
+the received bytes it has decoded, and starts again from the beginning whenever the tail position it is
+given has moved, on the reasoning that a moved tail means a commit has removed what it decoded. That holds
+for one commit at a time, but not for two. The listener decodes some frames and commits them; a delivery
+already queued, with the old tail, is decoded from where it left off, and those frames are committed too;
+then a delivery made after the reactor acted on the first commit but before it acted on the second arrives
+with a moved tail, still holding the frames of the second commit. The listener decodes it from the
+beginning, and counts those frames again. The failed assertion then leaves the reactor's thread running,
+which ends the process.
+
+**What is wanted.** The listener should work out how much of the window it has already decoded from the
+tail position and the bytes it has committed, not from whether the tail has moved, and the test should stop
+the reactor before a failed assertion leaves it running.
+
+**Principles.** None; a fault in a test.
+
+### BUG-0164: The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread {#bug_0164}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-15 |
+| Recorded | 2026-10-15 |
+| How | Sampling each thread's state and processor from `/proc` every half second while a sequencer started, to find why a follower wrote the records sent to it so slowly in the first seconds after starting |
+| Impact | For the first one to two and a half seconds after every start, the sequencer's own thread shares its processor with a thread reserving a table of 4 GiB and reading every record in the WAL. A starting follower writes what the leader sends it slowly meanwhile, and a starting instance that leads sequences orders more slowly meanwhile |
+
+**What was seen.** The samples showed a third thread named `SequencerThread` in the starting sequencer,
+running on processor 9, the processor the sequencer's own thread is pinned to, mostly in system time: the
+reservation of the table, which touches every page. Its Quill line says how long it took: "4096 MiB reserved
+in 1059 ms and 2532455 log record(s) read in 1456 ms in the background".
+
+**Why.** `LoggedCommandIdentifiersBuilder` starts its thread from the sequencer's own thread, and a new
+thread inherits the processor mask of the thread that created it. The WAL's helper thread had the same
+fault ([BUG-0093](#bug_0093)) and is moved to the background cores when it starts (`helper_cores`); the
+builder is not.
+
+**What is wanted.** The builder's thread moved to the component's background cores when it starts, in the
+same way, and named, so that it can be told apart from the sequencer's thread in `/proc` and in `perf`.
+
+**Principles.** F4.
+
 ### BUG-0162: The lock-free allocators and queues have no model checked by TLA+, as the high availability rules have {#bug_0162}
 
 | | |
@@ -210,7 +278,7 @@ algorithm, not whether each C++ memory ordering is strong enough; on this proces
 small, and a checker for C++ atomics (GenMC, for example) would cover it, as a new tool added to the Rocky 8
 Dockerfile, if it is ever needed.
 
-**When.** After step 1 of phase 5 of the recovery plan. Andrew agreed on 14 October 2026.
+**When.** Once step 2 of phase 5 of the recovery plan is committed, and before step 3, so that the model of the hand-over exists before the matching engine and the publishers depend on it. Andrew agreed on 15 October 2026.
 
 ### BUG-0161: The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send {#bug_0161}
 
@@ -276,56 +344,26 @@ Every order was answered.
 4. With its thread repeatedly busy for about a second, the leader fails to renew its lease: "lease ran
    out ... stops leading (epoch=1)", and the pair changes leader to epoch 5.
 
+**Where the time goes, from `perf`.** The publisher was restarted alone with an empty WAL, with about 1.2
+million records in the sequencers' WAL, and `perf record` run against the leading sequencer's thread. The
+publisher's request (`WalSubscribeRequest`, from record 0) held that thread for 7.3 seconds, from 23:22:04.41
+to 23:22:11.73, and the leader's lease ran out 63 milliseconds later. 37 per cent of the samples were in
+`Crc32::feed`, called from `WalReader::replay`, called from `SequencerThread::handle_wal_subscribe_request`:
+checking every record's checksum as it reads the WAL. Sampled from `/proc`, the thread was in state D,
+waiting for a page to be read from the disk (`folio_wait_bit_common`). The reading thread of step 1 was idle
+throughout: this is the publisher's own path, which step 4 moves.
+
+**After step 2.** The same measurement after step 2 of phase 5, with the repair no longer stopping the
+leader, showed this event alone: of 1,978 orders sent in the ten seconds after the publisher started, the
+median wait for a first report was 2.1 seconds and the longest 5.9 seconds, and the pair changed leader
+twice.
+
 **What is wanted.** The same as for [BUG-0155](#bug_0155) and [BUG-0133](#bug_0133): the reading on a
 thread of its own, paced by the connection, and only the leader serving. Step 4 of phase 5 repeats this
 measurement, and the phase is not finished until a publisher can subscribe from the start without
 affecting the order path.
 
 **Principles.** V11, F4.
-
-### BUG-0155: A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up {#bug_0155}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-14 |
-| Recorded | 2026-10-14 |
-| How | The measurement that starts step 1 of phase 5 ([following_the_wal.md](availability/following_the_wal.md), section 5.1), run with `tmp/phase5/stall.sh` |
-| Impact | A fault in the standby becomes a loss of service, against principle V11. After the follower sequencer was away while 300,000 orders were taken, about 1.2 million WAL records, which at 50 million orders a day is a few minutes of average trading, no order was answered for the rest of the run, more than two minutes, and the follower never caught up |
-
-**What was measured.** The venue was started fresh, the follower sequencer stopped, and 300,000 orders
-sent at 4,000 a second, every one answered. Orders were then sent at 200 a second, and the time to each
-order's first execution report recorded. Before anything else happened the longest was 5.2 milliseconds.
-Then the follower was started again. Of the 1,979 orders sent in the next ten seconds, 1,645 were never
-answered, and nothing sent after that was answered either.
-
-**What happens, from the two sequencers' Quill logs.**
-
-1. The follower asks where the two WALs agree, once on each of its two connections to the leader, and
-   the leader answers each by reading every record the follower lacks and sending it on its own thread:
-   1.2 million records, twice. Each takes the leader's thread several seconds, during which it handles
-   no order and sends no lease message ([BUG-0133](#bug_0133)).
-2. Nothing paces the sending. All the records are queued for the peer connection at once; the reactor's
-   pools of commands and buffers grow by 1.5 million objects at a time; and once 65,536 sends are
-   waiting, the framework closes the connection as "not reading what is sent to it".
-3. The follower, newly started and hearing no lease messages while the leader's thread is busy, asks to
-   lead; it then discards the 186,240 records it had written, as records the leader does not hold.
-4. The connection is made again, the follower asks again, and the leader starts the whole repair from
-   the first record. This repeats for as long as the run lasted. Meanwhile the leader counts the
-   follower as keeping up, so new orders wait for acknowledgements that never come.
-5. Every record queued for a connection already closed writes a Warning to the Quill log
-   ("unknown connection id ... for SendPdu"): 48.9 million lines, and a Quill log of 10 GB in three
-   minutes.
-
-**What is wanted.** Each part has its place in phase 5's design: the reading moves to a thread of its
-own; the reading thread sends only as fast as the connection takes the records; the follower is handed
-over to new records at an exact position, and is not waited for until it has acknowledged up to that
-position; the repair is answered once, not once for each connection. Separately, the reactor should
-report sends to a connection that no longer exists once for each connection, not once for each send.
-Step 2 of phase 5 repeats this measurement, and the phase is not finished until the follower catches up
-while orders go on being answered.
-
-**Principles.** V11 (a fault in the standby is a loss of resilience, not a loss of service) and F4.
 
 ### BUG-0153: A matching engine publisher can be sent records that are never committed, and the same record twice {#bug_0153}
 
@@ -3420,6 +3458,97 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0155: A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up {#bug_0155}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-15 -- step 2 of phase 5: the missing records are read and sent by a thread of their own, paced by the connection, the follower is handed over to new records at an exact position, and new records do not wait for it until it has acknowledged up to that position |
+| How | The measurement that starts step 1 of phase 5 ([following_the_wal.md](availability/following_the_wal.md), section 5.1), run with `tmp/phase5/stall.sh` |
+| Impact | A fault in the standby becomes a loss of service, against principle V11. After the follower sequencer was away while 300,000 orders were taken, about 1.2 million WAL records, which at 50 million orders a day is a few minutes of average trading, no order was answered for the rest of the run, more than two minutes, and the follower never caught up |
+
+**What was measured.** The venue was started fresh, the follower sequencer stopped, and 300,000 orders
+sent at 4,000 a second, every one answered. Orders were then sent at 200 a second, and the time to each
+order's first execution report recorded. Before anything else happened the longest was 5.2 milliseconds.
+Then the follower was started again. Of the 1,979 orders sent in the next ten seconds, 1,645 were never
+answered, and nothing sent after that was answered either.
+
+**What happens, from the two sequencers' Quill logs.**
+
+1. The follower asks where the two WALs agree, once on each of its two connections to the leader, and
+   the leader answers each by reading every record the follower lacks and sending it on its own thread:
+   1.2 million records, twice. Each takes the leader's thread several seconds, during which it handles
+   no order and sends no lease message ([BUG-0133](#bug_0133)).
+2. Nothing paces the sending. All the records are queued for the peer connection at once; the reactor's
+   pools of commands and buffers grow by 1.5 million objects at a time; and once 65,536 sends are
+   waiting, the framework closes the connection as "not reading what is sent to it".
+3. The follower, newly started and hearing no lease messages while the leader's thread is busy, asks to
+   lead; it then discards the 186,240 records it had written, as records the leader does not hold.
+4. The connection is made again, the follower asks again, and the leader starts the whole repair from
+   the first record. This repeats for as long as the run lasted. Meanwhile the leader counts the
+   follower as keeping up, so new orders wait for acknowledgements that never come.
+5. Every record queued for a connection already closed writes a Warning to the Quill log
+   ("unknown connection id ... for SendPdu"): 48.9 million lines, and a Quill log of 10 GB in three
+   minutes.
+
+**What is wanted.** Each part has its place in phase 5's design: the reading moves to a thread of its
+own; the reading thread sends only as fast as the connection takes the records; the follower is handed
+over to new records at an exact position, and is not waited for until it has acknowledged up to that
+position; the repair is answered once, not once for each connection. The reactor's Warning for each
+send to a connection that no longer exists is [BUG-0166](#bug_0166).
+Step 2 of phase 5 repeats this measurement, and the phase is not finished until the follower catches up
+while orders go on being answered.
+
+**How it was fixed.** Step 2 of phase 5 ([following_the_wal.md](availability/following_the_wal.md),
+section 5.2). The leader's replicated WAL asks the sequencer's `WalReadingThread` to send the records the
+follower lacks, and carries on sequencing; the reading thread sends 256 records at a time, each batch only
+once the connection has taken the last; the follower is handed over when the reading thread has sent every
+record up to the last written and nothing has been written since; and new records wait for the follower only
+once it has acknowledged every record up to the hand-over. A request that arrives twice from the same position
+starts one repair, not two.
+
+**How it was checked.** The same measurement, `tmp/phase5/stall.sh`, with 1.2 million records in the WAL:
+of 1,978 orders sent in the ten seconds after the follower started, the longest wait for a first report was
+10.2 milliseconds, against 5.2 before, and none went unanswered. The follower was sent 1.2 million records
+in 8.4 seconds and handed over.
+
+**Principles.** V11 (a fault in the standby is a loss of resilience, not a loss of service) and F4.
+
+### BUG-0163: A sequencer that cut its WAL back while it was still starting ended, because the thread building its record of command identifiers read a segment the cut had deleted {#bug_0163}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-14 -- a segment that cannot be read is passed over, and the build carries on with the next |
+| How | Scenario 2 of `scripts/ha_test.py`, run for step 2 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)) on a venue whose WAL held 1.26 million records from an earlier measurement. The scenario passed, but the secondary sequencer had ended: "terminate called after throwing an instance of 'pubsub_itc_fw::PubSubItcException' ... WalReader: open(.../wal_000103.log): No such file or directory" |
+| Impact | A follower sequencer restarted late in the day, holding records the leader does not hold, ends a few seconds after starting, and the pair is left without a standby. With a small WAL the build finishes in milliseconds, before any repair can begin, which is why no earlier run showed it |
+
+**What happened.** A starting sequencer builds its record of the identifier of every command in its WAL
+on a thread of its own (`LoggedCommandIdentifiersBuilder`), from a list of the segment files it takes when
+it opens the WAL. With 1.26 million records the build takes seconds. Ten seconds after starting, the
+secondary learnt from the leader that its last 23,000 records were not held by the leader, and discarded
+them (`Wal::truncate_after`), which overwrites the rest of the segment holding the last record kept with
+zeros and deletes every later segment. The building thread then came to a segment on its list that no
+longer existed. `WalReader::replay_segment` threw, nothing on that thread caught it, and the process ended.
+
+Reading a segment while it is being zeroed can fail in the same way: an entry partly zeroed, followed by
+one not yet reached, is reported as damage.
+
+**The fix.** A segment that cannot be read, or cannot be read to the end, is passed over, counted, and the
+build goes on with the next. This is safe because both failures happen only at or after the point the WAL
+was cut back, among records no longer in it: every record kept was read before the reading reached the cut,
+and an exact check of the WAL would not find a removed record either. Anything written after the cut is
+noted by the sequencer itself while the build runs, as before. When the build finishes, the sequencer
+writes a Warning saying how many segments it passed over and why the last could not be read.
+
+**How it was checked.** A new test in `LoggedCommandIdentifiersBuilderTest` lists the segments, cuts the
+WAL back so that later ones are deleted, and builds from the list: it must finish and hold every command
+left in the WAL. With the fix taken out, the test process ends with the same message as the scenario.
 
 ### BUG-0160: The ThreadSanitizer build checks the mutex variant of the queue between threads, not the lock-free one the venue runs {#bug_0160}
 

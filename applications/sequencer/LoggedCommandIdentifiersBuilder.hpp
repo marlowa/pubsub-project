@@ -16,6 +16,7 @@
 
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
@@ -136,6 +137,16 @@ class LoggedCommandIdentifiersBuilder {
         return read_time_;
     }
 
+    /// How many log segments could not be read, or not read to the end, and were passed over. Valid once finished.
+    [[nodiscard]] int segments_not_read() const {
+        return segments_not_read_;
+    }
+
+    /// Why the last segment passed over could not be read. Valid once finished.
+    [[nodiscard]] const std::string& last_segment_error() const {
+        return last_segment_error_;
+    }
+
     /// How many log records were read. Valid once finished.
     [[nodiscard]] int64_t records_read() const {
         return records_read_;
@@ -159,8 +170,19 @@ class LoggedCommandIdentifiersBuilder {
             if (stop_requested_.load(std::memory_order_acquire)) {
                 return;
             }
-            static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
-                path, 0, [this](int64_t /*record_id*/, const void* payload, size_t size) { note_record(static_cast<const uint8_t*>(payload), size); }));
+            // A repair of the log can cut it back while this reads it: the rest of the segment holding the
+            // last record kept is overwritten with zeros, and every later segment is deleted. Reading a
+            // deleted segment then fails, and so can reading one while it is being zeroed, which shows an
+            // entry partly zeroed followed by one not yet reached. Both happen only at or after the point
+            // the log was cut back, among records no longer in it, so the segment is passed over and the
+            // reading carries on with the next. Anything written after the cut, the sequencer notes itself.
+            try {
+                static_cast<void>(pubsub_itc_fw::WalReader::replay_segment(
+                    path, 0, [this](int64_t /*record_id*/, const void* payload, size_t size) { note_record(static_cast<const uint8_t*>(payload), size); }));
+            } catch (const pubsub_itc_fw::PubSubItcException& error) {
+                ++segments_not_read_;
+                last_segment_error_ = error.what();
+            }
         }
         read_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - read_started);
         finished_.store(true, std::memory_order_release);
@@ -195,6 +217,8 @@ class LoggedCommandIdentifiersBuilder {
     std::chrono::milliseconds reserve_time_{0};
     std::chrono::milliseconds read_time_{0};
     int64_t records_read_{0};
+    int segments_not_read_{0};
+    std::string last_segment_error_;
     std::vector<uint8_t> arena_ = std::vector<uint8_t>(64 * 1024);
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> finished_{false};

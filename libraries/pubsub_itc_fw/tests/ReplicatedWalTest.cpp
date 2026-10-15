@@ -186,6 +186,31 @@ std::map<int64_t, std::pair<int32_t, std::vector<uint8_t>>> read_wal(const std::
 } // namespaces
 
 // Two instances of a pair and an arbiter.
+// Stands in for the reading thread a real application uses through PeerCatchUpInterface: the leader asks
+// it to send a rejoining follower the records it lacks, and it does so at the next step, reading the
+// leader's WAL as it then stands, so that records the leader writes in between are part of what it sends,
+// as they are with the real thread. It then tells the leader the follower is caught up. Told to stop, it
+// confirms that it has stopped only at the next step, as the real thread confirms by a report.
+struct SimulatedCatchUp : public PeerCatchUpInterface {
+    bool pending{false};
+    bool stopping{false};
+    int64_t after{0};
+    int started{0};
+
+    void start_peer_catch_up(int64_t after_seq_no) override {
+        pending = true;
+        after = after_seq_no;
+        ++started;
+    }
+    void stop_peer_catch_up() override {
+        pending = false;
+        stopping = true;
+    }
+    [[nodiscard]] bool reading_has_stopped() const override {
+        return !pending && !stopping;
+    }
+};
+
 class Pair {
   public:
     ~Pair() {
@@ -195,8 +220,13 @@ class Pair {
         }
     }
 
-    explicit Pair(const std::string& name)
-        : logger_(FwLogLevel::Info, [this](const std::string& line) { log_.push_back(line); }), arbiter_(timing_.period, now_, 0) {
+    // With @p with_catch_up_thread, a rejoining follower's missing records are sent through a
+    // SimulatedCatchUp, as an application with a reading thread has them sent; without, the leader reads
+    // and sends them itself.
+    explicit Pair(const std::string& name, bool with_catch_up_thread = false)
+        : logger_(FwLogLevel::Info, [this](const std::string& line) { log_.push_back(line); })
+        , arbiter_(timing_.period, now_, 0)
+        , with_catch_up_thread_(with_catch_up_thread) {
         for (int i = 0; i < 2; ++i) {
             directories_[i] = tests_common::make_scratch_directory(name + "_" + std::to_string(i + 1));
         }
@@ -223,6 +253,10 @@ class Pair {
         wals_[i] = std::make_unique<ReplicatedWal>(configuration, logger_, peer_outboxes_[i], lease_outboxes_[i], events_[i],
                                                    PromisesKeptElsewhere{&kept_[i], kept_[i].record_kept, kept_[i].statement});
         up_[i] = true;
+        catch_ups_[i] = SimulatedCatchUp{};
+        if (with_catch_up_thread_) {
+            wals_[i]->use_peer_catch_up(catch_ups_[i]);
+        }
         static_cast<void>(wals_[i]->open(now_));
     }
 
@@ -236,6 +270,7 @@ class Pair {
     // process that is killed runs nothing more, so only the survivor is told the connection has gone.
     void crash(int i) {
         wals_[i].reset();
+        catch_ups_[i] = SimulatedCatchUp{};
         up_[i] = false;
         lease_outboxes_[i] = LeaseOutbox{};
         disconnect();
@@ -283,6 +318,42 @@ class Pair {
             }
         }
         deliver();
+        run_catch_ups();
+        deliver();
+    }
+
+    // Each catch-up that was told to stop confirms that it has stopped, and the leader answers any request
+    // it held back until then. Each catch-up that has been started sends the follower the records after
+    // its position, up to the last the leader has written, and hands it over.
+    void run_catch_ups() {
+        for (int i = 0; i < 2; ++i) {
+            if (catch_ups_[i].stopping) {
+                catch_ups_[i].stopping = false;
+                if (up_[i]) {
+                    wals_[i]->on_peer_catch_up_stopped(now_);
+                }
+            }
+            if (!up_[i] || !catch_ups_[i].pending || wals_[i]->role() != ReplicaRole::leader) {
+                continue;
+            }
+            const int64_t after = catch_ups_[i].after;
+            [[maybe_unused]] const auto end = WalReader::replay(directories_[i], wals_[i]->wal().scan_start_for(after + 1),
+                                                                [this, i, after](int64_t record_id, const void* payload, size_t size) {
+                                                                    const std::optional<WalEntryContents> contents = read_wal_entry_contents(payload, size);
+                                                                    if (record_id <= after || !contents.has_value()) {
+                                                                        return;
+                                                                    }
+                                                                    ReplicatedRecord record{};
+                                                                    record.seq_no = record_id;
+                                                                    record.leader_epoch = contents->leader_epoch;
+                                                                    record.wall_time_ns = contents->wall_time_ns;
+                                                                    record.pdu_id = contents->pdu_id;
+                                                                    record.payload = BytesView{contents->bytes, contents->size};
+                                                                    peer_outboxes_[i].send_record_to_peer(record);
+                                                                });
+            catch_ups_[i].pending = false;
+            wals_[i]->on_peer_caught_up(wals_[i]->last_seq_no(), now_);
+        }
     }
 
     // Delivers every message, both ways, until none is left. Messages from an instance whose sending is
@@ -447,6 +518,8 @@ class Pair {
     bool held_[2]{false, false};
     LeaseVoter arbiter_;
     bool arbiter_up_{true};
+    bool with_catch_up_thread_{false};
+    SimulatedCatchUp catch_ups_[2];
 };
 
 TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnceWritten) {
@@ -646,11 +719,13 @@ TEST(ReplicatedWalTest, AFormerLeaderHoldingAStatementNoVoterEchoedFollowsTheLea
 // the new leader's WAL must hold every record any leader committed, with the same epoch and bytes; and
 // once everything is restored, one instance must lead, the other must follow, and the two WALs must be
 // the same.
-TEST(ReplicatedWalTest, InRandomRunsNoCommittedRecordIsLostAndTheTwoWalsEndTheSame) {
+// The randomised runs, with a rejoining follower's records read by the leader itself or sent through the
+// catch-up.
+void run_random_runs(bool with_catch_up_thread) {
     constexpr int runs = 20;
     constexpr int steps = 400;
     for (int run = 0; run < runs; ++run) {
-        Pair pair("replicated_wal_random_" + std::to_string(run));
+        Pair pair(std::string(with_catch_up_thread ? "replicated_wal_random_catch_up_" : "replicated_wal_random_") + std::to_string(run), with_catch_up_thread);
         std::mt19937 random(static_cast<std::mt19937::result_type>(run + 1));
         const auto chance = [&random](double probability) { return std::uniform_real_distribution<double>(0.0, 1.0)(random) < probability; };
         pair.start_both();
@@ -752,6 +827,154 @@ TEST(ReplicatedWalTest, InRandomRunsNoCommittedRecordIsLostAndTheTwoWalsEndTheSa
             EXPECT_EQ(final_records.at(seq_no), record) << "run " << run << ": committed record " << seq_no << " changed";
         }
     }
+}
+
+TEST(ReplicatedWalTest, InRandomRunsNoCommittedRecordIsLostAndTheTwoWalsEndTheSame) {
+    run_random_runs(false);
+}
+
+TEST(ReplicatedWalTest, InRandomRunsWithTheCatchUpOnItsOwnThreadNoCommittedRecordIsLostAndTheTwoWalsEndTheSame) {
+    run_random_runs(true);
+}
+
+// The leader has a rejoining follower's missing records sent through the catch-up, not read on its own
+// thread, and then sends it each new record itself.
+TEST(ReplicatedWalTest, ARejoiningFollowerIsSentWhatItLacksThroughTheCatchUpAndThenNewRecords) {
+    Pair pair("replicated_wal_catch_up", true);
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    pair.crash(1);
+    for (int n = 0; n < 5; ++n) {
+        pair.step();
+    }
+    for (uint8_t marker = 0; marker < 20; ++marker) {
+        static_cast<void>(pair.append(0, marker));
+    }
+    pair.start(1);
+    pair.connect();
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_GE(pair.catch_ups_[0].started, 1);
+    EXPECT_TRUE(pair.log_contains("are being sent to it from the WAL"));
+    EXPECT_TRUE(pair.log_contains("has been sent every record through"));
+    static_cast<void>(pair.append(0, 99));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
+}
+
+// New records do not wait for a follower that is still being caught up, or that has been handed over but
+// has not yet acknowledged every record up to where it was: they would wait behind the whole catch-up
+// (BUG-0155). Once it has, they wait for it again.
+TEST(ReplicatedWalTest, NewRecordsDoNotWaitForAFollowerUntilItHasAcknowledgedThroughTheHandOver) {
+    Pair pair("replicated_wal_hand_over_wait", true);
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    pair.crash(1);
+    for (int n = 0; n < 5; ++n) {
+        pair.step();
+    }
+    for (uint8_t marker = 0; marker < 10; ++marker) {
+        static_cast<void>(pair.append(0, marker));
+    }
+    const int started_before = pair.catch_ups_[0].started;
+    pair.start(1);
+    pair.connect();
+    pair.deliver(); // the follower's request reaches the leader, which starts the catch-up
+    ASSERT_EQ(pair.catch_ups_[0].started, started_before + 1);
+    pair.held_[1] = true; // from here the follower's acknowledgements are held back
+    pair.run_catch_ups(); // the follower is sent every record and handed over
+    pair.deliver();
+    ASSERT_TRUE(pair.log_contains("has been sent every record through"));
+
+    EXPECT_FALSE(pair.wals_[0]->waits_for_follower());
+    const int64_t seq_no = pair.append(0, 50);
+    EXPECT_GE(pair.wals_[0]->committed_through(), seq_no) << "a new record waited for a follower that had not caught up";
+
+    pair.held_[1] = false;
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_TRUE(pair.wals_[0]->waits_for_follower());
+}
+
+// A follower asks on each of its connections, so one request can arrive twice; the catch-up is started once.
+TEST(ReplicatedWalTest, ARequestThatArrivesTwiceStartsTheCatchUpOnce) {
+    Pair pair("replicated_wal_request_twice", true);
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    pair.crash(1);
+    for (int n = 0; n < 5; ++n) {
+        pair.step();
+    }
+    for (uint8_t marker = 0; marker < 10; ++marker) {
+        static_cast<void>(pair.append(0, marker));
+    }
+    pair.start(1);
+    pair.connect();
+    const int started_before = pair.catch_ups_[0].started;
+    LogPositionRequest request{};
+    request.last_seq_no = pair.wals_[1]->last_seq_no();
+    request.last_epoch = pair.wals_[1]->epoch();
+    for (int copy = 0; copy < 2; ++copy) {
+        const Encoded encoded = encode_message(request);
+        EXPECT_TRUE(pair.wals_[0]->handle_message(ConnectionID{}, encoded.pdu_id, encoded.bytes.data(), encoded.bytes.size(), pair.now_));
+    }
+    EXPECT_EQ(pair.catch_ups_[0].started, started_before + 1);
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
+}
+
+// A request from a different position while a catch-up is running stops it. The follower is answered only
+// once the reading thread has confirmed it has stopped, so that every record it was still sending is
+// queued before the answer; until then the follower is not answered, and asks again.
+TEST(ReplicatedWalTest, ARequestFromANewPositionIsAnsweredOnlyAfterTheRunningCatchUpHasStopped) {
+    Pair pair("replicated_wal_request_restart", true);
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    for (uint8_t marker = 0; marker < 5; ++marker) {
+        static_cast<void>(pair.append(0, marker));
+    }
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    pair.crash(1);
+    for (int n = 0; n < 5; ++n) {
+        pair.step();
+    }
+    for (uint8_t marker = 0; marker < 10; ++marker) {
+        static_cast<void>(pair.append(0, marker));
+    }
+    pair.start(1);
+    pair.connect();
+    const int started_before = pair.catch_ups_[0].started;
+    LogPositionRequest request{};
+    request.last_seq_no = pair.wals_[1]->last_seq_no();
+    request.last_epoch = pair.wals_[1]->epoch();
+    ASSERT_GE(request.last_seq_no, 2);
+    const auto send_request = [&pair](const LogPositionRequest& to_send) {
+        const Encoded encoded = encode_message(to_send);
+        EXPECT_TRUE(pair.wals_[0]->handle_message(ConnectionID{}, encoded.pdu_id, encoded.bytes.data(), encoded.bytes.size(), pair.now_));
+    };
+    send_request(request);
+    ASSERT_EQ(pair.catch_ups_[0].started, started_before + 1);
+
+    // From one record earlier: the running catch-up stops, and nothing new starts.
+    request.last_seq_no -= 1;
+    send_request(request);
+    EXPECT_FALSE(pair.catch_ups_[0].pending);
+    EXPECT_TRUE(pair.log_contains("it is answered once that has stopped"));
+    EXPECT_EQ(pair.catch_ups_[0].started, started_before + 1);
+
+    // Asked again before the reading thread has confirmed: still not answered.
+    send_request(request);
+    EXPECT_EQ(pair.catch_ups_[0].started, started_before + 1);
+
+    // Once it has confirmed, the request held back is answered at once, without the follower asking
+    // again, and a new catch-up starts from it.
+    pair.run_catch_ups();
+    EXPECT_EQ(pair.catch_ups_[0].started, started_before + 2);
+    EXPECT_EQ(pair.catch_ups_[0].after, request.last_seq_no);
+
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
 }
 
 } // namespaces

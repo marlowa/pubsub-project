@@ -155,3 +155,32 @@ TEST_F(LoggedCommandIdentifiersBuilderTest, StoppingABuildThatHasNotFinishedEnds
     builder.stop();
     EXPECT_FALSE(builder.finished()) << "a build that was stopped reported itself finished";
 }
+
+// The segments are listed when the sequencer opens the log, and a repair can cut the log back before the
+// build reads them, deleting the later segments. The build passes over what it cannot read, finishes, and
+// still holds every command left in the log.
+TEST_F(LoggedCommandIdentifiersBuilderTest, SegmentsDeletedByCuttingTheLogBackArePassedOverAndTheBuildFinishes) {
+    for (int number = 1; number <= 300; ++number) {
+        append("order-" + std::to_string(number), new_order);
+    }
+    const std::vector<std::string> paths = segment_paths();
+    ASSERT_GT(paths.size(), 3U) << "the log should span several segments for this to test anything";
+    constexpr int kept = 20;
+    wal_->truncate_after(kept);
+    int deleted = 0;
+    for (const std::string& path : paths) {
+        deleted += std::filesystem::exists(path) ? 0 : 1;
+    }
+    ASSERT_GT(deleted, 0) << "cutting the log back should have deleted at least one listed segment";
+
+    sequencer::LoggedCommandIdentifiersBuilder builder;
+    builder.start(10000, paths);
+    ASSERT_TRUE(wait_until_finished(builder)) << "the build did not finish";
+    sequencer::LoggedCommandIdentifiers record = builder.take();
+
+    for (int number = 1; number <= kept; ++number) {
+        ASSERT_TRUE(record.may_hold(id_of("order-" + std::to_string(number)))) << "order-" << number;
+    }
+    EXPECT_GE(builder.segments_not_read(), 1);
+    EXPECT_FALSE(builder.last_segment_error().empty());
+}

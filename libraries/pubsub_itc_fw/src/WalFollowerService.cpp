@@ -32,34 +32,46 @@ void WalFollowerService::on_follow_request(const ConnectionID& connection, const
     }
     declined_.erase(connection.get_value());
 
-    // A request made again on a connection already being served starts that follower afresh.
-    if (followers_.find(connection.get_value()) != followers_.end()) {
-        on_connection_lost(connection);
-    }
-
-    Follower& follower = followers_[connection.get_value()];
-    follower.connection = connection;
-    follower.limit = limit;
-    follower.tell_when_caught_up = true;
-
     // A follower that holds nothing and wants nothing from the past is placed at the newest record it
     // may be sent, and sent nothing older.
     if (request.last_seq_no < 0) {
+        if (followers_.find(connection.get_value()) != followers_.end()) {
+            on_connection_lost(connection);
+        }
+        Follower& follower = followers_[connection.get_value()];
+        follower.connection = connection;
+        follower.limit = limit;
+        follower.tell_when_caught_up = true;
         PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds nothing and is placed at record {}, sent nothing older",
                    request.follower_name, connection.get_value(), positions_.limit(limit));
         hand_over(follower, positions_.limit(limit), 0);
         return;
     }
+    PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds records through {} -- the reading thread sends it the rest",
+               request.follower_name, connection.get_value(), request.last_seq_no);
+    serve(connection, request.last_seq_no, limit, converter, CaughtUpMessage::Send);
+}
+
+void WalFollowerService::serve(const ConnectionID& connection, int64_t after_seq_no, FollowerLimit limit, int converter, CaughtUpMessage caught_up_message) {
+    // A connection already being served starts afresh: the reading thread stops the earlier serving first,
+    // and a report from it still on its way carries the earlier serving's number and is ignored.
+    if (followers_.find(connection.get_value()) != followers_.end()) {
+        on_connection_lost(connection);
+    }
+    Follower& follower = followers_[connection.get_value()];
+    follower.connection = connection;
+    follower.limit = limit;
+    follower.tell_when_caught_up = caught_up_message == CaughtUpMessage::Send;
+    follower.serving = next_serving_++;
 
     auto command = std::make_unique<WalReadingCommand>();
     command->kind = WalReadingCommand::Kind::Serve;
     command->connection = connection;
-    command->after_seq_no = request.last_seq_no;
-    command->start = wal_.scan_start_for(request.last_seq_no + 1);
+    command->after_seq_no = after_seq_no;
+    command->start = wal_.scan_start_for(after_seq_no + 1);
     command->limit = limit;
     command->converter = converter;
-    PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds records through {} -- the reading thread sends it the rest",
-               request.follower_name, connection.get_value(), request.last_seq_no);
+    command->serving = follower.serving;
     links_.send_to_reading_thread(std::move(command));
 }
 
@@ -75,8 +87,8 @@ bool WalFollowerService::on_inter_thread_message(const EventMessage& message) {
     }
 
     const auto found = followers_.find(report->connection.get_value());
-    if (found == followers_.end() || found->second.handed_over) {
-        return true; // the connection went, or was asked about again, while the report was on its way
+    if (found == followers_.end() || found->second.handed_over || found->second.serving != report->serving) {
+        return true; // the connection went, or was served afresh, while the report was on its way
     }
     Follower& follower = found->second;
 

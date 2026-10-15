@@ -6,10 +6,14 @@
 #include "SequencerThread.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include <pubsub_itc_fw/AllocatorConfiguration.hpp>
 #include <pubsub_itc_fw/ApplicationAnnouncer.hpp>
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/CpuLayout.hpp>
@@ -19,8 +23,14 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
+#include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
+#include <pubsub_itc_fw/WalEntryContents.hpp>
+#include <pubsub_itc_fw/WalFollowing.hpp>
+#include <pubsub_itc_fw/WalReadingThread.hpp>
+
+#include <replication_messages.hpp>
 
 namespace sequencer {
 
@@ -85,9 +95,46 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                                         pubsub_itc_fw::ThreadID{1}, pubsub_itc_fw::ProtocolType{pubsub_itc_fw::ProtocolType::FrameworkPdu}, 0,
                                         pubsub_itc_fw::IdleTimeoutFlag{pubsub_itc_fw::IdleTimeoutFlag::BypassIdleTimeout});
 
-    sequencer_thread_ = pubsub_itc_fw::ApplicationThread::create<SequencerThread>(*logger_, *reactor_, config_);
+    sequencer_thread_ = pubsub_itc_fw::ApplicationThread::create<SequencerThread>(*logger_, *reactor_, config_, wal_positions_);
 
     reactor_->register_thread(sequencer_thread_);
+
+    // The thread that reads the WAL for its followers, so that the sequencer's own thread, which
+    // sequences every order, never does (docs/availability/following_the_wal.md). It stays on the
+    // background cores, so the CPU layout needs no core for it. It sends a rejoining follower sequencer
+    // the records it lacks as ReplicatedRecord messages, exactly as the replicated WAL sends new ones.
+    if (config_.ha_enabled && !config_.replay_mode) {
+        std::vector<pubsub_itc_fw::WalRecordConverter> converters;
+        converters.emplace_back([](int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> std::optional<int16_t> {
+            pubsub_itc_fw::ReplicatedRecord record{};
+            record.seq_no = seq_no;
+            record.leader_epoch = entry.leader_epoch;
+            record.wall_time_ns = entry.wall_time_ns;
+            record.pdu_id = entry.pdu_id;
+            record.payload = pubsub_itc_fw::BytesView{entry.bytes, entry.size};
+            size_t written = 0;
+            size_t needed = 0;
+            static_cast<void>(pubsub_itc_fw::encode(record, nullptr, 0, written, needed));
+            out.resize(needed);
+            if (!pubsub_itc_fw::encode(record, out.data(), out.size(), written, needed)) {
+                out.clear();
+                return std::nullopt;
+            }
+            out.resize(written);
+            return pubsub_itc_fw::ReplicatedRecord::message_pdu_id;
+        });
+        pubsub_itc_fw::QueueConfiguration queue_configuration{};
+        queue_configuration.low_watermark = 1;
+        queue_configuration.high_watermark = 64;
+        pubsub_itc_fw::AllocatorConfiguration allocator_configuration{};
+        allocator_configuration.pool_name = "WalReadingPool";
+        allocator_configuration.objects_per_pool = config_.event_queue_pool_objects_per_slab;
+        allocator_configuration.initial_pools = 1;
+        wal_reading_thread_ = pubsub_itc_fw::ApplicationThread::create<pubsub_itc_fw::WalReadingThread>(
+            *logger_, *reactor_, "WalReadingThread", SequencerThread::wal_reading_thread_id, queue_configuration, allocator_configuration,
+            pubsub_itc_fw::ThreadID{1}, config_.wal_directory, wal_positions_, std::move(converters));
+        reactor_->register_thread(wal_reading_thread_);
+    }
 
     // Outbound connections are initiated from SequencerThread::on_app_ready_event()
     // via connect_to_service(). The ServiceRegistry is populated here.

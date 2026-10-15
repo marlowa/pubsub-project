@@ -95,6 +95,7 @@ void WalReadingThread::serve(const WalReadingCommand& command) {
     follower->limit = command.limit;
     follower->converter = command.converter;
     follower->last_sent_seq_no = command.after_seq_no;
+    follower->serving = command.serving;
     follower->sending = true;
     follower->cursor.open(wal_directory_, command.start);
     Follower& served = *follower;
@@ -177,6 +178,7 @@ void WalReadingThread::send_batch(Follower& follower) {
     reached->connection = follower.connection;
     reached->reached_seq_no = limit;
     reached->records_sent = follower.records_sent;
+    reached->serving = follower.serving;
     report(std::move(reached));
 }
 

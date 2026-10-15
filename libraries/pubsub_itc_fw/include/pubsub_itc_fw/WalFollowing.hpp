@@ -141,6 +141,9 @@ struct WalReadingCommand {
     WalPosition start{};     ///< Serve: where to start reading, at or before the record after after_seq_no.
     FollowerLimit limit{FollowerLimit::LastCommitted};
     int converter{0}; ///< Serve: which of the reading thread's converters to use.
+    /// Serve: numbers this serving of the follower, echoed on its reports, so that a report from an
+    /// earlier serving of the same connection, still on its way, is told apart and ignored.
+    uint64_t serving{0};
 };
 
 /**
@@ -159,6 +162,7 @@ struct WalReadingReport {
     ConnectionID connection{};
     int64_t reached_seq_no{0};
     int64_t records_sent{0}; ///< Records sent to this follower since it was first served.
+    uint64_t serving{0};     ///< Reached: the serving it reports on, from the Serve command.
 };
 
 /**

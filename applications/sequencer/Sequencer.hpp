@@ -11,6 +11,8 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/ReactorConfiguration.hpp>
 #include <pubsub_itc_fw/ServiceRegistry.hpp>
+#include <pubsub_itc_fw/WalFollowing.hpp>
+#include <pubsub_itc_fw/WalReadingThread.hpp>
 
 #include "SequencerConfiguration.hpp"
 #include "SequencerThread.hpp"
@@ -54,8 +56,12 @@ class Sequencer {
     std::unique_ptr<pubsub_itc_fw::QuillLogger> logger_;
     pubsub_itc_fw::ServiceRegistry service_registry_;
     pubsub_itc_fw::ReactorConfiguration reactor_configuration_;
+    // Before the reactor and the threads, so that it is destroyed after them: both threads use it.
+    pubsub_itc_fw::WalFollowingPositions wal_positions_;
     std::unique_ptr<pubsub_itc_fw::Reactor> reactor_;
     std::shared_ptr<SequencerThread> sequencer_thread_;
+    // Reads the WAL for its followers, so that the sequencer's thread does not (with high availability on).
+    std::shared_ptr<pubsub_itc_fw::WalReadingThread> wal_reading_thread_;
 };
 
 } // namespaces

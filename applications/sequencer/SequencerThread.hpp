@@ -29,6 +29,8 @@
 #include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
+#include <pubsub_itc_fw/WalFollowerService.hpp>
+#include <pubsub_itc_fw/WalFollowing.hpp>
 
 #include "EngineOrderRouting.hpp"
 #include "EngineReportPosition.hpp"
@@ -70,9 +72,14 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      * @param[in] logger   Logger. Must outlive this object.
      * @param[in] reactor  Owning Reactor. Must outlive this object.
      * @param[in] config   Sequencer configuration.
+     * @param[in] wal_positions The positions this thread publishes for the WAL's reading thread. Must
+     *                          outlive this object.
      */
     SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
-                    const SequencerConfiguration& config);
+                    const SequencerConfiguration& config, pubsub_itc_fw::WalFollowingPositions& wal_positions);
+
+    /// The thread that reads the WAL for its followers (docs/availability/following_the_wal.md).
+    static constexpr pubsub_itc_fw::ThreadID wal_reading_thread_id{2};
 
   protected:
     void on_initial_event() override;
@@ -224,6 +231,44 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // instance leads: the library's replicated WAL (docs/availability/replicated_wal_in_the_library.md).
     // Constructed at the initial event, except in replay mode, which reads the log and writes nothing.
     std::optional<pubsub_itc_fw::ReplicatedWal> replicated_wal_;
+
+    // Following the WAL (docs/availability/following_the_wal.md). The records a rejoining follower
+    // sequencer lacks are read from the WAL and sent by the reading thread, not on this thread; this is
+    // the replicated WAL's catch-up, the service's links to the reading thread, and what the service
+    // tells this thread.
+    class SequencerWalFollowing : public pubsub_itc_fw::PeerCatchUpInterface,
+                                  public pubsub_itc_fw::WalFollowerLinksInterface,
+                                  public pubsub_itc_fw::WalFollowerEventsInterface {
+      public:
+        explicit SequencerWalFollowing(SequencerThread& owner) : owner_(owner) {}
+        // PeerCatchUpInterface
+        void start_peer_catch_up(int64_t after_seq_no) override;
+        void stop_peer_catch_up() override;
+        [[nodiscard]] bool reading_has_stopped() const override;
+        // WalFollowerLinksInterface
+        void send_to_reading_thread(std::unique_ptr<pubsub_itc_fw::WalReadingCommand> command) override;
+        void send_declined(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowDeclined& declined) override;
+        void send_caught_up(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowCaughtUp& caught_up) override;
+        void send_leader_changed(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalLeaderChanged& changed) override;
+        // WalFollowerEventsInterface
+        void follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through) override;
+        void hand_over_falling_behind(const pubsub_itc_fw::ConnectionID& follower) override;
+        void declined_while_not_leading(const pubsub_itc_fw::ConnectionID& follower) override;
+        void reading_stopped() override;
+
+      private:
+        SequencerThread& owner_;
+        // The connection the follower sequencer is being sent its missing records on, while it is.
+        pubsub_itc_fw::ConnectionID catch_up_connection_;
+    };
+    SequencerWalFollowing wal_following_{*this};
+    pubsub_itc_fw::WalFollowingPositions& wal_positions_;
+    std::optional<pubsub_itc_fw::WalFollowerService> wal_follower_service_;
+    // While set, reading orders from the gateways is paused so that a follower's hand-over can finish:
+    // records were released faster than one round between the two threads (section 3.4 of the design).
+    bool paused_for_hand_over_{false};
+    void pause_order_reading_for_hand_over();
+    void end_pause_for_hand_over();
 
     // The epoch the sequencer stamps on what it sends: the replicated WAL's, or 1 in replay mode.
     [[nodiscard]] int32_t current_epoch() const {

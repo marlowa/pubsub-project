@@ -70,7 +70,7 @@ pubsub_itc_fw::ApplicationThreadConfiguration make_thread_config() {
 // PDU IDs for the leader-follower and external WAL subscriber protocols.
 
 SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorToken token, pubsub_itc_fw::QuillLogger& logger, pubsub_itc_fw::Reactor& reactor,
-                                 const SequencerConfiguration& config)
+                                 const SequencerConfiguration& config, pubsub_itc_fw::WalFollowingPositions& wal_positions)
     : ApplicationThread(token, logger, reactor, "SequencerThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         make_thread_config())
     , config_(config)
@@ -80,7 +80,8 @@ SequencerThread::SequencerThread(pubsub_itc_fw::ApplicationThread::ConstructorTo
     , peer_conn_id_{}
     , peer_inbound_conn_id_{}
     , arbiter_primary_conn_id_{}
-    , arbiter_secondary_conn_id_{} {}
+    , arbiter_secondary_conn_id_{}
+    , wal_positions_(wal_positions) {}
 
 void SequencerThread::on_initial_event() {
     // The log starts a helper thread to prepare its next segment, and a new thread inherits the
@@ -156,6 +157,13 @@ void SequencerThread::on_initial_event() {
     wal_configuration.wal_append_histogram = wal_append_histogram_;
     wal_configuration.running_alone_gauge = running_alone_gauge_;
     replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_);
+    // The reading thread reads only before the position published here, and sends a follower nothing
+    // above the limit published here (docs/availability/following_the_wal.md, section 3.2).
+    replicated_wal_->publish_positions_to(wal_positions_);
+    if (config_.ha_enabled) {
+        wal_follower_service_.emplace(get_logger(), replicated_wal_->wal(), wal_positions_, wal_following_, wal_following_);
+        replicated_wal_->use_peer_catch_up(wal_following_);
+    }
     const int64_t recovered_seq = replicated_wal_->open(std::chrono::steady_clock::now());
     start_building_record_of_identifiers();
     if (recovered_seq > 0) {
@@ -1129,7 +1137,106 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
     }
 }
 
-void SequencerThread::on_itc_message([[maybe_unused]] const pubsub_itc_fw::EventMessage& message) {}
+void SequencerThread::on_itc_message(const pubsub_itc_fw::EventMessage& message) {
+    // The only messages between threads this thread receives are the reading thread's reports.
+    if (wal_follower_service_.has_value() && wal_follower_service_->on_inter_thread_message(message)) {
+        return;
+    }
+    PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: an inter-thread message that is not a report from the reading thread -- ignored");
+}
+
+// Following the WAL (docs/availability/following_the_wal.md)
+
+void SequencerThread::SequencerWalFollowing::start_peer_catch_up(int64_t after_seq_no) {
+    // On the connection the replicated WAL sends its records on, so that the records sent by the reading
+    // thread and the new records sent from here after the hand-over travel on one connection, in order.
+    catch_up_connection_ = owner_.peer_active_conn();
+    if (!catch_up_connection_.is_valid() || !owner_.wal_follower_service_.has_value()) {
+        return;
+    }
+    owner_.wal_follower_service_->serve(catch_up_connection_, after_seq_no, pubsub_itc_fw::FollowerLimit::LastWritten, 0,
+                                        pubsub_itc_fw::CaughtUpMessage::DoNotSend);
+}
+
+void SequencerThread::SequencerWalFollowing::stop_peer_catch_up() {
+    if (!owner_.wal_follower_service_.has_value()) {
+        return;
+    }
+    if (catch_up_connection_.is_valid()) {
+        owner_.wal_follower_service_->on_connection_lost(catch_up_connection_);
+        catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
+    }
+    // And stop everything the reading thread is doing, with its confirmation, so that a WAL about to be
+    // cut back, when this instance follows, is not being read.
+    owner_.wal_follower_service_->stop_all();
+    owner_.end_pause_for_hand_over();
+}
+
+bool SequencerThread::SequencerWalFollowing::reading_has_stopped() const {
+    return !owner_.wal_follower_service_.has_value() || owner_.wal_follower_service_->reading_has_stopped();
+}
+
+void SequencerThread::SequencerWalFollowing::send_to_reading_thread(std::unique_ptr<pubsub_itc_fw::WalReadingCommand> command) {
+    owner_.post_message(wal_reading_thread_id, pubsub_itc_fw::carry(owner_.get_thread_id(), std::move(command)));
+}
+
+void SequencerThread::SequencerWalFollowing::send_declined(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowDeclined& declined) {
+    owner_.send_pdu(to, pubsub_itc_fw::WalFollowDeclined::message_pdu_id, 0, declined);
+}
+
+void SequencerThread::SequencerWalFollowing::send_caught_up(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowCaughtUp& caught_up) {
+    owner_.send_pdu(to, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, caught_up);
+}
+
+void SequencerThread::SequencerWalFollowing::send_leader_changed(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalLeaderChanged& changed) {
+    owner_.send_pdu(to, pubsub_itc_fw::WalLeaderChanged::message_pdu_id, 0, changed);
+}
+
+void SequencerThread::SequencerWalFollowing::follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through) {
+    if (follower == catch_up_connection_ && owner_.replicated_wal_.has_value()) {
+        catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
+        owner_.replicated_wal_->on_peer_caught_up(through, std::chrono::steady_clock::now());
+        owner_.end_pause_for_hand_over();
+    }
+}
+
+void SequencerThread::SequencerWalFollowing::hand_over_falling_behind(const pubsub_itc_fw::ConnectionID& /*follower*/) {
+    owner_.pause_order_reading_for_hand_over();
+}
+
+void SequencerThread::SequencerWalFollowing::declined_while_not_leading(const pubsub_itc_fw::ConnectionID& /*follower*/) {}
+
+void SequencerThread::SequencerWalFollowing::reading_stopped() {
+    // The follower sequencer's request, if one waited for the reading thread to stop, is answered now.
+    if (owner_.replicated_wal_.has_value()) {
+        owner_.replicated_wal_->on_peer_catch_up_stopped(std::chrono::steady_clock::now());
+    }
+}
+
+void SequencerThread::pause_order_reading_for_hand_over() {
+    if (paused_for_hand_over_) {
+        return;
+    }
+    paused_for_hand_over_ = true;
+    for (const pubsub_itc_fw::ConnectionID& id : order_connection_ids_) {
+        pause_reading(id);
+    }
+    order_reading_paused_ = true;
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+               "SequencerThread: reading from the {} gateway connection(s) is paused until the follower sequencer is handed over to new records -- "
+               "orders were sequenced faster than one round between this thread and the reading thread",
+               order_connection_ids_.size());
+}
+
+void SequencerThread::end_pause_for_hand_over() {
+    if (!paused_for_hand_over_) {
+        return;
+    }
+    paused_for_hand_over_ = false;
+    // Resumed unless something else still needs reading paused.
+    pause_or_resume_order_reading();
+}
 
 // Leader-follower state machine helpers
 
@@ -1648,6 +1755,12 @@ void SequencerThread::take_record_of_identifiers_if_built() {
                "the background, holding {} identifier(s) of {} reserved, {} of them noted while it was built",
                identifiers_builder_.table_bytes() / (1024 * 1024), identifiers_builder_.reserve_time().count(), identifiers_builder_.records_read(),
                identifiers_builder_.read_time().count(), logged_identifiers_->size(), logged_identifiers_->capacity(), noted);
+    if (identifiers_builder_.segments_not_read() > 0) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: {} log segment(s) could not be read while the record of command identifiers was built, and were passed over "
+                   "(the last because: {}). This is expected only when a repair cut the log back meanwhile, which the Quill log shows above",
+                   identifiers_builder_.segments_not_read(), identifiers_builder_.last_segment_error());
+    }
 }
 
 void SequencerThread::note_logged_command(const pubsub_itc_fw_app::WalRecordView& view) {
@@ -1912,6 +2025,9 @@ int64_t SequencerThread::released_through() const {
 }
 
 void SequencerThread::pause_or_resume_order_reading() {
+    if (paused_for_hand_over_) {
+        return; // stays paused until the follower sequencer is handed over (end_pause_for_hand_over)
+    }
     const bool waiting_for_confirmation =
         role_ == pubsub_itc_fw_app::Role::leader && ((replicated_wal_.has_value() && replicated_wal_->waits_for_confirmation()) || awaiting_engine_position_);
     if (!order_reading_paused_) {

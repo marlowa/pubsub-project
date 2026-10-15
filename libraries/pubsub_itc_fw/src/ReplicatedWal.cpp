@@ -74,6 +74,9 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
     }
     highest_replicated_seq_no_ = wal_.last_seq_no();
     next_seq_no_ = wal_.last_seq_no() + 1;
+    if (positions_ != nullptr) {
+        positions_->publish_written(wal_.last_seq_no(), wal_.write_position());
+    }
 
     // Recover the leadership generation before any lease is asked for. Without this the instance
     // starts at zero, and a pair restarted together would agree a generation already spent.
@@ -108,6 +111,11 @@ void ReplicatedWal::write(int64_t seq_no, int32_t leader_epoch, int16_t pdu_id, 
     // The one thing on the order path that touches a disk, so how long it takes is recorded.
     const auto started = Clock::now();
     wal_.append(seq_no, pdu_id, bytes, static_cast<int>(size), wall_time_ns, leader_epoch);
+    if (positions_ != nullptr) {
+        // After the record is completely written, so that a reader that stops before this position reads
+        // only complete records.
+        positions_->publish_written(seq_no, wal_.write_position());
+    }
     const auto elapsed = Clock::now() - started;
     configuration_.wal_append_histogram.observe(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
 
@@ -152,7 +160,7 @@ int64_t ReplicatedWal::append(int16_t pdu_id, const uint8_t* bytes, size_t size,
 }
 
 bool ReplicatedWal::waits_for_follower() const {
-    return configuration_.ha_enabled && links_.peer_connected() && follower_wal_matches_ && !running_alone_;
+    return configuration_.ha_enabled && links_.peer_connected() && follower_wal_matches_ && !running_alone_ && peer_acked_through_ >= peer_handed_over_at_;
 }
 
 bool ReplicatedWal::may_commit_without_follower() const {
@@ -173,6 +181,9 @@ void ReplicatedWal::advance_commit() {
     }
     if (through > committed_through_) {
         committed_through_ = through;
+        if (positions_ != nullptr) {
+            positions_->publish_committed(committed_through_);
+        }
         events_.committed_through(committed_through_);
     }
 }
@@ -364,9 +375,17 @@ void ReplicatedWal::handle_ack(int64_t seq_no, Clock::time_point now) {
 }
 
 void ReplicatedWal::forget_agreement() {
+    unanswered_request_.reset();
     follower_wal_agreed_ = false;
     follower_wal_matches_ = false;
     waiting_since_.reset();
+    peer_handed_over_at_ = 0;
+    if (peer_catching_up_) {
+        peer_catching_up_ = false;
+        if (peer_catch_up_ != nullptr) {
+            peer_catch_up_->stop_peer_catch_up();
+        }
+    }
     // A leader that stops sending live records says so, or its follower, still believing the WALs
     // agree, would wait for records that never come.
     if (configuration_.ha_enabled && role_ == ReplicaRole::leader && links_.peer_connected()) {
@@ -389,7 +408,7 @@ void ReplicatedWal::send_position_request(Clock::time_point now) {
                request.last_seq_no, request.last_epoch);
 }
 
-void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_epoch, Clock::time_point now) {
+void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_epoch, Clock::time_point /*now*/) {
     if (role_ != ReplicaRole::leader || !links_.peer_connected()) {
         return;
     }
@@ -398,8 +417,44 @@ void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_ep
     reply.seq_no = answer.seq_no;
     reply.epoch = answer.epoch;
     reply.agreed = answer.seq_no == last_seq_no && (answer.seq_no == 0 || answer.epoch == last_epoch);
+
+    if (peer_catch_up_ != nullptr) {
+        // A follower asks on each of its connections when they open, so the same request can arrive twice
+        // in quick succession. While the records after that position are being sent, the second is the
+        // same request and is not answered again, or the follower would be sent every record twice
+        // (BUG-0155).
+        if (reply.agreed && peer_catching_up_ && last_seq_no == peer_catch_up_after_) {
+            PUBSUB_LOG(logger_, FwLogLevel::Debug,
+                       "{}: the follower asked again from record {}, which it is already being sent the records after -- not answered again",
+                       configuration_.owner_name, last_seq_no);
+            return;
+        }
+        // Any other request while records are being sent means the follower no longer agrees: what is
+        // being sent stops. It is not answered, whether the answer agrees or not, until the reading thread
+        // has confirmed that it has stopped, so that every record it was still sending is queued on the
+        // connection before the answer, and the follower, having discarded them, takes up from the answer
+        // cleanly. It is answered as soon as that is confirmed (on_peer_catch_up_stopped).
+        if (peer_catching_up_) {
+            PUBSUB_LOG(logger_, FwLogLevel::Info,
+                       "{}: the follower asked again from record {} -- what was being sent to it stops, and it is answered once that has stopped",
+                       configuration_.owner_name, last_seq_no);
+            peer_catch_up_->stop_peer_catch_up();
+            peer_catching_up_ = false;
+            unanswered_request_ = UnansweredRequest{last_seq_no, last_epoch};
+            return;
+        }
+        if (!peer_catch_up_->reading_has_stopped()) {
+            unanswered_request_ = UnansweredRequest{last_seq_no, last_epoch};
+            PUBSUB_LOG(logger_, FwLogLevel::Debug,
+                       "{}: the follower asked from record {}, but the reading thread has not yet stopped what it was sending -- answered when it has",
+                       configuration_.owner_name, last_seq_no);
+            return;
+        }
+    }
+
     // On the connection the records go on, so that the follower has the answer before the records that
     // follow it.
+    unanswered_request_.reset();
     links_.send_position_reply_to_peer(reply);
     if (!reply.agreed) {
         PUBSUB_LOG(logger_, FwLogLevel::Info,
@@ -408,11 +463,34 @@ void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_ep
         return;
     }
 
-    // The WALs agree through the follower's last record. Send it every record after that, then live
-    // records. Nothing is written while this runs, because this thread is the one that writes, so the
-    // live records follow without a gap.
-    int64_t sent = 0;
+    // A request after the hand-over means the follower no longer agrees, after a gap: it is answered
+    // afresh. New records sent to it before now are queued ahead of the answer, and it discards them.
+    if (follower_wal_matches_) {
+        PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the follower asked again from record {} -- answered afresh", configuration_.owner_name, last_seq_no);
+        follower_wal_matches_ = false;
+        peer_handed_over_at_ = 0;
+    }
     const int64_t after = last_seq_no;
+    peer_acked_through_ = after;
+
+    if (peer_catch_up_ != nullptr) {
+        // The records are read and sent by a thread of its own; this one carries on, sending the follower
+        // nothing until it is handed over (on_peer_caught_up).
+        peer_catching_up_ = true;
+        peer_catch_up_after_ = after;
+        peer_catch_up_->start_peer_catch_up(after);
+        // TEST CONTRACT -- ha_test.py matches the start of this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+        PUBSUB_LOG(logger_, FwLogLevel::Info,
+                   "{}: the follower's log agrees with this one through record {} -- the {} record(s) after that are being sent to it from the WAL; live "
+                   "records follow once it has them",
+                   configuration_.owner_name, after, log_epochs_.last_seq_no() - after);
+        return;
+    }
+
+    // Without a catch-up thread: every record after it is read and sent here, then live records. Nothing
+    // is written while this runs, because this thread is the one that writes, so the live records follow
+    // without a gap.
+    int64_t sent = 0;
     [[maybe_unused]] const auto end_position = WalReader::replay(configuration_.wal_directory, wal_.scan_start_for(after + 1),
                                                                  [this, after, &sent](int64_t record_id, const void* payload, size_t size) {
                                                                      const std::optional<WalEntryContents> contents = read_wal_entry_contents(payload, size);
@@ -428,15 +506,35 @@ void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_ep
                                                                      links_.send_record_to_peer(record);
                                                                      ++sent;
                                                                  });
-    peer_acked_through_ = after;
     follower_wal_matches_ = true;
-    if (peer_acked_through_ < log_epochs_.last_seq_no()) {
-        waiting_since_ = now;
-    }
+    // Not waited for until it has acknowledged everything just sent, or new records would wait behind it.
+    peer_handed_over_at_ = log_epochs_.last_seq_no();
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info,
                "{}: the follower's log agrees with this one through record {} -- sent it the {} record(s) after that; live records follow",
                configuration_.owner_name, after, sent);
+}
+
+void ReplicatedWal::on_peer_caught_up(int64_t through, Clock::time_point /*now*/) {
+    if (!peer_catching_up_ || role_ != ReplicaRole::leader) {
+        return;
+    }
+    peer_catching_up_ = false;
+    follower_wal_matches_ = true;
+    peer_handed_over_at_ = through;
+    PUBSUB_LOG(logger_, FwLogLevel::Info,
+               "{}: the follower has been sent every record through {} -- this instance sends it each new record from now, and waits for it again once "
+               "it has acknowledged them all",
+               configuration_.owner_name, through);
+}
+
+void ReplicatedWal::on_peer_catch_up_stopped(Clock::time_point now) {
+    if (!unanswered_request_.has_value() || peer_catch_up_ == nullptr || !peer_catch_up_->reading_has_stopped()) {
+        return;
+    }
+    const UnansweredRequest request = *unanswered_request_;
+    unanswered_request_.reset();
+    handle_position_request(request.last_seq_no, request.last_epoch, now);
 }
 
 void ReplicatedWal::handle_position_reply(const LogPositionReplyView& reply, Clock::time_point now) {
@@ -457,8 +555,19 @@ void ReplicatedWal::handle_position_reply(const LogPositionReplyView& reply, Clo
     const LogEpochTable::FollowerStep step = log_epochs_.follower_step(LogEpochTable::PositionAnswer{reply.seq_no, reply.epoch});
     const int64_t keep_through = step.keep_through;
     const bool agreed = reply.agreed && step.agreed && keep_through == last_before;
+    if (keep_through < last_before && peer_catch_up_ != nullptr && !peer_catch_up_->reading_has_stopped()) {
+        // A thread may still be reading this WAL for a follower this instance served while it led, and
+        // cutting the WAL back under it would have it read a segment being shortened or deleted. Asked
+        // again at the next tick, by which time it will have stopped.
+        PUBSUB_LOG(logger_, FwLogLevel::Debug, "{}: records {} to {} must be discarded, but the WAL is still being read for a follower -- asking again later",
+                   configuration_.owner_name, keep_through + 1, last_before);
+        return;
+    }
     if (keep_through < last_before) {
         wal_.truncate_after(keep_through);
+        if (positions_ != nullptr) {
+            positions_->publish_written(keep_through, wal_.write_position());
+        }
         log_epochs_.truncate_after(keep_through);
         highest_replicated_seq_no_ = keep_through;
         // A record this instance numbered itself, while it led, may be among those discarded. Its next
@@ -585,6 +694,9 @@ void ReplicatedWal::change_role(ReplicaRole new_role, Clock::time_point now) {
         // Every record this instance holds was written by it or acknowledged by it as a follower, so it
         // is on the machines it can be on; the new leadership commits from here.
         committed_through_ = log_epochs_.last_seq_no();
+        if (positions_ != nullptr) {
+            positions_->publish_committed(committed_through_);
+        }
         peer_acked_through_ = 0;
         waiting_since_.reset();
     } else if (new_role == ReplicaRole::follower) {

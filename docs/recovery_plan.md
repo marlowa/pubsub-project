@@ -19,7 +19,11 @@
 > and tested on its own; and the sequencer uses it. All 74 scenarios pass, and the order's round trip is
 > unchanged. Phase 4 is finished: Andrew reviewed it on 14 October 2026 and asked for phase 5's design
 > next. Phase 5's design, [following_the_wal.md](availability/following_the_wal.md), was agreed on
-> 14 October 2026. Its step 1 is built: the library's way of following a WAL, tested on its own.
+> 14 October 2026. Its step 1 is built: the library's way of following a WAL, tested on its own. Its
+> step 2 is built: the follower sequencer is repaired through the reading thread, and the venue goes on
+> answering orders while a follower that missed 1.2 million records catches up
+> ([BUG-0155](bug_list.md#bug_0155) is fixed). TLA+ models of the lock-free allocators and queues
+> ([BUG-0162](bug_list.md#bug_0162)) come next, before step 3.
 
 ## In one page
 

@@ -25,6 +25,7 @@
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
+#include <pubsub_itc_fw/WalFollowing.hpp>
 
 #include <lease_messages.hpp>
 #include <replication_messages.hpp>
@@ -59,6 +60,31 @@ class ReplicationLinksInterface {
     virtual void send_position_request_to_peer(const LogPositionRequest& request) = 0;
     /// As the leader: where the two WALs agree, or that the follower must ask again.
     virtual void send_position_reply_to_peer(const LogPositionReply& reply) = 0;
+};
+
+/**
+ * @brief How a ReplicatedWal has the records a rejoining follower lacks sent from a thread of its own.
+ *        Implemented by the application, with a WalFollowerService and a WalReadingThread.
+ *
+ * Without it, the leader reads those records itself, on its own thread, which stops it handling anything
+ * else for as long as the reading takes (docs/availability/following_the_wal.md, section 4.1, and
+ * docs/bug_list.md, BUG-0155). With it, the leader asks for them to be sent and carries on; the
+ * application calls ReplicatedWal::on_peer_caught_up() once the follower has been sent every record and
+ * handed over, and from then on the replicated WAL sends it each new record itself.
+ */
+class PeerCatchUpInterface {
+  public:
+    virtual ~PeerCatchUpInterface() = default;
+
+    /// Start sending the follower every record after @p after_seq_no, up to the last written, on the
+    /// connection the replicated WAL sends its records on.
+    virtual void start_peer_catch_up(int64_t after_seq_no) = 0;
+
+    /// Stop sending to the follower: its connection has gone, or this instance has stopped leading.
+    virtual void stop_peer_catch_up() = 0;
+
+    /// Whether nothing is reading the WAL for a follower, so that it may be cut back.
+    [[nodiscard]] virtual bool reading_has_stopped() const = 0;
 };
 
 /**
@@ -193,6 +219,34 @@ class ReplicatedWal {
      */
     ReplicatedWal(ReplicatedWalConfiguration configuration, QuillLogger& logger, ReplicationLinksInterface& links, LeaseLinksInterface& lease_links,
                   ReplicatedWalEventsInterface& events, std::optional<PromisesKeptElsewhere> promises_elsewhere = std::nullopt);
+
+    /**
+     * @brief Have a rejoining follower's missing records sent from a thread of its own, through
+     *        @p catch_up, rather than read on this thread. Call before open().
+     */
+    void use_peer_catch_up(PeerCatchUpInterface& catch_up) {
+        peer_catch_up_ = &catch_up;
+    }
+
+    /**
+     * @brief Publish the WAL's positions to @p positions as they change: the position after each record
+     *        written, and the last committed record. For a WalReadingThread. Call before open().
+     */
+    void publish_positions_to(WalFollowingPositions& positions) {
+        positions_ = &positions;
+    }
+
+    /**
+     * @brief The follower has been sent every record up to @p through by the catch-up and handed over:
+     *        the replicated WAL sends it each new record from now on. Only through PeerCatchUpInterface.
+     */
+    void on_peer_caught_up(int64_t through, Clock::time_point now);
+
+    /**
+     * @brief The catch-up has confirmed that it has stopped sending to the follower: a request from the
+     *        follower left unanswered until then is answered now. Only through PeerCatchUpInterface.
+     */
+    void on_peer_catch_up_stopped(Clock::time_point now);
 
     ReplicatedWal(const ReplicatedWal&) = delete;
     ReplicatedWal& operator=(const ReplicatedWal&) = delete;
@@ -358,6 +412,21 @@ class ReplicatedWal {
     // sent to it; the highest number it has acknowledged; and when it last acknowledged anything.
     bool follower_wal_matches_{false};
     int64_t peer_acked_through_{0};
+    // While the catch-up sends a rejoining follower the records it lacks, this instance sends it nothing
+    // itself, and is not waited for; once handed over, it is waited for again only once it has
+    // acknowledged every record up to where it was handed over, because until then new records would
+    // wait behind the whole catch-up (BUG-0155).
+    bool peer_catching_up_{false};
+    int64_t peer_catch_up_after_{0}; // the record after which the catch-up started
+    int64_t peer_handed_over_at_{0};
+    PeerCatchUpInterface* peer_catch_up_{nullptr};
+    // A request from the follower left unanswered until the catch-up has confirmed that it has stopped.
+    struct UnansweredRequest {
+        int64_t last_seq_no{0};
+        int32_t last_epoch{0};
+    };
+    std::optional<UnansweredRequest> unanswered_request_;
+    WalFollowingPositions* positions_{nullptr};
     // While records wait for the follower: since when, for the timeout. Reset to the time of each
     // acknowledgement that leaves records still waiting.
     std::optional<Clock::time_point> waiting_since_;

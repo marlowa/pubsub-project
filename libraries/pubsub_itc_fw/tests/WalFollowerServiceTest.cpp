@@ -72,8 +72,10 @@ WalFollowRequestView request(int64_t last_seq_no) {
     return view;
 }
 
-EventMessage reached(const ConnectionID& connection, int64_t reached_seq_no, int64_t records_sent) {
+// A report on the service's first serving of a connection, which is numbered 1, unless told otherwise.
+EventMessage reached(const ConnectionID& connection, int64_t reached_seq_no, int64_t records_sent, uint64_t serving = 1) {
     auto report = std::make_unique<WalReadingReport>();
+    report->serving = serving;
     report->kind = WalReadingReport::Kind::Reached;
     report->connection = connection;
     report->reached_seq_no = reached_seq_no;
@@ -212,6 +214,20 @@ TEST_F(WalFollowerServiceTest, StoppingAllWaitsForTheReadingThreadToSayItHasStop
 TEST_F(WalFollowerServiceTest, AMessageThatIsNotAReportIsLeftForTheApplication) {
     const uint8_t bytes[4] = {1, 2, 3, 4};
     EXPECT_FALSE(service_.on_inter_thread_message(EventMessage::create_itc_message(ThreadID{9}, bytes, 4)));
+}
+
+TEST_F(WalFollowerServiceTest, AReportFromAnEarlierServingOfTheSameConnectionIsIgnored) {
+    service_.serve(follower_connection, 5, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend);
+    service_.serve(follower_connection, 8, FollowerLimit::LastCommitted, converter, CaughtUpMessage::DoNotSend); // afresh, numbered 2
+    ASSERT_GE(links_.commands.size(), 3U);
+    EXPECT_EQ(links_.commands.back().serving, 2U);
+
+    // The first serving's report, still on its way, must not hand the follower over.
+    ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 15, 1)));
+    EXPECT_FALSE(service_.is_handed_over(follower_connection));
+
+    ASSERT_TRUE(service_.on_inter_thread_message(reached(follower_connection, 20, 12, 2)));
+    EXPECT_TRUE(service_.is_handed_over(follower_connection));
 }
 
 } // namespaces
