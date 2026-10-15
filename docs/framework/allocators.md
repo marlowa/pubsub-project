@@ -485,5 +485,6 @@ It is confined to one thread, like the maps it replaces. In debug, ASan and cove
 
 ## See Also
 
+- [TLA+ models](tla/findings.md) — the slab allocator's reclaim handshake and the queue of empty slabs, specified in TLA+ and checked with TLC
 - [Reactor](reactor.md) — how the reactor drives slab reclamation and the outbound/inbound PDU paths
 - [Threading](threading.md) — `ExpandablePoolAllocator` backing `LockFreeMessageQueue` node allocation
