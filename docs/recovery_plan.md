@@ -22,8 +22,9 @@
 > 14 October 2026. Its step 1 is built: the library's way of following a WAL, tested on its own. Its
 > step 2 is built: the follower sequencer is repaired through the reading thread, and the venue goes on
 > answering orders while a follower that missed 1.2 million records catches up
-> ([BUG-0155](bug_list.md#bug_0155) is fixed). TLA+ models of the lock-free allocators and queues
-> ([BUG-0162](bug_list.md#bug_0162)) come next, before step 3.
+> ([BUG-0155](bug_list.md#bug_0155) is fixed). The lock-free allocators and queues, and the hand-over of
+> a follower, are now specified in TLA+ and checked with TLC
+> ([BUG-0162](bug_list.md#bug_0162), [framework/tla/findings.md](framework/tla/findings.md)). Step 3 is next.
 
 ## In one page
 

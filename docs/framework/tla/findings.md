@@ -39,6 +39,8 @@ java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlab
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabsNoKeepBack.cfg QueueOfEmptySlabs.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeList.cfg PoolFreeList.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeListNoCounter.cfg PoolFreeList.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOver.cfg FollowerHandOver.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOverNoCompare.cfg FollowerHandOver.tla
 ```
 
 `-deadlock` turns off TLC's check that some step is always possible: the specifications stop when their
@@ -187,13 +189,49 @@ state space is bounded by a constraint on it, `MaxCounter`.
 | Taking a slot succeeds whether or not the head still matches | checked alone, `NeverTakenTwice` |
 | Taking a slot sets the head to nothing instead of the next slot | `NothingLost` |
 
-## Still to be modelled
+## 4. Handing a follower over to new records: FollowerHandOver.tla
 
-[BUG-0162](../../bug_list.md#bug_0162) lists one more:
+**The code.** `WalReadingThread` and `WalFollowerService`, as designed in
+[following_the_wal.md](../../availability/following_the_wal.md), section 3.4. A follower of a WAL is
+caught up by the reading thread and then handed over to the thread that owns the WAL, which sends it each
+new record from then on. The owning thread releases records one at a time, and a follower may be sent a
+record only once it is released. The reading thread reads the limit, sends every record up to it, and
+reports the position it reached; the owning thread hands the follower over only if that position still
+equals the limit, and otherwise tells the reading thread to carry on. Every send from either thread goes
+on one queue into the reactor, in order. Each serving has a number, and a report from an earlier serving
+is ignored. The follower's connection may be lost, after which sends queued for it are dropped, the
+reading thread is told to stop, and the follower asks again from the last record it holds.
 
-4. The hand-over of a follower from the reading thread to new records
-   ([following_the_wal.md](../../availability/following_the_wal.md), section 3.4): never a record missed,
-   never one sent twice.
+**The properties.**
+
+| Property | Meaning |
+|---|---|
+| `NoGapNoRepeat` | On each connection, the follower is sent every record exactly once and in order |
+| `NeverAboveLimit` | Nothing is queued for the follower that has not been released |
+| `NothingMissedAtHandOver` | Once the follower is handed over and every queued send has gone out, it holds every record released |
+
+**Handing over on any report** (`FollowerHandOverNoCompare.cfg`): TLC finds `NothingMissedAtHandOver`
+violated, in 8 states. The reading thread reads the limit as record 1; the owning thread releases record 2,
+and sends it nothing, because the follower is still being caught up; the reading thread reports that it
+reached record 1; the owning thread hands the follower over, and record 2 is never sent.
+
+**As designed** (`FollowerHandOver.cfg`): every property holds.
+
+| Records | Follower holds at the start | Connections lost | Distinct states | Time on 16 workers | Result |
+|---|---|---|---|---|---|
+| 7 | none | up to 2 | 255,528 | 1 s | holds (the configuration as committed) |
+| 8 | record 1 | up to 2 | 255,654 | 1 s | holds |
+| 9 | none | up to 3 | 5,272,145 | 7 s | holds |
+
+**Made to fail.**
+
+| Change | Property TLC found violated |
+|---|---|
+| The follower is handed over on any report | `NothingMissedAtHandOver` (the second configuration) |
+| A report from an earlier serving is acted on | `NothingMissedAtHandOver` |
+| The owning thread sends new records while the follower is still being caught up | `NoGapNoRepeat` |
+| The reading thread reports before it has queued its last record | `NothingMissedAtHandOver` |
+| The reading thread reads one record past the limit | checked alone, `NeverAboveLimit` |
 
 ---
 

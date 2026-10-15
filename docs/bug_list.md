@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 167 |
-| Open | 69 (49 defects, 20 tasks) |
-| Closed | 98 |
+| Open | 68 (49 defects, 19 tasks) |
+| Closed | 99 |
 | Next id | BUG-0168 |
 
 ## Open bugs by severity
 
-16 high, 44 medium, 9 low.
+16 high, 43 medium, 9 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -70,7 +70,6 @@
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
-| [BUG-0162](#bug_0162) | medium | task | The lock-free allocators and queues have no model checked by TLA+, as the high availability rules have |
 | [BUG-0164](#bug_0164) | medium | defect | The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread |
 | [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
@@ -274,49 +273,6 @@ builder is not.
 same way, and named, so that it can be told apart from the sequencer's thread in `/proc` and in `perf`.
 
 **Principles.** F4.
-
-### BUG-0162: The lock-free allocators and queues have no model checked by TLA+, as the high availability rules have {#bug_0162}
-
-| | |
-|---|---|
-| Severity | medium |
-| Kind | task |
-| Found | 2026-10-14 |
-| Recorded | 2026-10-14 |
-| How | Andrew, after [BUG-0157](#bug_0157): a use-after-free window in the slab allocator that lay undetected because nothing checked the order of the two threads' steps |
-| Impact | The allocators and queues every message passes through are checked only by tests and ThreadSanitizer, which find a race only when a run happens to reach it, and which cannot check the 16-byte compare-and-exchange at all |
-
-**What is wanted.** A TLA+ model of each lock-free structure, checked by TLC, as the rules for which
-instance leads are checked in `docs/availability/tla/`. Each models every atomic step of each thread, and
-states as invariants what must never happen: a slab touched after it is destroyed, a queue node lost or
-taken twice, a pool block handed out twice. In this order, the first being the cheapest and the most
-telling:
-
-1. The slab allocator's reclaim handshake (`SlabAllocator`, `ExpandableSlabAllocator`): the count, the
-   owner's hold on its current slab, and the deferred destruction. The design before BUG-0157 is modelled
-   first, and TLC must find the use-after-free in it, so that the model is known to be able to fail; then
-   the design now, in which it must find nothing.
-2. `EmptySlabQueue`: the queue with the rule that the last node taken is kept until the next drain.
-3. `FixedSizeMemoryPool`: the stack built on 16-byte compare-and-exchange, and its protection against a
-   block being taken, returned and taken again between one thread's read and its exchange, which neither
-   ThreadSanitizer nor Valgrind can check.
-4. The hand-over of a follower from the reading thread to new records (phase 5,
-   `docs/availability/following_the_wal.md`, section 3.4): never a record missed, never one sent twice.
-
-**What it will not do.** TLA+ checks the model, not the code, so each model names the code it describes
-and is kept in step with it. It assumes every thread sees every write in a single order, so it checks the
-algorithm, not whether each C++ memory ordering is strong enough; on this processor that difference is
-small, and a checker for C++ atomics (GenMC, for example) would cover it, as a new tool added to the Rocky 8
-Dockerfile, if it is ever needed.
-
-**Progress.** The first three are done: `docs/framework/tla/SlabReclaim.tla`, `QueueOfEmptySlabs.tla`
-and `PoolFreeList.tla`, described in [framework/tla/findings.md](framework/tla/findings.md). TLC finds the
-use after free of BUG-0157 in the design before it was fixed; finds that the slab of the last node taken
-from the queue would be used after it was destroyed if the owner did not keep it back; and finds the ABA
-fault in the pool's free list if its exchange compared only the pointer. In the code as it is, every
-property holds. Each property was made to fail by a deliberate change before the results were trusted.
-
-**When.** Once step 2 of phase 5 of the recovery plan is committed, and before step 3, so that the model of the hand-over exists before the matching engine and the publishers depend on it. Andrew agreed on 15 October 2026.
 
 ### BUG-0161: The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send {#bug_0161}
 
@@ -3496,6 +3452,53 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0162: The lock-free allocators and queues have no model checked by TLA+, as the high availability rules have {#bug_0162}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-15 -- TLA+ models of the slab allocator's reclaim, the queue of empty slabs, the pool's free list and the hand-over of a follower, checked with TLC |
+| How | Andrew, after [BUG-0157](#bug_0157): a use-after-free window in the slab allocator that lay undetected because nothing checked the order of the two threads' steps |
+| Impact | The allocators and queues every message passes through are checked only by tests and ThreadSanitizer, which find a race only when a run happens to reach it, and which cannot check the 16-byte compare-and-exchange at all |
+
+**What is wanted.** A TLA+ model of each lock-free structure, checked by TLC, as the rules for which
+instance leads are checked in `docs/availability/tla/`. Each models every atomic step of each thread, and
+states as invariants what must never happen: a slab touched after it is destroyed, a queue node lost or
+taken twice, a pool block handed out twice. In this order, the first being the cheapest and the most
+telling:
+
+1. The slab allocator's reclaim handshake (`SlabAllocator`, `ExpandableSlabAllocator`): the count, the
+   owner's hold on its current slab, and the deferred destruction. The design before BUG-0157 is modelled
+   first, and TLC must find the use-after-free in it, so that the model is known to be able to fail; then
+   the design now, in which it must find nothing.
+2. `EmptySlabQueue`: the queue with the rule that the last node taken is kept until the next drain.
+3. `FixedSizeMemoryPool`: the stack built on 16-byte compare-and-exchange, and its protection against a
+   block being taken, returned and taken again between one thread's read and its exchange, which neither
+   ThreadSanitizer nor Valgrind can check.
+4. The hand-over of a follower from the reading thread to new records (phase 5,
+   `docs/availability/following_the_wal.md`, section 3.4): never a record missed, never one sent twice.
+
+**What it will not do.** TLA+ checks the model, not the code, so each model names the code it describes
+and is kept in step with it. It assumes every thread sees every write in a single order, so it checks the
+algorithm, not whether each C++ memory ordering is strong enough; on this processor that difference is
+small, and a checker for C++ atomics (GenMC, for example) would cover it, as a new tool added to the Rocky 8
+Dockerfile, if it is ever needed.
+
+**How it was done.** Four specifications in `docs/framework/tla/`, described in
+[framework/tla/findings.md](framework/tla/findings.md): `SlabReclaim.tla`, `QueueOfEmptySlabs.tla`,
+`PoolFreeList.tla` and `FollowerHandOver.tla`. Each has a second configuration in which TLC must find the
+fault the code is built to prevent, and does: the use after free of BUG-0157 in the slab allocator as it
+was before that fix; the slab of the last node taken from the queue used after it was destroyed, if the
+owner did not keep it back; the ABA fault in the pool's free list, if its exchange compared only the
+pointer; and a record never sent to a follower, if it were handed over without comparing the position
+reached with the limit. In the code as it is, and the hand-over as designed, every property holds. Every
+property was made to fail by a deliberate change before the results were trusted.
+
+**When.** Once step 2 of phase 5 of the recovery plan is committed, and before step 3, so that the model of the hand-over exists before the matching engine and the publishers depend on it. Andrew agreed on 15 October 2026.
 
 ### BUG-0155: A follower sequencer that rejoins after missing about a million records stops the venue answering orders, and never catches up {#bug_0155}
 
