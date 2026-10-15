@@ -309,10 +309,11 @@ algorithm, not whether each C++ memory ordering is strong enough; on this proces
 small, and a checker for C++ atomics (GenMC, for example) would cover it, as a new tool added to the Rocky 8
 Dockerfile, if it is ever needed.
 
-**Progress.** The first two are done: `docs/framework/tla/SlabReclaim.tla` and `QueueOfEmptySlabs.tla`,
-described in [framework/tla/findings.md](framework/tla/findings.md). TLC finds the use after free of
-BUG-0157 in the design before it was fixed, and finds that the slab of the last node taken from the queue
-would be used after it was destroyed if the owner did not keep it back; in the code as it is, every
+**Progress.** The first three are done: `docs/framework/tla/SlabReclaim.tla`, `QueueOfEmptySlabs.tla`
+and `PoolFreeList.tla`, described in [framework/tla/findings.md](framework/tla/findings.md). TLC finds the
+use after free of BUG-0157 in the design before it was fixed; finds that the slab of the last node taken
+from the queue would be used after it was destroyed if the owner did not keep it back; and finds the ABA
+fault in the pool's free list if its exchange compared only the pointer. In the code as it is, every
 property holds. Each property was made to fail by a deliberate change before the results were trusted.
 
 **When.** Once step 2 of phase 5 of the recovery plan is committed, and before step 3, so that the model of the hand-over exists before the matching engine and the publishers depend on it. Andrew agreed on 15 October 2026.

@@ -37,6 +37,8 @@ java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SlabReclaim.cfg 
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config SlabReclaimBeforeBug0157.cfg SlabReclaim.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabs.cfg QueueOfEmptySlabs.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabsNoKeepBack.cfg QueueOfEmptySlabs.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeList.cfg PoolFreeList.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeListNoCounter.cfg PoolFreeList.tla
 ```
 
 `-deadlock` turns off TLC's check that some step is always possible: the specifications stop when their
@@ -134,12 +136,61 @@ once, by a process of its own, interleaved in every way with the owner and the o
 | The exchange does not move the tail, so two threads can link to the same earlier node | `NothingLost` |
 | Taking a node does not move the head | `TakenAtMostOnce` |
 
+## 3. The pool's free list: PoolFreeList.tla
+
+**The code.** `FixedSizeMemoryPool`, on the lock-free path the venue runs, which neither ThreadSanitizer
+nor Valgrind can check, because neither can follow a 16-byte compare-and-exchange. The free slots form a
+stack linked through each slot's `free_next`. The head is a pointer and a counter in one 16-byte word,
+changed only by a 16-byte compare-and-exchange, and every change adds one to the counter. To take a slot,
+a thread reads the head, reads the top slot's `free_next`, and exchanges the head for that; to give one
+back, it reads the head, sets the slot's `free_next` to it, and exchanges the head for the slot. A failed
+exchange starts again ([allocators.md](../allocators.md), "Treiber Stack Free List").
+
+The counter is what stops the fault known as ABA: a thread reads the head as slot A, with slot B after it,
+and is held up while others take A, take B and give A back. Its exchange then sees A at the head again,
+and without the counter it would succeed and make B the head, although B is in use.
+
+The code reads the head with one 16-byte load. If that load were torn, the exchange that follows would
+compare all 16 bytes against the head as it is and fail, and the thread would start again; a slot's
+`free_next` can always be read, because slots are never freed while the pool exists. So the
+specification reads the head in one step.
+
+**The properties.**
+
+| Property | Meaning |
+|---|---|
+| `NeverTakenTwice` | No slot is taken while another thread holds it |
+| `FreeListSound` | The free list never runs in a circle, and never contains a slot a thread holds |
+| `NothingLost` | Whenever no thread is part way through taking a slot, every slot is on the free list or held |
+
+**Without the counter** (`PoolFreeListNoCounter.cfg`, two threads): TLC finds `FreeListSound` violated,
+in 17 states, which are the ABA fault. Thread 2 reads the head as slot 1 with slot 2 after it, and is
+held up. Thread 1 takes slot 1, takes slot 2, and gives slot 1 back. Thread 2's exchange sees slot 1 at
+the head, succeeds, and makes slot 2 the head while thread 1 holds it.
+
+**As the code is** (`PoolFreeList.cfg`): every property holds. The counter grows without limit, so the
+state space is bounded by a constraint on it, `MaxCounter`.
+
+| Slots | Threads | Most slots one thread holds | `MaxCounter` | Distinct states | Time on 16 workers | Result |
+|---|---|---|---|---|---|---|
+| 3 | 3 | 2 | 7 | 13,654,140 | 24 s | holds (the configuration as committed) |
+| 3 | 3 | 2 | 10 | 100,146,444 | 194 s | holds |
+| 3 | 2 | 2 | 14 | 1,207,007 | 3 s | holds |
+
+**Made to fail.** With two threads:
+
+| Change | Property TLC found violated |
+|---|---|
+| The exchange compares only the pointer | `FreeListSound` (the second configuration) |
+| A slot given back is linked to itself instead of to the head read | `FreeListSound` |
+| Giving a slot back succeeds whether or not the head still matches | `FreeListSound` |
+| Taking a slot succeeds whether or not the head still matches | checked alone, `NeverTakenTwice` |
+| Taking a slot sets the head to nothing instead of the next slot | `NothingLost` |
+
 ## Still to be modelled
 
-[BUG-0162](../../bug_list.md#bug_0162) lists two more, in this order:
+[BUG-0162](../../bug_list.md#bug_0162) lists one more:
 
-3. `FixedSizeMemoryPool`: the free list built on a 16-byte compare-and-exchange, and its protection
-   against a block being taken, given back and taken again between one thread's read and its exchange.
 4. The hand-over of a follower from the reading thread to new records
    ([following_the_wal.md](../../availability/following_the_wal.md), section 3.4): never a record missed,
    never one sent twice.
