@@ -59,9 +59,12 @@
 (* 2^64 successful head changes, far beyond the expected continuous        *)
 (* operating lifetime at the comparison rate described above.             *)
 (*                                                                         *)
-(* Each push is assumed to return a slot held by that thread, so invalid   *)
-(* pointers and duplicate frees are outside the model. It also does not    *)
-(* model object construction, destruction, canaries, or is_constructed.    *)
+(* In PoolFreeList.cfg, a push is assumed to return a slot held by the     *)
+(* same thread. PoolFreeValidation.cfg also models the checks in           *)
+(* ExpandablePoolAllocator::deallocate: a pointer must identify a live     *)
+(* pool slot, and only one request may claim it for return. It abstracts   *)
+(* object construction, destruction, canaries, and is_constructed as the  *)
+(* live-slot set.                                                          *)
 (* There is no fairness or progress property: retries may continue without *)
 (* bound. The model checks reachable states, not whether an operation      *)
 (* eventually completes.                                                   *)
@@ -73,10 +76,14 @@ CONSTANTS
     Threads,      \* the threads using it
     MaxHeld,      \* the most slots one thread holds at once
     UseCounter,   \* whether the exchange compares the counter as well as the pointer
+    ModelFreeValidation, \* whether to include the outer allocator's free checks
     MaxCounter    \* bound on the head's counter, to keep the model finite
 
 Slots == 1..NumSlots
 Null == 0
+NullPointer == -1
+InvalidPointer == -2
+FreeResults == {"none", "accepted", "null_rejected", "invalid_pointer_rejected", "not_allocated_rejected"}
 
 VARIABLES
     head,       \* [ptr |-> the top slot or Null, counter |-> a number]
@@ -86,9 +93,10 @@ VARIABLES
     seen,       \* the head as each thread last read it
     seenNext,   \* in a pop, the free_next each thread read from the top slot
     pushing,    \* in a push, the slot each thread is giving back
-    gotTwice    \* a slot was taken while another thread held it
+    gotTwice,   \* a slot was taken while another thread held it
+    freeResult  \* result of each thread's latest modeled free request
 
-vars == <<head, freeNext, step, held, seen, seenNext, pushing, gotTwice>>
+vars == <<head, freeNext, step, held, seen, seenNext, pushing, gotTwice, freeResult>>
 
 Steps == {"idle", "pop_read_head", "pop_read_next", "pop_exchange", "push_read_head", "push_set_next", "push_exchange"}
 
@@ -116,6 +124,7 @@ TypeOK ==
     /\ seenNext \in [Threads -> Slots \cup {Null}]
     /\ pushing \in [Threads -> Slots \cup {Null}]
     /\ gotTwice \in BOOLEAN
+    /\ freeResult \in [Threads -> FreeResults]
 
 \* Every slot starts on the free list, slot 1 at the top.
 Init ==
@@ -127,6 +136,7 @@ Init ==
     /\ seenNext = [t \in Threads |-> Null]
     /\ pushing = [t \in Threads |-> Null]
     /\ gotTwice = FALSE
+    /\ freeResult = [t \in Threads |-> "none"]
 
 (***************************************************************************)
 (* Taking a slot (pop_slot_from_free_list).                                *)
@@ -135,20 +145,20 @@ PopBegin(t) ==
     /\ step[t] = "idle"
     /\ Cardinality(held[t]) < MaxHeld
     /\ step' = [step EXCEPT ![t] = "pop_read_head"]
-    /\ UNCHANGED <<head, freeNext, held, seen, seenNext, pushing, gotTwice>>
+    /\ UNCHANGED <<head, freeNext, held, seen, seenNext, pushing, gotTwice, freeResult>>
 
 \* An empty stack: the pool is exhausted, and the thread gets nothing.
 PopReadHead(t) ==
     /\ step[t] = "pop_read_head"
     /\ seen' = [seen EXCEPT ![t] = head]
     /\ step' = [step EXCEPT ![t] = IF head.ptr = Null THEN "idle" ELSE "pop_read_next"]
-    /\ UNCHANGED <<head, freeNext, held, seenNext, pushing, gotTwice>>
+    /\ UNCHANGED <<head, freeNext, held, seenNext, pushing, gotTwice, freeResult>>
 
 PopReadNext(t) ==
     /\ step[t] = "pop_read_next"
     /\ seenNext' = [seenNext EXCEPT ![t] = freeNext[seen[t].ptr]]
     /\ step' = [step EXCEPT ![t] = "pop_exchange"]
-    /\ UNCHANGED <<head, freeNext, held, seen, pushing, gotTwice>>
+    /\ UNCHANGED <<head, freeNext, held, seen, pushing, gotTwice, freeResult>>
 
 PopExchange(t) ==
     LET s == seen[t].ptr
@@ -161,7 +171,7 @@ PopExchange(t) ==
             /\ step' = [step EXCEPT ![t] = "idle"]
        ELSE /\ step' = [step EXCEPT ![t] = "pop_read_head"]
             /\ UNCHANGED <<head, held, gotTwice>>
-    /\ UNCHANGED <<freeNext, seen, seenNext, pushing>>
+    /\ UNCHANGED <<freeNext, seen, seenNext, pushing, freeResult>>
 
 (***************************************************************************)
 (* Giving a slot back (push_slot_to_free_list).                            *)
@@ -172,19 +182,41 @@ PushBegin(t) ==
         /\ pushing' = [pushing EXCEPT ![t] = s]
         /\ held' = [held EXCEPT ![t] = @ \ {s}]
     /\ step' = [step EXCEPT ![t] = "push_read_head"]
-    /\ UNCHANGED <<head, freeNext, seen, seenNext, gotTwice>>
+    /\ UNCHANGED <<head, freeNext, seen, seenNext, gotTwice, freeResult>>
+
+\* Model the pointer and live-object checks before the free-list push.
+FreeRequest(t, requested) ==
+    LET owners == {owner \in Threads : requested \in held[owner]}
+    IN
+    /\ step[t] = "idle"
+    /\ requested \in Slots \cup {NullPointer, InvalidPointer}
+    /\ IF requested = NullPointer
+       THEN /\ freeResult' = [freeResult EXCEPT ![t] = "null_rejected"]
+            /\ UNCHANGED <<head, freeNext, step, held, seen, seenNext, pushing, gotTwice>>
+       ELSE IF requested = InvalidPointer
+            THEN /\ freeResult' = [freeResult EXCEPT ![t] = "invalid_pointer_rejected"]
+                 /\ UNCHANGED <<head, freeNext, step, held, seen, seenNext, pushing, gotTwice>>
+            ELSE IF owners = {}
+                 THEN /\ freeResult' = [freeResult EXCEPT ![t] = "not_allocated_rejected"]
+                      /\ UNCHANGED <<head, freeNext, step, held, seen, seenNext, pushing, gotTwice>>
+                 ELSE /\ \E owner \in owners :
+                           /\ held' = [held EXCEPT ![owner] = @ \ {requested}]
+                      /\ pushing' = [pushing EXCEPT ![t] = requested]
+                      /\ step' = [step EXCEPT ![t] = "push_read_head"]
+                      /\ freeResult' = [freeResult EXCEPT ![t] = "accepted"]
+                      /\ UNCHANGED <<head, freeNext, seen, seenNext, gotTwice>>
 
 PushReadHead(t) ==
     /\ step[t] = "push_read_head"
     /\ seen' = [seen EXCEPT ![t] = head]
     /\ step' = [step EXCEPT ![t] = "push_set_next"]
-    /\ UNCHANGED <<head, freeNext, held, seenNext, pushing, gotTwice>>
+    /\ UNCHANGED <<head, freeNext, held, seenNext, pushing, gotTwice, freeResult>>
 
 PushSetNext(t) ==
     /\ step[t] = "push_set_next"
     /\ freeNext' = [freeNext EXCEPT ![pushing[t]] = seen[t].ptr]
     /\ step' = [step EXCEPT ![t] = "push_exchange"]
-    /\ UNCHANGED <<head, held, seen, seenNext, pushing, gotTwice>>
+    /\ UNCHANGED <<head, held, seen, seenNext, pushing, gotTwice, freeResult>>
 
 PushExchange(t) ==
     /\ step[t] = "push_exchange"
@@ -194,12 +226,15 @@ PushExchange(t) ==
             /\ pushing' = [pushing EXCEPT ![t] = Null]
        ELSE /\ step' = [step EXCEPT ![t] = "push_read_head"]
             /\ UNCHANGED <<head, pushing>>
-    /\ UNCHANGED <<freeNext, held, seen, seenNext, gotTwice>>
+    /\ UNCHANGED <<freeNext, held, seen, seenNext, gotTwice, freeResult>>
 
 Next ==
     \E t \in Threads :
         \/ PopBegin(t) \/ PopReadHead(t) \/ PopReadNext(t) \/ PopExchange(t)
-        \/ PushBegin(t) \/ PushReadHead(t) \/ PushSetNext(t) \/ PushExchange(t)
+        \/ IF ModelFreeValidation
+           THEN \/ \E requested \in Slots \cup {NullPointer, InvalidPointer} : FreeRequest(t, requested)
+                \/ PushReadHead(t) \/ PushSetNext(t) \/ PushExchange(t)
+           ELSE PushBegin(t) \/ PushReadHead(t) \/ PushSetNext(t) \/ PushExchange(t)
 
 Spec == Init /\ [][Next]_vars
 

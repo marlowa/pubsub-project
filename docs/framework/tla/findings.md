@@ -39,9 +39,16 @@ java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlab
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config QueueOfEmptySlabsNoKeepBack.cfg QueueOfEmptySlabs.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeList.cfg PoolFreeList.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeListNoCounter.cfg PoolFreeList.tla
+java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config PoolFreeValidation.cfg PoolFreeList.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOver.cfg FollowerHandOver.tla
 java -cp tla2tools.jar tlc2.TLC -deadlock -workers auto -config FollowerHandOverNoCompare.cfg FollowerHandOver.tla
 ```
+
+To check the three pool free-list configurations as one test, run
+`python3 scripts/check_pool_free_list_tla.py` from the repository root. The command exits successfully
+only when the tagged free-list and free-validation models pass and the no-counter model reports the
+expected `FreeListSound` violation. Pass `--jar path/to/tla2tools.jar` if the jar is not available
+through `TLA2TOOLS_JAR` or `THIRDPARTY_DIR`.
 
 `-deadlock` turns off TLC's check that some step is always possible: the specifications stop when their
 bounds are used up, which is not a fault. TLC writes its working files under `states/` beside the
@@ -157,6 +164,23 @@ that read as one atomic observation, but TLC does not verify the instruction's b
 output or C++ memory-order rules. A slot's `free_next` remains addressable because slots are not freed
 while the pool exists.
 
+`PoolFreeList.cfg` checks the free-list algorithm with valid push requests. The public
+`ExpandablePoolAllocator::deallocate()` checks the pointer against its pool chain and atomically
+changes `is_constructed` from 1 to 0 before calling the fixed pool's push. `PoolFreeValidation.cfg`
+models those checks before the push: null pointers are rejected, pointers outside the pool or not
+aligned to a slot are rejected, and a request for a slot that is not currently allocated is rejected.
+The check and claim are one model action, representing the atomic compare-and-exchange on
+`is_constructed`; this ensures that concurrent requests to free the same still-free slot cannot both
+reach the free list. The model permits a different thread to free an allocated slot, as the allocator
+does. TLC checks the same free-list invariants while exploring these accepted and rejected requests.
+
+The model represents pointers by slot addresses. It cannot distinguish an old pointer from a newly
+allocated object if the same slot address has been reused. A stale pointer used after that reuse names
+the current object at that address, and the allocator's `is_constructed` check cannot identify the
+pointer's earlier allocation. This model also does not claim that callers can bypass the checks in
+`ExpandablePoolAllocator` and safely call `FixedSizeMemoryPool::deallocate()` with an invalid or
+already-freed pointer; that lower-level operation requires a valid allocated slot.
+
 **The properties.**
 
 | Property | Meaning |
@@ -186,12 +210,17 @@ the counter cannot wrap.
 | 3 | 3 | 2 | 10 | 100,146,444 | 194 s | holds |
 | 3 | 2 | 2 | 14 | 1,207,007 | 3 s | holds |
 
+**Allocator free-request validation** (`PoolFreeValidation.cfg`, two threads and two slots): TLC
+checks the same invariants while exploring null pointers, non-pool pointers, requests for slots that
+are not allocated, and valid frees. The valid request may come from a thread other than the one that
+allocated the slot. All properties hold across 105,256 distinct states.
+
 These results apply only to the listed numbers of slots, threads, held slots and counter bounds.
-The model assumes frees return a slot held by that thread; invalid pointers and duplicate frees
-are not represented. It treats the inline x86-64 `movdqa` read of the aligned 128-bit head as
-one atomic observation. TLC does not verify the compiler output, instruction behaviour or C++
-memory-ordering rules. It also does not check progress: retries may continue indefinitely, and
-the implementation's bounded retries for an apparently empty list are not modelled.
+`PoolFreeValidation.cfg` explores invalid and already-free requests at the allocator boundary.
+All models treat the inline x86-64 `movdqa` read of the aligned 128-bit head as one atomic
+observation. TLC does not verify the compiler output, instruction behaviour or C++ memory-ordering
+rules. The models also do not check progress: retries may continue indefinitely, and the
+implementation's bounded retries for an apparently empty list are not modelled.
 
 **Made to fail.** With two threads:
 
