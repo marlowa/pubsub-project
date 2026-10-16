@@ -578,6 +578,29 @@ template <typename T> class FixedSizeMemoryPool {
   public:
     using SlotType = Slot<T>;
 
+    /*
+     * The counter makes a stale compare-and-swap fail when a slot returns to
+     * the head after another thread has changed the free list. It is 64 bits,
+     * so the tag repeats after 2^64 successful changes to this pool's head.
+     *
+     * At 10 million successful changes per second, continuously:
+     *   18,446,744,073,709,551,616 / 10,000,000
+     *       = 1,844,674,407,370 seconds
+     *   1,844,674,407,370 / 31,557,600
+     *       = about 58,450 years
+     *
+     * As a deliberately generous comparison, one successful head change on
+     * every cycle of a 6 GHz processor, continuously:
+     *   18,446,744,073,709,551,616 / 6,000,000,000
+     *       = 3,074,457,345 seconds
+     *   3,074,457,345 / 31,557,600
+     *       = about 97.4 years
+     *
+     * A register increment commonly has about one cycle of latency. A
+     * successful free-list operation also needs a 128-bit compare-and-swap
+     * on the shared head, so one successful change per cycle is an optimistic
+     * rate comparison, not a measured rate for this pool.
+     */
     struct alignas(16) HeadPtr {
         SlotType* ptr;
         std::uint64_t counter;

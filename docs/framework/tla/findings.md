@@ -152,10 +152,10 @@ The counter is what stops the fault known as ABA: a thread reads the head as slo
 and is held up while others take A, take B and give A back. Its exchange then sees A at the head again,
 and without the counter it would succeed and make B the head, although B is in use.
 
-The code reads the head with one 16-byte load. If that load were torn, the exchange that follows would
-compare all 16 bytes against the head as it is and fail, and the thread would start again; a slot's
-`free_next` can always be read, because slots are never freed while the pool exists. So the
-specification reads the head in one step.
+The C++ implementation reads the head with inline SSE `movdqa` assembly. The specification treats
+that read as one atomic observation, but TLC does not verify the instruction's behaviour, compiler
+output or C++ memory-order rules. A slot's `free_next` remains addressable because slots are not freed
+while the pool exists.
 
 **The properties.**
 
@@ -163,21 +163,35 @@ specification reads the head in one step.
 |---|---|
 | `NeverTakenTwice` | No slot is taken while another thread holds it |
 | `FreeListSound` | The free list never runs in a circle, and never contains a slot a thread holds |
-| `NothingLost` | Whenever no thread is part way through taking a slot, every slot is on the free list or held |
+| `NothingLost` | In every state, every slot is on the free list or held, including a slot part way through being returned |
 
 **Without the counter** (`PoolFreeListNoCounter.cfg`, two threads): TLC finds `FreeListSound` violated,
 in 17 states, which are the ABA fault. Thread 2 reads the head as slot 1 with slot 2 after it, and is
 held up. Thread 1 takes slot 1, takes slot 2, and gives slot 1 back. Thread 2's exchange sees slot 1 at
 the head, succeeds, and makes slot 2 the head while thread 1 holds it.
 
-**As the code is** (`PoolFreeList.cfg`): every property holds. The counter grows without limit, so the
-state space is bounded by a constraint on it, `MaxCounter`.
+**As the code is** (`PoolFreeList.cfg`): every property holds in the checked finite model. The model
+uses an unbounded counter and `CounterBound` excludes states whose head counter exceeds `MaxCounter`.
+This lets TLC check the tagged algorithm without adding a wraparound at the model's small bound.
+The model leaves out the theoretical `std::uint64_t` wraparound on practical grounds: it requires
+`2^64` successful changes to the same head. At a continuous rate of one successful change per cycle
+on a hypothetical 6 GHz processor, that would take about 97 years. A real successful change also
+requires a 128-bit compare-and-swap on the shared head, so the comparison rate is deliberately
+generous. This is a practical assumption about the allocator's operating lifetime, not a proof that
+the counter cannot wrap.
 
 | Slots | Threads | Most slots one thread holds | `MaxCounter` | Distinct states | Time on 16 workers | Result |
 |---|---|---|---|---|---|---|
 | 3 | 3 | 2 | 7 | 13,654,140 | 24 s | holds (the configuration as committed) |
 | 3 | 3 | 2 | 10 | 100,146,444 | 194 s | holds |
 | 3 | 2 | 2 | 14 | 1,207,007 | 3 s | holds |
+
+These results apply only to the listed numbers of slots, threads, held slots and counter bounds.
+The model assumes frees return a slot held by that thread; invalid pointers and duplicate frees
+are not represented. It treats the inline x86-64 `movdqa` read of the aligned 128-bit head as
+one atomic observation. TLC does not verify the compiler output, instruction behaviour or C++
+memory-ordering rules. It also does not check progress: retries may continue indefinitely, and
+the implementation's bounded retries for an apparently empty list are not modelled.
 
 **Made to fail.** With two threads:
 

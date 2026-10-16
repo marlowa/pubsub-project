@@ -9,8 +9,15 @@
 (* linked list through each slot's free_next field, whose top is the       *)
 (* head. The head is a pointer and a counter together in one 16-byte word, *)
 (* changed only by a 16-byte compare-and-exchange (CMPXCHG16B), and every  *)
-(* change adds one to the counter. Any thread may take a slot (pop) or     *)
-(* give one back (push):                                                   *)
+(* change increments the counter. Its C++ type is std::uint64_t, which wraps *)
+(* after 2^64 changes. This model uses unbounded natural numbers to leave   *)
+(* that wraparound out of the state space. This is a practical assumption: *)
+(* at a continuous rate of one successful head change per cycle on a       *)
+(* hypothetical 6 GHz processor, a full counter cycle takes about 97 years. *)
+(* Each real change also needs a 128-bit compare-and-swap on the shared     *)
+(* head, so that rate is deliberately generous. CounterBound limits the    *)
+(* explored values for TLC.                                                *)
+(* Any thread may take a slot (pop) or give one back (push):                *)
 (*                                                                         *)
 (*   pop:  read the head; if its pointer is a slot, read that slot's       *)
 (*         free_next; then compare-and-exchange the head from what was     *)
@@ -26,26 +33,38 @@
 (* again and succeeds, making B the head although B is in use. With the    *)
 (* counter, the head it read no longer matches and the exchange fails.     *)
 (* With UseCounter = FALSE the exchange compares only the pointer, and TLC *)
-(* must find that fault; with UseCounter = TRUE, as in the code, it must   *)
-(* find nothing.                                                           *)
+(* must find that fault. With UseCounter = TRUE, each successful change    *)
+(* increments the tag, so a stale head cannot match while the counter has  *)
+(* not repeated. In the C++ code the counter is 64 bits. If it completed a *)
+(* full cycle while a thread held a stale head, and the pointer returned   *)
+(* to the same slot, the pair could match again. The rate calculation     *)
+(* beside HeadPtr in FixedSizeMemoryPool.hpp explains the practical scale  *)
+(* of that interval. This model uses unbounded integers and excludes       *)
+(* counter wraparound, so it checks the tagged algorithm only before the  *)
+(* tag repeats.                                                           *)
 (*                                                                         *)
-(* The code reads the head with one 16-byte load (movdqa). If that load    *)
-(* were torn, so that the pointer and the counter came from different      *)
-(* moments, the exchange that follows compares all 16 bytes against the    *)
-(* head as it is and fails, and the thread starts again; and a slot's      *)
-(* free_next can always be read, because slots are never freed while the   *)
-(* pool exists. So a torn read costs a retry and nothing else, and the     *)
-(* head is read here in one step. The code also gives up after nine empty  *)
-(* reads and reports the pool exhausted; here a pop that finds the stack   *)
-(* empty returns at once, which is the same as far as the free list is     *)
-(* concerned.                                                              *)
+(* The C++ implementation reads the head with inline SSE movdqa assembly   *)
+(* and requires a 16-byte-aligned head on x86-64. This specification treats *)
+(* each head read as one atomic observation. It does not check the          *)
+(* instruction's behaviour, compiler output, or the C++ memory-order rules. *)
+(* Slots remain allocated for the pool's lifetime, so a slot's free_next  *)
+(* remains addressable. The implementation retries up to nine times when  *)
+(* the head appears empty; this model returns immediately for an empty     *)
+(* head and does not model pool expansion or a transient empty result.      *)
 (*                                                                         *)
-(* The counter grows without limit, so the state space is bounded by a    *)
-(* constraint, MaxCounter, on the head's counter.                          *)
+(* CounterBound limits the current head counter so TLC can check a finite  *)
+(* state space. Transitions that would exceed MaxCounter are excluded. The *)
+(* model therefore checks the tagged algorithm before wraparound. It       *)
+(* excludes the theoretical wraparound because a full cycle requires      *)
+(* 2^64 successful head changes, far beyond the expected continuous        *)
+(* operating lifetime at the comparison rate described above.             *)
 (*                                                                         *)
-(* Not modelled: the memory orderings of the C++ atomics; every thread     *)
-(* sees every write in one order. The canary and the is_constructed flag,  *)
-(* which are written by the caller, not by the free list.                  *)
+(* Each push is assumed to return a slot held by that thread, so invalid   *)
+(* pointers and duplicate frees are outside the model. It also does not    *)
+(* model object construction, destruction, canaries, or is_constructed.    *)
+(* There is no fairness or progress property: retries may continue without *)
+(* bound. The model checks reachable states, not whether an operation      *)
+(* eventually completes.                                                   *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
@@ -184,7 +203,9 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-\* Keeps the model finite: the counter only grows.
+\* TLC checks the tagged algorithm with an unbounded counter, bounded to
+\* MaxCounter for a finite state space. Transitions beyond this bound are
+\* excluded, so this model does not explore counter wraparound.
 CounterBound == head.counter <= MaxCounter
 
 (***************************************************************************)
@@ -199,10 +220,9 @@ FreeListSound ==
     /\ ~FreeList.cycle
     /\ FreeList.slots \cap AllHeld = {}
 
-\* No slot is lost: every slot is on the free list or held by a thread, whenever no thread is part way
-\* through taking one.
-NothingLost ==
-    (\A t \in Threads : step[t] \notin {"pop_read_head", "pop_read_next", "pop_exchange"})
-    => FreeList.slots \cup AllHeld = Slots
+\* No slot is lost: every slot is on the free list or held by a thread in
+\* every state. A pop transfers a slot from the free list to held in one
+\* action; while a push is in progress, AllHeld includes its slot.
+NothingLost == FreeList.slots \cup AllHeld = Slots
 
 =============================================================================
