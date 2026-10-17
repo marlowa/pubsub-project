@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 170 |
+| Bugs recorded | 172 |
 | Open | 67 (47 defects, 20 tasks) |
-| Closed | 103 |
-| Next id | BUG-0171 |
+| Closed | 105 |
+| Next id | BUG-0173 |
 
 ## Open bugs by severity
 
-16 high, 43 medium, 8 low.
+15 high, 44 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -28,7 +28,6 @@
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
-| [BUG-0156](#bug_0156) | high | defect | A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -68,10 +67,11 @@
 | [BUG-0141](#bug_0141) | medium | defect | A follower that discards records while its record of command identifiers is still being built stops: the builder reads a segment the discard has deleted |
 | [BUG-0144](#bug_0144) | medium | defect | ha_test.py searches each read of a log separately, so a line split between two reads is missed, by a wait and by a check that something is absent |
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
-| [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
 | [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
+| [BUG-0171](#bug_0171) | medium | defect | Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher |
+| [BUG-0172](#bug_0172) | medium | defect | With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -254,6 +254,15 @@ program was converting video on the machine, using about 14 of its 32 cores, inc
 order path is pinned to, and writing heavily to the same disk; with that program stopped, a full run of all
 75 scenarios passed. Whether such a program was running during the earlier cases is not known.
 
+**A later case, 17 October 2026, on an otherwise quiet machine.** In a fill of 300,000 orders at 4,000 a
+second, begun a minute after the developer loop had built, installed and tested the whole project, nine promise
+writes took over 500 milliseconds, the longest 5,928; the sequencers' threads reported callbacks running for
+hundreds of milliseconds (53 over 100 milliseconds, against 6 in the same fill on 14 October); the leader ran
+as if alone for 2.6 seconds, the pair then changed leader several times, and 98,349 messages went unanswered.
+The same fill run twice more in the next half hour, with the disk recorded by `iostat`, had no callback over
+100 milliseconds, no slow promise write, and every message answered; the disk was busy 0.4 per cent of the time
+at the median. What the machine was doing during the first fill was not recorded, so its cause is not known.
+
 **What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
 or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
 kind a production machine would have compares.
@@ -315,94 +324,6 @@ the script that generates it (`scripts/make_grafana_dashboard.py`), `docs/operat
 already stored under the old label do not join up with the new one.
 
 **When.** After phase 5 of the recovery plan is finished, because steps 3 and 4 add more code that uses these names, and the renaming is then done once. Andrew agreed on 15 October 2026.
-
-### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-14 |
-| Recorded | 2026-10-14 |
-| How | The second measurement of step 1 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)), `tmp/phase5/stall_no_repair.sh`, with both sequencers running throughout |
-| Impact | Restarting a matching engine publisher with an empty WAL, late in a day, changes the sequencers' leader and slows every order for seconds. A publisher is not on the order path, and nothing it does should be able to do either |
-
-**What was measured.** With both sequencers running and about 1.2 million records in the WAL, the
-follower publisher was started with an empty WAL while orders arrived at 200 a second. Before, the
-longest wait for an order's first report was 5.2 milliseconds; in the ten seconds after, the median was
-106 milliseconds, the longest 2.6 seconds, and 1,035 of 1,979 orders waited more than 50 milliseconds.
-Every order was answered.
-
-**What happens, from the sequencers' Quill logs.**
-
-1. The publisher subscribes to both sequencers from record 0. Both answer, whatever their role
-   ([BUG-0153](#bug_0153)), each reading and sending every record on its own thread: the framework
-   reports the leader's thread busy for 971 milliseconds.
-2. Nothing paces the sending, so once 65,536 sends are waiting the framework closes the publisher's
-   connection as not reading what is sent to it.
-3. The publisher connects again and subscribes from the last record it wrote, and the same happens
-   again, every two or three seconds.
-4. With its thread repeatedly busy for about a second, the leader fails to renew its lease: "lease ran
-   out ... stops leading (epoch=1)", and the pair changes leader to epoch 5.
-
-**Where the time goes, from `perf`.** The publisher was restarted alone with an empty WAL, with about 1.2
-million records in the sequencers' WAL, and `perf record` run against the leading sequencer's thread. The
-publisher's request (`WalSubscribeRequest`, from record 0) held that thread for 7.3 seconds, from 23:22:04.41
-to 23:22:11.73, and the leader's lease ran out 63 milliseconds later. 37 per cent of the samples were in
-`Crc32::feed`, called from `WalReader::replay`, called from `SequencerThread::handle_wal_subscribe_request`:
-checking every record's checksum as it reads the WAL. Sampled from `/proc`, the thread was in state D,
-waiting for a page to be read from the disk (`folio_wait_bit_common`). The reading thread of step 1 was idle
-throughout: this is the publisher's own path, which step 4 moves.
-
-**After step 2.** The same measurement after step 2 of phase 5, with the repair no longer stopping the
-leader, showed this event alone: of 1,978 orders sent in the ten seconds after the publisher started, the
-median wait for a first report was 2.1 seconds and the longest 5.9 seconds, and the pair changed leader
-twice.
-
-**What is wanted.** The same as for [BUG-0155](#bug_0155) and [BUG-0133](#bug_0133): the reading on a
-thread of its own, paced by the connection, and only the leader serving. Step 4 of phase 5 repeats this
-measurement, and the phase is not finished until a publisher can subscribe from the start without
-affecting the order path.
-
-**Principles.** V11, F4.
-
-### BUG-0153: A matching engine publisher can be sent records that are never committed, and the same record twice {#bug_0153}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-14 |
-| Recorded | 2026-10-14 |
-| How | Reading how the sequencer serves the matching engine publishers, while designing phase 5 of the recovery plan ([following_the_wal.md](availability/following_the_wal.md)). Found by reading the code; not yet shown by a run |
-| Impact | A publisher can publish an order or an execution report that the venue's record does not hold, and can publish the same record twice. Its subscribers, such as the order activity recorder once it is built, would then hold activity the venue never committed, or hold it twice |
-
-**What happens.** Each matching engine publisher connects to both sequencers and sends each a
-`WalSubscribeRequest` naming the last record it holds (`MatchingEnginePublisherThread::on_connection_established`).
-Three things in the sequencer combine badly with that.
-
-1. **Records go to the publishers before they are committed.** The leading sequencer sends each record
-   to its publishers as soon as it has written it (`stream_wal_record_to_external_subscribers`, called
-   in `SequencerThread::on_framework_pdu_message` and `forward_report_from_engine`), before its follower
-   has acknowledged it. If the leader then dies before the follower holds the record, the follower takes
-   over without it and gives the same sequence number to a different record. The publisher has already
-   written the first record into its own WAL and published it.
-2. **Both sequencers answer a subscription.** `SequencerThread::handle_wal_subscribe_request` does not
-   look at the instance's role. Each sequencer sends the publisher every record after the position it
-   named, read from its own WAL from the first segment. A publisher that subscribes from a position below
-   the end of the day's record, as one that restarts during the day does, is sent those records by both,
-   and writes each into its own WAL twice (`handle_wal_record_from_sequencer` appends whatever arrives,
-   and `Wal::append` does not refuse a number already written).
-3. **Nothing is sent again at a change of leader.** Only the leader sends live records, and the
-   follower sends nothing while it follows. A publisher therefore depends on the old leader having sent
-   it everything up to the moment of the change, which, by point 1, it may have done and more.
-
-**What is wanted.** A publisher is sent only committed records, only by the leading sequencer, each
-exactly once and in order; at a change of leader it is sent, by the new leader, every committed record
-after the last it holds. A publisher refuses a record that does not follow the last it wrote. Phase 5
-of the recovery plan does this, by moving the publishers onto the library's way of following the WAL,
-and shows the defect with a scenario before fixing it.
-
-**Principle.** V2 in `docs/design_principles.md`: the log is the record. A publisher's subscribers are
-told of activity the record does not hold.
 
 ### BUG-0151: The order's round trip is about 20 microseconds slower when the secondary matching engine leads {#bug_0151}
 
@@ -3457,7 +3378,174 @@ part of the fix. The cost to the gateway's speed is measured
 before and after. Both gateways' orders are tested with the same malformed values, and must be
 treated identically.
 
+### BUG-0171: Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher {#bug_0171}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| How | `perf` on the leading sequencer's thread for 30 seconds of a fill of 300,000 orders at 4,000 a second, with both publishers handed over (`tmp/phase5/fill_perf.sh`) |
+| Impact | Work on the thread that sequences every order, done after each commit's work for the order path. At 4,000 orders a second the thread was still asleep most of the time, so nothing waited for it; at a higher rate it is time the order path no longer has |
+
+**What was measured.** Of the samples on the sequencer's thread, 22.8 per cent were in
+`send_committed_records_to_publishers`, against 10.6 per cent for writing the WAL itself
+(`ReplicatedWal::write`). Most of it is `WalCursor::read_next` checking the checksum of each record as it is
+read back (`Crc32::feed` was 22.6 per cent of all samples, the reading thread's share included), and each
+record is read and checked once for each publisher, so twice.
+
+**Why.** Once a publisher is handed over, the sequencer's thread sends it each record as it is committed,
+reading it back from the WAL with one cursor for each publisher (`WalHandedOverFollowers`,
+[following_the_wal.md](availability/following_the_wal.md), section 4.3), because by then it no longer holds
+the record's bytes.
+
+**What could be done.** Any of three, which are not alternatives in every respect, so the choice is a design
+decision: read each record once for every publisher, which halves the cost; do not check the checksum of a
+record this thread wrote moments before, which removes most of it; or keep each record's bytes in memory until
+it is committed, and send them from there, which reads nothing back but holds every record not yet committed.
+
+**Principles.** F4.
+
+### BUG-0172: With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced {#bug_0172}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| How | Building step 4 of phase 5: with high availability off there is no reading thread, so the publishers are caught up as the matching engine is in that case |
+| Impact | A publisher that starts late in a day, with high availability off, has the sequencer's thread read and send it every record it lacks before that thread does anything else, and once 65,536 sends wait on the connection the framework closes it, so the publisher connects and asks again, and the same happens again ([BUG-0156](#bug_0156) without the change of leader) |
+
+**What happens.** `SequencerThread::handle_publisher_follow_request` catches the publisher up through
+`WalHandedOverFollowers::send_to`, which reads and sends every record up to the last committed in one go.
+The matching engine's catch-up with high availability off has the same shape (`engine_catch_up_from_wal`).
+
+**What is wanted.** A reading thread with high availability off as well, so that every catch-up is paced and
+off the order path whatever the configuration.
+
+**Principles.** F4.
+
 ## Closed
+
+### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-17 -- a publisher is caught up by the leading sequencer's reading thread, paced by its connection, and only the leader serves it |
+| How | The second measurement of step 1 of phase 5 ([following_the_wal.md](availability/following_the_wal.md)), `tmp/phase5/stall_no_repair.sh`, with both sequencers running throughout |
+| Impact | Restarting a matching engine publisher with an empty WAL, late in a day, changes the sequencers' leader and slows every order for seconds. A publisher is not on the order path, and nothing it does should be able to do either |
+
+**What was measured.** With both sequencers running and about 1.2 million records in the WAL, the
+follower publisher was started with an empty WAL while orders arrived at 200 a second. Before, the
+longest wait for an order's first report was 5.2 milliseconds; in the ten seconds after, the median was
+106 milliseconds, the longest 2.6 seconds, and 1,035 of 1,979 orders waited more than 50 milliseconds.
+Every order was answered.
+
+**What happens, from the sequencers' Quill logs.**
+
+1. The publisher subscribes to both sequencers from record 0. Both answer, whatever their role
+   ([BUG-0153](#bug_0153)), each reading and sending every record on its own thread: the framework
+   reports the leader's thread busy for 971 milliseconds.
+2. Nothing paces the sending, so once 65,536 sends are waiting the framework closes the publisher's
+   connection as not reading what is sent to it.
+3. The publisher connects again and subscribes from the last record it wrote, and the same happens
+   again, every two or three seconds.
+4. With its thread repeatedly busy for about a second, the leader fails to renew its lease: "lease ran
+   out ... stops leading (epoch=1)", and the pair changes leader to epoch 5.
+
+**Where the time goes, from `perf`.** The publisher was restarted alone with an empty WAL, with about 1.2
+million records in the sequencers' WAL, and `perf record` run against the leading sequencer's thread. The
+publisher's request (`WalSubscribeRequest`, from record 0) held that thread for 7.3 seconds, from 23:22:04.41
+to 23:22:11.73, and the leader's lease ran out 63 milliseconds later. 37 per cent of the samples were in
+`Crc32::feed`, called from `WalReader::replay`, called from `SequencerThread::handle_wal_subscribe_request`:
+checking every record's checksum as it reads the WAL. Sampled from `/proc`, the thread was in state D,
+waiting for a page to be read from the disk (`folio_wait_bit_common`). The reading thread of step 1 was idle
+throughout: this is the publisher's own path, which step 4 moves.
+
+**After step 2.** The same measurement after step 2 of phase 5, with the repair no longer stopping the
+leader, showed this event alone: of 1,978 orders sent in the ten seconds after the publisher started, the
+median wait for a first report was 2.1 seconds and the longest 5.9 seconds, and the pair changed leader
+twice.
+
+**What is wanted.** The same as for [BUG-0155](#bug_0155) and [BUG-0133](#bug_0133): the reading on a
+thread of its own, paced by the connection, and only the leader serving. Step 4 of phase 5 repeats this
+measurement, and the phase is not finished until a publisher can subscribe from the start without
+affecting the order path.
+
+**The fix.** Step 4 of phase 5 moved the publishers onto the library's way of following the WAL
+([BUG-0153](#bug_0153)): only the leading sequencer serves a publisher, and its reading thread reads and
+sends the records, a batch at a time as the publisher's connection takes them, so the sequencer's own
+thread reads nothing for it during the catch-up.
+
+**How it was checked.** The same measurement, `tmp/phase5/stall_no_repair.sh` with 300,000 orders filled
+(1.2 million records), on 17 October 2026. In the ten seconds after the follower publisher was started with
+an empty WAL, 1,979 orders were sent at 200 a second: the median wait for a first report was 5.1
+milliseconds and the longest 5.5 milliseconds, against 5.1 and 5.2 before the publisher started; none waited
+over 50 milliseconds, and the leader kept its lease. The publisher was sent all 1,211,538 records in about
+five seconds and handed over. With high availability off there is no reading thread, and the publisher is
+still caught up on the sequencer's own thread ([BUG-0172](#bug_0172)).
+
+**Principles.** V11, F4.
+
+### BUG-0153: A matching engine publisher can be sent records that are never committed, and the same record twice {#bug_0153}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-14 |
+| Recorded | 2026-10-14 |
+| Fixed | 2026-10-17 -- each publisher follows the WAL through the library's WalFollowerClient: served only by the leading sequencer, only up to the last record committed, and after a change of leader by the new leader |
+| How | Reading how the sequencer serves the matching engine publishers, while designing phase 5 of the recovery plan ([following_the_wal.md](availability/following_the_wal.md)). Found by reading the code, and shown by scenario 76 |
+| Impact | A publisher can publish an order or an execution report that the venue's record does not hold, and can publish the same record twice. Its subscribers, such as the order activity recorder once it is built, would then hold activity the venue never committed, or hold it twice |
+
+**What happens.** Each matching engine publisher connects to both sequencers and sends each a
+`WalSubscribeRequest` naming the last record it holds (`MatchingEnginePublisherThread::on_connection_established`).
+Three things in the sequencer combine badly with that.
+
+1. **Records go to the publishers before they are committed.** The leading sequencer sends each record
+   to its publishers as soon as it has written it (`stream_wal_record_to_external_subscribers`, called
+   in `SequencerThread::on_framework_pdu_message` and `forward_report_from_engine`), before its follower
+   has acknowledged it. If the leader then dies before the follower holds the record, the follower takes
+   over without it and gives the same sequence number to a different record. The publisher has already
+   written the first record into its own WAL and published it.
+2. **Both sequencers answer a subscription.** `SequencerThread::handle_wal_subscribe_request` does not
+   look at the instance's role. Each sequencer sends the publisher every record after the position it
+   named, read from its own WAL from the first segment. A publisher that subscribes from a position below
+   the end of the day's record, as one that restarts during the day does, is sent those records by both,
+   and writes each into its own WAL twice (`handle_wal_record_from_sequencer` appends whatever arrives,
+   and `Wal::append` does not refuse a number already written).
+3. **Nothing is sent again at a change of leader.** Only the leader sends live records, and the
+   follower sends nothing while it follows. A publisher therefore depends on the old leader having sent
+   it everything up to the moment of the change, which, by point 1, it may have done and more.
+
+**What is wanted.** A publisher is sent only committed records, only by the leading sequencer, each
+exactly once and in order; at a change of leader it is sent, by the new leader, every committed record
+after the last it holds. A publisher refuses a record that does not follow the last it wrote. Phase 5
+of the recovery plan does this, by moving the publishers onto the library's way of following the WAL,
+and shows the defect with a scenario before fixing it.
+
+**The fix.** Each publisher asks both sequencers with `WalFollowRequest` through the library's
+`WalFollowerClient`, naming the last record it holds. A sequencer that does not lead declines, and sends
+`WalLeaderChanged` if it takes the lead, so that the publisher asks it again. The leading sequencer's
+reading thread sends the publisher every record after its position, up to the last committed; once the
+publisher is handed over, the sequencer's own thread sends it each record as it is committed, reading it
+back from the WAL (`WalHandedOverFollowers`). Nothing is sent to a publisher as it is written. The
+publisher writes into its own WAL only the record after the last it holds. `WalSubscribeRequest`,
+`WalSubscribeAck` and the publishers' acknowledgements are removed
+([following_the_wal.md](availability/following_the_wal.md), sections 4.3 and 5.4).
+
+**How it was checked.** Scenario 76 restarts a publisher during the day, then has the leading sequencer
+die holding three orders its follower never received, and requires each publisher's WAL to hold every
+record once, without a gap, each the same as the leading sequencer's record of that number. Before the
+fix it failed: the restarted publisher's WAL held record 2001 twice. After it, it passes: the old leader's
+WAL holds the three orders as records 2007 to 2009, the new leader gave those numbers to other records,
+and both publishers hold the new leader's records there and none of the three orders.
+
+**Principle.** V2 in `docs/design_principles.md`: the log is the record. A publisher's subscribers are
+told of activity the record does not hold.
 
 ### BUG-0170: The reactor could leave the last command of a burst unseen until another command arrived, because the queue said it was empty while one message was still waiting {#bug_0170}
 

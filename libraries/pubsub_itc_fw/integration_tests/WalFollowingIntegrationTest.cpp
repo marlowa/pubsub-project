@@ -121,7 +121,7 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
     }
 
     // WalFollowerEventsInterface
-    void follower_handed_over(const ConnectionID& follower, int64_t /*through*/, int64_t /*records_sent*/) override {
+    void follower_handed_over(const ConnectionID& follower, int64_t /*through*/, int64_t /*records_sent*/, WalPosition /*resume_at*/) override {
         // From the next record released after now: the follower holds everything up to the limit now.
         handed_over_[follower.get_value()] = limits_[follower.get_value()];
     }
@@ -365,7 +365,7 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
         send_pdu(to, WalFollowCaughtUp::message_pdu_id, 0, caught_up);
     }
     void send_leader_changed(const ConnectionID& /*to*/, const WalLeaderChanged& /*changed*/) override {}
-    void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/, int64_t /*records_sent*/) override {}
+    void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/, int64_t /*records_sent*/, WalPosition /*resume_at*/) override {}
     void hand_over_falling_behind(const ConnectionID& /*follower*/) override {}
     void follower_cannot_be_served(const ConnectionID& /*follower*/, int64_t /*damaged_seq_no*/) override {}
     void declined_while_not_leading(const ConnectionID& /*follower*/) override {}
@@ -456,7 +456,7 @@ class DamagedRecordOwnerThread : public ApplicationThread, public WalFollowerLin
         send_pdu(to, WalFollowCaughtUp::message_pdu_id, 0, caught_up);
     }
     void send_leader_changed(const ConnectionID& /*to*/, const WalLeaderChanged& /*changed*/) override {}
-    void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/, int64_t /*records_sent*/) override {
+    void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/, int64_t /*records_sent*/, WalPosition /*resume_at*/) override {
         handed_over_count.fetch_add(1, std::memory_order_acq_rel);
     }
     void hand_over_falling_behind(const ConnectionID& /*follower*/) override {}

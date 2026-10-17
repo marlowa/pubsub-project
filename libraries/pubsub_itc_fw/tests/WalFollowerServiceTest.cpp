@@ -45,7 +45,7 @@ class RecordingLinks : public WalFollowerLinksInterface {
 
 class RecordingEvents : public WalFollowerEventsInterface {
   public:
-    void follower_handed_over(const ConnectionID& follower, int64_t through, int64_t records_sent) override {
+    void follower_handed_over(const ConnectionID& follower, int64_t through, int64_t records_sent, WalPosition /*resume_at*/) override {
         handed_over.emplace_back(follower.get_value(), through);
         handed_over_records_sent.push_back(records_sent);
     }

@@ -153,9 +153,17 @@ received, and sends it any command the log holds that the engine never got.
 ## Downstream subscribers
 
 Other components follow the log over the sequencer's subscriber listener (`[wal_subscriber]`).
-The matching engine publishers do so today. A subscriber sends `WalSubscribeRequest` naming the last
-sequence number it holds, is sent every record after it from the log, and then receives each new
-record as it is written, acknowledging them with `WalAck`. See
+The matching engine publishers do so today, in the same way as the matching engine and with the same
+messages. A publisher connects to both sequencers and sends each `WalFollowRequest`, naming the last
+record it holds and asking for new records too. A sequencer that does not lead declines with
+`WalFollowDeclined`, and sends `WalLeaderChanged` if it takes the lead, so that the publisher asks it
+again. The leading sequencer's reading thread sends the publisher every record after its position, up
+to the last record committed, and the sequencer then sends `WalFollowCaughtUp`, saying how many records
+were sent. From then on the sequencer's own thread sends the publisher each record as it is committed,
+reading it back from the log it has just written (`WalHandedOverFollowers`). So a publisher is sent
+only records the venue's record holds, once each and in order, and nothing a leader wrote but never had
+committed. A publisher writes into its own log only the record after the last it holds; it sends no
+acknowledgement. See [following_the_wal.md](../availability/following_the_wal.md), section 4.3,
 [Topology](../framework/topology.md) and the documents under [pubsub](../pubsub/README.md).
 
 ---

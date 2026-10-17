@@ -79,6 +79,7 @@ set(PUBSUB_ITC_FW_SRC
         src/WalWriter.cpp
         src/WalReadingThread.cpp
         src/WalFollowerService.cpp
+        src/WalHandedOverFollowers.cpp
         src/WalFollowerClient.cpp
         src/WalReader.cpp
         src/WalCursor.cpp

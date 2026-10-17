@@ -138,10 +138,10 @@ The follower logs at Warning how many records it discarded and their numbers and
 Having answered that the logs agree, the leader reads its own log from the segment that holds the first
 record to send, and sends the follower every record after the agreed one, in order, exactly as stored,
 and only then starts sending it live records. The segment is found by reading only the first entry of
-each segment file (`Wal::scan_start_for`). The publishers and the matching engine catch up from the
-sequencer in the same way (`handle_wal_subscribe_request`, `handle_me_position_request`), and the cost is
-of the same kind: the sequencer thread reads the log, and the order path waits while it does. Section 6
-gives the cost and section 7 the open question about it.
+each segment file (`Wal::scan_start_for`). The reading is done by the leader's reading thread, not by the
+thread that sequences orders, so the order path does not wait while it is done; the matching engine and
+the matching engine publishers are caught up by the same thread
+([following_the_wal.md](following_the_wal.md)).
 
 The follower acknowledges each record as now. On answering, the leader takes the agreed record as the
 highest the follower has acknowledged, replacing whatever it held from an earlier connection. From then on it is again "every

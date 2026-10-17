@@ -87,9 +87,10 @@ applies every committed command in order, and one that starts or restarts catche
 
 **How it is done now.** The matching engine's catch-up uses the library's messages (`WalFollowRequest`,
 `WalFollowCaughtUp`, `WalFollowDeclined`, `WalLeaderChanged`) and is served by the reading thread, the
-engine making the R-0101 count check; the publishers' subscription (`handle_wal_subscribe_request`) is
-still served by reading the WAL on the sequencer's thread (BUG-0133), and moves in step 4 of phase 5
-([following_the_wal.md](following_the_wal.md)).
+engine making the R-0101 count check. The matching engine publishers use the same messages, through the
+library's follower side (`WalFollowerClient`), and are served by the same thread up to the last record
+committed; once handed over, each is sent every record as it is committed by the sequencer's own thread,
+which reads it back from the WAL (`WalHandedOverFollowers`) ([following_the_wal.md](following_the_wal.md)).
 
 **What the library would provide.** One way to follow the WAL: a follower says the position it has
 reached, the library sends every committed command after it, in order, and says when it has sent all

@@ -135,8 +135,7 @@ dropped, and one further on is a gap, which the follower side treats by asking a
 record it holds, and reports as a warning in the Quill log.
 
 These four messages are new, and belong to the library's message file, `replication_messages.dsl`.
-The matching engine uses them, and `WalSubscribeRequest` and `WalSubscribeAck` are removed once the
-publishers have moved to them too (decision 2).
+The matching engine and the matching engine publishers both use them (decision 2).
 
 ### 3.2 The reading thread
 
@@ -316,14 +315,31 @@ does not change either, because it receives the same `WalRecord` messages on the
 
 Each publisher uses `WalFollowerClient` towards both sequencers, asking for new records too, and is
 served up to the last record committed, by the leading instance only. Its `handle_wal_record_from_sequencer`
-then writes into its own WAL only records that follow the last it wrote. The sequencer stops sending
-records to the publishers as it writes them (`stream_wal_record_to_external_subscribers`), and sends
-them instead as they are committed, from the thread that owns the WAL, once each publisher has been
-handed over.
+writes into its own WAL only the record that follows the last it holds: the client drops a record already
+held, and asks again after a gap. The publisher sends no acknowledgement.
 
-A publisher therefore publishes a record a little later than today: after the follower has acknowledged
-it, rather than as soon as the leader wrote it. On this machine that is the replication round trip,
-tens of microseconds. It is the cost of publishing only what the venue's record holds.
+The reading thread catches the publisher up and the service hands it over. From then on the sequencer's
+own thread sends the publisher each record as it is committed, after the commit's work for the order path,
+releasing orders and forwarding reports, is done. By the time a record is committed that thread no longer
+holds its bytes, so it reads the record back from the WAL it has just written, which is still in memory.
+It does this through the library's `WalHandedOverFollowers`, which keeps one cursor for each publisher,
+started where the reading thread stopped reading for it (`WalReadingReport::resume_at`), so that nothing
+is searched for. This is a read of the WAL on the sequencer's own thread, of records it wrote moments
+before; step 5's list of permitted reads must include it.
+
+Both threads turn a record into what a publisher is sent with the same function,
+`publisher_record_from_wal`: every record, as the `WalRecord` envelope the WAL holds. A record that is not
+an envelope, or whose envelope does not decode, is damaged, and the publisher is not served past it.
+Passing over it would leave a gap in the publisher's numbering, which the publisher would take for
+records lost on the way and ask about for ever.
+
+With high availability off there is no reading thread. The sequencer's own thread then catches the
+publisher up as well, through the same `WalHandedOverFollowers`, before sending it each record as it is
+committed, which with high availability off is as it is written.
+
+A publisher therefore publishes a record a little later than if it were sent as soon as the leader wrote
+it: after the follower has acknowledged it. On this machine that is the replication round trip, tens of
+microseconds. It is the cost of publishing only what the venue's record holds.
 
 How a publisher's own subscribers are served, from the publisher's own WAL by `TopicPublisher`, does not
 change.
@@ -487,8 +503,9 @@ handed over and one past it is; and a new scenario, 75, which fills the storage 
 every order of a burst to be accepted exactly once. Each was made to fail by a deliberate fault first. In the
 last full run, from fresh WALs, 72 of 75 scenarios passed. Scenario 34 failed when a lease promise record
 took 7.6 seconds to write ([BUG-0167](../bug_list.md#bug_0167)). Scenarios 14 and 48 failed in that run and
-the one before it, with no slow write, and passed every time they were run alone (six times between them);
-the cause is not established. The stall measurement, run before the engine moved to the library's messages,
+the one before it, with no slow write, and passed every time they were run alone (six times between them).
+The cause was a defect in the reactor's queue of commands, which could leave the last command of a burst
+unseen until another arrived ([BUG-0170](../bug_list.md#bug_0170)); with it fixed, all 75 scenarios pass. The stall measurement, run before the engine moved to the library's messages,
 showed every order answered and an engine's catch-up of 1,034 records taking 56 milliseconds; it has not been
 repeated since. No scenario withholds a record from a real catch-up, so refusing a hand-over past a damaged
 record is shown only by the unit and integration tests.
@@ -505,13 +522,63 @@ follower has not acknowledged, the publisher's WAL must hold the same record und
 new leader's WAL. It must fail before the change and pass after it. The stall measurement for a
 publisher's subscription must show no stall.
 
+**What step 4 built.** Each matching engine publisher follows the sequencers' WAL through the library, as
+section 4.3 describes: it asks both sequencers with `WalFollowRequest` through `WalFollowerClient`, is
+declined by the one that does not lead, is caught up by the leader's reading thread up to the last record
+committed, and is then sent each record as it is committed by the sequencer's own thread, which reads it back
+from the WAL (`WalHandedOverFollowers`, a new library class). To start where the reading thread stopped, the
+reading thread's report that it has reached a follower's limit now carries the position in the WAL to read on
+from (`WalReadingReport::resume_at`), which the service passes on when it hands the follower over. The
+sequencer sends a publisher nothing as it writes a record. A publisher writes into its own WAL only the record
+after the last it holds, and sends no acknowledgement. `WalSubscribeRequest`, `WalSubscribeAck`, the
+sequencer's record of the publishers' positions, and the library's integration test of the old messages are
+removed; their message numbers, 105 and 106, are not to be used again.
+
+**How it was checked.** A new scenario, 76, restarts a publisher during the day and then has the leading
+sequencer die holding three orders its follower never received; it requires each publisher's WAL to hold
+every record once, without a gap, each the same as the leading sequencer's record of that number. It failed
+before the change, the restarted publisher having written record 2001 twice, and passes after it; in the run
+after it, the old leader's WAL held the three orders as records 2007 to 2009, the new leader had given those
+numbers to other records, and both publishers held the new leader's records there. Unit tests cover
+`WalHandedOverFollowers` with a real WAL, among them records read one at a time across segments as they are
+written, a damaged record, and a jump in the numbering, and the converter's three outcomes; each test was made
+to fail by a deliberate fault, except that removing the check against the WAL's write position changed no
+result, because a cursor that reads into the unwritten end of a segment is opened again at its own position and
+loses nothing, so that check saves the cost of opening it again rather than preventing a loss. The stall
+measurement, with 1.2 million records in the WAL, showed no stall when a publisher was started with an empty
+WAL: the longest wait for an order's first report in the ten seconds after was 5.5 milliseconds, against 5.2
+before ([BUG-0156](../bug_list.md#bug_0156)). `perf` on the leading sequencer's thread during a fill showed
+the reading back of committed records costing about a fifth of that thread's time
+([BUG-0171](../bug_list.md#bug_0171)). With high availability off a publisher is still caught up on the
+sequencer's own thread ([BUG-0172](../bug_list.md#bug_0172)).
+
+**The order's round trip** was measured as in phase 4, swapping the installed binaries between the build
+before this step and the build with it, each arm on fresh state with five runs of 6,000 orders at 100 a
+second from a load client pinned to processors 0 and 1, the first run discarded. The secondary matching
+engine led in every start, with both builds, so every arm was measured with it leading:
+
+| Build | Median round trip in each of four runs, microseconds |
+|---|---|
+| Before step 4 | 127.7, 127.3, 127.1, 126.2 |
+| After step 4 | 99.0, 107.5, 107.6, 107.4 |
+| Before step 4, measured again | 124.8, 125.1, 124.5, 126.6 |
+
+The round trip is about 20 microseconds shorter with the step. The leading sequencer's thread received about
+103,000 messages a run before it and 55,000 after: the difference is the publishers' acknowledgements, one
+for every record from each publisher, which are no longer sent. And before it the sequencer encoded and sent
+each record to both publishers as it wrote it, ahead of passing the order on; now it sends them after the
+commit's work for the order path.
+
 ### 5.5 Step 5: the build refuses a new read
 
 `scripts/check_standards.py` refuses any use of `WalReader` or `WalCursor` in the sequencer outside a
 table of permitted uses, in the same way as its table of permitted locks, each entry with its reason:
 replay mode, which runs with nothing else; the resends and undelivered reports, naming BUG-0113; and the
-duplicate check's `LogTailIndex`, naming BUG-0122 and phase 8. It is made to fail on purpose before it is
-relied on. The documents that describe the catch-ups (`sequencer.md`, `wal_and_ha.md`,
+duplicate check's `LogTailIndex`, naming BUG-0122 and phase 8; and the records sent to a publisher after
+it has been handed over, read back moments after they were written, through the library's
+`WalHandedOverFollowers`, naming BUG-0171 for its cost. That last read happens inside a library class, so the
+check has to look at what the sequencer constructs, not only at the readers it names. It is made to fail on
+purpose before it is relied on. The documents that describe the catch-ups (`sequencer.md`, `wal_and_ha.md`,
 `follower_log_repair.md`, `change_of_sequencer_leader.md`, `docs/pubsub/mep_oar.md` and
 `design_principles.md` for F4) are brought up to date.
 

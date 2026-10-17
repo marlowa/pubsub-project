@@ -3,6 +3,8 @@
 
 #include "SequencerThread.hpp"
 
+#include "PublisherRecordFromWal.hpp"
+
 #include <cstring>
 #include <limits>
 
@@ -161,6 +163,7 @@ void SequencerThread::on_initial_event() {
     // The reading thread reads only before the position published here, and sends a follower nothing
     // above the limit published here (docs/availability/following_the_wal.md, section 3.2).
     replicated_wal_->publish_positions_to(wal_positions_);
+    handed_over_publishers_.emplace(replicated_wal_->wal(), config_.wal_directory, make_publisher_converter(64 * 1024), publisher_links_);
     if (config_.ha_enabled) {
         wal_follower_service_.emplace(get_logger(), replicated_wal_->wal(), wal_positions_, wal_following_, wal_following_);
         replicated_wal_->use_peer_catch_up(wal_following_);
@@ -358,8 +361,8 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway order connection {} established{}", id.get_value(),
                    order_reading_paused_ ? " -- reading from it is paused while orders wait" : "");
     } else if (svc == wal_subscriber_inbound_svc_) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: external WAL subscriber connection {} established -- awaiting WalSubscribeRequest", id.get_value());
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: publisher connection {} established -- awaiting WalFollowRequest",
+                   id.get_value());
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} established ({})", id.get_value(), svc);
         if (config_.replay_mode && svc == er_inbound_svc_) {
@@ -428,11 +431,12 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
                order_connection != order_connection_ids_.end()) {
         order_connection_ids_.erase(order_connection);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: gateway order connection {} lost: {}", id.get_value(), reason);
-    } else if (id.service_name() == wal_subscriber_inbound_svc_) {
-        wal_subscriber_conn_ids_.erase(id);
-        external_wal_subscriber_registry_.remove_subscriber(id);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: external WAL subscriber connection {} lost: {} (remaining={})",
-                   id.get_value(), reason, external_wal_subscriber_registry_.subscriber_count());
+    } else if (is_publisher_connection(id)) {
+        if (wal_follower_service_.has_value()) {
+            wal_follower_service_->on_connection_lost(id);
+        }
+        handed_over_publishers_->remove(id);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: publisher connection {} lost: {}", id.get_value(), reason);
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: inbound connection {} lost: {}", id.get_value(), reason);
     }
@@ -492,15 +496,13 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
         return;
     }
 
-    // External WAL subscriber PDUs (WalSubscribeRequest and WalAck from MEP).
+    // The matching engine publishers' requests to follow the WAL.
     if (svc == wal_subscriber_inbound_svc_) {
-        if (message.pdu_id() == pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id) {
-            handle_wal_subscribe_request(conn_id, message);
-        } else if (message.pdu_id() == pubsub_itc_fw::WalAck::message_pdu_id) {
-            handle_external_wal_ack(conn_id, message);
+        if (message.pdu_id() == pubsub_itc_fw::WalFollowRequest::message_pdu_id) {
+            handle_publisher_follow_request(conn_id, message);
         } else {
-            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                       "SequencerThread: unexpected PDU {} on external WAL subscriber connection {} -- dropping", message.pdu_id(), conn_id.get_value());
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: unexpected PDU {} on publisher connection {} -- dropping",
+                       message.pdu_id(), conn_id.get_value());
         }
         release_pdu_payload(message);
         return;
@@ -717,11 +719,6 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
             replicated_wal_->follower_too_far_behind("its storage for orders waiting on the follower is full", std::chrono::steady_clock::now());
         }
 
-        // Streamed to the external WAL subscribers (MEP primary and secondary), which unwrap the
-        // envelope and publish the inner DD-derived PDU on its topic. Before the order is held, because
-        // the envelope points into the inbound message, which is released at once if the order waits in
-        // the log.
-        stream_wal_record_to_external_subscribers(envelope);
         hold_until_acknowledged(envelope, message);
         release_held_orders_through(replicated_wal_->committed_through());
         return; // The payload is released when the held order is sent on, or at once if it waits in the log.
@@ -941,7 +938,6 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     stamp_reports_forwarded_through(envelope);
 
     append_envelope_to_wal(envelope);
-    stream_wal_record_to_external_subscribers(envelope);
 
     // Which WalAck releases this ER to the gateway.
     //
@@ -1206,7 +1202,19 @@ void SequencerThread::SequencerWalFollowing::send_leader_changed(const pubsub_it
     owner_.send_pdu(to, pubsub_itc_fw::WalLeaderChanged::message_pdu_id, 0, changed);
 }
 
-void SequencerThread::SequencerWalFollowing::follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent) {
+void SequencerThread::SequencerWalFollowing::follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent,
+                                                                  pubsub_itc_fw::WalPosition resume_at) {
+    if (owner_.is_publisher_connection(follower)) {
+        // Told it has caught up already, by the service; from here it is sent each record as it is committed,
+        // read on from where the reading thread stopped.
+        owner_.note_handed_over_through(through);
+        owner_.handed_over_publishers_->add(follower, through, resume_at);
+        PUBSUB_LOG(owner_.get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the matching engine publisher on connection {} holds every record through {} ({} sent by the reading thread) -- "
+                   "each record from here is sent as it is committed",
+                   follower.get_value(), through, records_sent);
+        return;
+    }
     if (follower == catch_up_connection_ && owner_.replicated_wal_.has_value()) {
         catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
         // The replicated WAL sends the follower sequencer its records from here; the service forgets it,
@@ -1235,6 +1243,8 @@ void SequencerThread::SequencerWalFollowing::follower_cannot_be_served(const pub
     if (follower == catch_up_connection_) {
         catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
         which_follower = "the follower sequencer";
+    } else if (owner_.is_publisher_connection(follower)) {
+        which_follower = "a matching engine publisher";
     } else {
         owner_.engine_servings_.erase(follower.get_value());
     }
@@ -1321,6 +1331,10 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         wal_follower_service_->stop_all();
         engine_servings_.clear();
         end_pause_for_hand_over();
+    }
+    // A publisher handed over is sent nothing more from here either; it asks again when told of the new leader.
+    if (stops_leading && handed_over_publishers_.has_value()) {
+        handed_over_publishers_->remove_all();
     }
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
@@ -1455,6 +1469,8 @@ void SequencerThread::SequencerReplicatedWalEvents::committed_through(int64_t se
     // engine, in order, and the reports to their gateways.
     owner_.release_held_orders_through(seq_no);
     owner_.forward_pending_er_through(seq_no);
+    // Last, after the order path's own work: the publishers are sent the records just committed.
+    owner_.send_committed_records_to_publishers(seq_no);
 }
 
 void SequencerThread::SequencerReplicatedWalEvents::written_as_follower(int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry) {
@@ -3009,106 +3025,73 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     }
 }
 
-// External WAL subscriber helpers
+// Matching engine publishers (docs/availability/following_the_wal.md, section 4.3)
 
-void SequencerThread::handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::WalSubscribeRequestView view{};
-
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode WalSubscribeRequest -- dropping");
-        return;
-    }
-
-    const std::string subscriber_id(view.subscriber_id);
-    const int64_t from_seq_no = view.from_seq_no;
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WalSubscribeRequest subscriber_id={} from_seq_no={} conn={}", subscriber_id,
-               from_seq_no, conn_id.get_value());
-
-    const pubsub_itc_fw::ConnectionID orphan = external_wal_subscriber_registry_.register_subscriber(conn_id, subscriber_id, from_seq_no);
-    if (orphan.is_valid()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: displacing orphan connection {} for subscriber_id={}",
-                   orphan.get_value(), subscriber_id);
-        wal_subscriber_conn_ids_.erase(orphan);
-        pubsub_itc_fw::ReactorControlCommand cmd(pubsub_itc_fw::ReactorControlCommand::CommandTag::Disconnect);
-        cmd.connection_id_ = orphan;
-        get_reactor().enqueue_control_command(cmd);
-    }
-
-    wal_subscriber_conn_ids_.insert(conn_id);
-
-    const int64_t accepted_from_seq_no = (from_seq_no == -1) ? replicated_wal_->wal().last_seq_no() : from_seq_no;
-
-    pubsub_itc_fw_app::WalSubscribeAck ack{};
-    ack.accepted_from_seq_no = accepted_from_seq_no;
-    send_pdu(conn_id, pubsub_itc_fw_app::WalSubscribeAck::message_pdu_id, 0, ack);
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WalSubscribeAck sent subscriber_id={} accepted_from_seq_no={}", subscriber_id,
-               accepted_from_seq_no);
-
-    if (from_seq_no == -1) {
-        return;
-    }
-
-    // Replay WAL records with seq_no > from_seq_no, unwrapping the payload format.
-    [[maybe_unused]] auto end_pos =
-        pubsub_itc_fw::WalReader::replay(config_.wal_directory, {0, 0}, [this, &conn_id, from_seq_no](int64_t record_id, const void* payload, size_t size) {
-            if (record_id <= from_seq_no) {
-                return;
-            }
-            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
-            if (!contents.has_value()) {
-                return;
-            }
-            const int64_t wall_time_ns = contents->wall_time_ns;
-            const int16_t pdu_id = contents->pdu_id;
-            const uint8_t* pdu_payload = contents->bytes;
-            const size_t pdu_size = contents->size;
-
-            pubsub_itc_fw_app::WalRecord wal_record{};
-            wal_record.seq_no = record_id;
-            wal_record.pdu_id = pdu_id;
-            wal_record.payload.data = pdu_payload;
-            wal_record.payload.size = pdu_size;
-            wal_record.wall_time_ns = wall_time_ns;
-            send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, wal_record);
-        });
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL replay complete for subscriber_id={}", subscriber_id);
+void SequencerThread::SequencerPublisherLinks::send_record(const pubsub_itc_fw::ConnectionID& follower, int16_t pdu_id, int64_t seq_no, const uint8_t* bytes,
+                                                           size_t size) {
+    owner_.send_pdu_payload(follower, pdu_id, seq_no, bytes, size);
 }
 
-void SequencerThread::handle_external_wal_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+void SequencerThread::handle_publisher_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw::WalAckView view{};
-
+    pubsub_itc_fw::WalFollowRequestView view{};
     if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode external WalAck -- dropping");
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode a publisher's WalFollowRequest -- dropping");
+        return;
+    }
+    // Whatever this connection was sent before stops: the publisher has asked afresh, from the last record it holds.
+    handed_over_publishers_->remove(conn_id);
+
+    // A publisher asks both sequencers, since it cannot tell which leads. Only the leader serves it: if both
+    // did, it would be sent every record twice (BUG-0153). One that does not lead declines, and tells the
+    // publisher if it takes the lead, when the publisher asks it again.
+    const pubsub_itc_fw::Leading leading = role_ == pubsub_itc_fw_app::Role::leader ? pubsub_itc_fw::Leading::Leads : pubsub_itc_fw::Leading::DoesNotLead;
+    if (wal_follower_service_.has_value()) {
+        // The reading thread sends it every record after its position, up to the last committed, and the
+        // service hands it over (SequencerWalFollowing::follower_handed_over), after which it is sent each
+        // record from here, as it is committed.
+        wal_follower_service_->on_follow_request(conn_id, view, leading, pubsub_itc_fw::FollowerLimit::LastCommitted, publisher_converter);
+        return;
+    }
+    if (leading == pubsub_itc_fw::Leading::DoesNotLead) {
+        pubsub_itc_fw::WalFollowDeclined declined{};
+        declined.last_seq_no = view.last_seq_no;
+        send_pdu(conn_id, pubsub_itc_fw::WalFollowDeclined::message_pdu_id, 0, declined);
         return;
     }
 
-    external_wal_subscriber_registry_.update_cursor(conn_id, view.seq_no);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: external WalAck conn={} seq={} min_cursor={}", conn_id.get_value(),
-               view.seq_no, external_wal_subscriber_registry_.min_cursor());
+    // Without a reading thread (high availability off): caught up here, from the segment holding the first
+    // record the publisher lacks, and then sent each record as it is committed.
+    const int64_t committed = replicated_wal_->committed_through();
+    const int64_t holds_through = view.last_seq_no < 0 ? committed : view.last_seq_no;
+    handed_over_publishers_->add(conn_id, holds_through, replicated_wal_->wal().scan_start_for(holds_through + 1));
+    const pubsub_itc_fw::WalHandedOverFollowers::Outcome outcome = handed_over_publishers_->send_to(conn_id, committed);
+    if (outcome.damaged_seq_no != 0) {
+        report_follower_cannot_be_served(conn_id, outcome.damaged_seq_no, "a matching engine publisher");
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: {} on connection {} held records through {} -- {} record(s) sent, through {}, and each record from here is sent as it "
+               "is committed",
+               view.follower_name, conn_id.get_value(), view.last_seq_no, outcome.records_sent, committed);
+    pubsub_itc_fw::WalFollowCaughtUp caught_up{};
+    caught_up.last_seq_no = std::max(committed, holds_through);
+    caught_up.records_sent = outcome.records_sent;
+    caught_up.first_seq_no_held = replicated_wal_->wal().first_seq_no();
+    send_pdu(conn_id, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, caught_up);
 }
 
-void SequencerThread::stream_wal_record_to_external_subscribers(const pubsub_itc_fw_app::WalRecord& envelope) {
-    if (wal_subscriber_conn_ids_.empty()) {
+void SequencerThread::send_committed_records_to_publishers(int64_t seq_no) {
+    if (!handed_over_publishers_.has_value() || handed_over_publishers_->empty()) {
         return;
     }
-    for (const auto& subscriber_conn_id : wal_subscriber_conn_ids_) {
-        send_pdu(subscriber_conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, envelope.seq_no, envelope);
+    for (const auto& [publisher, damaged_seq_no] : handed_over_publishers_->send_to_all(seq_no)) {
+        report_follower_cannot_be_served(publisher, damaged_seq_no, "a matching engine publisher");
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "SequencerThread: WalRecord seq={} inner_pdu_id={} streamed to {} external subscriber(s)",
-               envelope.seq_no, envelope.pdu_id, wal_subscriber_conn_ids_.size());
 }
 
 // ME failover reconciliation (Slice D)

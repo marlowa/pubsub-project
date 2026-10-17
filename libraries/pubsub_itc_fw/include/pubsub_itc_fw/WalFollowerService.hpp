@@ -51,8 +51,11 @@ class WalFollowerEventsInterface {
      * @param[in] through      The last record it holds.
      * @param[in] records_sent How many records the reading thread sent it in this serving, which a
      *                         follower that counts what it receives checks against.
+     * @param[in] resume_at    A position in the WAL before which the follower holds every record, from which
+     *                         the owning thread can read on to send it the records after @p through
+     *                         (WalHandedOverFollowers).
      */
-    virtual void follower_handed_over(const ConnectionID& follower, int64_t through, int64_t records_sent) = 0;
+    virtual void follower_handed_over(const ConnectionID& follower, int64_t through, int64_t records_sent, WalPosition resume_at) = 0;
 
     /// A follower's hand-over has fallen short three times in a row; see section 3.4 of the design.
     virtual void hand_over_falling_behind(const ConnectionID& follower) = 0;
@@ -175,7 +178,7 @@ class WalFollowerService {
         uint64_t serving{0};
     };
 
-    void hand_over(Follower& follower, int64_t through, int64_t records_sent);
+    void hand_over(Follower& follower, int64_t through, int64_t records_sent, WalPosition resume_at);
 
     QuillLogger& logger_;
     const Wal& wal_;

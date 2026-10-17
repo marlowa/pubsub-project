@@ -26,11 +26,11 @@
 #include <leader_follower.hpp>
 #include <replication_messages.hpp>
 
-#include <pubsub_itc_fw/ExternalWalSubscriberRegistry.hpp>
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalFollowerService.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
+#include <pubsub_itc_fw/WalHandedOverFollowers.hpp>
 
 #include "EngineCatchUpFromWal.hpp"
 #include "EngineOrderRouting.hpp"
@@ -87,6 +87,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     /// The reading thread's converter for a matching engine: each order and cancel as the WalRecord
     /// engine_record_from_wal builds, and nothing else.
     static constexpr int engine_converter = 1;
+    /// The reading thread's converter for a matching engine publisher: every record, as the WalRecord envelope
+    /// the WAL holds (publisher_record_from_wal).
+    static constexpr int publisher_converter = 2;
 
   protected:
     void on_initial_event() override;
@@ -179,12 +182,20 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     pubsub_itc_fw::HistogramHandle er_in_elapsed_histogram_;
     pubsub_itc_fw::HistogramHandle er_out_elapsed_histogram_;
 
-    // External WAL subscriber registry and active connection set.
-    // The registry tracks each subscriber's cursor for WAL truncation.
-    // wal_subscriber_conn_ids_ is the set of connections that have completed
-    // the WalSubscribeRequest handshake and are receiving live WalRecord PDUs.
-    pubsub_itc_fw::ExternalWalSubscriberRegistry external_wal_subscriber_registry_;
-    std::unordered_set<pubsub_itc_fw::ConnectionID> wal_subscriber_conn_ids_;
+    // The matching engine publishers that have been caught up and handed over to new records, each sent every
+    // record as it is committed, read back from the WAL (docs/availability/following_the_wal.md, section 4.3).
+    // Until a publisher is handed over, the reading thread sends it what it lacks; with high availability
+    // off there is no reading thread, and this catches it up as well, on this thread.
+    class SequencerPublisherLinks : public pubsub_itc_fw::WalHandedOverFollowersLinksInterface {
+      public:
+        explicit SequencerPublisherLinks(SequencerThread& owner) : owner_(owner) {}
+        void send_record(const pubsub_itc_fw::ConnectionID& follower, int16_t pdu_id, int64_t seq_no, const uint8_t* bytes, size_t size) override;
+
+      private:
+        SequencerThread& owner_;
+    };
+    SequencerPublisherLinks publisher_links_{*this};
+    std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_publishers_;
 
     // This instance's role, as the replicated WAL last said it changed.
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
@@ -258,7 +269,8 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void send_caught_up(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowCaughtUp& caught_up) override;
         void send_leader_changed(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalLeaderChanged& changed) override;
         // WalFollowerEventsInterface
-        void follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent) override;
+        void follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent,
+                                  pubsub_itc_fw::WalPosition resume_at) override;
         void hand_over_falling_behind(const pubsub_itc_fw::ConnectionID& follower) override;
         void follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) override;
         void declined_while_not_leading(const pubsub_itc_fw::ConnectionID& follower) override;
@@ -672,10 +684,16 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
      */
     void send_er_to_origin_gateway(int16_t protocol, int16_t instance, int64_t er_seq_no, const pubsub_itc_fw_app::WalRecord& envelope, bool is_new_order_ack);
 
-    // External WAL subscriber helpers (MEP primary and secondary).
-    void handle_wal_subscribe_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_external_wal_ack(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void stream_wal_record_to_external_subscribers(const pubsub_itc_fw_app::WalRecord& envelope);
+    // A matching engine publisher asking to follow the WAL (WalFollowRequest): declined unless this instance
+    // leads, otherwise caught up from the position it gives, up to the last record committed, and then sent
+    // each record as it is committed.
+    void handle_publisher_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    // Sends every publisher that has been handed over each record committed through @p seq_no.
+    void send_committed_records_to_publishers(int64_t seq_no);
+    // Whether @p connection is a matching engine publisher's.
+    [[nodiscard]] bool is_publisher_connection(const pubsub_itc_fw::ConnectionID& connection) const {
+        return connection.service_name() == wal_subscriber_inbound_svc_;
+    }
 
     // ME failover reconciliation (Slice D).
     //

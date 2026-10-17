@@ -107,6 +107,8 @@ void WalReadingThread::serve(const WalReadingCommand& command) {
     follower->sending = true;
     follower->round_limit = positions_.limit(command.limit);
     follower->cursor.open(wal_directory_, command.start);
+    // Every record before the start is one the follower holds: the start is at or before the record after after_seq_no.
+    follower->resume_at = command.start;
     Follower& served = *follower;
     followers_[command.connection.get_value()] = std::move(follower);
     PUBSUB_LOG(get_logger(), FwLogLevel::Info, "WalReadingThread: sending connection {} every record after {}, read from the WAL",
@@ -130,12 +132,14 @@ bool WalReadingThread::read_next_record(Follower& follower, WalPosition written)
             }
         }
         if (record_id <= follower.last_sent_seq_no) {
+            follower.resume_at = follower.cursor.position();
             continue; // the follower holds it already
         }
         follower.holding = true;
         follower.held_seq_no = record_id;
         follower.held_bytes = bytes;
         follower.held_size = size;
+        follower.held_end = follower.cursor.position();
         return true;
     }
     return false;
@@ -181,6 +185,7 @@ void WalReadingThread::send_batch(Follower& follower) {
             ++sent_in_batch;
         }
         follower.last_sent_seq_no = follower.held_seq_no;
+        follower.resume_at = follower.held_end;
         follower.holding = false;
     }
 
@@ -200,6 +205,7 @@ void WalReadingThread::send_batch(Follower& follower) {
     reached->reached_seq_no = limit;
     reached->records_sent = follower.records_sent;
     reached->serving = follower.serving;
+    reached->resume_at = follower.resume_at;
     report(std::move(reached));
 }
 

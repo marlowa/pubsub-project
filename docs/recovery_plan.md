@@ -25,8 +25,10 @@
 > ([BUG-0155](bug_list.md#bug_0155) is fixed). The lock-free allocators and queues, and the hand-over of
 > a follower, are now specified in TLA+ and checked with TLC
 > ([BUG-0162](bug_list.md#bug_0162), [framework/tla/findings.md](framework/tla/findings.md)). Its step 3 is
-> built: the matching engine is caught up by the reading thread, and uses the library's messages to ask. It
-> awaits Andrew's review before step 4.
+> built: the matching engine is caught up by the reading thread, and uses the library's messages to ask. Its
+> step 4 is built: the matching engine publishers follow the WAL through the library, are sent only committed
+> records, once each, by the leading sequencer only ([BUG-0153](bug_list.md#bug_0153) and
+> [BUG-0156](bug_list.md#bug_0156) are fixed). It awaits Andrew's review before step 5.
 
 ## In one page
 

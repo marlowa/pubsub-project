@@ -22,7 +22,6 @@ add_executable(pubsub_itc_fw_integration_tests
     TlsProtocolHandlerIntegrationTest.cpp
     TopicPubSubIntegrationTest.cpp
     VariableLengthPduTest.cpp
-    WalExternalSubscriberIntegrationTest.cpp
     WritableNotificationIntegrationTest.cpp
     WalFollowingIntegrationTest.cpp
 )
@@ -68,7 +67,6 @@ message(STATUS "  Added integration test: VariableLengthPduTest")
 message(STATUS "  Added integration test: RawBytesProtocolHandlerIntegrationTest")
 message(STATUS "  Added integration test: TlsOutboundIntegrationTest")
 message(STATUS "  Added integration test: TlsProtocolHandlerIntegrationTest")
-message(STATUS "  Added integration test: WalExternalSubscriberIntegrationTest")
 message(STATUS "  Added integration test: TopicPubSubIntegrationTest")
 message(STATUS "  Added integration test: WritableNotificationIntegrationTest")
 message(STATUS "  Added integration test: SlowReaderIntegrationTest")

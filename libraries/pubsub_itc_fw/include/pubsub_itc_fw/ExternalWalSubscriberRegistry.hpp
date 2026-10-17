@@ -33,7 +33,7 @@ namespace pubsub_itc_fw {
  * owns all socket I/O; callers must never close file descriptors directly.
  *
  * This class is not thread-safe. All calls must be made from the same
- * ApplicationThread (SequencerThread on the sequencer side).
+ * ApplicationThread: the one that owns the TopicPublisher using it.
  */
 class ExternalWalSubscriberRegistry {
   public:
@@ -54,8 +54,8 @@ class ExternalWalSubscriberRegistry {
      * exists.
      *
      * @param[in] connection_id   ConnectionID of the new connection.
-     * @param[in] subscriber_id   Stable identity string (e.g. "mep_primary").
-     * @param[in] initial_cursor  Starting cursor presented in WalSubscribeRequest.
+     * @param[in] subscriber_id   Stable identity string (for example "orders-recorder").
+     * @param[in] initial_cursor  Starting cursor presented in the subscriber's request (TopicSubscribeRequest).
      * @return ConnectionID of the displaced orphan, or ConnectionID{} if none.
      */
     ConnectionID register_subscriber(ConnectionID connection_id, const std::string& subscriber_id, int64_t initial_cursor) {

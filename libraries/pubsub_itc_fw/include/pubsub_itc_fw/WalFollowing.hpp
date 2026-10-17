@@ -188,6 +188,10 @@ struct WalReadingReport {
     int64_t reached_seq_no{0};
     int64_t records_sent{0}; ///< Records sent to this follower since it was first served.
     uint64_t serving{0};     ///< Reached: the serving it reports on, from the Serve command.
+    /// Reached: a position in the WAL before which the follower holds every record, the end of the last record
+    /// the reading thread read for it, so that whoever sends it the records after the hand-over can read on
+    /// from there without searching the WAL for the record after reached_seq_no.
+    WalPosition resume_at{};
 };
 
 /**

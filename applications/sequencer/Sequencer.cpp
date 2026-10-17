@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "Sequencer.hpp"
+#include "PublisherRecordFromWal.hpp"
 #include "SequencerConfigurationLoader.hpp"
 #include "SequencerThread.hpp"
 
@@ -105,7 +106,8 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     // background cores, so the CPU layout needs no core for it. It sends a rejoining follower sequencer
     // the records it lacks as ReplicatedRecord messages, exactly as the replicated WAL sends new ones.
     if (config_.ha_enabled && !config_.replay_mode) {
-        // In the order of their numbers: SequencerThread::peer_converter, then SequencerThread::engine_converter.
+        // In the order of their numbers: SequencerThread::peer_converter, SequencerThread::engine_converter, then
+        // SequencerThread::publisher_converter.
         std::vector<pubsub_itc_fw::WalRecordConverter> converters;
         converters.emplace_back([](int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> pubsub_itc_fw::ConvertedRecord {
             pubsub_itc_fw::ReplicatedRecord record{};
@@ -151,6 +153,8 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                 out.resize(written);
                 return pubsub_itc_fw::ConvertedRecord::send(pubsub_itc_fw_app::WalRecord::message_pdu_id);
             });
+        // A matching engine publisher is sent every record, as the WalRecord envelope the WAL holds.
+        converters.emplace_back(make_publisher_converter(64 * 1024));
         pubsub_itc_fw::QueueConfiguration queue_configuration{};
         queue_configuration.low_watermark = 1;
         queue_configuration.high_watermark = 64;

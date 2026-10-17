@@ -14,6 +14,7 @@
 #include <pubsub_itc_fw/Reactor.hpp>
 #include <pubsub_itc_fw/TopicPublisher.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
+#include <pubsub_itc_fw/WalFollowerClient.hpp>
 
 #include <leader_follower.hpp>
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
@@ -31,10 +32,14 @@ namespace matching_engine_publisher {
  *
  * MEP has two roles:
  *
- * WAL follower (inbound from sequencer):
- *   Connects outbound to both sequencer WAL subscriber listeners. On
- *   connection, sends WalSubscribeRequest. Receives WalRecord PDUs,
- *   appends each to its own WAL, and notifies the topic publishers.
+ * Follower of the sequencers' WAL:
+ *   Connects to both sequencers and asks each to be sent the records after the last it holds
+ *   (WalFollowRequest, through the library's WalFollowerClient), since it cannot tell which leads. The
+ *   leading sequencer sends it every record after that position, up to the last committed, and then each
+ *   record as it is committed; the other declines, and says so if it later takes the lead, when the
+ *   publisher asks it again. Each record that follows the last one held is appended to this publisher's
+ *   own WAL, and the topic publishers are told. A record already held is dropped, and a record beyond the
+ *   next is a gap, which makes the client ask again (docs/availability/following_the_wal.md, section 4.3).
  *
  * Topic publisher (inbound from topic subscribers):
  *   Listens on two ports -- one for the "orders" topic (NOS/OCR) and one
@@ -81,7 +86,7 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     const MatchingEnginePublisherConfiguration& config_;
 
     // Precomputed strings.
-    const std::string wal_subscriber_id_;
+    const std::string follower_name_;
     const std::string orders_inbound_svc_;
     const std::string er_inbound_svc_;
     const std::string peer_inbound_svc_;
@@ -89,12 +94,23 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     // MEP's own WAL.
     pubsub_itc_fw::Wal wal_;
 
-    // Sequencer WAL follower connections (both kept warm).
+    // The connections to the two sequencers, whose WAL this publisher follows.
     pubsub_itc_fw::ConnectionID sequencer_conn_id_;
     pubsub_itc_fw::ConnectionID sequencer_secondary_conn_id_;
 
-    // Last seq_no received and acked from the sequencer.
-    int64_t sequencer_cursor_{0};
+    // How the follower client's requests reach the sequencers.
+    class PublisherFollowLinks : public pubsub_itc_fw::WalFollowerClientLinksInterface {
+      public:
+        explicit PublisherFollowLinks(MatchingEnginePublisherThread& owner) : owner_(owner) {}
+        void send_follow_request(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowRequest& request) override;
+
+      private:
+        MatchingEnginePublisherThread& owner_;
+    };
+    PublisherFollowLinks follow_links_{*this};
+    // Holds the last record this publisher's WAL holds, asks the sequencers for the rest, and checks what
+    // they send. Constructed at the initial event, once the WAL has been opened and its last record is known.
+    std::optional<pubsub_itc_fw::WalFollowerClient> follower_client_;
 
     // HA state machine (same structure as the sequencer).
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};
@@ -145,7 +161,8 @@ class MatchingEnginePublisherThread : public pubsub_itc_fw::ApplicationThread, p
     void handle_lease_grant(const pubsub_itc_fw::EventMessage& message);
     void handle_lease_refusal(const pubsub_itc_fw::EventMessage& message);
 
-    void handle_wal_subscribe_ack(const pubsub_itc_fw::EventMessage& message);
+    void handle_follow_caught_up(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    void handle_leader_changed(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     void handle_wal_record_from_sequencer(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
 
     // Topic publisher helpers -- decode + route to the owning publisher

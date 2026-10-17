@@ -834,6 +834,14 @@ class Scenario(NamedTuple):
     # order exactly once. See run_scenario's "orders that waited in the log" block, and
     # docs/availability/following_the_wal.md, section 5.3.
     assert_orders_that_waited_in_the_log_reach_engine: bool = False
+    # When True, both matching engine publishers are started too, each with an empty write-ahead log.
+    with_publishers: bool = False
+    # When True, restart a publisher during the day, then make the leading sequencer die holding records
+    # its follower never received, and require each publisher's write-ahead log to hold every record once,
+    # without a gap, each the same as the record the leading sequencer's log holds under that number. Needs
+    # with_publishers and block_leader_peer_sends. See run_scenario's "publishers follow only the record"
+    # block, and BUG-0153.
+    assert_publishers_follow_only_the_record: bool = False
     # When True, kill the follower sequencer, have the leader take orders, restart the follower and
     # require its log to end identical to the leader's from where it stopped, then kill the leader
     # and require the new leader to hold every order the engine accepted. See run_scenario's
@@ -3875,6 +3883,31 @@ _SCENARIOS: list[Scenario] = [
         assert_orders_that_waited_in_the_log_reach_engine=True,
         steps=[],
     ),
+
+    # 76 -- a publisher is sent only records the venue's record holds, each once.
+    #
+    # Both matching engine publishers run, and are sent the sequencers' records as they follow them. One
+    # publisher is killed, orders are taken while it is down, and it is restarted with the write-ahead
+    # log it had: it must not write any record twice, and must have no gap. Then, as in scenario 59, the
+    # leading sequencer is made to hold records its follower never received, is stopped and killed, and
+    # the follower takes the lead and numbers a new order where the old leader's records were. Each
+    # publisher's log must then hold, under every number, the same record as the new leader's log, and
+    # none the new leader does not hold (BUG-0153, docs/availability/following_the_wal.md, section 5.4).
+    Scenario(
+        number=76,
+        short_name="publishers_follow_only_the_record",
+        description="A matching engine publisher is sent only the records the venue's record holds, each once, across a restart and a change of leader",
+        expected_outcome=(
+            "a restarted publisher's log holds every record once with no gap; after the leading sequencer dies holding records "
+            "its follower never received, each publisher's log holds the same record under each number as the new leader's log"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        with_publishers=True,
+        block_leader_peer_sends=True,
+        assert_publishers_follow_only_the_record=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -5126,6 +5159,9 @@ def count_lines_with_all(log_path: Path, *markers: str, from_byte: int = 0) -> i
 # payload_size (u32), record_id (i64) and eight reserved bytes, then the payload and a CRC32.
 _WAL_ENTRY_MAGIC = 0xFEEDFACE
 _WAL_ENTRY_HEADER = struct.Struct("<IIqQ")
+# What a write-ahead log entry's contents begin with: the wall-clock time in nanoseconds, the leader's
+# epoch, and the message type (WalEntryContents.hpp).
+_WAL_CONTENTS_HEADER = struct.Struct("<qih")
 
 
 def wal_record_ids(wal_dir: Path, after: tuple[int, int] = (-1, -1)) -> list[tuple[tuple[int, int], int]]:
@@ -5226,6 +5262,90 @@ def numbering_goes_backwards(wal_dir: Path, from_position: tuple[int, int]) -> l
     """Each place, from the entry at from_position onwards, where a record's number is not above the one before."""
     ids = [record_id for _, record_id in wal_record_ids(wal_dir, from_position)]
     return [(earlier, later) for earlier, later in zip(ids, ids[1:]) if later <= earlier]
+
+
+def wal_entries(wal_dir: Path):
+    """Each entry in a write-ahead log, in the order written: (record number, wall-clock time in nanoseconds, contents).
+
+    The contents are the bytes the writer gave the log, after the entry's own header of wall-clock time,
+    leader epoch and message type. Read as wal_record_ids reads, segment by segment, stopping at the first
+    entry whose magic number is wrong. A generator, so that a long log is never held in memory whole.
+    """
+    for segment_path in sorted(wal_dir.glob("wal_*.log")):
+        data = segment_path.read_bytes()
+        offset = 0
+        while offset + _WAL_ENTRY_HEADER.size <= len(data):
+            magic, size, record_id, _ = _WAL_ENTRY_HEADER.unpack_from(data, offset)
+            if magic != _WAL_ENTRY_MAGIC:
+                break
+            payload_at = offset + _WAL_ENTRY_HEADER.size
+            if payload_at + size > len(data) or size < _WAL_CONTENTS_HEADER.size:
+                break
+            wall_time_ns, _, _ = _WAL_CONTENTS_HEADER.unpack_from(data, payload_at)
+            yield record_id, wall_time_ns, data[payload_at + _WAL_CONTENTS_HEADER.size:payload_at + size]
+            offset = payload_at + size + 4
+
+
+def publisher_wal_directory(prefix: Path, which: str) -> Path:
+    """Where a matching engine publisher keeps its write-ahead log, from its installed configuration."""
+    config = prefix / "etc" / "matching_engine_publisher" / f"matching_engine_publisher_{which}.toml"
+    return config.parent / installed_toml_section_value(config, "wal", "directory")
+
+
+def publisher_last_record(publisher_dir: Path) -> int:
+    """The number of the last record a publisher's write-ahead log holds, or 0 if it holds none."""
+    entries = wal_record_ids(publisher_dir)
+    return entries[-1][1] if entries else 0
+
+
+def wait_for_publisher_to_hold(label: str, publisher_dir: Path, seq_no: int, timeout: float) -> None:
+    """Wait until a publisher's write-ahead log holds record seq_no or a later one; fail if it does not in time."""
+    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    while publisher_last_record(publisher_dir) < seq_no:
+        if time.monotonic() > deadline:
+            die(f"{label}: the publisher's log in {publisher_dir} reached record {publisher_last_record(publisher_dir)}, not {seq_no}, "
+                f"within {timeout:.0f}s.")
+        time.sleep(LOG_POLL_INTERVAL)
+    log(f"  {label}: the publisher holds record {seq_no} ({time.monotonic() - started:.1f}s)")
+
+
+def check_publisher_holds_the_record(label: str, publisher_dir: Path, sequencer_dir: Path) -> tuple[int, int]:
+    """Fail unless a publisher's log holds each record once, without a gap, each the same as the sequencer's record of that number.
+
+    A publisher writes, under each number, the message the sequencer's record carries, inside the
+    sequencer's envelope, and the envelope's wall-clock time. So the publisher's record is the same as the
+    sequencer's when the two times are equal and the publisher's contents appear within the sequencer's.
+    Returns the first and last numbers the publisher holds.
+    """
+    numbers: list[int] = []
+    sequencer = wal_entries(sequencer_dir)
+    current = next(sequencer, None)
+    for record_id, wall_time_ns, contents in wal_entries(publisher_dir):
+        if numbers and record_id == numbers[-1]:
+            die(f"{label}: the publisher's log in {publisher_dir} holds record {record_id} twice, one after the other. It was "
+                "sent the same record by both sequencers, or by one twice, and wrote it each time (BUG-0153).")
+        if numbers and record_id <= numbers[-1]:
+            die(f"{label}: the publisher's log in {publisher_dir} goes back from record {numbers[-1]} to record {record_id}, so it "
+                "holds that number twice (BUG-0153).")
+        if numbers and record_id != numbers[-1] + 1:
+            die(f"{label}: the publisher's log in {publisher_dir} jumps from record {numbers[-1]} to record {record_id}: it lacks "
+                f"{record_id - numbers[-1] - 1} record(s).")
+        numbers.append(record_id)
+        while current is not None and current[0] < record_id:
+            current = next(sequencer, None)
+        if current is None or current[0] != record_id:
+            die(f"{label}: the publisher's log holds record {record_id}, which the sequencer's log in {sequencer_dir} does not "
+                "hold. The publisher was sent a record the venue's record does not hold (BUG-0153).")
+        if current[1] != wall_time_ns or contents not in current[2]:
+            die(f"{label}: record {record_id} in the publisher's log is not the record the sequencer's log in {sequencer_dir} "
+                "holds under that number. The publisher was sent a record the venue's record does not hold, and the new "
+                "leader gave its number to another (BUG-0153).")
+    if not numbers:
+        die(f"{label}: the publisher's log in {publisher_dir} holds no record, so there is nothing to compare.")
+    log(f"  {label}: the publisher's log holds records {numbers[0]} to {numbers[-1]}, each once and without a gap, each the same "
+        "as the sequencer's record of that number -- OK")
+    return numbers[0], numbers[-1]
 
 
 def installed_toml_section_value(config: Path, section: str, key: str) -> str:
@@ -6077,6 +6197,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
                             ("binary_order_gateway_a", "binary_order_gateway",
                              etc_dir / "binary_order_gateway" / "binary_order_gateway_a.toml"))
 
+    if scenario.with_publishers:
+        for which in ("primary", "secondary"):
+            publisher_config = etc_dir / "matching_engine_publisher" / f"matching_engine_publisher_{which}.toml"
+            launch_table.append((f"matching_engine_publisher_{which}", "matching_engine_publisher", publisher_config))
+
     if scenario.gateway_b:
         gateway_a_index = next(index for index, entry in enumerate(launch_table)
                                if entry[0] == "fix_order_gateway_a")
@@ -6201,6 +6326,16 @@ def run_scenario(scenario: Scenario, args) -> bool:
         creds_file = etc_dir / "authentication_service" / "credentials.toml"
         export_credentials(project_root, creds_file)
         log("")
+
+        if scenario.with_publishers:
+            # Empty, so that everything a publisher's log holds was sent to it in this scenario, and can
+            # be compared with the sequencers' logs record by record.
+            for which in ("primary", "secondary"):
+                publisher_wal = publisher_wal_directory(prefix, which)
+                removed = [path for path in publisher_wal.glob("*") if path.is_file()]
+                for path in removed:
+                    path.unlink()
+                log(f"  matching_engine_publisher_{which}: emptied its write-ahead log in {publisher_wal} ({len(removed)} file(s))")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
         log("=== Phase 1: starting all processes ===")
@@ -8005,6 +8140,120 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "without them (BUG-0103).")
             log("  the engine holds no order the new leader's log lacks. The three orders are in neither; a gateway sending again the "
                 "commands it holds unanswered is what recovers them (part 4.3 of the design) -- OK")
+
+        # ── Publishers follow only the record ─────────────────────────────────
+        if scenario.assert_publishers_follow_only_the_record:
+            log("=== A publisher is sent only the records the venue's record holds, each once (BUG-0153) ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            secondary_log = log_dir / "sequencer_secondary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("publishers: sequencer_primary is not leading, so the scenario's change of leader would not happen as written.")
+            sequencer_etc = prefix / "etc" / "sequencer"
+            sequencer_configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
+            order_ports = {which: installed_toml_section_value(config, "network", "listen_port")
+                           for which, config in sequencer_configs.items()}
+            # Relative to the configuration's directory, which is where launch_app runs each process.
+            wal_dirs = {which: config.parent / installed_toml_section_value(config, "wal", "directory")
+                        for which, config in sequencer_configs.items()}
+            publisher_dirs = {which: publisher_wal_directory(prefix, which) for which in ("primary", "secondary")}
+            publisher_catch_up_timeout = 180.0
+            # Time for anything sent twice, or sent late, to arrive after a publisher has reached a record.
+            settle_seconds = 3.0
+
+            def inject_orders_to(port: str, cl_ord_id: str, count: int = 1) -> None:
+                command = [str(bin_dir / "inject_order"), "--port", port, "--cl-ord-id", cl_ord_id]
+                if count > 1:
+                    command += ["--count", str(count)]
+                result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+                if result.returncode != 0:
+                    die(f"publishers: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+
+            def last_record_of(which: str) -> int:
+                entries = wal_record_ids(wal_dirs[which])
+                return entries[-1][1] if entries else 0
+
+            run_tag = datetime.now().strftime("%H%M%S")
+
+            # 1. Both publishers catch up with everything the baseline orders produced.
+            leader_last = last_record_of("primary")
+            for which in ("primary", "secondary"):
+                wait_for_publisher_to_hold(f"matching_engine_publisher_{which}", publisher_dirs[which], leader_last, publisher_catch_up_timeout)
+
+            # 2. One publisher is killed, orders are taken while it is down, and it is restarted with its log.
+            publisher_name = "matching_engine_publisher_primary"
+            publisher = proc_by_name[publisher_name]
+            log(f"  SIGKILL -> {publisher_name} (PID {publisher.pid})")
+            publisher.kill()
+            publisher.wait()
+            if publisher.poll() is None or Path(f"/proc/{publisher.pid}").exists():
+                die(f"publishers: {publisher_name} (PID {publisher.pid}) is still running after SIGKILL.")
+            log(f"  {publisher_name} confirmed dead, holding records through {publisher_last_record(publisher_dirs['primary'])}")
+            while_down = f"pubdown-{run_tag}"
+            accepted_from = file_end(me_log)
+            inject_orders_to(order_ports["primary"], while_down, count=3)
+            for number in (1, 2, 3):
+                if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={while_down}-{number} ", timeout=_RAW_REPLY_TIMEOUT,
+                                    from_byte=accepted_from)[0]:
+                    die(f"publishers: the matching engine did not accept {while_down}-{number} while the publisher was down.")
+            log("  3 orders taken while the publisher was down")
+            restarted = launch_app(publisher_name, "matching_engine_publisher",
+                                   prefix / "etc" / "matching_engine_publisher" / "matching_engine_publisher_primary.toml", bin_dir, log_dir)
+            app_procs.append((publisher_name, restarted))
+            proc_by_name[publisher_name] = restarted
+            leader_last = last_record_of("primary")
+            wait_for_publisher_to_hold(f"{publisher_name} after its restart", publisher_dirs["primary"], leader_last, publisher_catch_up_timeout)
+            time.sleep(settle_seconds)
+            check_publisher_holds_the_record(f"{publisher_name} after its restart", publisher_dirs["primary"], wal_dirs["primary"])
+
+            # 3. The leader holds records its follower never received, and dies; as in scenario 59.
+            block_flag.touch()
+            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists",
+                                timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("publishers: libblock_sends_to_ports.so never reported that it had begun blocking, so the follower may still be "
+                    "receiving the leader's records and nothing below would mean anything.")
+            log("  the leader's sends to its follower are now discarded, and the library has said so -- OK")
+            primary = proc_by_name["sequencer_primary"]
+            unreplicated_base = f"pubunrep-{run_tag}"
+            injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", unreplicated_base,
+                                         "--count", "3"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            sent_line = injector.stdout.readline() if injector.stdout is not None else ""
+            os.kill(primary.pid, signal.SIGSTOP)
+            injector.wait(timeout=30)
+            if not sent_line.startswith("sent "):
+                die(f"publishers: inject_order did not report sending the orders: {sent_line!r}")
+            log(f"  3 orders sent to the leader, and the leader stopped straight after: {sent_line.strip()}")
+            for number in (1, 2, 3):
+                inject_orders_to(order_ports["secondary"], f"{unreplicated_base}-{number}")
+            time.sleep(1.0)
+            takeover_from = file_end(secondary_log)
+            log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            primary.kill()
+            primary.wait()
+            if primary.poll() is None or Path(f"/proc/{primary.pid}").exists():
+                die(f"publishers: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
+            log("  sequencer_primary confirmed dead")
+            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            if not found:
+                die(f"publishers: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
+            log(f"  sequencer_secondary took the lead {elapsed:.1f}s after the kill")
+
+            # 4. The new leader numbers a new order where the old leader's unacknowledged records were.
+            after_takeover = f"pubafter-{run_tag}"
+            after_from = file_end(me_log)
+            inject_orders_to(order_ports["secondary"], after_takeover)
+            if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={after_takeover} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=after_from)[0]:
+                die("publishers: the matching engine did not accept an order from the new leader.")
+            log("  the matching engine accepted an order from the new leader")
+
+            # 5. The requirement: each publisher's log holds, under each number, the new leader's record.
+            new_leader_last = last_record_of("secondary")
+            for which in ("primary", "secondary"):
+                label = f"matching_engine_publisher_{which} after the change of leader"
+                wait_for_publisher_to_hold(label, publisher_dirs[which], new_leader_last, publisher_catch_up_timeout)
+            time.sleep(settle_seconds)
+            for which in ("primary", "secondary"):
+                check_publisher_holds_the_record(f"matching_engine_publisher_{which} after the change of leader", publisher_dirs[which],
+                                                 wal_dirs["secondary"])
 
         # ── Stalled follower ──────────────────────────────────────────────────
         if scenario.assert_stalled_follower_runs_alone:

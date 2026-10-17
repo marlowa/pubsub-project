@@ -102,6 +102,11 @@ class WalReadingThread : public ApplicationThread {
         int64_t held_seq_no{0};
         const uint8_t* held_bytes{nullptr};
         size_t held_size{0};
+        /// Where the held record ends in the WAL.
+        WalPosition held_end{};
+        /// A position before which the follower holds or has been sent every record: the end of the last
+        /// record read for it and not held, or where reading started. Reported when the follower is handed over.
+        WalPosition resume_at{};
     };
 
     void serve(const WalReadingCommand& command);

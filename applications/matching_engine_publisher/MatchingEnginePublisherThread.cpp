@@ -57,7 +57,7 @@ MatchingEnginePublisherThread::MatchingEnginePublisherThread(pubsub_itc_fw::Appl
     : ApplicationThread(token, logger, reactor, "MepThread", pubsub_itc_fw::ThreadID{1}, make_queue_config(), make_allocator_config(config, logger),
                         pubsub_itc_fw::ApplicationThreadConfiguration{})
     , config_(config)
-    , wal_subscriber_id_("mep_" + std::to_string(config.instance_id))
+    , follower_name_("mep_" + std::to_string(config.instance_id))
     , orders_inbound_svc_("inbound:" + std::to_string(config.orders_listen_port))
     , er_inbound_svc_("inbound:" + std::to_string(config.er_listen_port))
     , peer_inbound_svc_("inbound:" + std::to_string(config.peer_listen_port))
@@ -81,8 +81,9 @@ void MatchingEnginePublisherThread::on_initial_event() {
     }
 
     const int64_t recovered_seq = wal_.open(config_.wal_directory, config_.wal_segment_size, nullptr);
+    // A publisher wants every record of the day, so one whose WAL is empty asks from the first record.
+    follower_client_.emplace(follower_name_, true, recovered_seq > 0 ? recovered_seq : 0, follow_links_);
     if (recovered_seq > 0) {
-        sequencer_cursor_ = recovered_seq;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: WAL open complete: recovered seq_no={} record_count={}", recovered_seq,
                    wal_.record_count());
     } else {
@@ -125,22 +126,15 @@ void MatchingEnginePublisherThread::on_app_ready_event() {
 void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     const std::string& svc = id.service_name();
 
-    if (svc == "sequencer") {
-        sequencer_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: sequencer (primary) connection {} established -- sending WalSubscribeRequest",
-                   id.get_value());
-        pubsub_itc_fw_app::WalSubscribeRequest req{};
-        req.subscriber_id = wal_subscriber_id_;
-        req.from_seq_no = sequencer_cursor_;
-        send_pdu(id, pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id, 0, req);
-    } else if (svc == "sequencer_secondary") {
-        sequencer_secondary_conn_id_ = id;
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: sequencer (secondary) connection {} established -- sending WalSubscribeRequest",
-                   id.get_value());
-        pubsub_itc_fw_app::WalSubscribeRequest req{};
-        req.subscriber_id = wal_subscriber_id_;
-        req.from_seq_no = sequencer_cursor_;
-        send_pdu(id, pubsub_itc_fw_app::WalSubscribeRequest::message_pdu_id, 0, req);
+    if (svc == "sequencer" || svc == "sequencer_secondary") {
+        if (svc == "sequencer") {
+            sequencer_conn_id_ = id;
+        } else {
+            sequencer_secondary_conn_id_ = id;
+        }
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: {} connection {} established -- asking to be sent the records after {}", svc,
+                   id.get_value(), follower_client_->last_seq_no());
+        follower_client_->on_connected(id);
     } else if (svc == "arbiter_primary") {
         arbiter_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: arbiter-primary connection {} established", id.get_value());
@@ -162,9 +156,11 @@ void MatchingEnginePublisherThread::on_connection_established(pubsub_itc_fw::Con
 void MatchingEnginePublisherThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
     if (id == sequencer_conn_id_) {
         sequencer_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        follower_client_->on_disconnected(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: sequencer (primary) connection {} lost: {}", id.get_value(), reason);
     } else if (id == sequencer_secondary_conn_id_) {
         sequencer_secondary_conn_id_ = pubsub_itc_fw::ConnectionID{};
+        follower_client_->on_disconnected(id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: sequencer (secondary) connection {} lost: {}", id.get_value(), reason);
     } else if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
@@ -217,12 +213,18 @@ void MatchingEnginePublisherThread::on_framework_pdu_message(const pubsub_itc_fw
         return;
     }
 
-    // Sequencer WAL follower PDUs.
+    // What the sequencers send this publisher as it follows their WAL.
     if (conn_id == sequencer_conn_id_ || conn_id == sequencer_secondary_conn_id_) {
         if (message.pdu_id() == pubsub_itc_fw_app::WalRecord::message_pdu_id) {
             handle_wal_record_from_sequencer(conn_id, message);
-        } else if (message.pdu_id() == pubsub_itc_fw_app::WalSubscribeAck::message_pdu_id) {
-            handle_wal_subscribe_ack(message);
+        } else if (message.pdu_id() == pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id) {
+            handle_follow_caught_up(conn_id, message);
+        } else if (message.pdu_id() == pubsub_itc_fw::WalFollowDeclined::message_pdu_id) {
+            follower_client_->on_declined(conn_id);
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: the sequencer on connection {} does not lead, and declined",
+                       conn_id.get_value());
+        } else if (message.pdu_id() == pubsub_itc_fw::WalLeaderChanged::message_pdu_id) {
+            handle_leader_changed(conn_id, message);
         } else {
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: unexpected PDU {} from sequencer connection {} -- dropping",
                        message.pdu_id(), conn_id.get_value());
@@ -397,18 +399,48 @@ void MatchingEnginePublisherThread::handle_peer_pdu(const pubsub_itc_fw::Connect
     }
 }
 
-void MatchingEnginePublisherThread::handle_wal_subscribe_ack(const pubsub_itc_fw::EventMessage& message) {
+void MatchingEnginePublisherThread::PublisherFollowLinks::send_follow_request(const pubsub_itc_fw::ConnectionID& to,
+                                                                              const pubsub_itc_fw::WalFollowRequest& request) {
+    owner_.send_pdu(to, pubsub_itc_fw::WalFollowRequest::message_pdu_id, 0, request);
+}
+
+void MatchingEnginePublisherThread::handle_follow_caught_up(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_needed = 0;
     size_t consumed = 0;
-    pubsub_itc_fw_app::WalSubscribeAckView ack{};
-    if (!pubsub_itc_fw_app::decode(ack, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode WalSubscribeAck -- dropping");
+    pubsub_itc_fw::WalFollowCaughtUpView caught_up{};
+    if (!pubsub_itc_fw::decode(caught_up, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode WalFollowCaughtUp -- dropping");
         return;
     }
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MepThread: WalSubscribeAck accepted_from_seq_no={}", ack.accepted_from_seq_no);
+    if (follower_client_->on_caught_up(conn_id, caught_up) == pubsub_itc_fw::WalFollowerClient::CaughtUpVerdict::CountMismatch) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MepThread: the sequencer on connection {} says it sent {} record(s), which is not how many arrived -- asked again from record {}",
+                   conn_id.get_value(), caught_up.records_sent, follower_client_->last_seq_no());
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MepThread: caught up from the sequencer on connection {} through record {} ({} sent) -- each record from here arrives as it is committed",
+               conn_id.get_value(), follower_client_->last_seq_no(), caught_up.records_sent);
+}
+
+void MatchingEnginePublisherThread::handle_leader_changed(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+    auto& arena_buf = decode_arena_buffer();
+    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
+    arena.reset();
+    size_t arena_needed = 0;
+    size_t consumed = 0;
+    pubsub_itc_fw::WalLeaderChangedView changed{};
+    if (!pubsub_itc_fw::decode(changed, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MepThread: failed to decode WalLeaderChanged -- dropping");
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "MepThread: the sequencer on connection {} now leads (epoch={}) -- asking it for the records after {}", conn_id.get_value(), changed.epoch,
+               follower_client_->last_seq_no());
+    follower_client_->on_leader_changed(conn_id);
 }
 
 void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
@@ -423,17 +455,25 @@ void MatchingEnginePublisherThread::handle_wal_record_from_sequencer(const pubsu
         return;
     }
 
+    // Only the record after the last one held is written. One already held arrives when a request is made
+    // again; one further on means records were lost on the way, and the client has asked again.
+    switch (follower_client_->on_record(conn_id, view.seq_no)) {
+        case pubsub_itc_fw::WalFollowerClient::RecordVerdict::Accept:
+            break;
+        case pubsub_itc_fw::WalFollowerClient::RecordVerdict::AlreadyHeld:
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: record {} from connection {} is held already -- dropped", view.seq_no,
+                       conn_id.get_value());
+            return;
+        case pubsub_itc_fw::WalFollowerClient::RecordVerdict::Gap:
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                       "MepThread: record {} from connection {} does not follow the last held -- dropped, and asked again from record {}", view.seq_no,
+                       conn_id.get_value(), follower_client_->last_seq_no());
+            return;
+    }
+
     wal_.append(view.seq_no, view.pdu_id, view.payload.data, static_cast<int>(view.payload.size), view.wall_time_ns,
                 view.has_leader_epoch ? view.leader_epoch : 0);
-    sequencer_cursor_ = view.seq_no;
-
-    // Ack immediately.
-    pubsub_itc_fw::WalAck ack{};
-    ack.seq_no = view.seq_no;
-    send_pdu(conn_id, pubsub_itc_fw::WalAck::message_pdu_id, 0, ack);
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: WalRecord seq={} pdu_id={} written to MEP WAL, WalAck sent", view.seq_no,
-               view.pdu_id);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "MepThread: WalRecord seq={} pdu_id={} written to MEP WAL", view.seq_no, view.pdu_id);
 
     // The record is now in the WAL; wake each publisher so it streams the new record to any
     // caught-up subscriber. Each filters by topic membership and only publishes while leader.

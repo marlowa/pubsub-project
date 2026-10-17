@@ -44,7 +44,10 @@ void WalFollowerService::on_follow_request(const ConnectionID& connection, const
         follower.tell_when_caught_up = true;
         PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds nothing and is placed at record {}, sent nothing older",
                    request.follower_name, connection.get_value(), positions_.limit(limit));
-        hand_over(follower, positions_.limit(limit), 0);
+        // Every record before the start of the segment that holds the record after the limit is at or below the
+        // limit, which the follower is taken to hold.
+        const int64_t placed_at = positions_.limit(limit);
+        hand_over(follower, placed_at, 0, wal_.scan_start_for(placed_at + 1));
         return;
     }
     PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: {} on connection {} holds records through {} -- the reading thread sends it the rest",
@@ -108,7 +111,7 @@ bool WalFollowerService::on_inter_thread_message(const EventMessage& message) {
     // follower is handed over at exactly this record. Short: records were released meanwhile.
     const int64_t limit_now = positions_.limit(follower.limit);
     if (report->reached_seq_no >= limit_now) {
-        hand_over(follower, report->reached_seq_no, report->records_sent);
+        hand_over(follower, report->reached_seq_no, report->records_sent, report->resume_at);
         return true;
     }
 
@@ -127,7 +130,7 @@ bool WalFollowerService::on_inter_thread_message(const EventMessage& message) {
     return true;
 }
 
-void WalFollowerService::hand_over(Follower& follower, int64_t through, int64_t records_sent) {
+void WalFollowerService::hand_over(Follower& follower, int64_t through, int64_t records_sent, WalPosition resume_at) {
     follower.handed_over = true;
     follower.short_rounds = 0;
     if (follower.tell_when_caught_up) {
@@ -139,7 +142,7 @@ void WalFollowerService::hand_over(Follower& follower, int64_t through, int64_t 
     }
     PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: connection {} caught up through record {} ({} records sent) and is handed over to new records",
                follower.connection.get_value(), through, records_sent);
-    events_.follower_handed_over(follower.connection, through, records_sent);
+    events_.follower_handed_over(follower.connection, through, records_sent, resume_at);
 }
 
 void WalFollowerService::on_connection_lost(const ConnectionID& connection) {
