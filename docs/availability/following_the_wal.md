@@ -311,6 +311,22 @@ become one thing: the engine is served from a position, up to the last order rel
 The engine's book, its checks and its region are unchanged. The engine's own reading of what it is sent
 does not change either, because it receives the same `WalRecord` messages on the same connection.
 
+**A limit on how long the engine waits before asking again.** An engine that is catching up asks again
+when a whole period of `catch_up_retry_seconds` (15 seconds as deployed) passes without a single record
+arriving. It counts the records it receives, not the records the reading thread examines. The reading
+thread sends the engine only orders and cancels, and passes over everything else in the WAL, such as
+execution reports and lease promise records, without sending anything. So if the WAL held a stretch of
+records with no order or cancel among them, long enough that passing over it took the reading thread more
+than 15 seconds, the engine would see nothing arrive and ask again. The sequencer would then stop the
+serving under way and start a new one from the last order the engine holds, which is before that stretch,
+and the same thing would happen at the next period. The catch-up would never finish, and the engine would
+stay waiting and never act. No wrong book results, because the engine acts only when it is told it has
+caught up. The reading thread passes over hundreds of thousands of records a second, so this needs a
+stretch of millions of records without an order or cancel; in this venue's WAL each order is followed by
+about one and a half execution reports, so such a stretch does not occur. If it ever did, the remedy is to
+raise `catch_up_retry_seconds`. The reading thread does not report how far it has examined, so the engine
+cannot tell this case apart from a sequencer that has stopped serving it.
+
 ### 4.3 The publishers
 
 Each publisher uses `WalFollowerClient` towards both sequencers, asking for new records too, and is

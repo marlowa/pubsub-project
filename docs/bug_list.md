@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 172 |
-| Open | 67 (47 defects, 20 tasks) |
+| Bugs recorded | 173 |
+| Open | 68 (47 defects, 21 tasks) |
 | Closed | 105 |
-| Next id | BUG-0173 |
+| Next id | BUG-0174 |
 
 ## Open bugs by severity
 
-15 high, 44 medium, 8 low.
+15 high, 45 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -72,6 +72,7 @@
 | [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
 | [BUG-0171](#bug_0171) | medium | defect | Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher |
 | [BUG-0172](#bug_0172) | medium | defect | With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced |
+| [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3424,6 +3425,47 @@ The matching engine's catch-up with high availability off has the same shape (`e
 off the order path whatever the configuration.
 
 **Principles.** F4.
+
+### BUG-0173: No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests {#bug_0173}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| How | Reviewing step 3 of phase 5 against the book's high availability chapter, which marks R-0101 as not covered by any scenario |
+| Impact | Two checks that stop a matching engine acting on an incomplete book are known to work only inside the library and the engine's own tests. Nothing shows that they still work when the real sequencer, the real engine and the real connections between them are running, which is where a fault would actually happen |
+
+**What is there now.** Two checks guard a matching engine's catch-up:
+
+1. **The engine's count check (R-0101, `CatchUpTally`).** When the sequencer says the catch-up is finished, it
+   says how many records it sent. The engine counts the records it received, and checks that each was
+   numbered after the one before. If the count differs, or a record arrived twice or out of order, the engine
+   does not act on what it holds and asks again.
+2. **The sequencer's refusal past a damaged record.** A record in the WAL that the reading thread cannot
+   decode stops the follower being handed over: the sequencer never tells the engine it has caught up, and
+   writes an Error naming the record.
+
+Both are tested, but only with test threads or in isolation: `CatchUpTallyTest`, the service's unit tests,
+`engine_catch_up_from_wal`'s test, and the integration test of the reading thread with a damaged record.
+The book says so for R-0101: "no scenario withholds a record during a catch-up".
+
+**What is wanted.** Scenarios in `scripts/ha_test.py` that run the real components and show each check
+working:
+
+- a catch-up in which one record sent to the engine does not arrive, after which the engine must not act,
+  must say why, and must catch up completely when it asks again;
+- a catch-up past a record in the WAL whose checksum is right but whose contents do not decode, after
+  which the engine must never be told it has caught up and the sequencer must write the Error once.
+
+Withholding a record needs a way to inject the fault into a running component, such as a setting read only
+by tests that makes the sequencer leave out one record of a catch-up. How that is done is part of the task,
+and it must not be possible to switch on in production. Each scenario is made to fail on purpose before it
+is relied on, by switching the check off. When both pass, the book's note on R-0101 is changed to say the
+check is covered.
+
+**Principles.** V2.
 
 ## Closed
 
