@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 169 |
-| Open | 68 (48 defects, 20 tasks) |
-| Closed | 101 |
-| Next id | BUG-0170 |
+| Bugs recorded | 170 |
+| Open | 67 (47 defects, 20 tasks) |
+| Closed | 103 |
+| Next id | BUG-0171 |
 
 ## Open bugs by severity
 
-16 high, 44 medium, 8 low.
+16 high, 43 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -70,7 +70,6 @@
 | [BUG-0151](#bug_0151) | medium | defect | The order's round trip is about 20 microseconds slower when the secondary matching engine leads |
 | [BUG-0153](#bug_0153) | medium | defect | A matching engine publisher can be sent records that are never committed, and the same record twice |
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
-| [BUG-0164](#bug_0164) | medium | defect | The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread |
 | [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
 | [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
@@ -244,12 +243,23 @@ when run again. In one run of `tmp/phase5/stall.sh`, a single promise write took
 the leading sequencer held 16,384 orders waiting for a voter to confirm in writing that the follower may not
 lead; the leader lost its lease and discarded them, as it must.
 
+**Measured with the machine idle, 17 October 2026.** On the WAL partition (on the same CT4000BX500, mounted
+with `lazytime`), 2,000 writes of 4 KiB each followed by `fdatasync` took 0.88 ms at the median when appending,
+5.2 ms at one in a thousand and 16 ms at the longest; overwriting blocks already allocated took 0.37 ms at the
+median and 4.0 ms at the longest. The project tree on the same disk gave the same figures, and the machine's
+NVMe disk was slower at the median (1.9 ms appending) though its longest was shorter (3.9 ms). Not one of the
+12,000 writes took 100 ms. So the disk, idle, makes a small write durable a thousand times faster than the
+slow promise writes above. On the same day a promise write of 3,099 ms failed scenario 14, while another
+program was converting video on the machine, using about 14 of its 32 cores, including the cores the venue's
+order path is pinned to, and writing heavily to the same disk; with that program stopped, a full run of all
+75 scenarios passed. Whether such a program was running during the earlier cases is not known.
+
 **What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
 or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
 kind a production machine would have compares.
 
-**What is wanted.** First a measurement: how long the write and its `fsync` take on this disk while idle and
-while the venue writes its WALs. Then a decision on whether a leader should keep its lease through one slow
+**What is wanted.** First the rest of the measurement: how long the write and its `fsync` take on this disk
+while the venue writes its WALs, the idle figures being known. Then a decision on whether a leader should keep its lease through one slow
 write. Every way to make it do so changes the rules for which instance leads, which the TLA+ models in
 `docs/availability/tla/` check, so any change is made to the model first.
 
@@ -269,31 +279,6 @@ write. Every way to make it do so changes the rules for which instance leads, wh
 of the sends dropped, written when the count stops growing or at a fixed interval; not one line for each send.
 
 **Principles.** None; how much the Quill log says.
-
-### BUG-0164: The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread {#bug_0164}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-15 |
-| Recorded | 2026-10-15 |
-| How | Sampling each thread's state and processor from `/proc` every half second while a sequencer started, to find why a follower wrote the records sent to it so slowly in the first seconds after starting |
-| Impact | For the first one to two and a half seconds after every start, the sequencer's own thread shares its processor with a thread reserving a table of 4 GiB and reading every record in the WAL. A starting follower writes what the leader sends it slowly meanwhile, and a starting instance that leads sequences orders more slowly meanwhile |
-
-**What was seen.** The samples showed a third thread named `SequencerThread` in the starting sequencer,
-running on processor 9, the processor the sequencer's own thread is pinned to, mostly in system time: the
-reservation of the table, which touches every page. Its Quill line says how long it took: "4096 MiB reserved
-in 1059 ms and 2532455 log record(s) read in 1456 ms in the background".
-
-**Why.** `LoggedCommandIdentifiersBuilder` starts its thread from the sequencer's own thread, and a new
-thread inherits the processor mask of the thread that created it. The WAL's helper thread had the same
-fault ([BUG-0093](#bug_0093)) and is moved to the background cores when it starts (`helper_cores`); the
-builder is not.
-
-**What is wanted.** The builder's thread moved to the component's background cores when it starts, in the
-same way, and named, so that it can be told apart from the sequencer's thread in `/proc` and in `perf`.
-
-**Principles.** F4.
 
 ### BUG-0161: The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send {#bug_0161}
 
@@ -3473,6 +3458,76 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0170: The reactor could leave the last command of a burst unseen until another command arrived, because the queue said it was empty while one message was still waiting {#bug_0170}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| Fixed | 2026-10-17 -- `LockFreeMessageQueue::empty()` says the queue is empty only when the node the consumer takes from next is the stub with nothing after it |
+| How | Investigating why scenarios 14 and 48 failed in full runs: a restarted follower sequencer was caught up at about three batches of 256 records a second. Diagnostics showed the reading thread asking the reactor to be told when the connection could take more straight after each batch, and the request then waiting in the reactor's command queue for up to 1.1 seconds, while the batch's own sends, ahead of it in the same queue, were taken within microseconds |
+| Impact | Every component's reactor checks `empty()` on its command queue before it takes commands. Whenever a burst of commands ended, the last one could wait until some other command arrived behind it -- on a quiet connection, up to a second or more. That includes sends on the order path, so the last report of a burst could be delayed; how much this affected latency measurements made before the fix is not known. A follower caught up while the venue was quiet took seconds instead of milliseconds, so scenarios that stop the leader soon after a restart found the follower still behind |
+
+**What happened.** `LockFreeMessageQueue` is a queue with one consumer and a stub node. `dequeue()` moves
+the consumer's position, `tail_`, only onto a node whose message is still to be taken, or onto the stub, and
+handles the last node correctly. `empty()` did not: it reported the queue empty whenever the node at `tail_`
+had nothing after it and was also the newest node, which is exactly the case of one message left after the
+one before it was taken. The reactor's polling loop takes commands only when `empty()` is false, so that
+message stayed there until something else was enqueued behind it. A busy component always has something
+arriving within microseconds, which is why nothing showed until a catch-up ran on a quiet connection, where
+the request after each batch is always the last command.
+
+**The fix.** `empty()` returns false whenever `tail_` is not the stub, and otherwise reports whether anything
+follows the stub.
+
+**How it was checked.** A new unit test, `LockFreeMessageQueueTest.EmptyIsFalseWhileAnyMessageIsWaitingIncludingTheLastAfterOthersWereTaken`,
+failed with the old code, at the second of two messages and at the last of 257, and passes with the fix, as
+do the other 19 tests of the queue. The unit test shows the defect whatever the load on the machine; the
+timings of the slow catch-ups above, by contrast, were taken while another program was using about 14 of the
+machine's 32 cores and writing heavily to the same disk as the WALs, so they show the effect but not its size
+on a quiet machine. With the fix, in a full run of all 75 scenarios on an otherwise idle machine, every
+scenario passed; in scenario 14 the restarted follower was caught up with 3,000 records in 22 milliseconds,
+and in scenario 48 with 8,000 records in 39 milliseconds, each in one serving.
+The TLA+ models in `docs/framework/tla/` cover the queue of empty slabs, a different queue; this one has no
+model.
+
+**Principles.** F4.
+
+### BUG-0164: The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread {#bug_0164}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-15 |
+| Recorded | 2026-10-15 |
+| Fixed | 2026-10-17 -- the builder names itself IdBuilder and moves itself to the component's background cores when it starts |
+| How | Sampling each thread's state and processor from `/proc` every half second while a sequencer started, to find why a follower wrote the records sent to it so slowly in the first seconds after starting |
+| Impact | For the first one to two and a half seconds after every start, the sequencer's own thread shares its processor with a thread reserving a table of 4 GiB and reading every record in the WAL. A starting follower writes what the leader sends it slowly meanwhile, and a starting instance that leads sequences orders more slowly meanwhile |
+
+**What was seen.** The samples showed a third thread named `SequencerThread` in the starting sequencer,
+running on processor 9, the processor the sequencer's own thread is pinned to, mostly in system time: the
+reservation of the table, which touches every page. Its Quill line says how long it took: "4096 MiB reserved
+in 1059 ms and 2532455 log record(s) read in 1456 ms in the background".
+
+**Why.** `LoggedCommandIdentifiersBuilder` starts its thread from the sequencer's own thread, and a new
+thread inherits the processor mask of the thread that created it. The WAL's helper thread had the same
+fault ([BUG-0093](#bug_0093)) and is moved to the background cores when it starts (`helper_cores`); the
+builder was not.
+
+**What is wanted.** The builder's thread moved to the component's background cores when it starts, in the
+same way, and named, so that it can be told apart from the sequencer's thread in `/proc` and in `perf`.
+
+**The fix.** `LoggedCommandIdentifiersBuilder` names its thread `IdBuilder` and moves it to the background
+cores from the CPU layout when it starts, as the WAL's helper thread does; with no layout, as in a test, it is
+left where it lands.
+
+**How it was checked.** Sampled from `/proc` while a sequencer started: the builder ran on processors 16 to
+31, and the sequencer's own thread alone on its processor. Moving it did not change how fast a restarted
+follower was caught up, which turned out to be [BUG-0170](#bug_0170).
+
+**Principles.** F4.
 
 ### BUG-0168: The reading thread read a follower's limit afresh at every batch, so while records were released faster than the follower took them it was never handed over {#bug_0168}
 

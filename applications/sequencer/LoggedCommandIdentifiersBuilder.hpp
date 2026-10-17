@@ -3,6 +3,8 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <pthread.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -16,6 +18,7 @@
 
 #include <pubsub_itc_fw/AllocationGrowthReporter.hpp>
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/CpuPinning.hpp>
 #include <pubsub_itc_fw/PubSubItcException.hpp>
 #include <pubsub_itc_fw/ThreadWithJoinTimeout.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
@@ -99,9 +102,10 @@ class LoggedCommandIdentifiersBuilder {
      * @brief Starts building a record with room for @p capacity identifiers from the given log segments,
      *        oldest first.
      */
-    void start(size_t capacity, std::vector<std::string> segment_paths) {
+    void start(size_t capacity, std::vector<std::string> segment_paths, std::vector<pubsub_itc_fw::CpuId> background_cores = {}) {
         capacity_ = capacity;
         segment_paths_ = std::move(segment_paths);
+        background_cores_ = std::move(background_cores);
         thread_.start([this] { build(); });
     }
 
@@ -159,6 +163,16 @@ class LoggedCommandIdentifiersBuilder {
 
   private:
     void build() {
+        // It puts itself where it belongs. A new thread inherits the processor mask of the thread that
+        // created it, which is the sequencer's own thread, pinned to a processor reserved for the order
+        // path: left there, reserving the table and reading the log would share that processor with the
+        // thread that sequences every order and reads what the leader sends (docs/bug_list.md, BUG-0164).
+        // Named, so that it can be told apart from the sequencer's thread. Where no processors are given,
+        // as in a test, it is left where it lands.
+        pthread_setname_np(pthread_self(), "IdBuilder");
+        if (!background_cores_.empty()) {
+            static_cast<void>(pubsub_itc_fw::apply_thread_affinity_mask(0, background_cores_));
+        }
         growth_reporter_.report_threshold_bytes = 1;
         growth_reporter_.on_large_allocation = [this](size_t bytes, size_t /*largest*/) { table_bytes_ = bytes; };
         const auto reserve_started = std::chrono::steady_clock::now();
@@ -211,6 +225,7 @@ class LoggedCommandIdentifiersBuilder {
 
     size_t capacity_{0};
     std::vector<std::string> segment_paths_;
+    std::vector<pubsub_itc_fw::CpuId> background_cores_;
     std::optional<LoggedCommandIdentifiers> built_;
     pubsub_itc_fw::AllocationGrowthReporter growth_reporter_;
     size_t table_bytes_{0};

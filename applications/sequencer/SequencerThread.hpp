@@ -283,6 +283,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         bool asking_to_lead{false};
     };
     std::unordered_map<int, EngineServing> engine_servings_;
+    // The component's background cores, from the CPU layout, for the helper threads this thread starts;
+    // empty when no layout was read.
+    std::vector<pubsub_itc_fw::CpuId> background_cores_;
     // Has the reading thread serve @p engine from the record after @p after_seq_no, up to the last order released.
     void serve_engine(const pubsub_itc_fw::ConnectionID& engine, int64_t after_seq_no, EngineServing serving);
     // The engine the reading thread was serving has been handed over at @p through.

@@ -302,11 +302,15 @@ template <typename T> class LockFreeMessageQueue {
      * @brief Checks if the queue is empty.
      */
     [[nodiscard]] bool empty() const {
+        // The node the consumer takes from next holds a message not yet taken, unless it is the stub:
+        // dequeue() moves tail_ only onto a node whose message is still to be taken, or onto the stub.
+        // So the queue is empty only when tail_ is the stub and nothing follows it. A node other than
+        // the stub with nothing after it is the last message, waiting, not an empty queue (BUG-0170).
         Node* tail = tail_;
-        if (tail == &stub_) {
-            return tail->next_.load(std::memory_order_acquire) == nullptr;
+        if (tail != &stub_) {
+            return false;
         }
-        return tail->next_.load(std::memory_order_acquire) == nullptr && tail == head_.load(std::memory_order_acquire);
+        return tail->next_.load(std::memory_order_acquire) == nullptr;
     }
 
     // To test for priority inversion we need to add some hooks that are just used by a unit test.

@@ -147,6 +147,7 @@ void SequencerThread::on_initial_event() {
     wal_configuration.wal_segment_size = config_.wal_segment_size;
     if (helper_layout_loaded) {
         wal_configuration.helper_cores = helper_layout.background_cores();
+        background_cores_ = helper_layout.background_cores();
     }
     wal_configuration.ha_enabled = config_.ha_enabled;
     wal_configuration.pair_id = fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::sequencer);
@@ -1835,7 +1836,7 @@ void SequencerThread::start_building_record_of_identifiers() {
                "SequencerThread: building the record of command identifiers in the background, for {} identifier(s), from {} log segment(s) -- "
                "until it is complete, a command sent again is checked against the log itself",
                config_.identifiers_reserved, segment_paths.size());
-    identifiers_builder_.start(config_.identifiers_reserved, std::move(segment_paths));
+    identifiers_builder_.start(config_.identifiers_reserved, std::move(segment_paths), background_cores_);
 }
 
 void SequencerThread::take_record_of_identifiers_if_built() {

@@ -242,6 +242,42 @@ TEST(LockFreeMessageQueueTest, SizeCountsWhatIsStillWaiting) {
     EXPECT_EQ(queue.size(), 0);
 }
 
+// empty() must say "not empty" whenever a message is still waiting. The case that matters is one message
+// left after the one before it was taken: the node the consumer reads from next then holds that message
+// with nothing after it, and must not be mistaken for an empty queue. A reactor that checks empty() before
+// it looks at its commands would otherwise leave that last command until something else arrived behind it
+// (docs/bug_list.md, BUG-0170).
+TEST(LockFreeMessageQueueTest, EmptyIsFalseWhileAnyMessageIsWaitingIncludingTheLastAfterOthersWereTaken) {
+    const QueueConfiguration queue_config = make_default_queue_config();
+    const AllocatorConfiguration allocator_config = make_default_allocator_config();
+    LockFreeMessageQueue<TestMessage> queue(queue_config, allocator_config);
+    EXPECT_TRUE(queue.empty());
+
+    queue.enqueue(TestMessage{1});
+    EXPECT_FALSE(queue.empty()) << "one message waiting";
+    queue.enqueue(TestMessage{2});
+    EXPECT_FALSE(queue.empty()) << "two messages waiting";
+
+    ASSERT_TRUE(queue.dequeue().has_value());
+    EXPECT_FALSE(queue.empty()) << "the second message is still waiting after the first was taken";
+
+    ASSERT_TRUE(queue.dequeue().has_value());
+    EXPECT_TRUE(queue.empty());
+
+    // Again from a queue that has been used, and with a longer run, as a batch of sends and then one
+    // more command would be.
+    for (int number = 0; number < 257; ++number) {
+        queue.enqueue(TestMessage{number});
+    }
+    for (int number = 0; number < 256; ++number) {
+        ASSERT_TRUE(queue.dequeue().has_value());
+        ASSERT_FALSE(queue.empty()) << "after taking " << number + 1 << " of 257";
+    }
+    ASSERT_TRUE(queue.dequeue().has_value());
+    EXPECT_TRUE(queue.empty());
+    EXPECT_FALSE(queue.dequeue().has_value());
+}
+
 // Multi-producer correctness test: launches several producers
 // concurrently and ensures that all messages are eventually
 // consumed with no loss, corruption, or duplication. This
