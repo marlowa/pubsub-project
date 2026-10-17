@@ -282,57 +282,6 @@ message WalSubscribeAck (id=106, version=1)
 end
 
 # ------------------------------------------------------------
-#  115 -- MePositionRequest
-#  Sent by a matching-engine instance to the sequencer when it
-#  begins WAL reconciliation (RECONCILING state).  It tells the
-#  sequencer the seq_no of the last record the ME has already
-#  applied (via book replication).  The sequencer then streams all
-#  WAL records after that point so the ME can catch up before it
-#  begins live processing as the new leader.
-# ------------------------------------------------------------
-message MePositionRequest (id=115, version=1)
-    i64 last_seq_no        # last seq_no the ME has already applied
-    # Why the instance is asking, which only the instance knows. A promotion must move the
-    # sequencer's ME order connection to the asker -- the request is what tells the sequencer
-    # where to route, because the arbiter's decision does not reach it. A start must not: an
-    # instance that is merely becoming current may be about to learn that its peer leads, and
-    # taking the routing from a working leader stops the venue matching. See BUG-0077.
-    bool asking_to_lead    # true: this catch-up is part of a promotion, not a start
-end
-
-# ------------------------------------------------------------
-#  116 -- MePositionAck
-#  Sent by the sequencer to the matching engine once WAL catch-up
-#  streaming is complete.  It carries the sequencer's current WAL
-#  head; on receipt the ME considers its book reconciled and
-#  transitions to LEADER state.
-#
-#  It also carries the EARLIEST record the sequencer still holds.
-#  The log is truncated as it is consumed, so a replay from zero
-#  does not necessarily reach the start of the day. An engine that
-#  has lost its own record of what it held falls back to this one,
-#  and must be able to tell whether it established what was open or
-#  merely got as far back as the log goes -- because resuming on an
-#  incomplete answer conceals exactly the loss it is recovering
-#  from. See R-0123.
-#
-#  And it carries HOW MANY records were streamed, so that the engine
-#  can establish its catch-up was complete before it acts (R-0101).
-#  The count is needed because contiguity cannot be used: the stream
-#  is filtered -- only NewOrderSingle and OrderCancelRequest are
-#  forwarded -- so the engine receives a subset of the numbers in the
-#  range and a gap between them is ordinary. It is the count of what
-#  was actually SENT, not of what was walked past: the filtering
-#  happens after the walk, and counting the walk would have the engine
-#  expect records the sequencer deliberately withheld.
-# ------------------------------------------------------------
-message MePositionAck (id=116, version=1)
-    i64 last_seq_no        # sequencer's current WAL head at catch-up completion
-    i64 first_seq_no       # earliest record the sequencer still retains, or 0 if it holds none
-    i64 records_sent       # how many records were streamed for this request, after filtering
-end
-
-# ------------------------------------------------------------
 #  117 -- RoleAnnouncement
 #  Sent by a matching engine to the sequencer to say which role it
 #  currently holds, and under which epoch it holds it.

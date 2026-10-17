@@ -169,6 +169,13 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
                 throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: commands.identifiers_reserved must be positive");
             }
             config.identifiers_reserved = static_cast<size_t>(identifiers_reserved);
+
+            int64_t orders_held_at_most = 0;
+            toml.get_required_except("commands.orders_held_at_most", orders_held_at_most);
+            if (orders_held_at_most <= 0) {
+                throw pubsub_itc_fw::ConfigurationException("SequencerConfigurationLoader: commands.orders_held_at_most must be positive");
+            }
+            config.orders_held_at_most = static_cast<size_t>(orders_held_at_most);
         }
 
         int32_t wal_subscriber_listen_port = 0;

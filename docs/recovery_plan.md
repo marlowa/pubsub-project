@@ -24,7 +24,9 @@
 > answering orders while a follower that missed 1.2 million records catches up
 > ([BUG-0155](bug_list.md#bug_0155) is fixed). The lock-free allocators and queues, and the hand-over of
 > a follower, are now specified in TLA+ and checked with TLC
-> ([BUG-0162](bug_list.md#bug_0162), [framework/tla/findings.md](framework/tla/findings.md)). Step 3 is next.
+> ([BUG-0162](bug_list.md#bug_0162), [framework/tla/findings.md](framework/tla/findings.md)). Its step 3 is
+> built: the matching engine is caught up by the reading thread, and uses the library's messages to ask. It
+> awaits Andrew's review before step 4.
 
 ## In one page
 
@@ -107,8 +109,8 @@ separate checks, one for each way a command can arrive twice, and each new way h
 Defects have been fixed one at a time, in the order they were found, each in the place where it showed
 up. Each fix was correct where it was made. But none was checked against the design as a whole,
 because there was no written statement of the design to check it against, and each fix made the next
-one more likely to be local too. The bug list has 127 entries, 31 of them open; working through it in
-the same way would make all three problems above worse.
+one more likely to be local too. On 9 October 2026 the bug list held 127 entries, 31 of them open; working
+through it in the same way would make all three problems above worse.
 
 ---
 
@@ -269,6 +271,10 @@ on the sequencer's thread, and the high availability scenarios pass.
 
 ### Phase 6. Make the matching engine deterministic
 
+**Starts only after a review.** Phases 6 and 7 change how the engine pair works and are a substantial
+design project. Once phase 5 is finished, Andrew reviews whether they still serve the guarantees the venue
+is to give, before either is designed; agreed 17 October 2026.
+
 **For:** a matching engine that, given the same commands in the same order, always produces the same
 book and the same reports.
 
@@ -361,7 +367,9 @@ under way; removing descriptions of mechanisms that phases 3 to 9 removed.
 fixed by phases 3 to 9 or the framework fixes, is a breach of a principle, or is a new requirement. Then agreeing an order for
 those that remain, with Andrew. Each fix from then on follows the same way of working as above.
 
-**Finished when:** every open entry has been judged and the order agreed.
+**Finished when:** there is an agreed set of the guarantees the venue gives, evidence for which of them
+hold, and an explicit decision, recorded, about which remaining risks are accepted. An empty bug list is
+not the aim. Gaps found along the way are recorded, not fixed within the phase. Agreed 17 October 2026.
 
 ---
 

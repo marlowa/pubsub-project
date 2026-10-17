@@ -106,16 +106,38 @@ class WalFollowingPositions {
     std::atomic<int64_t> last_released_{0};
 };
 
+/// What a WalRecordConverter found one WAL record to be.
+struct ConvertedRecord {
+    enum class Outcome : int8_t {
+        Send,     ///< Encoded into the output: send it, as message type pdu_id.
+        PassOver, ///< Not for this follower, such as an execution report for a matching engine.
+        Damaged   ///< Could not be read, so it may have been one the follower needed: the follower is not handed over.
+    };
+    Outcome outcome{Outcome::PassOver};
+    int16_t pdu_id{0}; ///< Send: the message type of what was encoded.
+
+    [[nodiscard]] static ConvertedRecord send(int16_t message_pdu_id) {
+        return ConvertedRecord{Outcome::Send, message_pdu_id};
+    }
+    [[nodiscard]] static ConvertedRecord pass_over() {
+        return ConvertedRecord{Outcome::PassOver, 0};
+    }
+    [[nodiscard]] static ConvertedRecord damaged() {
+        return ConvertedRecord{Outcome::Damaged, 0};
+    }
+};
+
 /**
- * @brief Turns one WAL record into the message a follower is sent, or into nothing.
+ * @brief Turns one WAL record into the message a follower is sent, passes it over, or finds it damaged.
  *
  * Supplied by the application, one for each kind of follower, and run on the reading thread: it may
  * read only the record it is given and write only @p out, and must touch nothing that belongs to the
- * application's thread. It writes the encoded message into @p out and returns its message type, or
- * returns nothing if the record is not for this follower, such as an execution report for a matching
- * engine.
+ * application's thread. It writes the encoded message into @p out and returns ConvertedRecord::send with
+ * its message type; returns ConvertedRecord::pass_over if the record is not for this follower; and returns
+ * ConvertedRecord::damaged if the record cannot be read, in which case the reading thread stops serving the
+ * follower and it is never handed over (docs/availability/following_the_wal.md, section 3.2).
  */
-using WalRecordConverter = std::function<std::optional<int16_t>(int64_t seq_no, const WalEntryContents& entry, std::vector<uint8_t>& out)>;
+using WalRecordConverter = std::function<ConvertedRecord(int64_t seq_no, const WalEntryContents& entry, std::vector<uint8_t>& out)>;
 
 /**
  * @brief An instruction from the owning thread to the reading thread.
@@ -132,6 +154,7 @@ struct WalReadingCommand {
         Continue, ///< Carry on sending to a follower that reported reaching a position short of the limit.
         Stop,     ///< Stop sending to a follower, whose connection has gone.
         StopAll,  ///< Stop sending to every follower; answered with a StoppedAll report.
+        Confirm,  ///< Answered with a Confirmed report, once every earlier command has been acted on.
     };
 
     uint32_t identity{marker};
@@ -155,6 +178,8 @@ struct WalReadingReport {
     enum class Kind : int8_t {
         Reached,    ///< Sent every record up to reached_seq_no, the limit as it last read it, and stopped sending.
         StoppedAll, ///< Has stopped sending to every follower, in answer to StopAll.
+        Confirmed,  ///< Has acted on every command before a Confirm, in answer to it.
+        Damaged,    ///< Found record reached_seq_no damaged, and has stopped sending to this follower.
     };
 
     uint32_t identity{marker};

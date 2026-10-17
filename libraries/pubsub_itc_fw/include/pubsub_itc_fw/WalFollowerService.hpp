@@ -23,6 +23,9 @@ namespace pubsub_itc_fw {
 /// WalFollowRequest is; the follower sequencer, whose replicated WAL starts its catch-up, is not.
 enum class CaughtUpMessage : int8_t { Send, DoNotSend };
 
+/// Whether the instance a follower asks leads, and so serves it, or declines it.
+enum class Leading : int8_t { Leads, DoesNotLead };
+
 /// How WalFollowerService reaches the reading thread and the followers. Implemented by the owning thread.
 class WalFollowerLinksInterface {
   public:
@@ -43,16 +46,28 @@ class WalFollowerEventsInterface {
     /**
      * @brief A follower has been handed over: it holds every record up to @p through, and from now on
      *        the owning thread sends it each new record above that, as the record passes its limit.
+     *
+     * @param[in] follower     The follower's connection.
+     * @param[in] through      The last record it holds.
+     * @param[in] records_sent How many records the reading thread sent it in this serving, which a
+     *                         follower that counts what it receives checks against.
      */
-    virtual void follower_handed_over(const ConnectionID& follower, int64_t through) = 0;
+    virtual void follower_handed_over(const ConnectionID& follower, int64_t through, int64_t records_sent) = 0;
 
     /// A follower's hand-over has fallen short three times in a row; see section 3.4 of the design.
     virtual void hand_over_falling_behind(const ConnectionID& follower) = 0;
 
+    /**
+     * @brief A follower cannot be served: record @p damaged_seq_no in the WAL could not be read, so it may
+     *        have been one the follower needed. The follower is not handed over, and is no longer served;
+     *        if it asks again from a position before that record, the same happens again.
+     */
+    virtual void follower_cannot_be_served(const ConnectionID& follower, int64_t damaged_seq_no) = 0;
+
     /// A follower asked while this instance does not lead, and was declined.
     virtual void declined_while_not_leading(const ConnectionID& follower) = 0;
 
-    /// The reading thread has stopped sending to every follower, in answer to stop_all().
+    /// Every stop asked for, by stop_all() or stop_serving(), has been confirmed by the reading thread.
     virtual void reading_stopped() = 0;
 };
 
@@ -97,7 +112,7 @@ class WalFollowerService {
      * @param[in] limit     How far this follower may be sent; the application decides by the connection.
      * @param[in] converter Which of the reading thread's converters turns records into its messages.
      */
-    void on_follow_request(const ConnectionID& connection, const WalFollowRequestView& request, bool leading, FollowerLimit limit, int converter);
+    void on_follow_request(const ConnectionID& connection, const WalFollowRequestView& request, Leading leading, FollowerLimit limit, int converter);
 
     /**
      * @brief Offers an inter-thread message to the service; true if it was a report from the reading
@@ -123,13 +138,29 @@ class WalFollowerService {
     /// This instance has stopped leading: the reading thread stops sending to every follower.
     void stop_all();
 
-    /// Whether the reading thread is sending to no follower, so that the WAL may be cut back.
+    /**
+     * @brief The reading thread stops sending to @p connection, and confirms when it has, so that the
+     *        owning thread can send the follower something that must follow every record the reading
+     *        thread sent it. Other followers are served as before.
+     */
+    void stop_serving(const ConnectionID& connection);
+
+    /**
+     * @brief Whether every stop asked for has been confirmed, so that nothing the reading thread was
+     *        told to stop sending is still being sent, and, after stop_all(), the WAL may be cut back.
+     */
     [[nodiscard]] bool reading_has_stopped() const {
-        return !stop_pending_;
+        return confirmations_awaited_ == 0;
     }
 
     /// Whether @p connection has been handed over, so that the owning thread sends it new records.
     [[nodiscard]] bool is_handed_over(const ConnectionID& connection) const;
+
+    /**
+     * @brief Whether the reading thread is catching @p connection up, so that the owning thread must
+     *        send it nothing: a record released meanwhile is sent by the reading thread.
+     */
+    [[nodiscard]] bool is_being_caught_up(const ConnectionID& connection) const;
 
     /// The followers handed over, each with the limit it is served up to.
     [[nodiscard]] std::vector<std::pair<ConnectionID, FollowerLimit>> handed_over_followers() const;
@@ -154,7 +185,8 @@ class WalFollowerService {
     std::unordered_map<int, Follower> followers_;
     // Connections whose follower was declined, kept so that they are told when this instance leads.
     std::unordered_map<int, ConnectionID> declined_;
-    bool stop_pending_{false};
+    // Stops asked for whose confirmation from the reading thread has not yet arrived.
+    int confirmations_awaited_{0};
     uint64_t next_serving_{1};
 };
 

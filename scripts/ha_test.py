@@ -827,6 +827,13 @@ class Scenario(NamedTuple):
     # trading, and returns to waiting for the follower when it runs again. See run_scenario's
     # "stalled follower" block.
     assert_stalled_follower_runs_alone: bool = False
+    # When True, both sequencers are started holding at most _FEW_HELD_ORDERS orders, the follower is
+    # stopped, and a burst of orders is sent, so that the leader's storage for held orders fills and the
+    # rest wait in the write-ahead log. Requires that the storage filled, that the reading thread sent the
+    # orders that waited to the matching engine and handed it over, and that the engine accepted every
+    # order exactly once. See run_scenario's "orders that waited in the log" block, and
+    # docs/availability/following_the_wal.md, section 5.3.
+    assert_orders_that_waited_in_the_log_reach_engine: bool = False
     # When True, kill the follower sequencer, have the leader take orders, restart the follower and
     # require its log to end identical to the leader's from where it stopped, then kill the leader
     # and require the new leader to hold every order the engine accepted. See run_scenario's
@@ -3847,6 +3854,27 @@ _SCENARIOS: list[Scenario] = [
         sent_again_after_change_of_leader=True,
         steps=[],
     ),
+
+    # 75 -- orders that wait in the write-ahead log reach the matching engine through the reading thread.
+    #
+    # Both sequencers hold at most a few orders while they wait. The follower is stopped with SIGSTOP and
+    # a burst of orders is sent: the leader holds the first few, writes the rest to its log without
+    # holding them, and once a voter confirms that the follower may not lead, the reading thread sends
+    # the matching engine the orders that waited in the log and hands it over. Every order must be
+    # accepted exactly once (docs/availability/following_the_wal.md, section 5.3, part 3).
+    Scenario(
+        number=75,
+        short_name="orders_that_waited_in_the_log",
+        description="Orders that wait in the write-ahead log because the storage for held orders is full reach the matching engine once each",
+        expected_outcome=(
+            "the leader's storage for held orders fills; the reading thread sends the matching engine the orders that waited in "
+            "the log and hands it over; the engine accepts every order of the burst exactly once"
+        ),
+        orders_during_override=0,
+        orders_after_override=0,
+        assert_orders_that_waited_in_the_log_reach_engine=True,
+        steps=[],
+    ),
 ]
 
 _SCENARIO_MAP: dict[int, Scenario] = {s.number: s for s in _SCENARIOS}
@@ -4040,6 +4068,22 @@ def preflight(prefix: Path) -> None:
     preflight_ports(prefix)
 
 
+def read_complete_lines(path: Path, from_byte: int) -> tuple[str, int]:
+    """The complete lines of a log written from from_byte on, and the byte offset to read from next.
+
+    A component writes its log in pieces, so a read can end part way through a line. Text after the last
+    newline is left for the next read, rather than taken now: a phrase split across two reads would
+    otherwise never be seen, and a partly written number, ME-ORD-12 read as ME-ORD-1, would match the wrong
+    one. Returns ("", from_byte) if no complete line has been written since."""
+    with open(path, "rb") as handle:
+        handle.seek(from_byte)
+        data = handle.read()
+    end = data.rfind(b"\n")
+    if end < 0:
+        return "", from_byte
+    return data[:end + 1].decode(errors="replace"), from_byte + end + 1
+
+
 def file_end(path: Path) -> int:
     """Current EOF byte offset; 0 if the file does not exist."""
     try:
@@ -4066,10 +4110,7 @@ def poll_log_for(log_path: Path, *markers: str,
     t0       = time.monotonic()
     while True:
         if log_path.is_file():
-            with open(log_path, "r", errors="replace") as fh:
-                fh.seek(pos)
-                chunk = fh.read()
-                pos   = fh.tell()
+            chunk, pos = read_complete_lines(log_path, pos)
             for line in chunk.splitlines():
                 if all(m in line for m in markers):
                     return True, time.monotonic() - t0, pos
@@ -4691,10 +4732,7 @@ def wait_for_fix_logon(gw_log: Path, from_byte: int,
     fell_back = False
     while time.monotonic() < deadline:
         if gw_log.is_file():
-            with open(gw_log, "r", errors="replace") as fh:
-                fh.seek(pos)
-                chunk = fh.read()
-                pos   = fh.tell()
+            chunk, pos = read_complete_lines(gw_log, pos)
             for line in chunk.splitlines():
                 if _GW_SEQ_STATE_FALLBACK in line:
                     fell_back = True
@@ -4720,10 +4758,7 @@ def wait_for_me_ord(me_log: Path, target: int,
     t0       = time.monotonic()
     while time.monotonic() < deadline:
         if me_log.is_file():
-            with open(me_log, "r", errors="replace") as fh:
-                fh.seek(pos)
-                chunk = fh.read()
-                pos   = fh.tell()
+            chunk, pos = read_complete_lines(me_log, pos)
             if pattern.search(chunk):
                 return True, time.monotonic() - t0, pos
         time.sleep(LOG_POLL_INTERVAL)
@@ -4803,6 +4838,24 @@ def config_with_small_send_queue(config: Path) -> Path:
                         f"connection_waiting_sends_maximum = {_SMALL_SEND_QUEUE}\n"
                         f"socket_send_buffer_size = {_SMALL_SEND_BUFFER}\n", 1)
     copy = config.with_name(config.stem + "_small_send_queue.toml")
+    copy.write_text(text)
+    return copy
+
+
+# Scenario 75: how many orders each sequencer holds at most, so few that a burst fills the storage.
+_FEW_HELD_ORDERS = 8
+
+
+def config_with_few_held_orders(config: Path) -> Path:
+    """A copy of a sequencer's configuration that holds at most _FEW_HELD_ORDERS orders while it waits.
+
+    Written beside the original and used instead of it for one scenario; the original is not touched."""
+    text = config.read_text()
+    line = next((candidate for candidate in text.splitlines() if candidate.startswith("orders_held_at_most =")), None)
+    if line is None:
+        die(f"config_with_few_held_orders: {config} has no orders_held_at_most to change")
+    text = text.replace(line + "\n", f"orders_held_at_most = {_FEW_HELD_ORDERS}\n", 1)
+    copy = config.with_name(config.stem + "_few_held_orders.toml")
     copy.write_text(text)
     return copy
 
@@ -5021,10 +5074,7 @@ def wait_for_accepted_count(me_log: Path, count: int,
     t0        = time.monotonic()
     while time.monotonic() < deadline:
         if me_log.is_file():
-            with open(me_log, "r", errors="replace") as fh:
-                fh.seek(pos)
-                chunk = fh.read()
-                pos   = fh.tell()
+            chunk, pos = read_complete_lines(me_log, pos)
             seen += chunk.count(needle)
             if seen >= count:
                 return True, time.monotonic() - t0, pos
@@ -6168,6 +6218,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if scenario.assert_engine_holds_reports_without_connection and name == "matching_engine":
                 config = config_with_report_relay(config)
                 log(f"  {name} sends its reports through a relay on ports {sorted(_REPORT_RELAY_PORTS)}, which accepts nothing yet")
+            if scenario.assert_orders_that_waited_in_the_log_reach_engine and name in ("sequencer_primary", "sequencer_secondary"):
+                config = config_with_few_held_orders(config)
+                log(f"  {name} holds at most {_FEW_HELD_ORDERS} orders while it waits for its follower or a voter")
             if scenario.assert_commands_resent_after_reconnection and name == "fix_order_gateway_a":
                 config = config_with_small_send_queue(config)
                 log(f"  {name} allows only {_SMALL_SEND_QUEUE} sends to wait on a connection, with a {_SMALL_SEND_BUFFER}-byte socket send buffer")
@@ -8017,6 +8070,56 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die(f"stalled follower: the leader went back to waiting for its follower but its gauge reads {running_alone_gauge()}.")
             log("  the follower caught up, the leader waits for its acknowledgements again, and the gauge reads 0 -- OK")
 
+        # ── Orders that waited in the log ─────────────────────────────────────
+        if scenario.assert_orders_that_waited_in_the_log_reach_engine:
+            log("=== Orders that wait in the log reach the matching engine through the reading thread ===")
+            primary_log = log_dir / "sequencer_primary.log"
+            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+                die("orders that waited in the log: sequencer_primary is not leading, so stopping sequencer_secondary would not stop a follower.")
+            primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
+            order_port = installed_toml_section_value(primary_config, "network", "listen_port")
+            burst = 200
+            tag = f"waited-{datetime.now().strftime('%H%M%S')}"
+            log_from = file_end(primary_log)
+            accepted_from = file_end(me_log)
+            follower = proc_by_name["sequencer_secondary"]
+            os.kill(follower.pid, signal.SIGSTOP)
+            with open(f"/proc/{follower.pid}/stat", encoding="ascii") as stat:
+                state = stat.read().rsplit(")", 1)[1].split()[0]
+            if state != "T":
+                die(f"orders that waited in the log: sequencer_secondary is in state {state!r} after SIGSTOP, not stopped.")
+            log(f"  SIGSTOP -> sequencer_secondary (PID {follower.pid}): alive, its connection open, acknowledging nothing")
+            try:
+                result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_port, "--cl-ord-id", tag, "--count", str(burst)],
+                                        capture_output=True, text=True, check=False, timeout=60)
+                if result.returncode != 0:
+                    die(f"orders that waited in the log: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
+                if not poll_log_for(primary_log, "the storage for waiting orders is full", timeout=_RAW_REPLY_TIMEOUT, from_byte=log_from)[0]:
+                    die(f"orders that waited in the log: the leader's storage for held orders never filled with {burst} orders sent and "
+                        f"room for {_FEW_HELD_ORDERS}, so nothing waited in the log and the scenario tests nothing.")
+                log("  the leader's storage for held orders filled, and later orders wait in the log")
+                if not poll_log_for(primary_log, "waited in the log -- the reading thread sends them", timeout=_RAW_REPLY_TIMEOUT, from_byte=log_from)[0]:
+                    die("orders that waited in the log: the leader never had the reading thread send the orders that waited in the log.")
+                if not poll_log_for(primary_log, "the reading thread has sent the matching engine on connection", timeout=_RAW_REPLY_TIMEOUT,
+                                    from_byte=log_from)[0]:
+                    die("orders that waited in the log: the reading thread never handed the matching engine over, so orders go on waiting.")
+                log("  the reading thread sent the orders that waited in the log, and handed the engine over")
+                expected = [f"{tag}-{number}" for number in range(1, burst + 1)]
+                for cl_ord_id in expected:
+                    if not poll_log_for(me_log, "accepted NOS", f"ClOrdID={cl_ord_id} ", timeout=_RAW_REPLY_TIMEOUT, from_byte=accepted_from)[0]:
+                        die(f"orders that waited in the log: the matching engine never accepted {cl_ord_id}.")
+                with open(me_log, "rb") as handle:
+                    handle.seek(accepted_from)
+                    accepted_text = handle.read().decode(errors="replace")
+                repeated = [cl_ord_id for cl_ord_id in expected if accepted_text.count(f"ClOrdID={cl_ord_id} ") > 1]
+                if repeated:
+                    die(f"orders that waited in the log: the matching engine accepted {len(repeated)} order(s) more than once, the first "
+                        f"{repeated[0]}.")
+                log(f"  the matching engine accepted all {burst} orders, each exactly once -- OK")
+            finally:
+                os.kill(follower.pid, signal.SIGCONT)
+            log(f"  SIGCONT -> sequencer_secondary (PID {follower.pid})")
+
         # ── Follower restarts ─────────────────────────────────────────────────
         if scenario.assert_restarted_follower_log_repaired:
             log("=== A follower that restarts is sent the records it missed ===")
@@ -8120,12 +8223,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
             injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", only_old, "--count", "3"],
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             sent_line = injector.stdout.readline() if injector.stdout is not None else ""
+            only_old_ids = [f"{only_old}-{number}" for number in (1, 2, 3)]
+            # The leader is stopped as soon as it has written the three orders, and before it can act on them.
+            # "sent" means only that they are on their way, so stopping it at once raced the leader reading them.
+            # It holds them at least the follower's acknowledgement timeout, 100 ms, before a voter can confirm
+            # that it may act without the follower, so waiting up to 80 ms still stops it first. Only the newest
+            # two segments are read, so that each look is quick.
+            def written_by_leader() -> bool:
+                newest = sorted(wal_dirs["primary"].glob("wal_*.log"))[-2:]
+                data = b"".join(path.read_bytes() for path in newest)
+                return all(cl_ord_id.encode() in data for cl_ord_id in only_old_ids)
+
+            give_up_at = time.monotonic() + 0.080
+            while not written_by_leader() and time.monotonic() < give_up_at:
+                time.sleep(0.002)
             os.kill(primary.pid, signal.SIGSTOP)
             injector.wait(timeout=30)
             if not sent_line.startswith("sent "):
                 die(f"old leader rejoins: inject_order did not report sending the orders: {sent_line!r}")
             time.sleep(1.0)
-            only_old_ids = [f"{only_old}-{number}" for number in (1, 2, 3)]
             if any(occurrences_in_log(wal_dirs["primary"], cl_ord_id) == 0 for cl_ord_id in only_old_ids):
                 die("old leader rejoins: the leader's log does not hold the three orders sent to it, so it holds nothing its follower lacks.")
             log("  the leader wrote three orders its follower never received, and was stopped before it could act on them")

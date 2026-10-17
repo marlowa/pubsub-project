@@ -26,6 +26,7 @@
 #include <fix_orders.hpp>
 #include <leader_follower.hpp>
 #include <matching_engine_replication.hpp>
+#include <replication_messages.hpp>
 
 #include "FixOrderLimits.hpp"
 #include "GatewayIds.hpp"
@@ -524,7 +525,7 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Inbound order connections from the sequencers. Both the leader and follower
     // sequencer open a (pre-warmed) order connection to this ME, so there may be
-    // more than one. On promotion we send MePositionRequest to every one of them:
+    // more than one. On promotion we send WalFollowRequest to every one of them:
     // the ME cannot tell which sequencer is the leader, so it asks all and lets the
     // leader serve WAL catch-up while followers re-point without streaming (see
     // SequencerThread::handle_me_position_request). This guarantees the leader --
@@ -599,8 +600,14 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     /// must not reconcile, because a catch-up makes live orders arriving meanwhile read as
     /// replay: applied silently, with no acceptance reported to the member.
     void become_leader_when_current();
-    void send_me_position_request();
-    void handle_me_position_ack(const pubsub_itc_fw::EventMessage& message);
+    // Asks every sequencer to be caught up (WalFollowRequest); only the leading one serves it.
+    void send_follow_request();
+    // The leading sequencer has sent every order after this instance's position (WalFollowCaughtUp).
+    void handle_caught_up(const pubsub_itc_fw::EventMessage& message);
+    // A sequencer that does not lead has declined the request (WalFollowDeclined); it says when it leads.
+    void handle_follow_declined(const pubsub_itc_fw::EventMessage& message);
+    // A sequencer has taken the lead (WalLeaderChanged): a request still unanswered is made again at once.
+    void handle_leader_changed(const pubsub_itc_fw::EventMessage& message);
     // A sequencer that has just taken the lead asks for the highest order or cancel this engine has
     // acted on, so that it can send any its log holds above that (EnginePositionQuery, 118).
     void handle_engine_position_query(const pubsub_itc_fw::EventMessage& message);

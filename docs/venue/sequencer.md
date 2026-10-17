@@ -137,9 +137,12 @@ depends on whether a matching engine is reachable. Only the leader sends it. See
 ## The matching engine's catch-up
 
 An engine catches up from the leader's log before it acts, whether it has just started or has just
-been promoted. It sends `MePositionRequest` with the position it has reached, the leader streams it
-every command after that position, and then sends `MePositionAck` saying where it stopped and how many
-records it sent, so the engine can check it received them all. See
+been promoted. It sends `WalFollowRequest` with the position it has reached. The leader's reading thread
+sends it every command after that position, up to the last one released, without holding up the
+sequencer's own thread, and the leader then sends `WalFollowCaughtUp` saying where it stopped and how
+many records it sent, so the engine can check it received them all. A sequencer that does not lead
+declines with `WalFollowDeclined`, and sends `WalLeaderChanged` when it takes the lead, so that the
+engine asks again at once ([following_the_wal.md](../availability/following_the_wal.md)). See
 [Matching Engine](matching_engine.md).
 
 A new leader also asks the leading engine, with `EnginePositionQuery`, which commands it has

@@ -246,6 +246,10 @@ void SequencerThread::on_initial_event() {
         "Log segments the writer created itself instead of adopting one prepared ahead of it. Expected to be 1, for the first segment");
     wal_segments_waited_for_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "wal_segments_waited_for", "Segment rolls that had to wait for a preparation still in progress. Expected to be 0");
+    damaged_record_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_wal_damaged_record",
+        "The number of a record in the write-ahead log that could not be read when a follower was being caught up, so that the follower "
+        "was not caught up past it and does not act; 0 when there is none. Expected to be 0");
     kept_reports_lost_gauge_ = get_reactor().metrics().register_gauge(
         "sequencer_thread", "sequencer_kept_reports_lost",
         "Reports from the matching engine, kept in case this instance takes the lead, that were overwritten while still needed because the store "
@@ -382,6 +386,10 @@ void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, 
                    id.get_value(), reason);
         gateway_conn_ids_.erase(lost_gateway);
     } else if (engine_routing_.is_engine_connection(id)) {
+        if (wal_follower_service_.has_value()) {
+            wal_follower_service_->on_connection_lost(id);
+        }
+        engine_servings_.erase(id.get_value());
         const bool carried_orders = engine_routing_.active() == id;
         engine_routing_.lost(id);
         if (carried_orders) {
@@ -462,8 +470,8 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
     // sequencer's order connection to either engine, whichever carries orders at the moment: an
     // engine that is about to lead may be on either, and a request dropped because routing pointed
     // elsewhere left the venue with no engine while one was leading and asking (BUG-0108).
-    if (message.pdu_id() == pubsub_itc_fw_app::MePositionRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
-        handle_me_position_request(conn_id, message);
+    if (message.pdu_id() == pubsub_itc_fw::WalFollowRequest::message_pdu_id && engine_routing_.is_engine_connection(conn_id)) {
+        handle_wal_follow_request(conn_id, message);
         release_pdu_payload(message);
         return;
     }
@@ -1138,7 +1146,10 @@ void SequencerThread::on_timer_event(pubsub_itc_fw::TimerID id) {
 }
 
 void SequencerThread::on_itc_message(const pubsub_itc_fw::EventMessage& message) {
-    // The only messages between threads this thread receives are the reading thread's reports.
+    // The only messages between threads this thread receives are the reading thread's reports. The last
+    // order released is published first, so that a matching engine is handed over only if the position
+    // the reading thread reached is the limit as it is now, never as it was.
+    publish_released_position();
     if (wal_follower_service_.has_value() && wal_follower_service_->on_inter_thread_message(message)) {
         return;
     }
@@ -1155,7 +1166,7 @@ void SequencerThread::SequencerWalFollowing::start_peer_catch_up(int64_t after_s
     if (!catch_up_connection_.is_valid() || !owner_.wal_follower_service_.has_value()) {
         return;
     }
-    owner_.wal_follower_service_->serve(catch_up_connection_, after_seq_no, pubsub_itc_fw::FollowerLimit::LastWritten, 0,
+    owner_.wal_follower_service_->serve(catch_up_connection_, after_seq_no, pubsub_itc_fw::FollowerLimit::LastWritten, peer_converter,
                                         pubsub_itc_fw::CaughtUpMessage::DoNotSend);
 }
 
@@ -1163,13 +1174,14 @@ void SequencerThread::SequencerWalFollowing::stop_peer_catch_up() {
     if (!owner_.wal_follower_service_.has_value()) {
         return;
     }
+    // Only the follower sequencer's serving stops, with the reading thread's confirmation, so that
+    // anything sent to it afterwards follows every record the reading thread sent it. A matching engine
+    // being served goes on being served. Everything stops when this instance stops leading
+    // (on_role_changed), which is what keeps a WAL about to be cut back from being read.
     if (catch_up_connection_.is_valid()) {
-        owner_.wal_follower_service_->on_connection_lost(catch_up_connection_);
+        owner_.wal_follower_service_->stop_serving(catch_up_connection_);
         catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
     }
-    // And stop everything the reading thread is doing, with its confirmation, so that a WAL about to be
-    // cut back, when this instance follows, is not being read.
-    owner_.wal_follower_service_->stop_all();
     owner_.end_pause_for_hand_over();
 }
 
@@ -1193,10 +1205,22 @@ void SequencerThread::SequencerWalFollowing::send_leader_changed(const pubsub_it
     owner_.send_pdu(to, pubsub_itc_fw::WalLeaderChanged::message_pdu_id, 0, changed);
 }
 
-void SequencerThread::SequencerWalFollowing::follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through) {
+void SequencerThread::SequencerWalFollowing::follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent) {
     if (follower == catch_up_connection_ && owner_.replicated_wal_.has_value()) {
         catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
+        // The replicated WAL sends the follower sequencer its records from here; the service forgets it,
+        // so that it is never told of a change of leader meant for the followers that ask.
+        owner_.wal_follower_service_->on_connection_lost(follower);
+        owner_.note_handed_over_through(through);
         owner_.replicated_wal_->on_peer_caught_up(through, std::chrono::steady_clock::now());
+        owner_.end_pause_for_hand_over();
+        return;
+    }
+    const auto engine = owner_.engine_servings_.find(follower.get_value());
+    if (engine != owner_.engine_servings_.end()) {
+        const EngineServing serving = engine->second;
+        owner_.engine_servings_.erase(engine);
+        owner_.engine_handed_over(follower, through, records_sent, serving);
         owner_.end_pause_for_hand_over();
     }
 }
@@ -1205,12 +1229,41 @@ void SequencerThread::SequencerWalFollowing::hand_over_falling_behind(const pubs
     owner_.pause_order_reading_for_hand_over();
 }
 
+void SequencerThread::SequencerWalFollowing::follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) {
+    std::string which_follower = "the matching engine";
+    if (follower == catch_up_connection_) {
+        catch_up_connection_ = pubsub_itc_fw::ConnectionID{};
+        which_follower = "the follower sequencer";
+    } else {
+        owner_.engine_servings_.erase(follower.get_value());
+    }
+    owner_.report_follower_cannot_be_served(follower, damaged_seq_no, which_follower);
+    owner_.end_pause_for_hand_over();
+}
+
 void SequencerThread::SequencerWalFollowing::declined_while_not_leading(const pubsub_itc_fw::ConnectionID& /*follower*/) {}
 
 void SequencerThread::SequencerWalFollowing::reading_stopped() {
     // The follower sequencer's request, if one waited for the reading thread to stop, is answered now.
     if (owner_.replicated_wal_.has_value()) {
         owner_.replicated_wal_->on_peer_catch_up_stopped(std::chrono::steady_clock::now());
+    }
+}
+
+void SequencerThread::report_follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no, const std::string& which_follower) {
+    damaged_record_standing_ = damaged_seq_no;
+    damaged_record_gauge_.set(static_cast<double>(damaged_seq_no));
+    const bool first_time = damaged_records_reported_.insert(which_follower + " " + std::to_string(damaged_seq_no)).second;
+    PUBSUB_LOG(get_logger(), first_time ? pubsub_itc_fw::FwLogLevel::Error : pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: record {} in the write-ahead log cannot be read, so {} on connection {} is not caught up past it and is not handed "
+               "over -- it does not act on what it holds until a person deals with the record{}",
+               damaged_seq_no, which_follower, follower.get_value(), first_time ? "" : " (asked again, and refused again)");
+}
+
+void SequencerThread::note_handed_over_through(int64_t through) {
+    if (damaged_record_standing_ != 0 && through >= damaged_record_standing_) {
+        damaged_record_standing_ = 0;
+        damaged_record_gauge_.set(0.0);
     }
 }
 
@@ -1224,8 +1277,8 @@ void SequencerThread::pause_order_reading_for_hand_over() {
     }
     order_reading_paused_ = true;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-               "SequencerThread: reading from the {} gateway connection(s) is paused until the follower sequencer is handed over to new records -- "
-               "orders were sequenced faster than one round between this thread and the reading thread",
+               "SequencerThread: reading from the {} gateway connection(s) is paused until the follower the reading thread is catching up is handed "
+               "over to new records -- orders were sequenced faster than one round between this thread and the reading thread",
                order_connection_ids_.size());
 }
 
@@ -1257,7 +1310,17 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     PUBSUB_LOG(get_logger(), transition_level, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch);
 
+    const bool stops_leading = role_ == pubsub_itc_fw_app::Role::leader;
     role_ = new_role;
+
+    // Only the leader serves followers. Every one being served stops, with the reading thread's
+    // confirmation, so that a WAL about to be cut back is not being read; each asks again of whichever
+    // instance leads next.
+    if (stops_leading && wal_follower_service_.has_value()) {
+        wal_follower_service_->stop_all();
+        engine_servings_.clear();
+        end_pause_for_hand_over();
+    }
 
     if (new_role == pubsub_itc_fw_app::Role::leader) {
         // Every record this instance wrote while it followed was noted as it was written, so the record
@@ -1289,6 +1352,12 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
         // (docs/availability/commands_during_a_change_of_leader.md, section 3.5).
         if (config_.ha_enabled && replicated_wal_.has_value()) {
             ask_engine_for_position();
+        }
+
+        // Every engine this instance declined while it followed is told it leads, and asks again at once
+        // rather than when its own timer next fires.
+        if (wal_follower_service_.has_value()) {
+            wal_follower_service_->on_became_leader(epoch);
         }
     } else if (new_role == pubsub_itc_fw_app::Role::follower) {
         awaiting_engine_position_ = false;
@@ -1640,6 +1709,11 @@ void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord
 }
 
 void SequencerThread::send_held_order_to_matching_engine(const HeldOrder& held) {
+    if (wal_follower_service_.has_value() && wal_follower_service_->is_being_caught_up(engine_routing_.active())) {
+        // The reading thread is catching the engine up, and sends it this order: it is released, so at or
+        // below the limit the reading thread serves up to.
+        return;
+    }
     if (!engine_routing_.active().is_valid()) {
         // Recovered by the catch-up whichever engine acts next performs before it acts, exactly as
         // an order deferred on arrival is.
@@ -1670,9 +1744,10 @@ void SequencerThread::release_held_orders_through(int64_t acknowledged_seq_no) {
     }
     // Every held order is numbered below the first that waits in the log, so these follow them.
     if (first_unheld_seq_ != 0 && first_unheld_seq_ <= acknowledged_seq_no) {
-        send_logged_orders(first_unheld_seq_, acknowledged_seq_no);
+        send_orders_that_waited_in_the_log(first_unheld_seq_, acknowledged_seq_no);
         first_unheld_seq_ = acknowledged_seq_no >= replicated_wal_->last_seq_no() ? 0 : acknowledged_seq_no + 1;
     }
+    publish_released_position();
     pause_or_resume_order_reading();
 }
 
@@ -1680,8 +1755,34 @@ void SequencerThread::release_all_held_orders() {
     release_held_orders_through(replicated_wal_->last_seq_no());
 }
 
+void SequencerThread::send_orders_that_waited_in_the_log(int64_t first, int64_t through) {
+    // With a reading thread and an engine to send to, the reading thread serves the engine from the first
+    // of them, and this thread reads nothing. Every order sent from the storage is numbered below the
+    // first, and is queued already. Once released, each later order is at or below the limit the reading
+    // thread serves up to, so it sends those too, until the engine is handed over. An engine already being
+    // served needs nothing more: its limit rises as orders are released.
+    const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
+    if (wal_follower_service_.has_value() && engine.is_valid()) {
+        if (!wal_follower_service_->is_being_caught_up(engine)) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: orders from {} waited in the log -- the reading thread sends them to the matching engine on connection {}", first,
+                       engine.get_value());
+            serve_engine(engine, first - 1, EngineServing{});
+        }
+        return;
+    }
+    // With no engine, they are counted as deferred; with no reading thread (high availability off), they
+    // are read here.
+    send_logged_orders(first, through);
+}
+
 void SequencerThread::send_logged_orders(int64_t first, int64_t through) {
     const pubsub_itc_fw::ConnectionID engine = engine_routing_.active();
+    if (wal_follower_service_.has_value() && wal_follower_service_->is_being_caught_up(engine)) {
+        // The reading thread is catching the engine up, and sends it these orders, as it does one sent from
+        // the storage.
+        return;
+    }
     int64_t sent = 0;
     [[maybe_unused]] const auto end_position =
         pubsub_itc_fw::WalReader::replay(config_.wal_directory, replicated_wal_->wal().scan_start_for(first),
@@ -1993,7 +2094,13 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::EventMessage& 
                    "SequencerThread: the matching engine has acted on orders through {} -- sending it the orders this log holds from {} to {}, which it "
                    "never received",
                    view.highest_applied, view.highest_applied + 1, held_at_takeover_);
-        send_logged_orders(view.highest_applied + 1, held_at_takeover_);
+        if (wal_follower_service_.has_value() && engine_routing_.active().is_valid()) {
+            // The reading thread sends them, followed by the orders that waited for the engine's answer,
+            // which are released below and are at or below the limit it serves up to.
+            serve_engine(engine_routing_.active(), view.highest_applied, EngineServing{});
+        } else {
+            send_logged_orders(view.highest_applied + 1, held_at_takeover_);
+        }
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: the matching engine has acted on orders through {}, and this log holds nothing after that it has not been sent",
@@ -2014,6 +2121,12 @@ void SequencerThread::release_orders_that_waited_for_the_engine() {
     release_held_orders_through(replicated_wal_->committed_through());
 }
 
+void SequencerThread::publish_released_position() {
+    if (replicated_wal_.has_value()) {
+        wal_positions_.publish_released(released_through());
+    }
+}
+
 int64_t SequencerThread::released_through() const {
     if (!held_orders_.empty()) {
         return held_orders_.front().envelope.seq_no - 1;
@@ -2031,7 +2144,7 @@ void SequencerThread::pause_or_resume_order_reading() {
     const bool waiting_for_confirmation =
         role_ == pubsub_itc_fw_app::Role::leader && ((replicated_wal_.has_value() && replicated_wal_->waits_for_confirmation()) || awaiting_engine_position_);
     if (!order_reading_paused_) {
-        if (waiting_for_confirmation && (held_orders_.size() >= pause_order_reading_at || first_unheld_seq_ != 0)) {
+        if (waiting_for_confirmation && (held_orders_.size() >= pause_order_reading_at() || first_unheld_seq_ != 0)) {
             for (const pubsub_itc_fw::ConnectionID& id : order_connection_ids_) {
                 pause_reading(id);
             }
@@ -2043,7 +2156,7 @@ void SequencerThread::pause_or_resume_order_reading() {
         }
         return;
     }
-    if (waiting_for_confirmation && (held_orders_.size() > resume_order_reading_at || first_unheld_seq_ != 0)) {
+    if (waiting_for_confirmation && (held_orders_.size() > resume_order_reading_at() || first_unheld_seq_ != 0)) {
         return;
     }
     for (const pubsub_itc_fw::ConnectionID& id : order_connection_ids_) {
@@ -3062,34 +3175,40 @@ void SequencerThread::handle_role_announcement(const pubsub_itc_fw::ConnectionID
     }
 }
 
-void SequencerThread::handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
+void SequencerThread::handle_wal_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
     arena.reset();
     size_t arena_bytes_needed = 0;
     size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::MePositionRequestView view{};
-
-    if (!pubsub_itc_fw_app::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
-        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode MePositionRequest -- dropping");
+    pubsub_itc_fw::WalFollowRequestView view{};
+    if (!pubsub_itc_fw::decode(view, message.payload(), static_cast<size_t>(message.payload_size()), bytes_consumed, arena, arena_bytes_needed)) {
+        PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: failed to decode WalFollowRequest -- dropping");
         return;
     }
-
     const int64_t last_seq_no = view.last_seq_no;
-    const bool asking_to_lead = view.asking_to_lead;
+    const bool asking_to_lead = view.wants_new_records;
 
-    // Only the leader may serve WAL catch-up. The promoted ME asks every sequencer
-    // it holds a pre-warmed order connection to (it cannot tell which one is the
-    // leader); if a follower also streamed, the ME would replay the WAL twice and
-    // process the second replay as live traffic once promoted. The follower instead
-    // re-points its own ME order connection to the standby -- so that if it later
-    // wins a sequencer election it forwards to the promoted ME -- and drops the
-    // request without streaming or acking.
+    // Only the leader may serve a catch-up. The promoted engine asks every sequencer it holds an order
+    // connection to, since it cannot tell which leads; if a follower also served, the engine would be
+    // sent the WAL twice and act on the second as live traffic once promoted. The follower instead
+    // re-points its own order connection to the asker -- so that if it later takes the lead it sends
+    // orders to the promoted engine -- and declines, remembering the engine, so that it tells it to ask
+    // again the moment it takes the lead (WalLeaderChanged).
     if (role_ != pubsub_itc_fw_app::Role::leader) {
         engine_routing_.asked_to_catch_up_while_following(conn_id);
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: MePositionRequest on connection {} but I am follower -- re-pointed ME order connection, not serving catch-up",
+                   "SequencerThread: WalFollowRequest on connection {} but I am follower -- re-pointed ME order connection, declined, and will say when "
+                   "this instance leads",
                    conn_id.get_value());
+        if (wal_follower_service_.has_value()) {
+            wal_follower_service_->on_follow_request(conn_id, view, pubsub_itc_fw::Leading::DoesNotLead, pubsub_itc_fw::FollowerLimit::LastReleased,
+                                                     engine_converter);
+        } else {
+            pubsub_itc_fw::WalFollowDeclined declined{};
+            declined.last_seq_no = last_seq_no;
+            send_pdu(conn_id, pubsub_itc_fw::WalFollowDeclined::message_pdu_id, 0, declined);
+        }
         return;
     }
 
@@ -3097,7 +3216,6 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // acknowledgement, or for a voter's confirmation, is sent live when it is released, and sending it
     // here as well would act on it early.
     const int64_t wal_head = released_through();
-    me_catchup_conn_id_ = conn_id;
 
     // A negative position is an engine saying it holds nothing and has applied nothing of this
     // venue's record -- a process that found no region where a predecessor would have left one.
@@ -3109,138 +3227,127 @@ void SequencerThread::handle_me_position_request(const pubsub_itc_fw::Connection
     // applied is not recovered by an instance that starts this way. Recovering it needs an
     // engine that can say where it had got to, which is what the region is for.
     if (last_seq_no < 0) {
+        // Anything the reading thread was still sending this connection stops first.
+        if (wal_follower_service_.has_value() && wal_follower_service_->is_being_caught_up(conn_id)) {
+            wal_follower_service_->on_connection_lost(conn_id);
+            engine_servings_.erase(conn_id.get_value());
+        }
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
-                   "SequencerThread: MePositionRequest from connection {} carries no position -- the engine holds nothing and is placed at head={} without "
+                   "SequencerThread: WalFollowRequest from connection {} carries no position -- the engine holds nothing and is placed at head={} without "
                    "catch-up. Any order taken and not yet applied is not recovered by this instance",
                    conn_id.get_value(), wal_head);
-        pubsub_itc_fw_app::MePositionAck head_ack{};
-        head_ack.last_seq_no = wal_head;
-        head_ack.first_seq_no = wal_head;
-        head_ack.records_sent = 0;
-        send_pdu(conn_id, pubsub_itc_fw_app::MePositionAck::message_pdu_id, 0, head_ack);
+        pubsub_itc_fw::WalFollowCaughtUp head{};
+        head.last_seq_no = wal_head;
+        head.first_seq_no_held = wal_head;
+        head.records_sent = 0;
+        send_pdu(conn_id, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, head);
         return;
     }
 
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: MePositionRequest from connection {} last_seq_no={} ({}) -- streaming WAL catch-up up to head={}", conn_id.get_value(),
-               last_seq_no, asking_to_lead ? "asking to lead" : "starting, not asking to lead", wal_head);
-
-    // Walk the WAL from last_seq_no+1 to the head, unwrapping each stored record
-    // and streaming the underlying NOS/OCR PDU directly to the ME connection.
-    size_t streamed = 0;
-    // The earliest record still held. The log is truncated as it is consumed, so a walk from
-    // zero starts wherever truncation left off rather than at the start of the day. An engine
-    // that has lost its own record of what it held falls back to this one and has to be able
-    // to tell those apart: see R-0123.
-    // The earliest record the log holds, which the engine needs to know whether the log reaches back
-    // to the first record of the day (R-0123). Reading starts at the segment holding the first record
-    // the engine lacks, not at the start of the log: reading the whole log on this thread stopped the
-    // venue sequencing orders for as long as it took (docs/bug_list.md, BUG-0113).
-    const int64_t earliest_retained = replicated_wal_->wal().first_seq_no();
-    [[maybe_unused]] auto end_pos = pubsub_itc_fw::WalReader::replay(
-        config_.wal_directory, replicated_wal_->wal().scan_start_for(last_seq_no + 1),
-        [this, &conn_id, last_seq_no, wal_head, &streamed](int64_t record_id, const void* payload, size_t size) {
-            if (record_id <= last_seq_no || record_id > wal_head) {
-                return;
-            }
-            const std::optional<pubsub_itc_fw::WalEntryContents> contents = pubsub_itc_fw::read_wal_entry_contents(payload, size);
-            if (!contents.has_value()) {
-                return;
-            }
-            if (stream_wal_record_to_me(conn_id, record_id, contents->pdu_id, contents->bytes, contents->size, contents->wall_time_ns)) {
-                ++streamed;
-            }
-        });
-
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}", streamed,
-               conn_id.get_value());
-
-    // Signal completion. On receipt the ME considers its book reconciled and becomes leader.
-    pubsub_itc_fw_app::MePositionAck ack{};
-    ack.last_seq_no = wal_head;
-    ack.first_seq_no = earliest_retained;
-    // What was sent, not what was walked past. The engine checks it received exactly this many
-    // and will not act if it did not, which is R-0101.
-    ack.records_sent = static_cast<int64_t>(streamed);
-    send_pdu(conn_id, pubsub_itc_fw_app::MePositionAck::message_pdu_id, 0, ack);
-    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: MePositionAck sent (last_seq_no={}, earliest retained={}, records_sent={}) -- ME is now live", wal_head, earliest_retained,
-               streamed);
-
-    // Promote this connection to the active ME order connection so subsequent sequenced orders
-    // flow to the newly-promoted ME. If the request arrived on the standby connection (the normal
-    // failover case), this swaps the active ME from the dead primary to the caught-up secondary.
-    // The old standby slot is cleared; a future ME-primary restart would arrive on it again.
-    //
-    // Only for a promotion. An instance that is merely starting gets the records and no routing:
-    // it does not yet know whether its peer leads, and it learns that from the peer over a
-    // different channel and on its own schedule. Moving the order connection here on the strength
-    // of the ask took the routing off a working leader in 400 milliseconds, and nothing put it
-    // back -- measured by ha_test.py scenario 54, and it stopped the venue matching. The asker is
-    // the only party that knows which case this is, which is why the request carries it rather
-    // than this side inferring it. See BUG-0077.
-    if (!asking_to_lead) {
+    // With a reading thread, it reads the WAL and sends the orders, and this thread carries on; the engine
+    // is answered when it is handed over (engine_handed_over). Orders released meanwhile reach it too.
+    if (wal_follower_service_.has_value()) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "SequencerThread: connection {} caught up but is starting rather than being promoted -- order routing left where it is",
-                   conn_id.get_value());
-        me_catchup_conn_id_ = pubsub_itc_fw::ConnectionID{};
+                   "SequencerThread: WalFollowRequest from connection {} last_seq_no={} ({}) -- the reading thread sends it the orders after that, up "
+                   "to the last released, now {}",
+                   conn_id.get_value(), last_seq_no, asking_to_lead ? "asking to lead" : "starting, not asking to lead", wal_head);
+        EngineServing serving{};
+        serving.answers_catch_up_request = true;
+        serving.asking_to_lead = asking_to_lead;
+        serve_engine(conn_id, last_seq_no, serving);
         return;
     }
 
-    engine_routing_.caught_up_to_lead(conn_id);
+    // Without a reading thread (high availability off): read here, from the segment holding the first
+    // record the engine lacks.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-               "SequencerThread: ME order connection promoted to {} -- sequenced orders now route to the caught-up ME", conn_id.get_value());
+               "SequencerThread: WalFollowRequest from connection {} last_seq_no={} ({}) -- streaming WAL catch-up up to head={}", conn_id.get_value(),
+               last_seq_no, asking_to_lead ? "asking to lead" : "starting, not asking to lead", wal_head);
+    const EngineCatchUpFromWal caught_up =
+        engine_catch_up_from_wal(config_.wal_directory, replicated_wal_->wal().scan_start_for(last_seq_no + 1), last_seq_no, wal_head, decode_arena_buffer(),
+                                 [this, &conn_id](int64_t record_id, const pubsub_itc_fw_app::WalRecord& envelope) {
+                                     send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, envelope);
+                                 });
+    if (caught_up.damaged_seq_no != 0) {
+        // The engine is not told it has caught up: what it holds would be incomplete without anything showing it.
+        report_follower_cannot_be_served(conn_id, caught_up.damaged_seq_no, "the matching engine");
+        return;
+    }
+    const int64_t streamed = caught_up.records_sent;
+    EngineServing serving{};
+    serving.answers_catch_up_request = true;
+    serving.asking_to_lead = asking_to_lead;
+    engine_handed_over(conn_id, wal_head, streamed, serving);
+}
 
-    me_catchup_conn_id_ = pubsub_itc_fw::ConnectionID{};
+void SequencerThread::serve_engine(const pubsub_itc_fw::ConnectionID& engine, int64_t after_seq_no, EngineServing serving) {
+    publish_released_position();
+    engine_servings_[engine.get_value()] = serving;
+    wal_follower_service_->serve(engine, after_seq_no, pubsub_itc_fw::FollowerLimit::LastReleased, engine_converter, pubsub_itc_fw::CaughtUpMessage::DoNotSend);
+}
+
+void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, EngineServing serving) {
+    note_handed_over_through(through);
+    if (!serving.answers_catch_up_request) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: the reading thread has sent the matching engine on connection {} the orders it lacked, through {} ({} sent) -- "
+                   "orders go to it from here again",
+                   engine.get_value(), through, records_sent);
+        return;
+    }
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL catch-up complete -- {} record(s) streamed to ME connection {}",
+               records_sent, engine.get_value());
+
+    // Signal completion. On receipt the ME considers its book reconciled and becomes leader. What was
+    // sent, not what was walked past: the engine checks it received exactly this many and will not act if
+    // it did not, which is R-0101. The earliest record the WAL holds tells the engine whether the WAL
+    // reaches back to the first record of the day (R-0123).
+    const int64_t earliest_retained = replicated_wal_->wal().first_seq_no();
+    pubsub_itc_fw::WalFollowCaughtUp caught_up{};
+    caught_up.last_seq_no = through;
+    caught_up.first_seq_no_held = earliest_retained;
+    caught_up.records_sent = records_sent;
+    send_pdu(engine, pubsub_itc_fw::WalFollowCaughtUp::message_pdu_id, 0, caught_up);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: WalFollowCaughtUp sent (last_seq_no={}, earliest retained={}, records_sent={}) -- ME is now live", through, earliest_retained,
+               records_sent);
+
+    // Only for a promotion. An instance that is merely starting gets the records and no routing: it does
+    // not yet know whether its peer leads, and it learns that from the peer over a different channel and
+    // on its own schedule. Moving the order connection here on the strength of the ask took the routing
+    // off a working leader in 400 milliseconds, and nothing put it back -- measured by ha_test.py
+    // scenario 54, and it stopped the venue matching. The asker is the only party that knows which case
+    // this is, which is why the request carries it rather than this side inferring it. See BUG-0077.
+    if (!serving.asking_to_lead) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "SequencerThread: connection {} caught up but is starting rather than being promoted -- order routing left where it is", engine.get_value());
+        return;
+    }
+    engine_routing_.caught_up_to_lead(engine);
+    PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+               "SequencerThread: ME order connection promoted to {} -- sequenced orders now route to the caught-up ME", engine.get_value());
 }
 
 bool SequencerThread::stream_wal_record_to_me(const pubsub_itc_fw::ConnectionID& conn_id, int64_t record_id, int16_t pdu_id, const uint8_t* pdu_payload,
-                                              size_t pdu_size, int64_t wall_time_ns) {
-    // Each stored WAL record is a WalRecord envelope (Option B). Decode it and
-    // re-send the envelope to the ME for NOS/OCR (the ME unwraps it and reads
-    // wall_time_ns as the sequencing time); ER envelopes are outputs, not inputs,
-    // and are not streamed to the ME during catch-up.
+                                              size_t pdu_size, int64_t /*wall_time_ns*/) {
+    // Each stored WAL record is a WalRecord envelope. Orders and cancels are sent to the engine, which
+    // unwraps the envelope and reads wall_time_ns as the sequencing time; execution reports are outputs,
+    // not inputs, and are not sent.
     if (pdu_id != pubsub_itc_fw_app::WalRecord::message_pdu_id) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- record seq={} is not a WalRecord (pdu_id={}) -- skipping",
                    record_id, pdu_id);
         return false;
     }
-
-    auto& arena_buf = decode_arena_buffer();
-    pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
-    arena.reset();
-    size_t arena_bytes_needed = 0;
-    size_t bytes_consumed = 0;
-    pubsub_itc_fw_app::WalRecordView view{};
-    if (!pubsub_itc_fw_app::decode(view, pdu_payload, pdu_size, bytes_consumed, arena, arena_bytes_needed)) {
+    pubsub_itc_fw_app::WalRecord envelope{};
+    const EngineRecordFromWal found = engine_record_from_wal(pdu_id, pdu_payload, pdu_size, decode_arena_buffer(), envelope);
+    if (found == EngineRecordFromWal::NotDecodable) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: catch-up -- failed to decode envelope seq={} -- skipping", record_id);
         return false;
     }
-
-    if (view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::NewOrderSingle) &&
-        view.pdu_id != static_cast<int16_t>(pubsub_itc_fw_app::PduId::PduIdTag::OrderCancelRequest)) {
+    if (found != EngineRecordFromWal::ForEngine) {
         return false;
     }
-
-    pubsub_itc_fw_app::WalRecord envelope{};
-    envelope.seq_no = view.seq_no;
-    envelope.pdu_id = view.pdu_id;
-    envelope.payload = view.payload;
-    envelope.wall_time_ns = view.wall_time_ns;
-    envelope.has_gateway_session_conn_id = view.has_gateway_session_conn_id;
-    envelope.gateway_session_conn_id = view.gateway_session_conn_id;
-    envelope.has_sender_comp_id = view.has_sender_comp_id;
-    envelope.sender_comp_id = view.sender_comp_id;
-    // The engine files an order under the session's comp id AND its gateway protocol, so the
-    // protocol must travel too: without it a binary gateway's member is filed under the default
-    // protocol, and the engine's reports and its check for a repeated ClOrdID name the wrong session.
-    envelope.has_origin_gateway_id = view.has_origin_gateway_id;
-    envelope.origin_gateway_id = view.origin_gateway_id;
-    envelope.has_gateway_instance_id = view.has_gateway_instance_id;
-    envelope.gateway_instance_id = view.gateway_instance_id;
-
     send_pdu(conn_id, pubsub_itc_fw_app::WalRecord::message_pdu_id, record_id, envelope);
-    (void)wall_time_ns;
     return true;
 }
 

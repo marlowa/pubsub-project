@@ -388,34 +388,27 @@ class BurstListenerThread : public ApplicationThread {
             return;
         }
 
-        // Exact tail-advance detection: if the tail moved since the last
-        // delivery, start decoding from the beginning of the new window.
-        if (tail != last_tail_) {
-            bytes_decoded_ = 0;
-            last_committed_ = 0;
-            last_tail_ = tail;
+        // Positions are counted in the whole stream of bytes received, which is what the tail is: the
+        // stream position of the first byte in this delivery's window. Decoding carries on from wherever
+        // it has reached, whatever window it is given. A delivery made before the reactor acted on an
+        // earlier commit still holds bytes already decoded, and they are not decoded again (BUG-0165).
+        if (decoded_through_ < 0) {
+            decoded_through_ = tail;
+            committed_through_ = tail;
         }
-
-        const int unprocessed = available - bytes_decoded_;
-        if (unprocessed <= 0) {
-            return;
+        const int64_t window_end = tail + available;
+        const int64_t start = decoded_through_ > tail ? decoded_through_ : tail;
+        if (start < window_end) {
+            int64_t total_consumed = 0;
+            decode_all_framed(data + (start - tail), static_cast<int>(window_end - start), received_payloads, total_consumed);
+            decoded_through_ = start + total_consumed;
         }
-
-        int64_t total_consumed = 0;
-        decode_all_framed(data + bytes_decoded_, unprocessed, received_payloads, total_consumed);
-
-        if (total_consumed > 0) {
-            bytes_decoded_ += static_cast<int>(total_consumed);
-            // Only commit when the entire current window is consumed.
-            // If partial bytes remain (bytes_decoded_ < available) leave them
-            // in the buffer -- the next EPOLLIN delivers them with new bytes.
-            // A rogue client sending a partial message and going silent will
-            // eventually fill the buffer and be disconnected by the framework.
-            if (bytes_decoded_ == available) {
-                const int64_t delta = static_cast<int64_t>(bytes_decoded_ - last_committed_);
-                commit_raw_bytes(conn_id, delta);
-                last_committed_ = bytes_decoded_;
-            }
+        // Only commit when the entire current window is decoded. If partial bytes remain, leave them in
+        // the buffer -- the next delivery brings them with new bytes. A rogue client sending a partial
+        // message and going silent will eventually fill the buffer and be disconnected by the framework.
+        if (decoded_through_ == window_end && decoded_through_ > committed_through_) {
+            commit_raw_bytes(conn_id, decoded_through_ - committed_through_);
+            committed_through_ = decoded_through_;
         }
 
         if (static_cast<int>(received_payloads.size()) >= expected_count_) {
@@ -427,9 +420,9 @@ class BurstListenerThread : public ApplicationThread {
 
   private:
     int expected_count_;
-    int bytes_decoded_{0};
-    int last_committed_{0};
-    int64_t last_tail_{-1};
+    // Stream positions: decoded up to here, and committed up to here. -1 before the first delivery.
+    int64_t decoded_through_{-1};
+    int64_t committed_through_{-1};
 };
 
 // Listener thread: tracks connection events only, does not consume bytes.

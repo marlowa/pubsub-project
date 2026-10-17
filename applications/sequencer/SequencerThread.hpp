@@ -32,7 +32,9 @@
 #include <pubsub_itc_fw/WalFollowerService.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
 
+#include "EngineCatchUpFromWal.hpp"
 #include "EngineOrderRouting.hpp"
+#include "EngineRecordFromWal.hpp"
 #include "EngineReportPosition.hpp"
 #include "GatewayIds.hpp"
 #include "KeptReportStore.hpp"
@@ -80,6 +82,11 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     /// The thread that reads the WAL for its followers (docs/availability/following_the_wal.md).
     static constexpr pubsub_itc_fw::ThreadID wal_reading_thread_id{2};
+    /// The reading thread's converter for the follower sequencer: each record as a ReplicatedRecord.
+    static constexpr int peer_converter = 0;
+    /// The reading thread's converter for a matching engine: each order and cancel as the WalRecord
+    /// engine_record_from_wal builds, and nothing else.
+    static constexpr int engine_converter = 1;
 
   protected:
     void on_initial_event() override;
@@ -251,8 +258,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         void send_caught_up(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalFollowCaughtUp& caught_up) override;
         void send_leader_changed(const pubsub_itc_fw::ConnectionID& to, const pubsub_itc_fw::WalLeaderChanged& changed) override;
         // WalFollowerEventsInterface
-        void follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through) override;
+        void follower_handed_over(const pubsub_itc_fw::ConnectionID& follower, int64_t through, int64_t records_sent) override;
         void hand_over_falling_behind(const pubsub_itc_fw::ConnectionID& follower) override;
+        void follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no) override;
         void declined_while_not_leading(const pubsub_itc_fw::ConnectionID& follower) override;
         void reading_stopped() override;
 
@@ -262,6 +270,36 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         pubsub_itc_fw::ConnectionID catch_up_connection_;
     };
     SequencerWalFollowing wal_following_{*this};
+
+    // A matching engine's connection that the reading thread is serving, and why. While it is, this
+    // thread sends that engine no order itself: an order released meanwhile is at or below the limit the
+    // reading thread serves up to, and the reading thread sends it (following_the_wal.md, section 5.3).
+    struct EngineServing {
+        // Whether the engine asked to be caught up with WalFollowRequest, and so is sent WalFollowCaughtUp
+        // when it is handed over; otherwise it is being sent orders it lacks.
+        bool answers_catch_up_request{false};
+        // For a catch-up request: whether the engine asked to lead, and so has the orders routed to it
+        // once it is caught up.
+        bool asking_to_lead{false};
+    };
+    std::unordered_map<int, EngineServing> engine_servings_;
+    // Has the reading thread serve @p engine from the record after @p after_seq_no, up to the last order released.
+    void serve_engine(const pubsub_itc_fw::ConnectionID& engine, int64_t after_seq_no, EngineServing serving);
+    // The engine the reading thread was serving has been handed over at @p through.
+    void engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, EngineServing serving);
+    // Publishes the last order released (released_through) as the limit a matching engine is served up to.
+    void publish_released_position();
+
+    // A record in the WAL that the reading thread could not read, which stops a follower being caught up
+    // past it. Said as an Error the first time it stops each kind of follower, and as Info when the same
+    // follower asks again and is refused again; and shown, as long as it stands, by a gauge holding the
+    // record's number, which is 0 when there is none.
+    std::unordered_set<std::string> damaged_records_reported_;
+    int64_t damaged_record_standing_{0};
+    pubsub_itc_fw::GaugeHandle damaged_record_gauge_;
+    void report_follower_cannot_be_served(const pubsub_itc_fw::ConnectionID& follower, int64_t damaged_seq_no, const std::string& which_follower);
+    // A follower has been handed over through @p through: a damaged record at or before it no longer stands.
+    void note_handed_over_through(int64_t through);
     pubsub_itc_fw::WalFollowingPositions& wal_positions_;
     std::optional<pubsub_itc_fw::WalFollowerService> wal_follower_service_;
     // While set, reading orders from the gateways is paused so that a follower's hand-over can finish:
@@ -394,15 +432,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
         std::chrono::steady_clock::time_point held_at;
     };
 
-    // How many orders the leader holds at most while waiting for the follower. When it is full the
-    // follower is treated as too far behind and the leader runs as if alone. At the highest rate
-    // measured on this venue, about 34,000 orders a second, this is about half a second of orders,
-    // well beyond the replicated WAL's acknowledgement timeout, so in practice the timeout is what
-    // notices a follower that has stopped, and this only bounds the storage. Each slot holds the envelope and a
-    // pointer, so the storage is a few megabytes, allocated once when the sequencer starts.
-    static constexpr size_t held_order_capacity = 16384;
-
-    pubsub_itc_fw::FixedCapacityRingBuffer<HeldOrder> held_orders_{held_order_capacity};
+    // The orders held while waiting for the follower, at most SequencerConfiguration::orders_held_at_most,
+    // allocated once when the sequencer starts.
+    pubsub_itc_fw::FixedCapacityRingBuffer<HeldOrder> held_orders_{config_.orders_held_at_most};
 
     // Orders numbered from here on were written to the log and replicated but not held, because the
     // storage above was full; zero when there are none. They are sent to the engine from the log
@@ -415,18 +447,26 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     std::vector<pubsub_itc_fw::ConnectionID> order_connection_ids_;
     bool order_reading_paused_{false};
 
-    // Reading from the gateways is paused when this many orders are held while waiting for a voter's
-    // confirmation, leaving room for orders already read, and resumed when the held orders fall to
-    // the lower mark. Orders that arrive with the storage full anyway wait in the log.
-    static constexpr size_t pause_order_reading_at = held_order_capacity * 3 / 4;
-    static constexpr size_t resume_order_reading_at = held_order_capacity / 4;
+    // Reading from the gateways is paused when three quarters of the storage for held orders is used
+    // while waiting for a voter's confirmation, leaving room for orders already read, and resumed when
+    // the held orders fall to a quarter. Orders that arrive with the storage full anyway wait in the log.
+    [[nodiscard]] size_t pause_order_reading_at() const {
+        return config_.orders_held_at_most * 3 / 4;
+    }
+    [[nodiscard]] size_t resume_order_reading_at() const {
+        return config_.orders_held_at_most / 4;
+    }
 
     // 1 while the leader carries on without waiting for a follower that is connected but too far
     // behind. Registered here and set by the replicated WAL.
     pubsub_itc_fw::GaugeHandle running_alone_gauge_;
 
     void hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord& envelope, const pubsub_itc_fw::EventMessage& message);
-    /// Sends the engine, in order, the orders numbered from first to through that waited in the log rather than the storage.
+    /// Has the engine sent, in order, the orders numbered from first to through that waited in the log rather than the storage:
+    /// by the reading thread when there is one and an engine to send to, otherwise by send_logged_orders.
+    void send_orders_that_waited_in_the_log(int64_t first, int64_t through);
+    /// Reads the WAL on this thread and sends the engine the orders numbered from first to through, or counts them as deferred
+    /// when no engine is connected. Used only without a reading thread, or without an engine.
     void send_logged_orders(int64_t first, int64_t through);
     /// The last order released to the engine: everything numbered at or below it has been sent or deferred, and nothing above it.
     [[nodiscard]] int64_t released_through() const;
@@ -636,14 +676,6 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     // ME failover reconciliation (Slice D).
     //
-    // When a promoted ME-secondary sends MePositionRequest on its order connection,
-    // the sequencer walks the WAL from the ME's last-applied seq_no to the WAL head,
-    // streaming each NOS/OCR to that connection, then sends MePositionAck. After the
-    // ack the ME is live and new orders flow to it via engine_routing_.active().
-    //
-    // me_catchup_conn_id_ tracks the connection currently in catch-up so the handler
-    // can stream to a specific ConnectionID rather than the buffered replay path.
-    pubsub_itc_fw::ConnectionID me_catchup_conn_id_;
 
     // Primary is always instance 1 and secondary always 2; the ids are fixed for the life of
     // a deployment and the arbiter's cold-start preference relies on it. Which of them LEADS
@@ -653,7 +685,9 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
 
     /// Handles a matching engine stating which role it holds and under which epoch.
     void handle_role_announcement(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
-    void handle_me_position_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
+    // A matching engine asking to be caught up (WalFollowRequest): declined unless this instance leads,
+    // otherwise served from the position it gives, up to the last order released.
+    void handle_wal_follow_request(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::EventMessage& message);
     /// Streams one catch-up record to a matching engine, and says whether it sent anything.
     ///
     /// It withholds execution report envelopes, which are outputs rather than inputs, so a record

@@ -31,7 +31,7 @@ There is a second gap. **A command can be in the new leader's log without the ma
 receiving it.** The follower writes a record and acknowledges it; if the leader dies after the
 follower wrote the record and before the acknowledgement reached the leader, the leader never sent
 the command to the engine. An engine asks a sequencer to catch it up only when the engine itself
-starts or takes the lead (`MePositionRequest`), not when the sequencers change leader, so without
+starts or takes the lead (`WalFollowRequest`), not when the sequencers change leader, so without
 section 3.5 nothing would send the command to the engine and the member would never be answered
 ([BUG-0115](../bug_list.md#bug_0115), fixed).
 

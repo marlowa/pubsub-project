@@ -85,10 +85,11 @@ sequence and is told when each is committed.
 **What it is for.** A component that follows the WAL, such as the matching engine or a publisher,
 applies every committed command in order, and one that starts or restarts catches up before it acts.
 
-**How it is done now.** Separately in each follower of the WAL: the matching engine's catch-up
-(`MePositionRequest`, `MePositionAck`, the R-0101 count check), the publishers' subscription
-(`handle_wal_subscribe_request`), each served by reading the WAL on the sequencer's thread
-(BUG-0133).
+**How it is done now.** The matching engine's catch-up uses the library's messages (`WalFollowRequest`,
+`WalFollowCaughtUp`, `WalFollowDeclined`, `WalLeaderChanged`) and is served by the reading thread, the
+engine making the R-0101 count check; the publishers' subscription (`handle_wal_subscribe_request`) is
+still served by reading the WAL on the sequencer's thread (BUG-0133), and moves in step 4 of phase 5
+([following_the_wal.md](following_the_wal.md)).
 
 **What the library would provide.** One way to follow the WAL: a follower says the position it has
 reached, the library sends every committed command after it, in order, and says when it has sent all

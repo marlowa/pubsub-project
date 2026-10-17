@@ -116,8 +116,10 @@ With high availability on, two instances run: `matching_engine` (the primary, in
   removes to the standby over the book replication connection (`BookUpdate`, ports 11025 and 11026 in
   the development environment). The standby discards the orders the sequencer sends it.
 - **Every engine catches up before it acts**, whether it has just been promoted or has just started.
-  It sends the sequencer the position it has reached (`MePositionRequest`), and the sequencer sends
-  every command after it, then says where it stopped and how many records it sent (`MePositionAck`).
+  It sends the sequencers the position it has reached (`WalFollowRequest`), and the leading sequencer
+  sends every command after it, then says where it stopped and how many records it sent
+  (`WalFollowCaughtUp`). A sequencer that does not lead declines (`WalFollowDeclined`) and says when it
+  takes the lead (`WalLeaderChanged`), and the engine then asks again.
   The engine checks that it received them all before it acts. Each command applied during a catch-up
   is reported to the member that placed it, marked `PossResend`, because the engine cannot tell a
   command an earlier engine already reported from one no engine ever saw. This is what recovers an

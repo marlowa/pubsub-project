@@ -258,7 +258,11 @@ violated, in 8 states. The reading thread reads the limit as record 1; the ownin
 and sends it nothing, because the follower is still being caught up; the reading thread reports that it
 reached record 1; the owning thread hands the follower over, and record 2 is never sent.
 
-**As designed** (`FollowerHandOver.cfg`): every property holds.
+**As designed** (`FollowerHandOver.cfg`): every property holds. The reading thread here reads the limit once,
+at the start of each round, as section 3.4 of the design has it. The code once read it at every batch
+instead, which this specification does not allow, and which kept a follower that was slower than the records
+being released from ever being handed over; it was found by measurement and fixed
+([BUG-0168](../../bug_list.md#bug_0168)).
 
 | Records | Follower holds at the start | Connections lost | Distinct states | Time on 16 workers | Result |
 |---|---|---|---|---|---|

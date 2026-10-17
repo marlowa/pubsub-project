@@ -62,6 +62,7 @@ void WalReadingThread::on_itc_message(const EventMessage& message) {
                 return; // stopped meanwhile
             }
             found->second->sending = true;
+            found->second->round_limit = positions_.limit(found->second->limit);
             send_batch(*found->second);
             return;
         }
@@ -73,6 +74,13 @@ void WalReadingThread::on_itc_message(const EventMessage& message) {
             auto stopped = std::make_unique<WalReadingReport>();
             stopped->kind = WalReadingReport::Kind::StoppedAll;
             report(std::move(stopped));
+            return;
+        }
+        case WalReadingCommand::Kind::Confirm: {
+            // Commands are acted on in the order they arrive, so every earlier one has been.
+            auto confirmed = std::make_unique<WalReadingReport>();
+            confirmed->kind = WalReadingReport::Kind::Confirmed;
+            report(std::move(confirmed));
             return;
         }
     }
@@ -97,6 +105,7 @@ void WalReadingThread::serve(const WalReadingCommand& command) {
     follower->last_sent_seq_no = command.after_seq_no;
     follower->serving = command.serving;
     follower->sending = true;
+    follower->round_limit = positions_.limit(command.limit);
     follower->cursor.open(wal_directory_, command.start);
     Follower& served = *follower;
     followers_[command.connection.get_value()] = std::move(follower);
@@ -133,10 +142,14 @@ bool WalReadingThread::read_next_record(Follower& follower, WalPosition written)
 }
 
 void WalReadingThread::send_batch(Follower& follower) {
-    // The limit before the write position: the owning thread publishes the position of a record before
-    // it publishes the record as written, committed or released, so a limit read here is never ahead of
-    // the position read next.
-    const int64_t limit = positions_.limit(follower.limit);
+    // The limit as it was read when this round started, not as it is now: a round ends at it, so that the
+    // owning thread can count a round that falls short and act once three in a row have, which is what
+    // makes the hand-over end while records go on being released. Read anew at each batch, a round would
+    // chase a limit that rises as fast as the follower takes records, and never end. The limit was read
+    // before the write position read here, and the owning thread publishes the position of a record
+    // before it publishes the record as written, committed or released, so the limit is never ahead of
+    // the position.
+    const int64_t limit = follower.round_limit;
     const WalPosition written = positions_.write_position();
 
     int sent_in_batch = 0;
@@ -149,15 +162,23 @@ void WalReadingThread::send_batch(Follower& follower) {
         if (follower.held_seq_no > limit) {
             break; // held until the limit passes it
         }
+        // A record whose contents cannot be read, or that the converter finds damaged, may have been one
+        // the follower needed. Passing over it would let the follower be handed over as complete when it
+        // is not, so serving stops here, and the owning thread is told which record it was.
         const std::optional<WalEntryContents> contents = read_wal_entry_contents(follower.held_bytes, follower.held_size);
+        ConvertedRecord converted = ConvertedRecord::damaged();
         if (contents.has_value()) {
             encoded_.clear();
-            const std::optional<int16_t> pdu_id = converters_[static_cast<size_t>(follower.converter)](follower.held_seq_no, *contents, encoded_);
-            if (pdu_id.has_value() && !encoded_.empty()) {
-                send_pdu_payload(follower.connection, *pdu_id, follower.held_seq_no, encoded_.data(), encoded_.size());
-                ++follower.records_sent;
-                ++sent_in_batch;
-            }
+            converted = converters_[static_cast<size_t>(follower.converter)](follower.held_seq_no, *contents, encoded_);
+        }
+        if (converted.outcome == ConvertedRecord::Outcome::Damaged) {
+            report_damaged(follower);
+            return; // the follower is no longer served, and its entry is gone
+        }
+        if (converted.outcome == ConvertedRecord::Outcome::Send && !encoded_.empty()) {
+            send_pdu_payload(follower.connection, converted.pdu_id, follower.held_seq_no, encoded_.data(), encoded_.size());
+            ++follower.records_sent;
+            ++sent_in_batch;
         }
         follower.last_sent_seq_no = follower.held_seq_no;
         follower.holding = false;
@@ -180,6 +201,22 @@ void WalReadingThread::send_batch(Follower& follower) {
     reached->records_sent = follower.records_sent;
     reached->serving = follower.serving;
     report(std::move(reached));
+}
+
+void WalReadingThread::report_damaged(Follower& follower) {
+    // Info, not Error: a follower asks again after this, and is refused again, so the application, which can
+    // tell the first time from the next, says it once as an Error.
+    PUBSUB_LOG(get_logger(), FwLogLevel::Info,
+               "WalReadingThread: record {} in the WAL cannot be read for connection {} -- serving stops, and the follower is not handed over",
+               follower.held_seq_no, follower.connection.get_value());
+    auto damaged = std::make_unique<WalReadingReport>();
+    damaged->kind = WalReadingReport::Kind::Damaged;
+    damaged->connection = follower.connection;
+    damaged->reached_seq_no = follower.held_seq_no;
+    damaged->records_sent = follower.records_sent;
+    damaged->serving = follower.serving;
+    report(std::move(damaged));
+    followers_.erase(follower.connection.get_value());
 }
 
 void WalReadingThread::report(std::unique_ptr<WalReadingReport> report_to_send) {

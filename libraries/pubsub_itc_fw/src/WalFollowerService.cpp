@@ -17,9 +17,9 @@ WalFollowerService::WalFollowerService(QuillLogger& logger, const Wal& wal, cons
                                        WalFollowerEventsInterface& events)
     : logger_(logger), wal_(wal), positions_(positions), links_(links), events_(events) {}
 
-void WalFollowerService::on_follow_request(const ConnectionID& connection, const WalFollowRequestView& request, bool leading, FollowerLimit limit,
+void WalFollowerService::on_follow_request(const ConnectionID& connection, const WalFollowRequestView& request, Leading leading, FollowerLimit limit,
                                            int converter) {
-    if (!leading) {
+    if (leading == Leading::DoesNotLead) {
         declined_[connection.get_value()] = connection;
         WalFollowDeclined declined{};
         declined.last_seq_no = request.last_seq_no;
@@ -80,9 +80,13 @@ bool WalFollowerService::on_inter_thread_message(const EventMessage& message) {
     if (report == nullptr) {
         return false;
     }
-    if (report->kind == WalReadingReport::Kind::StoppedAll) {
-        stop_pending_ = false;
-        events_.reading_stopped();
+    if (report->kind == WalReadingReport::Kind::StoppedAll || report->kind == WalReadingReport::Kind::Confirmed) {
+        if (confirmations_awaited_ > 0) {
+            --confirmations_awaited_;
+        }
+        if (confirmations_awaited_ == 0) {
+            events_.reading_stopped();
+        }
         return true;
     }
 
@@ -91,6 +95,14 @@ bool WalFollowerService::on_inter_thread_message(const EventMessage& message) {
         return true; // the connection went, or was served afresh, while the report was on its way
     }
     Follower& follower = found->second;
+
+    // A damaged record: never handed over. The reading thread has stopped serving the follower already.
+    if (report->kind == WalReadingReport::Kind::Damaged) {
+        const ConnectionID connection = follower.connection;
+        followers_.erase(found);
+        events_.follower_cannot_be_served(connection, report->reached_seq_no);
+        return true;
+    }
 
     // Equal to the limit now: nothing has been released since the reading thread looked, so the
     // follower is handed over at exactly this record. Short: records were released meanwhile.
@@ -127,7 +139,7 @@ void WalFollowerService::hand_over(Follower& follower, int64_t through, int64_t 
     }
     PUBSUB_LOG(logger_, FwLogLevel::Info, "WalFollowerService: connection {} caught up through record {} ({} records sent) and is handed over to new records",
                follower.connection.get_value(), through, records_sent);
-    events_.follower_handed_over(follower.connection, through);
+    events_.follower_handed_over(follower.connection, through, records_sent);
 }
 
 void WalFollowerService::on_connection_lost(const ConnectionID& connection) {
@@ -164,15 +176,28 @@ void WalFollowerService::stop_all() {
         declined_[value] = follower.connection;
     }
     followers_.clear();
-    stop_pending_ = true;
+    ++confirmations_awaited_;
     auto command = std::make_unique<WalReadingCommand>();
     command->kind = WalReadingCommand::Kind::StopAll;
+    links_.send_to_reading_thread(std::move(command));
+}
+
+void WalFollowerService::stop_serving(const ConnectionID& connection) {
+    on_connection_lost(connection);
+    ++confirmations_awaited_;
+    auto command = std::make_unique<WalReadingCommand>();
+    command->kind = WalReadingCommand::Kind::Confirm;
     links_.send_to_reading_thread(std::move(command));
 }
 
 bool WalFollowerService::is_handed_over(const ConnectionID& connection) const {
     const auto found = followers_.find(connection.get_value());
     return found != followers_.end() && found->second.handed_over;
+}
+
+bool WalFollowerService::is_being_caught_up(const ConnectionID& connection) const {
+    const auto found = followers_.find(connection.get_value());
+    return found != followers_.end() && !found->second.handed_over;
 }
 
 std::vector<std::pair<ConnectionID, FollowerLimit>> WalFollowerService::handed_over_followers() const {

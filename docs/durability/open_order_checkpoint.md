@@ -306,7 +306,7 @@ venue is halted throughout, so that time is an operator's rather than a member's
 The second case becomes reachable once retention is anchored to the oldest
 position anything may still present, which is R-0022 and what closes
 [BUG-0048](../bug_list.md#bug_0048). The two cases have to be told apart either
-way, and `MePositionAck` carries the earliest record the sequencer still holds so
+way, and `WalFollowCaughtUp` carries the earliest record the sequencer still holds so
 that they can be:
 
 | What the sequencer still holds | What the engine does |

@@ -114,7 +114,7 @@ struct SequencerConfiguration {
      *
      * Only used when ha_enabled=true. The sequencer keeps a pre-warmed standby
      * connection to ME-secondary. On ME failover the secondary sends a
-     * MePositionRequest over this connection; the sequencer replays the WAL
+     * WalFollowRequest over this connection; the sequencer replays the WAL
      * catch-up and then promotes the standby to the active ME order connection.
      */
     std::string matching_engine_secondary_host{"127.0.0.1"};
@@ -155,6 +155,19 @@ struct SequencerConfiguration {
      * docs/availability/commands_during_a_change_of_leader.md.
      */
     size_t identifiers_reserved{0};
+
+    /**
+     * @brief How many orders the leader holds at most while waiting for the follower's acknowledgement
+     * or a voter's confirmation. Orders that arrive with the storage full wait in the WAL instead, and
+     * are sent to the matching engine from there when they are released, by the reading thread. When
+     * the storage is full the follower is treated as too far behind and the leader runs as if alone. At
+     * the highest rate measured on this venue, about 34,000 orders a second, 16,384 is about half a
+     * second of orders, well beyond the replicated WAL's acknowledgement timeout, so in practice the
+     * timeout is what notices a follower that has stopped, and this only bounds the storage. Each slot
+     * holds the envelope and a pointer, so 16,384 slots are a few megabytes, allocated once when the
+     * sequencer starts. Read only when ha_enabled=true; otherwise 16,384.
+     */
+    size_t orders_held_at_most{16384};
 
     // HA mode -- when false, the sequencer starts as leader immediately
     // with no peer election. Set to true only when running a paired

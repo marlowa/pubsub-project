@@ -322,8 +322,10 @@ an engine that restarts has its own record of what it held.
 
 An engine that takes the lead, or starts, does nothing on the order path until it has caught up with
 the sequencer's log. It tells the sequencer the last sequence number its book reflects
-(`MePositionRequest`). The sequencer sends it every record after that one and then says how many it
-sent and the last sequence number (`MePositionAck`). The engine applies each record, and checks that
+(`WalFollowRequest`). The leading sequencer sends it every record after that one and then says how many
+it sent and the last sequence number (`WalFollowCaughtUp`); a sequencer that does not lead declines
+(`WalFollowDeclined`) and tells the engine when it takes the lead (`WalLeaderChanged`), so that the engine
+asks again at once. The engine applies each record, and checks that
 it has received every record the sequencer said it sent, before it acts (R-0101). If any are missing
 it asks again; it does not act on an incomplete catch-up. Each report it sends while catching up is
 marked as a possible repeat, because an earlier engine may already have sent the same report (R-0122).

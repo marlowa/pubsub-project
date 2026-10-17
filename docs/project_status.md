@@ -21,7 +21,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 - **A trading day under load.** `perf_run.py --profile profiles/trading_day.toml` runs a shaped day
   of several million orders with cancels.
-- **Failover and restart of each pair.** `ha_test.py` has 74 scenarios: killing each component,
+- **Failover and restart of each pair.** `ha_test.py` has 75 scenarios: killing each component,
   restarting each in each role, stopping a whole machine, and a member's open orders surviving a
   restart of the matching engine.
 - **The FIX session layer.** Resend requests are answered with the real execution reports, a
@@ -30,7 +30,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 56 open entries, 13 of them high severity. The ones most likely to
+The [bug list](bug_list.md) holds 68 open entries, 16 of them high severity. The ones most likely to
 matter first, by design area:
 
 - **The specification is mostly untested.** 30 of 148 requirements are verified by a scenario
@@ -70,9 +70,10 @@ voting service into the library, is finished; its design is
 replicated WAL with one writing thread, is finished: the sequencer keeps its WAL through the library's
 `ReplicatedWal`, whose thread is the only one that writes it. Its design is
 [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md). Phase 5, following
-the WAL, has an agreed design, [following_the_wal.md](availability/following_the_wal.md), and its first two
-steps are built: the library's way of following a WAL, and the follower sequencer's repair through it, so
-that a rejoining follower catches up without stopping the venue answering orders. New features, including pub/sub, the order activity recorder and the trading phases, wait
+the WAL, has an agreed design, [following_the_wal.md](availability/following_the_wal.md), and its first three
+steps are built: the library's way of following a WAL, the follower sequencer's repair through it, and the
+matching engine's catch-up through it, so that neither a rejoining follower nor a catching-up engine stops the
+venue answering orders. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start

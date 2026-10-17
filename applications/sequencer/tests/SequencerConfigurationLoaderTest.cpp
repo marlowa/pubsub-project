@@ -56,6 +56,7 @@ renewal_interval_milliseconds = 1000
 
 [commands]
 identifiers_reserved = 1000
+orders_held_at_most = 64
 
 [wal_subscriber]
 listen_host = "127.0.0.1"
@@ -331,6 +332,21 @@ port     = 7010
 TEST(SequencerConfigurationLoaderTest, ReadsHowManyCommandIdentifiersToReserve) {
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.identifiers_reserved, 1000U);
+}
+
+TEST(SequencerConfigurationLoaderTest, ReadsHowManyOrdersTheLeaderHoldsAtMost) {
+    const auto config = load_with_gateways(one_gateway);
+    EXPECT_EQ(config.orders_held_at_most, 64U);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsHoldingNoOrders) {
+    std::string sections(required_sections);
+    const std::string held = "orders_held_at_most = 64";
+    sections.replace(sections.find(held), held.size(), "orders_held_at_most = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(SequencerConfigurationLoaderTest, RejectsReservingNoCommandIdentifiers) {

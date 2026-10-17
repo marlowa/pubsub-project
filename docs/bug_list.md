@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 167 |
-| Open | 68 (49 defects, 19 tasks) |
-| Closed | 99 |
-| Next id | BUG-0168 |
+| Bugs recorded | 169 |
+| Open | 68 (48 defects, 20 tasks) |
+| Closed | 101 |
+| Next id | BUG-0170 |
 
 ## Open bugs by severity
 
-16 high, 43 medium, 9 low.
+16 high, 44 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -72,6 +72,7 @@
 | [BUG-0161](#bug_0161) | medium | task | The framework names the venue's ideas -- members, the order path, the matching engine -- in how it classifies a send |
 | [BUG-0164](#bug_0164) | medium | defect | The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread |
 | [BUG-0167](#bug_0167) | medium | defect | A lease promise record can take longer to write than a lease period, and the leader then loses its lease |
+| [BUG-0169](#bug_0169) | medium | task | The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -79,7 +80,6 @@
 | [BUG-0109](#bug_0109) | low | defect | The FIX gateway's health line counts cancel reports as answered orders |
 | [BUG-0145](#bug_0145) | low | defect | Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding |
 | [BUG-0149](#bug_0149) | low | defect | `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment |
-| [BUG-0165](#bug_0165) | low | defect | The raw-bytes burst test can count the same frames twice, and so fails now and then |
 | [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
 
 ---
@@ -178,6 +178,46 @@ went looking.
 
 ## Open
 
+### BUG-0169: The high availability tests depend on the wording of Quill log messages; they should observe outcomes directly, or read a separate stream of named test events {#bug_0169}
+
+| | |
+|---|---|
+| Severity | medium |
+| Kind | task |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| How | Andrew, after a review by another assistant pointed out that the tests read the Quill logs as their interface |
+| Impact | A Quill log message cannot be reworded for the people who read it without breaking a test, often silently and in another file; a test that fails can be failing on its own reading of the log rather than on the venue, which takes time to tell apart |
+
+**What is there now.** `scripts/ha_test.py` waits for a phrase in a Quill log 108 times, and counts lines in
+one 13 times, often from a byte position in the file. 67 messages in the C++ are marked `TEST CONTRACT`
+because a test depends on their exact wording: 15 in the FIX order gateway, 13 in the matching engine, 11 in
+the binary order gateway, 10 in the sequencer, 9 in the replicated WAL, and the rest in the arbiter and
+elsewhere. Prometheus is optional, so it cannot serve instead (principle V13 in
+[design_principles.md](design_principles.md)).
+
+**What is wanted.** Quill logs go back to being for people. A test asserts on what it can observe directly
+wherever it can: for instance, the test client reports each execution report it receives, rather than the
+test counting the matching engine's lines saying it accepted an order. For the internal steps a test cannot
+otherwise see -- a follower handed over, a follower refused past a damaged record, a change of leader -- each
+component writes named test events, switched off unless configured:
+
+- through Quill's existing asynchronous backend, but by a logger of their own, to a file of their own, one
+  event a line in a fixed machine-readable form: the event's name and its named fields;
+- every event name and its fields listed in one header, which is the whole of the contract between the
+  components and the tests, instead of the wording of 67 scattered messages;
+- each event replacing a wait on log text, not added beside it; once a message is no longer read by a test,
+  its `TEST CONTRACT` comment goes and it can be worded for people;
+- an event the test expected and did not see fails the test, rather than weakening it.
+
+The design comes first, and is agreed before any of it is built.
+
+**When.** After phase 5 of the recovery plan is finished, alongside [BUG-0161](#bug_0161), since both change
+how the framework is used. New tests written before then add as few log-text waits as they can. Andrew
+agreed on 17 October 2026.
+
+**Principles.** None directly; how the venue is tested.
+
 ### BUG-0167: A lease promise record can take longer to write than a lease period, and the leader then loses its lease {#bug_0167}
 
 | | |
@@ -196,6 +236,13 @@ engines and arbiters alike: the median 708 milliseconds, one in ten above 1,299,
 period of 3,000 milliseconds, the longest 4,601. In five further runs of scenario 26 alone, on an otherwise
 quiet machine, the longest were 2,317, 4,058 and 4,076 milliseconds. The disk is a CT4000BX500, a low-cost
 solid-state disk; the WALs share it.
+
+**Later cases, 15 October 2026.** Scenario 35 failed the same way as scenario 26: a promise write of 4,476
+milliseconds made the leading sequencer lose its lease while a matching engine was asking for its position,
+and the engine, answered only after its next retry, was not given the orders. It passed five times of five
+when run again. In one run of `tmp/phase5/stall.sh`, a single promise write took 16,770 milliseconds, while
+the leading sequencer held 16,384 orders waiting for a voter to confirm in writing that the follower may not
+lead; the leader lost its lease and discarded them, as it must.
 
 **What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
 or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
@@ -222,32 +269,6 @@ write. Every way to make it do so changes the rules for which instance leads, wh
 of the sends dropped, written when the count stops growing or at a fixed interval; not one line for each send.
 
 **Principles.** None; how much the Quill log says.
-
-### BUG-0165: The raw-bytes burst test can count the same frames twice, and so fails now and then {#bug_0165}
-
-| | |
-|---|---|
-| Severity | low |
-| Found | 2026-10-15 |
-| Recorded | 2026-10-15 |
-| How | `scripts/devsetup.sh` stopped in `RawBytesProtocolHandlerIntegrationTest.BurstDelivery`: "received_payloads.size() Which is: 6, expected_count Which is: 5", followed by "terminate called without an active exception". The test then passed 30 times in a row |
-| Impact | In the tests only: the developer loop stops now and then for no fault in the framework. The framework's handling of raw bytes is not affected |
-
-**What happens.** The test's listener (`BurstListenerThread::on_raw_socket_message`) remembers how far into
-the received bytes it has decoded, and starts again from the beginning whenever the tail position it is
-given has moved, on the reasoning that a moved tail means a commit has removed what it decoded. That holds
-for one commit at a time, but not for two. The listener decodes some frames and commits them; a delivery
-already queued, with the old tail, is decoded from where it left off, and those frames are committed too;
-then a delivery made after the reactor acted on the first commit but before it acted on the second arrives
-with a moved tail, still holding the frames of the second commit. The listener decodes it from the
-beginning, and counts those frames again. The failed assertion then leaves the reactor's thread running,
-which ends the process.
-
-**What is wanted.** The listener should work out how much of the window it has already decoded from the
-tail position and the bytes it has committed, not from whether the tail has moved, and the test should stop
-the reactor before a failed assertion leaves it running.
-
-**Principles.** None; a fault in a test.
 
 ### BUG-0164: The thread that builds a starting sequencer's record of command identifiers runs on the core reserved for the sequencer's own thread {#bug_0164}
 
@@ -3452,6 +3473,70 @@ before and after. Both gateways' orders are tested with the same malformed value
 treated identically.
 
 ## Closed
+
+### BUG-0168: The reading thread read a follower's limit afresh at every batch, so while records were released faster than the follower took them it was never handed over {#bug_0168}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-15 |
+| Recorded | 2026-10-15 |
+| Fixed | 2026-10-15 -- the limit is read once when a round starts, when the reading thread is told to serve the follower or to carry on |
+| How | The stall measurement of phase 5 (`tmp/phase5/stall.sh`), run during step 3, after a change of sequencer leader in which the matching engine lacked 25,000 orders and then 157,000: neither serving was handed over in the 39 seconds before the leader lost its lease, and no round was reported as falling short |
+| Impact | A follower that takes records more slowly than they are released, a matching engine replaying a backlog while orders keep arriving for instance, is never handed over; meanwhile orders wait, and the venue stops answering. Short catch-ups, which outrun the flow, were not affected, which is why no scenario showed it |
+
+**What happened.** Section 3.4 of [following_the_wal.md](availability/following_the_wal.md) has a round end at
+the limit the reading thread read when the round started. The owning thread then compares the position
+reached with the limit now, counts a round that falls short, and after three in a row pauses reading new
+orders, so that the next round ends the hand-over. The TLA+ model of the hand-over
+([framework/tla/findings.md](framework/tla/findings.md), section 4) reads the limit once a round, as designed.
+`WalReadingThread::send_batch` instead read the limit at the start of every batch of 256 records. While
+records were released at least as fast as the follower took them, the reading thread kept finding more to
+send, a round never ended, nothing was reported, nothing was counted as short, and the pause never came. In
+the measurement the engine was replaying its backlog at about 670 orders a second while 1,600 a second
+arrived.
+
+**The fix.** `round_limit` is read from the published positions when the reading thread is told to serve a
+follower and when it is told to carry on, and every batch of the round sends up to it.
+
+**How it was checked.** The same measurement after the fix: every order of the fill, the probe and the
+three events was answered. No automated test covers it: it needs the reading thread to be slower than the
+records being released, which a test machine does not arrange reliably. The code now does what the model
+specifies.
+
+### BUG-0165: The raw-bytes burst test can count the same frames twice, and so fails now and then {#bug_0165}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-15 |
+| Recorded | 2026-10-15 |
+| Fixed | 2026-10-15 -- the listener decodes by position in the whole stream of bytes received, so bytes already decoded are never decoded again |
+| How | `scripts/devsetup.sh` stopped in `RawBytesProtocolHandlerIntegrationTest.BurstDelivery`: "received_payloads.size() Which is: 6, expected_count Which is: 5", followed by "terminate called without an active exception". The test then passed 30 times in a row |
+| Impact | In the tests only: the developer loop stops now and then for no fault in the framework. The framework's handling of raw bytes is not affected |
+
+**What happens.** The test's listener (`BurstListenerThread::on_raw_socket_message`) remembers how far into
+the received bytes it has decoded, and starts again from the beginning whenever the tail position it is
+given has moved, on the reasoning that a moved tail means a commit has removed what it decoded. That holds
+for one commit at a time, but not for two. The listener decodes some frames and commits them; a delivery
+already queued, with the old tail, is decoded from where it left off, and those frames are committed too;
+then a delivery made after the reactor acted on the first commit but before it acted on the second arrives
+with a moved tail, still holding the frames of the second commit. The listener decodes it from the
+beginning, and counts those frames again. The failed assertion then leaves the reactor's thread running,
+which ends the process.
+
+**What is wanted.** The listener should work out how much of the window it has already decoded from the
+tail position and the bytes it has committed, not from whether the tail has moved, and the test should stop
+the reactor before a failed assertion leaves it running.
+
+**The fix.** The tail position the framework gives with each delivery is the position, in the whole stream
+of bytes received, of the first byte in the window; it only grows. The listener now keeps the stream position
+it has decoded up to, and the position it has committed up to, and decodes each delivery from wherever
+decoding has reached, whatever window it is given. A delivery that still holds bytes already decoded has
+those bytes passed over. The race needs one order of deliveries that a run reaches rarely, so the fix rests
+on that reasoning: the test then passed 300 times in a row, which the old one also did often.
+
+**Principles.** None; a fault in a test.
 
 ### BUG-0162: The lock-free allocators and queues have no model checked by TLA+, as the high availability rules have {#bug_0162}
 

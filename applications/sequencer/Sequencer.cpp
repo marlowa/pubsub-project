@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -104,8 +105,9 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
     // background cores, so the CPU layout needs no core for it. It sends a rejoining follower sequencer
     // the records it lacks as ReplicatedRecord messages, exactly as the replicated WAL sends new ones.
     if (config_.ha_enabled && !config_.replay_mode) {
+        // In the order of their numbers: SequencerThread::peer_converter, then SequencerThread::engine_converter.
         std::vector<pubsub_itc_fw::WalRecordConverter> converters;
-        converters.emplace_back([](int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> std::optional<int16_t> {
+        converters.emplace_back([](int64_t seq_no, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> pubsub_itc_fw::ConvertedRecord {
             pubsub_itc_fw::ReplicatedRecord record{};
             record.seq_no = seq_no;
             record.leader_epoch = entry.leader_epoch;
@@ -118,11 +120,37 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
             out.resize(needed);
             if (!pubsub_itc_fw::encode(record, out.data(), out.size(), written, needed)) {
                 out.clear();
-                return std::nullopt;
+                return pubsub_itc_fw::ConvertedRecord::damaged();
             }
             out.resize(written);
-            return pubsub_itc_fw::ReplicatedRecord::message_pdu_id;
+            return pubsub_itc_fw::ConvertedRecord::send(pubsub_itc_fw::ReplicatedRecord::message_pdu_id);
         });
+        // A matching engine is sent each order and cancel as the same WalRecord the sequencer's thread
+        // would send it, and nothing else. A WalRecord that does not decode may have been an order, so it is
+        // found damaged: the engine is then not handed over, and the sequencer says why
+        // (SequencerThread::follower_cannot_be_served). The arena is the reading thread's own: only it calls this.
+        auto engine_arena = std::make_shared<std::vector<uint8_t>>(64 * 1024);
+        converters.emplace_back(
+            [engine_arena](int64_t /*seq_no*/, const pubsub_itc_fw::WalEntryContents& entry, std::vector<uint8_t>& out) -> pubsub_itc_fw::ConvertedRecord {
+                pubsub_itc_fw_app::WalRecord envelope{};
+                const EngineRecordFromWal found = engine_record_from_wal(entry.pdu_id, entry.bytes, entry.size, *engine_arena, envelope);
+                if (found == EngineRecordFromWal::NotDecodable) {
+                    return pubsub_itc_fw::ConvertedRecord::damaged();
+                }
+                if (found != EngineRecordFromWal::ForEngine) {
+                    return pubsub_itc_fw::ConvertedRecord::pass_over();
+                }
+                size_t written = 0;
+                size_t needed = 0;
+                static_cast<void>(pubsub_itc_fw_app::encode(envelope, nullptr, 0, written, needed));
+                out.resize(needed);
+                if (!pubsub_itc_fw_app::encode(envelope, out.data(), out.size(), written, needed)) {
+                    out.clear();
+                    return pubsub_itc_fw::ConvertedRecord::damaged();
+                }
+                out.resize(written);
+                return pubsub_itc_fw::ConvertedRecord::send(pubsub_itc_fw_app::WalRecord::message_pdu_id);
+            });
         pubsub_itc_fw::QueueConfiguration queue_configuration{};
         queue_configuration.low_watermark = 1;
         queue_configuration.high_watermark = 64;
@@ -149,7 +177,7 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     if (config_.ha_enabled) {
         // Pre-warmed standby connection to ME-secondary. Promoted to the active
-        // ME order connection when ME-secondary sends a MePositionRequest on failover.
+        // ME order connection when ME-secondary sends a WalFollowRequest on failover.
         service_registry_.add("matching_engine_secondary",
                               pubsub_itc_fw::NetworkEndpointConfiguration{config_.matching_engine_secondary_host, config_.matching_engine_secondary_port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});

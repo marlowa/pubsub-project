@@ -135,8 +135,8 @@ dropped, and one further on is a gap, which the follower side treats by asking a
 record it holds, and reports as a warning in the Quill log.
 
 These four messages are new, and belong to the library's message file, `replication_messages.dsl`.
-`MePositionRequest`, `MePositionAck`, `WalSubscribeRequest` and `WalSubscribeAck` are removed once their
-users have moved (decision 2).
+The matching engine uses them, and `WalSubscribeRequest` and `WalSubscribeAck` are removed once the
+publishers have moved to them too (decision 2).
 
 ### 3.2 The reading thread
 
@@ -250,7 +250,7 @@ The application is told, on its own thread:
   sequencer can point its connection to the matching engine at the engine that asked, as it does today
   (`EngineOrderRouting::asked_to_catch_up_while_following`);
 - that a follower has been handed over, so that the sequencer can route new orders to an engine that
-  caught up in order to lead, as it does today on `MePositionAck` (`EngineOrderRouting::caught_up_to_lead`);
+  caught up in order to lead (`EngineOrderRouting::caught_up_to_lead`);
 - that a hand-over has fallen short three times in a row (section 3.4).
 
 ### 3.6 The follower's side
@@ -302,9 +302,8 @@ repair changes; only the thread that reads the missing records.
 The engine's catch-up and the two places where the sequencer sends the engine orders from its WAL
 become one thing: the engine is served from a position, up to the last order released to it.
 
-- **A starting or promoted engine** asks with `WalFollowRequest`, through `WalFollowerClient`, instead
-  of `MePositionRequest`. A promoted engine asks for new records too, and a starting one does not, which
-  is what `asking_to_lead` says today.
+- **A starting or promoted engine** asks with `WalFollowRequest`. A promoted engine asks for new records
+  too (`wants_new_records`), and a starting one does not.
 - **A new leader that learns how far the engine got** (`EnginePosition`) serves the engine from the
   record after that, followed by new orders, instead of reading them itself.
 - **Orders that waited in the WAL** because the storage for held orders was full are no longer read back
@@ -439,6 +438,64 @@ fixed: [BUG-0164](../bug_list.md#bug_0164) and [BUG-0165](../bug_list.md#bug_016
 
 Every scenario that starts, restarts or promotes an engine must pass, among them 10, 16, 24, 50, 53, 54, 59 and 66. The stall
 measurement for an engine's catch-up must show no stall.
+
+**What step 3 built.** The sequencer's reading thread now serves the matching engine in every case where
+the sequencer's own thread used to read the WAL for it:
+
+1. **The engine's catch-up.** A starting or promoted engine asks every sequencer with `WalFollowRequest`,
+   giving the last order it holds. A sequencer that does not lead re-points its own order connection to
+   the engine, declines with `WalFollowDeclined`, and remembers it; when it takes the lead it sends the
+   engine `WalLeaderChanged`, and the engine asks again at once. The leading sequencer has the reading
+   thread serve the engine from that order, up to the last released, with a converter
+   (`engine_record_from_wal`) that sends each order and cancel as the same `WalRecord` the sequencer's own
+   thread sends, and passes over everything else. When the engine is handed over, the sequencer sends
+   `WalFollowCaughtUp` with the order reached, the first record the WAL holds and the count the reading
+   thread sent, which the engine checks (R-0101); an engine that asked to lead then has the orders routed
+   to it. An engine that holds nothing is placed at the last order released and sent nothing.
+2. **After a change of leader,** when the engine says how far it got (`EnginePosition`), the reading
+   thread serves it from the order after that.
+3. **Orders that waited in the WAL** because the storage for held orders was full: the reading thread
+   serves the engine from the first of them. The size of that storage is a setting,
+   `commands.orders_held_at_most`, 16,384 as deployed.
+
+One rule joins the three: while the reading thread is catching an engine up, the sequencer's thread sends
+that engine no order itself (`WalFollowerService::is_being_caught_up`). An order released meanwhile is at or
+below the limit the reading thread serves up to, so the reading thread sends it, and the hand-over happens
+only when the position reached equals the limit. The sequencer publishes the last order released
+(`publish_released_position`) before the service compares the two, so that the comparison is never made
+against a value that is out of date. The reading thread reads the limit once at the start of each round, as
+section 3.4 has it ([BUG-0168](../bug_list.md#bug_0168)). With high availability off there is no reading
+thread, and the sequencer reads the WAL on its own thread, as `send_logged_orders` and the catch-up's own
+path do.
+
+Stopping the follower sequencer's catch-up stops only that serving, with the reading thread's confirmation
+(`WalFollowerService::stop_serving`), so that a matching engine being served goes on being served; every
+serving stops, with confirmation, when the instance stops leading.
+
+A record the reading thread cannot read stops the follower being handed over: the converter says the
+record is damaged (`ConvertedRecord::damaged`), the reading thread stops serving that follower and reports
+the record's number, and the service tells the application (`follower_cannot_be_served`) instead of handing
+the follower over. The sequencer says so as an Error the first time and as Info when the follower asks
+again, and sets the gauge `sequencer_wal_damaged_record` to the record's number until a follower is handed
+over past it. A follower already past the record is served as usual. The sequencer's own catch-up, used
+with high availability off, does the same (`engine_catch_up_from_wal`).
+
+**How it was checked.** Unit tests of the service (a damaged report: no hand-over, nor a caught-up
+message), of `engine_catch_up_from_wal` with a real WAL holding a malformed record, and of the setting for
+the storage; an integration test with real threads in which a follower from before a damaged record is never
+handed over and one past it is; and a new scenario, 75, which fills the storage for held orders and requires
+every order of a burst to be accepted exactly once. Each was made to fail by a deliberate fault first. In the
+last full run, from fresh WALs, 72 of 75 scenarios passed. Scenario 34 failed when a lease promise record
+took 7.6 seconds to write ([BUG-0167](../bug_list.md#bug_0167)). Scenarios 14 and 48 failed in that run and
+the one before it, with no slow write, and passed every time they were run alone (six times between them);
+the cause is not established. The stall measurement, run before the engine moved to the library's messages,
+showed every order answered and an engine's catch-up of 1,034 records taking 56 milliseconds; it has not been
+repeated since. No scenario withholds a record from a real catch-up, so refusing a hand-over past a damaged
+record is shown only by the unit and integration tests.
+
+Two things differ from what is written above. The engine does not use `WalFollowerClient`: it keeps its own
+count check (`CatchUpTally`, R-0101) and its own asking of every sequencer, and only its messages change.
+And the old messages, `MePositionRequest` and `MePositionAck`, are removed rather than kept alongside.
 
 ### 5.4 Step 4: the publishers
 

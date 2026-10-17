@@ -76,9 +76,9 @@ void encode_record(int64_t seq_no, std::vector<uint8_t>& out) {
 }
 
 WalRecordConverter record_converter() {
-    return [](int64_t seq_no, const WalEntryContents& /*entry*/, std::vector<uint8_t>& out) -> std::optional<int16_t> {
+    return [](int64_t seq_no, const WalEntryContents& /*entry*/, std::vector<uint8_t>& out) -> ConvertedRecord {
         encode_record(seq_no, out);
-        return WalAck::message_pdu_id;
+        return ConvertedRecord::send(WalAck::message_pdu_id);
     };
 }
 
@@ -121,7 +121,7 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
     }
 
     // WalFollowerEventsInterface
-    void follower_handed_over(const ConnectionID& follower, int64_t /*through*/) override {
+    void follower_handed_over(const ConnectionID& follower, int64_t /*through*/, int64_t /*records_sent*/) override {
         // From the next record released after now: the follower holds everything up to the limit now.
         handed_over_[follower.get_value()] = limits_[follower.get_value()];
     }
@@ -130,6 +130,7 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
         falling_behind_count.fetch_add(1, std::memory_order_acq_rel);
         skip_next_tick_ = true;
     }
+    void follower_cannot_be_served(const ConnectionID& /*follower*/, int64_t /*damaged_seq_no*/) override {}
     void declined_while_not_leading(const ConnectionID& /*follower*/) override {}
     void reading_stopped() override {}
 
@@ -169,7 +170,7 @@ class OwnerThread : public ApplicationThread, public WalFollowerLinksInterface, 
         const FollowerLimit limit = request.follower_name == "written" ? FollowerLimit::LastWritten : FollowerLimit::LastCommitted;
         limits_[message.connection_id().get_value()] = limit;
         handed_over_.erase(message.connection_id().get_value());
-        service_->on_follow_request(message.connection_id(), request, true, limit, 0);
+        service_->on_follow_request(message.connection_id(), request, Leading::Leads, limit, 0);
     }
 
     void on_itc_message(const EventMessage& message) override {
@@ -266,11 +267,13 @@ class FollowerThread : public ApplicationThread, public WalFollowerClientLinksIn
     std::atomic<int64_t> above_limit{0};
 
     // @p limit is the owner's committed position, which this follower must never be sent past, or null
-    // for a follower served up to the last written record.
-    FollowerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, ThreadID id, const std::string& name, const std::atomic<int64_t>* limit)
+    // for a follower served up to the last written record. @p start is the last record it holds already.
+    FollowerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, ThreadID id, const std::string& name, const std::atomic<int64_t>* limit,
+                   int64_t start = 0)
         : ApplicationThread(token, logger, reactor, "Follower-" + name, id, make_queue_config(), make_allocator_config("FollowerPool-" + name),
                             ApplicationThreadConfiguration{})
-        , client_(name, true, 0, *this)
+        , last_accepted(start)
+        , client_(name, true, start, *this)
         , limit_(limit) {}
 
     void send_follow_request(const ConnectionID& to, const WalFollowRequest& request) override {
@@ -362,8 +365,9 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
         send_pdu(to, WalFollowCaughtUp::message_pdu_id, 0, caught_up);
     }
     void send_leader_changed(const ConnectionID& /*to*/, const WalLeaderChanged& /*changed*/) override {}
-    void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/) override {}
+    void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/, int64_t /*records_sent*/) override {}
     void hand_over_falling_behind(const ConnectionID& /*follower*/) override {}
+    void follower_cannot_be_served(const ConnectionID& /*follower*/, int64_t /*damaged_seq_no*/) override {}
     void declined_while_not_leading(const ConnectionID& /*follower*/) override {}
     void reading_stopped() override {}
 
@@ -393,7 +397,7 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
             request.follower_name = "follower";
             request.last_seq_no = published;
             request.wants_new_records = false;
-            service_->on_follow_request(follower_, request, true, FollowerLimit::LastCommitted, 0);
+            service_->on_follow_request(follower_, request, Leading::Leads, FollowerLimit::LastCommitted, 0);
         }
     }
 
@@ -409,7 +413,7 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
             return;
         }
         follower_ = message.connection_id();
-        service_->on_follow_request(message.connection_id(), request, true, FollowerLimit::LastCommitted, 0);
+        service_->on_follow_request(message.connection_id(), request, Leading::Leads, FollowerLimit::LastCommitted, 0);
     }
 
     void on_itc_message(const EventMessage& message) override {
@@ -425,6 +429,91 @@ class PartlyPublishedOwnerThread : public ApplicationThread, public WalFollowerL
     ConnectionID follower_;
     std::unique_ptr<WalFollowerService> service_;
 };
+
+// Writes 100 records and publishes them all; its reading thread finds record 60 damaged
+// (damaging_converter). A follower asking from before it must be sent the records before it and never
+// told it caught up; one asking from 60 or later must be served and handed over as usual.
+class DamagedRecordOwnerThread : public ApplicationThread, public WalFollowerLinksInterface, public WalFollowerEventsInterface {
+  public:
+    static constexpr int64_t records = 100;
+    static constexpr int64_t damaged_record = 60;
+    std::atomic<bool> ready{false};
+    std::atomic<int64_t> cannot_be_served_count{0};
+    std::atomic<int64_t> damaged_seq_no_reported{0};
+    std::atomic<int64_t> handed_over_count{0};
+
+    DamagedRecordOwnerThread(ConstructorToken token, QuillLogger& logger, Reactor& reactor, std::string directory, WalFollowingPositions& positions)
+        : ApplicationThread(token, logger, reactor, "OwnerThread", owner_thread_id, make_queue_config(), make_allocator_config("OwnerPool"),
+                            ApplicationThreadConfiguration{})
+        , directory_(std::move(directory))
+        , positions_(positions) {}
+
+    void send_to_reading_thread(std::unique_ptr<WalReadingCommand> command) override {
+        post_message(reading_thread_id, carry(get_thread_id(), std::move(command)));
+    }
+    void send_declined(const ConnectionID& /*to*/, const WalFollowDeclined& /*declined*/) override {}
+    void send_caught_up(const ConnectionID& to, const WalFollowCaughtUp& caught_up) override {
+        send_pdu(to, WalFollowCaughtUp::message_pdu_id, 0, caught_up);
+    }
+    void send_leader_changed(const ConnectionID& /*to*/, const WalLeaderChanged& /*changed*/) override {}
+    void follower_handed_over(const ConnectionID& /*follower*/, int64_t /*through*/, int64_t /*records_sent*/) override {
+        handed_over_count.fetch_add(1, std::memory_order_acq_rel);
+    }
+    void hand_over_falling_behind(const ConnectionID& /*follower*/) override {}
+    void follower_cannot_be_served(const ConnectionID& /*follower*/, int64_t damaged_seq_no) override {
+        damaged_seq_no_reported.store(damaged_seq_no, std::memory_order_release);
+        cannot_be_served_count.fetch_add(1, std::memory_order_acq_rel);
+    }
+    void declined_while_not_leading(const ConnectionID& /*follower*/) override {}
+    void reading_stopped() override {}
+
+  protected:
+    void on_initial_event() override {
+        wal_.open(directory_, segment_size);
+        const uint8_t byte = 0;
+        for (int64_t seq_no = 1; seq_no <= records; ++seq_no) {
+            wal_.append(seq_no, 1, &byte, 1, 0, 1);
+        }
+        positions_.publish_written(records, wal_.write_position());
+        positions_.publish_committed(records);
+        service_ = std::make_unique<WalFollowerService>(get_logger(), wal_, positions_, *this, *this);
+        ready.store(true, std::memory_order_release);
+    }
+
+    void on_framework_pdu_message(const EventMessage& message) override {
+        if (message.pdu_id() != WalFollowRequest::message_pdu_id) {
+            return;
+        }
+        BumpAllocator arena(decode_arena_buffer().data(), decode_arena_buffer().capacity());
+        size_t consumed = 0;
+        size_t arena_needed = 0;
+        WalFollowRequestView request{};
+        if (!decode(request, message.payload(), static_cast<size_t>(message.payload_size()), consumed, arena, arena_needed)) {
+            return;
+        }
+        service_->on_follow_request(message.connection_id(), request, Leading::Leads, FollowerLimit::LastCommitted, 0);
+    }
+
+    void on_itc_message(const EventMessage& message) override {
+        static_cast<void>(service_->on_inter_thread_message(message));
+    }
+
+  private:
+    std::string directory_;
+    WalFollowingPositions& positions_;
+    Wal wal_;
+    std::unique_ptr<WalFollowerService> service_;
+};
+
+// As record_converter, but finds DamagedRecordOwnerThread::damaged_record damaged.
+WalRecordConverter damaging_converter() {
+    return [](int64_t seq_no, const WalEntryContents& entry, std::vector<uint8_t>& out) -> ConvertedRecord {
+        if (seq_no == DamagedRecordOwnerThread::damaged_record) {
+            return ConvertedRecord::damaged();
+        }
+        return record_converter()(seq_no, entry, out);
+    };
+}
 
 bool wait_for(const std::function<bool()>& condition, std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -558,6 +647,64 @@ TEST(WalFollowingIntegrationTest, TheReadingThreadNeverReadsPastThePublishedWrit
         << "reached " << follower->last_accepted.load();
     EXPECT_EQ(follower->out_of_order.load(), 0);
     EXPECT_EQ(follower->gaps.load(), 0);
+
+    follower_reactor->shutdown("test complete");
+    owner_reactor->shutdown("test complete");
+    if (follower_reactor_thread.joinable()) {
+        follower_reactor_thread.join();
+    }
+    if (owner_reactor_thread.joinable()) {
+        owner_reactor_thread.join();
+    }
+    tests_common::remove_scratch_directory(directory);
+}
+
+// A record the reading thread cannot read may have been one the follower needed, so a follower asking from
+// before it is sent the records before it and is never told it caught up, nor handed over; the owning
+// thread is told which record it was. A follower asking from that record or later is served as usual.
+TEST(WalFollowingIntegrationTest, AFollowerIsNeverHandedOverPastADamagedRecordButOneAlreadyPastItIs) {
+    const std::chrono::milliseconds timeout{30000};
+    LoggerWithSink logger(FwLogLevel::Info);
+    const std::string directory = tests_common::make_scratch_directory("wal_following_damaged_record");
+    WalFollowingPositions positions;
+
+    const ServiceRegistry owner_registry;
+    auto owner_reactor = std::make_unique<Reactor>(reactor_configuration(), owner_registry, logger.logger);
+    owner_reactor->register_inbound_listener(NetworkEndpointConfiguration{"127.0.0.1", 0}, owner_thread_id);
+    auto owner = ApplicationThread::create<DamagedRecordOwnerThread>(logger.logger, *owner_reactor, directory, positions);
+    auto reading = ApplicationThread::create<WalReadingThread>(logger.logger, *owner_reactor, "WalReadingThread", reading_thread_id, make_queue_config(),
+                                                               make_allocator_config("ReadingPool"), owner_thread_id, directory, positions,
+                                                               std::vector<WalRecordConverter>{damaging_converter()});
+    owner_reactor->register_thread(owner);
+    owner_reactor->register_thread(reading);
+    ThreadWithJoinTimeout owner_reactor_thread([&]() { owner_reactor->run(); });
+    ASSERT_TRUE(wait_for([&]() { return owner->ready.load(std::memory_order_acquire) && owner_reactor->is_initialized(); }, timeout));
+    const uint16_t port = owner_reactor->get_inbound_listener_port(0);
+
+    ServiceRegistry follower_registry;
+    follower_registry.add("owner", NetworkEndpointConfiguration{"127.0.0.1", port}, NetworkEndpointConfiguration{});
+    auto follower_reactor = std::make_unique<Reactor>(reactor_configuration(), follower_registry, logger.logger);
+    auto before = ApplicationThread::create<FollowerThread>(logger.logger, *follower_reactor, ThreadID{1}, "before", nullptr, int64_t{0});
+    auto past = ApplicationThread::create<FollowerThread>(logger.logger, *follower_reactor, ThreadID{2}, "past", nullptr,
+                                                          int64_t{DamagedRecordOwnerThread::damaged_record});
+    follower_reactor->register_thread(before);
+    follower_reactor->register_thread(past);
+    ThreadWithJoinTimeout follower_reactor_thread([&]() { follower_reactor->run(); });
+
+    // Waits from here on are EXPECTs, not ASSERTs, so that a failure still reaches the shutdown below: an
+    // ASSERT would return with both reactors running, and their threads would crash as the test ends.
+    // The follower already past the damaged record is served the rest, and handed over.
+    EXPECT_TRUE(wait_for([&]() { return past->times_caught_up.load(std::memory_order_acquire) >= 1; }, timeout));
+    EXPECT_EQ(past->last_accepted.load(), DamagedRecordOwnerThread::records);
+    EXPECT_EQ(past->out_of_order.load(), 0);
+
+    // The follower from before it is sent every record before it, and the owner is told which record could not be read.
+    EXPECT_TRUE(wait_for([&]() { return owner->cannot_be_served_count.load(std::memory_order_acquire) >= 1; }, timeout));
+    EXPECT_EQ(owner->damaged_seq_no_reported.load(), DamagedRecordOwnerThread::damaged_record);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300)); // time for anything more to arrive, which must not
+    EXPECT_EQ(before->last_accepted.load(), DamagedRecordOwnerThread::damaged_record - 1);
+    EXPECT_EQ(before->times_caught_up.load(), 0) << "a follower was told it caught up past a record that could not be read";
+    EXPECT_EQ(owner->handed_over_count.load(), 1) << "only the follower already past the damaged record may be handed over";
 
     follower_reactor->shutdown("test complete");
     owner_reactor->shutdown("test complete");

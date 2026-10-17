@@ -43,7 +43,8 @@ namespace pubsub_itc_fw {
  * - **It sends only as fast as the connection takes the records:** a batch at a time, asking after
  *   each to be told when the connection can take more.
  *
- * When it has sent every record up to the limit as it last read it, it reports the position to the
+ * It reads the follower's limit once at the start of each round, when it is told to serve the follower
+ * or to carry on, and when it has sent every record up to that limit it reports the position to the
  * owning thread and sends nothing more to that follower until told to carry on.
  *
  * It owns no connection and takes no lock. It stays on the component's background cores, so it needs
@@ -92,6 +93,8 @@ class WalReadingThread : public ApplicationThread {
         int64_t last_sent_seq_no{0}; ///< The follower holds or has been sent every record up to here.
         int64_t records_sent{0};
         uint64_t serving{0};
+        /// The follower's limit as it was read when this round started; the round ends at it.
+        int64_t round_limit{0};
         bool sending{false};
         /// A record read and found above the limit, held until the limit passes it. Its bytes stay
         /// valid because nothing more is read from the cursor while it is held.
@@ -105,6 +108,8 @@ class WalReadingThread : public ApplicationThread {
     void send_batch(Follower& follower);
     [[nodiscard]] bool read_next_record(Follower& follower, WalPosition written);
     void report(std::unique_ptr<WalReadingReport> report_to_send);
+    // Reports the follower's held record as damaged, and stops serving the follower, whose entry is erased.
+    void report_damaged(Follower& follower);
 
     ThreadID owner_thread_id_;
     std::string wal_directory_;

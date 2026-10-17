@@ -88,6 +88,12 @@ renewal_interval_milliseconds = ${shared_lease_renewal_interval_milliseconds}
 [commands]
 identifiers_reserved = 200000000
 
+# How many orders the leader holds at most while it waits for the follower's acknowledgement or a voter's
+# confirmation. Orders that arrive with this storage full wait in the write-ahead log instead, and are sent
+# to the matching engine from there once released. 16,384 is about half a second at the highest rate
+# measured on this venue, well beyond the follower's acknowledgement timeout. Allocated once at start.
+orders_held_at_most = 16384
+
 [wal_subscriber]
 listen_host = "${sequencer_primary_wal_subscriber_listen_host}"
 listen_port = ${sequencer_primary_wal_subscriber_listen_port}
