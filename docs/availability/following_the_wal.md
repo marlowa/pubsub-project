@@ -338,10 +338,14 @@ The reading thread catches the publisher up and the service hands it over. From 
 own thread sends the publisher each record as it is committed, after the commit's work for the order path,
 releasing orders and forwarding reports, is done. By the time a record is committed that thread no longer
 holds its bytes, so it reads the record back from the WAL it has just written, which is still in memory.
-It does this through the library's `WalHandedOverFollowers`, which keeps one cursor for each publisher,
-started where the reading thread stopped reading for it (`WalReadingReport::resume_at`), so that nothing
-is searched for. This is a read of the WAL on the sequencer's own thread, of records it wrote moments
-before; step 5's list of permitted reads must include it.
+It does this through the library's `WalHandedOverFollowers`. Reading a record back checks its checksum,
+which is most of what sending costs, so each record is read once whatever the number of publishers: one
+shared reading reads it, converts it once and sends the result to every publisher in step with it. A
+publisher that has just been handed over first reads on a cursor of its own, started where the reading thread
+stopped reading for it (`WalReadingReport::resume_at`), so that nothing is searched for, and joins the shared
+reading once it holds every record the shared reading has read; in normal running that is at the next
+commit. This is a read of the WAL on the sequencer's own thread, of records it wrote moments before, and it is
+in step 5's table of permitted reads ([BUG-0171](../bug_list.md#bug_0171)).
 
 Both threads turn a record into what a publisher is sent with the same function,
 `publisher_record_from_wal`: every record, as the `WalRecord` envelope the WAL holds. A record that is not
@@ -565,7 +569,8 @@ measurement, with 1.2 million records in the WAL, showed no stall when a publish
 WAL: the longest wait for an order's first report in the ten seconds after was 5.5 milliseconds, against 5.2
 before ([BUG-0156](../bug_list.md#bug_0156)). `perf` on the leading sequencer's thread during a fill showed
 the reading back of committed records costing about a fifth of that thread's time
-([BUG-0171](../bug_list.md#bug_0171)). With high availability off a publisher is still caught up on the
+([BUG-0171](../bug_list.md#bug_0171)). Each record is now read once whatever the number of publishers, which
+halved the checking of checksums and brought that share down to about a sixth. With high availability off a publisher is still caught up on the
 sequencer's own thread ([BUG-0172](../bug_list.md#bug_0172)).
 
 **The order's round trip** was measured as in phase 4, swapping the installed binaries between the build
@@ -587,7 +592,7 @@ commit's work for the order path.
 
 ### 5.5 Step 5: the build refuses a new read
 
-`scripts/check_standards.py` refuses any use of `WalReader` or `WalCursor` in the sequencer outside a
+`scripts/check_standards.py` refuses any read of the WAL in the sequencer outside a
 table of permitted uses, in the same way as its table of permitted locks, each entry with its reason:
 replay mode, which runs with nothing else; the resends and undelivered reports, naming BUG-0113; and the
 duplicate check's `LogTailIndex`, naming BUG-0122 and phase 8; and the records sent to a publisher after
@@ -597,6 +602,34 @@ check has to look at what the sequencer constructs, not only at the readers it n
 purpose before it is relied on. The documents that describe the catch-ups (`sequencer.md`, `wal_and_ha.md`,
 `follower_log_repair.md`, `change_of_sequencer_leader.md`, `docs/pubsub/mep_oar.md` and
 `design_principles.md` for F4) are brought up to date.
+
+**What step 5 built.** Check 30 of `scripts/check_standards.py` fails on any read of the WAL in
+`applications/sequencer` that is not in its table `_PERMITTED_WAL_READS`. A read is a use of anything in its
+list `_WAL_READERS`: the library's classes that read the WAL (`WalReader`, `WalCursor` and
+`WalHandedOverFollowers`), and the sequencer's own functions and members that read it with one of them
+(`LogTailIndex`, `LoggedCommandIdentifiersBuilder`, `engine_catch_up_from_wal`, `send_logged_orders`, and the
+members holding the first two and the publishers' `WalHandedOverFollowers`). Listing the sequencer's own
+readers means that a new call to a function that already reads the WAL is refused, not only a new use of a
+library class. Each entry of the table names the function, or in a header the word on the line, that it
+permits, and gives its reason:
+
+- replay mode, which runs with nothing else;
+- resends and requests for undelivered reports ([BUG-0113](../bug_list.md#bug_0113));
+- the duplicate check ([BUG-0122](../bug_list.md#bug_0122), phase 8);
+- the record of command identifiers, built on a thread of its own on the background cores;
+- records read back for publishers already handed over ([BUG-0171](../bug_list.md#bug_0171));
+- every catch-up with high availability off ([BUG-0172](../bug_list.md#bug_0172));
+- orders counted as deferred while no matching engine is connected
+  ([BUG-0174](../bug_list.md#bug_0174)), which listing the reads found.
+
+An entry that no longer matches any read is reported too, so that the table cannot go on permitting a read
+that has been removed.
+
+**How it was checked.** With the table complete the check passes. It was made to fail on purpose by adding,
+one at a time, a use of `WalCursor`, a call of `send_logged_orders`, a call of the publishers' `send_to_all`
+and a call of `WalReader::replay` to a function not in the table; each was refused, naming the function. A
+mention of `WalReader` in a comment was not. An entry naming a function that does not exist was reported as
+matching nothing.
 
 After every step, every high availability scenario must pass, the library's tests must pass, and the
 order's round trip is measured before and after, as in phase 4.

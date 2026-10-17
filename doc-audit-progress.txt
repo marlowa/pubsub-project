@@ -44,7 +44,10 @@ The audit continues with the rest of the availability directory meanwhile; these
    recorder under its old name (`applications/tap/`), has been replaced by the OAR design documents
    under review. Should it move to `docs/superseded/`, or be cut down to what is still true? The
    other OAR documents (`mep_oar.md`, `oar_external_stream.md`, `oar_bus_deduplication.md`,
-   `flow_control.md`) are left unaudited while the OAR design is under review with Andrew.
+   `flow_control.md`) are left unaudited while the OAR design is under review with Andrew. In
+   `mep_oar.md`, sections 4, 5.2, 5.3 and 6.2, and the publisher's callbacks in section 6, were
+   brought up to date on 17 October 2026 by step 5 of phase 5, because step 4 removed the messages
+   they described; the rest of it is still unaudited.
 ## Building and testing on Rocky 8 in Docker (started, blocked)
 
 Asked for on 7 October 2026: build, release, deploy and test with `scripts/devsetup.sh` inside the

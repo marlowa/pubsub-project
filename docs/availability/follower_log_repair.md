@@ -171,19 +171,17 @@ sequencer's by subscription, already starting from the position they hold.
 | 4.2 gap check | None | A check of the log at startup, which reads it already |
 | 4.3 finding the agreed record | None | One exchange, sometimes two, when a follower connects |
 | 4.4 discarding | None | A new log operation, used only by a rejoining follower |
-| 4.5 sending what it missed | The order path waits while the leader reads its log | Proportional to the records the follower missed, from the start of the segment holding the first of them |
+| 4.5 sending what it missed | None: the leader's reading thread reads and sends the records, not the thread that sequences orders | Proportional to the records the follower missed, from the start of the segment holding the first of them, on the reading thread |
 
-## 7. Open question
+## 7. Where the missed records are read
 
-**Reading the log on the sequencer thread.** The leader reads the records the follower missed on the
-sequencer thread, and the order path waits while it does. Reading starts at the segment holding the first
-of them, so the cost is proportional to what the follower missed rather than to the size of the log. A
-follower that has been down for long in a busy day misses many records: at 50 million orders a day,
-an hour's absence is several million records, and the startup measurement recorded under
-[BUG-0107](../bug_list.md#bug_0107) puts reading 5.5 million records at 2.6 seconds with the files
-already in memory. Reading and sending from a thread of its own, handing the leader the point where it
-stops so that live records follow without a gap, would remove the wait. The publishers' and the matching
-engine's catch-ups, which still read their log from its start, have the same question.
+The leader reads the records the follower missed on its reading thread, a thread of its own, and not on
+the thread that sequences orders, so the order path does not wait while it does
+([following_the_wal.md](following_the_wal.md), section 4.1). Reading starts at the segment holding the first
+of them, so the cost is proportional to what the follower missed rather than to the size of the log. With
+1.2 million records missed, the longest wait for an order's first report during the repair was 10.2
+milliseconds, and the follower received every record in 8.4 seconds. The matching engine and the publishers
+are caught up by the same reading thread.
 
 ## 8. Tests
 

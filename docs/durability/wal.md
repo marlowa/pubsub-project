@@ -24,11 +24,10 @@ allowed to be the source of truth for anything the WAL already records.
 Two consequences follow, and they shape the whole design:
 
 1. **Reading is trivial and total.** Recovery, replication, and pub/sub replay are all the
-   same operation at bottom: read records from sequence number *N* onward. The venue does not
-   yet have one path for it: a follower's repair, the matching engine's catch-up and the
-   publishers' subscriptions each have code of their own, all run on the sequencer's thread
-   ([BUG-0133](../bug_list.md#bug_0133)); one way of following the log is part of the design in
-   [ha_library_boundary.md](../availability/ha_library_boundary.md), section 4.
+   same operation at bottom: read records from sequence number *N* onward. The library has one
+   way of doing it, on a thread of its own: a follower sequencer's repair, the matching engine's
+   catch-up and the publishers' subscriptions all use it
+   ([following_the_wal.md](../availability/following_the_wal.md)).
 2. **Appending is the only privileged act.** Whoever may append is a policy decision that
    lives *outside* the log (leadership, for the sequencer; leadership again, for the
    publisher). The log itself does not know or care who the writer is — it only guarantees

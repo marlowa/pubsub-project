@@ -30,7 +30,7 @@ been shown to work, what is known to be wrong, and where anyone picking it up sh
 
 ## What is known to be wrong
 
-The [bug list](bug_list.md) holds 68 open entries, 15 of them high severity. The ones most likely to
+The [bug list](bug_list.md) holds 69 open entries, 15 of them high severity. The ones most likely to
 matter first, by design area:
 
 - **The specification is mostly untested.** 30 of 148 requirements are verified by a scenario
@@ -70,11 +70,12 @@ voting service into the library, is finished; its design is
 replicated WAL with one writing thread, is finished: the sequencer keeps its WAL through the library's
 `ReplicatedWal`, whose thread is the only one that writes it. Its design is
 [replicated_wal_in_the_library.md](availability/replicated_wal_in_the_library.md). Phase 5, following
-the WAL, has an agreed design, [following_the_wal.md](availability/following_the_wal.md), and its first four
+the WAL, has an agreed design, [following_the_wal.md](availability/following_the_wal.md), and all five of its
 steps are built: the library's way of following a WAL, and the follower sequencer's repair, the matching
 engine's catch-up and the matching engine publishers' following of the WAL through it, so that neither a
 rejoining follower, a catching-up engine nor a publisher starting late in the day stops the venue answering
-orders, and a publisher is sent only records the venue's record holds. New features, including pub/sub, the order activity recorder and the trading phases, wait
+orders, and a publisher is sent only records the venue's record holds; and the build refuses any new read of
+the WAL in the sequencer. It awaits Andrew's review. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start

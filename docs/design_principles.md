@@ -185,7 +185,15 @@ of time by the log's helper thread, which keeps several segments ready (see belo
 outcome at a later lease tick, without a lock and without waiting; a promise to the peer that the record on disk does not
 yet cover is refused until the write has finished.
 
-**What checks it.** Nothing in the build. Two metrics show whether the log's helper keeps pace:
+**Reading the log for another component.** A component that follows the sequencer's log (the follower
+sequencer when it rejoins, a matching engine when it starts or is promoted, and the matching engine
+publishers) is sent the records it lacks by the leading sequencer's reading thread, a thread of its own, and
+not by the thread that sequences orders. Records older than a few segments may no longer be in memory, so
+reading them can wait for the disk ([following_the_wal.md](availability/following_the_wal.md)).
+
+**What checks it.** Check 30 of `scripts/check_standards.py` fails the build on any read of the log in the
+sequencer that is not in its table of permitted reads, `_PERMITTED_WAL_READS`, each entry with its reason.
+Nothing in the build checks the rest of this principle. Two metrics show whether the log's helper keeps pace:
 `wal_segments_waited_for` counts the times the writing thread had to wait for the helper to finish a
 segment, and `wal_segments_filled_inline` counts the segments the writing thread created itself. The
 first should be 0, and the second 1, for the first segment at start-up, which nothing can prepare in
@@ -199,8 +207,14 @@ segments with records. If the helper has failed, the writing thread creates and 
 segment itself. That is the one accepted exception to this principle: it is counted, logged as a
 warning, and treated as an incident.
 
-**Today: broken in one place, uncommon.**
+**Today: broken in two places.**
 
+- The sequencer's thread still reads its log in the cases its table of permitted reads lists: resends and
+  requests for undelivered reports ([BUG-0113](bug_list.md#bug_0113)), the duplicate check
+  ([BUG-0122](bug_list.md#bug_0122)), records read back for publishers already handed over
+  ([BUG-0171](bug_list.md#bug_0171)), every catch-up with high availability off
+  ([BUG-0172](bug_list.md#bug_0172)), and orders counted as deferred while no matching engine is connected
+  ([BUG-0174](bug_list.md#bug_0174)).
 - The log's helper keeps only one segment ready. If it is still filling that segment when the writer
   needs it, the writer waits for it, spinning until it finishes; and the writer creates a segment
   itself, if the helper has failed, without logging a warning. Recorded as
@@ -692,14 +706,13 @@ recorder would read a log that disagrees with the one the venue acted on. And th
 follower holds everything again (V4) only once it knows the two logs agree.
 
 **Where it holds.** In the follower's log repair ([follower_log_repair.md](availability/follower_log_repair.md)),
-in `SequencerThread`.
+in the library's `ReplicatedWal`, which has the leading sequencer's reading thread send the follower the records
+it missed ([following_the_wal.md](availability/following_the_wal.md)).
 
 **What checks it.** `ha_test.py` scenario 62, and the scenarios in section 8 of the repair design, each
 of which was made to fail with the repair disabled.
 
-**Today: holds, with one reservation.** The leader reads the records the follower missed on the
-thread that sequences orders, so orders wait while it does, for seconds after a long absence:
-[BUG-0133](bug_list.md#bug_0133).
+**Today: holds.**
 
 ### V11. A fault in the standby is a loss of resilience, not a loss of service
 
@@ -733,8 +746,6 @@ follower that fell behind from leading later. Decided in section 7 of
   the record ([BUG-0135](bug_list.md#bug_0135)).
 - Whether any copy of the log outside the leader's machine could recover what is lost with it is not
   known ([BUG-0136](bug_list.md#bug_0136)).
-- When the follower sequencer returns after a long absence, trading stalls for seconds while the leader
-  reads the records it missed ([BUG-0133](bug_list.md#bug_0133)).
 
 ### V12. Every trading day starts fresh
 

@@ -1,6 +1,7 @@
 // Copyright (c) 2024-2026 Andrew Peter Marlow. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -84,9 +85,11 @@ class WalHandedOverFollowersTest : public ::testing::Test {
         return WalPosition{};
     }
 
-    // Sends every record as one message of sent_type, except those listed as damaged or passed over.
+    // Sends every record as one message of sent_type, except those listed as damaged or passed over. Each record
+    // converted is added to converted_, so that a test can see how many times each record was read.
     WalRecordConverter converter(std::vector<int64_t> damaged = {}, std::vector<int64_t> passed_over = {}) {
-        return [damaged, passed_over](int64_t seq_no, const WalEntryContents& entry, std::vector<uint8_t>& out) -> ConvertedRecord {
+        return [this, damaged, passed_over](int64_t seq_no, const WalEntryContents& entry, std::vector<uint8_t>& out) -> ConvertedRecord {
+            converted_.push_back(seq_no);
             for (const int64_t number : damaged) {
                 if (number == seq_no) {
                     return ConvertedRecord::damaged();
@@ -106,8 +109,10 @@ class WalHandedOverFollowersTest : public ::testing::Test {
     std::optional<Wal> wal_;
     int64_t last_seq_no_{0};
     RecordingLinks links_;
+    std::vector<int64_t> converted_;
     const ConnectionID first_{1};
     const ConnectionID second_{2};
+    const ConnectionID third_{3};
 };
 
 } // un-named namespace
@@ -230,6 +235,103 @@ TEST_F(WalHandedOverFollowersTest, ARemovedFollowerIsSentNothingAndOneAddedAgain
     EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{3, 4, 7, 8}));
     followers.remove_all();
     EXPECT_TRUE(followers.empty());
+}
+
+TEST_F(WalHandedOverFollowersTest, FollowersInStepHaveEachRecordReadAndConvertedOnce) {
+    append_through(4);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_);
+    followers.add(first_, 4, wal_->scan_start_for(5));
+    followers.add(second_, 4, wal_->scan_start_for(5));
+    static_cast<void>(followers.send_to_all(4)); // both join the shared reading
+    converted_.clear();
+
+    for (int64_t seq_no = 5; seq_no <= 60; ++seq_no) {
+        append_through(seq_no);
+        EXPECT_TRUE(followers.send_to_all(seq_no).empty());
+    }
+    std::vector<int64_t> expected;
+    for (int64_t seq_no = 5; seq_no <= 60; ++seq_no) {
+        expected.push_back(seq_no);
+    }
+    ASSERT_GT(wal_->segments_on_disk().size(), 3U) << "the records must cross several segments for this test to mean anything";
+    EXPECT_EQ(converted_, expected) << "each record is read and converted once, not once for each follower";
+    EXPECT_EQ(links_.sent_to(1), expected);
+    EXPECT_EQ(links_.sent_to(2), expected);
+}
+
+TEST_F(WalHandedOverFollowersTest, AFollowerAddedBehindCatchesUpOnItsOwnCursorAndThenJoinsTheSharedReading) {
+    append_through(10);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_);
+    followers.add(first_, 10, wal_->scan_start_for(11));
+    static_cast<void>(followers.send_to_all(10));
+    append_through(12);
+    static_cast<void>(followers.send_to_all(12));
+
+    followers.add(second_, 3, wal_->scan_start_for(4));
+    append_through(14);
+    static_cast<void>(followers.send_to_all(14));
+    converted_.clear();
+    append_through(20);
+    static_cast<void>(followers.send_to_all(20));
+
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{11, 12, 13, 14, 15, 16, 17, 18, 19, 20}));
+    EXPECT_EQ(links_.sent_to(2), (std::vector<int64_t>{4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}));
+    EXPECT_EQ(converted_, (std::vector<int64_t>{15, 16, 17, 18, 19, 20})) << "once caught up, the second follower is served by the shared reading";
+}
+
+TEST_F(WalHandedOverFollowersTest, ADamagedRecordOnTheSharedReadingStopsOnlyTheFollowersThatLackIt) {
+    append_through(9);
+    WalHandedOverFollowers followers(*wal_, directory_, converter({6}), links_);
+    followers.add(first_, 2, wal_->scan_start_for(3));
+    followers.add(second_, 2, wal_->scan_start_for(3));
+    static_cast<void>(followers.send_to_all(4)); // both in step at 4
+    // The third holds records through 7, past the damaged record, and joins ahead of the shared reading.
+    followers.add(third_, 7, wal_->scan_start_for(8));
+
+    std::vector<std::pair<ConnectionID, int64_t>> damaged = followers.send_to_all(9);
+    ASSERT_EQ(damaged.size(), 2U);
+    std::sort(damaged.begin(), damaged.end(), [](const auto& a, const auto& b) { return a.first.get_value() < b.first.get_value(); });
+    EXPECT_EQ(damaged[0], std::make_pair(first_, int64_t{6}));
+    EXPECT_EQ(damaged[1], std::make_pair(second_, int64_t{6}));
+    EXPECT_FALSE(followers.contains(first_));
+    EXPECT_FALSE(followers.contains(second_));
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{3, 4, 5}));
+    EXPECT_EQ(links_.sent_to(3), (std::vector<int64_t>{8, 9}));
+
+    append_through(11);
+    EXPECT_TRUE(followers.send_to_all(11).empty());
+    EXPECT_EQ(links_.sent_to(3), (std::vector<int64_t>{8, 9, 10, 11})) << "the follower past the damaged record goes on being sent records";
+}
+
+TEST_F(WalHandedOverFollowersTest, WhenNoFollowerIsLeftInStepTheNextOneToCatchUpBecomesTheSharedReading) {
+    append_through(6);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_);
+    followers.add(first_, 2, wal_->scan_start_for(3));
+    static_cast<void>(followers.send_to_all(6));
+    followers.remove(first_);
+
+    followers.add(second_, 1, wal_->scan_start_for(2));
+    followers.add(third_, 4, wal_->scan_start_for(5));
+    append_through(9);
+    static_cast<void>(followers.send_to_all(9));
+    converted_.clear();
+    append_through(12);
+    static_cast<void>(followers.send_to_all(12));
+
+    EXPECT_EQ(links_.sent_to(2), (std::vector<int64_t>{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}));
+    EXPECT_EQ(links_.sent_to(3), (std::vector<int64_t>{5, 6, 7, 8, 9, 10, 11, 12}));
+    EXPECT_EQ(converted_, (std::vector<int64_t>{10, 11, 12}));
+}
+
+TEST_F(WalHandedOverFollowersTest, SendToSendsNothingToAFollowerInStepWithTheSharedReading) {
+    append_through(6);
+    WalHandedOverFollowers followers(*wal_, directory_, converter(), links_);
+    followers.add(first_, 2, wal_->scan_start_for(3));
+    static_cast<void>(followers.send_to_all(4));
+    append_through(8);
+    EXPECT_EQ(followers.send_to(first_, 8).records_sent, 0) << "send_to_all serves a follower in step";
+    static_cast<void>(followers.send_to_all(8));
+    EXPECT_EQ(links_.sent_to(1), (std::vector<int64_t>{3, 4, 5, 6, 7, 8}));
 }
 
 } // namespaces

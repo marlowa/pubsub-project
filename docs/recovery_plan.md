@@ -28,7 +28,11 @@
 > built: the matching engine is caught up by the reading thread, and uses the library's messages to ask. Its
 > step 4 is built: the matching engine publishers follow the WAL through the library, are sent only committed
 > records, once each, by the leading sequencer only ([BUG-0153](bug_list.md#bug_0153) and
-> [BUG-0156](bug_list.md#bug_0156) are fixed). It awaits Andrew's review before step 5.
+> [BUG-0156](bug_list.md#bug_0156) are fixed). Its step 5 is built: the build refuses any read of the WAL in
+> the sequencer that is not in a named table of permitted reads, each with its reason
+> ([BUG-0133](bug_list.md#bug_0133) is fixed). All five steps are built, and phase 5 awaits Andrew's review.
+> After it, and before phase 6 is designed, Andrew reviews whether phases 6 and 7 still serve the guarantees
+> the venue is to give.
 
 ## In one page
 

@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 173 |
-| Open | 68 (47 defects, 21 tasks) |
-| Closed | 105 |
-| Next id | BUG-0174 |
+| Bugs recorded | 175 |
+| Open | 69 (48 defects, 21 tasks) |
+| Closed | 106 |
+| Next id | BUG-0176 |
 
 ## Open bugs by severity
 
-15 high, 45 medium, 8 low.
+15 high, 46 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -59,7 +59,6 @@
 | [BUG-0130](#bug_0130) | medium | defect | The log's helper keeps only one segment ready, so a slow disk during a burst makes the writing thread wait |
 | [BUG-0131](#bug_0131) | medium | defect | The leading sequencer allocates from the heap for every order, and copies execution reports that wait for the follower |
 | [BUG-0132](#bug_0132) | medium | task | Orders still open at the end of the trading day are never cancelled, and their members are never told |
-| [BUG-0133](#bug_0133) | medium | defect | A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders |
 | [BUG-0134](#bug_0134) | medium | defect | A venue running without a standby says so once, and not at all when no follower is connected |
 | [BUG-0135](#bug_0135) | medium | defect | While the leader trades alone, a power failure on its machine can lose the last several seconds of the day's record |
 | [BUG-0136](#bug_0136) | medium | task | Whether any copy of the log outside the leader's machine could recover the commands lost with it is not known |
@@ -73,6 +72,8 @@
 | [BUG-0171](#bug_0171) | medium | defect | Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher |
 | [BUG-0172](#bug_0172) | medium | defect | With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced |
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
+| [BUG-0174](#bug_0174) | medium | defect | With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred |
+| [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -263,6 +264,18 @@ as if alone for 2.6 seconds, the pair then changed leader several times, and 98,
 The same fill run twice more in the next half hour, with the disk recorded by `iostat`, had no callback over
 100 milliseconds, no slow promise write, and every message answered; the disk was busy 0.4 per cent of the time
 at the median. What the machine was doing during the first fill was not recorded, so its cause is not known.
+
+**Another, 17 October 2026, recorded with `iostat`.** The same fill, begun three minutes after the developer
+loop had installed a new build, failed the same way: promise writes took from 599 to 31,548 milliseconds on both
+sequencers, the pair changed leader four times, and 81,042 messages went unanswered. The disk was given the same
+work as in a fill that passed earlier the same day, about 11 MB a second in 22 writes a second, but was busy 35
+per cent of the time on average and over 90 per cent for 49 of the 181 seconds, against 2.5 per cent and none in
+the fill that passed. The same fill, run again ten minutes later, passed, with the disk busy 2.6 per cent of the
+time. Nothing else was using the disk or the processors. So for some minutes the disk took far longer to do the
+same writes. Both failed fills of this day began within a few minutes of the developer loop, which writes the
+whole build to the same disk, and both repeats a little later passed; whether a burst of writes leaves this disk
+slow for minutes afterwards is not shown. While it was slow, the leading sequencer's own thread also waited on
+the disk ([BUG-0175](#bug_0175)).
 
 **What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
 or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
@@ -763,39 +776,6 @@ been set on it, and Prometheus is optional.
 **No time limit.** Decided with Andrew, 11 October 2026: the venue does not halt itself after running
 without a standby for some time, because that would turn a loss of resilience into a loss of service
 (V11). Whether to halt is for the operators, with this reporting in front of them.
-
-### BUG-0133: A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders {#bug_0133}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-11 |
-| Recorded | 2026-10-11 |
-| How | Reviewing principle V10 (a follower's log becomes a copy of its leader's) in `docs/design_principles.md`; the cost was already stated as an open question in section 7 of `docs/availability/follower_log_repair.md` and was not in this list |
-| Impact | When a follower rejoins after a long absence, the leading sequencer stops taking orders while it reads the records the follower missed, for seconds after an hour's absence in a busy day, longer if the records must come from disk. A publisher's catch-up has the same effect |
-
-**Where.** When a follower rejoins, the leader finds the last record on which the two logs agree and
-sends the follower every record after it (part 4.5 of `docs/availability/follower_log_repair.md`). It
-reads those records from its log on the sequencer thread, the thread that sequences every order, and
-no order is handled while it does. Reading starts at the segment holding the first missed record, so
-the cost grows with what the follower missed, not with the size of the log. The publishers'
-catch-ups (`SequencerThread::handle_wal_subscribe_request`) read on the same thread, and the repair
-design says they still read from the start of the log. The matching engine's catch-up was bounded to
-start at the segment it needs on 5 October 2026 under [BUG-0113](#bug_0113), but it too reads on the
-sequencer thread.
-
-**How much.** At 50 million orders a day, a follower away for an hour misses several million records.
-The startup measurement recorded under [BUG-0107](#bug_0107) puts reading 5.5 million records at 2.6
-seconds with the files already in memory. Not measured on a catch-up.
-
-**What is wanted.** Read and send the missed records from a thread of their own, and hand over to live
-records at the exact point where that thread stops, so that there is no gap and no record is sent
-twice; the same for the publishers' catch-ups. The sequencer thread then does no reading of its log on
-behalf of anyone else. Designed for phase 5 of the recovery plan in
-[following_the_wal.md](availability/following_the_wal.md), agreed on 14 October 2026.
-
-**Principle.** F4 in `docs/design_principles.md`: an order-handling thread doing work that can wait for
-the disk.
 
 ### BUG-0132: Orders still open at the end of the trading day are never cancelled, and their members are never told {#bug_0132}
 
@@ -3405,6 +3385,28 @@ decision: read each record once for every publisher, which halves the cost; do n
 record this thread wrote moments before, which removes most of it; or keep each record's bytes in memory until
 it is committed, and send them from there, which reads nothing back but holds every record not yet committed.
 
+**Each record is now read once, 17 October 2026.** `WalHandedOverFollowers` reads each committed record once,
+with one shared reading, and sends it to every publisher in step with it. The same fill with `perf`, before and
+after, with almost the same number of samples (4,495 and 4,596):
+
+| | Before | After |
+|---|---|---|
+| Sending committed records to the publishers, share of the thread's samples | 22.8% | 16.0% |
+| of which checking checksums | 15.2% | 8.1% |
+| Writing the WAL, for comparison | 10.6% | 12.3% |
+
+The checking of checksums halved, as reading once should. The share as a whole fell by about a third, not by
+half, because each record is still converted into a message and sent to each publisher separately. What is left
+is about a sixth of the thread's time: half of it the one check of each record's checksum, half the sending.
+The other two ways listed above would remove most of the checksum's half; neither has been decided on.
+
+The order's round trip did not change. Measured as for step 4 of phase 5, with the secondary matching engine
+leading, the medians of four runs were 121.3, 120.5, 120.3 and 120.6 microseconds with the build of step 4,
+108.0, 108.2, 108.0 and 107.7 with each record read once, and 108.8, 108.1, 108.0 and 108.0 with the build of
+step 4 measured again. The first arm differs from the third, with the same build, by as much as from the
+second, so the difference is in the conditions, not the change. That is as expected: the publishers are sent
+their records after the commit's work for the order path is done.
+
 **Principles.** F4.
 
 ### BUG-0172: With high availability off, a matching engine publisher is caught up on the sequencer's own thread, unpaced {#bug_0172}
@@ -3419,7 +3421,9 @@ it is committed, and send them from there, which reads nothing back but holds ev
 
 **What happens.** `SequencerThread::handle_publisher_follow_request` catches the publisher up through
 `WalHandedOverFollowers::send_to`, which reads and sends every record up to the last committed in one go.
-The matching engine's catch-up with high availability off has the same shape (`engine_catch_up_from_wal`).
+The matching engine's catch-up with high availability off has the same shape (`engine_catch_up_from_wal`), and so
+does `SequencerThread::send_logged_orders`, which sends the engine orders that waited in the WAL, or that a new
+leader learns it never received, by reading them back on the sequencer's thread.
 
 **What is wanted.** A reading thread with high availability off as well, so that every catch-up is paced and
 off the order path whatever the configuration.
@@ -3467,7 +3471,117 @@ check is covered.
 
 **Principles.** V2.
 
+### BUG-0174: With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred {#bug_0174}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| How | Listing every read of the WAL in the sequencer for the table of permitted reads in `scripts/check_standards.py` (step 5 of phase 5) |
+| Impact | Orders that waited in the WAL, or that a new leader learns the engine never received, are read back on the thread that sequences orders when no engine is connected. The read runs from the first such order to the end of the WAL, so its length grows with everything written since, and while it runs the thread does nothing else, its lease renewals included |
+
+**What happens.** Two places send the matching engine orders from the WAL:
+`SequencerThread::send_orders_that_waited_in_the_log`, for orders that waited because the storage for held
+orders was full, and `SequencerThread::handle_engine_position`, for orders a new leader learns the engine never
+received. With a reading thread and an engine connected, the reading thread serves the engine. With no engine
+connected, both call `SequencerThread::send_logged_orders`, which reads the WAL on the sequencer's own thread
+with `WalReader::replay`, only to count each order as deferred (`note_order_deferred`). `WalReader::replay` reads
+every record from the segment holding the first order to the end of the WAL, not only up to the last order
+wanted.
+
+**What is wanted.** Nothing read on the sequencer's thread for this. The engine that connects next is caught up by
+the reading thread from its own position in any case, which recovers these orders whether or not they were counted,
+so the count could come from the positions alone, or the deferral could be noted without reading the records.
+
+**Principles.** F4.
+
+### BUG-0175: While the disk is slow, the leading sequencer's own thread waits in the file system's journal {#bug_0175}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-17 |
+| Recorded | 2026-10-17 |
+| How | A fill of 300,000 orders with the state of the leading sequencer's thread sampled from `/proc` five times a second (`tmp/phase5/fill_perf.sh`), during the slow disk recorded under [BUG-0167](#bug_0167) |
+| Impact | The thread that sequences every order stops, for as long as the file system's journal makes it wait, which on this disk was up to seconds at a time; principle F4 says no order-handling thread waits for the disk |
+
+**What was seen.** In the 30 seconds before the leading sequencer lost its lease, its sequencer thread was found
+waiting in the kernel (state D) in 46 of the 138 samples, from the first second to the last: 45 times at the
+start of a change to the ext4 journal, in `wait_transaction_locked` or `do_get_write_access`, and once waiting to
+send a write to the disk (`rq_qos_wait`). After it stopped leading it
+also waited in `jbd2_log_wait_commit`, which is what recording a new epoch with `fsync` does; principle F4
+permits that wait during a change of role. In a fill that passed the same evening, with the disk not slow, the
+thread was never found in state D.
+
+**What is not known.** Which call made the thread wait. A journal change is started by a `write` to a file, by
+creating or extending a file, and by the first write to a page of a memory-mapped file in some cases; the WAL's
+segments are memory-mapped and written by this thread. The samples show only where in the kernel the thread
+was waiting, not the call that led there. Recording that needs the scheduler's events with their kernel stacks,
+which this machine allows only as root.
+
+**What is wanted.** Find the call, then take it off the order-handling thread, or show that it is one F4 already
+permits.
+
+**Principles.** F4.
+
 ## Closed
+
+### BUG-0133: A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders {#bug_0133}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-11 |
+| Recorded | 2026-10-11 |
+| Fixed | 2026-10-17 -- every catch-up is served by the leading sequencer's reading thread, and the build refuses a new read of the WAL in the sequencer |
+| How | Reviewing principle V10 (a follower's log becomes a copy of its leader's) in `docs/design_principles.md`; the cost was already stated as an open question in section 7 of `docs/availability/follower_log_repair.md` and was not in this list |
+| Impact | When a follower rejoins after a long absence, the leading sequencer stops taking orders while it reads the records the follower missed, for seconds after an hour's absence in a busy day, longer if the records must come from disk. A publisher's catch-up has the same effect |
+
+**Where.** When a follower rejoins, the leader finds the last record on which the two logs agree and
+sends the follower every record after it (part 4.5 of `docs/availability/follower_log_repair.md`). It
+reads those records from its log on the sequencer thread, the thread that sequences every order, and
+no order is handled while it does. Reading starts at the segment holding the first missed record, so
+the cost grows with what the follower missed, not with the size of the log. The publishers'
+catch-ups (`SequencerThread::handle_wal_subscribe_request`) read on the same thread, and the repair
+design says they still read from the start of the log. The matching engine's catch-up was bounded to
+start at the segment it needs on 5 October 2026 under [BUG-0113](#bug_0113), but it too reads on the
+sequencer thread.
+
+**How much.** At 50 million orders a day, a follower away for an hour misses several million records.
+The startup measurement recorded under [BUG-0107](#bug_0107) puts reading 5.5 million records at 2.6
+seconds with the files already in memory. Not measured on a catch-up.
+
+**What is wanted.** Read and send the missed records from a thread of their own, and hand over to live
+records at the exact point where that thread stops, so that there is no gap and no record is sent
+twice; the same for the publishers' catch-ups. The sequencer thread then does no reading of its log on
+behalf of anyone else. Designed for phase 5 of the recovery plan in
+[following_the_wal.md](availability/following_the_wal.md), agreed on 14 October 2026.
+
+**The fix.** Phase 5 gives the library one way to follow the WAL: a reading thread of its own serves each
+follower from the position it gives, and the follower is handed over to new records at the exact position
+the reading thread reached ([following_the_wal.md](availability/following_the_wal.md), section 3).
+
+- **The follower sequencer's repair** is served by the reading thread, inside the library's `ReplicatedWal`
+  (step 2). With 1.2 million records missed, the longest wait for an order's first report during the repair
+  was 10.2 milliseconds, and the follower received every record in 8.4 seconds.
+- **The matching engine's catch-up**, and the sending of orders to it from the WAL, are served by the reading
+  thread (step 3).
+- **The publishers** are served by the reading thread up to the last committed record (step 4). With about
+  1.2 million records in the WAL, a publisher starting with an empty WAL was sent them all in about 5 seconds,
+  and the longest wait for an order's first report meanwhile was 5.5 milliseconds.
+- **The build refuses a new read** (step 5): check 30 of `scripts/check_standards.py` fails on any read of
+  the WAL in the sequencer that is not in its table of permitted reads, `_PERMITTED_WAL_READS`. It was made to
+  fail on purpose with each kind of read it looks for.
+
+**What still reads on the sequencer's thread,** each permitted by name in that table with its reason: replay
+mode; resends and requests for undelivered reports ([BUG-0113](#bug_0113)); the duplicate check
+([BUG-0122](#bug_0122)); records read back for publishers already handed over, once each whatever the number
+of publishers ([BUG-0171](#bug_0171)); every catch-up with high availability off ([BUG-0172](#bug_0172)); and
+orders counted as deferred while no matching engine is connected ([BUG-0174](#bug_0174)).
+
+**Principle.** F4 in `docs/design_principles.md`: an order-handling thread doing work that can wait for
+the disk.
 
 ### BUG-0156: A publisher that subscribes from the start of the day makes the leading sequencer lose its lease and the pair change leader {#bug_0156}
 

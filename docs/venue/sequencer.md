@@ -209,6 +209,19 @@ notes the command the record holds and the position of forwarded reports it carr
 already holds is not written again, and one that would leave a gap stops the writing until the follower
 has asked its leader again where their logs agree ([follower_log_repair.md](../availability/follower_log_repair.md)).
 
+**A thread of its own reads the log for the components that follow it** (principle F4): the follower
+sequencer when it rejoins, a matching engine when it starts or is promoted, and the matching engine
+publishers. Each is served by the leader's reading thread (`WalReadingThread`), so that the thread that
+sequences orders does not stop while records are read
+([following_the_wal.md](../availability/following_the_wal.md)). The sequencer's own thread still reads the
+log in a few named cases: replay mode; resends and requests for undelivered reports
+([BUG-0113](../bug_list.md#bug_0113)); the duplicate check ([BUG-0122](../bug_list.md#bug_0122)); records
+read back, once each, for publishers already caught up ([BUG-0171](../bug_list.md#bug_0171)); every
+catch-up with high availability off ([BUG-0172](../bug_list.md#bug_0172)); and orders counted as deferred
+while no matching engine is connected ([BUG-0174](../bug_list.md#bug_0174)). Check 30 of
+`scripts/check_standards.py` fails the build on any other read of the log in the sequencer; its table,
+`_PERMITTED_WAL_READS`, lists each of these with its reason.
+
 ---
 
 ## Replay mode

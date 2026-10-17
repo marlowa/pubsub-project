@@ -44,6 +44,16 @@ class WalHandedOverFollowersLinksInterface {
  * that follower being sent anything more: the follower is removed, and the caller is told which record it
  * was, as the reading thread does.
  *
+ * **Each record is read once, whatever the number of followers.** Reading a record back checks its checksum,
+ * and that check is most of what sending costs, so the followers do not each read the WAL. One reading, the
+ * shared reading, reads each record once, converts it once, and sends the result to every follower that is in
+ * step with it. A follower is added with a cursor of its own, because it may hold fewer records than the
+ * followers already in step, and reads on that cursor until it has every record the shared reading has read;
+ * at the next send_to_all it then joins the shared reading and its own cursor is closed. When no follower is
+ * left in step, the shared reading is closed too, and the next follower to catch up on its own cursor becomes
+ * the shared reading. In normal running a publisher is handed over at the last committed record, which is
+ * where the shared reading already is, so it reads on its own for one commit at most.
+ *
  * Reads no further than the WAL's write position. Past it lies the unwritten end of the segment, whose zeros
  * the cursor takes for the end of a finished segment, moving on to the next; the cursor would then have to
  * be opened again at its own position, which lists the WAL's directory, at every commit. Opening it again is
@@ -94,40 +104,69 @@ class WalHandedOverFollowers {
     [[nodiscard]] int64_t last_sent(const ConnectionID& follower) const;
 
     /**
-     * @brief Sends @p follower every record above the last it holds, up to and including @p through_seq_no.
+     * @brief Sends @p follower every record above the last it holds, up to and including @p through_seq_no,
+     *        reading on its own cursor.
      *
-     * Stops at a record the converter finds damaged; the follower is then removed.
+     * For a follower that has just been added, to catch it up at once. A follower that has joined the shared
+     * reading is sent nothing here, because send_to_all sends to it. Stops at a record the converter finds
+     * damaged; the follower is then removed.
      */
     Outcome send_to(const ConnectionID& follower, int64_t through_seq_no);
 
     /**
      * @brief Sends every follower every record above the last it holds, up to and including @p through_seq_no.
      *
+     * Followers still reading on their own cursors are served first, and each that has caught up with the shared
+     * reading joins it. Then the shared reading reads each record once and sends it to every follower in step.
+     *
      * @return Each follower removed because a record was damaged, with that record's number; usually none.
      */
     std::vector<std::pair<ConnectionID, int64_t>> send_to_all(int64_t through_seq_no);
 
   private:
-    struct Follower {
-        ConnectionID connection;
+    /// A cursor reading the WAL, and the record it has read and is holding until the limit passes it.
+    struct Reading {
         WalCursor cursor;
-        /// The follower holds or has been sent every record up to here.
-        int64_t last_sent_seq_no{0};
-        /// A record read and found above the limit, held until the limit passes it. Its bytes stay valid
-        /// because nothing more is read from the cursor while it is held.
+        /// Every record up to here has been read and dealt with: sent, passed over, or found damaged.
+        int64_t last_seq_no{0};
+        /// Whether a record has been read and found above the limit. Its bytes stay valid because nothing more
+        /// is read from the cursor while it is held.
         bool holding{false};
         int64_t held_seq_no{0};
         const uint8_t* held_bytes{nullptr};
         size_t held_size{0};
     };
 
-    [[nodiscard]] bool read_next_record(Follower& follower);
+    struct Follower {
+        ConnectionID connection;
+        /// The follower holds or has been sent every record up to here.
+        int64_t last_sent_seq_no{0};
+        /// Its own reading while it catches up with the shared reading; null once it is in step with it.
+        std::unique_ptr<Reading> own_reading;
+    };
+
+    /// Reads the next record above @p reading's last into its held record; false if nothing more is written.
+    [[nodiscard]] bool read_next_record(Reading& reading);
+
+    /// Converts @p reading's held record into encoded_.
+    [[nodiscard]] ConvertedRecord convert_held(const Reading& reading);
+
+    /// Sends @p follower the records on its own reading, up to @p through_seq_no.
+    Outcome send_on_own_reading(Follower& follower, int64_t through_seq_no);
+
+    /// Sends the followers in step with the shared reading the records up to @p through_seq_no, each read once.
+    void send_on_shared_reading(int64_t through_seq_no, std::vector<std::pair<ConnectionID, int64_t>>& damaged);
+
+    /// Closes the shared reading if no follower is in step with it.
+    void close_shared_reading_if_unused();
 
     const Wal& wal_;
     std::string directory_;
     WalRecordConverter converter_;
     WalHandedOverFollowersLinksInterface& links_;
     std::unordered_map<int, std::unique_ptr<Follower>> followers_;
+    /// The reading every follower in step with it is sent from; null when no follower is in step.
+    std::unique_ptr<Reading> shared_reading_;
     std::vector<uint8_t> encoded_;
     std::vector<ConnectionID> connections_;
 };

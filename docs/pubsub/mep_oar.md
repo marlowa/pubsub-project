@@ -228,36 +228,19 @@ used as an array element inside `TopicPage`.
 
 ---
 
-## 4. Additions to `leader_follower.dsl`
+## 4. The messages a publisher follows the WAL with
 
-Two new messages extend the WAL replication protocol to support external WAL subscribers
-(MEP primary and MEP secondary connecting to the sequencer's new external listener).
+A publisher follows the sequencer's WAL with the library's messages for following a WAL, the same ones the
+matching engine uses ([following_the_wal.md](../availability/following_the_wal.md), sections 3.1 and 4.3):
 
-The existing `WalRecord` (id=103) and `WalAck` (id=104) PDUs are reused unchanged for
-streaming records and acks between sequencer and MEP.
+| Id | Message | Direction | What it says |
+|---|---|---|---|
+| 134 | `WalFollowRequest` | publisher → sequencer | The last record the publisher holds, and that it wants new records as they come |
+| 135 | `WalFollowCaughtUp` | sequencer → publisher | The publisher has been sent every record up to the last committed, and how many were sent |
+| 136 | `WalFollowDeclined` | sequencer → publisher | This sequencer does not lead, so it serves nothing |
+| 137 | `WalLeaderChanged` | sequencer → publisher | This sequencer now leads, so the publisher should ask it again |
 
-```
-# ---------------------------------------------------------------------------
-# WalSubscribeRequest -- external WAL follower -> sequencer.
-#
-# Sent immediately after the TCP connection to the sequencer's external WAL
-# subscriber listener is established.
-#
-# subscriber_id: stable identity (e.g. "mep_primary", "mep_secondary").
-# from_seq_no:   cursor. Semantics identical to TopicSubscribeRequest.
-# ---------------------------------------------------------------------------
-message WalSubscribeRequest (id=105)
-    string subscriber_id
-    i64    from_seq_no
-end
-
-# ---------------------------------------------------------------------------
-# WalSubscribeAck -- sequencer -> external WAL follower.
-# ---------------------------------------------------------------------------
-message WalSubscribeAck (id=106)
-    i64 accepted_from_seq_no
-end
-```
+Each record itself arrives as a `WalRecord` (103). A publisher sends no acknowledgement.
 
 ---
 
@@ -280,39 +263,25 @@ port (7003/7004) used between the two sequencer instances.
 Both MEP primary and MEP secondary connect to both ports (keeping connections warm for
 failover), exactly as the ME and gateway connect to both sequencer instances.
 
-### 5.2 New PDU handlers in `SequencerThread`
+### 5.2 How the sequencer serves a publisher
 
-- **`WalSubscribeRequest` (105):** Handled by `ExternalWalSubscriberRegistry::register_subscriber`.
-  The registry enforces a **last-in-wins pre-emption rule**: if a connection with the same
-  `subscriber_id` is already registered (e.g. a reconnect before the old TCP socket has been
-  torn down), `register_subscriber` removes the old entry and returns its `ConnectionID` as
-  an orphan. `SequencerThread` immediately enqueues a `ReactorControlCommand::Disconnect` for
-  the orphaned connection — the reactor closes the socket, and the old connection receives a
-  TCP reset. `SequencerThread` never closes sockets directly; all I/O remains with the
-  reactor thread. After handling any orphan, the new connection is registered with the
-  requested cursor, a `WalSubscribeAck` is sent, and streaming begins.
+- **`WalFollowRequest` (134):** A sequencer that does not lead answers `WalFollowDeclined`, and sends
+  `WalLeaderChanged` if it takes the lead, so that the publisher asks it again. The leading sequencer has its
+  reading thread send the publisher every record after the last it holds, up to the last record committed,
+  paced by the publisher's connection, and then sends `WalFollowCaughtUp`. From then on the sequencer's own
+  thread sends the publisher each record as it is committed, reading it back from the WAL it has just written
+  (`WalHandedOverFollowers`), once whatever the number of publishers. A publisher is therefore sent only records
+  the venue's record holds, once each and in order. A request on a connection already being served starts
+  afresh from the position it gives.
+- **`ConnectionLost` for a publisher:** whatever was being sent to it stops at once.
 
-- **`WalAck` (104) from external subscriber:** Update that subscriber's confirmed cursor via
-  `ExternalWalSubscriberRegistry::update_cursor`. This cursor participates in WAL truncation.
+With high availability off there is no reading thread, and the sequencer catches the publisher up on its own
+thread ([BUG-0172](../bug_list.md#bug_0172)).
 
-- **`ConnectionLost` for an external subscriber:** Call
-  `ExternalWalSubscriberRegistry::remove_subscriber` immediately. The cursor is removed from
-  truncation consideration at once — there is no grace period, no SUSPENDED state, and no
-  cursor anchor retained for the disconnected subscriber. The WAL retention floor is the
-  minimum retention window (configured separately), not any disconnected subscriber's cursor.
-  If the subscriber reconnects it presents its own persisted cursor; if the WAL has been
-  truncated past that cursor the sequencer starts it from the oldest available record.
+### 5.3 WAL truncation
 
-### 5.3 WAL truncation update
-
-Current truncation target: `min(secondary_cursor, snapshot_anchor)`.
-
-New truncation target: `min(secondary_cursor, all_connected_external_subscriber_cursors, snapshot_anchor)`.
-
-Only **currently connected** subscribers participate. Disconnected subscribers are removed
-immediately (see `ConnectionLost` handling above) and do not constrain truncation. This
-ensures that a crashed or permanently disconnected MEP instance cannot pin WAL segments on
-disk indefinitely.
+The sequencer's WAL is never reclaimed during the day ([BUG-0048](../bug_list.md#bug_0048)), so a publisher's
+position does not hold back anything. Every trading day starts with fresh WALs (principle V12).
 
 ### 5.4 `SequencerConfiguration` additions
 
@@ -349,17 +318,14 @@ it, connect to MEP, and begin receiving records. `subscriber_id` is a label used
 logging and per-connection cursor tracking; it is not a registry key and is not validated
 against any list of known subscribers.
 
-### 6.2 Input: WAL follower on the sequencer
+### 6.2 Input: following the sequencer's WAL
 
-MEP connects outbound to the sequencer's external WAL subscriber listener (ports 7030/7031).
-This is a standard framework outbound PDU connection. On connection established, MEP sends
-`WalSubscribeRequest` with its `subscriber_id` and its current WAL write cursor. It then
-receives `WalRecord` PDUs and sends `WalAck` PDUs, identical to the existing sequencer
-replication protocol.
-
-MEP connects to both sequencer instances at startup and keeps both connections open. Only the
-leader streams records; the follower silently holds the connection. On sequencer failover, the
-new leader's connection becomes live.
+MEP connects outbound to the sequencer's subscriber listener (ports 7030/7031), on both sequencer instances,
+and keeps both connections open. When a connection is established it sends `WalFollowRequest`, giving the last
+record its own WAL holds. Only the leading sequencer serves it, as section 5.2 describes; the other declines,
+and says if it takes the lead. MEP writes into its own WAL only the record after the last it holds: a record it
+already holds is passed over, and a record that leaves a gap makes it ask again from the last it holds
+(`WalFollowerClient`, [following_the_wal.md](../availability/following_the_wal.md), section 3.6).
 
 ### 6.3 MEP's own WAL
 
@@ -389,9 +355,8 @@ Key properties:
   To ensure it can serve subscribers after a failover, it retains its full WAL indefinitely
   (no truncation while passive). The WAL segment files are small relative to disk; this is
   the chosen policy.
-- **Recovery on restart.** On restart, MEP reads its WAL to recover its write cursor, then
-  reconnects to the sequencer with `from_seq_no = write_cursor`. It resumes streaming from
-  the next unwritten record.
+- **Recovery on restart.** On restart, MEP reads its WAL to find the last record it holds, and asks
+  the sequencers with `WalFollowRequest` to be sent the records after it.
 
 ### 6.4 Two topics
 
@@ -555,12 +520,13 @@ Key callbacks:
 - `on_initial_event()`: open WAL, recover write cursor.
 - `on_app_ready_event()`: connect to both sequencer WAL listeners; begin leader-follower
   election (if `ha_enabled`).
-- `on_connection_established(id)`: if sequencer connection — send `WalSubscribeRequest`.
+- `on_connection_established(id)`: if sequencer connection — send `WalFollowRequest`.
   If topic subscriber connection — await `TopicSubscribeRequest`.
 - `on_framework_pdu_message(msg)`:
-  - `WalSubscribeAck` (106): log accepted cursor.
-  - `WalRecord` (103) from sequencer: append to own WAL; fan out to matching topic subscribers.
-  - `WalAck` (104): not expected inbound (MEP sends acks, not receives them from sequencer).
+  - `WalFollowCaughtUp` (135), `WalFollowDeclined` (136), `WalLeaderChanged` (137): passed to the
+    `WalFollowerClient`, which asks again when it should.
+  - `WalRecord` (103) from sequencer: if the `WalFollowerClient` accepts it as the record after the last
+    held, append to own WAL and fan out to matching topic subscribers.
   - `TopicSubscribeRequest` (107): register subscriber, send `TopicSubscribeAck`, start delivery cycle.
   - `TopicAck` (110): advance subscriber cursor, consider WAL truncation, send next page if
     `page_number < total_pages`.
@@ -848,7 +814,7 @@ Dependencies flow in this direction:
 ```
 topics.dsl (new file — list<TopicRecord> supported today, no DSL extension needed)
     │
-leader_follower.dsl additions (WalSubscribeRequest/Ack)
+the messages for following the sequencer's WAL
     │
 Sequencer slice 10 (external WAL subscriber listener + Wal extraction)
     │

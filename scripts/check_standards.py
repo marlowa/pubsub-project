@@ -35,6 +35,7 @@ Checks implemented:
   27. Doxygen comment block not preceded by a blank line
   28. A lock in venue code that is not in the table of permitted locks (principle F2)
   29. A raw std::thread in venue code; threads are created through ThreadWithJoinTimeout (principle F8)
+  30. A read of the WAL in the sequencer that is not in the table of permitted WAL reads (principle F4)
 """
 
 from __future__ import annotations
@@ -1258,6 +1259,120 @@ def check_raw_thread(path: Path, lines: list[str], stripped: list[str]) -> list[
     return violations
 
 
+# ── Check 30: reads of the WAL in the sequencer ──────────────────────────────
+#
+# Principle F4 in docs/design_principles.md: no catch-up runs on the thread that sequences orders. Every
+# component that follows the sequencer's WAL is served by the library's reading thread, which runs on a thread
+# of its own (docs/availability/following_the_wal.md). This check stops a new read of the WAL appearing in the
+# sequencer, where it would run on the sequencer's own thread. Every read must be listed in
+# _PERMITTED_WAL_READS below, which says why it is allowed, as _PERMITTED_LOCKS does for locks.
+#
+# A read of the WAL is a use of anything listed in _WAL_READERS: the library's classes that read the WAL, and
+# the sequencer's own functions and members that read it with one of them. Listing the sequencer's own as well
+# means that a new call to a function that already reads the WAL is caught, not only a new use of a library
+# class. A function or member added to the sequencer that reads the WAL must be added to _WAL_READERS, so that
+# each place it is used is checked too. The library itself is not checked: its reading thread is where reads
+# are meant to be.
+#
+# Each entry of _PERMITTED_WAL_READS names what it permits, in the same way as _PERMITTED_LOCKS: in a .cpp
+# file, Class::function permits every read in that function; any other name permits a line holding that word.
+
+_WAL_READ_DIRS = ('applications/sequencer/',)
+
+# (pattern, what it is). Only lines of code count: comments, strings and #include lines are ignored.
+_WAL_READERS = [
+    (r'\bWalReader\b', 'the library class that reads every record of the WAL from a position'),
+    (r'\bWalCursor\b', 'the library class that reads the WAL one record at a time'),
+    (r'\bWalHandedOverFollowers\b', 'the library class that reads committed records back for followers already handed over'),
+    (r'\bhanded_over_publishers_->send_to(?:_all)?\b', 'the sequencer member holding a WalHandedOverFollowers, sending records it reads'),
+    (r'\bLogTailIndex\b', 'the sequencer class that reads the newest segments for the duplicate check'),
+    (r'\blog_tail_index_->holds\b', 'the sequencer member holding a LogTailIndex, reading segments it has not yet read'),
+    (r'\bLoggedCommandIdentifiersBuilder\b', 'the sequencer class that reads every segment to build the record of command identifiers'),
+    (r'\bidentifiers_builder_\.start\b', 'the sequencer member holding a LoggedCommandIdentifiersBuilder, starting its reading'),
+    (r'\bengine_catch_up_from_wal\s*\(', 'the sequencer function that catches a matching engine up on the calling thread'),
+    (r'\bsend_logged_orders\s*\(', 'the sequencer function that reads orders back from the WAL on its own thread'),
+]
+_WAL_READER_RES = [re.compile(pattern) for pattern, _what in _WAL_READERS]
+
+_REPLAY_MODE = 'replay mode, which runs with nothing else and sequences nothing'
+_THREAD_OF_ITS_OWN = 'runs on a thread of its own, on the background cores, not on the sequencer\'s thread'
+_HIGH_AVAILABILITY_OFF = 'only with high availability off, when there is no reading thread: BUG-0172'
+_RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
+_DUPLICATE_CHECK = 'the duplicate check: BUG-0122, replaced in phase 8 of docs/recovery_plan.md'
+_PUBLISHERS = ('a record sent to a publisher already handed over, read back moments after it was written, once '
+               'whatever the number of publishers: BUG-0171')
+_NO_ENGINE = 'with no matching engine connected, to count the orders deferred: BUG-0174'
+_DEFINITION = 'where the reader itself is declared or defined; each use of it is checked where it is used'
+
+# Each entry: (path relative to the project root, where, why), as for _PERMITTED_LOCKS.
+_PERMITTED_WAL_READS = [
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::on_initial_event', _REPLAY_MODE),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_orders_that_waited_in_the_log', _HIGH_AVAILABILITY_OFF + '; ' + _NO_ENGINE),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_engine_position', _HIGH_AVAILABILITY_OFF + '; ' + _NO_ENGINE),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_logged_orders', _HIGH_AVAILABILITY_OFF + '; ' + _NO_ENGINE),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_wal_follow_request', _HIGH_AVAILABILITY_OFF),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_publisher_follow_request', _HIGH_AVAILABILITY_OFF),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::send_committed_records_to_publishers', _PUBLISHERS),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_undelivered_reports_request', _RESENDS),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::handle_session_replay_request', _RESENDS),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::command_already_logged', _DUPLICATE_CHECK),
+    ('applications/sequencer/SequencerThread.cpp', 'SequencerThread::start_building_record_of_identifiers', _THREAD_OF_ITS_OWN),
+    ('applications/sequencer/SequencerThread.hpp', 'handed_over_publishers_', _DEFINITION),
+    ('applications/sequencer/SequencerThread.hpp', 'log_tail_index_', _DEFINITION),
+    ('applications/sequencer/SequencerThread.hpp', 'identifiers_builder_', _DEFINITION),
+    ('applications/sequencer/SequencerThread.hpp', 'send_logged_orders', _DEFINITION),
+    ('applications/sequencer/EngineCatchUpFromWal.hpp', 'engine_catch_up_from_wal', _DEFINITION),
+    ('applications/sequencer/EngineCatchUpFromWal.hpp', 'WalReader', _HIGH_AVAILABILITY_OFF),
+    ('applications/sequencer/LogTailIndex.hpp', 'LogTailIndex', _DEFINITION),
+    ('applications/sequencer/LogTailIndex.hpp', 'WalReader', _DUPLICATE_CHECK),
+    ('applications/sequencer/LoggedCommandIdentifiersBuilder.hpp', 'LoggedCommandIdentifiersBuilder', _DEFINITION),
+    ('applications/sequencer/LoggedCommandIdentifiersBuilder.hpp', 'WalReader', _THREAD_OF_ITS_OWN),
+]
+
+# Entries of _PERMITTED_WAL_READS that matched at least one read in this run (see report_unused_permitted_wal_reads).
+_USED_PERMITTED_WAL_READS: set = set()
+
+
+def check_wal_reads(path: Path, lines: list[str], stripped: list[str]) -> list[Violation]:
+    """Flag a read of the WAL in the sequencer that _PERMITTED_WAL_READS does not list (principle F4)."""
+    relative = _relative_to_project(path)
+    if not _is_venue_code(path) or not relative.startswith(_WAL_READ_DIRS):
+        return []
+    entries = [where for entry_path, where, _why in _PERMITTED_WAL_READS if entry_path == relative]
+    violations: list[Violation] = []
+    function = None
+    for i, line in enumerate(stripped):
+        definition = _FUNCTION_DEFINITION_RE.match(line)
+        if definition and path.suffix == '.cpp':
+            function = definition.group(1)
+        if line.lstrip().startswith('#include') or not any(reader.search(line) for reader in _WAL_READER_RES):
+            continue
+        permitted = False
+        for where in entries:
+            if path.suffix == '.cpp' and '::' in where:
+                permitted = function == where
+            else:
+                permitted = re.search(r'\b' + re.escape(where) + r'\b', line) is not None
+            if permitted:
+                _USED_PERMITTED_WAL_READS.add((relative, where))
+                break
+        if not permitted:
+            place = f" in {function}" if path.suffix == '.cpp' and function else ''
+            violations.append(Violation(path, i + 1,
+                f"a read of the WAL{place} that is not in _PERMITTED_WAL_READS in scripts/check_standards.py. Principle F4: "
+                "no catch-up runs on the thread that sequences orders. Have the library's reading thread serve the follower "
+                "(WalFollowerService, docs/availability/following_the_wal.md) instead of reading the WAL here"))
+    return violations
+
+
+def report_unused_permitted_wal_reads() -> list[str]:
+    """Entries of _PERMITTED_WAL_READS that matched no read anywhere. Run only on the whole tree: an entry whose read
+    has been removed must be deleted, so that the table never permits a read that no longer exists."""
+    return [f"scripts/check_standards.py: _PERMITTED_WAL_READS lists {where} in {entry_path} ({why}), and no read of "
+            "the WAL there matches it any more; delete the entry"
+            for entry_path, where, why in _PERMITTED_WAL_READS if (entry_path, where) not in _USED_PERMITTED_WAL_READS]
+
+
 _CHECKS = [
     check_defines,
     check_screaming_snake_case,
@@ -1291,6 +1406,7 @@ _CHECKS = [
     check_doxygen_blank_line,
     check_locks,
     check_raw_thread,
+    check_wal_reads,
 ]
 
 
@@ -1374,6 +1490,9 @@ def main() -> int:
 
     if not args.paths:
         for message in report_unused_permitted_locks():
+            print(message)
+            total += 1
+        for message in report_unused_permitted_wal_reads():
             print(message)
             total += 1
 
