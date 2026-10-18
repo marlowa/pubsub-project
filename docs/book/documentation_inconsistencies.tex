@@ -1,0 +1,58 @@
+\chapter{Documentation inconsistencies}
+\label{ch:documentation_inconsistencies}
+
+This chapter records places where project documentation disagrees with the
+implementation or where written descriptions conflict with one another. An
+entry identifies a matter to review; it does not by itself establish that the
+implementation is wrong. Keep entries here until the discrepancy has been
+reviewed and dealt with. Remove this chapter when no entries remain.
+
+\section{Reactor epoll trigger mode}
+\label{sec:doc_issue_epoll_trigger_mode}
+
+\texttt{claude.md} and the framework documentation describe the reactor as
+using edge-triggered epoll. The reactor and connection managers register file
+descriptors without \texttt{EPOLLET}, and the connection-manager headers
+describe level-triggered epoll. The implementation therefore uses
+level-triggered epoll, contrary to those descriptions. Review the conflicting
+architecture guidance and decide whether the documentation or implementation
+should change.
+
+\section{Inbound connections per listener}
+\label{sec:doc_issue_inbound_connections}
+
+\texttt{Reactor.hpp} and \texttt{docs/framework/reactor.md} describe a limit of
+one peer per inbound listener. \texttt{InboundListener.hpp} documents multiple
+concurrent connections, and the inbound connection manager stores accepted
+connections independently and routes them to the listener's configured
+application thread. Review the conflicting descriptions and align them with
+the intended behaviour.
+
+\section{Placement of registered auxiliary threads}
+\label{sec:doc_issue_extra_thread_placement}
+
+The \texttt{ExtraThread} documentation in
+\texttt{ApplicationThread.hpp} says that the reactor claims a dedicated CPU
+for each thread registered through \texttt{register\_extra\_thread()}. The
+reactor's placement code instead leaves these threads in the background tier
+and excludes them from the component's hot-path CPU count. Review and correct
+the API documentation or implementation as appropriate.
+
+\section{Placement of the Quill backend}
+\label{sec:doc_issue_quill_placement}
+
+The design comment in \texttt{QuillLogger.cpp} says that the reactor pins the
+Quill backend. The implementation places the backend in
+\texttt{apply\_background\_affinity()}, before the reactor starts. Review and
+correct the comment or implementation as appropriate.
+
+\section{Application-thread termination callback}
+\label{sec:doc_issue_thread_termination_callback}
+
+The framework threading documentation describes
+\texttt{on\_termination\_event()} as the callback used when the process
+receives a termination signal. The reactor's ordinary shutdown path instead
+requests thread shutdown directly, wakes each thread, and joins it; it does
+not send a \texttt{Termination} event. Confirm whether the callback is
+intended to run during ordinary shutdown, then align the documentation or
+implementation with that behaviour.

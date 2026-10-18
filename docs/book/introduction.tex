@@ -1,0 +1,121 @@
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Aim}
+\label{sec:introduction:aim}
+
+This project provides a framework for developers building exchange systems.
+Applications built on the framework are event-driven. Their reactor dispatches
+four kinds of events to application threads: topic-based publish and subscribe
+records, inter-thread communication (ITC) messages, timer events, and activity
+on unicast socket connections. Topic-based publish and subscribe is a central
+framework facility. The framework is designed for low latency, not
+ultra-low latency.
+
+The framework also provides high-availability facilities for exchange
+applications. Paired components use leader and follower roles, and leases
+decide which instance may act. This is a simpler design than one based on a
+general consensus algorithm such as Raft or Paxos
+\cite{ongaro2014raft,lamport2001paxos}. The book states the
+behaviour required of the framework and the example venue, including the
+conditions and assumptions on which that behaviour depends.
+
+\section{Topic-based publish and subscribe}
+\label{sec:introduction:pubsub}
+
+The framework provides topic-based publish and subscribe for applications
+that need to distribute ordered records to independent subscribers. A
+subscriber can resume from an earlier position to catch up before receiving
+new records. The publisher retains the history in its write-ahead log and
+sends each subscriber a copy over that subscriber's own unicast TCP
+connection.
+
+This delivery design reflects the lack of a reliable UDP multicast system
+that has gained broad industry adoption. Protocols such as PGM and NORM have
+been specified for decades \cite{rfc3208,rfc5740}, but have not become widely
+adopted solutions. Other designs, including redundant A and B channels, were
+considered and rejected. Unicast fanout makes delivery to each subscriber
+independent, at the cost of work and network traffic that grow with the number
+of subscribers. The framework's delivery and recovery requirements are set
+out in \cref{sec:pubsub}.
+
+\section{Latency and how it is measured}
+\label{sec:introduction:latency}
+
+The design aims to keep work on the order path bounded and avoid delays caused
+by waiting for other threads. The framework uses event-driven dispatch,
+lock-free queues for inter-thread communication, single-thread ownership of
+changing state, and pre-allocated memory on hot paths. These choices reduce
+work and avoid common sources of variable delay; they do not make latency
+constant or guarantee a particular response time.
+
+The venue measures an order's round trip from when its gateway reads the
+order from the member's connection until the first byte of the execution
+report is sent back. It also records measurements at stages of the order path
+and on reactor and inter-thread hand-offs. Controlled load runs hold the
+offered rate and the load client's processor placement steady, then compare
+the resulting distributions across runs. The number of observations matters:
+the median and common percentiles can be compared with more confidence than
+rare tail percentiles from a small run. These are measurements of the tested
+configuration on a particular machine, not guarantees for every deployment.
+The measurement method and current findings are in
+\texttt{docs/operations/latency\_findings.md}.
+
+\section{The example applications}
+\label{sec:introduction:applications}
+
+The project includes example exchange applications to show how the framework
+can be used. They include FIX and binary order gateways, a sequencer, a
+matching engine, a matching engine publisher, and services for authentication,
+administration, arbitration, and witnessing. They are examples, not a
+fully-fledged exchange. For instance, the matching engine accepts and cancels
+orders but does not match buyers and sellers. The examples exercise framework
+facilities under exchange-like traffic and failure conditions; their
+limitations are stated where relevant in the book.
+
+Two Java web applications support the examples. The FIX test client lets a
+developer or operator connect through either the FIX or binary gateway, send
+and cancel orders, inspect reports, and drive repeatable tests with scripts.
+The administration service manages firms, member comp IDs, gateway
+permissions, and credentials. They are supporting applications: the test
+client exercises the venue, while the administration service provisions
+access to it.
+
+\section{How to read this book}
+\label{sec:introduction:structure}
+
+This is a functional specification, not a source-code or configuration
+reference. Its requirements state observable behaviour the framework or venue
+must provide, explain why each requirement matters, and identify the tests
+that verify it. Where the implementation does not meet a requirement, the
+book records the gap rather than changing the requirement to describe the
+shortfall. Deliberate limitations are also stated so that an example's
+boundaries are clear.
+
+The chapters follow the system from its foundations to its failure and
+recovery behaviour:
+
+\begin{itemize}[nosep]
+  \item \textbf{The framework} states the requirements for the reactor,
+        threads, inter-thread and inter-process communication, memory,
+        serialisation, timers, the write-ahead log, configuration, logging,
+        and topic-based publish and subscribe.
+  \item \textbf{The applications built on the library} states the ordinary
+        behaviour of the example exchange components and the services around
+        them.
+  \item \textbf{Building, configuring, releasing and deploying} describes
+        the project workflow, TOML configuration, and the environment
+        profiles used for development, testing, pre-production, and production.
+  \item \textbf{Security} states the requirements for protecting identities,
+        credentials, and communications.
+  \item \textbf{High availability} states what the venue must preserve when
+        processes or machines fail, and how components recover.
+  \item \textbf{Metrics} states what the system measures and makes available
+        for operational observation.
+  \item \textbf{Disaster recovery} addresses site loss and site switchover:
+        the decisions and procedures needed to resume trading elsewhere.
+\end{itemize}
+
+Implementation details, message layouts, configuration keys, and operating
+instructions are documented separately and linked from the relevant
+requirements where they help explain the system.

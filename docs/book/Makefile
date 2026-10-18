@@ -8,9 +8,11 @@ CHECK  := ../../scripts/check_book_requirements.py
 
 all: $(JOB).pdf
 
-$(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty')
+$(JOB).pdf: $(shell find . -name '*.tex' -o -name '*.sty' -o -name '*.bib')
 	$(LATEX) $(JOB).tex
 	makeglossaries $(JOB)
+	$(LATEX) $(JOB).tex
+	bibtex $(JOB)
 	$(LATEX) $(JOB).tex
 	$(LATEX) $(JOB).tex
 
@@ -31,7 +33,7 @@ $(JOB).txt: $(JOB).pdf
 	sed -i '/^refextract$$/d' $(JOB).txt
 
 clean:
-	rm -f $(JOB).pdf $(JOB).aux $(JOB).log $(JOB).toc $(JOB).out $(JOB).req
+	rm -f $(JOB).pdf $(JOB).aux $(JOB).bbl $(JOB).blg $(JOB).log $(JOB).toc $(JOB).out $(JOB).req
 	rm -f $(JOB).txt $(JOB).html $(JOB).css $(JOB).lg $(JOB).xref $(JOB).tmp $(JOB).idv $(JOB).4ct $(JOB).4tc $(JOB).dvi
 	rm -f $(JOB).glo $(JOB).gls $(JOB).glg $(JOB).acn $(JOB).acr $(JOB).alg $(JOB).ist
 	rm -f */*.aux */*/*.aux
