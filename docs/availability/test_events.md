@@ -30,27 +30,30 @@ scenarios pass, and changing the wording of any Quill message cannot make a test
 ## 2. What the tests read now
 
 The inventory, [test_events_inventory.md](test_events_inventory.md), lists every place the script reads a Quill
-log: 158 calls, grouped by the kind of fact they check. Some of the calls are inside helpers used several
-times, such as `wait_for_me_ord` and `accepted_by_engine`, so the number of checks made in a full run is larger.
+log: 171 calls, grouped by the kind of fact they check, each with what it proves and what replaces it. Some calls
+are inside helpers used several times, such as `wait_for_me_ord` and `accepted_by_engine`, so a full run makes
+more checks than that.
 
 | Kind of fact | Calls | Can a member see it? |
 |---|---|---|
 | A. Who leads: the role changes of sequencers, matching engines and arbiters | 47 | Not which instance leads. A member sees only whether the venue accepts orders |
-| B. What the matching engine did with an order or a cancel | 30 | Yes, as an execution report, for orders sent through a gateway. Not for orders the test hands straight to a sequencer with `inject_order`, whose reports go to no member by design |
+| B. What the matching engine did with an order or a cancel | 32 | Sometimes. Not for orders sent with `inject_order`, whose reports go to no member by design; not while a scenario blocks the reports on purpose; and not "applied exactly once", since a repeated report marked as a possible repeat is legitimate |
 | C. The matching engine's catch-up completing, or falling short | 2 | No |
 | D. Replication, repair and the rule that a follower that is behind does not lead | 14 | No |
-| E. Halting, and cancelling open orders on promotion | 8 | The cancels and the refusals, yes. That the engine has halted, no |
-| F. Gateway sessions: binding to an instance, disconnection, cancelling on disconnection | 13 | The cancels, yes. Which instance a session is bound to, no |
-| G. Resends and session replay | 15 | The resent messages and their sequence numbers, yes. Which sequencer answered or declined, no |
-| H. Connections between components made, lost or refused | 10 | No |
-| I. Throttles and logons | 8 | Yes: a reject, a logout, or a logon accepted |
+| E. Halting, and cancelling open orders on promotion | 10 | The cancels and the refusals, yes. That the engine has halted, no |
+| F. Gateway sessions: binding to an instance, disconnection, cancelling on disconnection | 14 | The reports and cancels, yes. Which instance a session is bound to, no |
+| G. Resends and session replay | 18 | The resent messages and their sequence numbers, yes. Which sequencer answered or declined, no |
+| H. Connections between components made, lost or refused | 10 | No, except the member's own connection |
+| I. Throttles and logons | 7 | The reject, logout or logon, yes. The limits the gateway applied, no |
 | J. The WAL written in order and undamaged, over the whole run | 2 | Not by a member; but the test can read the WAL files themselves |
 | K. The test's own fault-injection library saying it has begun blocking | 5 | Not a Quill log, but the test matches the library's own line on standard error, which phase 6 replaces with a file the library creates (decision 5) |
 | L. The helper that reads complete lines, used by the counts above | 4 | Goes when its callers go |
+| M. The gateway's progress counts, from a line it logs every few seconds | 4 | Yes: the test client counts what it sent and what was answered |
+| N. The FIX test client's own record of what it received | 2 | It is what the member received; not a Quill log of the venue, so it stays |
 
-So roughly a third of the checks can move to what a member sees, about half need test events, and a few need
-neither (J and K). Step 1 of the phase writes, for every check, the exact fact it proves and which of the three
-it becomes, before any check is changed.
+In all, 125 calls become test events, 33 move to what a member receives, 2 to the WAL files, and 5 to the
+fault-injection library's file; 2 stay and 4 go. The events they need are listed at the end of the inventory: 32 as
+first named, several of which may merge when they are defined in step 3.
 
 ## 3. The design
 
@@ -211,7 +214,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 
 1. **The inventory, check by check.** For each of the checks, the fact it proves, whether a member could see it,
    and what replaces it, written into the inventory. Andrew reviews it before step 3, because it fixes the list
-   of events.
+   of events. Done: [test_events_inventory.md](test_events_inventory.md), for review.
 2. **The Python generator and the framing**, built and checked as section 3.3 says, and the Java generator checked
    byte for byte with the same test DSL file and C++ program. This needs nothing from step 1 and can be done
    alongside it.
@@ -260,7 +263,7 @@ so they cannot be built for a list of enums either. The reference is the small C
 - **Prometheus metrics are not used for test results.** Prometheus is optional, so nothing the venue or its
   tests need may depend on it (principle V13).
 - **Unit and integration tests that do not read log wording are not changed.** Some do read it:
-  `PairLeaseAgentTest` checks 7 phrases in the log it captures and `ReplicatedWalTest` 12 (decision 6).
+  `PairLeaseAgentTest` checks 6 phrases in the log it captures and `ReplicatedWalTest` 11 (decision 6).
 - **Copilot's proposal**, which Andrew supplied, is the starting point; where this design departs from it, it says
   why (sections 3.2 and 3.3).
 
@@ -310,7 +313,7 @@ Recommended: B. **Decided: B** (Andrew, 18 October 2026).
 
 ### Decision 6. Are the unit tests that read log wording in this phase too? (Yes or no.)
 
-`PairLeaseAgentTest` and `ReplicatedWalTest` check 19 phrases between them in the logs they capture, and some of
+`PairLeaseAgentTest` and `ReplicatedWalTest` check 17 phrases between them in the logs they capture, and some of
 the `TEST CONTRACT` comments in `PairLeaseAgent` and `ReplicatedWal` are there for them. Unless they change too,
 rewording those messages would still break a test, and the phase's last step could not pass. They would check the
 class's state, or the events it sends, instead. Recommended: yes, added to the inventory in step 1. **Decided: yes** (Andrew, 18 October 2026).
