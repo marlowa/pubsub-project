@@ -4,6 +4,13 @@ This is step 1 of phase 6 ([test_events.md](test_events.md)): every place `scrip
 every phrase a unit test looks for in a captured log, with what each check proves and what replaces it. Andrew reviews it
 before step 3, because it fixes the list of test events.
 
+**Where the line falls between member checks and events was agreed with Andrew on 18 October 2026.** A check moves to
+what a member receives wherever a member can see the fact. The matching engine's outcome for an order becomes an event
+in three cases: the order was sent with `inject_order` and reaches no member by design; the scenario blocks the reports
+on purpose, so the member's silence is the expected result; or the check is that an order was applied exactly once,
+which a member cannot judge, since a report sent again after a change of leader, marked as a possible repeat, is
+legitimate.
+
 It was made on 18 October 2026 by parsing the script with Python's `ast` module and finding every call of a function
 that reads a log: the general helpers (`poll_log_for`, `count_log_marker`, `count_lines_with_all`,
 `read_complete_lines`) and the helpers that read one particular line (`me_cancel_on_failover_count`,
