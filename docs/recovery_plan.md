@@ -31,8 +31,9 @@
 > [BUG-0156](bug_list.md#bug_0156) are fixed). Its step 5 is built: the build refuses any read of the WAL in
 > the sequencer that is not in a named table of permitted reads, each with its reason
 > ([BUG-0133](bug_list.md#bug_0133) is fixed). All five steps are built, and phase 5 awaits Andrew's review.
-> After it, and before phase 6 is designed, Andrew reviews whether phases 6 and 7 still serve the guarantees
-> the venue is to give.
+> After that review comes phase 6, a channel of test events, so that the high availability tests stop reading
+> the wording of Quill log messages. Only then, before phase 7 is designed, does Andrew review whether phases 7
+> and 8 still serve the guarantees the venue is to give.
 
 ## In one page
 
@@ -176,7 +177,7 @@ the bug list:
   synchronisation), [BUG-0130](bug_list.md#bug_0130) (the log's helper keeps only one segment ready),
   [BUG-0131](bug_list.md#bug_0131) (the leading sequencer allocates from the heap for every order) and
   [BUG-0133](bug_list.md#bug_0133) (catch-ups read the log on the thread that sequences orders);
-- gaps in the venue principles, to be ordered with the rest of the bug list in phase 11 unless Andrew
+- gaps in the venue principles, to be ordered with the rest of the bug list in phase 12 unless Andrew
   brings one forward: [BUG-0132](bug_list.md#bug_0132) (orders open at the end of the day are never
   cancelled), [BUG-0134](bug_list.md#bug_0134) to [BUG-0136](bug_list.md#bug_0136) (a venue running
   without a standby) and [BUG-0137](bug_list.md#bug_0137) (no start-of-day or end-of-day procedure).
@@ -275,11 +276,37 @@ on the sequencer's thread, and the high availability scenarios pass.
 
 **Design:** [following_the_wal.md](availability/following_the_wal.md), agreed 14 October 2026.
 
-### Phase 6. Make the matching engine deterministic
+### Phase 6. Test events instead of Quill log wording
 
-**Starts only after a review.** Phases 6 and 7 change how the engine pair works and are a substantial
-design project. Once phase 5 is finished, Andrew reviews whether they still serve the guarantees the venue
-is to give, before either is designed; agreed 17 October 2026.
+**For:** high availability tests that check what the venue does, not the wording of what it writes to its
+Quill logs ([BUG-0169](bug_list.md#bug_0169)). Placed before the later phases by Andrew on 18 October 2026,
+because every finding is harder to establish while the evidence is log text.
+
+**Involves:**
+
+- an inventory of every check in `scripts/ha_test.py` that reads a Quill log, 112 waits for a phrase and about
+  40 counts and readings, each with the fact it proves and whether a member or another existing interface
+  could prove it instead;
+- checking what a member receives wherever it can be checked;
+- for the internal steps no member can see, test events sent by each component when a test asks for them,
+  defined in the DSL, and switched off otherwise;
+- a new generator in the DSL compiler that writes plain Python, beside the generators for C++, Java and
+  pybind11 bindings, so that the test harness decodes events exactly as they are encoded (decided by Andrew on
+  18 October 2026);
+- moving the checks over one kind at a time, and removing each `TEST CONTRACT` comment once no test reads the
+  message.
+
+**Finished when:** no high availability test reads a Quill log to decide whether it passes, the scenarios pass,
+and changing the wording of any Quill message cannot make a test pass or fail.
+
+**Design:** to be written and agreed before any code. Copilot's proposal, which Andrew supplied, is its starting
+point.
+
+### Phase 7. Make the matching engine deterministic
+
+**Starts only after a review.** Phases 7 and 8 change how the engine pair works and are a substantial
+design project. Once phase 6 is finished, Andrew reviews whether they still serve the guarantees the venue
+is to give, before either is designed; agreed 17 October 2026, and placed after phase 6 on 18 October 2026.
 
 **For:** a matching engine that, given the same commands in the same order, always produces the same
 book and the same reports.
@@ -298,7 +325,7 @@ book and the same reports.
 **Finished when:** both engines, run on the same WAL, produce identical reports, and the high
 availability scenarios pass.
 
-### Phase 7. Run the matching engine pair in lockstep
+### Phase 8. Run the matching engine pair in lockstep
 
 **For:** losing the leading engine costs a short pause and nothing else, without copying the book from
 one engine to the other.
@@ -311,7 +338,7 @@ removed.
 **Finished when:** the follower engine's book is built from the WAL alone, book copying is removed, and
 the high availability scenarios that promote an engine pass.
 
-### Phase 8. One check against sequencing a command twice, and the gateways as clients
+### Phase 9. One check against sequencing a command twice, and the gateways as clients
 
 **For:** the principle "a command is sequenced at most once" enforced in one place, for every command,
 however it arrived; and one way for a gateway to send commands and recognise their answers.
@@ -325,7 +352,7 @@ order path.
 **Finished when:** the separate checks are gone, the high availability scenarios that test repeated
 commands pass, and the cost is measured.
 
-### Phase 9. Divide what is left of the sequencer and the matching engine
+### Phase 10. Divide what is left of the sequencer and the matching engine
 
 **For:** a sequencer and a matching engine a reader can understand, and where a change to one job cannot
 disturb another.
@@ -355,7 +382,7 @@ small steps, with the whole test suite passing after each.
 
 **Finished when:** each is fixed and its exceptions are removed from the phase 2 list.
 
-### Phase 10. Check the models and documents against the principles
+### Phase 11. Check the models and documents against the principles
 
 **For:** the written descriptions agreeing with the repaired code.
 
@@ -365,7 +392,7 @@ under way; removing descriptions of mechanisms that phases 3 to 9 removed.
 
 **Finished when:** the documentation audit marks those documents done.
 
-### Phase 11. Return to the bug list
+### Phase 12. Return to the bug list
 
 **For:** the remaining defects, now fixed against a design that is written down.
 
@@ -383,7 +410,7 @@ not the aim. Gaps found along the way are recorded, not fixed within the phase. 
 
 - **OAR**, the external publishing of the venue's events, whose design is otherwise ready.
 - **New features of any kind.**
-- **The bug list**, except as phase 11 describes.
+- **The bug list**, except as phase 12 describes.
 - **The documentation audit of documents the plan does not touch**, which can carry on alongside,
   since it changes no code.
 

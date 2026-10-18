@@ -59,7 +59,7 @@ Phase 5 has five steps, each tested before the next starts, in the same way as p
 | A publisher's subscription: every record after the publisher's position | Each publisher, with `WalSubscribeRequest` | `SequencerThread::handle_wal_subscribe_request` | From the first segment of the WAL, whatever the position asked for | Phase 5, step 4 |
 | A member's resend request: that member's execution reports in a range | A gateway, with `SessionReplayRequest` | `SequencerThread::handle_session_replay_request` | Segments from the newest backwards until the range is covered | Not phase 5; [BUG-0113](../bug_list.md#bug_0113) (decision 3) |
 | Reports produced while a member had no connection | The sequencer, when the member's session is bound again | `SequencerThread::handle_undelivered_reports_request` | Segments from the newest backwards | Not phase 5; BUG-0113 (decision 3) |
-| Checking a command sent again against the WAL itself, while the record of identifiers cannot answer | The sequencer, when such a command arrives | `LogTailIndex`, from `SequencerThread::command_already_logged` | The end of the WAL | Not phase 5; phase 8 replaces the duplicate checks with one ([BUG-0122](../bug_list.md#bug_0122)) |
+| Checking a command sent again against the WAL itself, while the record of identifiers cannot answer | The sequencer, when such a command arrives | `LogTailIndex`, from `SequencerThread::command_already_logged` | The end of the WAL | Not phase 5; phase 9 replaces the duplicate checks with one ([BUG-0122](../bug_list.md#bug_0122)) |
 
 Two other reads are not on the order path: replay mode, a tool run against a WAL with nothing else
 running, and the building of the record of command identifiers, which already runs on a thread of its
@@ -595,7 +595,7 @@ commit's work for the order path.
 `scripts/check_standards.py` refuses any read of the WAL in the sequencer outside a
 table of permitted uses, in the same way as its table of permitted locks, each entry with its reason:
 replay mode, which runs with nothing else; the resends and undelivered reports, naming BUG-0113; and the
-duplicate check's `LogTailIndex`, naming BUG-0122 and phase 8; and the records sent to a publisher after
+duplicate check's `LogTailIndex`, naming BUG-0122 and phase 9; and the records sent to a publisher after
 it has been handed over, read back moments after they were written, through the library's
 `WalHandedOverFollowers`, naming BUG-0171 for its cost. That last read happens inside a library class, so the
 check has to look at what the sequencer constructs, not only at the readers it names. It is made to fail on
@@ -615,7 +615,7 @@ permits, and gives its reason:
 
 - replay mode, which runs with nothing else;
 - resends and requests for undelivered reports ([BUG-0113](../bug_list.md#bug_0113));
-- the duplicate check ([BUG-0122](../bug_list.md#bug_0122), phase 8);
+- the duplicate check ([BUG-0122](../bug_list.md#bug_0122), phase 9);
 - the record of command identifiers, built on a thread of its own on the background cores;
 - records read back for publishers already handed over ([BUG-0171](../bug_list.md#bug_0171));
 - every catch-up with high availability off ([BUG-0172](../bug_list.md#bug_0172));
@@ -640,7 +640,7 @@ order's round trip is measured before and after, as in phase 4.
   newest segment backwards and stop as soon as they have what they need, so an ordinary resend reads a
   few segments, measured at 7 milliseconds; one that reaches far back still reads far back. BUG-0113
   keeps them open, for the recovery service it describes.
-- **The duplicate check's reading of the WAL** stays until phase 8 replaces the checks against sequencing
+- **The duplicate check's reading of the WAL** stays until phase 9 replaces the checks against sequencing
   a command twice with one check in the library's WAL.
 - **Replay mode** is unchanged.
 - **Retention** is unchanged: the WAL is still never reclaimed during the day

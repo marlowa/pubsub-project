@@ -1298,7 +1298,7 @@ _REPLAY_MODE = 'replay mode, which runs with nothing else and sequences nothing'
 _THREAD_OF_ITS_OWN = 'runs on a thread of its own, on the background cores, not on the sequencer\'s thread'
 _HIGH_AVAILABILITY_OFF = 'only with high availability off, when there is no reading thread: BUG-0172'
 _RESENDS = 'a resend or a request for undelivered reports: BUG-0113, which moves them to a recovery service'
-_DUPLICATE_CHECK = 'the duplicate check: BUG-0122, replaced in phase 8 of docs/recovery_plan.md'
+_DUPLICATE_CHECK = 'the duplicate check: BUG-0122, replaced in phase 9 of docs/recovery_plan.md'
 _PUBLISHERS = ('a record sent to a publisher already handed over, read back moments after it was written, once '
                'whatever the number of publishers: BUG-0171')
 _NO_ENGINE = 'with no matching engine connected, to count the orders deferred: BUG-0174'

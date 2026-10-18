@@ -130,8 +130,8 @@ in the order set out in section 12 of [ha_library_boundary.md](ha_library_bounda
 - **The lease classes are the first and least risky step** (phase 3). They are already independent of
   the component using them, so moving them into the library is mostly a move.
 - **The replicated WAL leaves the sequencer for the library** (phases 4 and 5), with one writing thread.
-- **The matching engine becomes deterministic and runs in lockstep with its follower** (phases 6 and 7).
-- **Dividing the sequencer and the matching engine into parts comes last** (phase 9), because it is
+- **The matching engine becomes deterministic and runs in lockstep with its follower** (phases 7 and 8).
+- **Dividing the sequencer and the matching engine into parts comes last** (phase 10), because it is
   easier once most of what is in them has left.
 
 ## 8. Next steps

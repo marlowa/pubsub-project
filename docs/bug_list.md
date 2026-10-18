@@ -191,8 +191,10 @@ went looking.
 | How | Andrew, after a review by another assistant pointed out that the tests read the Quill logs as their interface |
 | Impact | A Quill log message cannot be reworded for the people who read it without breaking a test, often silently and in another file; a test that fails can be failing on its own reading of the log rather than on the venue, which takes time to tell apart |
 
-**What is there now.** `scripts/ha_test.py` waits for a phrase in a Quill log 108 times, and counts lines in
-one 13 times, often from a byte position in the file. 67 messages in the C++ are marked `TEST CONTRACT`
+**What is there now.** `scripts/ha_test.py` waits for a phrase in a Quill log 112 times (`poll_log_for`), counts
+lines holding a phrase 25 times (`count_log_marker`) and lines holding several phrases 10 times
+(`count_lines_with_all`), and reads counts or ranges out of log lines in seven more places, often from a byte
+position in the file. 67 messages in the C++ are marked `TEST CONTRACT`
 because a test depends on their exact wording: 15 in the FIX order gateway, 13 in the matching engine, 11 in
 the binary order gateway, 10 in the sequencer, 9 in the replicated WAL, and the rest in the arbiter and
 elsewhere. Prometheus is optional, so it cannot serve instead (principle V13 in
@@ -204,8 +206,11 @@ test counting the matching engine's lines saying it accepted an order. For the i
 otherwise see -- a follower handed over, a follower refused past a damaged record, a change of leader -- each
 component writes named test events, switched off unless configured:
 
-- through Quill's existing asynchronous backend, but by a logger of their own, to a file of their own, one
-  event a line in a fixed machine-readable form: the event's name and its named fields;
+- how the events reach the test is for the design. A file written through Quill has the very weakness being
+  removed: Quill writes in the background, so the test cannot know when the file holds every event. A
+  connection to a listener the test opens, carrying messages defined in the DSL, is the leading candidate;
+- the test harness decodes the events with Python code generated from the DSL by a new generator that writes
+  plain Python, beside the existing generators for C++, Java and pybind11 bindings (Andrew, 18 October 2026);
 - every event name and its fields listed in one header, which is the whole of the contract between the
   components and the tests, instead of the wording of 67 scattered messages;
 - each event replacing a wait on log text, not added beside it; once a message is no longer read by a test,
@@ -214,9 +219,9 @@ component writes named test events, switched off unless configured:
 
 The design comes first, and is agreed before any of it is built.
 
-**When.** After phase 5 of the recovery plan is finished, alongside [BUG-0161](#bug_0161), since both change
-how the framework is used. New tests written before then add as few log-text waits as they can. Andrew
-agreed on 17 October 2026.
+**When.** Phase 6 of the recovery plan, after the review of phase 5 and before phases 7 and 8 are reviewed;
+Andrew agreed on 17 October 2026 and placed it there on 18 October 2026. New tests written before then add as
+few log-text waits as they can.
 
 **Principles.** None directly; how the venue is tested.
 
@@ -2253,7 +2258,7 @@ This part does not depend on the recovery plan. It needs the book's table reserv
 (BUG-0028) and the queues' pools fixed in size ([BUG-0127](#bug_0127)).
 
 **A poison command: limit what it costs, because the standby cannot be relied on to survive it.**
-Once the two engines are deterministic and both apply the WAL, which is phases 6 and 7 of the recovery
+Once the two engines are deterministic and both apply the WAL, which is phases 7 and 8 of the recovery
 plan, a command that crashes one crashes the other at the same point.
 
 1. **Catch what can be caught, and reject the command.** Many faults show themselves as an exception
@@ -2275,8 +2280,8 @@ plan, a command that crashes one crashes the other at the same point.
    commands applied to the matching code, with the book's invariants checked after each one. Keep the
    gateways' strict checks of each field, so that a malformed order never reaches the engine.
 
-Parts 1 and 3 fit phase 6, making the engine deterministic, where fuzzing and running both engines on
-one WAL are natural tests. Part 2 needs phases 6 and 7.
+Parts 1 and 3 fit phase 7, making the engine deterministic, where fuzzing and running both engines on
+one WAL are natural tests. Part 2 needs phases 7 and 8.
 
 **A shared dependency or a shared mistake**, such as one disk serving both machines or the same wrong
 configuration on both, is not covered by either of the above. The answers are deployment practice, and

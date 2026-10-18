@@ -246,7 +246,7 @@ It is used on one thread only, the application thread that holds it (decision 2)
 
 The interface for an application that follows the WAL as a state machine, with a function called for
 each committed command and functions to save and restore its state, is not built in this phase. It
-belongs to phase 5, following the WAL, and phase 6, where the matching engine is the first user.
+belongs to phase 5, following the WAL, and phase 7, where the matching engine is the first user.
 
 ### 4.3 Each record's number and epoch
 
@@ -321,7 +321,7 @@ ownership of the lease agent, the epoch store and the promise recorder.
 What stays in the sequencer, because it is the venue's business: the held orders and when they go to the
 matching engine; the reports waiting for a commit and where they go; the reports kept while not leading;
 waiting for the matching engine's position after taking the lead; the record of identifiers and the
-check against sequencing a command twice (phase 8 moves that); sessions, resends and undelivered reports;
+check against sequencing a command twice (phase 9 moves that); sessions, resends and undelivered reports;
 the catch-ups of the matching engine and the publishers (phase 5 moves those); and order acceptance.
 
 ### 5.2 How step 3 is known to be right
