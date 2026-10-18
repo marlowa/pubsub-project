@@ -162,7 +162,7 @@ void SequencerThread::on_initial_event() {
     replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_);
     // Only when a test started this instance (docs/availability/test_events.md).
     if (config_.test_events.enabled) {
-        test_events_.emplace(test_event_links_, config_.cpu_layout_component, static_cast<int64_t>(config_.instance_id), "SequencerThread");
+        test_events_.emplace(test_event_links_, config_.test_events.component, static_cast<int64_t>(config_.instance_id), "SequencerThread");
         replicated_wal_->report_test_events_to(*test_events_);
     }
     // The reading thread reads only before the position published here, and sends a follower nothing

@@ -57,13 +57,19 @@ class TestEventChannel {
     TestEventChannel(TestEventLinksInterface& links, std::string component, int64_t instance, std::string thread);
 
     /**
-     * @brief Claims @p connection if it is the connection to the test, and introduces the thread on it.
+     * @brief Claims @p connection if it is the connection to the test, and introduces the thread on it; otherwise
+     *        reports it to the test as made (ConnectionChanged), when the connection to the test is up.
+     *
+     * The owner passes every connection it is told of here first, so that each one made after the connection to the
+     * test is reported.
+     *
      * @return Whether it was the connection to the test, so that the owner need not look at it further.
      */
     bool on_connection_established(const ConnectionID& connection);
 
     /**
-     * @brief Notes that @p connection has gone, if it was the connection to the test. Nothing more is sent.
+     * @brief Notes that @p connection has gone, if it was the connection to the test, after which nothing more is
+     *        sent; otherwise reports it to the test as lost (ConnectionChanged), when the connection to the test is up.
      * @return Whether it was the connection to the test. The owner says so in its Quill log: the test has failed
      *         by now, and the component carries on.
      */
@@ -91,8 +97,30 @@ class TestEventChannel {
      */
     void role_changed(std::string_view owner, int64_t instance, LeadershipRole from, LeadershipRole to, int32_t epoch);
 
+    /**
+     * @brief Something happened to an instance's lease.
+     *
+     * @param[in] owner      The lease agent's owner, as it names itself.
+     * @param[in] instance   The instance's id.
+     * @param[in] change     What happened.
+     * @param[in] granted_by For a grant, the voter whose grant made the majority; otherwise Voter::NoVoter.
+     * @param[in] epoch      The epoch it asked for, leads at, or stopped leading at.
+     */
+    void lease_changed(std::string_view owner, int64_t instance, LeaseChange change, Voter granted_by, int32_t epoch);
+
+    /**
+     * @brief This third voter granted an instance of a pair a lease.
+     *
+     * @param[in] pair_id  The pair.
+     * @param[in] instance The instance granted the lease.
+     * @param[in] epoch    The epoch of the lease.
+     */
+    void lease_granted_to(int32_t pair_id, int64_t instance, int32_t epoch);
+
   private:
     template <typename Message> void send(int16_t pdu_id, const Message& message);
+    enum class ConnectionChange { Made, Lost };
+    void connection_changed(const ConnectionID& connection, ConnectionChange change);
 
     TestEventLinksInterface& links_;
     std::string component_;

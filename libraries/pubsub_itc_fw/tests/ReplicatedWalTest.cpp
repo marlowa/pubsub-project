@@ -542,19 +542,22 @@ TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnc
 
 namespace {
 
-// Records each test event sent, decoding RoleChanged.
+// Records each test event sent, decoding RoleChanged and LeaseChanged.
 struct RecordingTestEventLinks : public TestEventLinksInterface {
     void send_test_event([[maybe_unused]] const ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) override {
-        if (pdu_id != RoleChanged::message_pdu_id) {
-            return;
-        }
         std::array<uint8_t, 256> arena_storage{};
         BumpAllocator arena(arena_storage.data(), arena_storage.size());
-        RoleChangedView view{};
         size_t consumed = 0;
         size_t arena_needed = 0;
-        ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
-        changes.push_back(Change{std::string(view.owner), view.instance, view.from_role, view.to_role, view.epoch});
+        if (pdu_id == RoleChanged::message_pdu_id) {
+            RoleChangedView view{};
+            ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+            changes.push_back(Change{std::string(view.owner), view.instance, view.from_role, view.to_role, view.epoch});
+        } else if (pdu_id == LeaseChanged::message_pdu_id) {
+            LeaseChangedView view{};
+            ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+            lease_changes.push_back(LeaseEvent{std::string(view.owner), view.instance, view.change, view.granted_by, view.epoch});
+        }
     }
     struct Change {
         std::string owner;
@@ -563,7 +566,15 @@ struct RecordingTestEventLinks : public TestEventLinksInterface {
         LeadershipRole to;
         int32_t epoch;
     };
+    struct LeaseEvent {
+        std::string owner;
+        int64_t instance;
+        LeaseChange change;
+        Voter granted_by;
+        int32_t epoch;
+    };
     std::vector<Change> changes;
+    std::vector<LeaseEvent> lease_changes;
 };
 
 } // un-named namespace
@@ -587,6 +598,24 @@ TEST(ReplicatedWalTest, EachChangeOfRoleIsReportedAsATestEventAndThePresentRoleW
     ASSERT_EQ(links.changes.size(), 2U);
     EXPECT_EQ(links.changes[1].from, LeadershipRole::Unknown);
     EXPECT_EQ(links.changes[1].to, LeadershipRole::Leader);
+}
+
+TEST(ReplicatedWalTest, TheLeaseAgentReportsAskingToLeadAndTheGrantThatMadeItLeader) {
+    RecordingTestEventLinks links;
+    TestEventChannel channel(links, "test_component", 1, "TestThread");
+    channel.on_connection_established(ConnectionID{3, std::string(TestEventChannel::service_name)});
+    Pair pair("replicated_wal_lease_events");
+    pair.test_events_[0] = &channel;
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_GE(links.lease_changes.size(), 2U);
+    EXPECT_EQ(links.lease_changes.front().change, LeaseChange::AskingToLead);
+    EXPECT_EQ(links.lease_changes.front().instance, 1);
+    EXPECT_EQ(links.lease_changes.front().granted_by, Voter::NoVoter);
+    const auto& granted = links.lease_changes.back();
+    EXPECT_EQ(granted.change, LeaseChange::Granted);
+    EXPECT_NE(granted.granted_by, Voter::NoVoter);
+    EXPECT_EQ(granted.epoch, pair.wals_[0]->epoch());
 }
 
 TEST(ReplicatedWalTest, ARecordIsCommittedOnlyOnceTheFollowerAcknowledgesIt) {

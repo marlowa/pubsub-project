@@ -28,6 +28,10 @@ struct TestEventsConfiguration {
 
     /// The port of the test's listener, which the operating system chose when the test opened it.
     uint16_t port{0};
+
+    /// The name the test knows the component by, such as "sequencer_primary", which the component's threads give in
+    /// their introduction. The test chooses it, because only the test knows which of its processes this is.
+    std::string component;
 };
 
 /**
@@ -38,9 +42,10 @@ struct TestEventsConfiguration {
  *     [test_events]
  *     host = "127.0.0.1"
  *     port = 45123
+ *     component = "sequencer_primary"
  *
- * The section is optional as a whole, and absent means no test events. Once present, both keys are required: a
- * half-filled section is a mistake in the test, and guessing the missing half would hide it.
+ * The section is optional as a whole, and absent means no test events. Once present, every key is required: a
+ * half-filled section is a mistake in the test, and guessing the missing part would hide it.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -62,6 +67,10 @@ class TestEventsConfigurationLoader {
             throw ConfigurationException(fmt::format("test_events.port must be in range [1, 65535], got {}", port));
         }
         configuration.port = static_cast<uint16_t>(port);
+        toml.get_required_except("test_events.component", configuration.component);
+        if (configuration.component.empty()) {
+            throw ConfigurationException("test_events.component must not be empty");
+        }
         return configuration;
     }
 };

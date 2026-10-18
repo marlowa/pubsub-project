@@ -98,6 +98,9 @@ int64_t ReplicatedWal::open(Clock::time_point now) {
     lease_agent_.emplace(configuration_.owner_name, logger_, lease_links_, configuration_.pair_id, configuration_.instance_id, peer_id,
                          configuration_.third_voter_id, configuration_.third_voter_name, configuration_.lease, now, epoch_,
                          PeerStatementsFlag{PeerStatementsFlag::SayWhetherPeerMayLead});
+    if (test_events_ != nullptr) {
+        lease_agent_->report_test_events_to(*test_events_);
+    }
     if (promises_elsewhere_.has_value()) {
         lease_agent_->keep_promises_in(*promises_elsewhere_->recorder, promises_elsewhere_->kept, promises_elsewhere_->kept_statement, now);
     } else {

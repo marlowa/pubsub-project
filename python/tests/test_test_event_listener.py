@@ -5,7 +5,9 @@ A component is played by a socket in the test, sending what the library's TestEv
 test_events module is made from the library's DSL file into the build tree, as the build makes it.
 """
 
+import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -42,11 +44,11 @@ def listener():
     made.close()
 
 
-def _component(listener, name="sequencer_primary"):
-    """A connected socket that has introduced itself as name's SequencerThread."""
+def _component(listener, name="sequencer_primary", process_id=None):
+    """A connected socket that has introduced itself as name's SequencerThread, running as process_id (this process if None)."""
     sock = socket.create_connection((listener.host, listener.port))
     events = listener.messages
-    hello = events.TestEventsHello(component=name, instance=1, thread="SequencerThread")
+    hello = events.TestEventsHello(component=name, instance=1, thread="SequencerThread", process_id=os.getpid() if process_id is None else process_id)
     sock.sendall(pdu_framing.encode_pdu(events.TestEventsHello.MESSAGE_ID, 1, hello.encode()))
     return sock
 
@@ -71,8 +73,8 @@ def test_events_joined_in_one_send_all_arrive_in_order(listener):
     sock = _component(listener)
     roles = listener.messages.LeadershipRole
     sock.sendall(_role_changed(listener, roles.Follower, 1) + _role_changed(listener, roles.Leader, 2) + _role_changed(listener, roles.Follower, 3))
-    assert listener.wait_for(lambda e: e.message.epoch == 3, timeout=5.0) is not None
-    assert [e.message.epoch for e in listener.events] == [1, 2, 3]
+    assert listener.wait_for(lambda e: getattr(e.message, "epoch", 0) == 3, timeout=5.0) is not None
+    assert [e.message.epoch for e in listener.events if isinstance(e.message, listener.messages.RoleChanged)] == [1, 2, 3]
     sock.close()
 
 
@@ -83,6 +85,27 @@ def test_mark_and_since_consider_only_later_events(listener):
     since = listener.mark()
     assert listener.wait_for(test_event_listener.leads(listener.messages), timeout=0.2, since=since) is None
     sock.close()
+
+
+def test_an_introduction_is_kept_as_an_event_and_marks_where_the_present_process_began(listener):
+    first = _component(listener)
+    first.sendall(_role_changed(listener, listener.messages.LeadershipRole.Leader, 1))
+    assert listener.wait_for(test_event_listener.leads(listener.messages, "sequencer_primary"), timeout=5.0) is not None
+    assert listener.find(test_event_listener.introduced(listener.messages, "sequencer_primary")) is not None
+    second = _component(listener)  # the component, started again
+    second.sendall(_role_changed(listener, listener.messages.LeadershipRole.Follower, 2))
+    assert listener.wait_for(test_event_listener.follows(listener.messages, "sequencer_primary"), timeout=5.0) is not None
+    since = listener.since_introduction("sequencer_primary")
+    assert listener.find(test_event_listener.leads(listener.messages, "sequencer_primary"), since=since) is None
+    assert listener.find(test_event_listener.follows(listener.messages, "sequencer_primary"), since=since) is not None
+    assert listener.since_introduction("nobody") == 0
+    first.close()
+    second.close()
+
+
+def test_settling_a_component_with_no_connection_needs_no_checkpoint(listener):
+    assert listener.settle("sequencer_primary", timeout=0.5)
+    assert not listener.failures
 
 
 def test_a_message_id_that_is_not_a_test_event_fails_the_test(listener):
@@ -103,19 +126,40 @@ def test_a_wrong_canary_fails_the_test(listener):
     sock.close()
 
 
-def test_a_connection_closing_while_running_fails_the_test_but_not_when_stopped_on_purpose(listener):
-    sock = _component(listener, "sequencer_secondary")
-    listener.mark()
-    sock.close()
-    with pytest.raises(test_event_listener.TestEventFailure, match="sequencer_secondary"):
-        listener.wait_for(lambda e: False, timeout=2.0)
-    second = test_event_listener.TestEventListener(_PYTHON_DIR)
-    sock = _component(second, "sequencer_secondary")
-    second.mark()
-    second.stopping("sequencer_secondary")
-    sock.close()
-    assert second.wait_for(lambda e: False, timeout=0.5) is None
-    second.close()
+def test_a_connection_closing_while_its_process_runs_on_fails_the_test():
+    short_grace = test_event_listener.TestEventListener(_PYTHON_DIR, close_grace=0.3)
+    try:
+        sock = _component(short_grace, "sequencer_secondary")  # this test's own process, which goes on running
+        short_grace.mark()
+        sock.close()
+        assert short_grace.wait_for(lambda e: False, timeout=0.1) is None  # within the grace period: not yet a failure
+        with pytest.raises(test_event_listener.TestEventFailure, match="sequencer_secondary.*still running"):
+            short_grace.wait_for(lambda e: False, timeout=2.0)
+    finally:
+        short_grace.close()
+
+
+def test_a_connection_closing_because_its_process_ended_is_expected():
+    short_grace = test_event_listener.TestEventListener(_PYTHON_DIR, close_grace=0.3)
+    finished = subprocess.Popen(["true"])  # pylint: disable=consider-using-with
+    finished.wait()
+    try:
+        sock = _component(short_grace, "sequencer_secondary", process_id=finished.pid)
+        short_grace.mark()
+        sock.close()
+        assert short_grace.wait_for(lambda e: False, timeout=1.0) is None
+    finally:
+        short_grace.close()
+
+
+def test_a_process_that_has_ended_but_not_been_waited_for_is_not_running():
+    zombie = subprocess.Popen(["true"])  # pylint: disable=consider-using-with
+    deadline = time.monotonic() + 5.0
+    while test_event_listener.process_is_running(zombie.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not test_event_listener.process_is_running(zombie.pid)
+    assert test_event_listener.process_is_running(os.getpid())
+    zombie.wait()
 
 
 def _answer_checkpoints(sock, events, stop):

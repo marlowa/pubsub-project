@@ -149,6 +149,7 @@ MatchingEngineConfiguration MatchingEngineConfigurationLoader::load(const std::s
         // concerns, and the test harnesses read their ground truth from these counters, so a
         // component must expose them whether or not it is pinned.
         config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+        config.test_events = pubsub_itc_fw::TestEventsConfigurationLoader::load(toml);
 
         // Read through the shared loader so this component is validated exactly as its
         // neighbours on the order path are, and only when metrics are on: a disabled endpoint

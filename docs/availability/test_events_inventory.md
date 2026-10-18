@@ -38,6 +38,11 @@ checks that need each. The fields given are what the checks need; the DSL defini
 
 ## A. Who leads: the role changes of sequencers, matching engines and arbiters (47)
 
+**Moved to test events in step 4** ([test_events.md](test_events.md), section 4.3). None of these calls reads a Quill log
+now. The general step paths in `do_restart_step` and in `run_scenario`'s handling of `VerifyStep` and
+`AssertAbsentStep` still read one for the steps of other kinds, so after kind A, 128 calls read a Quill log.
+The table records what each call was and what replaced it.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 15 scenarios | `do_kill_step` | secondary_log | *markers | a scenario step's expected outcome, usually that an instance leads, or that none or only one does | **Event**: RoleChanged, checked at a checkpoint for the steps that require an absence |
@@ -303,8 +308,10 @@ state, or the event the class sends in step 3, not by a test event connection.
 
 | Event | Kinds of check | Sent by |
 |---|---|---|
-| `Ready` | A | the framework, when a component's threads are operational |
-| `RoleChanged` | A | the library's lease classes, for sequencers, matching engines and arbiters |
+| `TestEventsHello` | A | each thread that sends test events, when its connection to the test is made: a component has started |
+| `RoleChanged` | A | the library's `ReplicatedWal` for sequencers, the matching engine, and the arbiter |
+| `LeaseChanged` | A | the library's `PairLeaseAgent`: asking to lead, granted a lease, lease ran out, no leader, resuming the lead |
+| `LeaseGrantedTo` | A | the arbiter, when the active arbiter grants an instance a lease |
 | `OrderApplied` | B | the matching engine, only when a test asks |
 | `OrderOutcome` | B | the matching engine, for orders no member will hear of |
 | `CaughtUp` | C | the matching engine |
@@ -329,12 +336,12 @@ state, or the event the class sends in step 3, not by a test event connection.
 | `ReplayAnswered` | G | the sequencer |
 | `ReplayDeclined` | G | the sequencer |
 | `ReplayAskedAgain` | G | the gateways |
-| `ConnectionChanged` | H | the framework's connection classes |
+| `ConnectionChanged` | A, H | `TestEventChannel`, for every connection of its thread made or lost after the connection to the test |
 | `ReportsHeld` | H | the matching engine |
 | `ReportsReleased` | H | the matching engine |
 | `ThrottleApplied` | I | the gateways |
 | `ThrottleStarted` | I | the gateways |
 | `ThrottleStopped` | I | the gateways |
 
-That is 32 events. Several may merge when they are defined, for instance the session events into one
+That is 34 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

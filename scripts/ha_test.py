@@ -210,9 +210,10 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
-from test_event_listener import TestEventListener, leads
+from test_event_listener import (ReceivedEvent, TestEventListener, connection_made, follows, granted_to, introduced, lease_changed, leads,
+                                 role_changed)
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY          = 1.0   # seconds between app launches
@@ -431,41 +432,14 @@ _GW_SIG_MISMATCH   = "ServerSignature mismatch"
 # session opened on unconfirmed numbering is not the thing the scenario meant to set up.
 _GW_SEQ_STATE_FALLBACK = "did not report this session's numbering within"
 
-# Substrings that appear together on adopt_role() log lines:
-#   "SequencerThread: role transition {from} -> {to} (epoch={n})"
-#   "ArbiterThread:   role transition {from} -> {to} (epoch={n})"
 # What a kill step establishes when nothing else is said: the secondary took over.
 _DEFAULT_KILL_OUTCOME = "elected leader"
 
-_SEQ_ROLE  = "SequencerThread: role transition"
-_ARB_ROLE  = "ArbiterThread: role transition"
-_TO_LEADER = "-> leader"
-
-# Readiness markers for a sequencer restarting as follower.
-_SEQ_FOLLOWER_MARKERS = (
-    "SequencerThread: role transition",
-    "-> follower",
-)
 _SEQ_FOLLOWER_TIMEOUT = 15.0   # seconds
 SETTLE_AFTER_RESTART  = 2.0    # seconds after a sequencer restart before proceeding
 
-# Readiness marker for a restarted matching engine.
-#
-# We wait for the sequencer's inbound ORDER connection to the ME to be
-# re-established, not just the ME's outbound ER connection.  The sequencer
-# connects outbound to ME's order listener (port configured in matching_engine
-# service registry); after a ME restart the sequencer's OutboundConnectionManager
-# retries after 2 s.  Only once this connection is up can the sequencer forward
-# sequenced orders to ME.  Waiting for "sequencer order connection established"
-# ensures both directions are ready before Phase 5 sends recovery orders.
-# The ME logs its inbound order connection as "inbound sequencer order connection
-# N established" (primary/non-HA) or "secondary sequencer order connection N
-# established" (HA secondary); match the common "sequencer order connection" +
-# "established" substrings so both forms are recognised.
-_ME_READY_MARKERS = (
-    "sequencer order connection",
-    "established",
-)
+# How long a restarted matching engine is given to start and have a sequencer connect to it
+# (expect_engine_reachable).
 _ME_READY_TIMEOUT = 15.0  # seconds
 # How long Phase 2 waits for one of a pair of matching engines to lead: comfortably more than the
 # lease period plus the secondary's head start, which is how long a pair started together takes.
@@ -473,37 +447,141 @@ _ME_LEADER_TIMEOUT = 15.0  # seconds
 _ME_SETTLE        = 1.0   # seconds after ME readiness confirmed
 
 
+class Condition(NamedTuple):
+    """One test event that an expectation needs (docs/availability/test_events.md).
+
+    component: the component whose events are searched, as this test names it, or None for any component.
+    matches:   given the generated test_events module, returns the predicate an event must satisfy. It is a function
+               rather than a predicate because the scenario table is built before the module is loaded.
+    """
+    component: str | None
+    matches: Callable[[object], Callable[[ReceivedEvent], bool]]
+
+
+class Expect(NamedTuple):
+    """
+    What a scenario step waits for, or requires not to have happened, stated as test events rather than Quill log
+    wording. Every condition must be met, each by an event of its own; the order between them is not checked.
+
+    what:       how the run's output describes it, such as "sequencer_secondary leads".
+    conditions: the events needed.
+    """
+    what: str
+    conditions: tuple
+
+
+def expect_leads(component: str) -> Expect:
+    """component takes the lead (RoleChanged to Leader)."""
+    return Expect(f"{component} leads", (Condition(component, lambda m: leads(m, component)),))
+
+
+def expect_follows(component: str) -> Expect:
+    """component follows (RoleChanged to Follower)."""
+    return Expect(f"{component} follows", (Condition(component, lambda m: follows(m, component)),))
+
+
+def expect_role(component: str) -> Expect:
+    """component reports any role (any RoleChanged): its role has been decided."""
+    return Expect(f"{component} has a role", (Condition(component, lambda m: role_changed(m, component)),))
+
+
+def expect_started(component: str) -> Expect:
+    """component has started: a thread of it introduced itself on the test event connection."""
+    return Expect(f"{component} started", (Condition(component, lambda m: introduced(m, component)),))
+
+
+def expect_engine_reachable(engine: str, service: str) -> Expect:
+    """
+    A matching engine has started and a sequencer has connected to it, so that orders the sequencer forwards reach it.
+
+    Both are needed. The engine's introduction says its thread is running; a sequencer's connection to the engine's
+    service says orders have a way in. The connection alone is not enough, because the kernel completes a connection as
+    soon as the engine listens, which can be before its thread is running. service is the name the sequencer gives the
+    engine: "matching_engine" for the primary, "matching_engine_secondary" for the secondary.
+    """
+    return Expect(f"{engine} started and a sequencer connected to it",
+                  (Condition(engine, lambda m: introduced(m, engine)), Condition(None, lambda m: connection_made(m, None, service))))
+
+
+def expect_lease(component: str, change: str, granted_by: str | None = None) -> Expect:
+    """component's lease agent reports change (a LeaseChange name), granted by granted_by (a Voter name) if given."""
+    by = f" by the {granted_by}" if granted_by else ""
+    return Expect(f"{component}: lease {change}{by}",
+                  (Condition(component, lambda m: lease_changed(m, component, getattr(m.LeaseChange, change),
+                                                                getattr(m.Voter, granted_by) if granted_by else None)),))
+
+
+def expect_granted_to(arbiter: str, pair_id: int, instance: int) -> Expect:
+    """arbiter, as the active arbiter, grants instance of pair_id a lease (LeaseGrantedTo)."""
+    return Expect(f"{arbiter} grants instance {instance} of pair {pair_id} a lease",
+                  (Condition(arbiter, lambda m: granted_to(m, arbiter, pair_id, instance)),))
+
+
+def _condition_met(condition: Condition, since: int) -> bool:
+    return _TEST_EVENTS.find(condition.matches(_TEST_EVENTS.messages), since=since) is not None
+
+
+def await_expectation(expect: Expect, timeout: float, since: int) -> tuple[bool, float]:
+    """Wait up to timeout seconds for every condition of expect to be met by an event at or after since.
+
+    Returns whether they were, and how long it took. A failure on the test event channel raises at once."""
+    started = time.monotonic()
+    deadline = started + timeout
+    while True:
+        _TEST_EVENTS.check()
+        if all(_condition_met(condition, since) for condition in expect.conditions):
+            return True, time.monotonic() - started
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, time.monotonic() - started
+        _TEST_EVENTS.pump(min(remaining, 0.05))
+
+
+def since_present_processes(expect: Expect) -> int:
+    """
+    The position from which expect is judged when a step asks what has happened since the components it names started,
+    rather than since some step of the test: the earliest of their newest introductions. This matches what reading a
+    component's Quill log from its start did, because a component the test restarts has its Quill log deleted first.
+    """
+    named = [condition.component for condition in expect.conditions if condition.component is not None]
+    if not named:
+        return 0
+    return min(_TEST_EVENTS.since_introduction(component) for component in named)
+
+
+def expectation_seen(expect: Expect, since: int) -> bool:
+    """Whether every condition of expect has been met at or after since, by what has been read once each component named
+    has been asked for a checkpoint. Used to check that something did NOT happen: without the checkpoint, an event
+    still on its way would be missed."""
+    for component in {condition.component for condition in expect.conditions if condition.component is not None}:
+        if not _TEST_EVENTS.settle(component):
+            die(f"{component} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so it is not known whether {expect.what}")
+    _TEST_EVENTS.check()
+    return all(_condition_met(condition, since) for condition in expect.conditions)
+
+
+def has_led(component: str, timeout: float) -> bool:
+    """Whether component's present process has taken the lead, waiting up to timeout seconds for it to."""
+    return await_expectation(expect_leads(component), timeout, _TEST_EVENTS.since_introduction(component))[0]
+
+
 class KillStep(NamedTuple):
     """
     One kill action within a scenario.
 
-    secondary_log_name: name of the log file to poll for a role-transition
-                        to leader.  None if no failover is expected for this
-                        kill (secondary/non-HA-critical processes).
-    role_prefix:        role-transition log prefix (_SEQ_ROLE or _ARB_ROLE).
-                        None when secondary_log_name is None.
-    settle_secs:        how long to wait after the kill (or after failover is
-                        confirmed) before proceeding to the next step.
-    failover_to:        override the derived name used in log messages for the
-                        process that takes over.  None uses the default
-                        proc_name.replace("_primary", "_secondary") derivation.
-                        Required when killing a _secondary and the _primary
-                        takes over (e.g. WAL recovery scenario).
+    takeover:      the test events that must follow the kill, normally the other instance
+                   taking the lead; None when nothing is expected to follow (a secondary, or a
+                   process whose loss changes no roles).
+    settle_secs:   how long to wait after the kill (or after the takeover is seen) before
+                   proceeding to the next step.
+    outcome_label: what seeing the takeover establishes, as a past-tense phrase, when it is
+                   not a promotion.  Scenario 8 asserts the opposite of one -- an arbiter that
+                   declines -- and a summary reading "elected leader" because an event arrived
+                   is how a run comes to report something it did not establish.
     """
     proc_name: str
-    secondary_log_name: str | None
-    role_prefix: str | None
+    takeover: Expect | None
     settle_secs: float
-    failover_to: str | None = None
-    # When set, poll for a line containing ALL of these markers instead of the
-    # default (role_prefix, _TO_LEADER).  Used for components whose promotion log
-    # line does not follow the "role transition ... -> leader" format, e.g. the
-    # matching engine's "MatchingEngineThread: adopting LEADER role".
-    leader_markers: tuple | None = None
-    # What finding those markers establishes, as a past-tense phrase, when it is
-    # not a promotion.  Scenario 8 asserts the opposite of one -- an arbiter that
-    # declines -- and a summary reading "elected leader" because a marker matched
-    # is how a run comes to report something it did not establish.
     outcome_label: str | None = None
 
 
@@ -521,12 +599,10 @@ class MachineKillStep(NamedTuple):
 
     proc_names:    every process on the machine, killed in one pass with no
                    waiting in between.
-    ready_log_name: a log to poll for the survivors taking over, or None.
-    ready_markers:  markers that must all appear on one line of that log.
+    takeover:      the test events showing the survivors took over, or None.
     """
     proc_names: tuple
-    ready_log_name: str | None
-    ready_markers: tuple
+    takeover: Expect | None
     ready_timeout: float
     settle_secs: float
 
@@ -553,19 +629,18 @@ class IsolateStep(NamedTuple):
     a second defence, but this step asserts the first one: the instance stops by
     itself, and the instance that took over keeps the entitlement.
 
-    stopped_markers:   markers on the RESUMED instance's own log showing that it
-                       found its lease had run out and stopped acting.  This is the
-                       assertion.
-    forbidden_markers: markers that must NOT appear on the survivor's log
-                       afterwards -- it must not give the entitlement back.
+    takeover:   the test events showing the peer took over while this instance was stopped.
+    stopped:    the test events from the RESUMED instance showing that it found its lease
+                had run out and stopped acting.  This is the assertion.
+    forbidden:  the test events that must NOT follow from the survivor afterwards -- it must
+                not give the entitlement back.
     """
     proc_name: str
-    takeover_log_name: str
-    takeover_markers: tuple
+    takeover: Expect
     takeover_timeout: float
-    stopped_markers: tuple
+    stopped: Expect
     stopped_timeout: float
-    forbidden_markers: tuple
+    forbidden: Expect
     settle_secs: float
 
 
@@ -573,9 +648,11 @@ class RestartStep(NamedTuple):
     """
     One kill-and-restart action within a scenario.
 
-    Kills the named process (if still running), deletes its old log so Quill
-    starts fresh, relaunches the process, and polls ready_log_name for a line
-    containing ALL of ready_markers.
+    Kills the named process (if still running), deletes its old Quill log
+    (ready_log_name) so that Quill starts a fresh one, relaunches the process, and
+    waits until it is ready: for the test events in ready, or, where readiness is
+    not yet reported as a test event, for a line of ready_log_name containing ALL
+    of ready_markers.  Exactly one of ready and ready_markers is given.
 
     resets_me_counter: True when restarting the matching engine.  Phase 5 adjusts
                        its order-count target and log-read position accordingly.
@@ -605,10 +682,11 @@ class RestartStep(NamedTuple):
     """
     proc_name: str
     ready_log_name: str
-    ready_markers: tuple
     ready_timeout: float
     resets_me_counter: bool
     settle_secs: float
+    ready: Expect | None = None
+    ready_markers: tuple = ()
     down_secs: float = 0.0
     damage_region: str = ""
     forget_lease_promises: bool = False
@@ -637,7 +715,9 @@ class SupervisedKillStep(NamedTuple):
 
 class AssertAbsentStep(NamedTuple):
     """
-    Wait, then assert a log does NOT contain a line with all of the given markers.
+    Wait, then assert that something did NOT happen: the test events in absent did not
+    arrive from the components' present processes, or, where the thing is not yet reported
+    as a test event, log_name does NOT contain a line with all of markers.
 
     For properties that are only expressible as something not having happened. A peer that
     correctly declines to promote produces no log line saying so -- the evidence is the
@@ -647,10 +727,11 @@ class AssertAbsentStep(NamedTuple):
     after_secs must comfortably exceed the window in which the thing could occur, or the
     absence proves nothing except that the test was impatient.
     """
-    log_name: str
-    markers: tuple
     after_secs: float
     description: str
+    absent: Expect | None = None
+    log_name: str = ""
+    markers: tuple = ()
     from_byte: int = 0
 
 
@@ -682,11 +763,12 @@ class OneLeaderStep(NamedTuple):
 
     For a pair started in either order with some time between the starts. Which instance leads
     then depends on which started first, and is not what is asserted; what is asserted is that
-    they settle on exactly one. The second log is checked after settle_secs, which must be long
-    enough for a second leader to have appeared if one were going to.
+    they settle on exactly one. The other instance is checked after settle_secs, which must be
+    long enough for a second leader to have appeared if one were going to.
+
+    components: the two instances, as this test names them.
     """
-    log_names: tuple
-    markers: tuple
+    components: tuple
     timeout: float
     settle_secs: float
     description: str
@@ -694,7 +776,9 @@ class OneLeaderStep(NamedTuple):
 
 class VerifyStep(NamedTuple):
     """
-    Poll a log file for a line containing ALL of the given markers.
+    Wait for the test events in expect from the components' present processes, or, where
+    the thing is not yet reported as a test event, for a line of log_name containing ALL
+    of markers.
 
     Used to verify intermediate steps of a change of leader (for example a lease
     request sent and a grant received) without relying solely on the final
@@ -706,6 +790,8 @@ class VerifyStep(NamedTuple):
     description: human-readable label shown in test output
     from_byte:   byte offset to start reading from (0 = beginning of file)
 
+    absent:         test events that must NOT have arrived from the components' present
+                    processes, checked once expect has been met.
     absent_markers: strings that must NOT all appear on any one line, checked once the
                     positive markers have been seen. Some properties are only expressible
                     as an absence -- an instance that came back as a follower is proved as
@@ -713,10 +799,12 @@ class VerifyStep(NamedTuple):
                     and a restart deletes the log first, so anything present afterwards
                     happened after the restart and nothing older can produce a false alarm.
     """
-    log_name: str
-    markers: tuple
     timeout: float
     description: str
+    expect: Expect | None = None
+    absent: Expect | None = None
+    log_name: str = ""
+    markers: tuple = ()
     from_byte: int = 0
     absent_markers: tuple = ()
 
@@ -999,7 +1087,7 @@ def _me_restart_step() -> RestartStep:
     return RestartStep(
         proc_name="matching_engine",
         ready_log_name="matching_engine.log",
-        ready_markers=_ME_READY_MARKERS,
+        ready=expect_engine_reachable("matching_engine", "matching_engine"),
         ready_timeout=_ME_READY_TIMEOUT,
         resets_me_counter=True,
         settle_secs=_ME_SETTLE,
@@ -1011,7 +1099,7 @@ def _me_primary_restart_step() -> RestartStep:
     return RestartStep(
         proc_name="matching_engine_primary",
         ready_log_name="matching_engine_primary.log",
-        ready_markers=_ME_READY_MARKERS,
+        ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
         ready_timeout=_ME_READY_TIMEOUT,
         resets_me_counter=True,
         settle_secs=_ME_SETTLE,
@@ -1119,8 +1207,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="sequencer_primary",
-                secondary_log_name="sequencer_secondary.log",
-                role_prefix=_SEQ_ROLE,
+                takeover=expect_leads("sequencer_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1140,8 +1227,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name="arbiter_secondary.log",
-                role_prefix=_ARB_ROLE,
+                takeover=expect_leads("arbiter_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1159,8 +1245,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="sequencer_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
@@ -1178,8 +1263,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
@@ -1197,8 +1281,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="witness",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
@@ -1218,14 +1301,12 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
@@ -1246,14 +1327,12 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name="arbiter_secondary.log",
-                role_prefix=_ARB_ROLE,
+                takeover=expect_leads("arbiter_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             KillStep(
                 proc_name="sequencer_primary",
-                secondary_log_name="sequencer_secondary.log",
-                role_prefix=_SEQ_ROLE,
+                takeover=expect_leads("sequencer_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1282,25 +1361,21 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="witness",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=0.0,
             ),
             VerifyStep(
-                log_name="arbiter_secondary.log",
-                markers=("ArbiterThread:", "this group has no leader"),
+                expect=expect_lease("arbiter_secondary", "NoLeader"),
                 timeout=25.0,
                 description="arbiter_secondary reported that the arbiter pool has no active arbiter",
             ),
             AssertAbsentStep(
-                log_name="arbiter_secondary.log",
-                markers=(_ARB_ROLE, _TO_LEADER),
+                absent=expect_leads("arbiter_secondary"),
                 after_secs=5.0,
                 description="arbiter_secondary did not become active with only its own vote",
             ),
@@ -1328,31 +1403,26 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
             KillStep(
                 proc_name="sequencer_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=0.0,
             ),
             VerifyStep(
-                log_name="sequencer_secondary.log",
-                markers=("SequencerThread:", "this group has no leader"),
+                expect=expect_lease("sequencer_secondary", "NoLeader"),
                 timeout=25.0,
                 description="sequencer_secondary reported that the group has no leader",
             ),
             AssertAbsentStep(
-                log_name="sequencer_secondary.log",
-                markers=(_SEQ_ROLE, _TO_LEADER),
+                absent=expect_leads("sequencer_secondary"),
                 after_secs=5.0,
                 description="sequencer_secondary did not take the lead without a majority",
             ),
@@ -1384,8 +1454,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name="arbiter_secondary.log",
-                role_prefix=_ARB_ROLE,
+                takeover=expect_leads("arbiter_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1410,14 +1479,12 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
@@ -1438,20 +1505,17 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="witness",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=SETTLE_AFTER_KILL,
             ),
         ],
@@ -1497,25 +1561,22 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="sequencer_primary",
-                secondary_log_name="sequencer_secondary.log",
-                role_prefix=_SEQ_ROLE,
+                takeover=expect_leads("sequencer_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             InterimOrdersStep(count_batches=1),
             RestartStep(
                 proc_name="sequencer_primary",
                 ready_log_name="sequencer_primary.log",
-                ready_markers=_SEQ_FOLLOWER_MARKERS,
+                ready=expect_follows("sequencer_primary"),
                 ready_timeout=_SEQ_FOLLOWER_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
             ),
             KillStep(
                 proc_name="sequencer_secondary",
-                secondary_log_name="sequencer_primary.log",
-                role_prefix=_SEQ_ROLE,
+                takeover=expect_leads("sequencer_primary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="sequencer_primary",
             ),
         ],
     ),
@@ -1543,31 +1604,26 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="sequencer_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=0.0,
             ),
             VerifyStep(
-                log_name="sequencer_secondary.log",
-                markers=("SequencerThread:", "asking the peer and the arbiter to let this instance lead"),
+                expect=expect_lease("sequencer_secondary", "AskingToLead"),
                 timeout=25.0,
                 description="sequencer_secondary asked to lead",
             ),
             VerifyStep(
-                log_name="arbiter_primary.log",
-                markers=("group=sequencer lease granted to instance 2",),
+                expect=expect_granted_to("arbiter_primary", 1, 2),
                 timeout=5.0,
                 description="arbiter_primary granted sequencer_secondary a lease",
             ),
             VerifyStep(
-                log_name="sequencer_secondary.log",
-                markers=("SequencerThread: leading at epoch", "granted a lease by the arbiter"),
+                expect=expect_lease("sequencer_secondary", "Granted", "ThirdVoter"),
                 timeout=5.0,
                 description="sequencer_secondary received the grant",
             ),
             VerifyStep(
-                log_name="sequencer_secondary.log",
-                markers=(_SEQ_ROLE, _TO_LEADER),
+                expect=expect_leads("sequencer_secondary"),
                 timeout=5.0,
                 description="sequencer_secondary transitioned to leader",
             ),
@@ -1593,11 +1649,8 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
         ],
     ),
@@ -1621,8 +1674,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="authentication_service_a",
-                secondary_log_name=None,   # active/active — no promotion to await
-                role_prefix=None,
+                takeover=None,   # active/active — no promotion to await
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1688,8 +1740,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="fix_order_gateway_a",
-                secondary_log_name=None,   # nothing is elected — that is the point
-                role_prefix=None,
+                takeover=None,   # nothing is elected — that is the point
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1697,7 +1748,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="matching_engine",
                 ready_log_name="matching_engine.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=True,
                 settle_secs=_ME_SETTLE,
@@ -1806,11 +1857,8 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
         ],
     ),
@@ -1904,8 +1952,7 @@ _SCENARIOS: list[Scenario] = [
         steps=[
             KillStep(
                 proc_name="fix_order_gateway_a",
-                secondary_log_name=None,   # nothing is elected -- a gateway elects nothing
-                role_prefix=None,
+                takeover=None,   # nothing is elected -- a gateway elects nothing
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -1950,35 +1997,30 @@ _SCENARIOS: list[Scenario] = [
             # 1. Kill the primary and let the secondary promote properly, timeout and all.
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
             # 2. Bring the primary back. The restart deletes its log first, so everything
             #    asserted on below happened after it came back.
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             # 3. The assertion the fix exists for, stated both ways round.
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "role now FOLLOWER"),
+                expect=expect_follows("matching_engine_primary"),
                 timeout=30.0,
                 description="restarted primary is assigned the follower role",
-                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
+                absent=expect_leads("matching_engine_primary"),
             ),
             # 4. And the secondary must have kept it throughout -- a leadership that moved
             #    and moved back would satisfy step 3 on its own.
             VerifyStep(
-                log_name="matching_engine_secondary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                expect=expect_leads("matching_engine_secondary"),
                 timeout=5.0,
                 description="promoted secondary still holds leadership",
             ),
@@ -2018,24 +2060,20 @@ _SCENARIOS: list[Scenario] = [
             # 1. Fail the primary so the secondary leads.
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
             # 2. Bring the primary back. It follows, and grants its peer its vote.
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "role now FOLLOWER"),
+                expect=expect_follows("matching_engine_primary"),
                 timeout=30.0,
                 description="the restarted primary follows the secondary",
             ),
@@ -2043,20 +2081,18 @@ _SCENARIOS: list[Scenario] = [
             #    and restarts one component before moving to the next, so both are killed first.
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=1.0,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=5.0,
             ),
             RestartStep(
                 proc_name="arbiter_primary",
                 ready_log_name="arbiter_primary.log",
-                ready_markers=(_ARB_ROLE,),
+                ready=expect_role("arbiter_primary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=1.0,
@@ -2064,21 +2100,19 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="arbiter_secondary",
                 ready_log_name="arbiter_secondary.log",
-                ready_markers=("ArbiterThread:",),
+                ready=expect_started("arbiter_secondary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             # 4. The assertions. The secondary never lost its lease, and the primary never led.
             AssertAbsentStep(
-                log_name="matching_engine_secondary.log",
-                markers=("MatchingEngineThread:", "lease ran out"),
+                absent=expect_lease("matching_engine_secondary", "RanOut"),
                 after_secs=10.0,
                 description="the secondary kept its lease while the arbiters were away and after they returned",
             ),
             AssertAbsentStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                absent=expect_leads("matching_engine_primary"),
                 after_secs=0.0,
                 description="the restarted primary never led",
             ),
@@ -2125,8 +2159,7 @@ _SCENARIOS: list[Scenario] = [
             # a few seconds. Waiting 25 leaves no room for argument about whether the secondary
             # simply had not got round to it.
             AssertAbsentStep(
-                log_name="matching_engine_secondary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                absent=expect_leads("matching_engine_secondary"),
                 after_secs=25.0,
                 description="the secondary never promoted, because the restart beat its timeout",
             ),
@@ -2162,8 +2195,7 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=2.0,
             ),
             AssertAbsentStep(
-                log_name="sequencer_secondary.log",
-                markers=(_SEQ_ROLE, _TO_LEADER),
+                absent=expect_leads("sequencer_secondary"),
                 after_secs=25.0,
                 description="sequencer_secondary never elected itself, because the restart beat its timeout",
             ),
@@ -2197,8 +2229,7 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=2.0,
             ),
             AssertAbsentStep(
-                log_name="arbiter_secondary.log",
-                markers=(_ARB_ROLE, _TO_LEADER),
+                absent=expect_leads("arbiter_secondary"),
                 after_secs=25.0,
                 description="arbiter_secondary never became active, because the restart beat its timeout",
             ),
@@ -2242,8 +2273,7 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=_ME_SETTLE,
             ),
             AssertAbsentStep(
-                log_name="matching_engine_secondary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                absent=expect_leads("matching_engine_secondary"),
                 after_secs=20.0,
                 description="the restarted follower never promoted itself",
             ),
@@ -2270,14 +2300,13 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="sequencer_secondary",
                 ready_log_name="sequencer_secondary.log",
-                ready_markers=_SEQ_FOLLOWER_MARKERS,
+                ready=expect_follows("sequencer_secondary"),
                 ready_timeout=_SEQ_FOLLOWER_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
             ),
             AssertAbsentStep(
-                log_name="sequencer_secondary.log",
-                markers=(_SEQ_ROLE, _TO_LEADER),
+                absent=expect_leads("sequencer_secondary"),
                 after_secs=20.0,
                 description="the restarted follower sequencer never elected itself",
             ),
@@ -2303,14 +2332,13 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="arbiter_secondary",
                 ready_log_name="arbiter_secondary.log",
-                ready_markers=("ArbiterThread:",),
+                ready=expect_started("arbiter_secondary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
             ),
             AssertAbsentStep(
-                log_name="arbiter_secondary.log",
-                markers=(_ARB_ROLE, _TO_LEADER),
+                absent=expect_leads("arbiter_secondary"),
                 after_secs=20.0,
                 description="the restarted passive arbiter never became active",
             ),
@@ -2349,23 +2377,19 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "role now FOLLOWER"),
+                expect=expect_follows("matching_engine_primary"),
                 timeout=60.0,
                 description="the rejoined primary is a follower before the second failure",
             ),
@@ -2385,11 +2409,8 @@ _SCENARIOS: list[Scenario] = [
             # Now the second failure, in the other direction.
             KillStep(
                 proc_name="matching_engine_secondary",
-                secondary_log_name="matching_engine_primary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_primary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_primary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
         ],
     ),
@@ -2415,14 +2436,13 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name="arbiter_secondary.log",
-                role_prefix=_ARB_ROLE,
+                takeover=expect_leads("arbiter_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             RestartStep(
                 proc_name="arbiter_primary",
                 ready_log_name="arbiter_primary.log",
-                ready_markers=("ArbiterThread:",),
+                ready=expect_started("arbiter_primary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
@@ -2431,10 +2451,8 @@ _SCENARIOS: list[Scenario] = [
             # rejoining -- must now take over.
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name="arbiter_primary.log",
-                role_prefix=_ARB_ROLE,
+                takeover=expect_leads("arbiter_primary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="arbiter_primary",
             ),
         ],
     ),
@@ -2464,23 +2482,19 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
             KillStep(
                 proc_name="matching_engine_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=2.0,
             ),
             # Secondary back first, deliberately.
             RestartStep(
                 proc_name="matching_engine_secondary",
                 ready_log_name="matching_engine_secondary.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine_secondary", "matching_engine_secondary"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
@@ -2488,14 +2502,13 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
             ),
             OneLeaderStep(
-                log_names=("matching_engine_primary.log", "matching_engine_secondary.log"),
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                components=("matching_engine_primary", "matching_engine_secondary"),
                 timeout=90.0,
                 settle_secs=10.0,
                 description="exactly one of the two engines leads",
@@ -2528,31 +2541,26 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=1.0,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=2.0,
             ),
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=0.0,
             ),
             VerifyStep(
-                log_name="matching_engine_secondary.log",
-                markers=("MatchingEngineThread:", "this group has no leader"),
+                expect=expect_lease("matching_engine_secondary", "NoLeader"),
                 timeout=25.0,
                 description="the secondary reported that the group has no leader",
             ),
             AssertAbsentStep(
-                log_name="matching_engine_secondary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                absent=expect_leads("matching_engine_secondary"),
                 after_secs=5.0,
                 description="the secondary did not take the lead without a majority",
             ),
@@ -2577,20 +2585,18 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="sequencer_primary",
-                secondary_log_name="sequencer_secondary.log",
-                role_prefix=_SEQ_ROLE,
+                takeover=expect_leads("sequencer_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             KillStep(
                 proc_name="sequencer_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=2.0,
             ),
             RestartStep(
                 proc_name="sequencer_secondary",
                 ready_log_name="sequencer_secondary.log",
-                ready_markers=("SequencerThread:",),
+                ready=expect_started("sequencer_secondary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
@@ -2598,7 +2604,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="sequencer_primary",
                 ready_log_name="sequencer_primary.log",
-                ready_markers=("SequencerThread:",),
+                ready=expect_started("sequencer_primary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 # Longer than the usual settle: restarting a sequencer takes the gateway's
@@ -2609,8 +2615,7 @@ _SCENARIOS: list[Scenario] = [
                 settle_secs=10.0,
             ),
             OneLeaderStep(
-                log_names=("sequencer_primary.log", "sequencer_secondary.log"),
-                markers=(_SEQ_ROLE, _TO_LEADER),
+                components=("sequencer_primary", "sequencer_secondary"),
                 timeout=90.0,
                 settle_secs=10.0,
                 description="exactly one of the two sequencers leads",
@@ -2664,20 +2669,18 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=1.0,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=2.0,
             ),
             RestartStep(
                 proc_name="sequencer_primary",
                 ready_log_name="sequencer_primary.log",
-                ready_markers=("SequencerThread:",),
+                ready=expect_started("sequencer_primary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 # Longer than the usual settle: restarting a sequencer takes the gateway's
@@ -2691,8 +2694,7 @@ _SCENARIOS: list[Scenario] = [
             # its own vote and the peer's make a majority of three. It gets it because it kept a
             # record of leading, and the peer promised its vote to it.
             VerifyStep(
-                log_name="sequencer_primary.log",
-                markers=("SequencerThread:", "leading at epoch", "granted a lease by the peer"),
+                expect=expect_lease("sequencer_primary", "Granted", "Peer"),
                 timeout=90.0,
                 description="the sequencer resolves leadership with its peer, needing no arbiter",
             ),
@@ -2709,8 +2711,7 @@ _SCENARIOS: list[Scenario] = [
             # claim stronger, since the peer has had three times the promotion timeout to
             # elect itself and has not.
             AssertAbsentStep(
-                log_name="sequencer_secondary.log",
-                markers=(_SEQ_ROLE, _TO_LEADER),
+                absent=expect_leads("sequencer_secondary"),
                 after_secs=45.0,
                 description="the secondary did not also elect itself with no arbiter present",
             ),
@@ -2737,20 +2738,18 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="arbiter_primary",
-                secondary_log_name="arbiter_secondary.log",
-                role_prefix=_ARB_ROLE,
+                takeover=expect_leads("arbiter_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=2.0,
             ),
             RestartStep(
                 proc_name="arbiter_secondary",
                 ready_log_name="arbiter_secondary.log",
-                ready_markers=("ArbiterThread:",),
+                ready=expect_started("arbiter_secondary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
@@ -2758,14 +2757,13 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="arbiter_primary",
                 ready_log_name="arbiter_primary.log",
-                ready_markers=("ArbiterThread:",),
+                ready=expect_started("arbiter_primary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
             ),
             OneLeaderStep(
-                log_names=("arbiter_primary.log", "arbiter_secondary.log"),
-                markers=(_ARB_ROLE, _TO_LEADER),
+                components=("arbiter_primary", "arbiter_secondary"),
                 timeout=90.0,
                 settle_secs=10.0,
                 description="exactly one of the two arbiters is active",
@@ -2798,33 +2796,29 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             KillStep(
                 proc_name="witness",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=1.0,
             ),
             KillStep(
                 proc_name="arbiter_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=1.0,
             ),
             RestartStep(
                 proc_name="arbiter_primary",
                 ready_log_name="arbiter_primary.log",
-                ready_markers=("ArbiterThread:",),
+                ready=expect_started("arbiter_primary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
             ),
             VerifyStep(
-                log_name="arbiter_primary.log",
-                markers=("ArbiterThread:", "this group has no leader"),
+                expect=expect_lease("arbiter_primary", "NoLeader"),
                 timeout=30.0,
                 description="the lone arbiter reported that the pool has no active arbiter",
             ),
             AssertAbsentStep(
-                log_name="arbiter_primary.log",
-                markers=(_ARB_ROLE, _TO_LEADER),
+                absent=expect_leads("arbiter_primary"),
                 after_secs=5.0,
                 description="the lone arbiter did not become active with only its own vote",
             ),
@@ -3010,11 +3004,8 @@ _SCENARIOS: list[Scenario] = [
             # 1. Fail the primary so the secondary is genuinely leading.
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
             # 2. Orders the promoted secondary takes while the primary is down. Without these the
             #    primary's catch-up has nothing to stream -- its region is already at the head --
@@ -3025,7 +3016,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=0.0,
@@ -3046,7 +3037,7 @@ _SCENARIOS: list[Scenario] = [
                 markers=("MatchingEngineThread:", "waiting to be told what it may do"),
                 timeout=30.0,
                 description="it becomes current without taking the role",
-                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
+                absent=expect_leads("matching_engine_primary"),
             ),
             # 6. Once its lease period has passed it grants its peer a renewal and follows, and the
             #    reports it produced while catching up go nowhere. It applied those records and
@@ -3058,7 +3049,7 @@ _SCENARIOS: list[Scenario] = [
                 markers=("MatchingEngineThread:", "discarding", "held report(s)"),
                 timeout=30.0,
                 description="the reports from its catch-up are discarded rather than sent",
-                absent_markers=("MatchingEngineThread:", "adopting LEADER role"),
+                absent=expect_leads("matching_engine_primary"),
             ),
         ],
     ),
@@ -3093,11 +3084,8 @@ _SCENARIOS: list[Scenario] = [
             #    follow are taken by a real leader rather than by nobody.
             KillStep(
                 proc_name="matching_engine_primary",
-                secondary_log_name="matching_engine_secondary.log",
-                role_prefix=None,
+                takeover=expect_leads("matching_engine_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
-                failover_to="matching_engine_secondary",
-                leader_markers=("MatchingEngineThread:", "adopting LEADER role"),
             ),
             # 2. Orders the leader takes while the primary is down. Without these the catch-up
             #    that follows has nothing to stream and no reports to hold, and this scenario
@@ -3106,8 +3094,7 @@ _SCENARIOS: list[Scenario] = [
             # 3. And now the leader as well, so the instance that comes back must serve.
             KillStep(
                 proc_name="matching_engine_secondary",
-                secondary_log_name=None,
-                role_prefix=None,
+                takeover=None,
                 settle_secs=2.0,
             ),
             # 4. The primary comes back knowing nothing of what it promised, catches up, and
@@ -3115,7 +3102,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="matching_engine_primary",
                 ready_log_name="matching_engine_primary.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=True,
                 settle_secs=0.0,
@@ -3129,8 +3116,7 @@ _SCENARIOS: list[Scenario] = [
             ),
             # 5. It becomes the one serving, with the arbiter's grant.
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "adopting LEADER role"),
+                expect=expect_leads("matching_engine_primary"),
                 timeout=30.0,
                 description="the instance that was holding becomes the one serving",
             ),
@@ -3271,8 +3257,7 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             MachineKillStep(
                 proc_names=("arbiter_primary", "sequencer_primary", "matching_engine_primary"),
-                ready_log_name="matching_engine_secondary.log",
-                ready_markers=("MatchingEngineThread:", "adopting LEADER role"),
+                takeover=expect_leads("matching_engine_secondary"),
                 ready_timeout=45.0,
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
@@ -3307,12 +3292,11 @@ _SCENARIOS: list[Scenario] = [
         extra_steps=[
             IsolateStep(
                 proc_name="sequencer_primary",
-                takeover_log_name="sequencer_secondary.log",
-                takeover_markers=(_SEQ_ROLE, _TO_LEADER),
+                takeover=expect_leads("sequencer_secondary"),
                 takeover_timeout=45.0,
-                stopped_markers=("SequencerThread:", "lease ran out", "stops leading"),
+                stopped=expect_lease("sequencer_primary", "RanOut"),
                 stopped_timeout=10.0,
-                forbidden_markers=(_SEQ_ROLE, "-> follower"),
+                forbidden=expect_follows("sequencer_secondary"),
                 settle_secs=SETTLE_AFTER_FAILOVER,
             ),
         ],
@@ -3378,7 +3362,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="matching_engine",
                 ready_log_name="matching_engine.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=True,
                 settle_secs=_ME_SETTLE,
@@ -3422,7 +3406,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="matching_engine",
                 ready_log_name="matching_engine.log",
-                ready_markers=_ME_READY_MARKERS,
+                ready=expect_engine_reachable("matching_engine", "matching_engine"),
                 ready_timeout=_ME_READY_TIMEOUT,
                 resets_me_counter=True,
                 settle_secs=_ME_SETTLE,
@@ -4992,18 +4976,20 @@ def process_is_stopped(pid: int) -> bool:
 _TEST_EVENTS: TestEventListener | None = None
 
 # The components that send test events so far. Others are added as their checks move onto test events.
-_TEST_EVENT_COMPONENTS = ("sequencer",)
+_TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter")
 
 
-def config_with_test_events(config: Path, listener: TestEventListener) -> Path:
-    """A copy of a component's configuration with a [test_events] section naming the listener.
+def config_with_test_events(config: Path, listener: TestEventListener, name: str) -> Path:
+    """A copy of a component's configuration with a [test_events] section naming the listener, and the name this test
+    knows the component by, which its threads give when they introduce themselves.
 
-    Written beside the original, so that the paths in it still resolve, and used instead of it."""
+    Written beside the original, so that the paths in it still resolve, and used instead of it. Named after the
+    component, not the original file, because two components can be started from one file."""
     text = config.read_text()
     if "[test_events]" in text:
         die(f"config_with_test_events: {config} already has a [test_events] section")
-    text = text.rstrip("\n") + f"\n\n[test_events]\nhost = \"{listener.host}\"\nport = {listener.port}\n"
-    copy = config.with_name(config.stem + "_test_events.toml")
+    text = text.rstrip("\n") + f"\n\n[test_events]\nhost = \"{listener.host}\"\nport = {listener.port}\ncomponent = \"{name}\"\n"
+    copy = config.with_name(f"{name}_test_events.toml")
     copy.write_text(text)
     return copy
 
@@ -5028,8 +5014,7 @@ def launch_app(name: str, bin_name: str, config: Path,
     if not config.is_file():
         die(f"config not found: {config}")
     if _TEST_EVENTS is not None and bin_name in _TEST_EVENT_COMPONENTS:
-        config = config_with_test_events(config, _TEST_EVENTS)
-        _TEST_EVENTS.started(name)
+        config = config_with_test_events(config, _TEST_EVENTS, name)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -5783,16 +5768,15 @@ def kill_summary_line(outcome: str | None, label: str, elapsed: float) -> str:
 def do_kill_step(
     step: KillStep,
     proc_by_name: dict[str, subprocess.Popen],
-    log_dir: Path,
     failover_timeout: float,
 ) -> tuple[str | None, str, float]:
     """
     Execute one KillStep: SIGKILL the target process, then either:
-      - poll the secondary log for what the step says must follow (if anything), or
-      - settle briefly without waiting for any transition.
+      - wait for the test events the step says must follow (if any), or
+      - settle briefly without waiting for anything.
 
     Returns (outcome, label, elapsed_seconds).
-      outcome: the phrase describing what was established; label is the secondary's name.
+      outcome: the phrase describing what was established; label is what the step expected.
                None → nothing was expected to follow; label is the killed process.
       elapsed_seconds: how long the outcome took, or 0.0 where none was awaited.
     """
@@ -5800,60 +5784,36 @@ def do_kill_step(
     if proc is None or proc.poll() is not None:
         die(f"{step.proc_name} is not running — cannot kill")
 
-    # Capture secondary log EOF before the kill so we skip startup content.
-    secondary_log_pos = (
-        file_end(log_dir / step.secondary_log_name)
-        if step.secondary_log_name
-        else 0
-    )
+    # Only events that arrive after the kill can show what the kill caused.
+    since = _TEST_EVENTS.mark()
 
     log(f"  SIGKILL → {step.proc_name} (PID {proc.pid})")
     proc.kill()
     proc.wait()
+    if Path(f"/proc/{proc.pid}").exists():
+        die(f"{step.proc_name} (PID {proc.pid}) is still running after SIGKILL")
     log(f"  {step.proc_name} confirmed dead")
 
-    if step.secondary_log_name is None:
-        # No failover expected for this kill.
+    if step.takeover is None:
         log(f"  No failover expected; settling {step.settle_secs:.0f}s ...")
         time.sleep(step.settle_secs)
         return None, step.proc_name, 0.0
 
-    # Failover expected: poll the secondary log for the leader role transition.
-    secondary_name = (
-        step.failover_to
-        if step.failover_to
-        else step.proc_name.replace("_primary", "_secondary")
-    )
-    secondary_log  = log_dir / step.secondary_log_name
-
-    markers = step.leader_markers if step.leader_markers else (step.role_prefix, _TO_LEADER)
-    log(
-        f"  Watching {step.secondary_log_name} for "
-        f"{' ... '.join(repr(m) for m in markers)} "
-        f"(timeout {failover_timeout:.0f}s) ..."
-    )
-    found, elapsed, _ = poll_log_for(
-        secondary_log, *markers,
-        timeout=failover_timeout,
-        from_byte=secondary_log_pos,
-    )
+    log(f"  Waiting for: {step.takeover.what} (timeout {failover_timeout:.0f}s) ...")
+    found, elapsed = await_expectation(step.takeover, failover_timeout, since)
     outcome = step.outcome_label if step.outcome_label else _DEFAULT_KILL_OUTCOME
     if not found:
-        die(
-            f"{secondary_name} did not reach '{outcome}' within "
-            f"{failover_timeout:.0f}s"
-        )
+        die(f"not seen within {failover_timeout:.0f}s of killing {step.proc_name}: {step.takeover.what}")
 
-    log(f"  {secondary_name} {outcome} ({elapsed:.1f}s after kill)")
+    log(f"  {step.takeover.what} ({elapsed:.1f}s after kill)")
     log(f"  Settling {step.settle_secs:.0f}s for connections to stabilise ...")
     time.sleep(step.settle_secs)
-    return outcome, secondary_name, elapsed
+    return outcome, step.takeover.what, elapsed
 
 
 def do_machine_kill_step(
     step: MachineKillStep,
     proc_by_name: dict[str, subprocess.Popen],
-    log_dir: Path,
 ) -> tuple[str | None, str, float]:
     """
     Kill every named process without waiting between them, then poll for the
@@ -5862,7 +5822,7 @@ def do_machine_kill_step(
     testing something else.
     """
     label = ", ".join(step.proc_names)
-    poll_from = file_end(log_dir / step.ready_log_name) if step.ready_log_name else 0
+    since = _TEST_EVENTS.mark()
 
     log(f"  SIGKILL -> every process on one machine: {label}")
     killed = []
@@ -5877,18 +5837,16 @@ def do_machine_kill_step(
 
     for name, proc in killed:
         proc.wait()
+        if Path(f"/proc/{proc.pid}").exists():
+            die(f"machine kill: {name} (PID {proc.pid}) is still running after SIGKILL")
     log(f"  {len(killed)} process(es) confirmed dead, and none will be restarted")
 
-    if step.ready_log_name is None:
+    if step.takeover is None:
         time.sleep(step.settle_secs)
         return _DEFAULT_KILL_OUTCOME, label, 0.0
 
-    markers = " + ".join(repr(m) for m in step.ready_markers)
-    log(f"  Waiting for {step.ready_log_name}: {markers} (timeout {step.ready_timeout:.0f}s) ...")
-    found, elapsed, _ = poll_log_for(
-        log_dir / step.ready_log_name, *step.ready_markers,
-        timeout=step.ready_timeout, from_byte=poll_from,
-    )
+    log(f"  Waiting for: {step.takeover.what} (timeout {step.ready_timeout:.0f}s) ...")
+    found, elapsed = await_expectation(step.takeover, step.ready_timeout, since)
     if not found:
         die(f"machine kill: nothing on the surviving machine took over within {step.ready_timeout:.0f}s")
     log(f"  the surviving machine took over ({elapsed:.1f}s)")
@@ -5899,42 +5857,29 @@ def do_machine_kill_step(
 def do_isolate_step(
     step: IsolateStep,
     proc_by_name: dict[str, subprocess.Popen],
-    log_dir: Path,
 ) -> tuple[str | None, str, float]:
     """Freeze the named process, wait for its peer to take over, then let it run again."""
     proc = proc_by_name.get(step.proc_name)
     if proc is None or proc.poll() is not None:
         die(f"isolate: '{step.proc_name}' is not running")
 
-    own_log = log_dir / f"{step.proc_name}.log"
-    takeover_from = file_end(log_dir / step.takeover_log_name)
-
+    takeover_from = _TEST_EVENTS.mark()
     log(f"  SIGSTOP -> {step.proc_name} (PID {proc.pid}): alive, holding its sockets, renewing nothing")
     os.kill(proc.pid, signal.SIGSTOP)
 
-    markers = " + ".join(repr(m) for m in step.takeover_markers)
-    log(f"  Waiting for {step.takeover_log_name}: {markers} (timeout {step.takeover_timeout:.0f}s) ...")
-    found, elapsed, _ = poll_log_for(
-        log_dir / step.takeover_log_name, *step.takeover_markers,
-        timeout=step.takeover_timeout, from_byte=takeover_from,
-    )
+    log(f"  Waiting for: {step.takeover.what} (timeout {step.takeover_timeout:.0f}s) ...")
+    found, elapsed = await_expectation(step.takeover, step.takeover_timeout, takeover_from)
     if not found:
         os.kill(proc.pid, signal.SIGCONT)
         die(f"isolate: the peer did not take over within {step.takeover_timeout:.0f}s")
     log(f"  the peer took over ({elapsed:.1f}s) while {step.proc_name} still believed it was entitled to act")
 
-    survivor_log = log_dir / step.takeover_log_name
-    survivor_from = file_end(survivor_log)
-    own_from = file_end(own_log)
+    resumed_from = _TEST_EVENTS.mark()
     log(f"  SIGCONT -> {step.proc_name}: its lease ran out while it was stopped, which it finds on waking")
     os.kill(proc.pid, signal.SIGCONT)
 
-    markers = " + ".join(repr(m) for m in step.stopped_markers)
-    log(f"  Waiting for {step.proc_name} to stop acting by itself: {markers} (timeout {step.stopped_timeout:.0f}s) ...")
-    found, stopped_elapsed, _ = poll_log_for(
-        own_log, *step.stopped_markers,
-        timeout=step.stopped_timeout, from_byte=own_from,
-    )
+    log(f"  Waiting for {step.proc_name} to stop acting by itself: {step.stopped.what} (timeout {step.stopped_timeout:.0f}s) ...")
+    found, stopped_elapsed = await_expectation(step.stopped, step.stopped_timeout, resumed_from)
     if not found:
         die(f"isolate: {step.proc_name} did not report that its lease had run out within {step.stopped_timeout:.0f}s of waking")
     log(f"  {step.proc_name} stopped acting by itself ({stopped_elapsed:.1f}s)")
@@ -5942,11 +5887,9 @@ def do_isolate_step(
     time.sleep(step.settle_secs)
 
     # And the entitlement must not have gone back.
-    tail = survivor_log.read_text(errors="replace")[survivor_from:]
-    for line in tail.splitlines():
-        if all(m in line for m in step.forbidden_markers):
-            die(f"isolate: the survivor gave the entitlement back to a superseded instance: {line.strip()}")
-    log(f"  the survivor kept the entitlement -- checked {len(tail.splitlines())} line(s) since the resume")
+    if expectation_seen(step.forbidden, resumed_from):
+        die(f"isolate: the survivor gave the entitlement back to a superseded instance: {step.forbidden.what}")
+    log(f"  the survivor kept the entitlement -- checked every event it sent since the resume, up to a checkpoint: not seen: {step.forbidden.what}")
     return _DEFAULT_KILL_OUTCOME, step.proc_name, elapsed
 
 
@@ -5960,17 +5903,21 @@ def do_restart_step(
     var_dir: Path,
 ) -> float:
     """
-    Kill the named process (if still running), delete its log so Quill starts
-    fresh, relaunch it, and poll for readiness markers.
+    Kill the named process (if still running), delete its Quill log so that Quill
+    starts a fresh one, relaunch it, and wait until it is ready.
 
     Updates proc_by_name and app_procs in place.
     Returns elapsed seconds from relaunch to readiness.
     """
+    if (step.ready is None) == (not step.ready_markers):
+        die(f"restart step for {step.proc_name}: give exactly one of ready and ready_markers")
     proc = proc_by_name.get(step.proc_name)
     if proc is not None and proc.poll() is None:
         log(f"  SIGKILL → {step.proc_name} (PID {proc.pid})")
         proc.kill()
         proc.wait()
+        if Path(f"/proc/{proc.pid}").exists():
+            die(f"{step.proc_name} (PID {proc.pid}) is still running after SIGKILL")
         log(f"  {step.proc_name} confirmed dead")
 
     if step.damage_region:
@@ -6012,6 +5959,8 @@ def do_restart_step(
         die(f"No launch table entry for '{step.proc_name}'")
     _, bin_name, config = launch_entry
 
+    # Only events from the new process can show that it is ready.
+    since = _TEST_EVENTS.mark()
     log(f"  Restarting {step.proc_name} ...")
     new_proc = launch_app(step.proc_name, bin_name, config, bin_dir, log_dir)
     proc_by_name[step.proc_name] = new_proc
@@ -6022,16 +5971,13 @@ def do_restart_step(
     else:
         app_procs.append((step.proc_name, new_proc))
 
-    markers_repr = " + ".join(repr(m) for m in step.ready_markers)
-    log(
-        f"  Waiting for {step.ready_log_name}: {markers_repr} "
-        f"(timeout {step.ready_timeout:.0f}s) ..."
-    )
-    found, elapsed, _ = poll_log_for(
-        ready_log, *step.ready_markers,
-        timeout=step.ready_timeout,
-        from_byte=0,
-    )
+    if step.ready is not None:
+        log(f"  Waiting for: {step.ready.what} (timeout {step.ready_timeout:.0f}s) ...")
+        found, elapsed = await_expectation(step.ready, step.ready_timeout, since)
+    else:
+        markers_repr = " + ".join(repr(m) for m in step.ready_markers)
+        log(f"  Waiting for {step.ready_log_name}: {markers_repr} (timeout {step.ready_timeout:.0f}s) ...")
+        found, elapsed, _ = poll_log_for(ready_log, *step.ready_markers, timeout=step.ready_timeout, from_byte=0)
     if not found:
         die(
             f"{step.proc_name} did not signal readiness within "
@@ -6107,7 +6053,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
     # ── header ────────────────────────────────────────────────────────────────
     def _step_label(s) -> str:
         if isinstance(s, KillStep):
-            return s.proc_name + (" [failover expected]" if s.secondary_log_name else "")
+            return s.proc_name + (" [failover expected]" if s.takeover is not None else "")
         if isinstance(s, RestartStep):
             return f"RESTART:{s.proc_name}"
         if isinstance(s, IsolateStep):
@@ -6116,7 +6062,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             return "MACHINE:" + "+".join(s.proc_names)
         if isinstance(s, InterimOrdersStep):
             return f"({s.count_batches * 1000} interim orders)"
-        if isinstance(s, (VerifyStep, OneLeaderStep)):
+        if isinstance(s, (VerifyStep, OneLeaderStep, AssertAbsentStep)):
             return f"VERIFY:{s.description}"
         return str(s)
 
@@ -6365,6 +6311,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
         # ── Phase 1: start all processes ──────────────────────────────────────
         global _TEST_EVENTS  # pylint: disable=global-statement
+        # The previous scenario's listener; its components have all been stopped by now.
+        if _TEST_EVENTS is not None:
+            _TEST_EVENTS.close()
         _TEST_EVENTS = TestEventListener(prefix / "lib" / "python")
         log(f"  test events: listening on {_TEST_EVENTS.host}:{_TEST_EVENTS.port}")
         log("=== Phase 1: starting all processes ===")
@@ -6438,25 +6387,18 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # Waiting for the engine says what was actually meant. An incidental delay that
             # happens to be long enough is not a wait.
             log("  No arbiter expected (high availability off); waiting for the matching engine ...")
-            found, elapsed, _ = poll_log_for(me_log, *_ME_READY_MARKERS,
-                                             timeout=_ME_READY_TIMEOUT, from_byte=0)
+            found, elapsed = await_expectation(expect_engine_reachable(me_log.stem, "matching_engine"), _ME_READY_TIMEOUT, 0)
             if not found:
                 die(f"matching engine not ready within {_ME_READY_TIMEOUT:.0f}s with high "
                     "availability off -- orders sent now would be deferred and lost.")
             log(f"  matching engine ready ({elapsed:.1f}s)")
         else:
-            log("  Polling arbiter_primary.log for active role ...")
-            found, elapsed, _ = poll_log_for(
-                arb_primary_log, _ARB_ROLE, _TO_LEADER,
-                timeout=10.0, from_byte=0,
-            )
+            log("  Waiting for arbiter_primary to become the active arbiter ...")
+            found, elapsed = await_expectation(expect_leads("arbiter_primary"), 10.0, 0)
             if found:
                 log(f"  arbiter_primary: active ({elapsed:.1f}s)")
             else:
-                log(
-                    "  arbiter_primary: active marker not seen within 10s "
-                    "(election may have completed before log was captured — continuing)"
-                )
+                log("  arbiter_primary: not active within 10s -- continuing, as the scenario may expect that")
         log("")
 
         # For the ME-HA topology, wait until the primary→secondary book
@@ -6483,18 +6425,18 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # starting the pair has no leader at all. A scenario that killed the primary in that
             # time would be testing a pair in which nothing had yet been decided, and a restarted
             # primary would have no lead to keep. So wait until one of the two engines leads.
-            log("  Polling both matching engine logs until one of them leads ...")
+            log("  Waiting until one of the two matching engines leads ...")
             deadline = time.monotonic() + _ME_LEADER_TIMEOUT
             t0 = time.monotonic()
             leader_name = None
             while leader_name is None and time.monotonic() < deadline:
-                for name, path in (("matching_engine_primary", me_log), ("matching_engine_secondary", me_secondary_log)):
-                    found, _, _ = poll_log_for(path, "MatchingEngineThread:", "adopting LEADER role", timeout=0.0, from_byte=0)
-                    if found:
+                _TEST_EVENTS.check()
+                for name in ("matching_engine_primary", "matching_engine_secondary"):
+                    if _TEST_EVENTS.find(leads(_TEST_EVENTS.messages, name)) is not None:
                         leader_name = name
                         break
                 else:
-                    time.sleep(LOG_POLL_INTERVAL)
+                    _TEST_EVENTS.pump(0.05)
             if leader_name is not None:
                 log(f"  {leader_name} leads ({time.monotonic() - t0:.1f}s)")
             else:
@@ -6505,8 +6447,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # only after its first lease period, and until it leads it discards orders, which it
             # then applies from the sequencer's log without writing the acceptance lines this
             # script counts. Orders are meant to meet an engine that is already leading.
-            log("  Polling matching_engine.log until the matching engine leads ...")
-            found, elapsed, _ = poll_log_for(me_log, "MatchingEngineThread:", "adopting LEADER role", timeout=_ME_LEADER_TIMEOUT, from_byte=0)
+            log("  Waiting until the matching engine leads ...")
+            found, elapsed = await_expectation(expect_leads(me_log.stem), _ME_LEADER_TIMEOUT, 0)
             if not found:
                 die(f"the matching engine did not lead within {_ME_LEADER_TIMEOUT:.0f}s")
             log(f"  matching engine leads ({elapsed:.1f}s)")
@@ -6667,17 +6609,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
         log(f"=== Phase 4: {scenario.description} ===")
         for step in effective_steps:
             if isinstance(step, KillStep):
-                outcome, label, elapsed = do_kill_step(
-                    step, proc_by_name, log_dir, args.failover_timeout,
-                )
+                outcome, label, elapsed = do_kill_step(step, proc_by_name, args.failover_timeout)
                 kill_results.append((outcome, label, elapsed))
                 phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, IsolateStep):
-                outcome, label, elapsed = do_isolate_step(step, proc_by_name, log_dir)
+                outcome, label, elapsed = do_isolate_step(step, proc_by_name)
                 kill_results.append((outcome, label, elapsed))
                 phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, MachineKillStep):
-                outcome, label, elapsed = do_machine_kill_step(step, proc_by_name, log_dir)
+                outcome, label, elapsed = do_machine_kill_step(step, proc_by_name)
                 kill_results.append((outcome, label, elapsed))
                 phase4_results.append(("kill", outcome, label, elapsed))
             elif isinstance(step, RestartStep):
@@ -6718,37 +6658,43 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 time.sleep(step.settle_secs)
             elif isinstance(step, OneLeaderStep):
                 log(f"  VERIFY: {step.description}")
+                # Either instance leading will do: the first condition met ends the wait.
+                either = Expect(" or ".join(f"{name} leads" for name in step.components),
+                                tuple(expect_leads(name).conditions[0] for name in step.components))
                 deadline = time.monotonic() + step.timeout
                 t0 = time.monotonic()
                 leaders = []
                 while not leaders and time.monotonic() < deadline:
-                    leaders = [name for name in step.log_names
-                               if poll_log_for(log_dir / name, *step.markers, timeout=0.0, from_byte=0)[0]]
+                    _TEST_EVENTS.check()
+                    leaders = [c.component for c in either.conditions if _condition_met(c, _TEST_EVENTS.since_introduction(c.component))]
                     if not leaders:
-                        time.sleep(LOG_POLL_INTERVAL)
+                        _TEST_EVENTS.pump(0.05)
                 if not leaders:
-                    die(f"Verification failed: {step.description} -- neither of {step.log_names} shows a leader within {step.timeout:.0f}s")
+                    die(f"Verification failed: {step.description} -- not seen within {step.timeout:.0f}s: {either.what}")
                 log(f"    {leaders[0]} leads ({time.monotonic() - t0:.1f}s); waiting {step.settle_secs:.0f}s for any second leader ...")
                 time.sleep(step.settle_secs)
-                leaders = [name for name in step.log_names
-                           if poll_log_for(log_dir / name, *step.markers, timeout=0.0, from_byte=0)[0]]
+                leaders = [name for name in step.components
+                           if expectation_seen(expect_leads(name), _TEST_EVENTS.since_introduction(name))]
                 if len(leaders) != 1:
-                    die(f"Verification failed: {step.description} -- both {step.log_names} show a leader")
-                log("    confirmed: exactly one leads")
+                    die(f"Verification failed: {step.description} -- both {step.components} lead")
+                log("    confirmed: exactly one leads, up to a checkpoint of each")
                 phase4_results.append(("verify", step.description, step.settle_secs))
             elif isinstance(step, AssertAbsentStep):
-                markers_repr = " + ".join(repr(m) for m in step.markers)
                 log(f"  VERIFY: {step.description}")
-                log(f"    waiting {step.after_secs:.0f}s, then requiring {step.log_name} NOT to contain {markers_repr} ...")
-                time.sleep(step.after_secs)
-                seen, _, _ = poll_log_for(
-                    log_dir / step.log_name, *step.markers,
-                    timeout=0.0,
-                    from_byte=step.from_byte,
-                )
-                if seen:
-                    die(f"Verification failed: {step.description} -- {step.log_name} contains {markers_repr}")
-                log("    confirmed absent")
+                if step.absent is not None:
+                    log(f"    waiting {step.after_secs:.0f}s, then requiring that this has NOT happened: {step.absent.what} ...")
+                    time.sleep(step.after_secs)
+                    if expectation_seen(step.absent, since_present_processes(step.absent)):
+                        die(f"Verification failed: {step.description} -- {step.absent.what}")
+                    log("    confirmed absent, up to a checkpoint")
+                else:
+                    markers_repr = " + ".join(repr(m) for m in step.markers)
+                    log(f"    waiting {step.after_secs:.0f}s, then requiring {step.log_name} NOT to contain {markers_repr} ...")
+                    time.sleep(step.after_secs)
+                    seen, _, _ = poll_log_for(log_dir / step.log_name, *step.markers, timeout=0.0, from_byte=step.from_byte)
+                    if seen:
+                        die(f"Verification failed: {step.description} -- {step.log_name} contains {markers_repr}")
+                    log("    confirmed absent")
                 phase4_results.append(("verify", step.description, step.after_secs))
             elif isinstance(step, InterimOrdersStep):
                 count = step.count_batches * 1000
@@ -6784,21 +6730,25 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  {count} interim orders confirmed ({elapsed:.1f}s)")
                 phase4_results.append(("interim", count))
             elif isinstance(step, VerifyStep):
-                markers_repr = " + ".join(repr(m) for m in step.markers)
                 log(f"  VERIFY: {step.description}")
-                log(f"    watching {step.log_name} for {markers_repr} (timeout {step.timeout:.0f}s) ...")
-                found, elapsed, _ = poll_log_for(
-                    log_dir / step.log_name, *step.markers,
-                    timeout=step.timeout,
-                    from_byte=step.from_byte,
-                )
-                if not found:
-                    die(
-                        f"Verification failed: {step.description} — "
-                        f"marker not seen in {step.log_name} within {step.timeout:.0f}s"
-                    )
+                if step.expect is not None:
+                    log(f"    waiting for: {step.expect.what} (timeout {step.timeout:.0f}s) ...")
+                    found, elapsed = await_expectation(step.expect, step.timeout, since_present_processes(step.expect))
+                    if not found:
+                        die(f"Verification failed: {step.description} -- not seen within {step.timeout:.0f}s: {step.expect.what}")
+                else:
+                    markers_repr = " + ".join(repr(m) for m in step.markers)
+                    log(f"    watching {step.log_name} for {markers_repr} (timeout {step.timeout:.0f}s) ...")
+                    found, elapsed, _ = poll_log_for(log_dir / step.log_name, *step.markers, timeout=step.timeout, from_byte=step.from_byte)
+                    if not found:
+                        die(f"Verification failed: {step.description} — marker not seen in {step.log_name} within {step.timeout:.0f}s")
                 log(f"    confirmed ({elapsed:.1f}s)")
 
+                if step.absent is not None:
+                    log(f"    checking that this has NOT happened: {step.absent.what} ...")
+                    if expectation_seen(step.absent, since_present_processes(step.absent)):
+                        die(f"Verification failed: {step.description} — {step.absent.what}, which must not have happened")
+                    log("    confirmed absent, up to a checkpoint")
                 if step.absent_markers:
                     absent_repr = " + ".join(repr(m) for m in step.absent_markers)
                     log(f"    checking {step.log_name} does NOT contain {absent_repr} ...")
@@ -6820,7 +6770,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
                 phase4_results.append(("verify", step.description, elapsed))
 
-        # If ME was restarted, the _ME_READY_MARKERS fire as soon as the first
+        # If ME was restarted, its readiness is met as soon as the first
         # sequencer (primary or secondary) re-establishes its order connection.
         # When the secondary connects first the primary may still be in its
         # retry window.  Wait explicitly for the primary's connection to avoid
@@ -6854,8 +6804,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # its target. Waiting for the engine to lead makes the orders arrive one at a time, as the
             # count expects.
             for restart_step in (s for s in effective_steps if isinstance(s, RestartStep) and s.resets_me_counter):
-                restarted_log = log_dir / restart_step.ready_log_name
-                found, elapsed, _ = poll_log_for(restarted_log, "MatchingEngineThread:", "adopting LEADER role", timeout=15.0, from_byte=0)
+                restarted = expect_leads(restart_step.proc_name)
+                found, elapsed = await_expectation(restarted, 15.0, since_present_processes(restarted))
                 if not found:
                     die(f"the restarted {restart_step.proc_name} did not take the lead within 15s")
                 log(f"  {restart_step.proc_name}: leading ({elapsed:.1f}s)")
@@ -7550,8 +7500,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── High availability off: a secondary started alone ────────────────────
         if scenario.assert_ha_off_secondary_alone:
             log("=== A secondary sequencer started alone with high availability off ===")
-            found, elapsed, _ = poll_log_for(log_dir / "sequencer_secondary.log", _SEQ_ROLE, _TO_LEADER,
-                                             timeout=_HA_OFF_LEAD_TIMEOUT, from_byte=0)
+            found, elapsed = await_expectation(expect_leads("sequencer_secondary"), _HA_OFF_LEAD_TIMEOUT, 0)
             if not found:
                 die("ha off: the secondary did not lead when started alone. Refusing to lead would "
                     "block the case someone actually turns high availability off to do -- run the "
@@ -7603,9 +7552,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Two sequencers started with high availability off ===")
             leading = []
             for name in scenario.ha_off_sequencers:
-                found, _, _ = poll_log_for(log_dir / f"{name}.log", _SEQ_ROLE, _TO_LEADER,
-                                           timeout=_HA_OFF_LEAD_TIMEOUT, from_byte=0)
-                if found:
+                if await_expectation(expect_leads(name), _HA_OFF_LEAD_TIMEOUT, 0)[0]:
                     leading.append(name)
             if len(leading) != len(scenario.ha_off_sequencers):
                 die("ha off: expected every started sequencer to lead, and "
@@ -7696,7 +7643,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 RestartStep(
                     proc_name="matching_engine_primary",
                     ready_log_name="matching_engine_primary.log",
-                    ready_markers=_ME_READY_MARKERS,
+                    ready=expect_engine_reachable("matching_engine_primary", "matching_engine"),
                     ready_timeout=_ME_READY_TIMEOUT,
                     resets_me_counter=False,
                     settle_secs=_ME_SETTLE,
@@ -8054,7 +8001,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== The leading sequencer dies holding orders its follower never received (BUG-0103) ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("unreplicated orders: sequencer_primary is not leading, so stopping what it sends to its peer would "
                     "not test the death of a leader.")
             sequencer_etc = prefix / "etc" / "sequencer"
@@ -8123,15 +8070,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  the matching engine has accepted none of them: the leader holds them until the follower acknowledges -- OK")
 
             # 3. The leader dies, and the follower takes the lead.
-            takeover_from = file_end(secondary_log)
+            takeover_from = _TEST_EVENTS.mark()
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
             if primary.poll() is None or Path(f"/proc/{primary.pid}").exists():
                 die(f"unreplicated orders: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
             log("  sequencer_primary confirmed dead")
-            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout,
-                                             from_byte=takeover_from)
+            found, elapsed = await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)
             if not found:
                 die(f"unreplicated orders: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
             log(f"  sequencer_secondary took the lead {elapsed:.1f}s after the kill")
@@ -8170,7 +8116,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== A publisher is sent only the records the venue's record holds, each once (BUG-0153) ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("publishers: sequencer_primary is not leading, so the scenario's change of leader would not happen as written.")
             sequencer_etc = prefix / "etc" / "sequencer"
             sequencer_configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
@@ -8249,14 +8195,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             for number in (1, 2, 3):
                 inject_orders_to(order_ports["secondary"], f"{unreplicated_base}-{number}")
             time.sleep(1.0)
-            takeover_from = file_end(secondary_log)
+            takeover_from = _TEST_EVENTS.mark()
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
             if primary.poll() is None or Path(f"/proc/{primary.pid}").exists():
                 die(f"publishers: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
             log("  sequencer_primary confirmed dead")
-            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            found, elapsed = await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)
             if not found:
                 die(f"publishers: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
             log(f"  sequencer_secondary took the lead {elapsed:.1f}s after the kill")
@@ -8283,7 +8229,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_stalled_follower_runs_alone:
             log("=== A stalled follower sequencer does not stop trading ===")
             primary_log = log_dir / "sequencer_primary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("stalled follower: sequencer_primary is not leading, so stopping sequencer_secondary would not stop a follower.")
             sequencer_etc = prefix / "etc" / "sequencer"
             primary_config = sequencer_etc / "sequencer_primary.toml"
@@ -8347,7 +8293,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_orders_that_waited_in_the_log_reach_engine:
             log("=== Orders that wait in the log reach the matching engine through the reading thread ===")
             primary_log = log_dir / "sequencer_primary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("orders that waited in the log: sequencer_primary is not leading, so stopping sequencer_secondary would not stop a follower.")
             primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
             order_port = installed_toml_section_value(primary_config, "network", "listen_port")
@@ -8397,7 +8343,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_restarted_follower_log_repaired:
             log("=== A follower that restarts is sent the records it missed ===")
             primary_log = log_dir / "sequencer_primary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("follower restarts: sequencer_primary is not leading, so killing sequencer_secondary would not kill a follower.")
             sequencer_etc = prefix / "etc" / "sequencer"
             configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
@@ -8434,7 +8380,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  the leader took {len(missed_ids)} orders while the follower was down, and the engine accepted them all")
 
             agreed_from = file_end(primary_log)
-            do_restart_step(RestartStep(proc_name="sequencer_secondary", ready_log_name="sequencer_secondary.log", ready_markers=("SequencerThread:",),
+            do_restart_step(RestartStep(proc_name="sequencer_secondary", ready_log_name="sequencer_secondary.log", ready=expect_started("sequencer_secondary"),
                                         ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                             proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
             if not poll_log_for(primary_log, "the follower's log agrees with this one through record", timeout=30.0, from_byte=agreed_from)[0]:
@@ -8449,14 +8395,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             # The follower can now take over without losing anything the engine acted on.
             primary = proc_by_name["sequencer_primary"]
-            takeover_from = file_end(log_dir / "sequencer_secondary.log")
+            takeover_from = _TEST_EVENTS.mark()
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
             if Path(f"/proc/{primary.pid}").exists():
                 die(f"follower restarts: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
-            if not poll_log_for(log_dir / "sequencer_secondary.log", _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout,
-                                from_byte=takeover_from)[0]:
+            if not await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)[0]:
                 die(f"follower restarts: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
             held = wal_records_after(wal_dirs["secondary"], stopped_at, start_positions["secondary"])
             leader_view = wal_records_after(wal_dirs["primary"], stopped_at, start_positions["primary"])
@@ -8472,7 +8417,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== An old leader that rejoins discards the records its new leader does not have ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("old leader rejoins: sequencer_primary is not leading.")
             sequencer_etc = prefix / "etc" / "sequencer"
             configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
@@ -8519,13 +8464,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("old leader rejoins: the leader's log does not hold the three orders sent to it, so it holds nothing its follower lacks.")
             log("  the leader wrote three orders its follower never received, and was stopped before it could act on them")
 
+            takeover_from = _TEST_EVENTS.mark()
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
             if Path(f"/proc/{primary.pid}").exists():
                 die(f"old leader rejoins: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
-            takeover_from = file_end(secondary_log)
-            if not poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)[0]:
+            if not await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)[0]:
                 die(f"old leader rejoins: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
             new_orders = f"newleader-{run_tag}"
             result = subprocess.run([str(bin_dir / "inject_order"), "--port", order_ports["secondary"], "--cl-ord-id", new_orders, "--count", "5"],
@@ -8536,7 +8481,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             block_flag.unlink(missing_ok=True)
             discarded_from = 0
-            do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready_markers=("SequencerThread:",),
+            do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready=expect_started("sequencer_primary"),
                                         ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                             proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
             if not poll_log_for(primary_log, "this log agrees with the leader's through record", timeout=30.0, from_byte=discarded_from)[0]:
@@ -8561,7 +8506,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== A follower that is behind does not take the lead ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("rule 11: sequencer_primary is not leading.")
             sequencer_etc = prefix / "etc" / "sequencer"
             configs = {which: sequencer_etc / f"sequencer_{which}.toml" for which in ("primary", "secondary")}
@@ -8594,7 +8539,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             if scenario.restart_arbiter_before_leader_dies:
                 arbiter_from = 0
-                do_restart_step(RestartStep(proc_name="arbiter_primary", ready_log_name="arbiter_primary.log", ready_markers=("ArbiterThread:",),
+                do_restart_step(RestartStep(proc_name="arbiter_primary", ready_log_name="arbiter_primary.log", ready=expect_started("arbiter_primary"),
                                             ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                                 proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
                 if not poll_log_for(log_dir / "arbiter_primary.log", "says instance 2 may not lead", timeout=10.0, from_byte=arbiter_from)[0]:
@@ -8603,7 +8548,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             primary = proc_by_name["sequencer_primary"]
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
-            _TEST_EVENTS.stopping("sequencer_primary")
             primary.kill()
             primary.wait()
             if Path(f"/proc/{primary.pid}").exists():
@@ -8622,10 +8566,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  the follower did not take the lead in {2 * args.failover_timeout:.0f}s, and it answered a checkpoint -- OK")
 
             leader_from = 0
-            do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready_markers=("SequencerThread:",),
+            do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready=expect_started("sequencer_primary"),
                                         ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                             proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout * 2, from_byte=leader_from)[0]:
+            if not has_led("sequencer_primary", args.failover_timeout * 2):
                 die("rule 11: the restarted old leader did not take the lead back.")
             if behind.encode() not in b"".join(path.read_bytes() for path in primary_wal.glob("wal_*.log")):
                 die("rule 11: the old leader's log does not hold the order the engine accepted.")
@@ -8639,7 +8583,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Reports the leader never forwarded reach the member from the new leader ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("kept reports: sequencer_primary is not leading, so blocking its sends would not stop any report.")
             # The fix8 client logs on with the same comp id, and two sessions cannot share one.
             if f8proc is not None:
@@ -8704,7 +8648,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             # 4. The leader dies, and the follower takes the lead.
             primary = proc_by_name["sequencer_primary"]
-            takeover_from = file_end(secondary_log)
+            takeover_from = _TEST_EVENTS.mark()
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
@@ -8712,7 +8656,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 member.close()
                 die(f"kept reports: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
             log("  sequencer_primary confirmed dead")
-            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            found, elapsed = await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)
             if not found:
                 member.close()
                 die(f"kept reports: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
@@ -8740,7 +8684,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Orders the new leader's log holds, and the matching engine never received, are applied ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("logged commands: sequencer_primary is not leading.")
             secondary_config = prefix / "etc" / "sequencer" / "sequencer_secondary.toml"
             secondary_wal = secondary_config.parent / installed_toml_section_value(secondary_config, "wal", "directory")
@@ -8826,7 +8770,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  the follower's log holds all the orders and the engine has applied none of them -- correct so far")
 
             # 5. The leader dies, and the follower takes the lead.
-            takeover_from = file_end(secondary_log)
+            takeover_from = _TEST_EVENTS.mark()
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
@@ -8834,7 +8778,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 member.close()
                 die(f"logged commands: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
             log("  sequencer_primary confirmed dead")
-            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            found, elapsed = await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)
             if not found:
                 member.close()
                 die(f"logged commands: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
@@ -8856,7 +8800,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_sent_again_sequenced_once:
             log("=== A command sent again is sequenced only if the leader's log does not already hold it ===")
             leader_log = log_dir / "sequencer_primary.log"
-            if not poll_log_for(leader_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("sent again: sequencer_primary is not leading.")
             primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
             order_port = installed_toml_section_value(primary_config, "network", "listen_port")
@@ -8888,14 +8832,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 # The leader sends an order to the engine only once its follower has acknowledged it, so the
                 # engine's acceptance means the follower holds it.
                 follower_log = log_dir / "sequencer_secondary.log"
-                follower_from = file_end(follower_log)
+                follower_from = _TEST_EVENTS.mark()
                 old_leader = proc_by_name.get("sequencer_primary")
                 if old_leader is None or old_leader.poll() is not None:
                     die("sent again: sequencer_primary is not running, so it cannot be killed.")
                 log(f"  SIGKILL -> sequencer_primary (PID {old_leader.pid}), which holds the order and has replicated it")
                 old_leader.kill()
                 old_leader.wait()
-                if not poll_log_for(follower_log, _SEQ_ROLE, _TO_LEADER, timeout=_RESEND_TIMEOUT, from_byte=follower_from)[0]:
+                if not await_expectation(expect_leads("sequencer_secondary"), _RESEND_TIMEOUT, follower_from)[0]:
                     die("sent again: sequencer_secondary did not take the lead after sequencer_primary was killed.")
                 log("  sequencer_secondary leads; the order is in its log only because its leader replicated it")
                 leader_log = follower_log
@@ -8926,7 +8870,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Every order sent while the sequencers change leader is answered, and none twice ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("orders during change: sequencer_primary is not leading.")
             if f8proc is not None:
                 stop_f8test(f8proc)
@@ -8975,7 +8919,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             accepted_from = file_end(me_log)
             send_for(1.0)
             primary = proc_by_name["sequencer_primary"]
-            takeover_from = file_end(secondary_log)
+            takeover_from = _TEST_EVENTS.mark()
             log(f"  {len(sent)} orders sent; SIGKILL -> sequencer_primary (PID {primary.pid}), still sending")
             primary.kill()
             sent_before_kill = len(sent)
@@ -8985,7 +8929,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             while not took_over and waited < args.failover_timeout:
                 send_for(0.5)
                 waited += 0.5
-                took_over = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=0.01, from_byte=takeover_from)[0]
+                took_over = await_expectation(expect_leads("sequencer_secondary"), 0.01, takeover_from)[0]
             primary.wait()
             if Path(f"/proc/{primary.pid}").exists():
                 stop_reading.set()
@@ -9023,7 +8967,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== After a change of leader, a member is sent again only the reports the old leader had not forwarded ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("few repeats: sequencer_primary is not leading.")
             if f8proc is not None:
                 stop_f8test(f8proc)
@@ -9070,14 +9014,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log(f"  {len(burst)} orders accepted, and one more half a second later")
 
             primary = proc_by_name["sequencer_primary"]
-            takeover_from = file_end(secondary_log)
+            takeover_from = _TEST_EVENTS.mark()
+            secondary_log_from = file_end(secondary_log)
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
             if Path(f"/proc/{primary.pid}").exists():
                 member.close()
                 die(f"few repeats: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
-            found, elapsed, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=args.failover_timeout, from_byte=takeover_from)
+            found, elapsed = await_expectation(expect_leads("sequencer_secondary"), args.failover_timeout, takeover_from)
             if not found:
                 member.close()
                 die(f"few repeats: sequencer_secondary did not take the lead within {args.failover_timeout:.0f}s.")
@@ -9095,7 +9040,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             unmarked = [r for r in repeats if r.get(97) != "Y"]
             forwarded_line = ""
             with open(secondary_log, encoding="utf-8", errors="replace") as handle:
-                handle.seek(takeover_from)
+                handle.seek(secondary_log_from)
                 for line in handle:
                     if "forwarding" in line and "kept report(s)" in line:
                         forwarded_line = line.strip()
@@ -9115,7 +9060,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_unbound_reports_delivered:
             log("=== A report produced while a member is disconnected is delivered when it reconnects ===")
             primary_log = log_dir / "sequencer_primary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("unbound reports: sequencer_primary is not leading.")
             primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
             order_port = installed_toml_section_value(primary_config, "network", "listen_port")
@@ -9196,7 +9141,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Commands discarded with a closed connection to the leader are sent again when it reconnects ===")
             primary_log = log_dir / "sequencer_primary.log"
             secondary_log = log_dir / "sequencer_secondary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("reconnection: sequencer_primary is not leading.")
             if f8proc is not None:
                 stop_f8test(f8proc)
@@ -9215,7 +9160,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             sequencer = proc_by_name["sequencer_primary"]
             gateway_from = file_end(gw_log)
-            secondary_from = file_end(secondary_log)
+            secondary_from = _TEST_EVENTS.mark()
             run_tag = datetime.now().strftime("%H%M%S")
             sent: list[str] = []
             os.kill(sequencer.pid, signal.SIGSTOP)
@@ -9292,7 +9237,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if twice or refused:
                 die(f"reconnection: orders were acted on twice: {len(twice)} accepted twice, {len(refused)} refused, for example "
                     f"{(twice + refused)[:3]}. A command sent again must be sequenced only if the log does not already hold it.")
-            if poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=0.1, from_byte=secondary_from)[0]:
+            if expectation_seen(expect_leads("sequencer_secondary"), secondary_from):
                 die("reconnection: sequencer_secondary took the lead, so the orders may have been sent again for the change of "
                     "leader rather than for the reconnection, which is what this scenario tests.")
             log(f"  all {len(sent)} orders accepted exactly once, none refused, and sequencer_primary kept the lead -- OK")
@@ -9301,7 +9246,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_engine_holds_reports_without_connection:
             log("=== Orders reaching an engine with no connection for reports are acted on and reported later ===")
             primary_log = log_dir / "sequencer_primary.log"
-            if not poll_log_for(primary_log, _SEQ_ROLE, _TO_LEADER, timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("held reports: sequencer_primary is not leading.")
             if f8proc is not None:
                 stop_f8test(f8proc)
@@ -9670,7 +9615,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 # The primary leads in this scenario because it is started first. Checked rather than
                 # assumed, because killing the follower instead would test nothing.
                 primary_log = sequencer_logs["sequencer_primary"]
-                if count_log_marker(primary_log, _SEQ_ROLE) == 0 or count_log_marker(primary_log, _TO_LEADER) == 0:
+                if not has_led("sequencer_primary", 0.0):
                     die("bounded resend: sequencer_primary never logged becoming leader, so killing it would not leave the "
                         "venue without a leader.")
                 leader = proc_by_name.get("sequencer_primary")

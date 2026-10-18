@@ -20,6 +20,7 @@
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 
 #include <pubsub_itc_fw/ArbiterConfiguration.hpp>
 #include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
@@ -87,6 +88,16 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
         ArbiterThread& owner_;
     };
 
+    // How the test event channel sends its messages, when a test started this arbiter (docs/availability/test_events.md).
+    class ArbiterTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
+      public:
+        explicit ArbiterTestEventLinks(ArbiterThread& owner) : owner_(owner) {}
+        void send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) override;
+
+      private:
+        ArbiterThread& owner_;
+    };
+
     const ArbiterConfiguration& config_;
 
     // Whether this arbiter is active, as last decided by the lease rules, and the epoch it is active in.
@@ -111,6 +122,11 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // This arbiter's side of the lease rules for deciding which arbiter is active. Constructed at
     // the initial event, because it needs the moment this arbiter started.
     std::optional<pubsub_itc_fw::PairLeaseAgent> pool_lease_;
+
+    // The test events this thread sends, when a test started this arbiter. Constructed at the initial event, before
+    // pool_lease_, so that the lease agent can be given it.
+    ArbiterTestEventLinks test_event_links_{*this};
+    std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
 
     // The pool's vote on which instance of each component pair leads, held while this arbiter is active.
     ComponentLeaseVoters component_voters_;

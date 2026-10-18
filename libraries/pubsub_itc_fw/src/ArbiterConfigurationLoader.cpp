@@ -8,6 +8,7 @@
 #include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
+#include <pubsub_itc_fw/TestEventsConfiguration.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 #include <pubsub_itc_fw/VotingPair.hpp>
 
@@ -116,6 +117,7 @@ ArbiterConfiguration ArbiterConfigurationLoader::load(const pubsub_itc_fw::TomlC
 
             config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
         }
+        config.test_events = pubsub_itc_fw::TestEventsConfigurationLoader::load(toml);
         toml.get_required_except("reactor.connect_retry_warning_interval", config.connect_retry_warning_interval);
 
         toml.get_required_except("event_queue_pool.objects_per_slab", config.event_queue_pool_objects_per_slab);

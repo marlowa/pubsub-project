@@ -5,6 +5,8 @@
 
 #include <utility>
 
+#include <unistd.h>
+
 #include <pubsub_itc_fw/BumpAllocator.hpp>
 
 namespace pubsub_itc_fw {
@@ -14,6 +16,7 @@ TestEventChannel::TestEventChannel(TestEventLinksInterface& links, std::string c
 
 bool TestEventChannel::on_connection_established(const ConnectionID& connection) {
     if (connection.service_name() != service_name) {
+        connection_changed(connection, ConnectionChange::Made);
         return false;
     }
     connection_ = connection;
@@ -22,12 +25,17 @@ bool TestEventChannel::on_connection_established(const ConnectionID& connection)
     hello.component = component_;
     hello.instance = instance_;
     hello.thread = thread_;
+    hello.process_id = static_cast<int64_t>(getpid());
     send(TestEventsHello::message_pdu_id, hello);
     return true;
 }
 
 bool TestEventChannel::on_connection_lost(const ConnectionID& connection) {
-    if (!connected_ || connection != connection_) {
+    if (!connected_) {
+        return false;
+    }
+    if (connection != connection_) {
+        connection_changed(connection, ConnectionChange::Lost);
         return false;
     }
     connected_ = false;
@@ -67,6 +75,41 @@ void TestEventChannel::role_changed(std::string_view owner, int64_t instance, Le
     event.to_role = to;
     event.epoch = epoch;
     send(RoleChanged::message_pdu_id, event);
+}
+
+void TestEventChannel::lease_changed(std::string_view owner, int64_t instance, LeaseChange change, Voter granted_by, int32_t epoch) {
+    if (!connected_) {
+        return;
+    }
+    LeaseChanged event{};
+    event.owner = owner;
+    event.instance = instance;
+    event.change = change;
+    event.granted_by = granted_by;
+    event.epoch = epoch;
+    send(LeaseChanged::message_pdu_id, event);
+}
+
+void TestEventChannel::lease_granted_to(int32_t pair_id, int64_t instance, int32_t epoch) {
+    if (!connected_) {
+        return;
+    }
+    LeaseGrantedTo event{};
+    event.pair_id = pair_id;
+    event.instance = instance;
+    event.epoch = epoch;
+    send(LeaseGrantedTo::message_pdu_id, event);
+}
+
+void TestEventChannel::connection_changed(const ConnectionID& connection, ConnectionChange change) {
+    if (!connected_) {
+        return;
+    }
+    ConnectionChanged event{};
+    event.service = connection.service_name();
+    event.connection = connection.get_value();
+    event.made = change == ConnectionChange::Made;
+    send(ConnectionChanged::message_pdu_id, event);
 }
 
 template <typename Message> void TestEventChannel::send(int16_t pdu_id, const Message& message) {

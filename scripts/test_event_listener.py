@@ -16,8 +16,15 @@ that something did NOT happen asks the component for a checkpoint first: the com
 everything before the request, so every event it sent before the answer has arrived when the answer does.
 
 Anything that would weaken a test fails it instead: a message that does not decode, a message id the DSL does not
-define, a framing error, or a component's connection closing while the test expects it to be running. All of these
-are collected in `failures`, and check() raises on the first.
+define, a framing error, or a component's connection closing while its process goes on running. All of these are
+collected in `failures`, and check() raises on the first.
+
+A connection closes, and nothing is wrong, whenever the test stops or kills a component, and also when a supervisor
+restarts one. So the listener does not need to be told which components the test is about to stop. The introduction
+carries the component's process id, and when the connection closes the listener looks at that process. If the process
+has ended, the close is expected. If it is still running a few seconds later (close_grace), the component lost its
+connection to the test while it carried on, so events it reported afterwards were never seen, and the test fails.
+The few seconds allow for a component that closes its connections as it shuts down and then takes a moment to exit.
 """
 
 from __future__ import annotations
@@ -64,14 +71,17 @@ class _Connection:  # pylint: disable=too-many-instance-attributes
     component: str = ""
     instance: int = 0
     thread: str = ""
+    process_id: int = 0
     open: bool = True
+    closed_at: float = 0.0
+    how_closed: str = ""
     checkpoints: Dict[int, bool] = field(default_factory=dict)
 
 
 class TestEventListener:  # pylint: disable=too-many-instance-attributes
     """Accepts components' test event connections on the loopback interface and keeps what they send."""
 
-    def __init__(self, python_dir: Path) -> None:
+    def __init__(self, python_dir: Path, close_grace: float = 5.0) -> None:
         self._events_module, self._framing = load_generated_modules(python_dir)
         self._selector = selectors.DefaultSelector()
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -85,8 +95,10 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
         self._next_checkpoint = 1
         self.events: List[ReceivedEvent] = []
         self.failures: List[str] = []
-        # Components whose connection may close without failing the test: those the test stopped on purpose.
-        self._may_close: set = set()
+        # How long a component's process may go on running after its connection closed before the test fails.
+        self._close_grace = close_grace
+        # Connections that have closed, whose process has not yet been seen to end.
+        self._closed_awaiting_exit: List[_Connection] = []
 
     @property
     def messages(self):
@@ -95,13 +107,16 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
 
     @property
     def host(self) -> str:
+        """The address the listener accepts connections on: the loopback interface."""
         return "127.0.0.1"
 
     @property
     def port(self) -> int:
+        """The port the operating system chose for the listener."""
         return self._server.getsockname()[1]
 
     def close(self) -> None:
+        """Close every connection and stop listening."""
         for connection in self._connections.values():
             if connection.open:
                 self._selector.unregister(connection.sock)
@@ -161,8 +176,10 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
             return
         if isinstance(message, self._events_module.TestEventsHello):
             connection.component, connection.instance, connection.thread = message.component, message.instance, message.thread
-            return
-        if isinstance(message, self._events_module.TestCheckpointReached):
+            connection.process_id = message.process_id
+            # Kept among the events as well, so that a test can wait for a component to start, and can look only at what
+            # the component's present process reported (since_introduction).
+        elif isinstance(message, self._events_module.TestCheckpointReached):
             connection.checkpoints[message.number] = True
             return
         self.events.append(ReceivedEvent(index=len(self.events), arrived=time.monotonic(), connection=connection.number,
@@ -171,10 +188,27 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
 
     def _note_closed(self, connection: _Connection, how: str) -> None:
         connection.open = False
+        connection.closed_at = time.monotonic()
+        connection.how_closed = how
         self._selector.unregister(connection.sock)
         connection.sock.close()
-        if connection.component not in self._may_close:
-            self.failures.append(f"the test event connection from {self._who(connection)} {how} while it was meant to be running")
+        # A connection that closed before introducing itself had sent no events, so nothing was lost.
+        if connection.process_id != 0:
+            self._closed_awaiting_exit.append(connection)
+        self._judge_closed_connections()
+
+    def _judge_closed_connections(self) -> None:
+        """Fail the test for each closed connection whose process is still running close_grace seconds after the close."""
+        still_waiting = []
+        for connection in self._closed_awaiting_exit:
+            if not process_is_running(connection.process_id):
+                continue
+            if time.monotonic() - connection.closed_at < self._close_grace:
+                still_waiting.append(connection)
+                continue
+            self.failures.append(f"the test event connection from {self._who(connection)} {connection.how_closed}, "
+                                 f"and its process {connection.process_id} was still running {self._close_grace:.0f}s later")
+        self._closed_awaiting_exit = still_waiting
 
     @staticmethod
     def _who(connection: _Connection) -> str:
@@ -187,6 +221,7 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
     def check(self) -> None:
         """Raise TestEventFailure if anything has gone wrong on the channel."""
         self.pump()
+        self._judge_closed_connections()
         if self.failures:
             raise TestEventFailure(self.failures[0])
 
@@ -195,13 +230,32 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
         self.pump()
         return len(self.events)
 
-    def stopping(self, component: str) -> None:
-        """Say that the test is about to stop component, so that its connection closing does not fail the test."""
-        self._may_close.add(component)
+    def since_introduction(self, component: str) -> int:
+        """The position of the newest introduction from component, so that only its present process's events are considered.
 
-    def started(self, component: str) -> None:
-        """Say that component is running again, so that its connection closing fails the test again."""
-        self._may_close.discard(component)
+        A test that looks for what a component has done since it started, rather than since some step of the test,
+        passes this as since. When component has not introduced itself, every event is considered.
+        """
+        self.pump()
+        for event in reversed(self.events):
+            if event.component == component and isinstance(event.message, self._events_module.TestEventsHello):
+                return event.index
+        return 0
+
+    def has_open_connection(self, component: str) -> bool:
+        """Whether component has a test event connection open now."""
+        self.pump()
+        return any(c.open and c.component == component for c in self._connections.values())
+
+    def settle(self, component: str, timeout: float = 10.0) -> bool:
+        """Make sure every event component has sent so far has been read, before a test checks that something is absent.
+
+        With a connection open, this is a checkpoint. With none, the component's process has gone, and its
+        connection was read to the end before the close was seen, so everything it sent has already arrived.
+        """
+        if self.has_open_connection(component):
+            return self.checkpoint(component, timeout)
+        return True
 
     def find(self, predicate: Callable[[ReceivedEvent], bool], since: int = 0) -> Optional[ReceivedEvent]:
         """The first event at or after since for which predicate holds, among those already read; or None."""
@@ -253,9 +307,65 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
         return True
 
 
+def process_is_running(process_id: int) -> bool:
+    """Whether process_id names a process that has not ended.
+
+    A process that has ended but has not yet been waited for by its parent (a zombie) has ended: it runs no code and
+    holds no sockets. The state is the third field of /proc/<pid>/stat, after the command name in parentheses, which
+    may itself contain spaces and parentheses, hence the search from the right.
+    """
+    try:
+        stat = Path(f"/proc/{process_id}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    state = stat[stat.rfind(")") + 1:].split()[0]
+    return state not in ("Z", "X")
+
+
 def leads(test_events_module, component: Optional[str] = None) -> Callable[[ReceivedEvent], bool]:
     """A predicate: a RoleChanged saying that the instance now leads, from component if one is named."""
+    return role_changed(test_events_module, component, test_events_module.LeadershipRole.Leader)
+
+
+def follows(test_events_module, component: Optional[str] = None) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: a RoleChanged saying that the instance now follows, from component if one is named."""
+    return role_changed(test_events_module, component, test_events_module.LeadershipRole.Follower)
+
+
+def role_changed(test_events_module, component: Optional[str] = None, to_role=None) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: a RoleChanged, to to_role if one is given, from component if one is named."""
     def predicate(event: ReceivedEvent) -> bool:
-        return (isinstance(event.message, test_events_module.RoleChanged) and event.message.to_role == test_events_module.LeadershipRole.Leader
+        return (isinstance(event.message, test_events_module.RoleChanged) and (to_role is None or event.message.to_role == to_role)
+                and (component is None or event.component == component))
+    return predicate
+
+
+def lease_changed(test_events_module, component: Optional[str], change, granted_by=None) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: a LeaseChanged of the given kind, by the given voter if one is given, from component if one is named."""
+    def predicate(event: ReceivedEvent) -> bool:
+        return (isinstance(event.message, test_events_module.LeaseChanged) and event.message.change == change
+                and (granted_by is None or event.message.granted_by == granted_by) and (component is None or event.component == component))
+    return predicate
+
+
+def granted_to(test_events_module, component: Optional[str], pair_id: int, instance: int) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: a LeaseGrantedTo saying that a third voter (component, if named) granted instance of pair_id a lease."""
+    def predicate(event: ReceivedEvent) -> bool:
+        return (isinstance(event.message, test_events_module.LeaseGrantedTo) and event.message.pair_id == pair_id
+                and event.message.instance == instance and (component is None or event.component == component))
+    return predicate
+
+
+def introduced(test_events_module, component: Optional[str] = None) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: a thread of component (any component, if none is named) introduced itself: it has started."""
+    def predicate(event: ReceivedEvent) -> bool:
+        return isinstance(event.message, test_events_module.TestEventsHello) and (component is None or event.component == component)
+    return predicate
+
+
+def connection_made(test_events_module, component: Optional[str], service: str) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: component (any, if none is named) made a connection to service."""
+    def predicate(event: ReceivedEvent) -> bool:
+        return (isinstance(event.message, test_events_module.ConnectionChanged) and event.message.made and event.message.service == service
                 and (component is None or event.component == component))
     return predicate

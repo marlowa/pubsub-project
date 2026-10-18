@@ -273,6 +273,12 @@ void MatchingEngineThread::on_app_ready_event() {
     able_to_match_timer_id_ = start_recurring_timer(able_to_match_interval);
     publish_book_metrics();
 
+    // Only when a test started this instance (docs/availability/test_events.md).
+    if (config_.test_events.enabled) {
+        test_events_.emplace(test_event_links_, config_.test_events.component, static_cast<int64_t>(config_.instance_id), "MatchingEngineThread");
+        connect_to_service(std::string(pubsub_itc_fw::TestEventChannel::service_name));
+    }
+
     // Both roles connect outbound to the sequencer ER listeners (pre-warmed so
     // ERs, including the cancel-on-failover burst, flow immediately on promotion).
     connect_to_service("sequencer_er");
@@ -290,6 +296,9 @@ void MatchingEngineThread::on_app_ready_event() {
         lease_agent_.emplace("MatchingEngineThread", get_logger(), lease_links_, fix_common::pair_id_of(pubsub_itc_fw_app::ComponentGroup::matching_engine),
                              self_id, peer_instance_id(), arbiter_pool_voter_id, "the arbiter", config_.lease, std::chrono::steady_clock::now(), epoch_,
                              pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead});
+        if (test_events_.has_value()) {
+            lease_agent_->report_test_events_to(*test_events_);
+        }
         background_promise_recorder_.emplace(lease_promise_store_);
         lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                        std::chrono::steady_clock::now());
@@ -309,6 +318,15 @@ void MatchingEngineThread::on_app_ready_event() {
 }
 
 void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+    if (test_events_.has_value() && test_events_->on_connection_established(id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} to the test's event listener established",
+                   id.get_value());
+        // A role taken before the connection was made is reported now, so that the test learns it whenever it connects.
+        if (ha_role_state_ == MeRole::Leader || ha_role_state_ == MeRole::Follower) {
+            report_role_change(MeRole::Unknown, ha_role_state_);
+        }
+        return;
+    }
     const std::string& svc = id.service_name();
     const std::string order_inbound_svc = "inbound:" + std::to_string(config_.listen_port);
     const std::string replication_inbound_svc = "inbound:" + std::to_string(config_.replication_listen_port);
@@ -398,6 +416,11 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
 }
 
 void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+    if (test_events_.has_value() && test_events_->on_connection_lost(id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "MatchingEngineThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
+        return;
+    }
     if (id == sequencer_er_conn_id_) {
         sequencer_er_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "MatchingEngineThread: primary sequencer ER connection {} lost: {}", id.get_value(),
@@ -434,6 +457,10 @@ void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID&
 }
 
 void MatchingEngineThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
+    if (test_events_.has_value() && test_events_->on_framework_pdu_message(message)) {
+        release_pdu_payload(message);
+        return;
+    }
     const auto pdu_id = message.pdu_id();
 
     // Forgotten here, at the start of every message, and remembered again further down only
@@ -1694,8 +1721,8 @@ void MatchingEngineThread::adopt_leader_role() {
     if (ha_role_state_ == MeRole::Leader) {
         return;
     }
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: adopting LEADER role (epoch={})", epoch_);
+    report_role_change(ha_role_state_, MeRole::Leader);
     ha_role_state_ = MeRole::Leader;
     announce_role();
 
@@ -1759,6 +1786,35 @@ void MatchingEngineThread::EngineLeaseLinks::send_request_to_third_voter(const p
 
 void MatchingEngineThread::EngineLeaseLinks::send_grant(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseGrant& grant) {
     owner_.send_pdu(conn_id, pubsub_itc_fw::LeaseGrant::message_pdu_id, 0, grant);
+}
+
+void MatchingEngineThread::EngineTestEventLinks::send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes,
+                                                                 size_t size) {
+    owner_.send_pdu_payload(connection, pdu_id, 0, bytes, size);
+}
+
+namespace {
+
+// An engine role as a test event names it: an instance still becoming current neither leads nor follows yet.
+pubsub_itc_fw::LeadershipRole leadership_role(MeRole role) {
+    switch (role) {
+        case MeRole::Leader:
+            return pubsub_itc_fw::LeadershipRole::Leader;
+        case MeRole::Follower:
+            return pubsub_itc_fw::LeadershipRole::Follower;
+        case MeRole::Unknown:
+        case MeRole::Reconciling:
+            break;
+    }
+    return pubsub_itc_fw::LeadershipRole::Unknown;
+}
+
+} // un-named namespace
+
+void MatchingEngineThread::report_role_change(MeRole from, MeRole to) {
+    if (test_events_.has_value()) {
+        test_events_->role_changed("MatchingEngineThread", static_cast<int64_t>(config_.instance_id), leadership_role(from), leadership_role(to), epoch_);
+    }
 }
 
 void MatchingEngineThread::EngineLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) {
@@ -1829,9 +1885,9 @@ void MatchingEngineThread::enter_follower_state() {
     // starts as a follower and is then confirmed as one has not changed anything, and
     // "role now FOLLOWER (was FOLLOWER)" is noise dressed as an event.
     if (previous != MeRole::Follower) {
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: role now FOLLOWER (was {}, epoch={}) -- passive, not accepting orders",
                    me_role_name(previous), epoch_);
+        report_role_change(previous, MeRole::Follower);
     }
     // Anything held back from a catch-up is not this instance's to send: it serves nobody, and
     // the leader answered those members from its own catch-up.

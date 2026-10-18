@@ -109,9 +109,13 @@ checkpoint request on a connection; the thread at the other end answers it after
 received the request. Since a connection delivers in order, every event that thread sent before the answer has
 arrived by the time the answer does. A negative check is made at a checkpoint, never on a timeout.
 
-**Failure.** The test fails, naming the component and the connection, if an event connection is lost while the
-component is meant to be running, if a message does not decode, if its message id is not one the DSL defines,
-or if an event a check waits for does not come. A component whose event connection is closed writes a Warning
+**Failure.** The test fails, naming the component and the connection, if an event connection closes while the
+component's process goes on running, if a message does not decode, if its message id is not one the DSL defines,
+or if an event a check waits for does not come. A connection also closes, and nothing is wrong, whenever the test
+stops or kills a component, or a supervisor restarts one. So each thread gives its process id when it introduces
+itself, and when a connection closes the listener looks at that process: if it has ended, the close is expected;
+if it is still running five seconds later, the test fails. The test therefore never has to say which components it
+is about to stop. A component whose event connection is closed writes a Warning
 to its Quill log and carries on: the test has already failed, and the venue does not stop for a test.
 
 **Cost when switched off.** In a venue with no `[test_events]` section, no connection is made, and each place
@@ -205,7 +209,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 
 | Kind | Becomes |
 |---|---|
-| A. Who leads | `RoleChanged` events from the library's lease classes and the arbiter |
+| A. Who leads | `RoleChanged` from the library's `ReplicatedWal`, the matching engine and the arbiter; `LeaseChanged` from the library's `PairLeaseAgent`; `LeaseGrantedTo` from the arbiter; a component's start from its introduction; and a sequencer's connection to a matching engine from `ConnectionChanged` |
 | B. The engine's outcome for an order | Execution reports at the client, for orders sent through a gateway; events from the matching engine for orders sent with `inject_order` (decision 2) |
 | C. The engine's catch-up | An event from the matching engine when its catch-up completes or falls short, with the count it checked |
 | D. Replication and repair | Events from the library's `ReplicatedWal`: the follower behind or keeping up again, the WALs agreeing through a record, records discarded, the statement that the follower may or may not lead; and from the arbiter, a statement recorded |
@@ -283,7 +287,7 @@ service, connects when it is ready, and passes its connections and messages to t
 writes the section into a copy of the sequencer's configuration in `launch_app`, so every start and restart of a
 sequencer has it. The listener reads its sockets only while the test waits, with no thread of its own. It fails the
 test on a message it cannot decode, a message id the DSL does not define, a framing error, or a component's connection
-closing while the test expects it to be running (`stopping` and `started` say when the test stops one on purpose).
+closing while its process goes on running.
 
 **The first two checks moved.** In every scenario, the wait for the expected sequencer to lead is a wait for its
 `RoleChanged` to leader. In scenarios 63 and 64, the check that the follower did not take the lead waits the same
@@ -301,6 +305,64 @@ its test events.
 leading, five runs of 6,000 orders and the first discarded: the medians of four runs were 101.5, 108.3, 108.3 and
 108.4 microseconds with the build before this step, 105.8, 108.4, 108.4 and 108.2 with it, and 108.7, 108.4, 108.2 and
 108.2 with the build before it again. The step does not change the round trip.
+
+### 4.3 Step 4, kind A: who leads
+
+**The events.** `test_events.dsl` gains three messages, and the introduction gains the process id:
+
+- `LeaseChanged`, sent by the library's `PairLeaseAgent` for every instance that has one (sequencers, matching
+  engines and arbiters) when the instance asks the other two voters to let it lead, is granted a lease (saying
+  whether the peer's grant or the third voter's made the majority), finds its lease has run out, finds that no voter
+  granted it a lease within a lease period, or restarts having been leading and asks to lead again at once;
+- `LeaseGrantedTo`, sent by the active arbiter when it grants a lease to a different instance of a pair from the one
+  it last granted one to;
+- `ConnectionChanged`, sent by `TestEventChannel` itself for each of its thread's other connections made or lost
+  after the connection to the test was made.
+
+**The components.** The matching engine and the arbiter now send test events as the sequencer does: each reports its
+changes of role, reports the role it already has when the connection to the test is made, and gives its lease agent
+the channel. The test writes the name it knows the component by into the `[test_events]` section (`component`), and
+the component gives that name in its introduction, because two components can be started from one configuration file.
+
+**What the test waits for.** Each scenario step that waited for a line in a Quill log now waits for events, stated
+in the scenario table as an expectation (`Expect`): `expect_leads`, `expect_follows`, `expect_role`,
+`expect_started`, `expect_lease`, `expect_granted_to`, and `expect_engine_reachable`, which needs both the engine's
+introduction and a sequencer's connection to it, because the kernel completes a connection as soon as the engine
+listens, which can be before its thread runs. A step that waits for what follows a kill, a stop or a restart
+considers only events that arrive after it. A step that asks what a component has done since it started considers
+the events since that component's newest introduction, which is what reading its Quill log from the start did, since
+a restart deletes that Quill log. Every check that something did not happen asks the component for a checkpoint
+first; a component with no connection open has ended, and everything it sent was read before its connection was
+seen to close.
+
+**What stays on the Quill log for now.** The steps that check a connection between components (kind H), and those
+that check the matching engine's own states while it becomes current: entering reconciling, waiting to be told what
+it may do, and the reports it holds back and then releases or discards (kinds C and H). Their checks that the engine
+did not take the lead meanwhile are events.
+
+**How it was shown to work.** Unit tests of each new event and of the `component` key (refused when missing or
+empty); a `ReplicatedWal` test that its lease agent reports asking to lead and then the grant, which failed with the
+report of the grant removed; and listener tests of introductions, of looking only at a component's present process,
+and of the process rule, which failed with the process check made to answer "ended". Against the deployed venue, each
+kind of check was made to fail on purpose, and each scenario failed at the step meant to catch it:
+
+| Fault | Scenario | Where it failed |
+|---|---|---|
+| The arbiter's change of role not reported | 2 | waiting for `arbiter_secondary` to lead after the kill |
+| No-leader not reported by the lease agent | 8, 9 | waiting for the report that the group has no leader |
+| The arbiter's grant not reported | 15 | waiting for `arbiter_primary` to grant instance 2 of the sequencer pair a lease |
+| No connection reported by the channel | 18 | waiting for the restarted matching engine to be reachable |
+| The matching engine's taking the lead not reported | 16 | waiting for `matching_engine_secondary` to lead after the kill |
+| A check that something did not happen, pointed at an event that did happen | 9 | that check, after its checkpoint |
+
+All 76 high availability scenarios pass. A deliberate fault in the C++ code was put in, built and deployed, and the
+build restored before the next; the restored files were compared byte for byte with copies taken first.
+
+**The order's round trip, with no test events configured,** measured as for step 3, with the secondary matching
+engine leading, five runs of 6,000 orders and the first discarded: the medians of four runs were 104.7, 108.5, 108.6 and
+108.2 microseconds with the build of step 3, 108.2, 108.1, 108.4 and 108.1 with this one, and 108.4, 108.3, 108.2 and
+107.9 with the build of step 3 again. Kind A does not change the round trip. None of its events is sent on the order
+path: they are sent when a role, a lease or a connection changes.
 
 ## 5. What phase 6 does not do
 

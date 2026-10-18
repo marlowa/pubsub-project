@@ -4,15 +4,21 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
 #include <pubsub_itc_fw/BumpAllocator.hpp>
+#include <pubsub_itc_fw/ConfigurationException.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
 #include <pubsub_itc_fw/SlabHandle.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
+#include <pubsub_itc_fw/TestEventsConfiguration.hpp>
+#include <pubsub_itc_fw/TomlConfiguration.hpp>
 
 #include <test_events.hpp>
 
@@ -105,6 +111,50 @@ TEST_F(TestEventChannelTest, AChangeOfRoleIsSentWithEveryField) {
     EXPECT_EQ(event.epoch, 14);
 }
 
+TEST_F(TestEventChannelTest, TheIntroductionCarriesTheProcessId) {
+    channel_.on_connection_established(to_test_);
+    ASSERT_EQ(links_.sent.size(), 1U);
+    EXPECT_EQ(decoded<TestEventsHelloView>(links_.sent[0]).process_id, static_cast<int64_t>(getpid()));
+}
+
+TEST_F(TestEventChannelTest, AChangeOfLeaseIsSentWithEveryField) {
+    channel_.on_connection_established(to_test_);
+    channel_.lease_changed("SequencerThread", 2, LeaseChange::Granted, Voter::ThirdVoter, 9);
+    ASSERT_EQ(links_.sent.size(), 2U);
+    EXPECT_EQ(links_.sent[1].pdu_id, LeaseChanged::message_pdu_id);
+    const auto event = decoded<LeaseChangedView>(links_.sent[1]);
+    EXPECT_EQ(event.owner, "SequencerThread");
+    EXPECT_EQ(event.instance, 2);
+    EXPECT_EQ(event.change, LeaseChange::Granted);
+    EXPECT_EQ(event.granted_by, Voter::ThirdVoter);
+    EXPECT_EQ(event.epoch, 9);
+}
+
+TEST_F(TestEventChannelTest, AGrantByAThirdVoterIsSentWithEveryField) {
+    channel_.on_connection_established(to_test_);
+    channel_.lease_granted_to(4, 1, 17);
+    ASSERT_EQ(links_.sent.size(), 2U);
+    EXPECT_EQ(links_.sent[1].pdu_id, LeaseGrantedTo::message_pdu_id);
+    const auto event = decoded<LeaseGrantedToView>(links_.sent[1]);
+    EXPECT_EQ(event.pair_id, 4);
+    EXPECT_EQ(event.instance, 1);
+    EXPECT_EQ(event.epoch, 17);
+}
+
+TEST_F(TestEventChannelTest, AnotherConnectionMadeOrLostIsReportedOnceTheTestIsConnected) {
+    EXPECT_FALSE(channel_.on_connection_established(elsewhere_)); // before the test connects: not reported
+    channel_.on_connection_established(to_test_);
+    EXPECT_FALSE(channel_.on_connection_lost(elsewhere_));
+    EXPECT_FALSE(channel_.on_connection_established(elsewhere_));
+    ASSERT_EQ(links_.sent.size(), 3U);
+    const auto lost = decoded<ConnectionChangedView>(links_.sent[1]);
+    EXPECT_EQ(links_.sent[1].pdu_id, ConnectionChanged::message_pdu_id);
+    EXPECT_EQ(lost.service, "peer");
+    EXPECT_EQ(lost.connection, 8);
+    EXPECT_FALSE(lost.made);
+    EXPECT_TRUE(decoded<ConnectionChangedView>(links_.sent[2]).made);
+}
+
 TEST_F(TestEventChannelTest, ACheckpointRequestIsAnsweredWithItsNumber) {
     channel_.on_connection_established(to_test_);
     EXPECT_TRUE(channel_.on_framework_pdu_message(checkpoint_request(to_test_, 42)));
@@ -121,12 +171,49 @@ TEST_F(TestEventChannelTest, AMessageOnAnotherConnectionIsLeftToTheOwner) {
 
 TEST_F(TestEventChannelTest, OnceTheConnectionIsLostNothingMoreIsSent) {
     channel_.on_connection_established(to_test_);
-    EXPECT_FALSE(channel_.on_connection_lost(elsewhere_));
+    EXPECT_FALSE(channel_.on_connection_lost(elsewhere_)); // reported, as another connection lost
     EXPECT_TRUE(channel_.on_connection_lost(to_test_));
     EXPECT_FALSE(channel_.connected());
+    const size_t sent_while_connected = links_.sent.size();
+    EXPECT_EQ(sent_while_connected, 2U);
     channel_.role_changed("sequencer", 1, LeadershipRole::Leader, LeadershipRole::Follower, 2);
+    channel_.lease_changed("SequencerThread", 1, LeaseChange::RanOut, Voter::NoVoter, 2);
+    channel_.lease_granted_to(1, 1, 2);
+    EXPECT_FALSE(channel_.on_connection_established(elsewhere_));
+    EXPECT_FALSE(channel_.on_connection_lost(elsewhere_));
     EXPECT_FALSE(channel_.on_framework_pdu_message(checkpoint_request(to_test_, 3)));
-    EXPECT_EQ(links_.sent.size(), 1U);
+    EXPECT_EQ(links_.sent.size(), sent_while_connected);
+}
+
+namespace {
+
+TestEventsConfiguration loaded(std::string_view text) {
+    TomlConfiguration toml;
+    const auto [parsed, error] = toml.load_string(text);
+    EXPECT_TRUE(parsed) << error;
+    return TestEventsConfigurationLoader::load(toml);
+}
+
+} // un-named namespace
+
+TEST(TestEventsConfigurationTest, WithNoSectionNoTestEventsAreSent) {
+    EXPECT_FALSE(loaded("[reactor]\nx = 1\n").enabled);
+}
+
+TEST(TestEventsConfigurationTest, AFullSectionGivesTheListenerAndTheNameTheTestKnowsTheComponentBy) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine\"\n");
+    EXPECT_TRUE(configuration.enabled);
+    EXPECT_EQ(configuration.host, "127.0.0.1");
+    EXPECT_EQ(configuration.port, 45123);
+    EXPECT_EQ(configuration.component, "matching_engine");
+}
+
+TEST(TestEventsConfigurationTest, ASectionWithoutTheComponentIsRefused) {
+    EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\n"), ConfigurationException);
+}
+
+TEST(TestEventsConfigurationTest, AnEmptyComponentIsRefused) {
+    EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"\"\n"), ConfigurationException);
 }
 
 } // namespaces

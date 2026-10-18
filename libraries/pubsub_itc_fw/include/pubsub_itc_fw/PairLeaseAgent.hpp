@@ -24,6 +24,7 @@
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -106,6 +107,14 @@ class PairLeaseAgent {
     }
 
     /**
+     * @brief Report what happens to this instance's lease to the test that started the component, through @p channel
+     *        (docs/availability/test_events.md). Without it, nothing is reported.
+     */
+    void report_test_events_to(TestEventChannel& channel) {
+        test_events_ = &channel;
+    }
+
+    /**
      * @brief Keep this instance's promises as a voter, written by @p recorder, and resume with the one it recorded before restarting.
      *
      * Called once, straight after construction, by an owner that can keep a record on disk. With a
@@ -144,6 +153,7 @@ class PairLeaseAgent {
             // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                        "{}: resuming with the promise recorded before restarting -- this instance was leading, so it asks to lead again at once", owner_name_);
+            report(LeaseChange::ResumingLead, Voter::NoVoter, participant_.epoch());
         } else if (kept->promised_to != 0 && kept->until > now) {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                        "{}: resuming with the promise recorded before restarting -- the vote is promised to the peer for {} ms more, so this instance "
@@ -167,6 +177,7 @@ class PairLeaseAgent {
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "{}: lease ran out -- neither the peer nor {} renewed it in time, so this instance stops leading (epoch={})", owner_name_,
                        third_voter_name_, participant_.epoch());
+            report(LeaseChange::RanOut, Voter::NoVoter, participant_.epoch());
             change = Change::StoppedLeading;
         }
 
@@ -187,13 +198,13 @@ class PairLeaseAgent {
 
         if (participant_.state() == LeaseHolder::State::Candidate && now - asked_at_ > timing_.period) {
             if (!reported_no_leader_) {
-                // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
                 PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                            "{}: no voter granted a lease within a lease period of asking to lead at epoch {} -- this group has no leader. If the leader and "
                            "every arbiter are unavailable, it stays without one until an arbiter or the peer returns, because this instance cannot tell a "
                            "dead leader from being cut off (R-0147). Asking again",
                            owner_name_, participant_.epoch());
                 reported_no_leader_ = true;
+                report(LeaseChange::NoLeader, Voter::NoVoter, participant_.epoch());
             } else {
                 PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Debug, "{}: still no grant after asking to lead at epoch {} -- asking again", owner_name_,
                            participant_.epoch());
@@ -208,6 +219,7 @@ class PairLeaseAgent {
             last_renewal_ = now;
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: asking the peer and {} to let this instance lead at epoch {}", owner_name_,
                        third_voter_name_, epoch);
+            report(LeaseChange::AskingToLead, Voter::NoVoter, epoch);
             ask_voters(epoch, now);
         }
         return change;
@@ -302,6 +314,7 @@ class PairLeaseAgent {
         // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: leading at epoch {} -- granted a lease by {}, which with its own vote is a majority",
                    owner_name_, epoch, voter_name(voter_id));
+        report(LeaseChange::Granted, voter_id == peer_id_ ? Voter::Peer : Voter::ThirdVoter, epoch);
         return Change::BecameLeader;
     }
 
@@ -392,6 +405,13 @@ class PairLeaseAgent {
     }
 
   private:
+    // What happened to this instance's lease, for the test that started the component, if there is one.
+    void report(LeaseChange change, Voter granted_by, int32_t epoch) {
+        if (test_events_ != nullptr) {
+            test_events_->lease_changed(owner_name_, self_id_, change, granted_by, epoch);
+        }
+    }
+
     // The leader's own statement changed: start writing it, and tell both other voters at once rather
     // than at the next renewal.
     void statement_changed(Clock::time_point now) {
@@ -653,6 +673,7 @@ class PairLeaseAgent {
 
     // What writes this instance's promises, or nullptr if they are not kept.
     BackgroundPromiseRecorderInterface* recorder_{nullptr};
+    TestEventChannel* test_events_{nullptr};
 
     // The instance named in the record, and the expiry recorded. The record covers a promise to that
     // instance that runs out before the expiry.

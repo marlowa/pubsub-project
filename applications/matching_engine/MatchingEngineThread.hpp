@@ -40,6 +40,7 @@
 #include <pubsub_itc_fw/LeaseLinksInterface.hpp>
 #include <pubsub_itc_fw/LeasePromiseStore.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 
 namespace matching_engine {
 
@@ -389,6 +390,21 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
     // its peer and the arbiter pool -- has granted it a lease that has not run out. Constructed when
     // the application is ready, if high availability is on. See pubsub_itc_fw/PairLeaseAgent.hpp.
     std::optional<pubsub_itc_fw::PairLeaseAgent> lease_agent_;
+
+    // The test events this thread sends, when a test started this instance (docs/availability/test_events.md).
+    class EngineTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
+      public:
+        explicit EngineTestEventLinks(MatchingEngineThread& owner) : owner_(owner) {}
+        void send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) override;
+
+      private:
+        MatchingEngineThread& owner_;
+    };
+    EngineTestEventLinks test_event_links_{*this};
+    std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
+
+    // Reports a change of role to the test, if one started this instance.
+    void report_role_change(MeRole from, MeRole to);
 
     // Armed while this instance is reconciling, and cancelled by the ack. Only a sequencer
     // that leads serves a catch-up; one that is not leading drops the request without

@@ -20,6 +20,7 @@
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace matching_engine {
@@ -112,6 +113,12 @@ MatchingEngine::MatchingEngine(MatchingEngineConfiguration config, std::unique_p
         service_registry_.add("arbiter_primary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_primary_host, config_.arbiter_primary_port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
         service_registry_.add("arbiter_secondary", pubsub_itc_fw::NetworkEndpointConfiguration{config_.arbiter_secondary_host, config_.arbiter_secondary_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
+    // Only when a test started this instance and gave it somewhere to send test events.
+    if (config_.test_events.enabled) {
+        service_registry_.add(std::string(pubsub_itc_fw::TestEventChannel::service_name),
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.test_events.host, config_.test_events.port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 

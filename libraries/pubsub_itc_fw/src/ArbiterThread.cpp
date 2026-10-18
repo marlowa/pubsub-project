@@ -4,6 +4,7 @@
 #include <pubsub_itc_fw/ArbiterThread.hpp>
 
 #include <chrono>
+#include <string>
 
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/AllocatorConfiguration.hpp>
@@ -27,6 +28,19 @@ constexpr int64_t witness_voter_id = 3;
 // The arbiter pool's identity as a voter in deciding which instance of a component pair leads. The
 // instances are 1 and 2. Both arbiters answer as 3: the pool votes through whichever is active.
 constexpr int64_t arbiter_pool_voter_id = 3;
+
+// An arbiter's role as a test event names it.
+pubsub_itc_fw::LeadershipRole leadership_role(ArbiterRole role) {
+    switch (role) {
+        case ArbiterRole::leader:
+            return pubsub_itc_fw::LeadershipRole::Leader;
+        case ArbiterRole::follower:
+            return pubsub_itc_fw::LeadershipRole::Follower;
+        case ArbiterRole::unknown:
+            break;
+    }
+    return pubsub_itc_fw::LeadershipRole::Unknown;
+}
 
 pubsub_itc_fw::LeaseRefusalReason refusal_reason_for(pubsub_itc_fw::LeaseVoter::Verdict verdict) {
     switch (verdict) {
@@ -87,11 +101,18 @@ ArbiterThread::ArbiterThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
     , component_statement_store_(config.lease_promise_file.empty() ? std::string{} : config.lease_promise_file + ".component_statements") {}
 
 void ArbiterThread::on_initial_event() {
+    // Only when a test started this arbiter (docs/availability/test_events.md). Made before the lease agent, which is given it.
+    if (config_.test_events.enabled) {
+        test_events_.emplace(test_event_links_, config_.test_events.component, static_cast<int64_t>(config_.instance_id), "ArbiterThread");
+    }
     // An arbiter keeps no epoch on disk, so it starts knowing none. It does keep its promise in
     // deciding which arbiter is active, so that a restart by its supervisor does not forget it.
     pool_lease_.emplace("ArbiterThread", get_logger(), pool_links_, config_.own_pair.pair_id, static_cast<int64_t>(config_.instance_id), peer_instance_id_,
                         witness_voter_id, "the witness", config_.lease, std::chrono::steady_clock::now(), 0,
                         pubsub_itc_fw::PeerStatementsFlag{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead});
+    if (test_events_.has_value()) {
+        pool_lease_->report_test_events_to(*test_events_);
+    }
     background_promise_recorder_.emplace(lease_promise_store_);
     pool_lease_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                   std::chrono::steady_clock::now());
@@ -117,11 +138,23 @@ void ArbiterThread::on_initial_event() {
 }
 
 void ArbiterThread::on_app_ready_event() {
+    if (test_events_.has_value()) {
+        connect_to_service(std::string(pubsub_itc_fw::TestEventChannel::service_name));
+    }
     connect_to_service("peer");
     connect_to_service("witness");
 }
 
 void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+    if (test_events_.has_value() && test_events_->on_connection_established(id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: connection {} to the test's event listener established", id.get_value());
+        // A role taken before the connection was made is reported now, so that the test learns it whenever it connects.
+        if (role_ != ArbiterRole::unknown) {
+            test_events_->role_changed("ArbiterThread", static_cast<int64_t>(config_.instance_id), pubsub_itc_fw::LeadershipRole::Unknown,
+                                       leadership_role(role_), epoch_);
+        }
+        return;
+    }
     const std::string& svc = id.service_name();
     const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
 
@@ -151,6 +184,11 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
 }
 
 void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+    if (test_events_.has_value() && test_events_->on_connection_lost(id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "ArbiterThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
+        return;
+    }
     if (id == peer_conn_id_) {
         peer_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "ArbiterThread: outbound peer connection {} lost: {}", id.get_value(), reason);
@@ -166,6 +204,10 @@ void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, co
 }
 
 void ArbiterThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
+    if (test_events_.has_value() && test_events_->on_framework_pdu_message(message)) {
+        release_pdu_payload(message);
+        return;
+    }
     const pubsub_itc_fw::ConnectionID& conn_id = message.connection_id();
     const auto pdu_id = message.pdu_id();
 
@@ -228,6 +270,9 @@ void ArbiterThread::adopt_role(ArbiterRole new_role) {
     const auto transition_level = (role_ == ArbiterRole::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
     // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), transition_level, "ArbiterThread: role transition {} -> {} (epoch={})", to_string(role_), to_string(new_role), epoch_);
+    if (test_events_.has_value()) {
+        test_events_->role_changed("ArbiterThread", static_cast<int64_t>(config_.instance_id), leadership_role(role_), leadership_role(new_role), epoch_);
+    }
     role_ = new_role;
 
     if (new_role == ArbiterRole::leader) {
@@ -255,6 +300,10 @@ void ArbiterThread::act_on(pubsub_itc_fw::PairLeaseAgent::Change change) {
         case pubsub_itc_fw::PairLeaseAgent::Change::Nothing:
             break;
     }
+}
+
+void ArbiterThread::ArbiterTestEventLinks::send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) {
+    owner_.send_pdu_payload(connection, pdu_id, 0, bytes, size);
 }
 
 void ArbiterThread::PoolLinks::send_request_to_peer(const pubsub_itc_fw::LeaseRequest& request) {
@@ -386,9 +435,11 @@ void ArbiterThread::handle_component_lease_request(const pubsub_itc_fw::Connecti
 
         int64_t& last = last_granted_to_[request.pair_id];
         if (last != request.candidate_instance_id) {
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: group={} lease granted to instance {} at epoch {}",
                        pair_name(request.pair_id), request.candidate_instance_id, request.epoch);
+            if (test_events_.has_value()) {
+                test_events_->lease_granted_to(request.pair_id, request.candidate_instance_id, request.epoch);
+            }
             last = request.candidate_instance_id;
         }
         if (answer.highest_epoch > highest_before || statement_changed) {
