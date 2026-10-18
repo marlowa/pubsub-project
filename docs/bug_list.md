@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 175 |
-| Open | 69 (48 defects, 21 tasks) |
+| Bugs recorded | 176 |
+| Open | 70 (49 defects, 21 tasks) |
 | Closed | 106 |
-| Next id | BUG-0176 |
+| Next id | BUG-0177 |
 
 ## Open bugs by severity
 
-15 high, 46 medium, 8 low.
+16 high, 46 medium, 8 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -28,6 +28,7 @@
 | [BUG-0142](#bug_0142) | high | defect | The arbiter writes each changed statement to disk on its own thread, and stalled there for 4.8 seconds, so the sequencer lost its leader |
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
+| [BUG-0176](#bug_0176) | high | defect | A matching engine catching up from far back sends a report for every order it applies, and the flood keeps the leading sequencer's thread so busy that it loses its lease without noticing |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -272,10 +273,16 @@ work as in a fill that passed earlier the same day, about 11 MB a second in 22 w
 per cent of the time on average and over 90 per cent for 49 of the 181 seconds, against 2.5 per cent and none in
 the fill that passed. The same fill, run again ten minutes later, passed, with the disk busy 2.6 per cent of the
 time. Nothing else was using the disk or the processors. So for some minutes the disk took far longer to do the
-same writes. Both failed fills of this day began within a few minutes of the developer loop, which writes the
-whole build to the same disk, and both repeats a little later passed; whether a burst of writes leaves this disk
-slow for minutes afterwards is not shown. While it was slow, the leading sequencer's own thread also waited on
-the disk ([BUG-0175](#bug_0175)).
+same writes. While it was slow, the leading sequencer's own thread also waited on the disk
+([BUG-0175](#bug_0175)).
+
+**And on 18 October 2026, after an idle night.** The same fill failed again at 08:36, with nothing built or run
+before it since the evening: promise writes took from 1,521 to 7,513 milliseconds on both sequencers, beginning
+about 40 seconds into the fill, as in the failure of the evening before, and 61,852 messages went unanswered. So
+the failures do not depend on a build having just written to the disk, as the two failures of 17 October had
+suggested. The fill run again at once passed, but even then the disk was over 90 per cent busy for 34 seconds,
+from about 100 seconds into the fill, against none in the passing fill of 17 October. Of the seven such fills run
+on 17 and 18 October, three failed this way.
 
 **What is not known.** Whether the time is spent waiting for the disk to make the record durable (`fsync`)
 or behind other writes queued for the same disk, such as the WALs and the Quill logs; and how a disk of the
@@ -3524,6 +3531,70 @@ which this machine allows only as root.
 permits.
 
 **Principles.** F4.
+
+### BUG-0176: A matching engine catching up from far back sends a report for every order it applies, and the flood keeps the leading sequencer's thread so busy that it loses its lease without noticing {#bug_0176}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| How | Measuring a matching engine's catch-up for phase 5 (`tmp/phase5/engine_catchup.sh`): after a fill of 300,000 orders, about 1.37 million WAL records, both engines were stopped and the one whose book region was at record 0 was started alone, so that it asked for every record after record 0 |
+| Impact | Starting a matching engine that holds an old position, late in a day, makes the sequencers change leader, and for some seconds both write records as leader, though only the new leader's are committed. The member is sent repeated reports faster than it can read them, and is disconnected. Any engine that starts with no peer to take its book from, whose region is far behind, does this |
+
+**What was seen, on 18 October 2026.**
+
+- The engine asked at 09:23:07, and asked again at 09:23:11 asking to lead, which started the serving again
+  from record 0. By 09:23:26 it had applied 855,463 records.
+- From 09:23:20 the leading sequencer's thread was found running in every sample taken from `/proc` five times
+  a second, never asleep. From 09:23:11 it wrote nothing to its Quill log but the reactor's notes that its
+  callbacks had not finished, and its memory pool chaining new slabs four times. Before the catch-up, the reading
+  thread did the reading, and the sequencer's thread was asleep most of the time.
+- Its WAL grew from about 1,371,000 records to 1,754,594, all at epoch 1, written from 09:23:11 to 09:23:39.
+  Each order an engine applies during a catch-up is reported to its member again, marked as a possible repeat
+  (R-0122), and the sequencer writes, replicates and forwards every report; so a catch-up from record 0 sends the
+  leader about one report for each order of the day so far.
+- At 09:23:21 the follower sequencer took the lead at epoch 2, granted a lease by the arbiter, and wrote 527,876
+  records at epoch 2 from 09:23:23 to 09:23:36. The leading sequencer never logged that it had stopped leading,
+  and went on writing records at epoch 1 until 09:23:39. The leader changed again, to epoch 6, at 09:23:37.
+- The load client sending orders meanwhile had its connection reset by the gateway.
+
+**Nothing the old leader wrote after its lease ran out was committed, by the WALs, the logs and the code.**
+
+- The follower holds the old leader's epoch-1 records up to 1,712,527, and its own epoch-2 records from
+  1,712,528. The old leader's 42,067 records numbered 1,712,528 to 1,754,594 were never received by the follower,
+  so it never acknowledged them; those numbers hold different records in the two WALs.
+- Without the follower's acknowledgement, the old leader commits a record only while a voter other than itself
+  has echoed its statement that the follower may not lead (`PairLeaseAgent::may_act_without_peer`). It had
+  withdrawn that statement at 09:22:55, when the follower caught up again, and its Quill log has no line saying
+  it made it again; the same thread's other messages did reach the log in those seconds, so they were not being
+  dropped. After 09:23:21 no arbiter would echo a statement at epoch 1, having granted epoch 2.
+- A sequencer forwards a report to a gateway, and releases an order to an engine, only once its record is
+  committed, and the reading thread serves an engine only up to the last order released. So nothing in the
+  42,067 records reached a gateway or an engine. The gateways do not check a report's epoch, so this rests
+  entirely on the commit rule.
+- `may_act_without_peer` does not ask whether the lease is still current. That does not open a second leader:
+  a statement a voter has echoed stops every voter granting the follower a lease (rule 11).
+
+**What did go wrong.** The old leader's lease tick, like everything else on its thread, waited behind the flood,
+so it went on taking itself for the leader for at least 18 seconds after its lease had run out, sequencing orders
+and reports into records that could never be committed. The gateways send every order to both sequencers and
+send unanswered ones again to a new leader, so no order was lost; the old leader's WAL must have the 42,067
+records discarded when it next follows, which the repair does.
+
+**What is not known.**
+
+- How the old leader's thread spent its time: the reports alone, or something else as well. `perf` was not
+  running.
+- What happened to the catch-up: the measuring script stopped the venue at 09:23:36, when the load client's
+  connection was reset, before the catch-up finished. The gateway closed that connection because 65,536 sends,
+  13 MB, were waiting for the client: the repeated reports reached the member faster than it read them.
+
+**What is wanted.** A design for a far-back catch-up whose repeated reports are paced, or
+sent some other way, such as the recovery service of [BUG-0113](#bug_0113), so that they cannot take the leading
+sequencer's thread away from renewing its lease.
+
+**Principles.** V3, V11, F4.
 
 ## Closed
 
