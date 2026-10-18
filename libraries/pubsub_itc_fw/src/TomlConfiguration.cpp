@@ -335,6 +335,10 @@ size_t TomlConfiguration::array_size(std::string_view key) const {
     return array->size();
 }
 
+bool TomlConfiguration::has_key(std::string_view key) const {
+    return impl_->find_node(key) != nullptr;
+}
+
 // get_required() helpers
 
 namespace {
@@ -453,6 +457,28 @@ std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view k
     return {true, ""};
 }
 
+std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::vector<std::string>& value) const {
+    const auto* node = impl_->find_node(key);
+    if (!node) {
+        return {false, not_found_error(key)};
+    }
+    const auto* array = node->as_array();
+    if (!array) {
+        return {false, wrong_type_error(key, "array of strings")};
+    }
+    std::vector<std::string> parsed;
+    parsed.reserve(array->size());
+    for (size_t index = 0; index < array->size(); ++index) {
+        const auto* as_string = array->get(index)->as_string();
+        if (as_string == nullptr) {
+            return {false, fmt::format("configuration key '{}' element {} is not a string", key, index)};
+        }
+        parsed.push_back(as_string->get());
+    }
+    value = std::move(parsed);
+    return {true, ""};
+}
+
 // Duration get_required helper -- shared logic now lives in Impl::get_duration_string
 
 std::tuple<bool, std::string> TomlConfiguration::get_required(std::string_view key, std::chrono::nanoseconds& value) const {
@@ -567,6 +593,12 @@ void TomlConfiguration::get_required_except(std::string_view key, double& value)
 }
 
 void TomlConfiguration::get_required_except(std::string_view key, std::vector<double>& value) const {
+    auto [ok, err] = get_required(key, value);
+    if (!ok)
+        throw ConfigurationException(err);
+}
+
+void TomlConfiguration::get_required_except(std::string_view key, std::vector<std::string>& value) const {
     auto [ok, err] = get_required(key, value);
     if (!ok)
         throw ConfigurationException(err);

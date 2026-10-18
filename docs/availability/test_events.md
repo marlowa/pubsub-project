@@ -210,7 +210,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | Kind | Becomes |
 |---|---|
 | A. Who leads | `RoleChanged` from the library's `ReplicatedWal`, the matching engine and the arbiter; `LeaseChanged` from the library's `PairLeaseAgent`; `LeaseGrantedTo` from the arbiter; a component's start from its introduction; and a sequencer's connection to a matching engine from `ConnectionChanged` |
-| B. The engine's outcome for an order | Execution reports at the client, for orders sent through a gateway; events from the matching engine for orders sent with `inject_order` (decision 2) |
+| B. The engine's outcome for an order | Execution reports at the client, for orders sent through a gateway; the matching engine's `OrderOutcome` for orders sent with `inject_order`, for the checks no member can make, and where the member has gone (decision 2) |
 | C. The engine's catch-up | An event from the matching engine when its catch-up completes or falls short, with the count it checked |
 | D. Replication and repair | Events from the library's `ReplicatedWal`: the follower behind or keeping up again, the WALs agreeing through a record, records discarded, the statement that the follower may or may not lead; and from the arbiter, a statement recorded |
 | E. Halting and cancelling on promotion | The cancels and refusals at the client; an event when the engine halts or resumes |
@@ -363,6 +363,74 @@ engine leading, five runs of 6,000 orders and the first discarded: the medians o
 108.2 microseconds with the build of step 3, 108.2, 108.1, 108.4 and 108.1 with this one, and 108.4, 108.3, 108.2 and
 107.9 with the build of step 3 again. Kind A does not change the round trip. None of its events is sent on the order
 path: they are sent when a role, a lease or a connection changes.
+
+### 4.4 Step 4, kind B: what the matching engine did with an order
+
+**The member's view.** Every order the FIX test client sends is confirmed by the execution report the client receives.
+`send_burst` keeps each client's standard output in a file of its own in the log directory, and `ClientReports` reads
+the reports from it as they arrive, taking only messages whose CheckSum line has been written. The test counts the
+orders it tells each client to send (`send_orders`); the client numbers its ClOrdIDs in the order it sends them, so the
+orders of one step are the next numbers after those already sent, and `await_new_orders` waits for a New report for
+each of exactly those ClOrdIDs. Phase 3's baseline orders, the interim orders of Phase 4 and the resend scenario's
+tail orders are confirmed in this way. A report sent again after a change of leader is counted once, by the first New
+report for its ClOrdID. An order sent into a halt is confirmed refused by the Rejected report whose reason is that the
+exchange is closed.
+
+Phase 5's recovery orders are counted rather than named (`await_new_orders_since`): the orders that New reports arrive
+for after the recovery orders are sent. Orders sent before them can still be in flight, and the client sends in order,
+so naming the recovery orders makes them wait behind thousands of earlier orders; counting confirms what the engine's
+own count confirmed before, that a thousand further orders were accepted and reported. It does not confirm the
+recovery orders themselves when others were in flight ([BUG-0181](../bug_list.md#bug_0181)).
+
+**The matching engine's view.** Where no member can see the outcome, the engine says what it did:
+`applications/matching_engine/matching_engine_test_events.dsl` defines `OrderOutcome` (message id 170), with the comp
+id, the ClOrdID, for a cancel the OrigClOrdID, what was done (accepted; refused as a duplicate; refused because the
+identifier is longer than the book holds; a cancel done; a cancel refused because the order is unknown or an
+identifier too long), whether the engine was catching up, and the sequence number. It is sent through the engine's
+`TestEventChannel` with `send_event`, which applications use for events they define themselves; message ids 170 to
+199 are theirs, and the listener refuses two event modules that define one id.
+
+The engine sends `OrderOutcome` only for the comp ids its `[test_events]` section lists in `report_orders_of`. The
+test always lists `INJECT-TEST`, the comp id of `inject_order`, whose orders reach no member. It adds the member's
+comp id only in the scenarios whose checks no member can make, or where the member has gone: that an order was applied
+exactly once (scenarios 66 and 68), acted on while its reports were held back on purpose (65 and 72), cancelled while
+the member was away (70), cancelled or refused after the member's session was dropped (50), or not cancelled when its
+gateway died (23). In every other scenario, and in any venue members trade on, no outcome is sent. With no
+`[test_events]` section, an order costs one test of whether the channel exists. `TomlConfiguration` gained a list of
+strings and `has_key`, so that an optional key written with the wrong type is refused rather than taken as absent.
+
+**What stays as it was.** The check that the engine received orders in ascending sequence number reads a message the
+engine no longer writes, so it checks nothing ([BUG-0180](../bug_list.md#bug_0180)); it is left until that is decided.
+
+**How it was shown to work.** Unit tests of the list of strings and `has_key`, of `report_orders_of`, and of the
+listener decoding an `OrderOutcome` and refusing two modules that share a message id. Each kind of check was made to
+fail on purpose, and each scenario failed at the step meant to catch it:
+
+| Fault | Scenario | Where it failed |
+|---|---|---|
+| Refusals for an over-long identifier not reported by the engine | 58 | the count of refused orders |
+| Accepted orders not reported by the engine | 59 | the order sent to the new leader |
+| Cancels done, and cancels of unknown orders, not reported | 50 | waiting for the engine's answer to the gateway's cancels |
+| Cancels done not reported | 70 | the cancel made while the member was away |
+| One order's New report not seen by the client reader | 1 | the baseline orders |
+| The halted refusal looked for with the wrong reject reason | 51 | the order sent into the halt |
+
+Seventy-three of the 76 high availability scenarios pass. Scenarios 14, 27 and 36 fail at Phase 5, because the
+member is not told of its recovery orders: after a sequencer restarts and then takes the lead it holds no record of the
+member's session, and drops the reports ([BUG-0182](../bug_list.md#bug_0182)). The same failure happens with the
+binaries from before this step, so the defect is older than the check; the check that read the matching engine's
+Quill log could not see it, because the engine did accept the orders. The three are marked as expected to fail,
+naming the bug, so that a run reports them and fails if one of them passes.
+
+The FIX test client is started under `stdbuf -oL`, so that each report reaches its output file when it is printed.
+Without it the output is buffered in blocks, and the last reports of a burst can wait in the buffer while the test waits
+for them.
+
+**The order's round trip, with no test events configured,** measured as for kind A, with the secondary matching engine
+leading, five runs of 6,000 orders and the first discarded: the medians of four runs were 108.5, 108.3, 108.1 and 108.0
+microseconds with the build of kind A, 108.4, 108.6, 108.3 and 108.1 with this one, and 108.6, 108.4, 108.3 and 108.1
+with the build of kind A again. Kind B adds one test of whether the channel exists to each order the engine accepts,
+refuses or cancels, and does not change the round trip.
 
 ## 5. What phase 6 does not do
 

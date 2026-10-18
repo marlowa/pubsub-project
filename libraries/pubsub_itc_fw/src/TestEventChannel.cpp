@@ -112,14 +112,4 @@ void TestEventChannel::connection_changed(const ConnectionID& connection, Connec
     send(ConnectionChanged::message_pdu_id, event);
 }
 
-template <typename Message> void TestEventChannel::send(int16_t pdu_id, const Message& message) {
-    size_t written = 0;
-    size_t needed = 0;
-    // An event too large for the buffer is not sent, and the test, waiting for it, fails; no event comes close.
-    if (!encode(message, buffer_.data(), buffer_.size(), written, needed)) {
-        return;
-    }
-    links_.send_test_event(connection_, pdu_id, buffer_.data(), written);
-}
-
 } // namespaces

@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 179 |
-| Open | 72 (51 defects, 21 tasks) |
+| Bugs recorded | 183 |
+| Open | 76 (55 defects, 21 tasks) |
 | Closed | 107 |
-| Next id | BUG-0180 |
+| Next id | BUG-0184 |
 
 ## Open bugs by severity
 
-16 high, 46 medium, 10 low.
+18 high, 48 medium, 10 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,6 +29,8 @@
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
 | [BUG-0176](#bug_0176) | high | defect | A matching engine catching up from far back sends a report for every order it applies, and the flood keeps the leading sequencer's thread so busy that it loses its lease without noticing |
+| [BUG-0182](#bug_0182) | high | defect | After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts |
+| [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -75,6 +77,8 @@
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0174](#bug_0174) | medium | defect | With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
+| [BUG-0180](#bug_0180) | medium | defect | The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes |
+| [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3649,6 +3653,143 @@ the C++ code keeps it.
 that says whether each value is one the definition allows.
 
 **Principles.** None; the DSL compiler.
+
+### BUG-0180: The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes {#bug_0180}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| How | Moving the checks of the matching engine's outcomes onto test events and the member's reports, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): the check's phrase appears nowhere in the code |
+| Impact | Every scenario with recovery orders prints "seq monotonicity check: OK" without having checked anything. A sequencer that took the lead and numbered orders below ones the engine had already been sent would not be caught by it |
+
+**What happens.** After the recovery orders, Phase 5 of `scripts/ha_test.py` calls `check_me_seq_monotonic`, which
+reads the matching engine's Quill log for lines containing "NewOrderSingle seq=N" and fails if a number is not above
+the one before. The engine stopped writing that line when it was given an order book, on 3 June 2026, and nothing has
+written it since. With no line to read, the check finds no numbers, reports no violation, and passes.
+
+The property it was meant to check, that a sequencer which takes the lead goes on numbering above what was numbered
+before, is checked directly from the new leader's WAL in the two scenarios that set `assert_new_leader_numbers_forward`
+(`check_new_leader_numbers_forward`), and nowhere else.
+
+**What is wanted.** A decision: either the check is removed, since it has tested nothing for months and the WAL check
+covers the property where it was asked for; or the property is checked in every scenario with a change of sequencer
+leader, from the WAL as `check_new_leader_numbers_forward` does, or from the sequence numbers the engine reports in its
+test events. The check is left in place until that is decided, so that nothing is taken away unnoticed.
+
+**Principles.** The tests check what they say they check (BUG-0084 was the same failure: an assertion that read
+nothing).
+
+### BUG-0181: When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were {#bug_0181}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| How | Moving Phase 5's confirmation of the recovery orders from the matching engine's Quill log to the member's reports, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): confirming the recovery orders by name failed in scenario 1, which showed what the old check had been confirming |
+| Impact | A scenario can pass when the orders sent after the failure are lost, provided enough orders sent before it are accepted afterwards. The run's output says "1000 recovery orders confirmed" either way |
+
+**What happens.** In every scenario that leaves orders in flight across the failure (by default Phase 3 sends 20,000
+just before Phase 4 without waiting), Phase 5 sends 1,000 recovery orders and waits for 1,000 further orders to be
+accepted. The FIX test client sends in order, so the recovery orders queue behind those it has not yet sent: in
+scenario 1 the client had been answered for 7,512 of 22,000 orders when the 30 seconds ran out. The orders that
+confirm the wait are therefore orders sent before the failure, and the recovery orders themselves may never be
+reported. The check before phase 6 did the same, by waiting for the matching engine's highest order number at the
+start of Phase 5 plus 1,000.
+
+**What is wanted.** Phase 5 confirms the recovery orders by their ClOrdIDs, as Phase 3 and the interim orders now
+are (`await_new_orders`), with a wait long enough for the orders ahead of them, or with the client allowed to finish
+sending the orders in flight first. Either way the time the in-flight orders take should be printed, so that a run
+shows how long recovery really took.
+
+**Principles.** The tests check what they say they check.
+
+### BUG-0182: After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts {#bug_0182}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| How | Moving Phase 5's confirmation of the recovery orders from the matching engine's Quill log to the execution reports the member receives, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): scenarios 14, 27 and 36 then failed, and had passed while the check read the engine's Quill log |
+| Impact | A member's orders are accepted and rest on the book, and the member is never told. It cannot tell them from orders the venue lost, and will send them again or trade as though it had no position |
+
+**What was seen.** In scenario 14 the primary sequencer is killed, the secondary takes the lead, the primary is
+restarted and follows, and then the secondary is killed and the primary takes the lead again. The member then sends
+1,000 orders. The matching engine accepted all of them (its Quill log holds "accepted NOS" for ord2001 to ord3000),
+and the FIX test client received no report for any of them in 30 seconds. Everything the gateway sent the client did
+arrive: 3,001 messages, being the logon, the 1,000 baseline reports, the same 1,000 again marked PossResend after the
+first change of leader, and the 1,000 interim reports. The gateway's progress line said `sent=3000`, counting the
+repeated reports as well, so it looked complete.
+
+The restarted primary's Quill log has no line about the member's session at all: the session was bound to it before
+it was killed, and nothing after its restart records it learning the binding again. Scenarios 27 (a supervised restart
+of a sequencer) and 36 (both sequencers restarted) fail in the same way, at the same check; their files were not kept,
+so that they fail for the same reason is likely rather than shown.
+
+The same failure happens with the binaries from before the change that found it (kind A of step 4), so the defect is
+older than the check. Before that change, Phase 5 confirmed the orders from the engine's Quill log, which says nothing
+about whether the member was told.
+
+**Why.** Each sequencer keeps the binding of every connected session, which gateway instance and connection it can be
+reached on, in a table held only in memory (`session_destinations_`), filled from the `SessionBound` messages the
+gateways send when a member logs on. A report for a session with no binding is dropped, and logged only at Debug. The
+table does not survive a restart, and nothing fills it again: when a link to a sequencer comes up, the FIX gateway
+announces only the sessions still waiting for their numbering (`retry_pending_session_binds`), and the binary gateway
+announces none.
+
+**What is wanted.** Decided with Andrew, 18 October 2026:
+
+- When a link to a sequencer comes up, each gateway announces every session it holds, not only those still waiting
+  for their numbering. The announcement says that the session is still connected there, as a message of its own or a
+  flag on `SessionBound`: a `SessionBound` for a session the sequencer already holds is read as the previous session
+  having died, which raises the number the session resumes from, and a link can come up again without the sequencer
+  having restarted.
+- A report the sequencer cannot route is counted and logged as a Warning, so that a member left untold is visible.
+- Whether a sequencer may take the lead before its gateway links are up and have announced their sessions, since
+  reports that come back in that interval would still be dropped, is decided within this design.
+
+The other ways considered, and why not: the restarted sequencer taking the bindings from its peer fails when both
+sequencers restart (scenario 36); routing a report without a binding, to the gateway instance the order came in
+through, cannot reach a member that has since moved to another instance; recording bindings in the WAL is the largest
+change, and a recorded binding can be stale after a gateway dies while both sequencers are down.
+
+Until it is fixed, scenarios 14, 27 and 36 are marked as expected to fail, naming this bug (`expected_failure` in
+`scripts/ha_test.py`): a run reports them as expected failures, and fails if one of them passes.
+
+**Principles.** V8: every report the matching engine produces reaches the member (G3); and V6: every command a
+gateway accepted is answered (G1).
+
+### BUG-0183: A sequencer dies with SIGBUS appending to a WAL left by earlier runs {#bug_0183}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| How | A full run of the high availability scenarios started without fresh WALs, after round-trip measurements had added to them, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): from scenario 3 on, every scenario failed at its baseline orders |
+| Impact | The leading sequencer dies on the first order it appends, with nothing in its Quill log and no crash report of its own; its follower takes over, and each restart dies the same way. A venue whose WAL reaches this state cannot sequence |
+
+**What was seen.** Eleven SIGBUS core dumps of the sequencer between 21:32 and 21:52 on 18 October 2026, none before.
+The one examined (`coredumpctl`, process 3039788) died in `memcpy`, called from `pubsub_itc_fw::Wal::append`, from
+`ReplicatedWal::write` and `SequencerThread::append_envelope_to_wal`, writing the first record after record 151,891.
+The WAL directory held 50 MB in segments of 4 MiB (`segment_size = 4194304`), and the filesystem had 1.7 TB free, so
+the write did not fail for want of space. SIGBUS from a write to a memory-mapped file usually means the page lies
+beyond the end of the file: the segment being written is shorter than the region mapped for it. The sequencer's Quill
+log simply stops, because the process is killed before its background thread writes the last lines.
+
+The WAL had been written by the round-trip measurements of that afternoon (three arms of five runs of 6,000 orders,
+each started with `devenv.py`, with the installed binaries swapped between the build before and after each change) as
+well as by the scenarios. Started again from fresh WALs (`devenv.py --fresh-wal --fresh-book`), the scenarios run.
+
+**What is wanted.** The cause found: which segment was short, and why, whether from how a segment is created or
+grown, from the swap of binaries, or from a process killed while creating one. A write that cannot be backed must be
+refused with a message saying so, not kill the process. Until then, every full run starts from fresh WALs.
+
+**Principles.** V2: the log is the record. V12: every trading day starts fresh, which the tests do not yet do between
+runs.
 
 ## Closed
 

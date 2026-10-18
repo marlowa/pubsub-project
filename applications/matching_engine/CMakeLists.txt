@@ -15,7 +15,7 @@ target_link_libraries(matching_engine PRIVATE
         pubsub_itc_fw
 )
 
-add_dependencies(matching_engine fix_orders_generated matching_engine_replication_generated leader_follower_generated)
+add_dependencies(matching_engine fix_orders_generated matching_engine_replication_generated matching_engine_test_events_generated leader_follower_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(matching_engine PRIVATE

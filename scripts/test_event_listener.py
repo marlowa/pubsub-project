@@ -4,8 +4,9 @@
 The test opens a TestEventListener before it starts the venue, and passes its address to each component that is to
 send test events, in a [test_events] section of the configuration the component is started with. Each such component
 connects, says which component, instance and thread it is (TestEventsHello), and sends its events as framework PDUs:
-DSL messages from libraries/pubsub_itc_fw/include/pubsub_itc_fw/test_events.dsl, decoded here with the Python module
-the build generates from that file and installs into lib/python, beside the PDU framing (python/dsl/pdu_framing.py).
+DSL messages from libraries/pubsub_itc_fw/include/pubsub_itc_fw/test_events.dsl, and from the DSL files applications keep
+for their own events (EVENT_MODULES), decoded here with the Python modules the build generates from those files and
+installs into lib/python, beside the PDU framing (python/dsl/pdu_framing.py).
 
 The listener reads its sockets only while the test waits for an event or a checkpoint. There is no thread of its own:
 whatever arrives meanwhile waits in the kernel's buffers and the component's send queue, which hold far more than the
@@ -39,11 +40,25 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 
-def load_generated_modules(python_dir: Path):
-    """Import the generated test_events module and pdu_framing from the installed lib/python directory."""
+# The generated modules whose messages may arrive on a test event connection: the library's first, then each application's.
+EVENT_MODULES = ("test_events", "matching_engine_test_events")
+
+
+def load_generated_modules(python_dir: Path, module_names=EVENT_MODULES):
+    """Import the generated event modules and pdu_framing from the installed lib/python directory.
+
+    Returns the modules by name, and pdu_framing. Two modules that define the same message id would make a message
+    ambiguous, so that is refused here rather than decoded as whichever came first."""
     if str(python_dir) not in sys.path:
         sys.path.insert(0, str(python_dir))
-    return importlib.import_module("test_events"), importlib.import_module("pdu_framing")
+    modules = {name: importlib.import_module(name) for name in module_names}
+    owner: Dict[int, str] = {}
+    for name, module in modules.items():
+        for message_id in module.MESSAGES_BY_ID:
+            if message_id in owner:
+                raise TestEventFailure(f"message id {message_id} is defined by both {owner[message_id]} and {name}")
+            owner[message_id] = name
+    return modules, importlib.import_module("pdu_framing")
 
 
 class TestEventFailure(AssertionError):
@@ -81,8 +96,13 @@ class _Connection:  # pylint: disable=too-many-instance-attributes
 class TestEventListener:  # pylint: disable=too-many-instance-attributes
     """Accepts components' test event connections on the loopback interface and keeps what they send."""
 
-    def __init__(self, python_dir: Path, close_grace: float = 5.0) -> None:
-        self._events_module, self._framing = load_generated_modules(python_dir)
+    def __init__(self, python_dir: Path, close_grace: float = 5.0, module_names=EVENT_MODULES) -> None:
+        self.modules, self._framing = load_generated_modules(python_dir, module_names)
+        self._events_module = self.modules["test_events"]
+        self._messages_by_id: Dict[int, type] = {}
+        self._decode_errors = tuple({module.DecodeError for module in self.modules.values()})
+        for module in self.modules.values():
+            self._messages_by_id.update(module.MESSAGES_BY_ID)
         self._selector = selectors.DefaultSelector()
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -162,13 +182,15 @@ class TestEventListener:  # pylint: disable=too-many-instance-attributes
             self._handle(connection, header, body)
 
     def _handle(self, connection: _Connection, header, body: bytes) -> None:
-        message_class = self._events_module.MESSAGES_BY_ID.get(header.pdu_id)
+        message_class = self._messages_by_id.get(header.pdu_id)
         if message_class is None:
             self.failures.append(f"test events from {self._who(connection)}: message id {header.pdu_id} is not a test event")
             return
         try:
             message, end = message_class.decode(body)
-        except self._events_module.DecodeError as error:
+        except ValueError as error:  # each generated module's DecodeError is a ValueError
+            if not isinstance(error, self._decode_errors):
+                raise
             self.failures.append(f"test events from {self._who(connection)}: {error}")
             return
         if end != len(body):
@@ -360,6 +382,18 @@ def introduced(test_events_module, component: Optional[str] = None) -> Callable[
     """A predicate: a thread of component (any component, if none is named) introduced itself: it has started."""
     def predicate(event: ReceivedEvent) -> bool:
         return isinstance(event.message, test_events_module.TestEventsHello) and (component is None or event.component == component)
+    return predicate
+
+
+def order_outcome(engine_events_module, component: Optional[str], cl_ord_id: str, outcome=None,
+                  during_catch_up: Optional[bool] = None) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: an OrderOutcome from the matching engine (component, if named) for cl_ord_id, with the given outcome
+    and catch-up flag where those are given."""
+    def predicate(event: ReceivedEvent) -> bool:
+        return (isinstance(event.message, engine_events_module.OrderOutcome) and event.message.cl_ord_id == cl_ord_id
+                and (outcome is None or event.message.outcome == outcome)
+                and (during_catch_up is None or bool(event.message.during_catch_up) == during_catch_up)
+                and (component is None or event.component == component))
     return predicate
 
 

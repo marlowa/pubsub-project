@@ -14,7 +14,9 @@
 #  arrive in the order that thread sent them, and the test keeps each
 #  connection's events apart: there is no order between connections.
 #
-#  Message ids 140 to 199 are set aside for test events.
+#  Message ids 140 to 199 are set aside for test events: 140 to 169 for
+#  the library's, here, and 170 to 199 for applications' own, in DSL
+#  files of their own.
 
 # ------------------------------------------------------------
 #  What happened to an instance's lease, as the library's

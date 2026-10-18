@@ -212,6 +212,25 @@ TEST(TestEventsConfigurationTest, ASectionWithoutTheComponentIsRefused) {
     EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\n"), ConfigurationException);
 }
 
+TEST(TestEventsConfigurationTest, WithoutTheListNoOrderIsReported) {
+    const auto configuration = loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine\"\n");
+    EXPECT_TRUE(configuration.report_orders_of.empty());
+    EXPECT_FALSE(configuration.reports_orders_of("INJECT-TEST"));
+}
+
+TEST(TestEventsConfigurationTest, OnlyTheListedCompIdsHaveTheirOrdersReported) {
+    const auto configuration =
+        loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"matching_engine\"\nreport_orders_of = [\"INJECT-TEST\", \"CLIENT\"]\n");
+    EXPECT_TRUE(configuration.reports_orders_of("INJECT-TEST"));
+    EXPECT_TRUE(configuration.reports_orders_of("CLIENT"));
+    EXPECT_FALSE(configuration.reports_orders_of("CLIENT2"));
+    EXPECT_FALSE(configuration.reports_orders_of(""));
+}
+
+TEST(TestEventsConfigurationTest, AListThatIsNotOfStringsIsRefused) {
+    EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"m\"\nreport_orders_of = \"INJECT-TEST\"\n"), ConfigurationException);
+}
+
 TEST(TestEventsConfigurationTest, AnEmptyComponentIsRefused) {
     EXPECT_THROW(loaded("[test_events]\nhost = \"127.0.0.1\"\nport = 45123\ncomponent = \"\"\n"), ConfigurationException);
 }

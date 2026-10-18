@@ -564,6 +564,40 @@ add_custom_target(matching_engine_replication_generated ALL
     DEPENDS "${ME_REPL_DSL_GENERATED_HPP}"
 )
 
+# Matching engine test events (IDs 170-179): the outcome of an order, for the high availability tests only
+# (docs/availability/test_events.md). The Python module is installed into lib/python beside the library's, for the
+# tests' listener to decode the events with.
+set(ME_TEST_EVENTS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/matching_engine/matching_engine_test_events.dsl")
+set(ME_TEST_EVENTS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/matching_engine_test_events.hpp")
+set(ME_TEST_EVENTS_PYTHON_DIR "${CMAKE_BINARY_DIR}/applications/matching_engine/python")
+set(ME_TEST_EVENTS_DSL_GENERATED_PY "${ME_TEST_EVENTS_PYTHON_DIR}/matching_engine_test_events.py")
+
+add_custom_command(
+    OUTPUT "${ME_TEST_EVENTS_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${ME_TEST_EVENTS_DSL_SOURCE}"
+            --cpp "${ME_TEST_EVENTS_DSL_GENERATED_HPP}"
+    DEPENDS "${ME_TEST_EVENTS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    COMMENT "Generating matching_engine_test_events.hpp from matching_engine_test_events.dsl"
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT "${ME_TEST_EVENTS_DSL_GENERATED_PY}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${ME_TEST_EVENTS_PYTHON_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            "${ME_TEST_EVENTS_DSL_SOURCE}"
+            --python "${ME_TEST_EVENTS_DSL_GENERATED_PY}"
+    DEPENDS "${ME_TEST_EVENTS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    COMMENT "Generating matching_engine_test_events.py from matching_engine_test_events.dsl"
+    VERBATIM
+)
+add_custom_target(matching_engine_test_events_generated ALL
+    DEPENDS "${ME_TEST_EVENTS_DSL_GENERATED_HPP}" "${ME_TEST_EVENTS_DSL_GENERATED_PY}"
+)
+install(FILES "${ME_TEST_EVENTS_DSL_GENERATED_PY}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/python")
+
 # Topic pub/sub protocol PDU header (plain integer IDs 107-111; no --pdu-id-enum).
 set(TOPICS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/topics.dsl")
 set(TOPICS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/topics.hpp")

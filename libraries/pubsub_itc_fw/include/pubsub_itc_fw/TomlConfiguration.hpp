@@ -38,7 +38,7 @@ namespace pubsub_itc_fw {
  *                            cluttering the code with tuple checks.
  *
  * Supported types:
- *   std::string, bool, int32_t, int64_t, double,
+ *   std::string, bool, int32_t, int64_t, double, a list of doubles, a list of strings,
  *   std::chrono::nanoseconds, std::chrono::microseconds,
  *   std::chrono::milliseconds, std::chrono::seconds,
  *   std::chrono::minutes, std::chrono::hours
@@ -186,6 +186,16 @@ class TomlConfiguration {
      */
     [[nodiscard]] size_t array_size(std::string_view key) const;
 
+    /**
+     * @brief Whether the configuration holds @p key, whatever its type.
+     *
+     * For an optional key: a loader asks this first, and reads the key with get_required_except only when it is
+     * there, so that a key written with the wrong type is still refused rather than taken as absent.
+     *
+     * @param[in] key Dotted key (e.g. "test_events.report_orders_of").
+     */
+    [[nodiscard]] bool has_key(std::string_view key) const;
+
     // Error-returning accessors
 
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::string& value) const;
@@ -194,6 +204,7 @@ class TomlConfiguration {
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, int64_t& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, double& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::vector<double>& value) const;
+    [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::vector<std::string>& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::nanoseconds& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::microseconds& value) const;
     [[nodiscard]] std::tuple<bool, std::string> get_required(std::string_view key, std::chrono::milliseconds& value) const;
@@ -209,6 +220,7 @@ class TomlConfiguration {
     void get_required_except(std::string_view key, int64_t& value) const;
     void get_required_except(std::string_view key, double& value) const;
     void get_required_except(std::string_view key, std::vector<double>& value) const;
+    void get_required_except(std::string_view key, std::vector<std::string>& value) const;
     void get_required_except(std::string_view key, std::chrono::nanoseconds& value) const;
     void get_required_except(std::string_view key, std::chrono::microseconds& value) const;
     void get_required_except(std::string_view key, std::chrono::milliseconds& value) const;

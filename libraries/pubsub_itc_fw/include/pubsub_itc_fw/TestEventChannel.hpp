@@ -117,8 +117,33 @@ class TestEventChannel {
      */
     void lease_granted_to(int32_t pair_id, int64_t instance, int32_t epoch);
 
+    /**
+     * @brief Sends an event an application defines in a DSL file of its own, for the venue's ideas the library does
+     *        not name.
+     *
+     * The application's message ids must lie in the range set aside for test events (140 to 199) and must not be one
+     * the library's `test_events.dsl` uses, so that the test can decode every message on the connection. Nothing is
+     * sent while there is no connection to the test.
+     *
+     * @param[in] pdu_id  The message's id, as its DSL file gives it.
+     * @param[in] message The message, which the generated `encode` for its type writes into the channel's buffer.
+     */
+    template <typename Message> void send_event(int16_t pdu_id, const Message& message) {
+        if (connected_) {
+            send(pdu_id, message);
+        }
+    }
+
   private:
-    template <typename Message> void send(int16_t pdu_id, const Message& message);
+    template <typename Message> void send(int16_t pdu_id, const Message& message) {
+        size_t written = 0;
+        size_t needed = 0;
+        // An event too large for the buffer is not sent, and the test, waiting for it, fails; no event comes close.
+        if (!encode(message, buffer_.data(), buffer_.size(), written, needed)) {
+            return;
+        }
+        links_.send_test_event(connection_, pdu_id, buffer_.data(), written);
+    }
     enum class ConnectionChange { Made, Lost };
     void connection_changed(const ConnectionID& connection, ConnectionChange change);
 

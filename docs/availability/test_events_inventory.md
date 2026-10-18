@@ -95,6 +95,13 @@ The table records what each call was and what replaced it.
 
 ## B. What the matching engine did with an order or a cancel (32)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.4), together with the reads listed under "Reads the
+first sweep missed" below that are of this kind. Orders sent through a gateway are confirmed by the New report the FIX
+test client receives; the matching engine's `OrderOutcome` event is used for orders sent with `inject_order`, for the
+scenarios whose checks no member can make, and where the member has gone. The check that the engine received orders in
+ascending sequence number stays as it was, because it reads a message the engine no longer writes and so checks nothing
+([BUG-0180](../bug_list.md#bug_0180)).
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 23 | `run_scenario` | me_log | "accepted NOS OrderID=ME-ORD-" | how many orders the engine accepted in the in-flight scenario | **Member**: the execution reports the member receives, counted at the client |
@@ -304,7 +311,22 @@ state, or the event the class sends in step 3, not by a test event connection.
 | `ReplicatedWalTest` | has been sent every record through (two places) | the follower was handed over | the calls on the test's catch-up stand-in |
 | `ReplicatedWalTest` | it is answered once that has stopped | a new request is held until the catch-up stops | the calls on the test's catch-up stand-in |
 
-## The events needed
+## Reads the first sweep missed
+
+The sweep above looked for calls of the helpers it names. These functions and places read a Quill log directly, and
+were missed by it:
+
+| Scenarios | Function | Log | What it reads | Kind | Replaced by |
+|---|---|---|---|---|---|
+| nearly all | `wait_for_me_ord` | me_log | "ME-ORD-N": the engine's order number reaching a target | B | **Member**: the New report for each order, at the client (moved) |
+| several | `wait_for_accepted_count` | me_log | "accepted NOS OrderID=ME-ORD-", counted | B | **Member**: New reports at the client, counted (moved) |
+| 50 | `run_scenario` | me_log | "UnknownOrder" and "sent cancel ER" after the member's session is dropped | B | **Event**: `OrderOutcome` (Cancelled, CancelRefusedUnknown): the member has gone (moved) |
+| all | `wait_for_fix_logon` | gw_log | the gateway's lines for a logon established, refused, or opened at unconfirmed numbering | F | to be decided with kind F: the logon outcome at the client, and the unconfirmed numbering as an event from the gateway |
+| 44, 45 | `run_scenario` | refuser_log | "refusing to start" and "[ha] enabled = false" from a component that refuses to start | to be decided | the operator reads this message, so it may stay as the component's standard error rather than a Quill log |
+| 47 | `run_scenario` | each sequencer's log | "ha_enabled=false", the reason each leads | A | an event, or the role events' epoch, when the remaining kinds are moved |
+| 69 | `run_scenario` | secondary_log | "forwarding ... kept report(s)" | D or G | to be decided with kind G |
+
+
 
 | Event | Kinds of check | Sent by |
 |---|---|---|

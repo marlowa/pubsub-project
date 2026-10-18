@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <string>
 #include <tuple>
+#include <vector>
 
 #include <fmt/format.h>
 #include <gtest/gtest.h>
@@ -649,6 +650,49 @@ TEST_F(TomlConfigurationTest, ArrayOfTablesBoolAndStringFields) {
     EXPECT_EQ(comp_id, "ALPHA");
     EXPECT_FALSE(locked);
     EXPECT_TRUE(force_pw);
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfStringsReadsInOrder) {
+    auto [ok, err] = config.load_string(R"(
+        [test_events]
+        report_orders_of = ["INJECT-TEST", "CLIENT"]
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<std::string> comp_ids;
+    auto [got, error] = config.get_required("test_events.report_orders_of", comp_ids);
+    EXPECT_TRUE(got) << error;
+    ASSERT_EQ(comp_ids.size(), 2u);
+    EXPECT_EQ(comp_ids[0], "INJECT-TEST");
+    EXPECT_EQ(comp_ids[1], "CLIENT");
+}
+
+TEST_F(TomlConfigurationTest, HasKeySaysWhetherAKeyIsPresentWhateverItsType) {
+    auto [ok, err] = config.load_string(R"(
+        [test_events]
+        port = 45123
+        report_orders_of = ["INJECT-TEST"]
+    )");
+    EXPECT_TRUE(ok) << err;
+    EXPECT_TRUE(config.has_key("test_events.port"));
+    EXPECT_TRUE(config.has_key("test_events.report_orders_of"));
+    EXPECT_TRUE(config.has_key("test_events"));
+    EXPECT_FALSE(config.has_key("test_events.host"));
+    EXPECT_FALSE(config.has_key("reactor.port"));
+}
+
+TEST_F(TomlConfigurationTest, ArrayOfStringsRejectsANumber) {
+    auto [ok, err] = config.load_string(R"(
+        [test_events]
+        report_orders_of = ["INJECT-TEST", 7]
+    )");
+    EXPECT_TRUE(ok) << err;
+
+    std::vector<std::string> comp_ids;
+    auto [got, error] = config.get_required("test_events.report_orders_of", comp_ids);
+    EXPECT_FALSE(got);
+    EXPECT_NE(error.find("element 1 is not a string"), std::string::npos) << error;
+    EXPECT_THROW(config.get_required_except("test_events.report_orders_of", comp_ids), ConfigurationException);
 }
 
 // Arrays of numbers. Unlike the arrays of tables above, these are read in one call into a

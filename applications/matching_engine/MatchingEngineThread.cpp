@@ -775,6 +775,7 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     if (order_book_.contains(order_key)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: duplicate ClOrdID={} (session comp_id='{}') -- rejecting NOS",
                    view.cl_ord_id, session.comp_id_view());
+        report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::RefusedDuplicate, ReportIsRepeat::no, sequence_number);
 
         pubsub_itc_fw_app::ExecutionReport er{};
         er.order_id = "NONE";
@@ -927,24 +928,19 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     send_er_to_sequencer(er, sequence_number, session);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
-    // and the test breaks, silently and elsewhere.
+    // TEST CONTRACT -- scripts/callgrind_run.py counts this line ("accepted NOS"). The wording is an
+    // interface: change it and that script miscounts, silently and elsewhere.
     //
-    // Kept at Info deliberately, having been tried at Debug and reverted. It costs 226
-    // bytes per order -- 9.5 GB a day at 40 million orders -- but that volume only arises
-    // under load, and ha_test's scenarios are a few thousand orders. Its HA assertions
-    // read ME-ORD-N, the ME's own order_id_counter_, which advances during WAL
-    // reconciliation where orders_processed_total deliberately does not; the two diverge
-    // after a failover, so the counter cannot express "no ME-ORD gap or reset".
-    //
-    // A LOAD RUN raises this component's applog_level instead, which is per-component
-    // configuration and needs no code change. See perf_run.py --profile.
+    // At Info, the line costs 226 bytes per order -- 9.5 GB a day at 40 million orders. A load
+    // run raises this component's applog_level instead, which is per-component configuration
+    // and needs no code change. See perf_run.py --profile.
     // Last, and only now. The report has left, so a death from here loses nothing: the
     // record is already in the region and this says how far the region can be trusted.
     order_book_.publish(sequence_number);
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: accepted NOS OrderID={} ExecID={} ClOrdID={} book_size={}", order_id,
                exec_id, view.cl_ord_id, order_book_.size());
+    report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::Accepted, ReportIsRepeat::no, sequence_number);
 }
 
 void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::OrderCancelRequestView& view, int64_t sequence_number, int64_t sequenced_at_ns,
@@ -1051,6 +1047,8 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
         // and the venue has answered it correctly.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: sent rejection ER ExecID={} OrigClOrdID={} (UnknownOrder)", exec_id,
                    view.orig_cl_ord_id);
+        report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::CancelRefusedUnknown, ReportIsRepeat::no, sequence_number,
+                             view.orig_cl_ord_id);
         return;
     }
 
@@ -1109,6 +1107,7 @@ void MatchingEngineThread::handle_order_cancel_request(const pubsub_itc_fw_app::
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: sent cancel ER OrderID={} ExecID={} ClOrdID={} OrigClOrdID={} book_size={}", order_id, exec_id, view.cl_ord_id,
                view.orig_cl_ord_id, order_book_.size());
+    report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::Cancelled, ReportIsRepeat::no, sequence_number, view.orig_cl_ord_id);
 }
 
 void MatchingEngineThread::refuse_over_long_order(const pubsub_itc_fw_app::NewOrderSingleView& view, int64_t sequence_number, int64_t transact_time,
@@ -1120,6 +1119,7 @@ void MatchingEngineThread::refuse_over_long_order(const pubsub_itc_fw_app::NewOr
                "MatchingEngineThread: refusing NOS seq={} -- ClOrdID is {} characters, longer than the {} the book holds (session comp_id='{}'){}",
                sequence_number, view.cl_ord_id.size(), fix_order_limits::max_cl_ord_id_length, session.comp_id_view(),
                repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
+    report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::RefusedTooLong, repeat, sequence_number);
 
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
@@ -1159,6 +1159,7 @@ void MatchingEngineThread::refuse_over_long_cancel(const pubsub_itc_fw_app::Orde
                orig_too_long ? "OrigClOrdID" : "ClOrdID", orig_too_long ? view.orig_cl_ord_id.size() : view.cl_ord_id.size(),
                fix_order_limits::max_cl_ord_id_length, session.comp_id_view(),
                repeat == ReportIsRepeat::yes ? " -- during catch-up, reported as a possible repeat" : "");
+    report_order_outcome(session, view.cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind::CancelRefusedTooLong, repeat, sequence_number, view.orig_cl_ord_id);
 
     std::array<char, 32> exec_id_buf{};
     const std::string_view exec_id = format_id(exec_id_buf, "ME-EXEC-", 8, ++exec_id_counter_);
@@ -1815,6 +1816,22 @@ void MatchingEngineThread::report_role_change(MeRole from, MeRole to) {
     if (test_events_.has_value()) {
         test_events_->role_changed("MatchingEngineThread", static_cast<int64_t>(config_.instance_id), leadership_role(from), leadership_role(to), epoch_);
     }
+}
+
+void MatchingEngineThread::report_order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
+                                                pubsub_itc_fw_app::OrderOutcomeKind outcome, ReportIsRepeat repeat, int64_t sequence_number,
+                                                std::string_view orig_cl_ord_id) {
+    if (!test_events_.has_value() || !config_.test_events.reports_orders_of(session.comp_id_view())) {
+        return;
+    }
+    pubsub_itc_fw_app::OrderOutcome event{};
+    event.comp_id = session.comp_id_view();
+    event.cl_ord_id = cl_ord_id;
+    event.orig_cl_ord_id = orig_cl_ord_id;
+    event.outcome = outcome;
+    event.during_catch_up = repeat == ReportIsRepeat::yes;
+    event.seq_no = sequence_number;
+    test_events_->send_event(pubsub_itc_fw_app::OrderOutcome::message_pdu_id, event);
 }
 
 void MatchingEngineThread::EngineLeaseLinks::send_refusal(const pubsub_itc_fw::ConnectionID& conn_id, const pubsub_itc_fw::LeaseRefusal& refusal) {

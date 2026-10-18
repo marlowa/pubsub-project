@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -32,6 +33,22 @@ struct TestEventsConfiguration {
     /// The name the test knows the component by, such as "sequencer_primary", which the component's threads give in
     /// their introduction. The test chooses it, because only the test knows which of its processes this is.
     std::string component;
+
+    /// The comp ids whose orders an application reports the outcome of, one test event per order, from the optional
+    /// `report_orders_of` key. Empty when the key is absent: no outcome is reported for any order. Only the orders
+    /// whose reports reach no member, or whose checks no member can make, are meant to be listed here, so that the
+    /// per-order events stay confined to the scenarios that need them.
+    std::vector<std::string> report_orders_of;
+
+    /// Whether the outcome of orders from @p comp_id is to be reported.
+    [[nodiscard]] bool reports_orders_of(std::string_view comp_id) const {
+        for (const auto& listed : report_orders_of) {
+            if (listed == comp_id) {
+                return true;
+            }
+        }
+        return false;
+    }
 };
 
 /**
@@ -43,9 +60,11 @@ struct TestEventsConfiguration {
  *     host = "127.0.0.1"
  *     port = 45123
  *     component = "sequencer_primary"
+ *     report_orders_of = ["INJECT-TEST"]
  *
- * The section is optional as a whole, and absent means no test events. Once present, every key is required: a
- * half-filled section is a mistake in the test, and guessing the missing part would hide it.
+ * The section is optional as a whole, and absent means no test events. Once present, host, port and component are
+ * required: a half-filled section is a mistake in the test, and guessing the missing part would hide it.
+ * `report_orders_of` is optional, and only an application that reports the outcome of orders reads it.
  */
 class TestEventsConfigurationLoader {
   public:
@@ -70,6 +89,9 @@ class TestEventsConfigurationLoader {
         toml.get_required_except("test_events.component", configuration.component);
         if (configuration.component.empty()) {
             throw ConfigurationException("test_events.component must not be empty");
+        }
+        if (toml.has_key("test_events.report_orders_of")) {
+            toml.get_required_except("test_events.report_orders_of", configuration.report_orders_of);
         }
         return configuration;
     }

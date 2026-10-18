@@ -26,6 +26,7 @@
 #include <fix_orders.hpp>
 #include <leader_follower.hpp>
 #include <matching_engine_replication.hpp>
+#include <matching_engine_test_events.hpp>
 #include <replication_messages.hpp>
 
 #include "FixOrderLimits.hpp"
@@ -405,6 +406,11 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Reports a change of role to the test, if one started this instance.
     void report_role_change(MeRole from, MeRole to);
+
+    // Reports what the engine did with an order or a cancel to the test, if one started this instance and listed the
+    // session's comp id in report_orders_of. With no test, this costs one test of whether the channel exists.
+    void report_order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
+                              ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id = {});
 
     // Armed while this instance is reconciling, and cancelled by the ack. Only a sequencer
     // that leads serves a catch-up; one that is not leading drops the request without

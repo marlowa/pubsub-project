@@ -29,11 +29,13 @@ import test_event_listener  # noqa: E402  pylint: disable=wrong-import-position,
 
 @pytest.fixture(scope="module", autouse=True)
 def generated_modules():
-    """test_events.py, generated from the library's DSL file, beside a copy of pdu_framing.py."""
+    """test_events.py and matching_engine_test_events.py, generated from their DSL files, beside a copy of pdu_framing.py."""
     _PYTHON_DIR.mkdir(parents=True, exist_ok=True)
-    tree = load(_PROJECT_ROOT / "libraries" / "pubsub_itc_fw" / "include" / "pubsub_itc_fw" / "test_events.dsl")
-    Validator(tree).validate()
-    (_PYTHON_DIR / "test_events.py").write_text(PythonGenerator(source_name="test_events.dsl").emit(tree))
+    for dsl in (_PROJECT_ROOT / "libraries" / "pubsub_itc_fw" / "include" / "pubsub_itc_fw" / "test_events.dsl",
+                _PROJECT_ROOT / "applications" / "matching_engine" / "matching_engine_test_events.dsl"):
+        tree = load(dsl)
+        Validator(tree).validate()
+        (_PYTHON_DIR / f"{dsl.stem}.py").write_text(PythonGenerator(source_name=dsl.name).emit(tree))
     (_PYTHON_DIR / "pdu_framing.py").write_text(Path(pdu_framing.__file__).read_text(encoding="utf-8"))
 
 
@@ -101,6 +103,30 @@ def test_an_introduction_is_kept_as_an_event_and_marks_where_the_present_process
     assert listener.since_introduction("nobody") == 0
     first.close()
     second.close()
+
+
+def test_an_engine_order_outcome_arrives_decoded_with_its_sender(listener):
+    sock = _component(listener, "matching_engine")
+    engine = listener.modules["matching_engine_test_events"]
+    outcome = engine.OrderOutcome(comp_id="INJECT-TEST", cl_ord_id="ord-1", outcome=engine.OrderOutcomeKind.RefusedTooLong,
+                                  during_catch_up=True, seq_no=42)
+    sock.sendall(pdu_framing.encode_pdu(engine.OrderOutcome.MESSAGE_ID, 1, outcome.encode()))
+    refused = test_event_listener.order_outcome(engine, "matching_engine", "ord-1", engine.OrderOutcomeKind.RefusedTooLong, during_catch_up=True)
+    found = listener.wait_for(refused, timeout=5.0)
+    assert found is not None and found.message.seq_no == 42 and found.message.comp_id == "INJECT-TEST"
+    assert listener.find(test_event_listener.order_outcome(engine, None, "ord-1", during_catch_up=False)) is None
+    assert listener.find(test_event_listener.order_outcome(engine, None, "ord-2")) is None
+    sock.close()
+
+
+def test_two_event_modules_defining_one_message_id_are_refused():
+    # The clash is made by loading the library's module twice under two names, in the build tree's test directory.
+    (_PYTHON_DIR / "test_events_again.py").write_text((_PYTHON_DIR / "test_events.py").read_text())
+    try:
+        with pytest.raises(test_event_listener.TestEventFailure, match="defined by both test_events and test_events_again"):
+            test_event_listener.TestEventListener(_PYTHON_DIR, module_names=("test_events", "test_events_again"))
+    finally:
+        (_PYTHON_DIR / "test_events_again.py").unlink()
 
 
 def test_settling_a_component_with_no_connection_needs_no_checkpoint(listener):
