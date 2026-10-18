@@ -139,6 +139,9 @@ ascending sequence number stays as it was, because it reads a message the engine
 
 ## C. The matching engine's catch-up (2)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.5), with three steps of scenarios 54 and 55 that
+read the engine's catch-up from its Quill log: the matching engine's `CatchUp` event.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 58 | `run_scenario` | me_log | "book reconciled to seq_no=" \| "the catch-up accounted for all" | the restarted engine's catch-up completed and accounted for every record (R-0101) | **Event**: CaughtUp(through, records) or CatchUpIncomplete from the matching engine |
@@ -336,8 +339,7 @@ were missed by it:
 | `LeaseGrantedTo` | A | the arbiter, when the active arbiter grants an instance a lease |
 | `OrderApplied` | B | the matching engine, only when a test asks |
 | `OrderOutcome` | B | the matching engine, for orders no member will hear of |
-| `CaughtUp` | C | the matching engine |
-| `CatchUpIncomplete` | C | the matching engine |
+| `CatchUp` | C | the matching engine, at each stage of catching up |
 | `RunningAlone` | D | the library's ReplicatedWal |
 | `HeldOrdersFull` | D | the sequencer |
 | `Serving` | D | the library's WalFollowerService |
@@ -365,5 +367,5 @@ were missed by it:
 | `ThrottleStarted` | I | the gateways |
 | `ThrottleStopped` | I | the gateways |
 
-That is 34 events. Several may merge when they are defined, for instance the session events into one
+That is 33 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

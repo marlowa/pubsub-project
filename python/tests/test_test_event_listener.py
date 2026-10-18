@@ -119,6 +119,18 @@ def test_an_engine_order_outcome_arrives_decoded_with_its_sender(listener):
     sock.close()
 
 
+def test_a_catch_up_stage_arrives_decoded_and_is_matched_by_its_stage(listener):
+    sock = _component(listener, "matching_engine")
+    engine = listener.modules["matching_engine_test_events"]
+    stage = engine.CatchUp(stage=engine.CatchUpStage.Completed, through_seq_no=40, records_applied=3, records_sent=3, reports_sent=1, book_size=9)
+    sock.sendall(pdu_framing.encode_pdu(engine.CatchUp.MESSAGE_ID, 1, stage.encode()))
+    completed = test_event_listener.catch_up(engine, "matching_engine", engine.CatchUpStage.Completed)
+    found = listener.wait_for(completed, timeout=5.0)
+    assert found is not None and found.message.records_sent == 3 and found.message.through_seq_no == 40
+    assert listener.find(test_event_listener.catch_up(engine, "matching_engine", engine.CatchUpStage.Incomplete)) is None
+    sock.close()
+
+
 def test_two_event_modules_defining_one_message_id_are_refused():
     # The clash is made by loading the library's module twice under two names, in the build tree's test directory.
     (_PYTHON_DIR / "test_events_again.py").write_text((_PYTHON_DIR / "test_events.py").read_text())

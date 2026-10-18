@@ -321,7 +321,9 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
     if (test_events_.has_value() && test_events_->on_connection_established(id)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: connection {} to the test's event listener established",
                    id.get_value());
-        // A role taken before the connection was made is reported now, so that the test learns it whenever it connects.
+        // A role taken, or a catch-up begun or finished, before the connection was made is reported now, so that the test
+        // learns it whenever it connects.
+        report_present_catch_up();
         if (ha_role_state_ == MeRole::Leader || ha_role_state_ == MeRole::Follower) {
             report_role_change(MeRole::Unknown, ha_role_state_);
         }
@@ -1818,6 +1820,34 @@ void MatchingEngineThread::report_role_change(MeRole from, MeRole to) {
     }
 }
 
+void MatchingEngineThread::report_catch_up(pubsub_itc_fw_app::CatchUpStage stage, int64_t through_seq_no, int64_t records_sent) {
+    if (!test_events_.has_value()) {
+        return;
+    }
+    pubsub_itc_fw_app::CatchUp event{};
+    event.stage = stage;
+    event.through_seq_no = through_seq_no;
+    event.records_applied = reconciliation_records_seen_;
+    event.records_sent = records_sent;
+    event.reports_sent = reconciliation_reports_sent_;
+    event.book_size = static_cast<int64_t>(order_book_.size());
+    test_events_->send_event(pubsub_itc_fw_app::CatchUp::message_pdu_id, event);
+}
+
+void MatchingEngineThread::report_present_catch_up() {
+    if (ha_role_state_ == MeRole::Reconciling) {
+        report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, last_replicated_seq_no_, 0);
+        return;
+    }
+    if (!has_reconciled_) {
+        return;
+    }
+    report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, last_replicated_seq_no_, last_catch_up_records_sent_);
+    if (ha_role_state_ == MeRole::Unknown) {
+        report_catch_up(pubsub_itc_fw_app::CatchUpStage::CurrentAndWaiting, last_replicated_seq_no_, last_catch_up_records_sent_);
+    }
+}
+
 void MatchingEngineThread::report_order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id,
                                                 pubsub_itc_fw_app::OrderOutcomeKind outcome, ReportIsRepeat repeat, int64_t sequence_number,
                                                 std::string_view orig_cl_ord_id) {
@@ -2088,6 +2118,7 @@ void MatchingEngineThread::begin_reconciliation() {
     ha_role_state_ = MeRole::Reconciling;
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: entering RECONCILING (last_replicated_seq_no={}, book_size={})",
                last_replicated_seq_no_, order_book_.size());
+    report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, last_replicated_seq_no_, 0);
 
     // The sequencers connect to our (now-listening) order port. If at least one is
     // already connected, request WAL catch-up immediately; otherwise
@@ -2237,18 +2268,19 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
                    "MatchingEngineThread: catch-up was not complete -- {}. Not acting on it, and asking again (R-0101). {} record(s) were applied and are "
                    "kept, because what arrived was not wrong, only incomplete",
                    catch_up_tally_.describe_shortfall(ack.records_sent, ack.last_seq_no), reconciliation_records_seen_);
+        report_catch_up(pubsub_itc_fw_app::CatchUpStage::Incomplete, ack.last_seq_no, ack.records_sent);
         return;
     }
 
     cancel_timer(reconciliation_timer_id_);
     last_replicated_seq_no_ = ack.last_seq_no;
     highest_live_seq_no_ = std::max(highest_live_seq_no_, ack.last_seq_no);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
-    // and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: caught up -- book reconciled to seq_no={} (book_size={}), {} record(s) applied and {} report(s) sent to "
                "members, each marked as a possible repeat; the catch-up accounted for all {} record(s) sent (R-0101)",
                ack.last_seq_no, order_book_.size(), reconciliation_records_seen_, reconciliation_reports_sent_, ack.records_sent);
+    last_catch_up_records_sent_ = ack.records_sent;
+    report_catch_up(pubsub_itc_fw_app::CatchUpStage::Completed, ack.last_seq_no, ack.records_sent);
 
     // The book is now assembled: what the region vouched for, plus every record the sequencer
     // held after it. What happens to it next is a stated policy rather than a decision taken
@@ -2327,6 +2359,7 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: caught up at seq_no={} with {} order(s) on the book -- current, and waiting to be told what it may do",
                    ack.last_seq_no, order_book_.size());
+        report_catch_up(pubsub_itc_fw_app::CatchUpStage::CurrentAndWaiting, ack.last_seq_no, ack.records_sent);
         act_on_pending_halt();
         // A leader that announced itself while this catch-up was running said so on the only
         // occasion it had. Acting on it here is what keeps the startup arbitration deadline from

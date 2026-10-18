@@ -409,6 +409,16 @@ class MatchingEngineThread : public pubsub_itc_fw::ApplicationThread {
 
     // Reports what the engine did with an order or a cancel to the test, if one started this instance and listed the
     // session's comp id in report_orders_of. With no test, this costs one test of whether the channel exists.
+    // Reports a stage of catching up from the sequencer's WAL to the test, if one started this instance.
+    void report_catch_up(pubsub_itc_fw_app::CatchUpStage stage, int64_t through_seq_no, int64_t records_sent);
+
+    // Reports where this instance stands in catching up, when the connection to the test is made, so that a stage reached
+    // before then is not lost: catching up, or caught up, and if caught up at startup, waiting to be told what it may do.
+    void report_present_catch_up();
+
+    // What the sequencer said it had sent, in the catch-up that last completed, for report_present_catch_up.
+    int64_t last_catch_up_records_sent_{0};
+
     void report_order_outcome(const fix_common::SessionIdentity& session, std::string_view cl_ord_id, pubsub_itc_fw_app::OrderOutcomeKind outcome,
                               ReportIsRepeat repeat, int64_t sequence_number, std::string_view orig_cl_ord_id = {});
 

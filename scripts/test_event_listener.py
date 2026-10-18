@@ -397,6 +397,14 @@ def order_outcome(engine_events_module, component: Optional[str], cl_ord_id: str
     return predicate
 
 
+def catch_up(engine_events_module, component: Optional[str], stage) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: a CatchUp at the given stage from the matching engine (component, if named)."""
+    def predicate(event: ReceivedEvent) -> bool:
+        return (isinstance(event.message, engine_events_module.CatchUp) and event.message.stage == stage
+                and (component is None or event.component == component))
+    return predicate
+
+
 def connection_made(test_events_module, component: Optional[str], service: str) -> Callable[[ReceivedEvent], bool]:
     """A predicate: component (any, if none is named) made a connection to service."""
     def predicate(event: ReceivedEvent) -> bool:

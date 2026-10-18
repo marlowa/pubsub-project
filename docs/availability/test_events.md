@@ -211,7 +211,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 |---|---|
 | A. Who leads | `RoleChanged` from the library's `ReplicatedWal`, the matching engine and the arbiter; `LeaseChanged` from the library's `PairLeaseAgent`; `LeaseGrantedTo` from the arbiter; a component's start from its introduction; and a sequencer's connection to a matching engine from `ConnectionChanged` |
 | B. The engine's outcome for an order | Execution reports at the client, for orders sent through a gateway; the matching engine's `OrderOutcome` for orders sent with `inject_order`, for the checks no member can make, and where the member has gone (decision 2) |
-| C. The engine's catch-up | An event from the matching engine when its catch-up completes or falls short, with the count it checked |
+| C. The engine's catch-up | The matching engine's `CatchUp` event at each stage of catching up: begun, incomplete, completed, and current but waiting to be told what it may do |
 | D. Replication and repair | Events from the library's `ReplicatedWal`: the follower behind or keeping up again, the WALs agreeing through a record, records discarded, the statement that the follower may or may not lead; and from the arbiter, a statement recorded |
 | E. Halting and cancelling on promotion | The cancels and refusals at the client; an event when the engine halts or resumes |
 | F. Gateway sessions | The cancels at the client; an event from the gateway when a session is bound or unbound |
@@ -431,6 +431,37 @@ leading, five runs of 6,000 orders and the first discarded: the medians of four 
 microseconds with the build of kind A, 108.4, 108.6, 108.3 and 108.1 with this one, and 108.6, 108.4, 108.3 and 108.1
 with the build of kind A again. Kind B adds one test of whether the channel exists to each order the engine accepts,
 refuses or cancels, and does not change the round trip.
+
+### 4.5 Step 4, kind C: the matching engine's catch-up
+
+**The event.** `matching_engine_test_events.dsl` gains `CatchUp` (message id 171), sent at each stage of the engine
+catching up from the sequencer's WAL: when it begins (entering reconciling); when the sequencer says it has sent
+everything and what arrived does not account for it, so the engine asks again; when every record sent has arrived,
+once each and in order (R-0101); and, after a catch-up at startup, when the engine is current and waiting to be told
+whether it may lead. It carries the record reached, the records applied, the records the sequencer said it sent, the
+reports sent to members, and the size of the book. A catch-up happens at a start or a change of leader, not for each
+order, so the event is sent whatever comp ids `report_orders_of` lists.
+
+A catch-up can begin before the engine's connection to the test is made. So, as with its role, the engine reports
+where it stands when the connection is made: catching up; or caught up, and if caught up at startup and not yet
+leading or following, waiting to be told.
+
+**The checks moved.** Scenario 58's check that the restarted engine completed its catch-up and accounted for every
+record, and that it did not report its catch-up incomplete. And three steps of scenarios 54 and 55 that had stayed on
+the Quill log: the restarted engine asks for a catch-up though it does not lead, and becomes current and waits to be
+told. The steps about the reports the engine holds back and then releases or discards stay for kind H.
+
+**How it was shown to work.** A listener test of the event. With the event built to send nothing, scenario 54 failed at
+the step waiting for the catch-up to begin, scenario 55 at the step waiting for the engine to be current and waiting,
+and scenario 58 at the check that the catch-up completed.
+
+From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 108.2,
+108.0, 108.1 and 107.7 microseconds with the build of kind B, 108.1, 107.9, 107.9 and 107.4 with this one, and 98.7,
+107.9, 107.8 and 108.0 with the build of kind B again. Kind C sends nothing on the order path and does not change the
+round trip.
 
 ## 5. What phase 6 does not do
 

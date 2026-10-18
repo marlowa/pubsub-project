@@ -212,8 +212,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, NamedTuple
 
-from test_event_listener import (ReceivedEvent, TestEventListener, connection_made, follows, granted_to, introduced, lease_changed, leads,
-                                 order_outcome, role_changed)
+from test_event_listener import (ReceivedEvent, TestEventListener, catch_up, connection_made, follows, granted_to, introduced, lease_changed,
+                                 leads, order_outcome, role_changed)
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY          = 1.0   # seconds between app launches
@@ -509,6 +509,14 @@ def expect_lease(component: str, change: str, granted_by: str | None = None) -> 
     return Expect(f"{component}: lease {change}{by}",
                   (Condition(component, lambda m: lease_changed(m, component, getattr(m.LeaseChange, change),
                                                                 getattr(m.Voter, granted_by) if granted_by else None)),))
+
+
+def expect_catch_up(engine: str, stage: str) -> Expect:
+    """The matching engine reached a stage (a CatchUpStage name) of catching up from the sequencer's WAL."""
+    def matches(_library_events):
+        engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+        return catch_up(engine_events, engine, getattr(engine_events.CatchUpStage, stage))
+    return Expect(f"{engine}: catch-up {stage}", (Condition(engine, matches),))
 
 
 def expect_granted_to(arbiter: str, pair_id: int, instance: int) -> Expect:
@@ -3065,16 +3073,14 @@ _SCENARIOS: list[Scenario] = [
             # 4. It asked. The restart deletes the log first, so this line is from this start and
             #    not from the one before it.
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "entering RECONCILING"),
+                expect=expect_catch_up("matching_engine_primary", "Started"),
                 timeout=30.0,
                 description="the restarted instance asks for a catch-up though it does not lead",
             ),
             # 5. And it stopped there. Current, and waiting -- never adopting the role on the
             #    strength of having caught up, which is what trap 5 of BUG-0064 was about.
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "waiting to be told what it may do"),
+                expect=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
                 timeout=30.0,
                 description="it becomes current without taking the role",
                 absent=expect_leads("matching_engine_primary"),
@@ -3149,8 +3155,7 @@ _SCENARIOS: list[Scenario] = [
                 forget_lease_promises=True,
             ),
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "waiting to be told what it may do"),
+                expect=expect_catch_up("matching_engine_primary", "CurrentAndWaiting"),
                 timeout=30.0,
                 description="the restarted instance is current and holding its reports",
             ),
@@ -8048,15 +8053,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # published, so the engine is sent them again from the write-ahead log.
             log("  restarting the matching engine, which must replay and refuse the same records")
             do_restart_step(_me_restart_step(), proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
-            # do_restart_step deletes the engine's log before starting it again, so everything in the
-            # log now was written by the restarted engine, and it is read from the start.
-            restart_pos = 0
-            found, _, _ = poll_log_for(me_log, "book reconciled to seq_no=", "the catch-up accounted for all",
-                                       timeout=_ME_READY_TIMEOUT * 2, from_byte=restart_pos)
+            # Only the restarted engine's events count: those since its newest introduction.
+            caught_up = expect_catch_up(me_log.stem, "Completed")
+            found, _ = await_expectation(caught_up, _ME_READY_TIMEOUT * 2, since_present_processes(caught_up))
             if not found:
                 die("engine refusal: the restarted matching engine never completed its catch-up. A refusal that stops "
                     "the catch-up's count would leave a healthy engine unable to serve (R-0101).")
-            if count_log_marker(me_log, "catch-up was not complete", restart_pos):
+            if expectation_seen(expect_catch_up(me_log.stem, "Incomplete"), since_present_processes(caught_up)):
                 die("engine refusal: the restarted engine reported its catch-up incomplete, so a refused record was not "
                     "counted (R-0101).")
             restarted_from = _TEST_EVENTS.since_introduction(engine)

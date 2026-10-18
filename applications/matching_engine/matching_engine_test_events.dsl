@@ -46,3 +46,29 @@ message OrderOutcome (id=170, version=1)
     bool             during_catch_up  # true when the engine dealt with it while catching up, and marked its report as a possible repeat
     i64              seq_no           # the sequence number the sequencer gave the command
 end
+
+# ------------------------------------------------------------
+#  Where the engine stands in catching up from the sequencer's
+#  WAL, before it may act.
+# ------------------------------------------------------------
+enum CatchUpStage : i8 {
+    Started = 1             # it began catching up: it asked the sequencer for every record after the one it holds
+    Incomplete = 2          # the sequencer said it had sent everything, and what arrived does not account for it: the engine asks again
+    Completed = 3           # every record the sequencer sent arrived, once each and in order (R-0101)
+    CurrentAndWaiting = 4   # caught up at startup, and waiting to be told whether it may lead
+}
+
+# ------------------------------------------------------------
+#  171 -- CatchUp
+#  The engine reached a stage of catching up. Sent whatever the comp
+#  ids: a catch-up happens at a start or a change of leader, not for
+#  each order.
+# ------------------------------------------------------------
+message CatchUp (id=171, version=1)
+    CatchUpStage stage
+    i64          through_seq_no    # Started: the last record the engine holds; otherwise the last record the sequencer sent
+    i64          records_applied   # the records the engine applied in this catch-up so far
+    i64          records_sent      # what the sequencer said it sent; 0 for Started
+    i64          reports_sent      # the reports the engine sent members in this catch-up, each marked as a possible repeat
+    i64          book_size         # the orders on the book at this stage
+end
