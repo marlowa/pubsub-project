@@ -15,14 +15,15 @@ from dsl.errors import DslError
 from dsl.validator import Validator
 from dsl.generator_cpp import CppGenerator
 from dsl.generator_java import JavaGenerator
+from dsl.generator_python import PythonGenerator
 from dsl.generator_topics import TopicsGenerator
 from dsl.ast import TopicDecl
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Generate C++ and/or Java source from a DSL schema. "
-                    "At least one of --cpp or --java must be specified."
+        description="Generate C++, Java and/or Python source from a DSL schema. "
+                    "At least one output must be specified."
     )
     ap.add_argument("input", help="Input .dsl schema file")
 
@@ -44,6 +45,10 @@ def main():
                             help="Java package declaration (e.g. com.example.app). "
                                  "Omit for no package.")
 
+    python_group = ap.add_argument_group("Python output")
+    python_group.add_argument("--python", metavar="OUTPUT",
+                              help="Output .py file to write: a plain Python module, standard library only")
+
     topics_group = ap.add_argument_group("Topic catalog output")
     topics_group.add_argument("--topics-registry", metavar="OUTPUT",
                               help="Output .hpp file for the generated topic registry "
@@ -58,8 +63,8 @@ def main():
 
     args = ap.parse_args()
 
-    if not (args.cpp or args.java or args.topics_registry or args.topics_catalog):
-        ap.error("at least one output (--cpp, --java, --topics-registry, --topics-catalog) "
+    if not (args.cpp or args.java or args.python or args.topics_registry or args.topics_catalog):
+        ap.error("at least one output (--cpp, --java, --python, --topics-registry, --topics-catalog) "
                  "must be specified")
     if args.cpp and not args.namespace:
         ap.error("--namespace is required when --cpp is specified")
@@ -92,6 +97,11 @@ def main():
         gen = JavaGenerator(class_name=output_path.stem, package_name=args.package)
         code = gen.emit(ast)
         output_path.write_text(code)
+
+    if args.python:
+        output_path = Path(args.python)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(PythonGenerator(source_name=input_path.name).emit(ast))
 
     if args.topics_registry or args.topics_catalog:
         if not any(isinstance(decl, TopicDecl) for decl in ast.declarations):

@@ -134,7 +134,8 @@ pybind11 bindings or decoding by hand.
   which takes a buffer and a position and returns the message and the position after it;
 - a function `first_invalid_field()`, as the C++ generator writes, which names the first field whose value is
   not allowed: an enum value the DSL does not list, or an empty string in a field that is not optional;
-- an import of the module of each DSL file the file includes, for messages it refers to.
+- nothing imported from another generated module: the DSL loader copies the declarations of an included file into
+  the file that includes it, so each module stands alone.
 
 **The wire format** is the one in [dsl_design.dox](../dsl_design.dox), section "Wire format": little-endian
 integers, a four-byte length before each string, bytes value and list, no length before a fixed array, and a
@@ -175,7 +176,8 @@ against the C++ code byte for byte:
 3. The Python test decodes each file and compares every field with the values; encodes the same values and
    compares the bytes with the C++ program's, exactly; and hands its own bytes to the C++ program, which decodes
    them and checks every field.
-4. The same for the PDU header, against bytes the framework's own C++ wrote.
+4. The same for the PDU header, against the bytes the framework's own `PduFramer` writes, compiled into the C++
+   program.
 5. Every DSL file in the project is generated, and the modules are imported, on Python 3.8 in the Rocky image
    and on 3.12 here.
 6. Each test is made to fail on purpose before it is trusted: a generator that writes a big-endian integer, that
@@ -223,6 +225,34 @@ yet, such as lists of lists and fixed arrays (decision 4).
    `TEST CONTRACT` comments on its messages taken out. Every scenario passes after each kind.
 5. **The proof that no test reads Quill wording.** The helpers that read logs are removed from `ha_test.py`, and
    a run with every `TEST CONTRACT` message reworded on purpose passes.
+
+### 4.1 What step 2 built
+
+**The generator.** `python/dsl/generator_python.py` writes the module section 3.3 describes, and
+`python/tools/generate_cpp_from_dsl.py` writes it with `--python`. `python/dsl/pdu_framing.py` reads and writes the
+PDU header and returns whole PDUs from a stream. Every DSL file of the project generates a module that imports and
+round-trips its messages, on Python 3.12 here and on Python 3.8.17 in the project's Rocky Linux 8 image.
+
+**The check against the C++ code.** `python/tests/resources/every_type.dsl` and `python/tests/cross_language.py`,
+with the tests in `python/tests/test_generator_python.py`. For each of 15 sets of values, the Python code writes the
+same bytes as the C++ code and decodes the C++ bytes to the same values; for 4 PDUs, `pdu_framing` writes the same
+bytes as `PduFramer`. The Java code writes the same bytes as the C++ code for 14 sets of values, and decodes and
+encodes the C++ bytes unchanged. Six deliberate faults were each caught: an integer written big-endian, an optional
+field's flag left out, a list's count written in two bytes, the rule for an optional field at the end of a message
+removed, framing that ignores the canary, and a Java 16-bit integer written in four bytes.
+
+**What it found.**
+
+- The C++ generator cannot write a list of enums, and writes the smallest `i64` value as a literal the compiler warns
+  about ([BUG-0177](../bug_list.md#bug_0177)). A list of enums is left out of the test DSL file, and the Python
+  generator's handling of one is tested on its own.
+- The Java generator did not compile an `i64` enum with a value outside the 32-bit range; fixed, since it stopped the
+  Java check running ([BUG-0178](../bug_list.md#bug_0178)).
+- The Java code decodes an enum value its enum does not list as `null`, and cannot then encode the message again
+  ([BUG-0179](../bug_list.md#bug_0179)). The case holding such values is left out of the Java checks.
+
+The pybind11 bindings were tried as the C++ reference first, and do not serve: they include the C++ generator's code,
+so they cannot be built for a list of enums either. The reference is the small C++ program the design called for.
 
 ## 5. What phase 6 does not do
 

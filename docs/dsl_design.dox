@@ -22,6 +22,7 @@ dependencies in the generated code, and allocator-friendly decoding via a
 | DSL type | C++ type | Wire size |
 |----------|----------|-----------|
 | i8 | int8_t | 1 byte |
+| char | char | 1 byte |
 | i16 | int16_t | 2 bytes, little-endian |
 | i32 | int32_t | 4 bytes, little-endian |
 | i64 | int64_t | 8 bytes, little-endian |
@@ -145,7 +146,7 @@ All multi-byte integers are little-endian. The wire format for each type is:
 
 | Type | Wire encoding |
 |------|---------------|
-| i8, bool | 1 byte |
+| i8, char, bool | 1 byte |
 | i16 | 2 bytes LE |
 | i32, string length, list count | 4 bytes LE |
 | i64, datetime_ns | 8 bytes LE |
@@ -178,7 +179,9 @@ The Python package is structured as:
 - \c dsl/validator.py -- semantic validation (unknown types, duplicate IDs, cycles)
 - \c dsl/generator_cpp.py -- C++17 code emitter
 - \c dsl/generator_topics.py -- the topic registry for pub/sub
-- \c dsl/generator_java.py and \c dsl/generator_pybind11.py -- Java and Python bindings
+- \c dsl/generator_java.py and \c dsl/generator_pybind11.py -- Java, and C++ bindings for Python used by the compiler's tests
+- \c dsl/generator_python.py -- plain Python, standard library only, which the high availability tests use
+- \c dsl/pdu_framing.py -- the framework's PDU header and stream framing, in plain Python
 - \c dsl/loader.py and \c dsl/errors.py -- loading DSL files and reporting errors
 - \c tools/generate_cpp_from_dsl.py -- command-line entry point
 

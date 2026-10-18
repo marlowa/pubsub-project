@@ -90,6 +90,15 @@ def test_enum_i64_uses_long_value_type():
     assert "public static BigEnum fromValue(long v) {" in code
 
 
+def test_enum_i64_values_carry_the_long_suffix():
+    # Without the L suffix Java refuses a value outside the 32-bit range (BUG-0178).
+    code = generate("enum BigEnum : i64 { least = -9223372036854775808 most = 9223372036854775807 }")
+    assert "least(-9223372036854775808L)," in code
+    assert "most(9223372036854775807L);" in code
+    small = generate("enum SmallEnum : i32 { one = 1 }")
+    assert "one(1);" in small
+
+
 def test_message_class_declaration():
     text = """
         message Trade (id=1)

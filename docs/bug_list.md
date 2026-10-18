@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 176 |
-| Open | 70 (49 defects, 21 tasks) |
-| Closed | 106 |
-| Next id | BUG-0177 |
+| Bugs recorded | 179 |
+| Open | 72 (51 defects, 21 tasks) |
+| Closed | 107 |
+| Next id | BUG-0180 |
 
 ## Open bugs by severity
 
-16 high, 46 medium, 8 low.
+16 high, 46 medium, 10 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -83,6 +83,8 @@
 | [BUG-0145](#bug_0145) | low | defect | Scenarios 59 and 62 stop the leading sequencer without knowing that it has received the three orders it is meant to be holding |
 | [BUG-0149](#bug_0149) | low | defect | `ha_test.py` scenario 62 can crash reading a WAL segment that the running sequencer deletes at the same moment |
 | [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
+| [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
+| [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
 
 ---
 
@@ -3604,7 +3606,69 @@ with later.
 
 **Principles.** V3, V11, F4.
 
+### BUG-0177: The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value {#bug_0177}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| How | Building the C++ reference program for checking the Python and Java generators, in step 2 of phase 6 ([test_events.md](availability/test_events.md)), from a test DSL file holding every kind of field |
+| Impact | None on the venue today: no DSL file of the project has a list of enums or an `i64` enum entry at the smallest value, and one that did would stop the build, not misbehave. But a list of enums cannot be used in any message until this is fixed, and the cross-language check cannot cover it |
+
+**What happens.**
+
+- For a field such as `list<Small> smalls`, the decoder `generator_cpp.py` writes refers to `SmallView`, a type it
+  writes only for messages, and the compiler refuses it. A plain enum field, `Small small`, is fine. The pybind11
+  bindings (`generator_pybind11.py`) fail for the same field, because they include that header.
+- An `i64` enum entry of -9223372036854775808 is written as that literal, which the compiler warns "is so large
+  that it is unsigned": the magnitude does not fit in a signed 64-bit integer before the minus sign is applied.
+  The venue's build treats warnings as errors. The usual spelling is `(-9223372036854775807LL - 1)`.
+
+**What is wanted.** The decoder treats a list of enums as a list of integers of the enum's type, as the Java and
+Python generators do; and the smallest `i64` value is written so that it compiles cleanly.
+
+**Principles.** None; the DSL compiler.
+
+### BUG-0179: The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again {#bug_0179}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| How | The byte-for-byte check of the Java generator against the C++ one, in step 2 of phase 6 ([test_events.md](availability/test_events.md)) |
+| Impact | A Java client sent a message with an enum value its copy of the DSL does not list, for instance because the other side has a newer DSL with an extra entry, holds `null` in that field; code that reads the field, or encodes the message again, fails with a NullPointerException. The C++ decoder keeps the value, and leaves it to `first_invalid_field` to say whether it is allowed |
+
+**What was seen.** The C++ code encoded a message whose five enum fields held values their enums do not define. The
+Java code decoded it with every one of those fields `null` (`fromValue` returns `null` for a value it does not know),
+and encoding it again threw a NullPointerException. The Python generator keeps such a value as a plain integer, as
+the C++ code keeps it.
+
+**What is wanted.** The Java code keeps a value it does not know, as the C++ and Python code do, and offers a check
+that says whether each value is one the definition allows.
+
+**Principles.** None; the DSL compiler.
+
 ## Closed
+
+### BUG-0178: The Java generated from the DSL did not compile for an i64 enum with a value outside the 32-bit range {#bug_0178}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| Fixed | 2026-10-18 -- each value of an `i64` enum is written with Java's `L` suffix |
+| How | The byte-for-byte check of the Java generator against the C++ one, in step 2 of phase 6 ([test_events.md](availability/test_events.md)): the Java generated for the test DSL file did not compile |
+| Impact | None on the venue: no Java client used an `i64` enum. Any that did would not have compiled |
+
+**What happened.** `generator_java.py` wrote each enum entry's value as a bare number. For an `i64` enum Java needs the
+`L` suffix on a value outside the 32-bit range, so `Least(-9223372036854775808)` was refused as "integer number too
+large". Fixed because it stopped the Java check running at all; the check now compiles and runs the Java for both
+the smallest and the largest `i64` value.
+
+**Principles.** None; the DSL compiler.
 
 ### BUG-0133: A follower's catch-up and the publishers' catch-ups read the log on the thread that sequences orders {#bug_0133}
 

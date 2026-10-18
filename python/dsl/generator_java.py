@@ -158,9 +158,11 @@ class JavaGenerator:
     def _emit_enum(self, enum: EnumDecl, w) -> None:
         value_type = "long" if enum.underlying_type == "i64" else "int"
         w(f"    public enum {enum.name} {{")
+        # A 64-bit value needs Java's L suffix; without it, a value outside the 32-bit range does not compile.
+        suffix = "L" if value_type == "long" else ""
         for index, entry in enumerate(enum.entries):
             sep = "," if index + 1 < len(enum.entries) else ";"
-            w(f"        {entry.name}({entry.value}){sep}")
+            w(f"        {entry.name}({entry.value}{suffix}){sep}")
         w(f"        public final {value_type} value;")
         w(f"        {enum.name}({value_type} v) {{ this.value = v; }}")
         w(f"        public static {enum.name} fromValue({value_type} v) {{")
