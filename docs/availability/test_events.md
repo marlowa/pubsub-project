@@ -1,0 +1,277 @@
+# Phase 6: test events instead of Quill log wording {#test_events}
+
+**Status: design for review.** Nothing in it is built. It is agreed with Andrew before any code is written.
+
+## 1. What phase 6 does
+
+The high availability tests in `scripts/ha_test.py` decide whether a scenario passes by reading the venue's
+Quill logs: they wait for a phrase to appear, count the lines holding a phrase, or read a number out of a line.
+That ties every test to the wording of messages written for people, and to the moment Quill's background
+thread happens to write them to the file. 67 messages in the C++ carry a `TEST CONTRACT` comment because a test
+depends on their exact wording ([BUG-0169](../bug_list.md#bug_0169)). When a test fails, it is often unclear
+whether the venue went wrong or the test misread a log.
+
+Phase 6 makes the tests decide from two things instead:
+
+1. **What a member sees.** Wherever a fact can be checked from the messages a member receives (execution
+   reports, rejects, resends, logons and logouts), the test checks those messages.
+2. **Test events.** For the steps inside the venue that no member can see, such as which sequencer leads or a
+   follower being handed over, each component sends the test a small message saying what happened, in a form
+   defined in the DSL. A component sends test events only when its configuration names a test to send them
+   to, so a venue that members trade on sends none.
+
+Quill logs then go back to being written for people. A message no test reads loses its `TEST CONTRACT`
+comment and can be worded for the people who read it.
+
+The phase is finished when no high availability test reads a Quill log to decide whether it passes, the
+scenarios pass, and changing the wording of any Quill message cannot make a test pass or fail.
+
+## 2. What the tests read now
+
+The inventory, [test_events_inventory.md](test_events_inventory.md), lists every place the script reads a Quill
+log: 158 calls, grouped by the kind of fact they check. Some of the calls are inside helpers used several
+times, such as `wait_for_me_ord` and `accepted_by_engine`, so the number of checks made in a full run is larger.
+
+| Kind of fact | Calls | Can a member see it? |
+|---|---|---|
+| A. Who leads: the role changes of sequencers, matching engines and arbiters | 47 | Not which instance leads. A member sees only whether the venue accepts orders |
+| B. What the matching engine did with an order or a cancel | 30 | Yes, as an execution report, for orders sent through a gateway. Not for orders the test hands straight to a sequencer with `inject_order`, whose reports go to no member by design |
+| C. The matching engine's catch-up completing, or falling short | 2 | No |
+| D. Replication, repair and the rule that a follower that is behind does not lead | 14 | No |
+| E. Halting, and cancelling open orders on promotion | 8 | The cancels and the refusals, yes. That the engine has halted, no |
+| F. Gateway sessions: binding to an instance, disconnection, cancelling on disconnection | 13 | The cancels, yes. Which instance a session is bound to, no |
+| G. Resends and session replay | 15 | The resent messages and their sequence numbers, yes. Which sequencer answered or declined, no |
+| H. Connections between components made, lost or refused | 10 | No |
+| I. Throttles and logons | 8 | Yes: a reject, a logout, or a logon accepted |
+| J. The WAL written in order and undamaged, over the whole run | 2 | Not by a member; but the test can read the WAL files themselves |
+| K. The test's own fault-injection library saying it has begun blocking | 5 | Not a Quill log: it is the test library's own line on standard error |
+| L. The helper that reads complete lines, used by the counts above | 4 | Goes when its callers go |
+
+So roughly a third of the checks can move to what a member sees, about half need test events, and a few need
+neither (J and K). Step 1 of the phase writes, for every check, the exact fact it proves and which of the three
+it becomes, before any check is changed.
+
+## 3. The design
+
+### 3.1 Checks moved to what a member sees
+
+The test clients already receive what a member receives: `scripts/fix_load_client.py`, which can record the
+time of each order's first report (`--answer-times`), `scripts/fix_raw_client.py`, and the binary clients
+`binary_client` and `binary_load_client`. Where a client does not yet report what a check needs, it is made to.
+For kinds B, E, F, G and I, a check moves to the client wherever the scenario sends its orders through a
+gateway: the test asks the client for the reports, rejects, resends or logouts it received, and checks them.
+This is the strongest form of check, because it tests what the venue promises its members rather than what it
+says about itself.
+
+The scenarios that use `inject_order` hand an order straight to a sequencer, under a session no gateway holds,
+to test the matching engine's own refusals, which no gateway would let through. Their reports reach no member,
+so those checks use the matching engine's test events (decision 2).
+
+### 3.2 Test events
+
+**What an event is.** A message defined in a new DSL file of the library, `test_events.dsl`, with a name and
+the fields a test needs: an instance, an epoch, a record number, a count. The DSL file is the whole contract
+between the components and the tests, in place of the wording of 67 scattered messages. Events are named in the
+library's terms, not the venue's (for example "a follower was handed over at record N", not "the matching
+engine caught up"), since the library is not to name the venue's ideas ([BUG-0161](../bug_list.md#bug_0161)); an
+application may define events of its own in its own DSL file.
+
+The list of events is not settled here. It comes out of step 1, from the checks that need one, and is kept to
+what those checks need. A first idea of its shape, for the largest kind (A):
+
+- `RoleChanged`: the group (sequencer, matching engine, arbiter), the instance, the role it now has and the
+  epoch, sent by the library's lease classes whenever the role changes.
+
+**How events reach the test (decision 1).** Before it starts the venue, the test opens a listening socket on
+the loopback interface, on a port the operating system chooses, and passes its address to each component in
+its configuration (`[test_events]`). A component so configured opens an ordinary framework connection to it at
+start, and sends its events on it as PDUs. This uses what the framework already does well:
+
+- it frames each message, so the test reads whole messages however the bytes arrive;
+- sending never makes the sending thread wait: a send is queued and the reactor writes it;
+- a connection whose reader does not keep up is closed once 65,536 sends wait on it, so a test that stops
+  reading fails visibly instead of slowing the venue down.
+
+A file written through Quill was considered and is not proposed: Quill writes in the background, so the test
+cannot know when the file holds every event, which is the weakness this phase removes.
+
+**Order.** Events from one thread reach the test in the order that thread sent them. Events from different
+threads, or different processes, have no order between them, and a test must not assume one. Each thread that
+sends events therefore has a connection of its own, and the test keeps each connection's events apart.
+
+**Knowing that nothing happened.** A test that checks that something did not happen, such as no second leader
+or no order accepted twice, must know when it has seen every event that could have shown it. The test sends a
+checkpoint request on a connection; the thread at the other end answers it after everything it did before it
+received the request. Since a connection delivers in order, every event that thread sent before the answer has
+arrived by the time the answer does. A negative check is made at a checkpoint, never on a timeout.
+
+**Failure.** The test fails, naming the component and the connection, if an event connection is lost while the
+component is meant to be running, if a message does not decode, if its message id is not one the DSL defines,
+or if an event a check waits for does not come. A component whose event connection is closed writes a Warning
+to its Quill log and carries on: the test has already failed, and the venue does not stop for a test.
+
+**Cost when switched off.** In a venue with no `[test_events]` section, no connection is made, and each place
+that sends an event costs one test of whether the connection exists. Events are sent on role changes,
+hand-overs, catch-ups and connections, which happen rarely. The one kind that could be sent for every order is
+the matching engine's outcome for an order (kind B), which is why decision 2 keeps it to the orders no member
+can see. The order's round trip is measured with the events switched off before and after, as in phases 4
+and 5.
+
+### 3.3 The Python generator
+
+The test harness is written in Python, so it needs to decode the events, and to encode the checkpoint request.
+The DSL compiler, which is itself written in Python, has generators for C++, Java and pybind11 bindings. Phase
+6 adds a fourth, `python/dsl/generator_python.py`, that writes plain Python: nothing to compile, using only the
+standard library (`struct`, `dataclasses`, `enum`). Andrew chose this on 18 October 2026, over decoding with the
+pybind11 bindings or decoding by hand.
+
+**What it writes.** One Python module for each DSL file. In it:
+
+- for each enum, an `IntEnum` class with the same entries and values;
+- for each message, a dataclass with the fields in the order the DSL gives them, its message id and version as
+  class constants, and three functions: `encoded_size()`, `encode()`, which returns the bytes, and `decode()`,
+  which takes a buffer and a position and returns the message and the position after it;
+- a function `first_invalid_field()`, as the C++ generator writes, which names the first field whose value is
+  not allowed: an enum value the DSL does not list, or an empty string in a field that is not optional;
+- an import of the module of each DSL file the file includes, for messages it refers to.
+
+**The wire format** is the one in [dsl_design.dox](../dsl_design.dox), section "Wire format": little-endian
+integers, a four-byte length before each string, bytes value and list, no length before a fixed array, and a
+one-byte flag before an optional field. The Python types are `int` for the integers and `datetime_ns`, `bool`,
+`str` for strings (UTF-8), `bytes`, `list` for lists and fixed arrays, `None` for an absent optional field, and
+the dataclass for a field that is another message. The DSL's `char` type, which that section does not list,
+is one byte, as in the C++ generator.
+
+**Decoding behaves as the C++ decoder does.** It accepts any value for an enum field, as the C++ decoder does,
+keeping a value the enum does not list as a plain `int`; `first_invalid_field()` is what rejects it. A buffer
+that ends too soon raises `DecodeError`, naming the message and the field, and never returns part of a message.
+Encoding a value out of its field's range, such as 200 in an `i8`, raises `EncodeError`.
+
+**The PDU header** is not described by the DSL. Its layout is fixed by `PduHeader.hpp`: 24 bytes, in network
+byte order (big-endian), holding the payload's length, the message id, the version, the sequence number and a
+canary value that must be `0xC0FFEE00`. The framing is written once by hand, as `python/dsl/pdu_framing.py`,
+beside the generator: it reads a header, checks the canary, and returns whole messages from a stream however the
+bytes arrive, keeping an incomplete one until the rest comes.
+
+**Python 3.8.** The Rocky Linux 8 image in the project's `Dockerfile` has Python 3.8, and this development
+machine has 3.12. The generated code must run on both, so it uses nothing newer than 3.8: no `match`, and
+`typing.List` rather than `list[...]` in annotations.
+
+**Where the code goes.** Generated into the build tree, never into the source tree, as the C++ is; installed by
+the release step into `installed/lib/python/`, from where `ha_test.py`, which runs against the installed venue,
+imports it (decision 3).
+
+**How it is shown to be right.** The Java generator's tests check only the text it generates; they never compile
+the Java or compare its bytes with the C++ code's. That is not enough here, so the Python generator is checked
+against the C++ code byte for byte:
+
+1. A DSL file written for the test, `every_type.dsl`, has messages using every kind of field: each integer
+   size at its smallest and largest value, `bool`, `char`, `datetime_ns`, empty and non-empty strings and bytes,
+   strings that are not ASCII, lists of each kind including lists of lists and of messages, fixed arrays,
+   optional fields present and absent, enums, and messages inside messages.
+2. A small C++ test program, built from the C++ generated for that file, encodes a set of values for each message
+   and writes the bytes to files.
+3. The Python test decodes each file and compares every field with the values; encodes the same values and
+   compares the bytes with the C++ program's, exactly; and hands its own bytes to the C++ program, which decodes
+   them and checks every field.
+4. The same for the PDU header, against bytes the framework's own C++ wrote.
+5. Every DSL file in the project is generated, and the modules are imported, on Python 3.8 in the Rocky image
+   and on 3.12 here.
+6. Each test is made to fail on purpose before it is trusted: a generator that writes a big-endian integer, that
+   leaves out an optional field's flag, that writes a list's count in two bytes, or framing that ignores the
+   canary.
+
+The same `every_type.dsl` and C++ program can check the Java generator byte for byte too, which it has never
+been; whether to do that now is decision 4.
+
+### 3.4 How each kind of check moves
+
+| Kind | Becomes |
+|---|---|
+| A. Who leads | `RoleChanged` events from the library's lease classes and the arbiter |
+| B. The engine's outcome for an order | Execution reports at the client, for orders sent through a gateway; events from the matching engine for orders sent with `inject_order` (decision 2) |
+| C. The engine's catch-up | An event from the matching engine when its catch-up completes or falls short, with the count it checked |
+| D. Replication and repair | Events from the library's `ReplicatedWal`: the follower behind or keeping up again, the WALs agreeing through a record, records discarded, the statement that the follower may or may not lead; and from the arbiter, a statement recorded |
+| E. Halting and cancelling on promotion | The cancels and refusals at the client; an event when the engine halts or resumes |
+| F. Gateway sessions | The cancels at the client; an event from the gateway when a session is bound or unbound |
+| G. Resends and replay | The resent messages at the client; an event from a sequencer when it answers or declines a replay |
+| H. Connections | An event when a component's connection to another is made or lost, from the framework's connection classes in the library's terms |
+| I. Throttles and logons | The reject, logout or logon at the client |
+| J. The WAL in order and undamaged | The test reads the WAL files after the scenario, which it already knows how to do; no log and no event |
+| K. The test's own library | Stays: it is the test tool's own output, not the venue's (decision 5) |
+
+## 4. Steps, and how each is known to be right
+
+1. **The inventory, check by check.** For each of the checks, the fact it proves, whether a member could see it,
+   and what replaces it, written into the inventory. Andrew reviews it before step 3, because it fixes the list
+   of events.
+2. **The Python generator and the framing**, built and checked as section 3.3 says. This needs nothing from step 1
+   and can be done alongside it.
+3. **The channel**, on its own, before any check moves: the library's side (the event connection and answering a
+   checkpoint) and the test's side (the listener, decoding, waiting for an event, the checkpoint), with one check
+   of each kind moved as the first example, one that something happened and one that something did not. Tested
+   with deliberate faults: the test stops reading, a connection is lost, a message arrives split across reads and
+   joined with the next. The order's round trip is measured with events switched off, before and after.
+4. **The checks moved, one kind at a time,** in the order of the table in section 3.4, largest first. For each
+   kind: the replacement is written, made to fail on purpose, and only then is the log check removed and the
+   `TEST CONTRACT` comments on its messages taken out. Every scenario passes after each kind.
+5. **The proof that no test reads Quill wording.** The helpers that read logs are removed from `ha_test.py`, and
+   a run with every `TEST CONTRACT` message reworded on purpose passes.
+
+## 5. What phase 6 does not do
+
+- **No behaviour of the venue changes.** Only what the components tell a test, when one asks.
+- **Prometheus metrics are not used for test results.** Prometheus is optional, so nothing the venue or its
+  tests need may depend on it (principle V13).
+- **Unit and integration tests that do not read log wording are not changed.** Some do read it:
+  `PairLeaseAgentTest` checks 7 phrases in the log it captures and `ReplicatedWalTest` 12 (decision 6).
+- **Copilot's proposal**, which Andrew supplied, is the starting point; where this design departs from it, it says
+  why (sections 3.2 and 3.3).
+
+## 6. Decisions
+
+### Decision 1. How do events reach the test? (Choose A or B.)
+
+- **A.** A framework connection from each component to a listener the test opens on the loopback interface,
+  carrying DSL messages (section 3.2). The test knows when it has every event, through the checkpoint, and a
+  test that stops reading fails visibly.
+- **B.** A file per component, written through a Quill logger of its own. Simpler to build, but the test cannot
+  know when the file is complete.
+
+Recommended: **A**.
+
+### Decision 2. How are the matching engine's outcomes for orders checked? (Choose A or B.)
+
+- **A.** Through the member's execution reports wherever the order went through a gateway, and through matching
+  engine events only for orders sent with `inject_order`, whose reports reach no member.
+- **B.** Through matching engine events for every order. One mechanism, but an event for each order on the
+  engine's thread, and checks that no longer test what members receive.
+
+Recommended: **A**.
+
+### Decision 3. Where does the generated Python go? (Yes or no.)
+
+Generated into the build tree and installed by the release step into `installed/lib/python/`, from where
+`ha_test.py` imports it. Recommended: **yes**.
+
+### Decision 4. Is the Java generator checked byte for byte against the C++ code in this phase? (Yes or no.)
+
+The test DSL file and C++ program of section 3.3 would serve it too, at a small extra cost. It is not needed by
+the tests, which do not use Java. Recommended: **no** in this phase; recorded as a task instead.
+
+### Decision 5. Does the fault-injection library's line on standard error stay? (Yes or no.)
+
+`libblock_sends_to_ports.so` writes one line when it begins blocking, and five checks wait for it. It is the test
+library's own output, written straight to standard error, not a Quill log of the venue. Recommended: **yes**, it
+stays.
+
+### Decision 6. Are the unit tests that read log wording in this phase too? (Yes or no.)
+
+`PairLeaseAgentTest` and `ReplicatedWalTest` check 19 phrases between them in the logs they capture, and some of
+the `TEST CONTRACT` comments in `PairLeaseAgent` and `ReplicatedWal` are there for them. Unless they change too,
+rewording those messages would still break a test, and the phase's last step could not pass. They would check the
+class's state, or the events it sends, instead. Recommended: **yes**, added to the inventory in step 1.
+
+### Decision 7. Is the design as a whole right to build, in the order of section 4? (Yes or no.)
+
+Recommended: **yes**.

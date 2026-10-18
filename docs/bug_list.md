@@ -3599,6 +3599,9 @@ records discarded when it next follows, which the repair does.
 sent some other way, such as the recovery service of [BUG-0113](#bug_0113), so that they cannot take the leading
 sequencer's thread away from renewing its lease.
 
+**When.** Andrew judged on 18 October 2026 that it does not hold up the completion of phase 5, and is dealt
+with later.
+
 **Principles.** V3, V11, F4.
 
 ## Closed
