@@ -75,7 +75,8 @@ steps are built: the library's way of following a WAL, and the follower sequence
 engine's catch-up and the matching engine publishers' following of the WAL through it, so that neither a
 rejoining follower, a catching-up engine nor a publisher starting late in the day stops the venue answering
 orders, and a publisher is sent only records the venue's record holds; and the build refuses any new read of
-the WAL in the sequencer. It awaits Andrew's review. New features, including pub/sub, the order activity recorder and the trading phases, wait
+the WAL in the sequencer. It awaits Andrew's review. Phase 6, test events instead of Quill log wording, has an agreed design,
+[test_events.md](availability/test_events.md), and its first three steps are built. New features, including pub/sub, the order activity recorder and the trading phases, wait
 until the plan is finished.
 
 ## Where to start

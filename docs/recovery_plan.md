@@ -32,7 +32,9 @@
 > the sequencer that is not in a named table of permitted reads, each with its reason
 > ([BUG-0133](bug_list.md#bug_0133) is fixed). All five steps are built, and phase 5 awaits Andrew's review.
 > After that review comes phase 6, a channel of test events, so that the high availability tests stop reading
-> the wording of Quill log messages. Only then, before phase 7 is designed, does Andrew review whether phases 7
+> the wording of Quill log messages. Its design is agreed, and its first three steps are built: the inventory of every check that reads
+> a Quill log, a generator that writes plain Python from the DSL, and the channel itself, with the first two checks
+> moved onto it. Only then, before phase 7 is designed, does Andrew review whether phases 7
 > and 8 still serve the guarantees the venue is to give.
 
 ## In one page

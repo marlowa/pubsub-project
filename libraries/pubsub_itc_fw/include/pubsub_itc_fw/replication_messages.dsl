@@ -19,10 +19,6 @@
 #  record numbered seq_no to its WAL. The follower acknowledges
 #  records in the order it receives them, so an acknowledgement also
 #  covers every record before it.
-#
-#  A component that follows the venue's WAL from outside the pair,
-#  the matching engine publisher, sends the same message to the
-#  sequencer to say how far it has read.
 # ------------------------------------------------------------
 message WalAck (id=104, version=1)
     i64 seq_no      # the number of the record written

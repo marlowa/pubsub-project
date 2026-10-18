@@ -27,6 +27,7 @@
 #include <replication_messages.hpp>
 
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalFollowerService.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
@@ -196,6 +197,18 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     };
     SequencerPublisherLinks publisher_links_{*this};
     std::optional<pubsub_itc_fw::WalHandedOverFollowers> handed_over_publishers_;
+
+    // The test events this thread sends, when a test started this instance (docs/availability/test_events.md).
+    class SequencerTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
+      public:
+        explicit SequencerTestEventLinks(SequencerThread& owner) : owner_(owner) {}
+        void send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) override;
+
+      private:
+        SequencerThread& owner_;
+    };
+    SequencerTestEventLinks test_event_links_{*this};
+    std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
 
     // This instance's role, as the replicated WAL last said it changed.
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};

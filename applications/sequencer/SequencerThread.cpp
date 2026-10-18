@@ -160,6 +160,11 @@ void SequencerThread::on_initial_event() {
     wal_configuration.wal_append_histogram = wal_append_histogram_;
     wal_configuration.running_alone_gauge = running_alone_gauge_;
     replicated_wal_.emplace(std::move(wal_configuration), get_logger(), replication_links_, lease_links_, replicated_wal_events_);
+    // Only when a test started this instance (docs/availability/test_events.md).
+    if (config_.test_events.enabled) {
+        test_events_.emplace(test_event_links_, config_.cpu_layout_component, static_cast<int64_t>(config_.instance_id), "SequencerThread");
+        replicated_wal_->report_test_events_to(*test_events_);
+    }
     // The reading thread reads only before the position published here, and sends a follower nothing
     // above the limit published here (docs/availability/following_the_wal.md, section 3.2).
     replicated_wal_->publish_positions_to(wal_positions_);
@@ -269,6 +274,9 @@ void SequencerThread::on_app_ready_event() {
         return;
     }
 
+    if (test_events_.has_value()) {
+        connect_to_service(std::string(pubsub_itc_fw::TestEventChannel::service_name));
+    }
     for (const auto& endpoint : config_.gateway_endpoints) {
         connect_to_service(endpoint.service_name());
     }
@@ -282,6 +290,13 @@ void SequencerThread::on_app_ready_event() {
 }
 
 void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+    if (test_events_.has_value() && test_events_->on_connection_established(id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: connection {} to the test's event listener established", id.get_value());
+        // A change of role made before the connection was is reported now, so that the test learns the role whenever
+        // it connects.
+        replicated_wal_->report_role_to_test_events();
+        return;
+    }
     const std::string& svc = id.service_name();
     const std::string peer_inbound_svc = "inbound:" + std::to_string(config_.peer_listen_port);
 
@@ -383,6 +398,11 @@ void SequencerThread::on_connection_established(pubsub_itc_fw::ConnectionID id) 
 }
 
 void SequencerThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+    if (test_events_.has_value() && test_events_->on_connection_lost(id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
+        return;
+    }
     forget_command_connection(id);
     const auto lost_gateway = std::find_if(gateway_conn_ids_.begin(), gateway_conn_ids_.end(), [&id](const auto& entry) { return entry.second == id; });
     if (lost_gateway != gateway_conn_ids_.end()) {
@@ -448,6 +468,11 @@ void SequencerThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage
 
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug, "TRACE on_framework_pdu_message: msg.connection_id value={} service_name=[{}]",
                conn_id.get_value(), svc);
+
+    if (test_events_.has_value() && test_events_->on_framework_pdu_message(message)) {
+        release_pdu_payload(message);
+        return;
+    }
 
     // Peer PDUs arrive on the outbound peer connection or from the inbound peer listener.
 
@@ -3026,6 +3051,11 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
 }
 
 // Matching engine publishers (docs/availability/following_the_wal.md, section 4.3)
+
+void SequencerThread::SequencerTestEventLinks::send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes,
+                                                               size_t size) {
+    owner_.send_pdu_payload(connection, pdu_id, 0, bytes, size);
+}
 
 void SequencerThread::SequencerPublisherLinks::send_record(const pubsub_itc_fw::ConnectionID& follower, int16_t pdu_id, int64_t seq_no, const uint8_t* bytes,
                                                            size_t size) {

@@ -62,6 +62,7 @@ add_executable(pubsub_itc_fw_tests
     ReplicatedWalTest.cpp
     WalFollowerClientTest.cpp
     WalFollowerServiceTest.cpp
+    TestEventChannelTest.cpp
     WalHandedOverFollowersTest.cpp
     LeaderEpochTest.cpp
     LeasePromiseStoreTest.cpp

@@ -674,6 +674,30 @@ void ReplicatedWal::act_on(PairLeaseAgent::Change change, Clock::time_point now)
     }
 }
 
+namespace {
+
+// A role as a test event names it.
+LeadershipRole leadership_role(ReplicaRole role) {
+    switch (role) {
+        case ReplicaRole::leader:
+            return LeadershipRole::Leader;
+        case ReplicaRole::follower:
+            return LeadershipRole::Follower;
+        case ReplicaRole::unknown:
+            break;
+    }
+    return LeadershipRole::Unknown;
+}
+
+} // un-named namespace
+
+void ReplicatedWal::report_role_to_test_events() {
+    if (test_events_ == nullptr || role_ == ReplicaRole::unknown) {
+        return;
+    }
+    test_events_->role_changed(configuration_.owner_name, configuration_.instance_id, LeadershipRole::Unknown, leadership_role(role_), epoch_);
+}
+
 void ReplicatedWal::change_role(ReplicaRole new_role, Clock::time_point now) {
     if (new_role == role_) {
         return;
@@ -705,6 +729,9 @@ void ReplicatedWal::change_role(ReplicaRole new_role, Clock::time_point now) {
             running_alone_ = false;
             configuration_.running_alone_gauge.set(0.0);
         }
+    }
+    if (test_events_ != nullptr) {
+        test_events_->role_changed(configuration_.owner_name, configuration_.instance_id, leadership_role(old_role), leadership_role(new_role), epoch_);
     }
     events_.role_changed(old_role, new_role, epoch_);
 }

@@ -27,6 +27,7 @@
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QueueConfiguration.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
@@ -192,6 +193,12 @@ Sequencer::Sequencer(SequencerConfiguration config, std::unique_ptr<pubsub_itc_f
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
     service_registry_.add("peer", pubsub_itc_fw::NetworkEndpointConfiguration{config_.peer_host, config_.peer_port},
                           pubsub_itc_fw::NetworkEndpointConfiguration{});
+    // Only when a test started this instance and gave it somewhere to send test events.
+    if (config_.test_events.enabled) {
+        service_registry_.add(std::string(pubsub_itc_fw::TestEventChannel::service_name),
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.test_events.host, config_.test_events.port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
 
     PUBSUB_LOG((*logger_), pubsub_itc_fw::FwLogLevel::Info, "Sequencer: order={}:{} er={}:{} wal_subscriber={}:{} instance_id={}", config_.listen_host,
                config_.listen_port, config_.er_listen_host, config_.er_listen_port, config_.wal_subscriber_listen_host, config_.wal_subscriber_listen_port,

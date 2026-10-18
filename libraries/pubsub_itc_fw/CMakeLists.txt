@@ -9,6 +9,8 @@ file(GLOB_RECURSE DSL_SCHEMAS
 
 set(DSL_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/dsl)
 file(MAKE_DIRECTORY ${DSL_OUTPUT_DIR})
+set(DSL_PYTHON_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/python)
+file(MAKE_DIRECTORY ${DSL_PYTHON_OUTPUT_DIR})
 
 set(GENERATED_DSL_HEADERS "")
 
@@ -30,6 +32,22 @@ foreach(DSL_FILE ${DSL_SCHEMAS})
     )
 
     list(APPEND GENERATED_DSL_HEADERS ${OUT_HPP})
+
+    # The same messages in plain Python, for the high availability tests to decode the test events with
+    # (docs/availability/test_events.md). Installed into lib/python beside the PDU framing they need.
+    set(OUT_PY ${DSL_PYTHON_OUTPUT_DIR}/${DSL_NAME}.py)
+    add_custom_command(
+            OUTPUT ${OUT_PY}
+            COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py
+            ${DSL_FILE}
+            --python ${OUT_PY}
+            DEPENDS ${DSL_FILE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../python/tools/generate_cpp_from_dsl.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../python/dsl/generator_python.py
+            COMMENT "Generating DSL Python module ${OUT_PY}"
+    )
+    list(APPEND GENERATED_DSL_HEADERS ${OUT_PY})
 endforeach()
 
 add_custom_target(pubsub_itc_fw_dsl ALL
@@ -54,6 +72,7 @@ set(PUBSUB_ITC_FW_SRC
         src/OutboundConnection.cpp
         src/PduFramer.cpp
         src/PduParser.cpp
+        src/TestEventChannel.cpp
         src/PrometheusEndpoint.cpp
         src/QuillLogger.cpp
         src/SingleWriterHistogram.cpp
@@ -210,6 +229,16 @@ install(DIRECTORY "${DSL_OUTPUT_DIR}/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/pubsub_itc_fw"
         OPTIONAL
         FILES_MATCHING PATTERN "*.hpp"
+)
+
+# Generated Python modules, and the PDU framing they need -> lib/python, for the high availability tests
+install(DIRECTORY "${DSL_PYTHON_OUTPUT_DIR}/"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/python"
+        OPTIONAL
+        FILES_MATCHING PATTERN "*.py"
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../python/dsl/pdu_framing.py"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/python"
 )
 
 # Benchmark -> bin

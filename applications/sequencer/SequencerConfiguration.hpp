@@ -12,6 +12,7 @@
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaseTiming.hpp>
 #include <pubsub_itc_fw/MetricsConfiguration.hpp>
+#include <pubsub_itc_fw/TestEventsConfiguration.hpp>
 #include <pubsub_itc_fw/WallClock.hpp>
 
 namespace sequencer {
@@ -318,6 +319,13 @@ struct SequencerConfiguration {
      * Copied into ReactorConfiguration, which is where the Reactor reads it from.
      */
     pubsub_itc_fw::MetricsConfiguration metrics_configuration;
+
+    /**
+     * @brief Where to send test events, from the optional [test_events] section; see docs/availability/test_events.md.
+     *
+     * Only a test writes the section. Without it, no test events are sent and no connection is opened for them.
+     */
+    pubsub_itc_fw::TestEventsConfiguration test_events;
 
     /** @brief Bucket bounds, in nanoseconds, for how long committing one record to the log takes.
      *

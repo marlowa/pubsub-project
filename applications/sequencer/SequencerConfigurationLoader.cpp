@@ -229,6 +229,7 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         // the load gated on pinning, turning pinning off silently took every metric with it.
         // The gateway loader already had it this way round.
         config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+        config.test_events = pubsub_itc_fw::TestEventsConfigurationLoader::load(toml);
 
         // Required rather than defaulted, for the reason GatewayMetrics.hpp gives about its own
         // bounds: a default is the one value nobody revisits, and bounds that do not bracket

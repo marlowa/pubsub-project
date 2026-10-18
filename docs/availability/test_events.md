@@ -121,6 +121,13 @@ the matching engine's outcome for an order (kind B), which is why decision 2 kee
 can see. The order's round trip is measured with the events switched off before and after, as in phases 4
 and 5.
 
+**Switched on by configuration, not by the build** (Andrew, 18 October 2026). A build with the events compiled in or
+out would mean the tests test a different binary from the one members trade on, and two builds to keep working. So
+the rule is: no event is sent from the per-order path, except the matching engine's outcome for an order sent with
+`inject_order` (decision 2), and that one only once its cost has been measured. Every step that adds a place that
+sends an event measures the order's round trip with the events switched off, before and after, and records the
+figures here.
+
 ### 3.3 The Python generator
 
 The test harness is written in Python, so it needs to decode the events, and to encode the checkpoint request.
@@ -256,6 +263,44 @@ removed, framing that ignores the canary, and a Java 16-bit integer written in f
 
 The pybind11 bindings were tried as the C++ reference first, and do not serve: they include the C++ generator's code,
 so they cannot be built for a list of enums either. The reference is the small C++ program the design called for.
+
+### 4.2 What step 3 built
+
+**The library's side.** `libraries/pubsub_itc_fw/include/pubsub_itc_fw/test_events.dsl` defines the first four
+messages: `TestEventsHello`, with which a thread introduces itself; `TestCheckpointRequest` and
+`TestCheckpointReached`; and `RoleChanged`. `TestEventChannel` holds one thread's connection to the test, encodes
+each event into a buffer of its own and sends it through its owner (`TestEventLinksInterface`, implemented with
+`send_pdu_payload`), and answers checkpoint requests. `TestEventsConfigurationLoader` reads the optional
+`[test_events]` section. The library's `ReplicatedWal` reports each change of role through the channel it is given
+(`report_test_events_to`), and reports its present role when asked (`report_role_to_test_events`), which its owner
+does when the connection is made, so that a change made before then is not lost. The build generates a Python module
+from every library DSL file and installs them, with `pdu_framing.py`, into `lib/python`.
+
+**The sequencer** is the first component to send test events: with a `[test_events]` section it registers the
+service, connects when it is ready, and passes its connections and messages to the channel first.
+
+**The test's side.** `scripts/test_event_listener.py` opens the listener before the venue starts; `ha_test.py`
+writes the section into a copy of the sequencer's configuration in `launch_app`, so every start and restart of a
+sequencer has it. The listener reads its sockets only while the test waits, with no thread of its own. It fails the
+test on a message it cannot decode, a message id the DSL does not define, a framing error, or a component's connection
+closing while the test expects it to be running (`stopping` and `started` say when the test stops one on purpose).
+
+**The first two checks moved.** In every scenario, the wait for the expected sequencer to lead is a wait for its
+`RoleChanged` to leader. In scenarios 63 and 64, the check that the follower did not take the lead waits the same
+time, asks the follower for a checkpoint, and then finds no `RoleChanged` to leader from it.
+
+**How it was shown to work.** Seven unit tests of `TestEventChannel` and one of `ReplicatedWal`'s reporting; nine
+tests of the listener, among them a message sent a byte at a time, three joined in one send, a wrong canary, an
+unknown message id, a connection closing, and a checkpoint answered, not answered, and asked of a component with no
+connection. Four deliberate faults in the C++ were each caught by its test: a change of role not reported, the present
+role not reported, a checkpoint not answered, and a wrong component name. Scenario 63, with its negative check made to
+look for any event from the follower, failed at that check. All 76 high availability scenarios pass, from fresh WALs, each waiting for the expected sequencer to lead through
+its test events.
+
+**The order's round trip, with no test events configured,** measured as in phase 5, with the secondary matching engine
+leading, five runs of 6,000 orders and the first discarded: the medians of four runs were 101.5, 108.3, 108.3 and
+108.4 microseconds with the build before this step, 105.8, 108.4, 108.4 and 108.2 with it, and 108.7, 108.4, 108.2 and
+108.2 with the build before it again. The step does not change the round trip.
 
 ## 5. What phase 6 does not do
 

@@ -13,6 +13,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -36,12 +37,14 @@
 #include <pubsub_itc_fw/LeaseVoter.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalReader.hpp>
 #include <pubsub_itc_fw/tests_common/ScratchDirectory.hpp>
 
 #include <lease_messages.hpp>
 #include <replication_messages.hpp>
+#include <test_events.hpp>
 
 namespace pubsub_itc_fw::tests {
 
@@ -256,6 +259,9 @@ class Pair {
         catch_ups_[i] = SimulatedCatchUp{};
         if (with_catch_up_thread_) {
             wals_[i]->use_peer_catch_up(catch_ups_[i]);
+        }
+        if (test_events_[i] != nullptr) {
+            wals_[i]->report_test_events_to(*test_events_[i]);
         }
         static_cast<void>(wals_[i]->open(now_));
     }
@@ -520,6 +526,8 @@ class Pair {
     bool arbiter_up_{true};
     bool with_catch_up_thread_{false};
     SimulatedCatchUp catch_ups_[2];
+    // Where each instance reports its test events, if anywhere.
+    TestEventChannel* test_events_[2]{nullptr, nullptr};
 };
 
 TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnceWritten) {
@@ -530,6 +538,55 @@ TEST(ReplicatedWalTest, AnInstanceRunningAloneLeadsAtOnceAndCommitsEachRecordOnc
     EXPECT_EQ(seq_no, 1);
     EXPECT_EQ(pair.events_[0].committed, 1);
     EXPECT_EQ(pair.wals_[0]->next_seq_no(), 2);
+}
+
+namespace {
+
+// Records each test event sent, decoding RoleChanged.
+struct RecordingTestEventLinks : public TestEventLinksInterface {
+    void send_test_event([[maybe_unused]] const ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) override {
+        if (pdu_id != RoleChanged::message_pdu_id) {
+            return;
+        }
+        std::array<uint8_t, 256> arena_storage{};
+        BumpAllocator arena(arena_storage.data(), arena_storage.size());
+        RoleChangedView view{};
+        size_t consumed = 0;
+        size_t arena_needed = 0;
+        ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+        changes.push_back(Change{std::string(view.owner), view.instance, view.from_role, view.to_role, view.epoch});
+    }
+    struct Change {
+        std::string owner;
+        int64_t instance;
+        LeadershipRole from;
+        LeadershipRole to;
+        int32_t epoch;
+    };
+    std::vector<Change> changes;
+};
+
+} // un-named namespace
+
+TEST(ReplicatedWalTest, EachChangeOfRoleIsReportedAsATestEventAndThePresentRoleWhenAsked) {
+    RecordingTestEventLinks links;
+    TestEventChannel channel(links, "test_component", 1, "TestThread");
+    channel.on_connection_established(ConnectionID{3, std::string(TestEventChannel::service_name)});
+    Pair pair("replicated_wal_test_events");
+    pair.test_events_[0] = &channel;
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_EQ(links.changes.size(), 1U);
+    EXPECT_EQ(links.changes[0].owner, "TestReplica1");
+    EXPECT_EQ(links.changes[0].instance, 1);
+    EXPECT_EQ(links.changes[0].from, LeadershipRole::Unknown);
+    EXPECT_EQ(links.changes[0].to, LeadershipRole::Leader);
+    EXPECT_EQ(links.changes[0].epoch, pair.wals_[0]->epoch());
+
+    pair.wals_[0]->report_role_to_test_events();
+    ASSERT_EQ(links.changes.size(), 2U);
+    EXPECT_EQ(links.changes[1].from, LeadershipRole::Unknown);
+    EXPECT_EQ(links.changes[1].to, LeadershipRole::Leader);
 }
 
 TEST(ReplicatedWalTest, ARecordIsCommittedOnlyOnceTheFollowerAcknowledgesIt) {

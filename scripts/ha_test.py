@@ -212,6 +212,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from test_event_listener import TestEventListener, leads
+
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY          = 1.0   # seconds between app launches
 # Upper bound on how long a logon may take, not an expectation of how long it does take:
@@ -4985,6 +4987,27 @@ def process_is_stopped(pid: int) -> bool:
     return stat[stat.rindex(")") + 2] in ("T", "t")
 
 
+# The test event listener of the scenario being run (docs/availability/test_events.md). Each component that sends test
+# events is started with its address, by launch_app.
+_TEST_EVENTS: TestEventListener | None = None
+
+# The components that send test events so far. Others are added as their checks move onto test events.
+_TEST_EVENT_COMPONENTS = ("sequencer",)
+
+
+def config_with_test_events(config: Path, listener: TestEventListener) -> Path:
+    """A copy of a component's configuration with a [test_events] section naming the listener.
+
+    Written beside the original, so that the paths in it still resolve, and used instead of it."""
+    text = config.read_text()
+    if "[test_events]" in text:
+        die(f"config_with_test_events: {config} already has a [test_events] section")
+    text = text.rstrip("\n") + f"\n\n[test_events]\nhost = \"{listener.host}\"\nport = {listener.port}\n"
+    copy = config.with_name(config.stem + "_test_events.toml")
+    copy.write_text(text)
+    return copy
+
+
 def launch_app(name: str, bin_name: str, config: Path,
                bin_dir: Path, log_dir: Path, run_dir: Path | None = None,
                extra_environment: dict[str, str] | None = None) -> subprocess.Popen:
@@ -5004,6 +5027,9 @@ def launch_app(name: str, bin_name: str, config: Path,
     """
     if not config.is_file():
         die(f"config not found: {config}")
+    if _TEST_EVENTS is not None and bin_name in _TEST_EVENT_COMPONENTS:
+        config = config_with_test_events(config, _TEST_EVENTS)
+        _TEST_EVENTS.started(name)
     # Run each process from its config directory (etc/<component>), matching
     # devenv's per-component workdir.  Config-relative paths — notably the
     # gateway's fix_gateway.crt — resolve against this dir.  Log and config are
@@ -6338,6 +6364,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  matching_engine_publisher_{which}: emptied its write-ahead log in {publisher_wal} ({len(removed)} file(s))")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
+        global _TEST_EVENTS  # pylint: disable=global-statement
+        _TEST_EVENTS = TestEventListener(prefix / "lib" / "python")
+        log(f"  test events: listening on {_TEST_EVENTS.host}:{_TEST_EVENTS.port}")
         log("=== Phase 1: starting all processes ===")
         block_flag = prefix / "var" / "block_sends_to_ports.flag"
         block_flag.unlink(missing_ok=True)
@@ -6383,16 +6412,11 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # is whichever instance was started, because which FILE a sequencer was started from stops
         # meaning anything once there is no peer and no arbiter to give the role weight.
         seq_ready_name = scenario.ha_off_sequencers[0] if scenario.ha_disabled else "sequencer_primary"
-        seq_ready_log = log_dir / f"{seq_ready_name}.log"
 
-        log(
-            f"  Polling {seq_ready_name}.log for leader election "
-            f"(timeout {args.ready_timeout:.0f}s) ..."
-        )
-        found, elapsed, _ = poll_log_for(
-            seq_ready_log, _SEQ_ROLE, _TO_LEADER,
-            timeout=args.ready_timeout, from_byte=0,
-        )
+        log(f"  Waiting for {seq_ready_name} to say it leads (timeout {args.ready_timeout:.0f}s) ...")
+        election_started = time.monotonic()
+        found = _TEST_EVENTS.wait_for(leads(_TEST_EVENTS.messages, seq_ready_name), timeout=args.ready_timeout) is not None
+        elapsed = time.monotonic() - election_started
         if not found:
             die(
                 f"{seq_ready_name} did not elect leader within "
@@ -8579,17 +8603,23 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             primary = proc_by_name["sequencer_primary"]
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
+            _TEST_EVENTS.stopping("sequencer_primary")
             primary.kill()
             primary.wait()
             if Path(f"/proc/{primary.pid}").exists():
                 die(f"rule 11: sequencer_primary (PID {primary.pid}) is still running after SIGKILL.")
-            takeover_from = file_end(secondary_log)
+            takeover_from = _TEST_EVENTS.mark()
             os.kill(follower.pid, signal.SIGCONT)
             log(f"  SIGCONT -> sequencer_secondary (PID {follower.pid}); it lacks the order the engine acted on")
-            took_over, _, _ = poll_log_for(secondary_log, _SEQ_ROLE, _TO_LEADER, timeout=2 * args.failover_timeout, from_byte=takeover_from)
-            if took_over:
+            follower_leads = leads(_TEST_EVENTS.messages, "sequencer_secondary")
+            if _TEST_EVENTS.wait_for(follower_leads, timeout=2 * args.failover_timeout, since=takeover_from) is not None:
                 die("rule 11: the follower took the lead although it lacks an order the matching engine acted on.")
-            log(f"  the follower did not take the lead in {2 * args.failover_timeout:.0f}s -- OK")
+            # Everything the follower did before answering has arrived by the time the answer does.
+            if not _TEST_EVENTS.checkpoint("sequencer_secondary"):
+                die(f"rule 11: the follower did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so it is not known that it did not lead.")
+            if _TEST_EVENTS.find(follower_leads, since=takeover_from) is not None:
+                die("rule 11: the follower took the lead although it lacks an order the matching engine acted on.")
+            log(f"  the follower did not take the lead in {2 * args.failover_timeout:.0f}s, and it answered a checkpoint -- OK")
 
             leader_from = 0
             do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready_markers=("SequencerThread:",),

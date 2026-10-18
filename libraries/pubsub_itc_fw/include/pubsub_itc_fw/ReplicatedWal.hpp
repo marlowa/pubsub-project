@@ -23,6 +23,7 @@
 #include <pubsub_itc_fw/LogEpochTable.hpp>
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/Wal.hpp>
 #include <pubsub_itc_fw/WalEntryContents.hpp>
 #include <pubsub_itc_fw/WalFollowing.hpp>
@@ -229,6 +230,22 @@ class ReplicatedWal {
     }
 
     /**
+     * @brief Report each change of role to the test that started the component, through @p channel
+     *        (docs/availability/test_events.md). Call before open(). Without it, nothing is reported.
+     */
+    void report_test_events_to(TestEventChannel& channel) {
+        test_events_ = &channel;
+    }
+
+    /**
+     * @brief Report the present role as a test event, as a change from unknown, when it is known.
+     *
+     * For the owner to call when the connection to the test is made: a change of role made before it was is not
+     * reported when it happens, and the test must still learn the role.
+     */
+    void report_role_to_test_events();
+
+    /**
      * @brief Publish the WAL's positions to @p positions as they change: the position after each record
      *        written, and the last committed record. For a WalReadingThread. Call before open().
      */
@@ -427,6 +444,7 @@ class ReplicatedWal {
     };
     std::optional<UnansweredRequest> unanswered_request_;
     WalFollowingPositions* positions_{nullptr};
+    TestEventChannel* test_events_{nullptr};
     // While records wait for the follower: since when, for the timeout. Reset to the time of each
     // acknowledgement that leaves records still waiting.
     std::optional<Clock::time_point> waiting_since_;
