@@ -1,6 +1,7 @@
 # Phase 6: test events instead of Quill log wording {#test_events}
 
-**Status: design for review.** Nothing in it is built. It is agreed with Andrew before any code is written.
+**Status: design for review.** Nothing in it is built. Andrew has decided 1 A, 2 A, 3 yes, 4 yes, 6 yes and 7 yes;
+decision 5 is still open.
 
 ## 1. What phase 6 does
 
@@ -181,8 +182,12 @@ against the C++ code byte for byte:
    leaves out an optional field's flag, that writes a list's count in two bytes, or framing that ignores the
    canary.
 
-The same `every_type.dsl` and C++ program can check the Java generator byte for byte too, which it has never
-been; whether to do that now is decision 4.
+The Java generator is checked the same way, with the same `every_type.dsl` and C++ program: the Java generated
+for it is compiled with the Java 17 compiler, which this machine and the Rocky Linux 8 image both have, and a small
+Java test program decodes the C++ bytes, encodes the same values, and compares, as the Python test does. The Java
+clients already show that Java and C++ agree on every message they send and receive (`authentication.dsl` in the
+admin service, `fix_orders.dsl` in the FIX test client); this check covers the kinds of field no Java client uses
+yet, such as lists of lists and fixed arrays (decision 4).
 
 ### 3.4 How each kind of check moves
 
@@ -205,8 +210,9 @@ been; whether to do that now is decision 4.
 1. **The inventory, check by check.** For each of the checks, the fact it proves, whether a member could see it,
    and what replaces it, written into the inventory. Andrew reviews it before step 3, because it fixes the list
    of events.
-2. **The Python generator and the framing**, built and checked as section 3.3 says. This needs nothing from step 1
-   and can be done alongside it.
+2. **The Python generator and the framing**, built and checked as section 3.3 says, and the Java generator checked
+   byte for byte with the same test DSL file and C++ program. This needs nothing from step 1 and can be done
+   alongside it.
 3. **The channel**, on its own, before any check moves: the library's side (the event connection and answering a
    checkpoint) and the test's side (the listener, decoding, waiting for an event, the checkpoint), with one check
    of each kind moved as the first example, one that something happened and one that something did not. Tested
@@ -238,7 +244,7 @@ been; whether to do that now is decision 4.
 - **B.** A file per component, written through a Quill logger of its own. Simpler to build, but the test cannot
   know when the file is complete.
 
-Recommended: **A**.
+Recommended: A. **Decided: A** (Andrew, 18 October 2026).
 
 ### Decision 2. How are the matching engine's outcomes for orders checked? (Choose A or B.)
 
@@ -247,17 +253,17 @@ Recommended: **A**.
 - **B.** Through matching engine events for every order. One mechanism, but an event for each order on the
   engine's thread, and checks that no longer test what members receive.
 
-Recommended: **A**.
+Recommended: A. **Decided: A** (Andrew, 18 October 2026).
 
 ### Decision 3. Where does the generated Python go? (Yes or no.)
 
 Generated into the build tree and installed by the release step into `installed/lib/python/`, from where
-`ha_test.py` imports it. Recommended: **yes**.
+`ha_test.py` imports it. Recommended: yes. **Decided: yes** (Andrew, 18 October 2026).
 
 ### Decision 4. Is the Java generator checked byte for byte against the C++ code in this phase? (Yes or no.)
 
-The test DSL file and C++ program of section 3.3 would serve it too, at a small extra cost. It is not needed by
-the tests, which do not use Java. Recommended: **no** in this phase; recorded as a task instead.
+The test DSL file and C++ program of section 3.3 serve it too, at a small extra cost. Recommended: no, since the
+high availability tests do not use Java. **Decided: yes** (Andrew, 18 October 2026).
 
 ### Decision 5. Does the fault-injection library's line on standard error stay? (Yes or no.)
 
@@ -270,8 +276,8 @@ stays.
 `PairLeaseAgentTest` and `ReplicatedWalTest` check 19 phrases between them in the logs they capture, and some of
 the `TEST CONTRACT` comments in `PairLeaseAgent` and `ReplicatedWal` are there for them. Unless they change too,
 rewording those messages would still break a test, and the phase's last step could not pass. They would check the
-class's state, or the events it sends, instead. Recommended: **yes**, added to the inventory in step 1.
+class's state, or the events it sends, instead. Recommended: yes, added to the inventory in step 1. **Decided: yes** (Andrew, 18 October 2026).
 
 ### Decision 7. Is the design as a whole right to build, in the order of section 4? (Yes or no.)
 
-Recommended: **yes**.
+Recommended: yes. **Decided: yes** (Andrew, 18 October 2026).
