@@ -1,7 +1,7 @@
 # Phase 6: test events instead of Quill log wording {#test_events}
 
-**Status: design for review.** Nothing in it is built. Andrew has decided 1 A, 2 A, 3 yes, 4 yes, 6 yes and 7 yes;
-decision 5 is still open.
+**Status: agreed** with Andrew on 18 October 2026 (decisions 1 A, 2 A, 3 yes, 4 yes, 5 B, 6 yes, 7 yes). Nothing in
+it is built yet.
 
 ## 1. What phase 6 does
 
@@ -45,7 +45,7 @@ times, such as `wait_for_me_ord` and `accepted_by_engine`, so the number of chec
 | H. Connections between components made, lost or refused | 10 | No |
 | I. Throttles and logons | 8 | Yes: a reject, a logout, or a logon accepted |
 | J. The WAL written in order and undamaged, over the whole run | 2 | Not by a member; but the test can read the WAL files themselves |
-| K. The test's own fault-injection library saying it has begun blocking | 5 | Not a Quill log: it is the test library's own line on standard error |
+| K. The test's own fault-injection library saying it has begun blocking | 5 | Not a Quill log, but the test matches the library's own line on standard error, which phase 6 replaces with a file the library creates (decision 5) |
 | L. The helper that reads complete lines, used by the counts above | 4 | Goes when its callers go |
 
 So roughly a third of the checks can move to what a member sees, about half need test events, and a few need
@@ -203,7 +203,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | H. Connections | An event when a component's connection to another is made or lost, from the framework's connection classes in the library's terms |
 | I. Throttles and logons | The reject, logout or logon at the client |
 | J. The WAL in order and undamaged | The test reads the WAL files after the scenario, which it already knows how to do; no log and no event |
-| K. The test's own library | Stays: it is the test tool's own output, not the venue's (decision 5) |
+| K. The test's own library | The library creates a second file when it begins blocking, and the test waits for that file instead of a phrase (decision 5) |
 
 ## 4. Steps, and how each is known to be right
 
@@ -265,11 +265,18 @@ Generated into the build tree and installed by the release step into `installed/
 The test DSL file and C++ program of section 3.3 serve it too, at a small extra cost. Recommended: no, since the
 high availability tests do not use Java. **Decided: yes** (Andrew, 18 October 2026).
 
-### Decision 5. Does the fault-injection library's line on standard error stay? (Yes or no.)
+### Decision 5. How does the fault-injection library confirm that it has begun blocking? (Choose A or B.)
 
-`libblock_sends_to_ports.so` writes one line when it begins blocking, and five checks wait for it. It is the test
-library's own output, written straight to standard error, not a Quill log of the venue. Recommended: **yes**, it
-stays.
+`libblock_sends_to_ports.so`, loaded into one sequencer, discards everything that sequencer sends on chosen ports
+once a flag file the test creates exists. The test must know the block has begun before it goes on. Today the
+library writes one line to standard error when it begins, the test captures each component's standard error in a
+file, and five checks wait for the phrase there.
+
+- **A.** Keep the line and the five checks that match its wording.
+- **B.** When it begins blocking, the library also creates a second file whose path the test gives it, and the test
+  waits for that file to exist. No test matches text; the line stays for people reading the output.
+
+Recommended: B. **Decided: B** (Andrew, 18 October 2026).
 
 ### Decision 6. Are the unit tests that read log wording in this phase too? (Yes or no.)
 

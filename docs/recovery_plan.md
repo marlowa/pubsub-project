@@ -299,9 +299,9 @@ because every finding is harder to establish while the evidence is log text.
 **Finished when:** no high availability test reads a Quill log to decide whether it passes, the scenarios pass,
 and changing the wording of any Quill message cannot make a test pass or fail.
 
-**Design:** [test_events.md](availability/test_events.md), for review, with its inventory
-[test_events_inventory.md](availability/test_events_inventory.md). It starts from Copilot's proposal, which Andrew
-supplied, and is agreed before any code.
+**Design:** [test_events.md](availability/test_events.md), with its inventory
+[test_events_inventory.md](availability/test_events_inventory.md), agreed 18 October 2026. It starts from Copilot's
+proposal, which Andrew supplied.
 
 ### Phase 7. Make the matching engine deterministic
 
