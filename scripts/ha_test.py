@@ -222,7 +222,7 @@ STARTUP_DELAY          = 1.0   # seconds between app launches
 # run nothing. It must exceed the gateway's 5s sequence_state_timeout, or a logon that takes
 # the fallback is failed here two seconds before the venue would have finished trying --
 # reported as a timeout, which points at the wrong thing entirely. Taking that fallback is
-# still a failure, but it is detected by _GW_SEQ_STATE_FALLBACK and named as itself.
+# still a failure, but the gateway's SessionEstablished event says so, and it is named as itself.
 FIX8_LOGON_WAIT        = 8.0   # seconds for f8test to establish a FIX session
 LOG_POLL_INTERVAL      = 0.05  # seconds between log-file polls
 SHUTDOWN_TIMEOUT       = 5.0   # seconds per-process for SIGTERM grace period
@@ -350,8 +350,8 @@ _THROTTLE_BURST = 12
 # order in place of the oldest accepted one would hold nothing but retries by the time the next
 # order is sent, and refuse it; with fewer, some accepted times would expire first and hide that.
 _THROTTLE_RETRIES = _THROTTLE_PLACE_LIMIT + 1
-# How long a gateway log line may take to reach the file after the event it records.
-_THROTTLE_LOG_TIMEOUT = 5.0
+# How long the gateway may take to send a test event about a member's throttle after the member sees the cause.
+_THROTTLE_EVENT_TIMEOUT = 5.0
 
 # Scenarios 42 and 57, through the binary gateway. A comp id of its own, so the binary client never
 # shares a session with the FIX test client: two gateways holding one comp id would each announce
@@ -420,17 +420,6 @@ FIX8_NO_RESET_CFG = "myfix_gateway_client_no_reset.xml"
 FIX8_RECOVERY_COMP_ID = "CLIENT-RECOVERY"
 FIX8_RECOVERY_CFG     = "myfix_gateway_client_recovery.xml"
 # ──────────────────────────────────────────────────────────────────────────────
-
-# Gateway log substrings for FIX logon outcome detection.
-_GW_LOGON_OK       = "authentication succeeded -- FIX session established"
-_GW_LOGON_FAIL     = "authentication failed"
-_GW_SIG_MISMATCH   = "ServerSignature mismatch"
-# The gateway gave up waiting for the sequencer to report the session's numbering and opened
-# the session anyway, at a number the venue never confirmed. The session does establish, so
-# without this marker the run looks clean; the gateway's own warning says a member expecting a
-# higher number will see a low sequence and disconnect. Treated as a failed logon, because a
-# session opened on unconfirmed numbering is not the thing the scenario meant to set up.
-_GW_SEQ_STATE_FALLBACK = "did not report this session's numbering within"
 
 # What a kill step establishes when nothing else is said: the secondary took over.
 _DEFAULT_KILL_OUTCOME = "elected leader"
@@ -4820,37 +4809,29 @@ def count_log_marker(log_path: Path, marker: str, from_byte: int = 0) -> int:
         return sum(1 for line in fh.read().splitlines() if marker in line)
 
 
-def wait_for_fix_logon(gw_log: Path, from_byte: int,
-                       timeout: float) -> str:
+def wait_for_fix_logon(gateway: str, since: int, timeout: float) -> str:
     """
-    Poll the gateway log for the outcome of a FIX logon attempt.
-    Returns 'ok', 'degraded', 'auth_failed', 'sig_mismatch', or 'timeout'.
-    Only bytes beyond from_byte are examined so pre-existing content is skipped.
+    Wait for the outcome of a FIX logon attempt at gateway, from its test events at or after since.
+    Returns 'ok', 'degraded', 'auth_failed', 'sig_mismatch', 'refused' for any other refusal, or 'timeout'.
 
     'degraded' is a session that established only because the gateway stopped waiting for the
     sequencer to report its numbering. It is reported separately from 'ok' because the two are
     indistinguishable from the member's side at this instant and diverge later, when the
     member sees a sequence number below the one it expects and drops the session.
     """
-    deadline = time.monotonic() + timeout
-    pos = from_byte
-    # Set on the warning, which the gateway emits just before opening the session, so it is
-    # already known by the time the establishment line arrives.
-    fell_back = False
-    while time.monotonic() < deadline:
-        if gw_log.is_file():
-            chunk, pos = read_complete_lines(gw_log, pos)
-            for line in chunk.splitlines():
-                if _GW_SEQ_STATE_FALLBACK in line:
-                    fell_back = True
-                if _GW_LOGON_OK in line:
-                    return "degraded" if fell_back else "ok"
-                if _GW_LOGON_FAIL in line:
-                    return "auth_failed"
-                if _GW_SIG_MISMATCH in line:
-                    return "sig_mismatch"
-        time.sleep(LOG_POLL_INTERVAL)
-    return "timeout"
+    events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+    established = message_of(events.SessionEstablished, gateway)
+    refused = message_of(events.LogonRefused, gateway)
+    found = _TEST_EVENTS.wait_for(lambda event: established(event) or refused(event), timeout=timeout, since=since)
+    if found is None:
+        return "timeout"
+    if isinstance(found.message, events.SessionEstablished):
+        return "ok" if found.message.numbering_confirmed else "degraded"
+    if found.message.reason == events.LogonRefusal.AuthenticationFailed:
+        return "auth_failed"
+    if found.message.reason == events.LogonRefusal.SignatureMismatch:
+        return "sig_mismatch"
+    return "refused"
 
 
 def check_me_seq_monotonic(me_log: Path) -> tuple[bool, list[tuple[int, int, int]]]:
@@ -5728,7 +5709,7 @@ def send_burst(count: int, gw_log: Path, config: str = FIX8_CFG,
     value. Setting it below where the venue has actually reached manufactures a gap the member
     detects for itself and asks about -- see _RESEND_GAP_MESSAGES.
     """
-    gw_pos = file_end(gw_log)
+    logon_from = _TEST_EVENTS.mark()
     if client_output is None:
         global _CLIENT_SESSIONS_STARTED  # pylint: disable=global-statement
         _CLIENT_SESSIONS_STARTED += 1
@@ -5750,13 +5731,17 @@ def send_burst(count: int, gw_log: Path, config: str = FIX8_CFG,
     stdout_target.close()  # the client holds its own copy
     _CLIENT_REPORTS[proc.pid] = ClientReports(client_output)
     log(f"  f8test PID {proc.pid}: waiting up to {FIX8_LOGON_WAIT:.0f}s for FIX logon, output in {client_output.name} ...")
-    outcome = wait_for_fix_logon(gw_log, gw_pos, FIX8_LOGON_WAIT)
+    outcome = wait_for_fix_logon(gw_log.stem, logon_from, FIX8_LOGON_WAIT)
     if outcome == "auth_failed":
         stop_f8test(proc)
         die("FIX logon failed: authentication rejected — check credentials.toml has an entry for this comp_id")
     if outcome == "sig_mismatch":
         stop_f8test(proc)
         die("FIX logon failed: ServerSignature mismatch — auth service identity could not be verified")
+    if outcome == "refused":
+        stop_f8test(proc)
+        die("FIX logon failed: the gateway refused it -- the comp id is provisioned for another gateway instance, or its "
+            "throttle limits are out of range")
     if outcome == "degraded":
         stop_f8test(proc)
         die("FIX logon completed only via the gateway's sequence-state fallback — the session was opened "
@@ -9366,15 +9351,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    AuthenticationResult: a session that arrived unlimited would refuse nothing, and
             #    a refusal for another reason would look like a throttle to a test that did not
             #    check.
-            limits_pos = file_end(gw_log)
+            limits_from = _TEST_EVENTS.mark()
             member = logged_on(_THROTTLED_COMP_ID)
-            applied_marker = (f"comp_id='{_THROTTLED_COMP_ID}' throttle limits per second for this session: "
-                              f"new orders={_THROTTLE_PLACE_LIMIT} amends={_THROTTLE_AMEND_LIMIT} cancels={_THROTTLE_CANCEL_LIMIT}")
-            # Polled rather than read once: the gateway's logger writes on a thread of its own, so
-            # the line can reach the file a little after the logon reply reaches the client.
-            if not poll_log_for(gw_log, applied_marker, timeout=_THROTTLE_LOG_TIMEOUT, from_byte=limits_pos)[0]:
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            if gateway_event("fix_order_gateway_a", "ThrottleApplied", limits_from, _THROTTLE_EVENT_TIMEOUT, comp_id=_THROTTLED_COMP_ID,
+                             new_orders_per_second=_THROTTLE_PLACE_LIMIT, amends_per_second=_THROTTLE_AMEND_LIMIT,
+                             cancels_per_second=_THROTTLE_CANCEL_LIMIT) is None:
                 member.close()
-                die(f"throttles: the gateway never logged '{applied_marker}'. The limits did not reach it -- check, in "
+                die(f"throttles: the gateway never applied new orders={_THROTTLE_PLACE_LIMIT} amends={_THROTTLE_AMEND_LIMIT} "
+                    f"cancels={_THROTTLE_CANCEL_LIMIT} to '{_THROTTLED_COMP_ID}'. The limits did not reach it -- check, in "
                     "order: the comp_id row, credentials.toml after export, the authentication service, and "
                     "AuthenticationResult.")
             log(f"  throttles: the gateway applied new orders={_THROTTLE_PLACE_LIMIT} amends={_THROTTLE_AMEND_LIMIT} "
@@ -9448,20 +9433,22 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"{'not answered' if later_reply is None else 'refused: ' + later_reply.get(58, '')}. "
                     "Every order accepted in the burst was more than a second old, so either the refused retries "
                     "were counted towards the limit (R-0149), or the limit is not measured over the last second.")
-            started_marker = (f"comp_id='{_THROTTLED_COMP_ID}' started being throttled for kind 'new order': the limit of "
-                              f"{_THROTTLE_PLACE_LIMIT} per second for this session was reached")
-            stopped_marker = (f"comp_id='{_THROTTLED_COMP_ID}' stopped being throttled for kind 'new order': accepted again "
-                              f"after {_THROTTLE_BURST - _THROTTLE_PLACE_LIMIT + _THROTTLE_RETRIES} refused")
-            # Wait for the later of the two lines to be written, then count both.
-            poll_log_for(gw_log, stopped_marker, timeout=_THROTTLE_LOG_TIMEOUT, from_byte=limits_pos)
-            for marker in (started_marker, stopped_marker):
-                if count_log_marker(gw_log, marker, limits_pos) != 1:
+            new_order = gateway_events.ThrottledKind.NewOrder
+            started = expect_message("fix_order_gateway_a", "started throttling new orders", "ThrottleStarted", "fix_order_gateway_test_events",
+                                     fields=lambda _: {"comp_id": _THROTTLED_COMP_ID, "kind": new_order, "limit_per_second": _THROTTLE_PLACE_LIMIT})
+            stopped = expect_message("fix_order_gateway_a", "stopped throttling new orders", "ThrottleStopped", "fix_order_gateway_test_events",
+                                     fields=lambda m: {"comp_id": _THROTTLED_COMP_ID, "kind": new_order,
+                                                       "refused": _THROTTLE_BURST - _THROTTLE_PLACE_LIMIT + _THROTTLE_RETRIES,
+                                                       "ended_by": m.ThrottleEnd.AcceptedAgain})
+            # Wait for the later of the two, then count both.
+            await_expectation(stopped, _THROTTLE_EVENT_TIMEOUT, limits_from)
+            for expect in (started, stopped):
+                if count_seen(expect, limits_from) != 1:
                     member.close()
-                    die(f"throttles: the gateway should have logged '{marker}' exactly once. The log says when a "
-                        "member starts and stops being throttled, not each refusal, or a member sending far too "
-                        "fast fills it.")
+                    die(f"throttles: expected '{expect.what}' exactly once. The gateway says when a member starts and stops "
+                        "being throttled, not each refusal, or a member sending far too fast fills its Quill log.")
             log(f"  throttles: {_THROTTLE_RETRIES} retries within the second were refused, an order a second after the "
-                "burst was accepted, so refused orders did not count; and the gateway logged once when the session "
+                "burst was accepted, so refused orders did not count; and the gateway said once when the session "
                 "started being throttled and once when it stopped -- OK")
 
             # 4. A burst of cancels for the orders now open. The first up to the cancel limit are
@@ -9496,13 +9483,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             # 5. A comp id with no limit sends the same burst and nothing is refused, so the
             #    refusals above came from the limit and not from the venue refusing a burst.
-            unlimited_pos = file_end(gw_log)
+            unlimited_from = _TEST_EVENTS.mark()
             member = logged_on(FIX8_COMP_ID)
-            unlimited_marker = (f"comp_id='{FIX8_COMP_ID}' throttle limits per second for this session: "
-                                "new orders=0 amends=0 cancels=0")
-            if not poll_log_for(gw_log, unlimited_marker, timeout=_THROTTLE_LOG_TIMEOUT, from_byte=unlimited_pos)[0]:
+            if gateway_event("fix_order_gateway_a", "ThrottleApplied", unlimited_from, _THROTTLE_EVENT_TIMEOUT, comp_id=FIX8_COMP_ID,
+                             new_orders_per_second=0, amends_per_second=0, cancels_per_second=0) is None:
                 member.close()
-                die(f"throttles: the gateway never logged '{unlimited_marker}' for the comp id provisioned with no limit.")
+                die(f"throttles: the gateway never applied no limit (0, 0 and 0) to '{FIX8_COMP_ID}', the comp id provisioned with "
+                    "no limit.")
             unlimited_orders = [f"unthrottled-{run_tag}-{index}" for index in range(_THROTTLE_BURST)]
             for cl_ord_id in unlimited_orders:
                 member.new_order_single(cl_ord_id)
@@ -9884,7 +9871,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  resend: the session survived the resend and the heartbeat that followed -- OK")
 
         # ── Session provisioning (step 4) ─────────────────────────────────────
-        # Nothing is killed. Everything here reads the gateway's own log, because the
+        # Nothing is killed. Everything here reads the gateway's own test events, because the
         # decision under test is the gateway's alone: whether this session belongs on this
         # instance, taken once, at the moment authentication succeeds.
         if scenario.assert_session_provisioning:
@@ -9894,15 +9881,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    session too, so "it logged on" discriminates nothing; the numbers only
             #    appear if the pinning survived the database -> export -> auth service ->
             #    AuthenticationResult chain intact. The baseline session opened back in
-            #    Phase 3, so this reads from the start of the log.
-            accepted_marker = (
-                f"provisioned for gateway instances primary={_PROVISIONED_PRIMARY_INSTANCE} "
-                f"backup={_PROVISIONED_BACKUP_INSTANCE} -- this is instance "
-                f"{_PROVISIONED_PRIMARY_INSTANCE} (primary)"
-            )
-            if count_log_marker(gw_log, accepted_marker) == 0:
-                die("provisioning: the gateway never named this comp id's provisioned instances. "
-                    f"It should have logged '{accepted_marker}'. Either the values did not reach "
+            #    Phase 3, so this reads from the gateway's start.
+            provisioned = gateway_event("fix_order_gateway_a", "SessionProvisioned", _TEST_EVENTS.since_introduction("fix_order_gateway_a"), 0.0,
+                                        settle=True, comp_id=FIX8_COMP_ID, primary_instance=_PROVISIONED_PRIMARY_INSTANCE,
+                                        backup_instance=_PROVISIONED_BACKUP_INSTANCE, this_instance=_PROVISIONED_PRIMARY_INSTANCE)
+            if provisioned is None:
+                die("provisioning: the gateway never said it admitted this comp id as provisioned for primary="
+                    f"{_PROVISIONED_PRIMARY_INSTANCE} backup={_PROVISIONED_BACKUP_INSTANCE}. Either the values did not reach "
                     "it -- check, in order: the comp_id row, credentials.toml after export, that "
                     "the harness did not overwrite it, and that AuthenticationResult carried the "
                     "fields -- or the gateway is admitting everyone without looking.")
@@ -9952,7 +9937,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Reconnecting the comp id now provisioned for another instance ===")
             stop_f8test(f8proc)
             f8proc = None
-            gw_pos = file_end(gw_log)
+            logon_from = _TEST_EVENTS.mark()
             f8proc = subprocess.Popen(
                 [str(FIX8_BIN), "-c", FIX8_CFG, "-N", "GW1"],
                 cwd=str(FIX8_DIR),
@@ -9960,24 +9945,21 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            refused_marker = (
-                f"logon refused -- this is gateway instance {_PROVISIONED_PRIMARY_INSTANCE}, "
-                f"and the session is provisioned for primary={_ELSEWHERE_PRIMARY_INSTANCE} "
-                f"backup=(none)"
-            )
-            found, elapsed, _ = poll_log_for(
-                gw_log, refused_marker,
-                timeout=_PROVISIONING_LOGON_TIMEOUT, from_byte=gw_pos,
-            )
-            if not found:
+            gateway_events = _TEST_EVENTS.modules["fix_order_gateway_test_events"]
+            started = time.monotonic()
+            refused = gateway_event("fix_order_gateway_a", "LogonRefused", logon_from, _PROVISIONING_LOGON_TIMEOUT, comp_id=FIX8_COMP_ID,
+                                    reason=gateway_events.LogonRefusal.NotProvisionedHere, primary_instance=_ELSEWHERE_PRIMARY_INSTANCE,
+                                    backup_instance=0)
+            if refused is None:
                 die("provisioning: the gateway did not refuse a comp id provisioned for another "
-                    f"instance. It should have logged '{refused_marker}'. A session that can log "
+                    f"instance, primary={_ELSEWHERE_PRIMARY_INSTANCE} with no backup. A session that can log "
                     "on anywhere makes the pinning a convention rather than a rule, and the "
                     "recovery guarantees in docs/availability/gateway_ha.md rest on it being a rule.")
-            log(f"  provisioning: logon refused at the wrong instance ({elapsed:.1f}s)")
+            log(f"  provisioning: logon refused at the wrong instance ({time.monotonic() - started:.1f}s)")
 
             # And refused means refused: no session may have been established alongside it.
-            established = count_log_marker(gw_log, _GW_LOGON_OK, from_byte=gw_pos)
+            established = count_seen(expect_message("fix_order_gateway_a", "a session established", "SessionEstablished",
+                                                    "fix_order_gateway_test_events", fields=lambda _: {"comp_id": FIX8_COMP_ID}), logon_from)
             if established > 0:
                 die(f"provisioning: the gateway refused the logon but also established "
                     f"{established} session(s) for it. A refusal that leaves a working session "

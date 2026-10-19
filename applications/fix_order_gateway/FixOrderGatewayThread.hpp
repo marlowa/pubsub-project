@@ -599,8 +599,17 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
      */
     bool venue_accepting_orders_{true};
 
-    /// Sends the FIX Logon reply and opens the session, once its numbering is settled.
-    void complete_session_establishment(FixSession& session);
+    /// Whether the sequencer reported a session's numbering before the gateway opened the session.
+    enum class SessionNumbering {
+        ConfirmedBySequencer, ///< the sequencer reported where the session's numbering stands
+        NotReportedInTime     ///< the sequencer did not report it in time, and the session was opened without it
+    };
+
+    /// Sends the FIX Logon reply and opens the session, once its numbering is settled or the wait for it is over.
+    void complete_session_establishment(FixSession& session, SessionNumbering numbering);
+
+    /// Reports to a test that the gateway refused a member's logon (docs/availability/test_events.md).
+    void report_logon_refused(const FixSession& session, pubsub_itc_fw_app::LogonRefusal reason, int16_t primary_instance, int16_t backup_instance);
 
     // A session's missed execution reports, replayed from the sequencer's WAL in answer to a
     // ResendRequest, and the completion that ends the replay. See handle_resend_request.

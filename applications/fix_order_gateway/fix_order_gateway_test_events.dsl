@@ -11,8 +11,8 @@
 #  None is sent for each order: each says what happened to a member's
 #  session.
 #
-#  Message ids 190 to 199 are the FIX gateway's, within the range 170 to
-#  199 set aside for applications' test events.
+#  Message ids 190 to 209 are the FIX gateway's, within the ranges 170 to
+#  199 and 200 to 229 set aside for applications' test events.
 # ============================================================
 
 # ------------------------------------------------------------
@@ -117,4 +117,101 @@ message ReplayAskedAgain (id=198, version=1)
     string comp_id
     i32    connection
     i64    request_id          # the new request's identifier
+end
+
+# ------------------------------------------------------------
+#  200 -- SessionProvisioned
+#  A member that is provisioned for particular gateway instances logged
+#  on to one of them, and the gateway admitted it. A member provisioned
+#  for no instance may log on anywhere, and this is not sent for it.
+# ------------------------------------------------------------
+message SessionProvisioned (id=200, version=1)
+    string comp_id
+    i16    primary_instance    # the gateway instance the member is provisioned for
+    i16    backup_instance     # the second instance it may use; 0 when it has none
+    i16    this_instance       # the instance that admitted it
+end
+
+# ------------------------------------------------------------
+#  Why the gateway refused a logon.
+# ------------------------------------------------------------
+enum LogonRefusal : i8 {
+    AuthenticationFailed = 1    # the authentication service did not grant the logon
+    SignatureMismatch = 2       # the authentication service could not prove it is the genuine one
+    NotProvisionedHere = 3      # the member is provisioned for other gateway instances
+    LimitsOutOfRange = 4        # the member's throttle limits are outside the range the gateway can apply
+}
+
+# ------------------------------------------------------------
+#  201 -- LogonRefused
+#  The gateway refused a member's logon, sent it a Logout, and closed
+#  its connection.
+# ------------------------------------------------------------
+message LogonRefused (id=201, version=1)
+    string       comp_id
+    i32          connection
+    LogonRefusal reason
+    i16          primary_instance    # when not provisioned here, the instance the member is provisioned for; otherwise 0
+    i16          backup_instance     # when not provisioned here, its second instance; otherwise 0, as when it has none
+end
+
+# ------------------------------------------------------------
+#  202 -- SessionEstablished
+#  The gateway sent a member its Logon reply, and the session is open.
+# ------------------------------------------------------------
+message SessionEstablished (id=202, version=1)
+    string comp_id
+    i32    connection
+    bool   numbering_confirmed    # false when the sequencer did not report the session's numbering in time, so the gateway opened the session without it
+end
+
+# ------------------------------------------------------------
+#  203 -- ThrottleApplied
+#  The gateway applied a member's limits on commands per second to its
+#  session, as the authentication service sent them. 0 means no limit.
+# ------------------------------------------------------------
+message ThrottleApplied (id=203, version=1)
+    string comp_id
+    i32    new_orders_per_second
+    i32    amends_per_second
+    i32    cancels_per_second
+end
+
+# ------------------------------------------------------------
+#  The kind of command a throttle limits.
+# ------------------------------------------------------------
+enum ThrottledKind : i8 {
+    NewOrder = 1
+    Amend = 2
+    Cancel = 3
+}
+
+# ------------------------------------------------------------
+#  204 -- ThrottleStarted
+#  The gateway refused a member's command because its limit per second
+#  was reached. It is sent for the first refusal of a run, not for each.
+# ------------------------------------------------------------
+message ThrottleStarted (id=204, version=1)
+    string        comp_id
+    ThrottledKind kind
+    i32           limit_per_second
+end
+
+# ------------------------------------------------------------
+#  Why a run of refusals ended.
+# ------------------------------------------------------------
+enum ThrottleEnd : i8 {
+    AcceptedAgain = 1   # a command of that kind was accepted again
+    SessionEnded = 2    # the member's session ended while it was being refused
+}
+
+# ------------------------------------------------------------
+#  205 -- ThrottleStopped
+#  A run of refusals for one kind of command ended.
+# ------------------------------------------------------------
+message ThrottleStopped (id=205, version=1)
+    string        comp_id
+    ThrottledKind kind
+    i64           refused     # how many commands of that kind were refused in the run
+    ThrottleEnd   ended_by
 end

@@ -258,6 +258,11 @@ connection.
 
 ## I. Throttles and logons (7)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.11): six events from the FIX gateway, for a
+provisioned session admitted, a logon refused, a session established, and the throttle limits applied, started and
+stopped. The logons in scenario 20 are checked through the gateway's events rather than at the member, because the
+member cannot see which instances it is provisioned for.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 56 | `run_scenario` | gw_log | applied_marker | the gateway applied a member's throttle limits, and started and stopped throttling it once each | **Event**: ThrottleApplied(limits), ThrottleStarted and ThrottleStopped from the gateway; the refusals themselves are seen by the member |
@@ -342,7 +347,7 @@ were missed by it:
 | nearly all | `wait_for_me_ord` | me_log | "ME-ORD-N": the engine's order number reaching a target | B | **Member**: the New report for each order, at the client (moved) |
 | several | `wait_for_accepted_count` | me_log | "accepted NOS OrderID=ME-ORD-", counted | B | **Member**: New reports at the client, counted (moved) |
 | 50 | `run_scenario` | me_log | "UnknownOrder" and "sent cancel ER" after the member's session is dropped | B | **Event**: `OrderOutcome` (Cancelled, CancelRefusedUnknown): the member has gone (moved) |
-| all | `wait_for_fix_logon` | gw_log | the gateway's lines for a logon established, refused, or opened at unconfirmed numbering | F | to be decided with kind F: the logon outcome at the client, and the unconfirmed numbering as an event from the gateway |
+| all | `wait_for_fix_logon` | gw_log | the gateway's lines for a logon established, refused, or opened at unconfirmed numbering | I | **Event**: `SessionEstablished`, with whether the numbering was confirmed, or `LogonRefused`, with the reason (moved) |
 | 44, 45 | `run_scenario` | refuser_log | "refusing to start" and "[ha] enabled = false" from a component that refuses to start | to be decided | the operator reads this message, so it may stay as the component's standard error rather than a Quill log |
 | 47 | `run_scenario` | each sequencer's log | "ha_enabled=false", the reason each leads | A | an event, or the role events' epoch, when the remaining kinds are moved |
 | 69 | `run_scenario` | secondary_log | "forwarding ... kept report(s)" | D or G | to be decided with kind G |
@@ -389,9 +394,12 @@ were missed by it:
 | `ReportsHeld` | H | the matching engine |
 | `ReportsReleased` | H | the matching engine |
 | `ReportsDiscarded` | H | the matching engine |
-| `ThrottleApplied` | I | the gateways |
-| `ThrottleStarted` | I | the gateways |
-| `ThrottleStopped` | I | the gateways |
+| `SessionProvisioned` | I | the FIX gateway |
+| `LogonRefused` | I | the FIX gateway |
+| `SessionEstablished` | I | the FIX gateway |
+| `ThrottleApplied` | I | the FIX gateway |
+| `ThrottleStarted` | I | the FIX gateway |
+| `ThrottleStopped` | I | the FIX gateway |
 
-That is 41 events. Several may merge when they are defined, for instance the session events into one
+That is 44 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

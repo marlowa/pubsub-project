@@ -42,6 +42,19 @@ namespace {
 
 constexpr size_t scram_client_nonce_size = 16;
 
+// The kind of command a throttle limits, as a test event names it.
+pubsub_itc_fw_app::ThrottledKind throttled_kind(fix_common::ThrottledCommand command) {
+    switch (command) {
+        case fix_common::ThrottledCommand::Place:
+            return pubsub_itc_fw_app::ThrottledKind::NewOrder;
+        case fix_common::ThrottledCommand::Amend:
+            return pubsub_itc_fw_app::ThrottledKind::Amend;
+        case fix_common::ThrottledCommand::Cancel:
+            return pubsub_itc_fw_app::ThrottledKind::Cancel;
+    }
+    return pubsub_itc_fw_app::ThrottledKind::NewOrder;
+}
+
 pubsub_itc_fw::QueueConfiguration make_queue_config() {
     pubsub_itc_fw::QueueConfiguration queue_configuration{};
     queue_configuration.low_watermark = 1;
@@ -1007,12 +1020,11 @@ void FixOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
         }
         if (timer_id == session.sequence_state_timeout_timer_id) {
             if (session.awaiting_sequence_state) {
-                // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
                 PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "FixOrderGatewayThread: connection {} comp_id='{}' the sequencer did not report this session's numbering within {}s -- "
                            "opening the session at {} anyway; a member expecting a higher number will see a low sequence and disconnect",
                            id.get_value(), session.client_comp_id, sequence_state_timeout.count(), session.outbound_seq_num);
-                complete_session_establishment(session);
+                complete_session_establishment(session, SessionNumbering::NotReportedInTime);
             }
             return;
         }
@@ -1150,6 +1162,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         logout.set(Tag::MsgType, MsgType::Logout);
         logout.set(Tag::Text, std::string("Authentication failed"));
         send_fix_to_session(session, logout);
+        report_logon_refused(session, pubsub_itc_fw_app::LogonRefusal::AuthenticationFailed, 0, 0);
         disconnect_session(session, "authentication failed");
         return;
     }
@@ -1163,6 +1176,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         logout.set(Tag::MsgType, MsgType::Logout);
         logout.set(Tag::Text, std::string("Authentication service identity could not be verified"));
         send_fix_to_session(session, logout);
+        report_logon_refused(session, pubsub_itc_fw_app::LogonRefusal::SignatureMismatch, 0, 0);
         disconnect_session(session, "ServerSignature mismatch");
         return;
     }
@@ -1186,7 +1200,6 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         const bool provisioned_here = config_.instance_id == primary_instance || (has_backup && config_.instance_id == backup_instance);
 
         if (!provisioned_here) {
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "FixOrderGatewayThread: connection {} comp_id='{}' logon refused -- this is gateway instance {}, "
                        "and the session is provisioned for primary={} backup={}",
@@ -1199,6 +1212,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
             logout.set(Tag::Text, fmt::format("Session not provisioned for gateway instance {} -- use instance {}{}", config_.instance_id, primary_instance,
                                               has_backup ? fmt::format(" or {}", backup_instance) : std::string()));
             send_fix_to_session(session, logout);
+            report_logon_refused(session, pubsub_itc_fw_app::LogonRefusal::NotProvisionedHere, primary_instance, backup_instance);
             disconnect_session(session, "session not provisioned for this gateway instance");
             return;
         }
@@ -1207,12 +1221,12 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         // saying "accepted": a hop that drops the provisioning leaves the gateway letting
         // everyone in everywhere, which looks identical to a correctly unpinned venue
         // unless the values themselves are visible.
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: comp_id='{}' provisioned for gateway instances primary={} backup={} -- "
                    "this is instance {} ({})",
                    session.client_comp_id, primary_instance, has_backup ? std::to_string(backup_instance) : std::string("(none)"), config_.instance_id,
                    config_.instance_id == primary_instance ? "primary" : "backup");
+        report(pubsub_itc_fw_app::SessionProvisioned{session.client_comp_id, primary_instance, backup_instance, config_.instance_id});
     }
 
     // Cancel-on-disconnect for this comp id, provisioned in the database and delivered with
@@ -1243,6 +1257,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
         logout.set(Tag::MsgType, MsgType::Logout);
         logout.set(Tag::Text, std::string("Session limits could not be applied"));
         send_fix_to_session(session, logout);
+        report_logon_refused(session, pubsub_itc_fw_app::LogonRefusal::LimitsOutOfRange, 0, 0);
         disconnect_session(session, "throttle limits out of range");
         return;
     }
@@ -1250,10 +1265,11 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
     // Logged for every logon, naming the numbers, because a hop that drops them leaves the
     // session unlimited, which looks the same as a member provisioned with no limits unless the
     // values themselves are visible.
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: comp_id='{}' throttle limits per second for this session: new orders={} amends={} cancels={} (0 means no limit)",
                session.client_comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second, throttle_limits.max_cancel_per_second);
+    report(pubsub_itc_fw_app::ThrottleApplied{session.client_comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second,
+                                              throttle_limits.max_cancel_per_second});
 
     // Authenticated and provisioned. Bind the session BEFORE replying, and wait for the
     // venue to say where its numbering stands.
@@ -1287,7 +1303,7 @@ void FixOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw::Ev
     }
 }
 
-void FixOrderGatewayThread::complete_session_establishment(FixSession& session) {
+void FixOrderGatewayThread::complete_session_establishment(FixSession& session, SessionNumbering numbering) {
     if (!session.awaiting_sequence_state) {
         return;
     }
@@ -1315,10 +1331,16 @@ void FixOrderGatewayThread::complete_session_establishment(FixSession& session) 
     undelivered.gateway_session_conn_id = session.conn_id.get_value();
     forward_pdu_to_sequencers(pubsub_itc_fw_app::UndeliveredReportsRequest::message_pdu_id, undelivered);
 
-    // TEST CONTRACT -- ha_test.py and perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: connection {} authentication succeeded -- FIX session established comp_id='{}'", session.conn_id.get_value(),
                session.client_comp_id);
+    report(pubsub_itc_fw_app::SessionEstablished{session.client_comp_id, session.conn_id.get_value(), numbering == SessionNumbering::ConfirmedBySequencer});
+}
+
+void FixOrderGatewayThread::report_logon_refused(const FixSession& session, pubsub_itc_fw_app::LogonRefusal reason, int16_t primary_instance,
+                                                 int16_t backup_instance) {
+    report(pubsub_itc_fw_app::LogonRefused{session.client_comp_id, session.conn_id.get_value(), reason, primary_instance, backup_instance});
 }
 
 // FIX session handlers
@@ -1706,7 +1728,7 @@ void FixOrderGatewayThread::establish_session_after_logon_sequence(FixSession& s
         return;
     }
 
-    complete_session_establishment(session);
+    complete_session_establishment(session, SessionNumbering::ConfirmedBySequencer);
 
     if (outcome == LogonSequence::ProceedThenAskForGap) {
         request_missing_messages(session, session.logon_seq_num);
@@ -2311,6 +2333,7 @@ void FixOrderGatewayThread::log_throttling_ended_by_disconnection(const FixSessi
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "FixOrderGatewayThread: connection {} comp_id='{}' stopped being throttled for kind '{}': the session ended after {} refused",
                        session.conn_id.get_value(), session.client_comp_id, fix_common::throttled_command_name(command), refused);
+            report(pubsub_itc_fw_app::ThrottleStopped{session.client_comp_id, throttled_kind(command), refused, pubsub_itc_fw_app::ThrottleEnd::SessionEnded});
         }
     }
 }
@@ -2327,19 +2350,20 @@ bool FixOrderGatewayThread::admit_throttled_command(FixSession& session, fix_com
         case fix_common::ThrottleOutcome::Accepted:
             return true;
         case fix_common::ThrottleOutcome::AcceptedAfterRefusals:
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "FixOrderGatewayThread: connection {} comp_id='{}' stopped being throttled for kind '{}': accepted again after {} refused",
                        session.conn_id.get_value(), session.client_comp_id, fix_common::throttled_command_name(command),
                        session.throttles.refusals_in_last_run(command));
+            report(pubsub_itc_fw_app::ThrottleStopped{session.client_comp_id, throttled_kind(command), session.throttles.refusals_in_last_run(command),
+                                                      pubsub_itc_fw_app::ThrottleEnd::AcceptedAgain});
             return true;
         case fix_common::ThrottleOutcome::FirstRefusal:
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "FixOrderGatewayThread: connection {} comp_id='{}' started being throttled for kind '{}': the limit of {} per second for this session "
                        "was reached, and further refusals are not logged until one is accepted",
                        session.conn_id.get_value(), session.client_comp_id, fix_common::throttled_command_name(command),
                        session.throttles.max_per_second(command));
+            report(pubsub_itc_fw_app::ThrottleStarted{session.client_comp_id, throttled_kind(command), session.throttles.max_per_second(command)});
             throttle_refusal_metrics_.count_refusal(command);
             return false;
         case fix_common::ThrottleOutcome::FurtherRefusal:

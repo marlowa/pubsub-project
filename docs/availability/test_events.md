@@ -217,7 +217,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | F. Gateway sessions | The FIX gateway's own events: a session announced bound or unbound, a report dropped for want of a session, a member gone with orders open, cancels sent, a session reclaimed; and the sequencer's: a report dropped because its gateway is not connected, a session recorded as unbound, the reports sent when it binds again |
 | G. Resends and replay | The resent messages, their numbers and the gap-fills at the client, as before; the FIX gateway's events for the boundaries the client is checked against (the numbering resumed, a resend requested and completed, a new leader asked again); and the sequencers' events for answering or declining a replay |
 | H. Connections | `ConnectionChanged` from the channel of the component whose connection it is, including connections made before the test connected; and the matching engine's events for the reports it holds without a connection, releases, or discards |
-| I. Throttles and logons | The reject, logout or logon at the client |
+| I. Throttles and logons | The FIX gateway's events: a provisioned session admitted, a logon refused with the reason, a session established with whether its numbering was confirmed, the throttle limits applied, and throttling started and stopped; the rejects themselves at the client, as before |
 | J. The WAL in order and undamaged | The test reads the WAL files after the scenario, which it already knows how to do; no log and no event |
 | K. The test's own library | The library creates a second file when it begins blocking, and the test waits for that file instead of a phrase (decision 5) |
 
@@ -388,7 +388,7 @@ id, the ClOrdID, for a cancel the OrigClOrdID, what was done (accepted; refused 
 identifier is longer than the book holds; a cancel done; a cancel refused because the order is unknown or an
 identifier too long), whether the engine was catching up, and the sequence number. It is sent through the engine's
 `TestEventChannel` with `send_event`, which applications use for events they define themselves; message ids 170 to
-199 are theirs, and the listener refuses two event modules that define one id.
+229 are theirs, and the listener refuses two event modules that define one id.
 
 The engine sends `OrderOutcome` only for the comp ids its `[test_events]` section lists in `report_orders_of`. The
 test always lists `INJECT-TEST`, the comp id of `inject_order`, whose orders reach no member. It adds the member's
@@ -697,6 +697,51 @@ From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 fail
 107.4 and 107.5 with the build of kind G again. The round trip settles at about 100 or about 108 microseconds from one run
 to the next with any build, as the first run of each kind G measurement shows, so this build's lower medians are not a
 gain. Kind H adds nothing to the path of an order, and it does not slow the round trip.
+
+### 4.11 Step 4, kind I: throttles and logons
+
+**The gateway's events.** `fix_order_gateway_test_events.dsl` gains six, at message ids 200 to 205, because the
+gateway's first ten ids are used and no message definition in the project uses the ids 200 to 299. Applications' test
+events now have the ids 170 to 229, and the FIX gateway has 190 to 209. The six are: a member provisioned for particular
+gateway instances admitted at one of them, with its primary and backup instances and the instance that admitted it
+(`SessionProvisioned`); a logon refused, with the reason (authentication failed, the authentication service not proved
+genuine, provisioned for other instances, or throttle limits out of range) and, when provisioned elsewhere, the
+instances it is provisioned for (`LogonRefused`); a session established, with whether the sequencer reported the
+session's numbering before the gateway opened it (`SessionEstablished`); a member's limits per second on new orders,
+amends and cancels applied to its session (`ThrottleApplied`); the first refusal of a run for one kind of command, with
+the limit (`ThrottleStarted`); and the end of that run, with how many were refused and whether a command was accepted
+again or the session ended (`ThrottleStopped`).
+
+**The checks moved.** The seven of kind I, in scenarios 20 and 56, and the wait for each FIX test client's logon that
+every scenario makes, which read the gateway's Quill log for the outcome and is listed among the reads the first sweep
+missed. The wait now takes the first `SessionEstablished` or `LogonRefused` from the gateway after the client starts. A
+session opened without its numbering confirmed is still a failure there, named as itself. The line the gateway logs
+when a session is established keeps its `TEST CONTRACT` comment, because `perf_run.py` and `callgrind_run.py` still
+match it.
+
+**How it was shown to work.** The faults were put in four builds of the gateway, each scenario failing at the check
+meant to catch it:
+
+| Fault | Scenario | Where it failed |
+|---|---|---|
+| A provisioned session admitted not reported | 20 | the gateway admitting the comp id as provisioned for instances 1 and 2 |
+| The throttle limits applied not reported | 56 | the gateway applying the limits of 5 new orders, 2 amends and 3 cancels a second |
+| A logon refused at the wrong instance not reported | 20 | the gateway refusing the comp id provisioned for instance 2 |
+| Throttling started not reported | 56 | throttling of new orders started exactly once |
+| A session reported established alongside the refusal | 20 | no session established at the wrong instance |
+| Throttling stopped not reported | 56 | throttling of new orders stopped exactly once |
+| Every session reported as opened without its numbering confirmed | 1 | the first logon of the scenario, named as opened without confirmed numbering |
+
+The fault that reports a session established alongside the refusal shows that the check that no session was established
+reads the events that would show one.
+
+From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 108.1,
+107.9, 107.5 and 107.7 microseconds with the build of kind H, 99.0, 98.7, 107.7 and 107.7 with this one, and 107.8,
+107.6, 107.7 and 107.8 with the build of kind H again. The runs settle at about 100 or about 108 microseconds with any
+build, as section 4.10 says. None of kind I's events is sent for each order, and it does not change the round trip.
 
 ## 5. What phase 6 does not do
 
