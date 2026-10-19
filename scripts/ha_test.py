@@ -213,7 +213,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 
 from test_event_listener import (ReceivedEvent, TestEventListener, catch_up, connection_made, follows, granted_to, introduced, lease_changed,
-                                 leads, order_outcome, role_changed)
+                                 leads, message_of, order_outcome, role_changed)
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 STARTUP_DELAY          = 1.0   # seconds between app launches
@@ -519,6 +519,15 @@ def expect_catch_up(engine: str, stage: str) -> Expect:
     return Expect(f"{engine}: catch-up {stage}", (Condition(engine, matches),))
 
 
+def expect_message(component: str, what: str, message: str, module: str = "test_events", fields=None) -> Expect:
+    """component sends a message named message, from the generated module named module. fields, when given, takes that
+    module and returns the field values the message must have, so that an enum value can be named through the module."""
+    def matches(_library_events):
+        generated = _TEST_EVENTS.modules[module]
+        return message_of(getattr(generated, message), component, **(fields(generated) if fields else {}))
+    return Expect(f"{component}: {what}", (Condition(component, matches),))
+
+
 def expect_granted_to(arbiter: str, pair_id: int, instance: int) -> Expect:
     """arbiter, as the active arbiter, grants instance of pair_id a lease (LeaseGrantedTo)."""
     return Expect(f"{arbiter} grants instance {instance} of pair {pair_id} a lease",
@@ -566,6 +575,11 @@ def expectation_seen(expect: Expect, since: int) -> bool:
             die(f"{component} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so it is not known whether {expect.what}")
     _TEST_EVENTS.check()
     return all(_condition_met(condition, since) for condition in expect.conditions)
+
+
+def has_happened(expect: Expect, timeout: float) -> bool:
+    """Whether expect has been met since the components it names started, waiting up to timeout seconds for it."""
+    return await_expectation(expect, timeout, since_present_processes(expect))[0]
 
 
 def has_led(component: str, timeout: float) -> bool:
@@ -8328,15 +8342,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "stopped; it must read 0 while the follower keeps up.")
             follower = proc_by_name["sequencer_secondary"]
             run_tag = datetime.now().strftime("%H%M%S")
-            alone_from = file_end(primary_log)
-            accepted_from = _TEST_EVENTS.mark()
+            alone_from = _TEST_EVENTS.mark()
+            accepted_from = alone_from
             os.kill(follower.pid, signal.SIGSTOP)
             log(f"  SIGSTOP -> sequencer_secondary (PID {follower.pid}): alive, its connection open, acknowledging nothing")
             try:
                 first = f"stall-{run_tag}-1"
                 send_order(first)
-                if not poll_log_for(primary_log, "the follower is too far behind", "no acknowledgement from it", timeout=_RAW_REPLY_TIMEOUT,
-                                    from_byte=alone_from)[0]:
+                if not await_expectation(expect_message("sequencer_primary", "running as if alone", "RunningAloneChanged", fields=lambda m: {"running_alone": True}), _RAW_REPLY_TIMEOUT, alone_from)[0]:
                     die("stalled follower: the leader never reported running as if alone with its follower stopped, so the order "
                         "it holds waits for an acknowledgement that cannot come and trading has stopped.")
                 if not await_order_outcome(me_log.stem, first, "Accepted", _RAW_REPLY_TIMEOUT, accepted_from):
@@ -8356,7 +8369,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # The follower reads what the leader sent while it was stopped and acknowledges it; a
             # further order makes sure there is a new record for it to acknowledge.
             send_order(f"stall-{run_tag}-3")
-            if not poll_log_for(primary_log, "the follower is keeping up again", timeout=_RAW_REPLY_TIMEOUT, from_byte=alone_from)[0]:
+            if not await_expectation(expect_message("sequencer_primary", "waiting for the follower again", "RunningAloneChanged", fields=lambda m: {"running_alone": False}), _RAW_REPLY_TIMEOUT, alone_from)[0]:
                 die("stalled follower: the follower ran again but the leader never went back to waiting for its acknowledgements, "
                     "so it would go on running as if alone with a follower that is keeping up.")
             if running_alone_gauge() not in ("0", "0.0"):
@@ -8373,7 +8386,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             order_port = installed_toml_section_value(primary_config, "network", "listen_port")
             burst = 200
             tag = f"waited-{datetime.now().strftime('%H%M%S')}"
-            log_from = file_end(primary_log)
+            log_from = _TEST_EVENTS.mark()
             accepted_from = _TEST_EVENTS.mark()
             follower = proc_by_name["sequencer_secondary"]
             os.kill(follower.pid, signal.SIGSTOP)
@@ -8387,14 +8400,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                                         capture_output=True, text=True, check=False, timeout=60)
                 if result.returncode != 0:
                     die(f"orders that waited in the log: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
-                if not poll_log_for(primary_log, "the storage for waiting orders is full", timeout=_RAW_REPLY_TIMEOUT, from_byte=log_from)[0]:
+                if not await_expectation(expect_message("sequencer_primary", "the storage for waiting orders is full", "HeldOrdersFull", "sequencer_test_events"), _RAW_REPLY_TIMEOUT, log_from)[0]:
                     die(f"orders that waited in the log: the leader's storage for held orders never filled with {burst} orders sent and "
                         f"room for {_FEW_HELD_ORDERS}, so nothing waited in the log and the scenario tests nothing.")
                 log("  the leader's storage for held orders filled, and later orders wait in the log")
-                if not poll_log_for(primary_log, "waited in the log -- the reading thread sends them", timeout=_RAW_REPLY_TIMEOUT, from_byte=log_from)[0]:
+                if not await_expectation(expect_message("sequencer_primary", "the reading thread serves the engine", "EngineServedFromWal", "sequencer_test_events"), _RAW_REPLY_TIMEOUT, log_from)[0]:
                     die("orders that waited in the log: the leader never had the reading thread send the orders that waited in the log.")
-                if not poll_log_for(primary_log, "the reading thread has sent the matching engine on connection", timeout=_RAW_REPLY_TIMEOUT,
-                                    from_byte=log_from)[0]:
+                if not await_expectation(expect_message("sequencer_primary", "the engine handed over", "EngineHandedOver", "sequencer_test_events", fields=lambda m: {"answered_catch_up": False}), _RAW_REPLY_TIMEOUT, log_from)[0]:
                     die("orders that waited in the log: the reading thread never handed the matching engine over, so orders go on waiting.")
                 log("  the reading thread sent the orders that waited in the log, and handed the engine over")
                 expected = [f"{tag}-{number}" for number in range(1, burst + 1)]
@@ -8450,13 +8462,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     die(f"follower restarts: the matching engine did not accept {cl_ord_id}, sent while the follower was down.")
             log(f"  the leader took {len(missed_ids)} orders while the follower was down, and the engine accepted them all")
 
-            agreed_from = file_end(primary_log)
+            agreed_from = _TEST_EVENTS.mark()
             do_restart_step(RestartStep(proc_name="sequencer_secondary", ready_log_name="sequencer_secondary.log", ready=expect_started("sequencer_secondary"),
                                         ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                             proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
-            if not poll_log_for(primary_log, "the follower's log agrees with this one through record", timeout=30.0, from_byte=agreed_from)[0]:
+            if not await_expectation(expect_message("sequencer_primary", "the follower's WAL agrees", "WalsAgree", fields=lambda m: {"side": m.WalSide.Leader}), 30.0, agreed_from)[0]:
                 die("follower restarts: the leader never reported that the restarted follower's log agrees with its own.")
-            if not poll_log_for(log_dir / "sequencer_secondary.log", "this log agrees with the leader's through record", timeout=30.0)[0]:
+            if not has_happened(expect_message("sequencer_secondary", "its WAL agrees with the leader's", "WalsAgree", fields=lambda m: {"side": m.WalSide.Follower}), 30.0):
                 die("follower restarts: the restarted follower never reported that its log agrees with the leader's.")
             inject_orders(order_ports["primary"], f"after-{run_tag}")
             time.sleep(2.0)
@@ -8551,13 +8563,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("  the follower took the lead and took five orders of its own, numbered where the old leader's three were")
 
             block_flag.unlink(missing_ok=True)
-            discarded_from = 0
+            discarded_from = _TEST_EVENTS.since_introduction("sequencer_primary")
             do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready=expect_started("sequencer_primary"),
                                         ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                             proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
-            if not poll_log_for(primary_log, "this log agrees with the leader's through record", timeout=30.0, from_byte=discarded_from)[0]:
+            if not await_expectation(expect_message("sequencer_primary", "its WAL agrees with the leader's", "WalsAgree", fields=lambda m: {"side": m.WalSide.Follower}), 30.0, discarded_from)[0]:
                 die("old leader rejoins: the restarted old leader never reported that its log agrees with the new leader's.")
-            if not poll_log_for(primary_log, "from this instance's log -- the leader does not hold them", timeout=5.0, from_byte=discarded_from)[0]:
+            if not await_expectation(expect_message("sequencer_primary", "records the leader does not hold discarded", "RecordsDiscarded"), 5.0, discarded_from)[0]:
                 die("old leader rejoins: the restarted old leader never reported discarding the records its new leader does not hold.")
             remaining = [cl_ord_id for cl_ord_id in only_old_ids if occurrences_in_log(wal_dirs["primary"], cl_ord_id) > 0]
             if remaining:
@@ -8593,27 +8605,27 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     die(f"rule 11: inject_order failed (exit {result.returncode}):\n{result.stdout}{result.stderr}")
 
             # Let the follower catch up and the leader say it may lead, so that the statement below is a change.
-            if not poll_log_for(primary_log, "saying it may lead again", timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not has_happened(expect_message("sequencer_primary", "saying the follower may lead again", "PeerMayLeadChanged", fields=lambda m: {"peer_may_lead": True}), _RAW_REPLY_TIMEOUT):
                 die("rule 11: the leader never said its follower may lead, so it would never have said otherwise.")
 
             follower = proc_by_name["sequencer_secondary"]
-            statement_from = file_end(primary_log)
+            statement_from = _TEST_EVENTS.mark()
             accepted_from = _TEST_EVENTS.mark()
             os.kill(follower.pid, signal.SIGSTOP)
             log(f"  SIGSTOP -> sequencer_secondary (PID {follower.pid})")
             send_order_to_leader(behind)
-            if not poll_log_for(primary_log, "saying the follower may not lead", timeout=_RAW_REPLY_TIMEOUT, from_byte=statement_from)[0]:
+            if not await_expectation(expect_message("sequencer_primary", "saying the follower may not lead", "PeerMayLeadChanged", fields=lambda m: {"peer_may_lead": False}), _RAW_REPLY_TIMEOUT, statement_from)[0]:
                 die("rule 11: the leader never said the follower may not lead before acting on an order it lacks.")
             if not await_order_outcome(me_log.stem, behind, "Accepted", _RAW_REPLY_TIMEOUT, accepted_from):
                 die("rule 11: the matching engine never accepted the order, so the arbiter's confirmation never released it.")
             log("  the leader said the follower may not lead, the arbiter confirmed, and the engine accepted the order -- OK")
 
             if scenario.restart_arbiter_before_leader_dies:
-                arbiter_from = 0
+                arbiter_from = _TEST_EVENTS.since_introduction("arbiter_primary")
                 do_restart_step(RestartStep(proc_name="arbiter_primary", ready_log_name="arbiter_primary.log", ready=expect_started("arbiter_primary"),
                                             ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                                 proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
-                if not poll_log_for(log_dir / "arbiter_primary.log", "says instance 2 may not lead", timeout=10.0, from_byte=arbiter_from)[0]:
+                if not await_expectation(expect_message("arbiter_primary", "holds the statement that instance 2 may not lead", "StatementRecorded", fields=lambda m: {"instance_may_not_lead": 2}), 10.0, arbiter_from)[0]:
                     die("rule 11: the restarted arbiter did not report the recorded statement that instance 2 may not lead.")
                 log("  the active arbiter restarted and still holds the statement that the follower may not lead -- OK")
 
@@ -8636,7 +8648,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("rule 11: the follower took the lead although it lacks an order the matching engine acted on.")
             log(f"  the follower did not take the lead in {2 * args.failover_timeout:.0f}s, and it answered a checkpoint -- OK")
 
-            leader_from = 0
+            leader_from = _TEST_EVENTS.since_introduction("sequencer_primary")
             do_restart_step(RestartStep(proc_name="sequencer_primary", ready_log_name="sequencer_primary.log", ready=expect_started("sequencer_primary"),
                                         ready_timeout=30.0, resets_me_counter=False, settle_secs=0.0),
                             proc_by_name, app_procs, launch_table, bin_dir, log_dir, venue_state_dir(prefix))
@@ -8645,7 +8657,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if behind.encode() not in b"".join(path.read_bytes() for path in primary_wal.glob("wal_*.log")):
                 die("rule 11: the old leader's log does not hold the order the engine accepted.")
             log("  the old leader took the lead back, holding the order -- OK")
-            if not poll_log_for(primary_log, "saying it may lead again", timeout=30.0, from_byte=leader_from)[0]:
+            if not await_expectation(expect_message("sequencer_primary", "saying the follower may lead again", "PeerMayLeadChanged", fields=lambda m: {"peer_may_lead": True}), 30.0, leader_from)[0]:
                 die("rule 11: the follower caught up but the leader never said it may lead again.")
             log("  the follower caught up, and the leader says it may lead again -- OK")
 
@@ -8870,7 +8882,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Commands sent again ───────────────────────────────────────────────
         if scenario.assert_sent_again_sequenced_once:
             log("=== A command sent again is sequenced only if the leader's log does not already hold it ===")
-            leader_log = log_dir / "sequencer_primary.log"
+            leader_name = "sequencer_primary"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("sent again: sequencer_primary is not leading.")
             primary_config = prefix / "etc" / "sequencer" / "sequencer_primary.toml"
@@ -8902,7 +8914,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
             if scenario.sent_again_after_change_of_leader:
                 # The leader sends an order to the engine only once its follower has acknowledged it, so the
                 # engine's acceptance means the follower holds it.
-                follower_log = log_dir / "sequencer_secondary.log"
                 follower_from = _TEST_EVENTS.mark()
                 old_leader = proc_by_name.get("sequencer_primary")
                 if old_leader is None or old_leader.poll() is not None:
@@ -8913,12 +8924,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if not await_expectation(expect_leads("sequencer_secondary"), _RESEND_TIMEOUT, follower_from)[0]:
                     die("sent again: sequencer_secondary did not take the lead after sequencer_primary was killed.")
                 log("  sequencer_secondary leads; the order is in its log only because its leader replicated it")
-                leader_log = follower_log
+                leader_name = "sequencer_secondary"
                 secondary_config = prefix / "etc" / "sequencer" / "sequencer_secondary.toml"
                 order_port = installed_toml_section_value(secondary_config, "network", "listen_port")
                 engine_wait = _RESEND_TIMEOUT
 
-            check_from = file_end(leader_log)
+            check_from = _TEST_EVENTS.mark()
             inject_sent_again_test(held, "--sent-again")
             never_sent = f"again-{run_tag}-new"
             inject_sent_again_test(never_sent, "--sent-again")
@@ -8932,7 +8943,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "The leader's log already held it, so it must not be sequenced twice.")
             if accepted_by_engine(never_sent, started_from) != 1:
                 die(f"sent again: the engine accepted {never_sent} {accepted_by_engine(never_sent, started_from)} times, not once.")
-            if not poll_log_for(leader_log, "commands that may already be in the log are arriving", timeout=1.0, from_byte=check_from)[0]:
+            if not await_expectation(expect_message(leader_name, "checking the end of the WAL for repeats", "CheckingLogForRepeats", "sequencer_test_events"), 1.0, check_from)[0]:
                 die("sent again: the leader never built its index of the end of the log, so the check above did not run as designed.")
             log("  the order sent again was not sequenced twice, and the order sent again for the first time was applied once -- OK")
 

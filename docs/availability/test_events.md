@@ -212,7 +212,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | A. Who leads | `RoleChanged` from the library's `ReplicatedWal`, the matching engine and the arbiter; `LeaseChanged` from the library's `PairLeaseAgent`; `LeaseGrantedTo` from the arbiter; a component's start from its introduction; and a sequencer's connection to a matching engine from `ConnectionChanged` |
 | B. The engine's outcome for an order | Execution reports at the client, for orders sent through a gateway; the matching engine's `OrderOutcome` for orders sent with `inject_order`, for the checks no member can make, and where the member has gone (decision 2) |
 | C. The engine's catch-up | The matching engine's `CatchUp` event at each stage of catching up: begun, incomplete, completed, and current but waiting to be told what it may do |
-| D. Replication and repair | Events from the library's `ReplicatedWal`: the follower behind or keeping up again, the WALs agreeing through a record, records discarded, the statement that the follower may or may not lead; and from the arbiter, a statement recorded |
+| D. Replication and repair | Events from the library's `ReplicatedWal`: running as if alone or not, the WALs agreeing through a record, records discarded, the leader saying its follower may or may not lead; from the arbiter, a statement found on disk; and the sequencer's own events for orders that waited in the WAL and for checking the end of the WAL for repeats |
 | E. Halting and cancelling on promotion | The cancels and refusals at the client; an event when the engine halts or resumes |
 | F. Gateway sessions | The cancels at the client; an event from the gateway when a session is bound or unbound |
 | G. Resends and replay | The resent messages at the client; an event from a sequencer when it answers or declines a replay |
@@ -462,6 +462,65 @@ From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail a
 108.0, 108.1 and 107.7 microseconds with the build of kind B, 108.1, 107.9, 107.9 and 107.4 with this one, and 98.7,
 107.9, 107.8 and 108.0 with the build of kind B again. Kind C sends nothing on the order path and does not change the
 round trip.
+
+### 4.6 Step 4, kind D: replication, repair and the follower that is behind
+
+**The library's events.** `test_events.dsl` gains five messages, sent by the library's `ReplicatedWal` through the
+channel its owner gives it, and by the arbiter:
+
+- `RunningAloneChanged` (147): the leader began, or stopped, running as if alone, committing without waiting for a
+  follower that is too far behind; with the reason, and how far the follower had acknowledged;
+- `WalsAgree` (148): the two WALs were found to agree through a record, said by the leader or by the follower;
+- `RecordsDiscarded` (149): a follower discarded records its leader does not hold;
+- `PeerMayLeadChanged` (150): the leader now says its follower may not lead, or may lead again;
+- `StatementRecorded` (151): an arbiter, starting, found on disk a leader's statement that an instance may not lead.
+  The statements are read before the arbiter's connection to the test can be made, so it reports them when the
+  connection is made.
+
+**The sequencer's events.** `applications/sequencer/sequencer_test_events.dsl` (message ids 180 to 189) defines four:
+the storage for orders waiting for the follower is full (`HeldOrdersFull`); the reading thread sends the matching
+engine orders that waited in the WAL (`EngineServedFromWal`); it has sent them all and hands the engine over
+(`EngineHandedOver`); and the first command that may already be in the WAL arrived, so the sequencer began reading the
+end of the WAL to check such commands (`CheckingLogForRepeats`). None is sent for each order. The listener decodes the
+sequencer's messages as it does the matching engine's, and `expect_message` in `ha_test.py` waits for any message by
+name, with the field values it must have.
+
+**The checks moved.** The fourteen of the inventory's kind D, in scenarios 60 to 64, 67, 74 and 75. A check that read a
+component's Quill log from its start, after a restart, looks at the events since that component's newest introduction.
+
+**How it was shown to work.** A `ReplicatedWal` unit test that the leader reports the WALs agreeing, running as if
+alone and then not, and saying its follower may not lead and then may lead again, in that order.
+
+Each event was then made to fail on purpose. A scenario stops at its first failure, so the faults were put in four
+builds: the first sending none of the events, the next two sending all but the ones each scenario checks second and
+third, and the last leaving out only the arbiter's statement. Each scenario failed at the check meant to catch it:
+
+| Fault | Scenario | Where it failed |
+|---|---|---|
+| No WAL, sequencer or arbiter event sent | 60 | the leader running as if alone |
+| | 61 | the leader finding the follower's WAL agrees |
+| | 62 | the restarted old leader finding its WAL agrees |
+| | 63 | the leader saying its follower may lead |
+| | 67 | the leader beginning to check the end of the WAL for repeats |
+| | 75 | the storage for waiting orders filling |
+| Running as if alone ending not reported | 60 | the leader waiting for the follower again |
+| The follower's agreement not reported | 61 | the restarted follower finding its WAL agrees |
+| Saying the follower may not lead not reported | 63 | the leader saying its follower may not lead |
+| Serving the engine from the WAL not reported | 75 | the reading thread sending the orders that waited |
+| Discarded records not reported | 62 | the old leader discarding the records the new leader lacks |
+| The hand-over not reported | 75 | the engine handed over |
+| The arbiter's statement not reported | 64 | the restarted arbiter holding the statement that instance 2 may not lead |
+
+Scenario 63 does not restart the arbiter, so it passed with the arbiter's statement left out, as it should; scenario 64
+is the one that does.
+
+From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 108.1,
+107.9, 107.7 and 107.4 microseconds with the build of kind C, 99.1, 98.5, 107.5 and 107.4 with this one, and 98.5, 97.8,
+107.7 and 107.3 with the build of kind C again. The runs near 98 microseconds come with both builds; none of kind D's
+events is sent for each order, and it does not change the round trip.
 
 ## 5. What phase 6 does not do
 

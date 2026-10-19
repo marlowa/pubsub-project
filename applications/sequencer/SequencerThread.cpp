@@ -1746,6 +1746,7 @@ void SequencerThread::hold_until_acknowledged(const pubsub_itc_fw_app::WalRecord
                    "SequencerThread: the storage for waiting orders is full -- orders from seq={} wait in the write-ahead log, and are sent to the matching "
                    "engine from there when they are released",
                    envelope.seq_no);
+        report(pubsub_itc_fw_app::HeldOrdersFull{envelope.seq_no});
     }
     release_pdu_payload(message);
 }
@@ -1809,6 +1810,7 @@ void SequencerThread::send_orders_that_waited_in_the_log(int64_t first, int64_t 
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: orders from {} waited in the log -- the reading thread sends them to the matching engine on connection {}", first,
                        engine.get_value());
+            report(pubsub_itc_fw_app::EngineServedFromWal{engine.get_value(), first - 1});
             serve_engine(engine, first - 1, EngineServing{});
         }
         return;
@@ -1958,9 +1960,9 @@ bool SequencerThread::command_already_logged(const pubsub_itc_fw_app::WalRecordV
     }
     if (!log_tail_index_.has_value()) {
         log_tail_index_.emplace(config_.wal_directory);
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "SequencerThread: commands that may already be in the log are arriving -- reading the end of the log to check them exactly");
+        report(pubsub_itc_fw_app::CheckingLogForRepeats{replicated_wal_.has_value() ? replicated_wal_->next_seq_no() - 1 : 0});
     }
     log_tail_index_used_at_ = std::chrono::steady_clock::now();
     const int64_t first_sent_no_earlier_than = inbound.has_gateway_ingress_ns ? inbound.gateway_ingress_ns : std::numeric_limits<int64_t>::min();
@@ -3302,6 +3304,7 @@ void SequencerThread::serve_engine(const pubsub_itc_fw::ConnectionID& engine, in
 
 void SequencerThread::engine_handed_over(const pubsub_itc_fw::ConnectionID& engine, int64_t through, int64_t records_sent, EngineServing serving) {
     note_handed_over_through(through);
+    report(pubsub_itc_fw_app::EngineHandedOver{engine.get_value(), through, records_sent, serving.answers_catch_up_request});
     if (!serving.answers_catch_up_request) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: the reading thread has sent the matching engine on connection {} the orders it lacked, through {} ({} sent) -- "

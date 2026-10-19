@@ -549,7 +549,16 @@ struct RecordingTestEventLinks : public TestEventLinksInterface {
         BumpAllocator arena(arena_storage.data(), arena_storage.size());
         size_t consumed = 0;
         size_t arena_needed = 0;
-        if (pdu_id == RoleChanged::message_pdu_id) {
+        pdu_ids.push_back(pdu_id);
+        if (pdu_id == RunningAloneChanged::message_pdu_id) {
+            RunningAloneChangedView view{};
+            ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+            running_alone.push_back(view.running_alone);
+        } else if (pdu_id == PeerMayLeadChanged::message_pdu_id) {
+            PeerMayLeadChangedView view{};
+            ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+            peer_may_lead.push_back(view.peer_may_lead);
+        } else if (pdu_id == RoleChanged::message_pdu_id) {
             RoleChangedView view{};
             ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
             changes.push_back(Change{std::string(view.owner), view.instance, view.from_role, view.to_role, view.epoch});
@@ -575,6 +584,10 @@ struct RecordingTestEventLinks : public TestEventLinksInterface {
     };
     std::vector<Change> changes;
     std::vector<LeaseEvent> lease_changes;
+    // Every message sent, by id, in order; and the value of each RunningAloneChanged and PeerMayLeadChanged.
+    std::vector<int16_t> pdu_ids;
+    std::vector<bool> running_alone;
+    std::vector<bool> peer_may_lead;
 };
 
 } // un-named namespace
@@ -693,6 +706,37 @@ TEST(ReplicatedWalTest, AFollowerThatStopsAcknowledgingIsLeftBehindOnlyOnceAVote
         pair.step();
     }
     EXPECT_TRUE(pair.log_contains("saying it may lead again"));
+}
+
+TEST(ReplicatedWalTest, RunningAloneAndWhatTheLeaderSaysOfItsFollowerAreReportedAsTestEvents) {
+    RecordingTestEventLinks links;
+    TestEventChannel channel(links, "test_component", 1, "TestThread");
+    channel.on_connection_established(ConnectionID{3, std::string(TestEventChannel::service_name)});
+    Pair pair("replicated_wal_alone_events");
+    pair.test_events_[0] = &channel;
+    pair.start_both();
+    ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    ASSERT_TRUE(pair.step_until_follower_may_lead(0));
+    EXPECT_NE(std::find(links.pdu_ids.begin(), links.pdu_ids.end(), WalsAgree::message_pdu_id), links.pdu_ids.end())
+        << "the leader did not report that the follower's WAL agrees with its own";
+    links.running_alone.clear();
+    links.peer_may_lead.clear();
+
+    pair.held_[1] = true;
+    pair.append(0, 50);
+    pair.advance(ReplicatedWal::follower_acknowledgement_timeout);
+    pair.wals_[0]->on_acknowledgement_watch(pair.now_);
+    ASSERT_EQ(links.running_alone, std::vector<bool>{true});
+    ASSERT_EQ(links.peer_may_lead, std::vector<bool>{false});
+
+    pair.held_[1] = false;
+    ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
+    for (int n = 0; n < 20 && links.peer_may_lead.size() < 2; ++n) {
+        pair.step();
+    }
+    EXPECT_EQ(links.running_alone, (std::vector<bool>{true, false}));
+    EXPECT_EQ(links.peer_may_lead, (std::vector<bool>{false, true}));
 }
 
 TEST(ReplicatedWalTest, ARejoiningFollowerDiscardsTheRecordsOfAnOlderLeadershipAndTakesItsLeaders) {

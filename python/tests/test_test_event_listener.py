@@ -32,7 +32,8 @@ def generated_modules():
     """test_events.py and matching_engine_test_events.py, generated from their DSL files, beside a copy of pdu_framing.py."""
     _PYTHON_DIR.mkdir(parents=True, exist_ok=True)
     for dsl in (_PROJECT_ROOT / "libraries" / "pubsub_itc_fw" / "include" / "pubsub_itc_fw" / "test_events.dsl",
-                _PROJECT_ROOT / "applications" / "matching_engine" / "matching_engine_test_events.dsl"):
+                _PROJECT_ROOT / "applications" / "matching_engine" / "matching_engine_test_events.dsl",
+                _PROJECT_ROOT / "applications" / "sequencer" / "sequencer_test_events.dsl"):
         tree = load(dsl)
         Validator(tree).validate()
         (_PYTHON_DIR / f"{dsl.stem}.py").write_text(PythonGenerator(source_name=dsl.name).emit(tree))
@@ -128,6 +129,21 @@ def test_a_catch_up_stage_arrives_decoded_and_is_matched_by_its_stage(listener):
     found = listener.wait_for(completed, timeout=5.0)
     assert found is not None and found.message.records_sent == 3 and found.message.through_seq_no == 40
     assert listener.find(test_event_listener.catch_up(engine, "matching_engine", engine.CatchUpStage.Incomplete)) is None
+    sock.close()
+
+
+def test_a_message_is_matched_by_its_type_sender_and_fields(listener):
+    sock = _component(listener, "sequencer_primary")
+    events = listener.messages
+    agree = events.WalsAgree(owner="SequencerThread", instance=1, side=events.WalSide.Follower, through=12)
+    sock.sendall(pdu_framing.encode_pdu(events.WalsAgree.MESSAGE_ID, 1, agree.encode()))
+    full = listener.modules["sequencer_test_events"].HeldOrdersFull(first_unheld_seq_no=99)
+    sock.sendall(pdu_framing.encode_pdu(listener.modules["sequencer_test_events"].HeldOrdersFull.MESSAGE_ID, 1, full.encode()))
+    follower_agrees = test_event_listener.message_of(events.WalsAgree, "sequencer_primary", side=events.WalSide.Follower)
+    assert listener.wait_for(follower_agrees, timeout=5.0) is not None
+    assert listener.find(test_event_listener.message_of(events.WalsAgree, "sequencer_primary", side=events.WalSide.Leader)) is None
+    assert listener.wait_for(test_event_listener.message_of(listener.modules["sequencer_test_events"].HeldOrdersFull, first_unheld_seq_no=99),
+                             timeout=5.0) is not None
     sock.close()
 
 

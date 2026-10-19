@@ -15,7 +15,7 @@ target_link_libraries(sequencer PRIVATE
         tsl::robin_map
 )
 
-add_dependencies(sequencer fix_orders_generated leader_follower_generated)
+add_dependencies(sequencer fix_orders_generated leader_follower_generated sequencer_test_events_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(sequencer PRIVATE

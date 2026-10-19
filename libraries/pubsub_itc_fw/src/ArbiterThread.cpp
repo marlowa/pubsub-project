@@ -123,6 +123,7 @@ void ArbiterThread::on_initial_event() {
         }
         component_voters_.learn_statement(pair_id, statement);
         if (statement.instance_that_may_not_lead() != 0) {
+            statements_found_at_start_.emplace_back(pair_id, statement);
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "ArbiterThread: group={} -- the recorded statement from instance {} at epoch {} says instance {} may not lead; no lease is granted "
                        "to it until its leader says otherwise",
@@ -148,7 +149,12 @@ void ArbiterThread::on_app_ready_event() {
 void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
     if (test_events_.has_value() && test_events_->on_connection_established(id)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "ArbiterThread: connection {} to the test's event listener established", id.get_value());
-        // A role taken before the connection was made is reported now, so that the test learns it whenever it connects.
+        // The statements read from disk at start, and a role taken, before the connection was made are reported now, so that
+        // the test learns them whenever it connects.
+        for (const auto& [pair_id, statement] : statements_found_at_start_) {
+            test_events_->send_event(pubsub_itc_fw::StatementRecorded::message_pdu_id,
+                                     pubsub_itc_fw::StatementRecorded{pair_id, statement.leader_id, statement.epoch, statement.instance_that_may_not_lead()});
+        }
         if (role_ != ArbiterRole::unknown) {
             test_events_->role_changed("ArbiterThread", static_cast<int64_t>(config_.instance_id), pubsub_itc_fw::LeadershipRole::Unknown,
                                        leadership_role(role_), epoch_);

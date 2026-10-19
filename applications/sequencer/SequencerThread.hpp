@@ -25,6 +25,7 @@
 #include <fix_orders.hpp>
 #include <leader_follower.hpp>
 #include <replication_messages.hpp>
+#include <sequencer_test_events.hpp>
 
 #include <pubsub_itc_fw/ReplicatedWal.hpp>
 #include <pubsub_itc_fw/TestEventChannel.hpp>
@@ -209,6 +210,13 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     };
     SequencerTestEventLinks test_event_links_{*this};
     std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
+
+    // Sends one of the sequencer's own test events (sequencer_test_events.dsl), if a test started this instance.
+    template <typename Message> void report(const Message& message) {
+        if (test_events_.has_value()) {
+            test_events_->send_event(Message::message_pdu_id, message);
+        }
+    }
 
     // This instance's role, as the replicated WAL last said it changed.
     pubsub_itc_fw_app::Role role_{pubsub_itc_fw_app::Role::unknown};

@@ -8,6 +8,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <pubsub_itc_fw/ApplicationThread.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
@@ -25,6 +27,7 @@
 #include <pubsub_itc_fw/ArbiterConfiguration.hpp>
 #include <pubsub_itc_fw/ComponentLeaseVoters.hpp>
 #include <pubsub_itc_fw/ComponentStatementStore.hpp>
+#include <pubsub_itc_fw/LeaderStatement.hpp>
 
 namespace pubsub_itc_fw {
 
@@ -142,6 +145,10 @@ class ArbiterThread : public pubsub_itc_fw::ApplicationThread {
     // The newest statement from each component pair's leader about whether its peer may lead,
     // kept on disk beside the promise record, so that a restart does not forget it.
     ComponentStatementStore component_statement_store_;
+
+    // The statements found on disk at start that say an instance may not lead, by pair, reported to the test when its
+    // connection is made, since they are read before it can be (docs/availability/test_events.md).
+    std::vector<std::pair<int32_t, pubsub_itc_fw::LeaderStatement>> statements_found_at_start_;
 
     // The instance last granted a lease in each pair, so that a change of leader is logged and a
     // renewal is not.

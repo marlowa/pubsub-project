@@ -205,11 +205,12 @@ void ReplicatedWal::start_running_alone(const char* reason, Clock::time_point no
     running_alone_since_ = now;
     waiting_since_.reset();
     configuration_.running_alone_gauge.set(1.0);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Warning,
                "{}: the follower is too far behind -- {}. Running as if alone: once a voter confirms that the follower may not lead, records are "
                "committed without waiting for it, so resilience is reduced until the follower catches up. The follower has acknowledged through {} of {}",
                configuration_.owner_name, reason, peer_acked_through_, log_epochs_.last_seq_no());
+    report(RunningAloneChanged{configuration_.owner_name, configuration_.instance_id, true, reason, peer_acked_through_, log_epochs_.last_seq_no()});
     say_follower_may_not_lead(now);
     advance_commit();
 }
@@ -221,9 +222,10 @@ void ReplicatedWal::stop_running_alone(const char* reason, Clock::time_point now
     running_alone_ = false;
     configuration_.running_alone_gauge.set(0.0);
     const auto alone_for = std::chrono::duration_cast<std::chrono::milliseconds>(now - running_alone_since_);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the follower is keeping up again -- {}. Waiting for its acknowledgements again after {} ms running as if alone",
                configuration_.owner_name, reason, alone_for.count());
+    report(RunningAloneChanged{configuration_.owner_name, configuration_.instance_id, false, reason, peer_acked_through_, log_epochs_.last_seq_no()});
 }
 
 void ReplicatedWal::say_follower_may_not_lead(Clock::time_point now) {
@@ -231,10 +233,11 @@ void ReplicatedWal::say_follower_may_not_lead(Clock::time_point now) {
         return;
     }
     lease_agent_->begin_running_without_peer(now);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info,
                "{}: saying the follower may not lead -- records it does not hold are not committed until a voter confirms that statement",
                configuration_.owner_name);
+    report(PeerMayLeadChanged{configuration_.owner_name, configuration_.instance_id, false, 0});
 }
 
 void ReplicatedWal::say_follower_may_lead_if_it_holds_everything(Clock::time_point now) {
@@ -247,9 +250,10 @@ void ReplicatedWal::say_follower_may_lead_if_it_holds_everything(Clock::time_poi
         return;
     }
     lease_agent_->peer_holds_everything(now);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the follower holds every record through {} -- saying it may lead again", configuration_.owner_name,
                peer_acked_through_);
+    report(PeerMayLeadChanged{configuration_.owner_name, configuration_.instance_id, true, peer_acked_through_});
 }
 
 bool ReplicatedWal::handle_message(const ConnectionID& from, int16_t pdu_id, const uint8_t* payload, size_t size, Clock::time_point now) {
@@ -482,11 +486,11 @@ void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_ep
         peer_catching_up_ = true;
         peer_catch_up_after_ = after;
         peer_catch_up_->start_peer_catch_up(after);
-        // TEST CONTRACT -- ha_test.py matches the start of this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, FwLogLevel::Info,
                    "{}: the follower's log agrees with this one through record {} -- the {} record(s) after that are being sent to it from the WAL; live "
                    "records follow once it has them",
                    configuration_.owner_name, after, log_epochs_.last_seq_no() - after);
+        report(WalsAgree{configuration_.owner_name, configuration_.instance_id, WalSide::Leader, after});
         return;
     }
 
@@ -512,10 +516,10 @@ void ReplicatedWal::handle_position_request(int64_t last_seq_no, int32_t last_ep
     follower_wal_matches_ = true;
     // Not waited for until it has acknowledged everything just sent, or new records would wait behind it.
     peer_handed_over_at_ = log_epochs_.last_seq_no();
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info,
                "{}: the follower's log agrees with this one through record {} -- sent it the {} record(s) after that; live records follow",
                configuration_.owner_name, after, sent);
+    report(WalsAgree{configuration_.owner_name, configuration_.instance_id, WalSide::Leader, after});
 }
 
 void ReplicatedWal::on_peer_caught_up(int64_t through, Clock::time_point /*now*/) {
@@ -577,18 +581,19 @@ void ReplicatedWal::handle_position_reply(const LogPositionReplyView& reply, Clo
         // number follows the last record kept, so that if it leads again it does not number past a gap;
         // taking the lead raises it above every record replicated since.
         next_seq_no_ = keep_through + 1;
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
+        // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, FwLogLevel::Warning,
                    "{}: discarded records {} to {} from this instance's log -- the leader does not hold them. They were never committed, so nothing has "
                    "acted on them",
                    configuration_.owner_name, keep_through + 1, last_before);
+        report(RecordsDiscarded{configuration_.owner_name, configuration_.instance_id, keep_through + 1, last_before});
         events_.discarded_after(keep_through);
     }
     if (agreed) {
         follower_wal_agreed_ = true;
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: this log agrees with the leader's through record {} -- writing the records it sends from here",
                    configuration_.owner_name, keep_through);
+        report(WalsAgree{configuration_.owner_name, configuration_.instance_id, WalSide::Follower, keep_through});
         return;
     }
     send_position_request(now);

@@ -41,7 +41,7 @@ from typing import Callable, Dict, List, Optional
 
 
 # The generated modules whose messages may arrive on a test event connection: the library's first, then each application's.
-EVENT_MODULES = ("test_events", "matching_engine_test_events")
+EVENT_MODULES = ("test_events", "matching_engine_test_events", "sequencer_test_events")
 
 
 def load_generated_modules(python_dir: Path, module_names=EVENT_MODULES):
@@ -394,6 +394,14 @@ def order_outcome(engine_events_module, component: Optional[str], cl_ord_id: str
                 and (outcome is None or event.message.outcome == outcome)
                 and (during_catch_up is None or bool(event.message.during_catch_up) == during_catch_up)
                 and (component is None or event.component == component))
+    return predicate
+
+
+def message_of(message_class, component: Optional[str] = None, **fields) -> Callable[[ReceivedEvent], bool]:
+    """A predicate: a message of message_class, from component if one is named, whose fields equal those given."""
+    def predicate(event: ReceivedEvent) -> bool:
+        return (isinstance(event.message, message_class) and (component is None or event.component == component)
+                and all(getattr(event.message, name) == value for name, value in fields.items()))
     return predicate
 
 

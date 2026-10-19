@@ -130,3 +130,77 @@ message ConnectionChanged (id=146, version=1)
     i32    connection   # the framework's id for the connection
     bool   made         # true when it was made, false when it was lost
 end
+
+# ------------------------------------------------------------
+#  Which side of a replicated pair says its WAL agrees with the
+#  other's.
+# ------------------------------------------------------------
+enum WalSide : i8 {
+    Leader = 1          # the leader found the follower's WAL agrees with its own
+    Follower = 2        # the follower found its WAL agrees with the leader's
+}
+
+# ------------------------------------------------------------
+#  147 -- RunningAloneChanged
+#  The library's ReplicatedWal began or stopped running as if alone:
+#  committing records without waiting for a follower that is too far
+#  behind, once a voter confirms that the follower may not lead.
+# ------------------------------------------------------------
+message RunningAloneChanged (id=147, version=1)
+    string owner                # the pair's owner, as the library's configuration names it
+    i64    instance             # the instance's id
+    bool   running_alone        # true when it began running as if alone, false when it stopped
+    string reason               # why, as the ReplicatedWal states it
+    i64    acknowledged_through # the last record the follower has acknowledged
+    i64    last_record          # the last record in this instance's WAL
+end
+
+# ------------------------------------------------------------
+#  148 -- WalsAgree
+#  The two WALs of a pair were found to agree through a record, after
+#  which the leader sends the follower the records after it.
+# ------------------------------------------------------------
+message WalsAgree (id=148, version=1)
+    string  owner       # the pair's owner
+    i64     instance    # the instance that says so
+    WalSide side        # whether the instance is the leader or the follower
+    i64     through     # the last record the two WALs agree on
+end
+
+# ------------------------------------------------------------
+#  149 -- RecordsDiscarded
+#  A follower discarded records from its WAL that its leader does not
+#  hold. They were never committed, so nothing acted on them.
+# ------------------------------------------------------------
+message RecordsDiscarded (id=149, version=1)
+    string owner        # the pair's owner
+    i64    instance     # the instance that discarded them
+    i64    first        # the first record discarded
+    i64    last         # the last record discarded
+end
+
+# ------------------------------------------------------------
+#  150 -- PeerMayLeadChanged
+#  A leader changed what it says about whether its follower may lead:
+#  that it may not, because it is missing records; or that it may
+#  again, because it holds every record.
+# ------------------------------------------------------------
+message PeerMayLeadChanged (id=150, version=1)
+    string owner         # the pair's owner
+    i64    instance      # the leader's id
+    bool   peer_may_lead # what the leader now says
+    i64    through       # when it may lead again, the last record the follower holds; otherwise 0
+end
+
+# ------------------------------------------------------------
+#  151 -- StatementRecorded
+#  An arbiter, starting, found a statement from a pair's leader on
+#  disk that an instance may not lead, and will grant it no lease
+#  until the leader says otherwise.
+# ------------------------------------------------------------
+message StatementRecorded (id=151, version=1)
+    i32 pair_id                  # the pair
+    i64 leader                   # the instance that made the statement
+    i32 epoch                    # the epoch it was made at
+    i64 instance_may_not_lead    # the instance it says may not lead
+end

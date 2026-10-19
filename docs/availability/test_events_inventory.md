@@ -149,6 +149,9 @@ read the engine's catch-up from its Quill log: the matching engine's `CatchUp` e
 
 ## D. Replication, repair and the follower-behind rule in the sequencer (14)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.6): five events from the library's `ReplicatedWal` and
+the arbiter, and four of the sequencer's own.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 60 | `run_scenario` | primary_log | "the follower is too far behind" \| "no acknowledgement from it" | the leader started, or stopped, running as if alone | **Event**: RunningAlone(started or stopped, reason) from the library's ReplicatedWal |
@@ -340,15 +343,15 @@ were missed by it:
 | `OrderApplied` | B | the matching engine, only when a test asks |
 | `OrderOutcome` | B | the matching engine, for orders no member will hear of |
 | `CatchUp` | C | the matching engine, at each stage of catching up |
-| `RunningAlone` | D | the library's ReplicatedWal |
+| `RunningAloneChanged` | D | the library's ReplicatedWal |
 | `HeldOrdersFull` | D | the sequencer |
-| `Serving` | D | the library's WalFollowerService |
-| `HandedOver` | D | the library's WalFollowerService |
-| `WalsAgree` | D | the library's ReplicatedWal |
+| `EngineServedFromWal` | D | the sequencer, when its reading thread sends the engine orders that waited in the WAL |
+| `EngineHandedOver` | D | the sequencer, when its reading thread has sent them all |
+| `WalsAgree` | D | the library's ReplicatedWal, on each side |
 | `RecordsDiscarded` | D | the library's ReplicatedWal |
-| `StatementChanged` | D | the library's lease classes |
-| `StatementRecorded` | D | the arbiter (the library's voting service) |
-| `DuplicateIndexBuilt` | D | the sequencer |
+| `PeerMayLeadChanged` | D | the library's ReplicatedWal |
+| `StatementRecorded` | D | the arbiter |
+| `CheckingLogForRepeats` | D | the sequencer |
 | `Promoted` | E | the matching engine |
 | `Halted` | E | the matching engine |
 | `SessionBound` | F | the gateways |

@@ -445,6 +445,12 @@ class ReplicatedWal {
     std::optional<UnansweredRequest> unanswered_request_;
     WalFollowingPositions* positions_{nullptr};
     TestEventChannel* test_events_{nullptr};
+    // Sends a test event, if the owner gave this instance a channel (report_test_events_to).
+    template <typename Message> void report(const Message& message) {
+        if (test_events_ != nullptr) {
+            test_events_->send_event(Message::message_pdu_id, message);
+        }
+    }
     // While records wait for the follower: since when, for the timeout. Reset to the time of each
     // acknowledgement that leaves records still waiting.
     std::optional<Clock::time_point> waiting_since_;
