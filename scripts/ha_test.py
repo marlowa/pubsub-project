@@ -577,16 +577,25 @@ def expectation_seen(expect: Expect, since: int) -> bool:
     return all(_condition_met(condition, since) for condition in expect.conditions)
 
 
-def engine_event(engine: str, message: str, since: int, timeout: float, settle: bool = False):
-    """The first of the matching engine's events named message (matching_engine_test_events.dsl) at or after since,
-    waiting up to timeout seconds for it; or None. With settle, the engine is first asked for a checkpoint, so that None
-    means it sent none."""
-    module = _TEST_EVENTS.modules["matching_engine_test_events"]
-    predicate = message_of(getattr(module, message), engine)
-    if settle and not _TEST_EVENTS.settle(engine):
-        die(f"{engine} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so whether it sent {message} is not known")
+def component_event(component: str, module: str, message: str, since: int, timeout: float, settle: bool = False, **fields):
+    """The first event named message, from the generated module named module, sent by component at or after since with
+    the field values given, waiting up to timeout seconds for it; or None. With settle, the component is first asked for a
+    checkpoint, so that None means it sent none."""
+    predicate = message_of(getattr(_TEST_EVENTS.modules[module], message), component, **fields)
+    if settle and not _TEST_EVENTS.settle(component):
+        die(f"{component} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so whether it sent {message} is not known")
     found = _TEST_EVENTS.wait_for(predicate, timeout=timeout, since=since)
     return found.message if found is not None else None
+
+
+def engine_event(engine: str, message: str, since: int, timeout: float, settle: bool = False):
+    """component_event for the matching engine's events (matching_engine_test_events.dsl)."""
+    return component_event(engine, "matching_engine_test_events", message, since, timeout, settle)
+
+
+def gateway_event(gateway: str, message: str, since: int, timeout: float, settle: bool = False, **fields):
+    """component_event for a FIX gateway's events (fix_order_gateway_test_events.dsl)."""
+    return component_event(gateway, "fix_order_gateway_test_events", message, since, timeout, settle, **fields)
 
 
 def count_seen(expect: Expect, since: int) -> int:
@@ -4362,21 +4371,6 @@ def unprovision_gateway_pinning(comp_id: str) -> None:
     log(f"  {comp_id}: gateway pinning cleared")
 
 
-def _resent_report_count(log_path: Path, from_byte: int = 0) -> int | None:
-    """Reports named on the gateway's 'resend complete' line, or None if absent."""
-    try:
-        with log_path.open("r", errors="replace") as handle:
-            handle.seek(from_byte)
-            for line in handle:
-                if "resend complete" in line:
-                    match = re.search(r"resend complete -- (\d+) report\(s\) resent", line)
-                    if match:
-                        return int(match.group(1))
-    except OSError:
-        return None
-    return None
-
-
 def _client_logon_seq_num(client_output: Path) -> int | None:
     """MsgSeqNum of the Logon the CLIENT received, or None if it received none.
 
@@ -4631,59 +4625,6 @@ def _client_highest_seq_num(client_output: Path) -> int | None:
     return max(numbers) if numbers else None
 
 
-def _inherited_report_range_count(log_path: Path, from_byte: int = 0) -> int | None:
-    """How many outbound numbers the gateway was told had held execution reports, on binding.
-
-    The record travels in the sequencer's session state, so a gateway that never sent those
-    messages still knows which numbers carried one. None means the line was not found.
-    """
-    try:
-        with log_path.open("r", errors="replace") as handle:
-            handle.seek(from_byte)
-            for line in handle:
-                match = re.search(r"report range\(s\) covering (\d+) number\(s\)", line)
-                if match:
-                    return int(match.group(1))
-    except OSError:
-        return None
-    return None
-
-
-def _resend_resume_point(log_path: Path, from_byte: int = 0) -> int | None:
-    """The outbound number the gateway said it would resume at after the resend, or None.
-
-    The end of the requested range, and the number the member must be left expecting. Taken
-    from the gateway rather than assumed from where the numbering stood before the reconnect,
-    because the member detects its gap on the first message after the Logon -- so by the time
-    it asks, a heartbeat or a live report may have moved the venue on. Only the boundary comes
-    from here; every assertion about what the member was handed reads the client's own output.
-    """
-    try:
-        with log_path.open("r", errors="replace") as handle:
-            handle.seek(from_byte)
-            for line in handle:
-                match = re.search(r"will resume at (\d+)\)", line)
-                if match:
-                    return int(match.group(1))
-    except OSError:
-        return None
-    return None
-
-
-def _resend_gap_fill(log_path: Path, from_byte: int = 0) -> tuple[int, int] | None:
-    """The (from, to) range named on the gateway's gap-fill line, or None if it filled nothing."""
-    try:
-        with log_path.open("r", errors="replace") as handle:
-            handle.seek(from_byte)
-            for line in handle:
-                match = re.search(r"gap-filled (\d+)\.\.(\d+) \(administrative traffic\)", line)
-                if match:
-                    return int(match.group(1)), int(match.group(2))
-    except OSError:
-        return None
-    return None
-
-
 def _gateway_progress_lines(log_path: Path) -> list[dict[str, int]]:
     """Every GW-PROGRESS line in a gateway log, as its figures.
 
@@ -4845,12 +4786,6 @@ def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
 # What a sequencer logs when it writes a record out of order, and when it finds its write-ahead log damaged.
 _WAL_OUT_OF_ORDER = "was written after record"
 _WAL_DAMAGED = "write-ahead log is damaged"
-# What a sequencer logs when it answers a gateway's request for a session's reports, and when it
-# declines one because it does not lead. Scenario 40 expects exactly one of each (BUG-0148).
-_REPLAY_ANSWERED = "SequencerThread: SessionReplayComplete id="
-_REPLAY_DECLINED = "declined -- this instance is"
-# What the FIX gateway logs when it asks a new leader again for a resend that is still waiting.
-_REPLAY_ASKED_AGAIN = "a new sequencer leads"
 
 
 def check_write_ahead_logs_in_order(log_dir: Path) -> None:
@@ -9601,7 +9536,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # whether the venue sends what was asked for.
             log(f"=== Asking for a bounded resend of {_BOUNDED_RESEND_BEGIN}..{_BOUNDED_RESEND_END} ===")
             sequencer_logs = {name: log_dir / f"{name}.log" for name in ("sequencer_primary", "sequencer_secondary")}
-            sequencer_positions = {name: file_end(path) for name, path in sequencer_logs.items()}
+            replay_from = _TEST_EVENTS.mark()
             if scenario.bounded_resend_with_leader_killed:
                 # The primary leads in this scenario because it is started first. Checked rather than
                 # assumed, because killing the follower instead would test nothing.
@@ -9625,19 +9560,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         f"{keystroke!r}. Its menu reads keys in raw mode, so each line has to be "
                         "written only once it has asked for it.")
 
-            found, elapsed, _ = poll_log_for(
-                gw_log, f"ResendRequest BeginSeqNo={_BOUNDED_RESEND_BEGIN} EndSeqNo={_BOUNDED_RESEND_END}",
-                timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
-            )
+            started = time.monotonic()
+            found = gateway_event("fix_order_gateway_a", "ResendRequested", replay_from, _RESEND_TIMEOUT, begin_seq_no=_BOUNDED_RESEND_BEGIN,
+                                  end_seq_no=_BOUNDED_RESEND_END) is not None
+            elapsed = time.monotonic() - started
             if not found:
-                die("bounded resend: the gateway never logged the request with both bounds. Either "
+                die("bounded resend: the gateway never reported reading the request with both bounds. Either "
                     "the client did not send it, or EndSeqNo is not being read -- which was "
                     "BUG-0039, and this is the test that was owed for it.")
             log(f"  bounded resend: the gateway read both bounds off the request ({elapsed:.1f}s)")
 
-            found, elapsed, _ = poll_log_for(
-                gw_log, "resend complete", timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
-            )
+            started = time.monotonic()
+            found = gateway_event("fix_order_gateway_a", "ResendCompleted", replay_from, _RESEND_TIMEOUT) is not None
+            elapsed = time.monotonic() - started
             if not found:
                 die("bounded resend: the gateway never finished the resend.")
             log(f"  bounded resend: the venue answered ({elapsed:.1f}s)")
@@ -9647,10 +9582,15 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    two answers' records on the member's numbers in the order they arrived, and the
             #    member was sent the wrong orders under the right numbers whenever the two
             #    interleaved -- BUG-0148, which made this scenario fail at random.
-            for name, path in sequencer_logs.items():
-                poll_log_for(path, _REPLAY_DECLINED, timeout=_BOUNDED_RESEND_SETTLE, from_byte=sequencer_positions[name])
-            answered = {name: count_log_marker(path, _REPLAY_ANSWERED, sequencer_positions[name]) for name, path in sequencer_logs.items()}
-            declined = {name: count_log_marker(path, _REPLAY_DECLINED, sequencer_positions[name]) for name, path in sequencer_logs.items()}
+            # Each sequencer's answers and declines, counted once both have answered a checkpoint. A sequencer killed during
+            # the test has none open, and everything it sent was read before its connection closed. The decline comes on a
+            # request the gateway sent on another connection, so it is waited for first, as long as the answer was.
+            sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+            _TEST_EVENTS.wait_for(message_of(sequencer_events.ReplayDeclined), timeout=_BOUNDED_RESEND_SETTLE, since=replay_from)
+            answered = {name: count_seen(expect_message(name, "a replay answered", "ReplayAnswered", "sequencer_test_events"), replay_from)
+                        for name in sequencer_logs}
+            declined = {name: count_seen(expect_message(name, "a replay declined", "ReplayDeclined", "sequencer_test_events"), replay_from)
+                        for name in sequencer_logs}
             if sum(answered.values()) != 1 or sum(declined.values()) != 1:
                 die(f"bounded resend: the sequencers answered {answered} and declined {declined}; exactly one answer, from "
                     "the leader, and one decline, from the follower, were expected. Two answers are mixed by the gateway "
@@ -9662,9 +9602,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 if answered["sequencer_secondary"] != 1 or declined["sequencer_secondary"] != 1:
                     die(f"bounded resend: expected sequencer_secondary to decline the request and then answer it, but it "
                         f"answered {answered['sequencer_secondary']} and declined {declined['sequencer_secondary']}.")
-                found, _, _ = poll_log_for(gw_log, _REPLAY_ASKED_AGAIN, timeout=0.0, from_byte=gw_pos)
+                found = gateway_event("fix_order_gateway_a", "ReplayAskedAgain", replay_from, 0.0, settle=True) is not None
                 if not found:
-                    die(f"bounded resend: the gateway never logged '{_REPLAY_ASKED_AGAIN}', so the answer did not come from "
+                    die("bounded resend: the gateway never reported asking the new leader again, so the answer did not come from "
                         "asking the new leader again.")
                 log("  bounded resend: the follower declined, took over, and answered when the gateway asked again -- OK")
 
@@ -9713,6 +9653,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # properly and the figure is exact.
         if scenario.assert_resend_recovery:
             gw_pos = file_end(gw_log)
+            gateway_from = _TEST_EVENTS.mark()
             client_output = log_dir / "f8test_resend_client.txt"
 
             # A number the venue cannot replay, with reports on both sides of it. Without this
@@ -9752,10 +9693,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             f8proc = send_burst(0, gw_log, FIX8_NO_RESET_CFG, client_output,
                                 next_expected_receive=resume_from)
 
-            found, elapsed, _ = poll_log_for(
-                gw_log, "resuming the venue's sequence state", "outbound=",
-                timeout=_PROVISIONING_LOGON_TIMEOUT, from_byte=gw_pos,
-            )
+            started = time.monotonic()
+            found = gateway_event("fix_order_gateway_a", "SessionResumed", gateway_from, _PROVISIONING_LOGON_TIMEOUT) is not None
+            elapsed = time.monotonic() - started
             if not found:
                 die("resend: the gateway did not resume the session's numbering. The venue "
                     "remembers it at SessionUnbound and hands it back on SessionBoundAck -- check "
@@ -9782,10 +9722,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # that is what ignore_logon_sequence_check buys -- and its expected-receive advances
             # over it before the gap is acted on, so it asks from the number after.
             asks_from = resume_from + 1
-            found, elapsed, _ = poll_log_for(
-                gw_log, f"ResendRequest BeginSeqNo={asks_from}",
-                timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
-            )
+            started = time.monotonic()
+            requested = gateway_event("fix_order_gateway_a", "ResendRequested", gateway_from, _RESEND_TIMEOUT, begin_seq_no=asks_from)
+            found, elapsed = requested is not None, time.monotonic() - started
             if not found:
                 die(f"resend: the member never asked for the gap. It was started expecting "
                     f"MsgSeqNum={resume_from} and was sent a Logon numbered {logon_seq}, so it had "
@@ -9801,19 +9740,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # detects its gap on the first message after the Logon, so the venue may have moved
             # on by a heartbeat or a live report before it asks; where the numbering stood at the
             # reconnect is no longer the answer.
-            resume_at = _resend_resume_point(gw_log, from_byte=gw_pos)
+            resume_at = requested.resume_at if requested is not None else None
             if resume_at is None:
                 die("resend: the gateway did not say where it would resume after the replay, so "
                     "the range the member asked about cannot be bounded.")
 
-            found, elapsed, _ = poll_log_for(
-                gw_log, "resend complete", timeout=_RESEND_TIMEOUT, from_byte=gw_pos,
-            )
-            if not found:
+            completed = gateway_event("fix_order_gateway_a", "ResendCompleted", gateway_from, _RESEND_TIMEOUT)
+            if completed is None:
                 die("resend: the gateway never finished the resend. The reports come from the "
                     "sequencer's WAL asynchronously -- check for a SessionReplayRequest that got "
                     "no SessionReplayComplete.")
-            resent = _resent_report_count(gw_log, from_byte=gw_pos)
+            resent = completed.reports_resent
             if not resent:
                 die(f"resend: the gateway resent {resent} reports. The whole point of this "
                     "scenario is that the member is sent real execution reports rather than a "
@@ -9881,7 +9818,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    Whichever way the range was closed -- real reports to the end of it, or a
             #    terminating gap-fill over the remainder -- this is the property that decides
             #    whether the session survives, and it is the one that has to hold.
-            filled = _resend_gap_fill(gw_log, from_byte=gw_pos)
+            filled = (completed.gap_from, completed.gap_to) if completed.gap_from != 0 else None
             if filled is not None:
                 gap_from, gap_to = filled
                 resets = [msg for msg in received
@@ -10078,7 +10015,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             log("=== Reconnecting the member on instance b ===")
             stop_f8test(f8proc)
             f8proc = None
-            gw_b_pos = file_end(gw_b_log)
+            gateway_b_from = _TEST_EVENTS.mark()
             client_output = log_dir / "f8test_inflight_client.txt"
             instance_b_config = write_fix8_variant(
                 _INFLIGHT_CFG,
@@ -10099,10 +10036,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    available: the member was resynchronised as though it were a brand new
             #    session, told nothing, and left with thousands of live orders it had never
             #    heard of. The resumed number is what makes the loss VISIBLE to it.
-            found, elapsed, _ = poll_log_for(
-                gw_b_log, "resuming the venue's sequence state", "outbound=",
-                timeout=_RESEND_TIMEOUT, from_byte=gw_b_pos,
-            )
+            started = time.monotonic()
+            resumed = gateway_event("fix_order_gateway_b", "SessionResumed", gateway_b_from, _RESEND_TIMEOUT)
+            found, elapsed = resumed is not None, time.monotonic() - started
             if not found:
                 die("in-flight: instance b did not resume this session's numbering. The sequencer "
                     "must hand it back on SessionBoundAck, biased HIGH after an unclean death -- "
@@ -10145,9 +10081,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #    reports for the session, so after a failover the member is handed recent ones
             #    presented as the old missing ones, and nothing on its side distinguishes that
             #    from a correct answer. See docs/availability/resend_provenance.md.
-            found, elapsed, _ = poll_log_for(
-                gw_b_log, "ResendRequest BeginSeqNo=", timeout=_RESEND_TIMEOUT, from_byte=gw_b_pos,
-            )
+            started = time.monotonic()
+            requested = gateway_event("fix_order_gateway_b", "ResendRequested", gateway_b_from, _RESEND_TIMEOUT)
+            found, elapsed = requested is not None, time.monotonic() - started
             if not found:
                 die("in-flight: the member never asked for what it missed. It was sent a Logon "
                     f"numbered {logon_seq} while expecting 1, so it was short by everything the "
@@ -10155,9 +10091,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "ignore_logon_sequence_check.")
             log(f"  in-flight: the member asked instance b for the gap ({elapsed:.1f}s)")
 
-            found, elapsed, _ = poll_log_for(
-                gw_b_log, "resend complete", timeout=_RESEND_TIMEOUT, from_byte=gw_b_pos,
-            )
+            started = time.monotonic()
+            completed = gateway_event("fix_order_gateway_b", "ResendCompleted", gateway_b_from, _RESEND_TIMEOUT)
+            found, elapsed = completed is not None, time.monotonic() - started
             if not found:
                 die("in-flight: instance b never finished answering the resend. The reports come "
                     "from the sequencer's WAL asynchronously -- check for a SessionReplayRequest "
@@ -10188,19 +10124,19 @@ def run_scenario(scenario: Scenario, args) -> bool:
             #     boundary at all. Without it instance b cannot tell a number that held a report
             #     from one that held a heartbeat, which is BUG-0051 in the case a gateway-local
             #     record cannot reach.
-            inherited = _inherited_report_range_count(gw_b_log, from_byte=gw_b_pos)
+            inherited = resumed.report_numbers if resumed is not None else None
             if inherited is None or inherited == 0:
                 die("in-flight: instance b inherited no record of which of this session's numbers "
                     "held execution reports. It never sent them itself, so without that record it "
                     "cannot tell a report's number from a heartbeat's, and a resend would refill "
                     "both -- see BUG-0051. The gateway reports the record on SessionSequenceUpdate "
                     "every 2s; a session that lives and dies inside one interval reports nothing.")
-            resent = _resent_report_count(gw_b_log, from_byte=gw_b_pos)
+            resent = completed.reports_resent
             log(f"  in-flight: instance b inherited a record covering {inherited} number(s) for a "
                 f"session it never served, and replayed {resent} report(s) into the range asked "
                 "for -- the rest of that range is the venue's own high bias, which nobody sent -- OK")
 
-            resume_at = _resend_resume_point(gw_b_log, from_byte=gw_b_pos)
+            resume_at = requested.resume_at if requested is not None else None
             if resume_at is None:
                 die("in-flight: instance b did not say where it would resume after the replay.")
 

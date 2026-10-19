@@ -1506,6 +1506,8 @@ void FixOrderGatewayThread::handle_resend_request(FixSession& session, const Par
                "sequencer (request_id={}, resending {}..{}, {} of those numbers held a report, will resume at {})",
                session.conn_id.get_value(), session.client_comp_id, begin_seq, end_seq, session.replay_request_id, begin_seq, session.replay_end_seq_num,
                fix_common::seq_num_ranges::count_in(session.report_seq_nums, begin_seq, session.replay_end_seq_num), session.replay_resume_seq_num);
+    report(pubsub_itc_fw_app::ResendRequested{session.client_comp_id, session.conn_id.get_value(), begin_seq, end_seq,
+                                              static_cast<int64_t>(session.replay_request_id), session.replay_resume_seq_num});
 }
 
 void FixOrderGatewayThread::send_replay_request(FixSession& session) {
@@ -1568,6 +1570,7 @@ void FixOrderGatewayThread::send_waiting_replay_requests_again(int32_t new_epoch
                    "(request_id={}, replacing request_id={})",
                    session.conn_id.get_value(), session.client_comp_id, new_epoch, session.outbound_seq_num, session.replay_end_seq_num,
                    session.replay_request_id, previous_request_id);
+        report(pubsub_itc_fw_app::ReplayAskedAgain{session.client_comp_id, session.conn_id.get_value(), static_cast<int64_t>(session.replay_request_id)});
     }
 }
 
@@ -1687,6 +1690,8 @@ void FixOrderGatewayThread::handle_session_bound_ack(const pubsub_itc_fw::EventM
                "range(s) covering {} number(s)",
                session->client_comp_id, view.outbound_seq_num, session->expected_inbound_seq_num, view.inbound_seq_num, session->report_seq_nums.size(),
                fix_common::seq_num_ranges::count_in(session->report_seq_nums, 1, view.outbound_seq_num));
+    report(pubsub_itc_fw_app::SessionResumed{session->client_comp_id, view.outbound_seq_num, session->expected_inbound_seq_num,
+                                             static_cast<int64_t>(fix_common::seq_num_ranges::count_in(session->report_seq_nums, 1, view.outbound_seq_num))});
     establish_session_after_logon_sequence(*session);
 }
 
@@ -1821,9 +1826,11 @@ void FixOrderGatewayThread::finish_replay(FixSession& session, int32_t record_co
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "FixOrderGatewayThread: connection {} resend complete -- {} report(s) resent, gap-filled {}..{} (administrative traffic)",
                    session.conn_id.get_value(), record_count, gap_from, session.replay_resume_seq_num);
+        report(pubsub_itc_fw_app::ResendCompleted{session.conn_id.get_value(), static_cast<int64_t>(record_count), gap_from, session.replay_resume_seq_num});
     } else {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: connection {} resend complete -- {} report(s) resent, no gap left",
                    session.conn_id.get_value(), record_count);
+        report(pubsub_itc_fw_app::ResendCompleted{session.conn_id.get_value(), static_cast<int64_t>(record_count), 0, 0});
     }
 
     if (truncated) {

@@ -215,7 +215,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | D. Replication and repair | Events from the library's `ReplicatedWal`: running as if alone or not, the WALs agreeing through a record, records discarded, the leader saying its follower may or may not lead; from the arbiter, a statement found on disk; and the sequencer's own events for orders that waited in the WAL and for checking the end of the WAL for repeats |
 | E. Halting and cancelling on promotion | The matching engine's events: its book cancelled, with the orders it held and the reports it sent; resumed as leader, with its book; halted, with the reason; and its region found unusable at startup |
 | F. Gateway sessions | The FIX gateway's own events: a session announced bound or unbound, a report dropped for want of a session, a member gone with orders open, cancels sent, a session reclaimed; and the sequencer's: a report dropped because its gateway is not connected, a session recorded as unbound, the reports sent when it binds again |
-| G. Resends and replay | The resent messages at the client; an event from a sequencer when it answers or declines a replay |
+| G. Resends and replay | The resent messages, their numbers and the gap-fills at the client, as before; the FIX gateway's events for the boundaries the client is checked against (the numbering resumed, a resend requested and completed, a new leader asked again); and the sequencers' events for answering or declining a replay |
 | H. Connections | An event when a component's connection to another is made or lost, from the framework's connection classes in the library's terms |
 | I. Throttles and logons | The reject, logout or logon at the client |
 | J. The WAL in order and undamaged | The test reads the WAL files after the scenario, which it already knows how to do; no log and no event |
@@ -599,6 +599,49 @@ connection, which then failed once in five runs on its own; it is recorded as [B
 107.7, 107.8 and 107.4 microseconds with the build of kind E, 108.4, 107.8, 108.1 and 107.7 with this one, and 108.0,
 108.0, 108.1 and 109.0 with the build of kind E again. None of the gateway's or sequencer's new events is sent for each
 order, and kind F does not change the round trip.
+
+### 4.9 Step 4, kind G: resends and session replay
+
+**What was already at the member.** The checks of what the member was resent were already made on the FIX test
+client's own output: which numbers came back, which order each carries, which reports were marked as possible
+repeats, and the gap-fill the member received. What the test still read from the gateway's Quill log were the
+boundaries those checks are made against: the number the session resumed at after a reconnect, the bounds the gateway
+read off the member's ResendRequest, the number it resumes at after the resend, how many reports it resent, what it
+gap-filled, and how many of the session's numbers it was told had held reports.
+
+**The events.** The FIX gateway's DSL file gains four: the session's numbering resumed, with how many of its numbers
+held reports (`SessionResumed`); a ResendRequest read, with its bounds and the number the session resumes at
+(`ResendRequested`); the resend completed, with the reports resent and the gap-fill (`ResendCompleted`); and a new
+sequencer leader asked again for a resend that was waiting (`ReplayAskedAgain`). The sequencer's DSL file gains two: a
+replay answered, and a replay declined because the instance does not lead (`ReplayAnswered`, `ReplayDeclined`).
+
+**The checks moved.** The eighteen of kind G, in scenarios 22, 23, 40 and 73. That exactly one sequencer answered and the
+other declined is counted once both have answered a checkpoint, after waiting for the decline, which comes on the
+gateway's request to the other sequencer. The four helpers that read these boundaries from the gateway's Quill log are
+gone.
+
+**How it was shown to work.** The events of one scenario are checked one after another, so the faults were put in five
+builds, each scenario failing at the check meant to catch it:
+
+| Fault | Scenarios | Where they failed |
+|---|---|---|
+| The numbering resumed and the request read not reported | 22, 23 | the session's numbering resumed |
+| | 40 | the gateway reading both bounds off the request |
+| The request read not reported | 22, 23 | the member's request for the gap |
+| The resend's completion not reported | 22, 23, 40 | the gateway finishing the resend |
+| A replay answered not reported | 40 | exactly one sequencer answering |
+| Asking the new leader again not reported | 73 | the gateway asking the new leader again |
+
+From fresh WALs, 72 of the 76 scenarios passed, scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182), and scenario 59 failed: the old leader's WAL did not hold the last of three orders
+sent to it just before it was stopped. The scenario stops the leader the moment the orders are sent, which can beat the
+leader to reading the last one; scenario 62 had the same race and waits for the WAL instead. It is recorded as
+[BUG-0185](../bug_list.md#bug_0185), and scenario 59 passed in each of three runs on its own with the same build.
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 101.0,
+108.5, 108.1 and 108.2 microseconds with the build of kind F, 101.8, 108.3, 108.1 and 107.8 with this one, and 99.0,
+107.7, 107.8 and 107.7 with the build of kind F again. None of kind G's events is sent for each order, and it does not
+change the round trip.
 
 ## 5. What phase 6 does not do
 

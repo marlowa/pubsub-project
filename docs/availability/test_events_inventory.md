@@ -212,6 +212,10 @@ the sequencer's.
 
 ## G. Resends and session replay (18)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.9). What the member was resent was already checked at
+the client; the boundaries those checks use come from four events of the FIX gateway's, and the replay's answer and
+decline from two of the sequencer's.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 40, 73 | `run_scenario` | gw_log | f"ResendRequest BeginSeqNo={_BOUNDED_RESEND_BEGIN} EndSeqNo={_BOUNDED_RESEND_END}" | the member's resend request was read with its bounds, answered, and the numbering resumed | **Member**: what the member sends and receives: the ResendRequest, the resent messages and the numbers they carry |
@@ -373,7 +377,10 @@ were missed by it:
 | `UndeliveredReportsSent` | F | the sequencer |
 | `ReplayAnswered` | G | the sequencer |
 | `ReplayDeclined` | G | the sequencer |
-| `ReplayAskedAgain` | G | the gateways |
+| `ReplayAskedAgain` | G | the FIX gateway |
+| `SessionResumed` | G | the FIX gateway |
+| `ResendRequested` | G | the FIX gateway |
+| `ResendCompleted` | G | the FIX gateway |
 | `ConnectionChanged` | A, H | `TestEventChannel`, for every connection of its thread made or lost after the connection to the test |
 | `ReportsHeld` | H | the matching engine |
 | `ReportsReleased` | H | the matching engine |
@@ -381,5 +388,5 @@ were missed by it:
 | `ThrottleStarted` | I | the gateways |
 | `ThrottleStopped` | I | the gateways |
 
-That is 37 events. Several may merge when they are defined, for instance the session events into one
+That is 40 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

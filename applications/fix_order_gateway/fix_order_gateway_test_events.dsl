@@ -70,3 +70,51 @@ message SessionReclaimed (id=194, version=1)
     string comp_id
     i64    orders_left_resting
 end
+
+# ------------------------------------------------------------
+#  195 -- SessionResumed
+#  A member's session resumed the numbering the venue remembered for
+#  it, with the record of which outbound numbers held reports.
+# ------------------------------------------------------------
+message SessionResumed (id=195, version=1)
+    string comp_id
+    i64    outbound            # the outbound number the session resumes at
+    i64    inbound             # the inbound number it expects next
+    i64    report_numbers      # how many of the outbound numbers before outbound held a report
+end
+
+# ------------------------------------------------------------
+#  196 -- ResendRequested
+#  The gateway read a member's ResendRequest and asked the sequencers
+#  for the session's reports.
+# ------------------------------------------------------------
+message ResendRequested (id=196, version=1)
+    string comp_id
+    i32    connection
+    i64    begin_seq_no        # BeginSeqNo as the member sent it
+    i64    end_seq_no          # EndSeqNo as the member sent it
+    i64    request_id          # the gateway's identifier for its request to the sequencers
+    i64    resume_at           # the outbound number the session resumes at once the resend is done
+end
+
+# ------------------------------------------------------------
+#  197 -- ResendCompleted
+#  The gateway finished a member's resend.
+# ------------------------------------------------------------
+message ResendCompleted (id=197, version=1)
+    i32 connection
+    i64 reports_resent
+    i64 gap_from               # the first number gap-filled at the end; 0 when nothing was left to fill
+    i64 gap_to                 # the number the gap-fill leads to; 0 when nothing was left to fill
+end
+
+# ------------------------------------------------------------
+#  198 -- ReplayAskedAgain
+#  A new sequencer took the lead while a resend waited for its
+#  answer, so the gateway asked the new leader.
+# ------------------------------------------------------------
+message ReplayAskedAgain (id=198, version=1)
+    string comp_id
+    i32    connection
+    i64    request_id          # the new request's identifier
+end

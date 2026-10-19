@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 184 |
-| Open | 77 (56 defects, 21 tasks) |
+| Bugs recorded | 185 |
+| Open | 78 (57 defects, 21 tasks) |
 | Closed | 107 |
-| Next id | BUG-0185 |
+| Next id | BUG-0186 |
 
 ## Open bugs by severity
 
-18 high, 49 medium, 10 low.
+18 high, 49 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -90,6 +90,7 @@
 | [BUG-0166](#bug_0166) | low | defect | The reactor writes a Warning for every send to a connection that has gone, not one for each connection |
 | [BUG-0177](#bug_0177) | low | defect | The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value |
 | [BUG-0179](#bug_0179) | low | defect | The Java generated from the DSL decodes an enum value the enum does not list as null, and then cannot encode the message again |
+| [BUG-0185](#bug_0185) | low | defect | Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order |
 
 ---
 
@@ -3812,6 +3813,27 @@ earlier run of the developer loop that day.
 into a buffer before the pause took effect, or whether the test samples the count before the pause has taken effect.
 
 **Principles.** None directly; the reactor's pausing of a connection is what the gateways rely on to hold back a member.
+
+### BUG-0185: Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order {#bug_0185}
+
+| | |
+|---|---|
+| Severity | low |
+| Found | 2026-10-19 |
+| Recorded | 2026-10-19 |
+| How | A full run of the high availability scenarios in step 4 of phase 6 ([test_events.md](availability/test_events.md)) failed at scenario 59, which had passed in every earlier full run |
+| Impact | The scenarios fail at random, and a run that fails this way says the old leader's WAL lacks an order, which reads as a defect of the venue's |
+
+**What was seen.** Scenario 59 failed with "the old leader's log ... does not hold ['unrep-210320-3'], which it wrote
+before sending them to the engine". The scenario starts `inject_order` with three orders, waits for the line saying they
+were sent, and stops the leader with SIGSTOP at once. "Sent" means only that the orders are on their way: the leader may
+not yet have read the third when it is stopped, so it never writes it. Scenario 62 had the same race, and waits, polling
+the WAL, until the leader has written its orders before stopping it; its comment says why. Scenarios 59 and 76 do not.
+
+**What is wanted.** Scenarios 59 and 76 wait as scenario 62 does: until the leader's WAL holds the orders, within the
+time before the leader may act on them, and only then stop it.
+
+**Principles.** None; the tests.
 
 ## Closed
 

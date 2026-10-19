@@ -92,3 +92,24 @@ message UndeliveredReportsSent (id=186, version=1)
     i64    count            # the reports sent
 end
 
+# ------------------------------------------------------------
+#  187 -- ReplayAnswered
+#  The leader answered a gateway's request for a session's reports,
+#  sent to replay a member's resend.
+# ------------------------------------------------------------
+message ReplayAnswered (id=187, version=1)
+    i64    request_id      # the gateway's identifier for the request
+    string comp_id
+    i64    records         # the reports sent in answer
+    bool   truncated       # true when the answer stopped at the sequencer's cap on records
+end
+
+# ------------------------------------------------------------
+#  188 -- ReplayDeclined
+#  A sequencer that does not lead declined a request for a session's
+#  reports: only the leader answers.
+# ------------------------------------------------------------
+message ReplayDeclined (id=188, version=1)
+    i64    request_id
+    string comp_id
+end

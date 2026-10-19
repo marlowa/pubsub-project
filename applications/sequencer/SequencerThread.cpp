@@ -2855,6 +2855,7 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: SessionReplayRequest id={} comp_id='{}' declined -- this instance is {}, and only the leader answers", view.request_id,
                    identity.comp_id_view(), pubsub_itc_fw_app::to_string(role_));
+        report(pubsub_itc_fw_app::ReplayDeclined{static_cast<int64_t>(view.request_id), identity.comp_id_view()});
         return;
     }
 
@@ -3006,6 +3007,7 @@ void SequencerThread::handle_session_replay_request(const pubsub_itc_fw::Connect
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: SessionReplayComplete id={} comp_id='{}' records={} last_seq_no={} truncated={} scanned_in_ms={} segments_read={} of {}",
                view.request_id, identity.comp_id_view(), record_count, last_seq_no, truncated, elapsed_ns / 1000000, segments_read, segments.size());
+    report(pubsub_itc_fw_app::ReplayAnswered{static_cast<int64_t>(view.request_id), identity.comp_id_view(), static_cast<int64_t>(record_count), truncated});
 }
 
 void SequencerThread::forward_pending_er(const PendingEr& pending) {
