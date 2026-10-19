@@ -122,13 +122,14 @@ end
 # ------------------------------------------------------------
 #  146 -- ConnectionChanged
 #  One of the thread's connections, other than the one to the test,
-#  was made or lost. Only connections made or lost after the
-#  connection to the test was made are reported.
+#  was made or lost. A connection made before the connection to the
+#  test, and still open when it is made, is reported then.
 # ------------------------------------------------------------
 message ConnectionChanged (id=146, version=1)
     string service      # the service, as the framework names it: an outbound service's name, or "inbound:<port>"
     i32    connection   # the framework's id for the connection
     bool   made         # true when it was made, false when it was lost
+    string reason       # for a connection lost, why, as the framework says; empty for one made
 end
 
 # ------------------------------------------------------------

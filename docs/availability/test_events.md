@@ -216,7 +216,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | E. Halting and cancelling on promotion | The matching engine's events: its book cancelled, with the orders it held and the reports it sent; resumed as leader, with its book; halted, with the reason; and its region found unusable at startup |
 | F. Gateway sessions | The FIX gateway's own events: a session announced bound or unbound, a report dropped for want of a session, a member gone with orders open, cancels sent, a session reclaimed; and the sequencer's: a report dropped because its gateway is not connected, a session recorded as unbound, the reports sent when it binds again |
 | G. Resends and replay | The resent messages, their numbers and the gap-fills at the client, as before; the FIX gateway's events for the boundaries the client is checked against (the numbering resumed, a resend requested and completed, a new leader asked again); and the sequencers' events for answering or declining a replay |
-| H. Connections | An event when a component's connection to another is made or lost, from the framework's connection classes in the library's terms |
+| H. Connections | `ConnectionChanged` from the channel of the component whose connection it is, including connections made before the test connected; and the matching engine's events for the reports it holds without a connection, releases, or discards |
 | I. Throttles and logons | The reject, logout or logon at the client |
 | J. The WAL in order and undamaged | The test reads the WAL files after the scenario, which it already knows how to do; no log and no event |
 | K. The test's own library | The library creates a second file when it begins blocking, and the test waits for that file instead of a phrase (decision 5) |
@@ -642,6 +642,61 @@ leader to reading the last one; scenario 62 had the same race and waits for the 
 108.5, 108.1 and 108.2 microseconds with the build of kind F, 101.8, 108.3, 108.1 and 107.8 with this one, and 99.0,
 107.7, 107.8 and 107.7 with the build of kind F again. None of kind G's events is sent for each order, and it does not
 change the round trip.
+
+### 4.10 Step 4, kind H: connections made, lost and refused
+
+**Connections made before the test.** `TestEventChannel` reports each of its thread's other connections made or lost
+(`ConnectionChanged`). It now also remembers the connections made before its own connection to the test, forgets any
+of them that are lost, and reports the rest as made when the test connects. Without that, a connection a component
+accepts in its first moments, such as a matching engine's book replication connection, could be made before the test
+was connected and never be reported, and a test waiting for it would fail at random. `ConnectionChanged` also carries
+the reason a lost connection gives.
+
+**The binary gateway.** The binary gateway now sends test events as the FIX gateway does, and `ha_test.py` starts it with
+a `[test_events]` section. It needs no events of its own yet: its connection to the sequencer is a `ConnectionChanged`.
+
+**The matching engine's events.** `matching_engine_test_events.dsl` gains three: the engine has no connection to a
+sequencer for reports, so it acts on orders and holds their reports (`ReportsHeld`); it sends the reports it held, because
+a connection was made or because it now serves (`ReportsReleased`); and it discards the reports it held, because
+another instance served those members (`ReportsDiscarded`).
+
+**The checks moved.** The ten of kind H, and the steps of scenarios 54 and 55 about the reports the engine held. The
+matching engine's book replication connection is the connection the engine accepts on its replication listener, whose
+port is read from the engine's deployed configuration when the check runs (`expect_replication_connection`). In scenario
+71, the gateway's connection to the sequencer closing while the sequencer is stopped, and so still holds its socket
+open, can only be the gateway closing it; the check is that it closed, without reading the reason. The check that the
+gateway did not close the member's own connection counts the connections lost on the gateway's member listener up to
+the moment the test closes that connection itself, after a checkpoint.
+
+**How it was shown to work.** The faults were put in six builds of the venue, each scenario failing at the check meant
+to catch it:
+
+| Fault | Scenarios | Where they failed |
+|---|---|---|
+| A lost connection not reported | 71 | the gateway closing its connection to the stopped sequencer |
+| The engine's held reports discarded not reported | 54 | the reports from the engine's catch-up discarded rather than sent |
+| The engine's held reports released not reported | 55 | the held reports released now that the engine serves |
+| | 72 | the engine sending the reports it held once its connections were let through |
+| The engine holding reports not reported | 72 | the engine saying it was holding reports |
+| The binary gateway making no connection to the test | 57 | the binary gateway connecting to the primary sequencer |
+
+The connections made before the test connected are not reported in a seventh build, and scenarios 29, 32 and 37 passed
+with it. In that run, each connection they wait for was made after the test had connected, which is the usual order; the
+remembered connections are reported only when it is the other way round, which is too rare and too dependent on timing
+for a scenario to catch on purpose. The unit test `AConnectionMadeBeforeTheTestIsReportedWhenTheTestConnects` failed
+with the same fault, and passed again without it. The check in scenario 71 that the gateway did not close the member's
+own connection reads for an event that should never come, so it was shown to see one in a copy of `ha_test.py` whose
+window runs on past the test closing that connection itself, and which reads every event sent up to then: the check
+failed, on the gateway reporting the member's connection lost when the test closed it.
+
+From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 99.9,
+108.0, 108.2 and 107.9 microseconds with the build of kind G, 100.1, 99.4, 99.4 and 99.0 with this one, and 108.0, 107.4,
+107.4 and 107.5 with the build of kind G again. The round trip settles at about 100 or about 108 microseconds from one run
+to the next with any build, as the first run of each kind G measurement shows, so this build's lower medians are not a
+gain. Kind H adds nothing to the path of an order, and it does not slow the round trip.
 
 ## 5. What phase 6 does not do
 

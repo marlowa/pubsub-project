@@ -16,7 +16,12 @@ TestEventChannel::TestEventChannel(TestEventLinksInterface& links, std::string c
 
 bool TestEventChannel::on_connection_established(const ConnectionID& connection) {
     if (connection.service_name() != service_name) {
-        connection_changed(connection, ConnectionChange::Made);
+        open_.push_back(connection);
+        if (connected_) {
+            connection_changed(connection, ConnectionChange::Made, {});
+        } else {
+            made_before_the_test_.push_back(connection);
+        }
         return false;
     }
     connection_ = connection;
@@ -27,15 +32,34 @@ bool TestEventChannel::on_connection_established(const ConnectionID& connection)
     hello.thread = thread_;
     hello.process_id = static_cast<int64_t>(getpid());
     send(TestEventsHello::message_pdu_id, hello);
+    for (const ConnectionID& earlier : made_before_the_test_) {
+        connection_changed(earlier, ConnectionChange::Made, {});
+    }
+    made_before_the_test_.clear();
     return true;
 }
 
-bool TestEventChannel::on_connection_lost(const ConnectionID& connection) {
+bool TestEventChannel::on_connection_lost(const ConnectionID& lost, std::string_view reason) {
+    // The connection as it was when made, which names its service; the framework's lost connection names only its id.
+    ConnectionID connection = lost;
+    for (auto it = open_.begin(); it != open_.end(); ++it) {
+        if (*it == lost) {
+            connection = *it;
+            open_.erase(it);
+            break;
+        }
+    }
     if (!connected_) {
+        for (auto it = made_before_the_test_.begin(); it != made_before_the_test_.end(); ++it) {
+            if (*it == connection) {
+                made_before_the_test_.erase(it);
+                break;
+            }
+        }
         return false;
     }
     if (connection != connection_) {
-        connection_changed(connection, ConnectionChange::Lost);
+        connection_changed(connection, ConnectionChange::Lost, reason);
         return false;
     }
     connected_ = false;
@@ -101,7 +125,7 @@ void TestEventChannel::lease_granted_to(int32_t pair_id, int64_t instance, int32
     send(LeaseGrantedTo::message_pdu_id, event);
 }
 
-void TestEventChannel::connection_changed(const ConnectionID& connection, ConnectionChange change) {
+void TestEventChannel::connection_changed(const ConnectionID& connection, ConnectionChange change, std::string_view reason) {
     if (!connected_) {
         return;
     }
@@ -109,6 +133,7 @@ void TestEventChannel::connection_changed(const ConnectionID& connection, Connec
     event.service = connection.service_name();
     event.connection = connection.get_value();
     event.made = change == ConnectionChange::Made;
+    event.reason = reason;
     send(ConnectionChanged::message_pdu_id, event);
 }
 

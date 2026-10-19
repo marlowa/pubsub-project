@@ -23,6 +23,7 @@
 #include <pubsub_itc_fw/LoggingMacros.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/TimerID.hpp>
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
@@ -238,6 +239,18 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // The commands sent to the sequencers and not yet answered. Present only with high availability
     // on, because only a change of sequencer leader makes a command need sending again.
     std::optional<fix_common::UnansweredCommandStore> unanswered_commands_;
+
+    // The test events this thread sends, when a test started this gateway (docs/availability/test_events.md).
+    class GatewayTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
+      public:
+        explicit GatewayTestEventLinks(BinaryOrderGatewayThread& owner) : owner_(owner) {}
+        void send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) override;
+
+      private:
+        BinaryOrderGatewayThread& owner_;
+    };
+    GatewayTestEventLinks test_event_links_{*this};
+    std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
     std::vector<uint8_t> unanswered_encode_buffer_;
     std::vector<uint8_t> resend_arena_buffer_ = std::vector<uint8_t>(64 * 1024);
     bool unanswered_store_full_{false};

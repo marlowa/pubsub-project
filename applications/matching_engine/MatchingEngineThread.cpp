@@ -366,7 +366,6 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
         // follow, and losing it is how we learn the leader has gone -- which is why both
         // instances must have one, not only the configured secondary.
         inbound_replication_conn_id_ = id;
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: ME-primary replication connection {} established -- replica book will be updated", id.get_value());
         // Tell the peer what this instance is as soon as there is a link to tell it
@@ -419,7 +418,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
 }
 
 void MatchingEngineThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
-    if (test_events_.has_value() && test_events_->on_connection_lost(id)) {
+    if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "MatchingEngineThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
@@ -1287,11 +1286,14 @@ void MatchingEngineThread::release_held_reports() {
     if (!to_primary && !to_secondary) {
         return;
     }
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: releasing {} report(s) held while this instance was becoming current -- it now serves, so the members who placed "
                "those orders are told",
                held_reports_.size());
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::ReportsReleased::message_pdu_id,
+                                 pubsub_itc_fw_app::ReportsReleased{pubsub_itc_fw_app::ReleaseReason::NowServes, static_cast<int64_t>(held_reports_.size())});
+    }
     send_held_reports(to_primary, to_secondary);
 }
 
@@ -1351,9 +1353,13 @@ void MatchingEngineThread::release_reports_held_for_a_connection() {
     if (held_reports_.empty() || holding_reports_until_entitled()) {
         return;
     }
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: a connection to a sequencer for reports is established -- sending {} report(s) held without one", held_reports_.size());
+    if (test_events_.has_value()) {
+        test_events_->send_event(
+            pubsub_itc_fw_app::ReportsReleased::message_pdu_id,
+            pubsub_itc_fw_app::ReportsReleased{pubsub_itc_fw_app::ReleaseReason::ConnectionMade, static_cast<int64_t>(held_reports_.size())});
+    }
     send_held_reports(sequencer_er_conn_id_.is_valid(), sequencer_er_secondary_conn_id_.is_valid());
 }
 
@@ -1381,6 +1387,10 @@ void MatchingEngineThread::discard_held_reports(const char* reason) {
     // had this instance gone the other way, and an operator reconciling a member's day against
     // this log should be able to see that they were not sent, and why.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: discarding {} held report(s) -- {}", held_reports_.size(), reason);
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::ReportsDiscarded::message_pdu_id,
+                                 pubsub_itc_fw_app::ReportsDiscarded{static_cast<int64_t>(held_reports_.size())});
+    }
     held_reports_.clear();
     held_reports_.shrink_to_fit();
     held_reports_overflowed_ = false;
@@ -1441,6 +1451,10 @@ void MatchingEngineThread::send_er_to_sequencer(const pubsub_itc_fw_app::Executi
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                            "MatchingEngineThread: no connection to a sequencer for reports -- acting on orders and holding their reports until one is "
                            "established");
+            if (test_events_.has_value()) {
+                test_events_->send_event(pubsub_itc_fw_app::ReportsHeld::message_pdu_id,
+                                         pubsub_itc_fw_app::ReportsHeld{static_cast<int64_t>(held_reports_.size()) + 1});
+            }
         }
         if (held_reports_.size() < max_held_reports_) {
             HeldReport held;

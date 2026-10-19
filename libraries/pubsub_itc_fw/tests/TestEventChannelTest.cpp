@@ -141,18 +141,52 @@ TEST_F(TestEventChannelTest, AGrantByAThirdVoterIsSentWithEveryField) {
     EXPECT_EQ(event.epoch, 17);
 }
 
-TEST_F(TestEventChannelTest, AnotherConnectionMadeOrLostIsReportedOnceTheTestIsConnected) {
-    EXPECT_FALSE(channel_.on_connection_established(elsewhere_)); // before the test connects: not reported
+TEST_F(TestEventChannelTest, AnotherConnectionMadeOrLostIsReportedWithTheReasonItWasLost) {
     channel_.on_connection_established(to_test_);
-    EXPECT_FALSE(channel_.on_connection_lost(elsewhere_));
+    EXPECT_FALSE(channel_.on_connection_lost(elsewhere_, "peer closed connection"));
     EXPECT_FALSE(channel_.on_connection_established(elsewhere_));
     ASSERT_EQ(links_.sent.size(), 3U);
-    const auto lost = decoded<ConnectionChangedView>(links_.sent[1]);
     EXPECT_EQ(links_.sent[1].pdu_id, ConnectionChanged::message_pdu_id);
+    const auto lost = decoded<ConnectionChangedView>(links_.sent[1]);
     EXPECT_EQ(lost.service, "peer");
     EXPECT_EQ(lost.connection, 8);
     EXPECT_FALSE(lost.made);
-    EXPECT_TRUE(decoded<ConnectionChangedView>(links_.sent[2]).made);
+    EXPECT_EQ(lost.reason, "peer closed connection");
+    const auto made = decoded<ConnectionChangedView>(links_.sent[2]);
+    EXPECT_TRUE(made.made);
+    EXPECT_EQ(made.reason, "");
+}
+
+TEST_F(TestEventChannelTest, ALostConnectionIsNamedByTheServiceItWasMadeFor) {
+    channel_.on_connection_established(to_test_);
+    channel_.on_connection_established(elsewhere_);
+    // The framework names a lost connection by its id alone.
+    EXPECT_FALSE(channel_.on_connection_lost(ConnectionID{8, ""}, "closed"));
+    ASSERT_EQ(links_.sent.size(), 3U);
+    const auto lost = decoded<ConnectionChangedView>(links_.sent[2]);
+    EXPECT_EQ(lost.service, "peer");
+    EXPECT_EQ(lost.connection, 8);
+    EXPECT_FALSE(lost.made);
+}
+
+TEST_F(TestEventChannelTest, AConnectionMadeBeforeTheTestIsReportedWhenTheTestConnects) {
+    EXPECT_FALSE(channel_.on_connection_established(elsewhere_));
+    EXPECT_TRUE(links_.sent.empty());
+    channel_.on_connection_established(to_test_);
+    ASSERT_EQ(links_.sent.size(), 2U);
+    EXPECT_EQ(links_.sent[0].pdu_id, TestEventsHello::message_pdu_id);
+    EXPECT_EQ(links_.sent[1].pdu_id, ConnectionChanged::message_pdu_id);
+    const auto made = decoded<ConnectionChangedView>(links_.sent[1]);
+    EXPECT_EQ(made.service, "peer");
+    EXPECT_TRUE(made.made);
+}
+
+TEST_F(TestEventChannelTest, AConnectionMadeAndLostBeforeTheTestIsNotReported) {
+    EXPECT_FALSE(channel_.on_connection_established(elsewhere_));
+    EXPECT_FALSE(channel_.on_connection_lost(elsewhere_, "gone"));
+    channel_.on_connection_established(to_test_);
+    ASSERT_EQ(links_.sent.size(), 1U);
+    EXPECT_EQ(links_.sent[0].pdu_id, TestEventsHello::message_pdu_id);
 }
 
 TEST_F(TestEventChannelTest, ACheckpointRequestIsAnsweredWithItsNumber) {

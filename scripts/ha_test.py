@@ -528,6 +528,23 @@ def expect_message(component: str, what: str, message: str, module: str = "test_
     return Expect(f"{component}: {what}", (Condition(component, matches),))
 
 
+def expect_connection_made(component: str, service: str) -> Expect:
+    """component made a connection to service (ConnectionChanged), as the framework names it."""
+    return Expect(f"{component}: connection to {service} made",
+                  (Condition(component, lambda m: message_of(m.ConnectionChanged, component, made=True, service=service)),))
+
+
+def expect_replication_connection(engine: str) -> Expect:
+    """The other engine of the pair connected to engine's book replication listener, which engine accepts as an inbound
+    connection named after the port. The port is read from engine's deployed configuration when the check runs, because
+    the scenario table is built before the install directory is known."""
+    def matches(library_events):
+        config = _INSTALL_PREFIX / "etc" / "matching_engine" / f"{engine if engine != 'matching_engine' else 'matching_engine_primary'}.toml"
+        port = installed_toml_section_value(config, "book_replication", "listen_port")
+        return message_of(library_events.ConnectionChanged, engine, made=True, service=f"inbound:{port}")
+    return Expect(f"{engine}: the other engine's replication connection made", (Condition(engine, matches),))
+
+
 def expect_granted_to(arbiter: str, pair_id: int, instance: int) -> Expect:
     """arbiter, as the active arbiter, grants instance of pair_id a lease (LeaseGrantedTo)."""
     return Expect(f"{arbiter} grants instance {instance} of pair {pair_id} a lease",
@@ -2359,7 +2376,7 @@ _SCENARIOS: list[Scenario] = [
             RestartStep(
                 proc_name="matching_engine_secondary",
                 ready_log_name="matching_engine_secondary.log",
-                ready_markers=("ME-primary replication connection", "established"),
+                ready=expect_replication_connection("matching_engine_secondary"),
                 ready_timeout=30.0,
                 resets_me_counter=False,
                 settle_secs=_ME_SETTLE,
@@ -2493,8 +2510,7 @@ _SCENARIOS: list[Scenario] = [
             # window -- passing alone and failing inside the suite, which is worse than failing
             # outright.
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("ME-primary replication connection", "established"),
+                expect=expect_replication_connection("matching_engine_primary"),
                 timeout=60.0,
                 description="the new leader's replication connection has reached the rejoined instance",
             ),
@@ -2720,14 +2736,12 @@ _SCENARIOS: list[Scenario] = [
             # the scenario measures reconnection time and calls it a failure. Both are checked,
             # because either may be the one that leads.
             VerifyStep(
-                log_name="sequencer_primary.log",
-                markers=("matching engine order connection", "established"),
+                expect=expect_connection_made("sequencer_primary", "matching_engine"),
                 timeout=60.0,
                 description="the restarted primary has reached the matching engine again",
             ),
             VerifyStep(
-                log_name="sequencer_secondary.log",
-                markers=("matching engine order connection", "established"),
+                expect=expect_connection_made("sequencer_secondary", "matching_engine"),
                 timeout=60.0,
                 description="the restarted secondary has reached the matching engine again",
             ),
@@ -2793,8 +2807,7 @@ _SCENARIOS: list[Scenario] = [
                 description="the sequencer resolves leadership with its peer, needing no arbiter",
             ),
             VerifyStep(
-                log_name="sequencer_primary.log",
-                markers=("matching engine order connection", "established"),
+                expect=expect_connection_made("sequencer_primary", "matching_engine"),
                 timeout=60.0,
                 description="the restarted leader has reached the matching engine again",
             ),
@@ -3137,8 +3150,7 @@ _SCENARIOS: list[Scenario] = [
             #    Being current and being entitled to act are separate things, and reporting is an
             #    act -- BUG-0077.
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                markers=("MatchingEngineThread:", "discarding", "held report(s)"),
+                expect=expect_message("matching_engine_primary", "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
                 timeout=30.0,
                 description="the reports from its catch-up are discarded rather than sent",
                 absent=expect_leads("matching_engine_primary"),
@@ -3213,13 +3225,11 @@ _SCENARIOS: list[Scenario] = [
             ),
             # 6. The assertion this scenario exists for.
             VerifyStep(
-                log_name="matching_engine_primary.log",
-                # TEST CONTRACT -- the engine's wording. "held report(s)" is the discarding line's
-                # phrasing, not this one's.
-                markers=("MatchingEngineThread:", "releasing", "report(s) held while this instance was becoming current"),
+                expect=expect_message("matching_engine_primary", "its held reports released now that it serves", "ReportsReleased",
+                                      "matching_engine_test_events", fields=lambda m: {"reason": m.ReleaseReason.NowServes}),
                 timeout=30.0,
                 description="the held reports are released to the members who placed those orders",
-                absent_markers=("MatchingEngineThread:", "discarding", "held report(s)"),
+                absent=expect_message("matching_engine_primary", "its held reports discarded", "ReportsDiscarded", "matching_engine_test_events"),
             ),
         ],
     ),
@@ -4878,8 +4888,6 @@ def check_me_seq_monotonic(me_log: Path) -> tuple[bool, list[tuple[int, int, int
 # smallest limit a gateway accepts, because it must hold several batches of a resend.
 _SMALL_SEND_QUEUE  = 1024
 _SMALL_SEND_BUFFER = 16384
-# What gateway a logs when it closes its connection to the primary sequencer because its queue is full.
-_SEQUENCER_CONNECTION_CLOSED = "to service 'sequencer_primary' closed: it is not reading what is sent to it"
 
 
 def config_with_small_send_queue(config: Path) -> Path:
@@ -5013,12 +5021,15 @@ def process_is_stopped(pid: int) -> bool:
 # events is started with its address, by launch_app.
 _TEST_EVENTS: TestEventListener | None = None
 
+# The install directory of the scenario being run, for checks that read a deployed configuration. Set by run_scenario.
+_INSTALL_PREFIX = Path()
+
 # The comp ids the matching engine reports the outcome of orders for, in the scenario being run (_REPORT_ORDERS_OF, and
 # the member's comp id where the scenario needs it). Set by run_scenario before anything is started.
 _REPORT_ORDERS_NOW: tuple = _REPORT_ORDERS_OF
 
 # The components that send test events so far. Others are added as their checks move onto test events.
-_TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_gateway")
+_TEST_EVENT_COMPONENTS = ("sequencer", "matching_engine", "arbiter", "fix_order_gateway", "binary_order_gateway")
 
 
 def config_with_test_events(config: Path, listener: TestEventListener, name: str, report_orders_of: tuple = ()) -> Path:
@@ -6336,7 +6347,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 log(f"  matching_engine_publisher_{which}: emptied its write-ahead log in {publisher_wal} ({len(removed)} file(s))")
 
         # ── Phase 1: start all processes ──────────────────────────────────────
-        global _TEST_EVENTS, _REPORT_ORDERS_NOW  # pylint: disable=global-statement
+        global _TEST_EVENTS, _REPORT_ORDERS_NOW, _INSTALL_PREFIX  # pylint: disable=global-statement
+        _INSTALL_PREFIX = prefix
         # The member's orders are reported by the engine only in the scenarios whose checks no member can make: that an
         # order was applied exactly once, acted on while its reports were held back on purpose, or cancelled (or not)
         # after the member had gone.
@@ -6442,12 +6454,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # against the secondary's listener) would leave the secondary unaware and
         # no promotion would ever fire.
         if scenario.me_ha:
-            log("  Polling matching_engine_secondary.log for ME-primary replication connection ...")
-            found, elapsed, _ = poll_log_for(
-                me_secondary_log,
-                "ME-primary replication connection", "established",
-                timeout=args.ready_timeout, from_byte=0,
-            )
+            log("  Waiting for the primary engine's replication connection to the secondary ...")
+            found, elapsed = await_expectation(expect_replication_connection("matching_engine_secondary"), args.ready_timeout, 0)
             if not found:
                 die(
                     "ME-primary → secondary replication connection not established "
@@ -6610,9 +6618,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # extra_steps (when present) replaces steps+restart_steps and may
         # include InterimOrdersStep entries that send orders mid-phase.
         #
-        # seq_primary_pos_pre_kill is used after Phase 4 to wait for
+        # sequencer_events_pre_kill is used after Phase 4 to wait for
         # sequencer_primary to re-establish its ME connection (see below).
-        seq_primary_pos_pre_kill = file_end(seq_primary_log)
         sequencer_events_pre_kill = _TEST_EVENTS.mark()
 
         # Where the secondary sequencer's log ends before anything is killed, so that the records
@@ -6786,13 +6793,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         )
         if has_me_restart:
             log("  Waiting for sequencer_primary to re-establish ME connection ...")
-            found, elapsed, _ = poll_log_for(
-                seq_primary_log,
-                "SequencerThread: matching engine order connection",
-                "established",
-                timeout=10.0,
-                from_byte=seq_primary_pos_pre_kill,
-            )
+            found, elapsed = await_expectation(expect_connection_made("sequencer_primary", "matching_engine"), 10.0, sequencer_events_pre_kill)
             if not found:
                 die(
                     "sequencer_primary did not re-establish ME connection "
@@ -9085,7 +9086,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 die("reconnection: the raw client could not log on.")
 
             sequencer = proc_by_name["sequencer_primary"]
-            gateway_from = file_end(gw_log)
+            gateway_from = _TEST_EVENTS.mark()
+            gateway_lost_sequencer = expect_message("fix_order_gateway_a", "its connection to the primary sequencer closed", "ConnectionChanged",
+                                                    fields=lambda m: {"service": "sequencer_primary", "made": False})
             secondary_from = _TEST_EVENTS.mark()
             run_tag = datetime.now().strftime("%H%M%S")
             sent: list[str] = []
@@ -9103,11 +9106,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     cl_ord_id = f"recon-{run_tag}-{len(sent) + 1}"
                     member.new_order_single(cl_ord_id)
                     sent.append(cl_ord_id)
-                if count_log_marker(gw_log, _SEQUENCER_CONNECTION_CLOSED, from_byte=gateway_from) > 0:
+                # The sequencer is stopped, not dead, so its socket stays open: a connection to it that closes now was closed
+                # by the gateway, for not reading what it is sent.
+                if await_expectation(gateway_lost_sequencer, 0.0, gateway_from)[0]:
                     closed = True
                     break
             if not closed:
-                closed = poll_log_for(gw_log, _SEQUENCER_CONNECTION_CLOSED, timeout=0.3, from_byte=gateway_from)[0]
+                closed = await_expectation(gateway_lost_sequencer, 0.3, gateway_from)[0]
             # Running again well inside its lease, so that it still leads.
             os.kill(sequencer.pid, signal.SIGCONT)
             stopped_for = time.monotonic() - stopped_at
@@ -9137,7 +9142,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             resent = False
             while not resent and time.monotonic() < deadline:
                 take_reports(0.1)
-                resent = count_log_marker(gw_log, "established again -- sending again on it", from_byte=gateway_from) > 0
+                resent = await_expectation(expect_connection_made("fix_order_gateway_a", "sequencer_primary"), 0.0, gateway_from)[0]
             if not resent:
                 member.close()
                 die("reconnection: gateway a did not connect to the primary sequencer again and send its unanswered commands again.")
@@ -9151,8 +9156,14 @@ def run_scenario(scenario: Scenario, args) -> bool:
             settle_until = time.monotonic() + 2.0
             while time.monotonic() < settle_until:
                 take_reports(0.2)
+            # Every member connection the gateway lost before the test closes its own, on gateway a's member listener.
+            member_listener = f"inbound:{gateway_listen_port(prefix, 'a')}"
+            if not _TEST_EVENTS.settle("fix_order_gateway_a"):
+                die(f"reconnection: gateway a did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            before_close = _TEST_EVENTS.mark()
             member.close()
-            if count_log_marker(gw_log, "InboundConnectionManager::send_or_wait: connection from", from_byte=gateway_from) > 0:
+            member_lost = message_of(_TEST_EVENTS.messages.ConnectionChanged, "fix_order_gateway_a", service=member_listener, made=False)
+            if any(member_lost(event) for event in _TEST_EVENTS.events[gateway_from:before_close]):
                 die("reconnection: gateway a closed the member's own connection during the test, so the reports had nowhere to go "
                     "and the test cannot tell whether the orders were sent again.")
             missing = [c for c in sent if c not in accepted]
@@ -9188,7 +9199,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 member.close()
                 die("held reports: the raw client could not log on.")
 
-            engine_from = file_end(me_log)
             outcomes_from = _TEST_EVENTS.mark()
             run_tag = datetime.now().strftime("%H%M%S")
             sent = [f"held-{run_tag}-{number}" for number in range(1, 51)]
@@ -9198,8 +9208,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 member.close()
                 die("held reports: the matching engine dropped orders because it had no connection for reports. They are in the "
                     "sequencer's log, so the engine must act on them and report them later (BUG-0120).")
-            if not poll_log_for(me_log, "no connection to a sequencer for reports -- acting on orders and holding their reports",
-                                timeout=5.0, from_byte=engine_from)[0]:
+            if engine_event(me_log.stem, "ReportsHeld", outcomes_from, 5.0) is None:
                 member.close()
                 die("held reports: the matching engine never said it was holding reports, so it is not known to have had no "
                     "connection for reports, and nothing here was tested.")
@@ -9213,8 +9222,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             relay = PortRelay(_REPORT_RELAY_PORTS)
             relay.start()
             try:
-                if not poll_log_for(me_log, "a connection to a sequencer for reports is established -- sending", timeout=15.0,
-                                    from_byte=engine_from)[0]:
+                if engine_event(me_log.stem, "ReportsReleased", outcomes_from, 15.0) is None:
                     member.close()
                     die("held reports: once its connections for reports were let through, the engine did not send the reports it held.")
                 log("  the relay let the engine's connections through, and it sent the reports it held")
@@ -9242,8 +9250,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if scenario.assert_binary_checks:
             log("=== Binary gateway checks ===")
             binary_port = binary_gateway_listen_port(prefix)
-            binary_log = log_dir / "binary_order_gateway_a.log"
-            if not poll_log_for(binary_log, "primary sequencer connection", "established", timeout=_BINARY_READY_TIMEOUT)[0]:
+            if not has_happened(expect_connection_made("binary_order_gateway_a", "sequencer_primary"), _BINARY_READY_TIMEOUT):
                 die("binary checks: the binary gateway never connected to the primary sequencer, so nothing sent to it "
                     "could reach the venue and every check below would be measuring that instead.")
             binary_config = prefix / "etc" / "binary_order_gateway" / "binary_order_gateway_a.toml"
@@ -9915,7 +9922,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # next statement runs, and a position sampled afterwards would skip the very line
             # being waited for. Nothing earlier in the log can match, because the connection
             # this looks for is the one the restart is about to break.
-            auth_restart_pos = file_end(gw_log)
+            auth_restart_from = _TEST_EVENTS.mark()
 
             for auth_name in ("authentication_service_a", "authentication_service_b"):
                 auth_proc = proc_by_name.get(auth_name)
@@ -9934,10 +9941,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # for that is not politeness: a logon attempted before it reconnects is refused
             # for having no authentication service at all, which is a different refusal and
             # would let this scenario pass without testing anything.
-            found, elapsed, _ = poll_log_for(
-                gw_log, "authentication service connection", "established",
-                timeout=args.failover_timeout, from_byte=auth_restart_pos,
-            )
+            found, elapsed = await_expectation(expect_connection_made("fix_order_gateway_a", "authentication_service_primary"), args.failover_timeout, auth_restart_from)
             if not found:
                 die("provisioning: the gateway did not reconnect to the restarted authentication "
                     f"service within {args.failover_timeout:.0f}s, so the next logon would be "

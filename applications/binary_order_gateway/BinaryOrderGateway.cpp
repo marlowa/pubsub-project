@@ -18,6 +18,7 @@
 #include <pubsub_itc_fw/NetworkEndpointConfiguration.hpp>
 #include <pubsub_itc_fw/ProtocolType.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
 #include <pubsub_itc_fw/ThreadID.hpp>
 
 namespace binary_order_gateway {
@@ -88,6 +89,12 @@ BinaryOrderGateway::BinaryOrderGateway(const BinaryOrderGatewayConfiguration& co
     if (config_.ha_enabled) {
         service_registry_.add("sequencer_secondary",
                               pubsub_itc_fw::NetworkEndpointConfiguration{config_.sequencer_secondary_host, config_.sequencer_secondary_port},
+                              pubsub_itc_fw::NetworkEndpointConfiguration{});
+    }
+    // Only when a test started this gateway and gave it somewhere to send test events.
+    if (config_.test_events.enabled) {
+        service_registry_.add(std::string(pubsub_itc_fw::TestEventChannel::service_name),
+                              pubsub_itc_fw::NetworkEndpointConfiguration{config_.test_events.host, config_.test_events.port},
                               pubsub_itc_fw::NetworkEndpointConfiguration{});
     }
 

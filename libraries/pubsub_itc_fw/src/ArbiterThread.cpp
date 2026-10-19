@@ -190,7 +190,7 @@ void ArbiterThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
 }
 
 void ArbiterThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
-    if (test_events_.has_value() && test_events_->on_connection_lost(id)) {
+    if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "ArbiterThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;

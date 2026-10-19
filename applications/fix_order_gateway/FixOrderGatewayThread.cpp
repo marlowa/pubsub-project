@@ -321,7 +321,7 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
 }
 
 void FixOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
-    if (test_events_.has_value() && test_events_->on_connection_lost(id)) {
+    if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                    "FixOrderGatewayThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
         return;
@@ -2615,7 +2615,6 @@ void FixOrderGatewayThread::send_unanswered_commands_on(const pubsub_itc_fw::Con
     }
     const bool primary = id == sequencer_primary_conn_id_;
     start_resends(primary, !primary);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "FixOrderGatewayThread: {} sequencer connection {} established again -- sending again on it {} command(s) still unanswered, each marked as sent "
                "again, {} at a time",

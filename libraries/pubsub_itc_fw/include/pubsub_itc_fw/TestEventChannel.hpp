@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/EventMessage.hpp>
@@ -58,10 +59,11 @@ class TestEventChannel {
 
     /**
      * @brief Claims @p connection if it is the connection to the test, and introduces the thread on it; otherwise
-     *        reports it to the test as made (ConnectionChanged), when the connection to the test is up.
+     *        reports it to the test as made (ConnectionChanged).
      *
-     * The owner passes every connection it is told of here first, so that each one made after the connection to the
-     * test is reported.
+     * The owner passes every connection it is told of here first. A connection made before the connection to the test
+     * is remembered, and reported once the connection to the test is made, if it is still open then; so the test
+     * learns of every connection whichever of the two was made first.
      *
      * @return Whether it was the connection to the test, so that the owner need not look at it further.
      */
@@ -69,11 +71,12 @@ class TestEventChannel {
 
     /**
      * @brief Notes that @p connection has gone, if it was the connection to the test, after which nothing more is
-     *        sent; otherwise reports it to the test as lost (ConnectionChanged), when the connection to the test is up.
+     *        sent; otherwise reports it to the test as lost (ConnectionChanged), with @p reason, when the connection
+     *        to the test is up, and forgets it if it was remembered.
      * @return Whether it was the connection to the test. The owner says so in its Quill log: the test has failed
      *         by now, and the component carries on.
      */
-    bool on_connection_lost(const ConnectionID& connection);
+    bool on_connection_lost(const ConnectionID& connection, std::string_view reason = {});
 
     /**
      * @brief Answers a checkpoint request that arrived on the connection to the test.
@@ -145,7 +148,15 @@ class TestEventChannel {
         links_.send_test_event(connection_, pdu_id, buffer_.data(), written);
     }
     enum class ConnectionChange { Made, Lost };
-    void connection_changed(const ConnectionID& connection, ConnectionChange change);
+    void connection_changed(const ConnectionID& connection, ConnectionChange change, std::string_view reason);
+
+    // The connections made before the connection to the test, and still open, to report when it is made. Connections
+    // are made at start and when a peer comes back, not for each order, so this stays small.
+    std::vector<ConnectionID> made_before_the_test_;
+
+    // Every other connection open now, as it was when made. The framework names a lost connection by its id alone, so its
+    // service is taken from here.
+    std::vector<ConnectionID> open_;
 
     TestEventLinksInterface& links_;
     std::string component_;

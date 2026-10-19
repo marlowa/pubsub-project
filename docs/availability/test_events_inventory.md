@@ -239,6 +239,10 @@ decline from two of the sequencer's.
 
 ## H. Connections made, lost and refused (10)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.10): `ConnectionChanged`, now reported for connections
+made before the test connected, and three of the matching engine's events for the reports it holds without a
+connection.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 22 scenarios | `run_scenario` | me_secondary_log | "ME-primary replication connection" \| "established" | a connection between components was made, lost or made again | **Event**: ConnectionChanged(service, made or lost) from the framework's connection classes; for the engine's report connections, ReportsHeld and ReportsReleased |
@@ -381,12 +385,13 @@ were missed by it:
 | `SessionResumed` | G | the FIX gateway |
 | `ResendRequested` | G | the FIX gateway |
 | `ResendCompleted` | G | the FIX gateway |
-| `ConnectionChanged` | A, H | `TestEventChannel`, for every connection of its thread made or lost after the connection to the test |
+| `ConnectionChanged` | A, H | `TestEventChannel`, for every connection of its thread made or lost, those made before the connection to the test reported when it is made |
 | `ReportsHeld` | H | the matching engine |
 | `ReportsReleased` | H | the matching engine |
+| `ReportsDiscarded` | H | the matching engine |
 | `ThrottleApplied` | I | the gateways |
 | `ThrottleStarted` | I | the gateways |
 | `ThrottleStopped` | I | the gateways |
 
-That is 40 events. Several may merge when they are defined, for instance the session events into one
+That is 41 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

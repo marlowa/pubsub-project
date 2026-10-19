@@ -123,3 +123,38 @@ end
 message RegionUnusable (id=175, version=1)
     string reason              # why it could not be used, as the region's own check states it
 end
+
+# ------------------------------------------------------------
+#  176 -- ReportsHeld
+#  The engine has no connection to a sequencer to send reports on, so
+#  it acts on orders and holds their reports until it has one.
+# ------------------------------------------------------------
+message ReportsHeld (id=176, version=1)
+    i64 held                   # the reports held so far, including the one that began the holding
+end
+
+# ------------------------------------------------------------
+#  Why the engine sent the reports it held.
+# ------------------------------------------------------------
+enum ReleaseReason : i8 {
+    ConnectionMade = 1         # a connection to a sequencer for reports was made
+    NowServes = 2              # it held them while becoming current, and it now serves
+}
+
+# ------------------------------------------------------------
+#  177 -- ReportsReleased
+#  The engine sent the reports it held.
+# ------------------------------------------------------------
+message ReportsReleased (id=177, version=1)
+    ReleaseReason reason
+    i64           count
+end
+
+# ------------------------------------------------------------
+#  178 -- ReportsDiscarded
+#  The engine discarded the reports it held, because they are not its
+#  to send: another instance served those members.
+# ------------------------------------------------------------
+message ReportsDiscarded (id=178, version=1)
+    i64 count
+end

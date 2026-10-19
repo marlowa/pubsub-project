@@ -111,6 +111,11 @@ BinaryOrderGatewayThread::BinaryOrderGatewayThread(pubsub_itc_fw::ApplicationThr
 }
 
 void BinaryOrderGatewayThread::on_app_ready_event() {
+    // Only when a test started this gateway (docs/availability/test_events.md).
+    if (config_.test_events.enabled) {
+        test_events_.emplace(test_event_links_, config_.test_events.component, static_cast<int64_t>(config_.instance_id), "BinaryOrderGatewayThread");
+        connect_to_service(std::string(pubsub_itc_fw::TestEventChannel::service_name));
+    }
     // The store of unanswered commands, allocated once, here, so that keeping a command on the order
     // path allocates nothing. Only with high availability on: without it there is one sequencer and
     // no change of leader, so nothing is ever sent again.
@@ -184,6 +189,11 @@ void BinaryOrderGatewayThread::on_timer_event(pubsub_itc_fw::TimerID timer_id) {
 }
 
 void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionID id) {
+    if (test_events_.has_value() && test_events_->on_connection_established(id)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: connection {} to the test's event listener established",
+                   id.get_value());
+        return;
+    }
     const std::string& service = id.service_name();
 
     if (service == "authentication_service_primary") {
@@ -236,6 +246,11 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
 }
 
 void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::ConnectionID& id, const std::string& reason) {
+    if (test_events_.has_value() && test_events_->on_connection_lost(id, reason)) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "BinaryOrderGatewayThread: the connection to the test's event listener is lost ({}) -- no more test events are sent", reason);
+        return;
+    }
     if (id == auth_service_primary_conn_id_) {
         auth_service_primary_conn_id_ = pubsub_itc_fw::ConnectionID{};
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "BinaryOrderGatewayThread: primary authentication service connection {} lost: {}",
@@ -287,6 +302,10 @@ void BinaryOrderGatewayThread::on_connection_lost(const pubsub_itc_fw::Connectio
 void BinaryOrderGatewayThread::on_itc_message(const pubsub_itc_fw::EventMessage& /*message*/) {}
 
 void BinaryOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventMessage& message) {
+    if (test_events_.has_value() && test_events_->on_framework_pdu_message(message)) {
+        release_pdu_payload(message);
+        return;
+    }
     // ERs arrive on the connection the sequencer dialled; everything else on this thread
     // is a client. Telling them apart by service name rather than by PDU id means a
     // client cannot reach the ER path by sending a PDU it has no business sending.
@@ -1611,6 +1630,11 @@ bool BinaryOrderGatewayThread::comp_id_in_use(std::string_view comp_id) const {
         }
     }
     return false;
+}
+
+void BinaryOrderGatewayThread::GatewayTestEventLinks::send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes,
+                                                                      size_t size) {
+    owner_.send_pdu_payload(connection, pdu_id, 0, bytes, size);
 }
 
 } // namespaces
