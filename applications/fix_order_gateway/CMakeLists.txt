@@ -25,7 +25,7 @@ target_link_libraries(fix_order_gateway PRIVATE
 # gateway compiles. The migration onto fix_codec (inbound parse + validate) is
 # documented in docs/venue/fix_order_gateway.md.
 # leader_follower_generated: FixOrderGatewayThread.hpp includes leader_follower.hpp, which is generated.
-add_dependencies(fix_order_gateway fix_orders_generated authentication_generated fix_dictionary_generated leader_follower_generated)
+add_dependencies(fix_order_gateway fix_orders_generated authentication_generated fix_dictionary_generated leader_follower_generated fix_order_gateway_test_events_generated)
 
 # Header files listed explicitly so CLion indexes them correctly.
 target_sources(fix_order_gateway PRIVATE

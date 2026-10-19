@@ -57,3 +57,38 @@ end
 message CheckingLogForRepeats (id=183, version=1)
     i64 last_record            # the last record in the WAL when it began
 end
+
+# ------------------------------------------------------------
+#  184 -- ReportDroppedGatewayNotConnected
+#  An execution report could not be sent, because the gateway instance
+#  it is for is not connected.
+# ------------------------------------------------------------
+message ReportDroppedGatewayNotConnected (id=184, version=1)
+    i16 gateway_protocol    # 1 for FIX, 2 for binary
+    i16 gateway_instance
+    i64 seq_no              # the report's sequence number
+end
+
+# ------------------------------------------------------------
+#  185 -- SessionUnboundRecorded
+#  A gateway said a member's session is no longer bound to it. Its
+#  reports have nowhere to go until it binds again.
+# ------------------------------------------------------------
+message SessionUnboundRecorded (id=185, version=1)
+    string comp_id
+    i16    gateway_protocol
+    i16    gateway_instance
+    i32    connection       # the gateway's id for the member's connection
+end
+
+# ------------------------------------------------------------
+#  186 -- UndeliveredReportsSent
+#  A member's session bound again, and the sequencer sent it the reports
+#  produced while it had no connection.
+# ------------------------------------------------------------
+message UndeliveredReportsSent (id=186, version=1)
+    string comp_id
+    i16    gateway_protocol
+    i64    count            # the reports sent
+end
+

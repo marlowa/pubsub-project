@@ -21,6 +21,9 @@
 #include <pubsub_itc_fw/HistogramHandle.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
 #include <pubsub_itc_fw/Reactor.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
+
+#include <fix_order_gateway_test_events.hpp>
 #ifdef PUBSUB_ITC_FW_THREAD_CHECKS
 #include <pubsub_itc_fw/ThreadConfinementCheck.hpp>
 #endif
@@ -453,6 +456,25 @@ class FixOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     // can be told from the first.
     bool sequencer_primary_connected_before_{false};
     bool sequencer_secondary_connected_before_{false};
+
+    // The test events this thread sends, when a test started this gateway (docs/availability/test_events.md).
+    class GatewayTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
+      public:
+        explicit GatewayTestEventLinks(FixOrderGatewayThread& owner) : owner_(owner) {}
+        void send_test_event(const pubsub_itc_fw::ConnectionID& connection, int16_t pdu_id, const uint8_t* bytes, size_t size) override;
+
+      private:
+        FixOrderGatewayThread& owner_;
+    };
+    GatewayTestEventLinks test_event_links_{*this};
+    std::optional<pubsub_itc_fw::TestEventChannel> test_events_;
+
+    // Sends one of the gateway's test events, if a test started this gateway.
+    template <typename Message> void report(const Message& message) {
+        if (test_events_.has_value()) {
+            test_events_->send_event(Message::message_pdu_id, message);
+        }
+    }
 
     // The commands sent to the sequencers and not yet answered. Present only with high availability
     // on, because only a change of sequencer leader makes a command need sending again.

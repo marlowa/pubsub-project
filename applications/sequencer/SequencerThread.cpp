@@ -2256,9 +2256,9 @@ void SequencerThread::send_er_to_origin_gateway(int16_t protocol, int16_t instan
                        "sequencer's endpoints.",
                        protocol, instance);
         }
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning, "SequencerThread: gateway protocol={} instance={} not connected -- dropping ER seq={}",
                    protocol, instance, er_seq_no);
+        report(pubsub_itc_fw_app::ReportDroppedGatewayNotConnected{protocol, instance, er_seq_no});
         return;
     }
     // A member is waiting for this: it is the report on its way back to them.
@@ -2645,6 +2645,7 @@ void SequencerThread::handle_session_unbound(const pubsub_itc_fw::EventMessage& 
                "remembered outbound={} and {} report range(s); its reports have nowhere to go until it binds again",
                identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id, state.outbound_seq_num,
                state.report_seq_nums.size());
+    report(pubsub_itc_fw_app::SessionUnboundRecorded{identity.comp_id_view(), identity.protocol, view.gateway_instance_id, view.gateway_session_conn_id});
 }
 
 void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::EventMessage& message) {
@@ -2743,11 +2744,11 @@ void SequencerThread::handle_undelivered_reports_request(const pubsub_itc_fw::Ev
         const bool is_new_order_ack = false;
         send_er_to_origin_gateway(identity.protocol, destination->instance, 0, envelope, is_new_order_ack);
     }
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: session comp_id='{}' protocol={} bound again -- sent it {} report(s) produced while it had no connection (log records {} to "
                "{}){}",
                identity.comp_id_view(), identity.protocol, found.size(), after + 1, through, possible_repeat ? ", marked as possible repeats" : "");
+    report(pubsub_itc_fw_app::UndeliveredReportsSent{identity.comp_id_view(), identity.protocol, static_cast<int64_t>(found.size())});
 }
 
 void SequencerThread::note_report_forwarded(const fix_common::SessionIdentity& identity) {

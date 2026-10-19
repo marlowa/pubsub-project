@@ -631,6 +631,39 @@ add_custom_target(sequencer_test_events_generated ALL
 )
 install(FILES "${SEQ_TEST_EVENTS_DSL_GENERATED_PY}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/python")
 
+# FIX gateway test events (IDs 190-199), for the high availability tests only (docs/availability/test_events.md). The
+# Python module is installed into lib/python beside the library's, for the tests' listener.
+set(GW_TEST_EVENTS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/fix_order_gateway/fix_order_gateway_test_events.dsl")
+set(GW_TEST_EVENTS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/fix_order_gateway_test_events.hpp")
+set(GW_TEST_EVENTS_PYTHON_DIR "${CMAKE_BINARY_DIR}/applications/fix_order_gateway/python")
+set(GW_TEST_EVENTS_DSL_GENERATED_PY "${GW_TEST_EVENTS_PYTHON_DIR}/fix_order_gateway_test_events.py")
+
+add_custom_command(
+    OUTPUT "${GW_TEST_EVENTS_DSL_GENERATED_HPP}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${FIX_DSL_INCLUDE_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            --namespace pubsub_itc_fw_app
+            "${GW_TEST_EVENTS_DSL_SOURCE}"
+            --cpp "${GW_TEST_EVENTS_DSL_GENERATED_HPP}"
+    DEPENDS "${GW_TEST_EVENTS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    COMMENT "Generating fix_order_gateway_test_events.hpp from fix_order_gateway_test_events.dsl"
+    VERBATIM
+)
+add_custom_command(
+    OUTPUT "${GW_TEST_EVENTS_DSL_GENERATED_PY}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${GW_TEST_EVENTS_PYTHON_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${FIX_DSL_GENERATOR}"
+            "${GW_TEST_EVENTS_DSL_SOURCE}"
+            --python "${GW_TEST_EVENTS_DSL_GENERATED_PY}"
+    DEPENDS "${GW_TEST_EVENTS_DSL_SOURCE}" "${FIX_DSL_GENERATOR}" ${FIX_DSL_GENERATOR_MODULES}
+    COMMENT "Generating fix_order_gateway_test_events.py from fix_order_gateway_test_events.dsl"
+    VERBATIM
+)
+add_custom_target(fix_order_gateway_test_events_generated ALL
+    DEPENDS "${GW_TEST_EVENTS_DSL_GENERATED_HPP}" "${GW_TEST_EVENTS_DSL_GENERATED_PY}"
+)
+install(FILES "${GW_TEST_EVENTS_DSL_GENERATED_PY}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/python")
+
 # Topic pub/sub protocol PDU header (plain integer IDs 107-111; no --pdu-id-enum).
 set(TOPICS_DSL_SOURCE "${CMAKE_SOURCE_DIR}/applications/topics.dsl")
 set(TOPICS_DSL_GENERATED_HPP "${FIX_DSL_INCLUDE_DIR}/topics.hpp")

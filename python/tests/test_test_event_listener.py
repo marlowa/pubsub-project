@@ -33,7 +33,8 @@ def generated_modules():
     _PYTHON_DIR.mkdir(parents=True, exist_ok=True)
     for dsl in (_PROJECT_ROOT / "libraries" / "pubsub_itc_fw" / "include" / "pubsub_itc_fw" / "test_events.dsl",
                 _PROJECT_ROOT / "applications" / "matching_engine" / "matching_engine_test_events.dsl",
-                _PROJECT_ROOT / "applications" / "sequencer" / "sequencer_test_events.dsl"):
+                _PROJECT_ROOT / "applications" / "sequencer" / "sequencer_test_events.dsl",
+                _PROJECT_ROOT / "applications" / "fix_order_gateway" / "fix_order_gateway_test_events.dsl"):
         tree = load(dsl)
         Validator(tree).validate()
         (_PYTHON_DIR / f"{dsl.stem}.py").write_text(PythonGenerator(source_name=dsl.name).emit(tree))

@@ -41,7 +41,7 @@ from typing import Callable, Dict, List, Optional
 
 
 # The generated modules whose messages may arrive on a test event connection: the library's first, then each application's.
-EVENT_MODULES = ("test_events", "matching_engine_test_events", "sequencer_test_events")
+EVENT_MODULES = ("test_events", "matching_engine_test_events", "sequencer_test_events", "fix_order_gateway_test_events")
 
 
 def load_generated_modules(python_dir: Path, module_names=EVENT_MODULES):

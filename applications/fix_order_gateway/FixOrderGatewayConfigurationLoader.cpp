@@ -9,6 +9,7 @@
 #include <pubsub_itc_fw/LoggingConfigurationLoader.hpp>
 #include <pubsub_itc_fw/MetricsConfigurationLoader.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TestEventsConfiguration.hpp>
 #include <pubsub_itc_fw/TomlConfiguration.hpp>
 
 #include "FixOrderGatewayConfigurationLoader.hpp"
@@ -150,6 +151,7 @@ FixOrderGatewayConfigurationLoader::load_and_init_logging(const std::string& fil
         // concerns, and the test harnesses read their ground truth from these counters, so a
         // component must expose them whether or not it is pinned.
         config.metrics_configuration = pubsub_itc_fw::MetricsConfigurationLoader::load(toml);
+        config.test_events = pubsub_itc_fw::TestEventsConfigurationLoader::load(toml);
         // Only when metrics are on: a disabled endpoint registers nothing, so requiring the
         // bounds would make turning metrics off mean filling in a value never read -- the
         // same rule metrics.listen_host follows.

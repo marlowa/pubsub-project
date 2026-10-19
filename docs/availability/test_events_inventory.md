@@ -190,6 +190,9 @@ they are events rather than member checks.
 
 ## F. Gateway sessions: binding, disconnection, cancelling on disconnection (14)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.8): five events of the FIX gateway's own and three of
+the sequencer's.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 21 | `run_scenario` | gw_log | "announced session" \| "bound to instance" | the gateway announced the reconnected session to the sequencer | **Event**: SessionBound(comp_id, instance) from the gateway |
@@ -360,12 +363,14 @@ were missed by it:
 | `ResumedAsLeader` | E | the matching engine |
 | `Halted` | E | the matching engine |
 | `RegionUnusable` | E | the matching engine |
-| `SessionBound` | F | the gateways |
-| `ReportDropped` | F | the sequencer and the gateways |
+| `SessionAnnounced` | F | the FIX gateway |
+| `ReportDroppedNoSession` | F | the FIX gateway |
+| `ReportDroppedGatewayNotConnected` | F | the sequencer |
+| `SessionDisconnectedWithOrders` | F | the FIX gateway |
 | `CancelsSent` | F | the FIX gateway |
 | `SessionReclaimed` | F | the FIX gateway |
-| `SessionHeld` | F | the FIX gateway |
-| `SessionUnbound` | F | the gateways and the sequencer |
+| `SessionUnboundRecorded` | F | the sequencer |
+| `UndeliveredReportsSent` | F | the sequencer |
 | `ReplayAnswered` | G | the sequencer |
 | `ReplayDeclined` | G | the sequencer |
 | `ReplayAskedAgain` | G | the gateways |
@@ -376,5 +381,5 @@ were missed by it:
 | `ThrottleStarted` | I | the gateways |
 | `ThrottleStopped` | I | the gateways |
 
-That is 35 events. Several may merge when they are defined, for instance the session events into one
+That is 37 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

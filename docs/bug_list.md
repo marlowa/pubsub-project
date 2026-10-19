@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 183 |
-| Open | 76 (55 defects, 21 tasks) |
+| Bugs recorded | 184 |
+| Open | 77 (56 defects, 21 tasks) |
 | Closed | 107 |
-| Next id | BUG-0184 |
+| Next id | BUG-0185 |
 
 ## Open bugs by severity
 
-18 high, 48 medium, 10 low.
+18 high, 49 medium, 10 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -79,6 +79,7 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0180](#bug_0180) | medium | defect | The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
+| [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3790,6 +3791,27 @@ refused with a message saying so, not kill the process. Until then, every full r
 
 **Principles.** V2: the log is the record. V12: every trading day starts fresh, which the tests do not yet do between
 runs.
+
+### BUG-0184: A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five {#bug_0184}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-19 |
+| Recorded | 2026-10-19 |
+| How | The developer loop stopped at this integration test during step 4 of phase 6 ([test_events.md](availability/test_events.md)); run on its own, it then failed once in five runs, and passed in twelve more |
+| Impact | Unknown until the cause is found. If pausing a connection does not stop it being read, a component that pauses a connection to hold back a sender is not holding it back. If the fault is in the test, the developer loop fails at random and its result cannot be trusted |
+
+**What was seen.** `PauseReadingIntegrationTest.OtherConnectionsAndTimersAreServedWhileOneIsPaused` failed at line 453:
+connection 0 had delivered 200,000 PDUs, every one sent, when the test expected it to have stopped at the 135,248 it
+had delivered when it was paused ("connection 0 delivered PDUs while paused"). The machine's load was about 2.5. The
+change being built touched nothing in the reactor or in how a connection is paused, and the test had passed in every
+earlier run of the developer loop that day.
+
+**What is wanted.** The cause found: whether the reactor reads a paused connection, for instance data already read
+into a buffer before the pause took effect, or whether the test samples the count before the pause has taken effect.
+
+**Principles.** None directly; the reactor's pausing of a connection is what the gateways rely on to hold back a member.
 
 ## Closed
 

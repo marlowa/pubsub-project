@@ -214,7 +214,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | C. The engine's catch-up | The matching engine's `CatchUp` event at each stage of catching up: begun, incomplete, completed, and current but waiting to be told what it may do |
 | D. Replication and repair | Events from the library's `ReplicatedWal`: running as if alone or not, the WALs agreeing through a record, records discarded, the leader saying its follower may or may not lead; from the arbiter, a statement found on disk; and the sequencer's own events for orders that waited in the WAL and for checking the end of the WAL for repeats |
 | E. Halting and cancelling on promotion | The matching engine's events: its book cancelled, with the orders it held and the reports it sent; resumed as leader, with its book; halted, with the reason; and its region found unusable at startup |
-| F. Gateway sessions | The cancels at the client; an event from the gateway when a session is bound or unbound |
+| F. Gateway sessions | The FIX gateway's own events: a session announced bound or unbound, a report dropped for want of a session, a member gone with orders open, cancels sent, a session reclaimed; and the sequencer's: a report dropped because its gateway is not connected, a session recorded as unbound, the reports sent when it binds again |
 | G. Resends and replay | The resent messages at the client; an event from a sequencer when it answers or declines a replay |
 | H. Connections | An event when a component's connection to another is made or lost, from the framework's connection classes in the library's terms |
 | I. Throttles and logons | The reject, logout or logon at the client |
@@ -559,6 +559,46 @@ From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail a
 107.5, 107.5 and 107.3 microseconds with the build of kind D, 98.9, 98.8, 107.7 and 107.8 with this one, and 107.9,
 107.8, 107.5 and 107.2 with the build of kind D again. Runs near 98 microseconds have come with the builds both before
 and after a change in earlier measurements (sections 4.5 and 4.6); none of kind E's events is sent for each order.
+
+### 4.8 Step 4, kind F: gateway sessions
+
+**The gateway's channel.** The FIX gateway now sends test events as the sequencer, the matching engine and the arbiter
+do: with a `[test_events]` section it registers the service, connects when it is ready, and passes its connections and
+messages to the channel first. `ha_test.py` starts every FIX gateway with the section.
+
+**The gateway's events.** `applications/fix_order_gateway/fix_order_gateway_test_events.dsl` (message ids 190 to 199)
+defines five: a member's session announced to the sequencers as bound or unbound (`SessionAnnounced`); a report dropped
+because it carries no member connection (`ReportDroppedNoSession`); a member gone with orders open, whether they are
+cancelled at once, held for a grace period, or left resting, with the grace period (`SessionDisconnectedWithOrders`);
+the cancels sent when grace periods end (`CancelsSent`); and a member reconnected within its grace period, its orders
+left resting (`SessionReclaimed`). None is sent for each order.
+
+**The sequencer's events.** `sequencer_test_events.dsl` gains three: a report dropped because the gateway instance it is
+for is not connected (`ReportDroppedGatewayNotConnected`); a session recorded as unbound (`SessionUnboundRecorded`);
+and the reports produced while a member was away, sent when it binds again (`UndeliveredReportsSent`).
+
+**The checks moved.** The fourteen of kind F, in scenarios 18, 19, 21, 22, 23, 50, 70 and every scenario with a pair of
+engines that changes leader. The grace period scenario 19 checks is taken from the event's `grace_seconds`, and the
+helper that read it from the gateway's Quill log is gone. A check that something did not happen, such as no session
+unbound after a resend, counts the events once the component has answered a checkpoint (`count_seen`).
+
+**How it was shown to work.** With no gateway event sent, and neither the sequencer's dropped report nor its unbound
+session, scenario 21 failed at the new session's announcement, 18 at the report dropped for the dead instance, 19 at the
+orders held for the grace period, 50 at the dropped session's open orders, and 70 at the session recorded as unbound.
+With the reclaimed session and the reports sent on binding again not reported, 19 failed at the reclaim and 70 at the
+report sent on reconnecting.
+
+The first run of scenario 50 found that the gateway also cancels a member's orders at once, when the member logs out or
+its grace period is zero, on a third path the event had not been added to; it was added there.
+
+From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail as expected under
+[BUG-0182](../bug_list.md#bug_0182). One run of the developer loop failed at an integration test of pausing a
+connection, which then failed once in five runs on its own; it is recorded as [BUG-0184](../bug_list.md#bug_0184).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 107.8,
+107.7, 107.8 and 107.4 microseconds with the build of kind E, 108.4, 107.8, 108.1 and 107.7 with this one, and 108.0,
+108.0, 108.1 and 109.0 with the build of kind E again. None of the gateway's or sequencer's new events is sent for each
+order, and kind F does not change the round trip.
 
 ## 5. What phase 6 does not do
 
