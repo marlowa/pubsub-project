@@ -197,6 +197,7 @@ MatchingEngineThread::MatchingEngineThread(pubsub_itc_fw::ApplicationThread::Con
         // be vouched for and trading must not simply resume -- R-0123 decides what happens
         // instead, once the sequencer's record has been asked.
         region_was_unusable_ = true;
+        region_unusable_reason_ = error.what();
         const std::string kept = config_.order_book_region_path + ".unusable";
         const bool moved = std::rename(config_.order_book_region_path.c_str(), kept.c_str()) == 0;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
@@ -323,7 +324,7 @@ void MatchingEngineThread::on_connection_established(pubsub_itc_fw::ConnectionID
                    id.get_value());
         // A role taken, or a catch-up begun or finished, before the connection was made is reported now, so that the test
         // learns it whenever it connects.
-        report_present_catch_up();
+        report_present_state();
         if (ha_role_state_ == MeRole::Leader || ha_role_state_ == MeRole::Follower) {
             report_role_change(MeRole::Unknown, ha_role_state_);
         }
@@ -1834,7 +1835,24 @@ void MatchingEngineThread::report_catch_up(pubsub_itc_fw_app::CatchUpStage stage
     test_events_->send_event(pubsub_itc_fw_app::CatchUp::message_pdu_id, event);
 }
 
-void MatchingEngineThread::report_present_catch_up() {
+void MatchingEngineThread::halt_for(pubsub_itc_fw_app::HaltReason reason) {
+    halted_ = true;
+    halt_reason_ = reason;
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{reason});
+    }
+}
+
+void MatchingEngineThread::report_present_state() {
+    if (!test_events_.has_value()) {
+        return;
+    }
+    if (!region_unusable_reason_.empty()) {
+        test_events_->send_event(pubsub_itc_fw_app::RegionUnusable::message_pdu_id, pubsub_itc_fw_app::RegionUnusable{region_unusable_reason_});
+    }
+    if (halt_reason_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::Halted::message_pdu_id, pubsub_itc_fw_app::Halted{*halt_reason_});
+    }
     if (ha_role_state_ == MeRole::Reconciling) {
         report_catch_up(pubsub_itc_fw_app::CatchUpStage::Started, last_replicated_seq_no_, 0);
         return;
@@ -2313,16 +2331,14 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
             // Established after all: the sequencer's record goes back to the first order the
             // venue ever took, so what was open can be named, cancelled and reported.
             region_was_unusable_ = false;
-            cancel_everything_and_halt("the venue's own record of what it held could not be used");
+            cancel_everything_and_halt("the venue's own record of what it held could not be used", pubsub_itc_fw_app::HaltReason::RecordCouldNotBeUsed);
         } else {
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface:
-            // change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                        "MatchingEngineThread: cannot account for what the venue was holding -- the order book region could not be used and the sequencer's "
                        "record starts at seq_no={}, so orders taken before that cannot be named. Halting without cancelling, because cancelling what cannot "
                        "be named would leave the rest unmentioned (R-0123)",
                        ack.first_seq_no_held);
-            halted_ = true;
+            halt_for(pubsub_itc_fw_app::HaltReason::CannotAccountForBook);
             PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                            "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
         }
@@ -2375,6 +2391,10 @@ void MatchingEngineThread::handle_caught_up(const pubsub_itc_fw::EventMessage& m
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: reconciliation complete at seq_no={} with {} order(s) on the book -- resuming as leader", ack.last_seq_no,
                order_book_.size());
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::ResumedAsLeader::message_pdu_id,
+                                 pubsub_itc_fw_app::ResumedAsLeader{ack.last_seq_no, static_cast<int64_t>(order_book_.size())});
+    }
     adopt_leader_role();
 }
 
@@ -2400,13 +2420,11 @@ void MatchingEngineThread::act_on_pending_halt() {
         // unmentioned, which is the silence R-0020 exists to prevent, reached while appearing
         // to have dealt with it.
         //
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change
-        // it and the test breaks, silently and elsewhere.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                        "MatchingEngineThread: cannot account for what the venue was holding -- the order book region could not be used and nothing has "
                        "established what was open from the sequencer's record. Halting without cancelling, because cancelling what can be named would leave "
                        "the rest unmentioned (R-0123)");
-        halted_ = true;
+        halt_for(pubsub_itc_fw_app::HaltReason::CannotAccountForBook);
         cancel_and_halt_pending_ = false;
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                        "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
@@ -2424,10 +2442,10 @@ void MatchingEngineThread::act_on_pending_halt() {
                        "MatchingEngineThread: waiting for a sequencer connection before cancelling the orders held across a long absence");
         return;
     }
-    cancel_everything_and_halt("the venue was unable to match for longer than it may be");
+    cancel_everything_and_halt("the venue was unable to match for longer than it may be", pubsub_itc_fw_app::HaltReason::UnableToMatchTooLong);
 }
 
-void MatchingEngineThread::cancel_everything_and_halt(const char* why) {
+void MatchingEngineThread::cancel_everything_and_halt(const char* why, pubsub_itc_fw_app::HaltReason reason) {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error, "MatchingEngineThread: cancelling {} open order(s) and halting trading -- {} (R-0117)",
                order_book_.size(), why);
 
@@ -2436,16 +2454,15 @@ void MatchingEngineThread::cancel_everything_and_halt(const char* why) {
     // than the venue simply ceasing to mention it.
     cancel_all_orders_on_failover();
     cancel_and_halt_pending_ = false;
-    halted_ = true;
+    halt_for(reason);
 
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
-    // and the test breaks, silently and elsewhere.
     PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "MatchingEngineThread: trading is halted -- the venue is not accepting orders and a person must lift this (R-0023)");
 }
 
 void MatchingEngineThread::cancel_all_orders_on_failover() {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: cancel-on-failover -- cancelling {} live order(s)", order_book_.size());
+    const auto live_orders = static_cast<int64_t>(order_book_.size());
 
     const int64_t now_ns = config_.wall_clock->now_ns();
     size_t cancelled = 0;
@@ -2487,9 +2504,12 @@ void MatchingEngineThread::cancel_all_orders_on_failover() {
     });
 
     order_book_.clear();
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "MatchingEngineThread: cancel-on-failover complete -- {} cancel ER(s) sent, book cleared",
                cancelled);
+    if (test_events_.has_value()) {
+        test_events_->send_event(pubsub_itc_fw_app::BookCancelled::message_pdu_id,
+                                 pubsub_itc_fw_app::BookCancelled{live_orders, static_cast<int64_t>(cancelled)});
+    }
 }
 
 } // namespaces

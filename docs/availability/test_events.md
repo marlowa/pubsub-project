@@ -213,7 +213,7 @@ yet, such as lists of lists and fixed arrays (decision 4).
 | B. The engine's outcome for an order | Execution reports at the client, for orders sent through a gateway; the matching engine's `OrderOutcome` for orders sent with `inject_order`, for the checks no member can make, and where the member has gone (decision 2) |
 | C. The engine's catch-up | The matching engine's `CatchUp` event at each stage of catching up: begun, incomplete, completed, and current but waiting to be told what it may do |
 | D. Replication and repair | Events from the library's `ReplicatedWal`: running as if alone or not, the WALs agreeing through a record, records discarded, the leader saying its follower may or may not lead; from the arbiter, a statement found on disk; and the sequencer's own events for orders that waited in the WAL and for checking the end of the WAL for repeats |
-| E. Halting and cancelling on promotion | The cancels and refusals at the client; an event when the engine halts or resumes |
+| E. Halting and cancelling on promotion | The matching engine's events: its book cancelled, with the orders it held and the reports it sent; resumed as leader, with its book; halted, with the reason; and its region found unusable at startup |
 | F. Gateway sessions | The cancels at the client; an event from the gateway when a session is bound or unbound |
 | G. Resends and replay | The resent messages at the client; an event from a sequencer when it answers or declines a replay |
 | H. Connections | An event when a component's connection to another is made or lost, from the framework's connection classes in the library's terms |
@@ -521,6 +521,44 @@ From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail a
 107.9, 107.7 and 107.4 microseconds with the build of kind C, 99.1, 98.5, 107.5 and 107.4 with this one, and 98.5, 97.8,
 107.7 and 107.3 with the build of kind C again. The runs near 98 microseconds come with both builds; none of kind D's
 events is sent for each order, and it does not change the round trip.
+
+### 4.7 Step 4, kind E: halting, and cancelling on promotion
+
+**The events.** `matching_engine_test_events.dsl` gains four messages:
+
+- `BookCancelled` (172): the engine cancelled every order on its book, with the number it held when it began and the
+  number of cancel reports it sent;
+- `ResumedAsLeader` (173): a promoted engine finished catching up and serves again, with the orders on its book;
+- `Halted` (174): the engine halted trading, with the reason: it could not match for longer than it may, so it cancelled
+  its book first; its region could not be used and the sequencer's record named every order, so it cancelled them
+  first; or its region could not be used and nothing could name every order, so it halted without cancelling;
+- `RegionUnusable` (175): at startup, the region holding the open orders could not be used, with the reason.
+
+The region is found unusable, and trading may be halted, before the engine's connection to the test is made, so both
+are reported when it is made, with the engine's catch-up.
+
+**The checks moved.** What a promoted engine inherited, cancelled and resumed with, in every scenario with a pair of
+engines that changes leader; the cancels after a gateway's death and a long absence (scenario 18); the cancels and the
+halt after a long absence (51); and the refused region, the engine saying it cannot account for what it held, the
+halt, and the absence of any cancel (52). These were the engine's own book, which no member can see: what it inherited
+and what it resumed with. Where the check is that nothing was cancelled, the engine is asked for a checkpoint first.
+The three helpers that read these counts from the engine's Quill log are gone.
+
+**How it was shown to work.** With the cancelled book and the unusable region not reported, scenario 16 failed at what
+the promoted engine inherited, 18 and 51 at the cancels, and 52 at the refused region. With the halt and the resumption
+not reported, 16 failed at what the engine resumed with, 51 at the halt, and 52 at the engine saying it cannot account
+for what it held.
+
+No scenario sets `open_orders_on_promotion` to keep, so the branch of the check for a promoted engine that keeps its
+book has not run, before this step or since.
+
+From fresh WALs, 73 of the 76 scenarios pass, and scenarios 14, 27 and 36 fail as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 108.1,
+107.5, 107.5 and 107.3 microseconds with the build of kind D, 98.9, 98.8, 107.7 and 107.8 with this one, and 107.9,
+107.8, 107.5 and 107.2 with the build of kind D again. Runs near 98 microseconds have come with the builds both before
+and after a change in earlier measurements (sections 4.5 and 4.6); none of kind E's events is sent for each order.
 
 ## 5. What phase 6 does not do
 

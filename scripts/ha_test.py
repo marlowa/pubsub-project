@@ -577,6 +577,18 @@ def expectation_seen(expect: Expect, since: int) -> bool:
     return all(_condition_met(condition, since) for condition in expect.conditions)
 
 
+def engine_event(engine: str, message: str, since: int, timeout: float, settle: bool = False):
+    """The first of the matching engine's events named message (matching_engine_test_events.dsl) at or after since,
+    waiting up to timeout seconds for it; or None. With settle, the engine is first asked for a checkpoint, so that None
+    means it sent none."""
+    module = _TEST_EVENTS.modules["matching_engine_test_events"]
+    predicate = message_of(getattr(module, message), engine)
+    if settle and not _TEST_EVENTS.settle(engine):
+        die(f"{engine} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so whether it sent {message} is not known")
+    found = _TEST_EVENTS.wait_for(predicate, timeout=timeout, since=since)
+    return found.message if found is not None else None
+
+
 def has_happened(expect: Expect, timeout: float) -> bool:
     """Whether expect has been met since the components it names started, waiting up to timeout seconds for it."""
     return await_expectation(expect, timeout, since_present_processes(expect))[0]
@@ -4197,89 +4209,6 @@ def poll_log_for(log_path: Path, *markers: str,
         time.sleep(LOG_POLL_INTERVAL)
 
 
-def me_resumed_book_size(log_path: Path, from_byte: int = 0,
-                         timeout: float = 10.0) -> int | None:
-    """Return the order count the ME resumed as leader with, or None if it never said.
-
-    On promotion the ME logs "reconciliation complete at seq_no=S with N order(s) on
-    the book -- resuming as leader". N is what it is holding at the moment it starts
-    serving again, which is the member-visible promise: those orders are still open
-    and still cancellable. Only bytes beyond from_byte are scanned, so this promotion
-    is seen rather than a prior one. Polls up to `timeout` because the logger is
-    asynchronous and the line may lag the event slightly.
-    """
-    marker = "resuming as leader"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if log_path.is_file():
-            with open(log_path, "r", errors="replace") as fh:
-                fh.seek(from_byte)
-                for line in fh.read().splitlines():
-                    if marker in line and " order(s) on the book" in line:
-                        try:
-                            return int(line.split(" with ", 1)[1].split(" order(s)", 1)[0])
-                        except (IndexError, ValueError):
-                            return None
-        time.sleep(LOG_POLL_INTERVAL)
-    return None
-
-
-def me_cancel_on_failover_count(log_path: Path, from_byte: int = 0,
-                                timeout: float = 10.0) -> int:
-    """Return N from the ME's cancel-on-failover summary line, or -1 if absent.
-
-    The ME logs "cancel-on-failover complete -- N cancel ER(s) sent, book cleared"
-    when it cancels its whole book. Whether a promotion does that is the venue's
-    stated policy, order_book.open_orders_on_promotion; the same line is also emitted
-    on the paths that cancel and halt (R-0102, R-0117, R-0123). A caller confirming
-    the line is ABSENT should pass a short timeout, since it is waiting on an absence
-    rather than an event.
-
-    Only bytes beyond from_byte are scanned (so we see this promotion, not a prior
-    run). Polls up to `timeout` because the logger is asynchronous and the line may
-    lag the event slightly.
-    """
-    marker = "cancel-on-failover complete"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if log_path.is_file():
-            with open(log_path, "r", errors="replace") as fh:
-                fh.seek(from_byte)
-                for line in fh.read().splitlines():
-                    if marker in line:
-                        try:
-                            return int(line.split("complete -- ", 1)[1].split()[0])
-                        except (IndexError, ValueError):
-                            return -1
-        time.sleep(LOG_POLL_INTERVAL)
-    return -1
-
-
-def me_inherited_book_size(log_path: Path, from_byte: int = 0,
-                           timeout: float = 10.0) -> int:
-    """Return the order count the ME held when it began cancelling, or -1 if absent.
-
-    Under the cancel policy the book is emptied before the engine says what it is
-    resuming with, so "resuming as leader" reports zero and cannot say what was
-    inherited. The count is taken from the line the cancel burst opens with instead:
-    "cancel-on-failover -- cancelling N live order(s)".
-    """
-    marker = "cancel-on-failover -- cancelling "
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if log_path.is_file():
-            with open(log_path, "r", errors="replace") as fh:
-                fh.seek(from_byte)
-                for line in fh.read().splitlines():
-                    if marker in line:
-                        try:
-                            return int(line.split(marker, 1)[1].split()[0])
-                        except (IndexError, ValueError):
-                            return -1
-        time.sleep(LOG_POLL_INTERVAL)
-    return -1
-
-
 def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> None:
     """Set a comp id's cancel-on-disconnect grace period in the database.
 
@@ -6766,7 +6695,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # For the ME-HA cancel-on-failover assertion after Phase 5: remember where
         # the secondary ME log and the gateway log end before the kill, so we scan
         # only what the promotion (and its cancel-ER burst) produces.
-        me_secondary_pos_pre_kill = file_end(me_secondary_log) if scenario.me_ha else 0
+        me_secondary_events_from = _TEST_EVENTS.mark()
         gw_pos_pre_kill = file_end(gw_log)
 
         log(f"=== Phase 4: {scenario.description} ===")
@@ -7059,20 +6988,22 @@ def run_scenario(scenario: Scenario, args) -> bool:
         if (scenario.me_ha and not scenario.assert_gateway_orphaned and not scenario.recovery_on_primary
                 and not scenario.assert_deferred_answered and not scenario.expects_no_new_leader):
             cancels_expected = scenario.open_orders_on_promotion == "cancel"
-            # A short timeout under "keep": the promotion has already been observed by the
-            # time this runs, so it is confirming an absence rather than waiting for a line.
-            cancel_count = me_cancel_on_failover_count(me_secondary_log, from_byte=me_secondary_pos_pre_kill,
-                                                       timeout=args.failover_timeout if cancels_expected else 2.0)
-            resumed = me_resumed_book_size(me_secondary_log, from_byte=me_secondary_pos_pre_kill)
-            if resumed is None:
-                die("ME-HA: the promoted secondary logged no 'resuming as leader' line -- "
+            # Under "keep" the promotion has already been observed by the time this runs, so it is confirming an absence:
+            # the engine is asked for a checkpoint first, and a cancel it sent cannot still be on its way.
+            cancelled_book = engine_event("matching_engine_secondary", "BookCancelled", me_secondary_events_from,
+                                          args.failover_timeout if cancels_expected else 0.0, settle=not cancels_expected)
+            cancel_count = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
+            resumed_event = engine_event("matching_engine_secondary", "ResumedAsLeader", me_secondary_events_from, 10.0)
+            if resumed_event is None:
+                die("ME-HA: the promoted secondary never reported resuming as leader -- "
                     "cannot confirm what book it resumed with")
+            resumed = resumed_event.book_size
 
             if cancels_expected:
                 # What it inherited has to come from the cancel burst's own opening line: the
                 # book is empty by the time the engine says what it is resuming with, so
                 # "resuming as leader" reports zero under this policy and proves nothing.
-                inherited = me_inherited_book_size(me_secondary_log, from_byte=me_secondary_pos_pre_kill, timeout=2.0)
+                inherited = cancelled_book.live_orders if cancelled_book is not None else -1
                 if inherited <= 0:
                     die(f"ME-HA: the venue is configured to cancel on promotion but the promoted "
                         f"secondary reported inheriting {inherited} order(s). The baseline orders rest "
@@ -7130,8 +7061,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # BLOCK SHOULD FAIL. Invert it rather than deleting it: dropped_ers becomes 0
         # and b's traffic becomes non-zero.
         if scenario.assert_gateway_orphaned:
-            # The log was deleted on restart, so read it whole.
-            cancel_count = me_cancel_on_failover_count(me_log, from_byte=0, timeout=args.failover_timeout)
+            # Only the restarted engine's events count: those since its newest introduction.
+            cancelled_book = engine_event(me_log.stem, "BookCancelled", _TEST_EVENTS.since_introduction(me_log.stem), args.failover_timeout)
+            cancel_count = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
             if cancel_count <= 0:
                 die("gateway orphan: the restarted engine did not cancel the orders it "
                     f"recovered (count={cancel_count}) -- no execution reports were generated "
@@ -7192,10 +7124,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # most, because it is the one an implementation is most likely to get wrong in the
         # helpful direction.
         if scenario.assert_damaged_region:
-            region_pos = 0  # the log was deleted on restart, so read it whole
+            region_from = _TEST_EVENTS.since_introduction(me_log.stem)  # the restarted engine's events
 
-            refused = poll_log_for(me_log, "cannot be used", "R-0102",
-                                   timeout=args.failover_timeout, from_byte=region_pos)[0]
+            refused = engine_event(me_log.stem, "RegionUnusable", region_from, args.failover_timeout) is not None
             if not refused:
                 die("damaged region: the engine did not refuse the damaged region. Reading it "
                     "the wrong way round produces orders that are wrong in ways nothing "
@@ -7214,8 +7145,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # The venue must say it cannot account for what it was holding. The sequencer's log
             # is truncated as it is consumed, so it does not reach the orders taken earlier in
             # the day, and the engine has no way to name them.
-            cannot_account = poll_log_for(me_log, "cannot account for what the venue was holding",
-                                          timeout=args.failover_timeout, from_byte=region_pos)[0]
+            halt = engine_event(me_log.stem, "Halted", region_from, args.failover_timeout)
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            cannot_account = halt is not None and halt.reason == engine_events.HaltReason.CannotAccountForBook
             if not cannot_account:
                 die("damaged region: the engine did not say it cannot account for what it was "
                     "holding. The sequencer's log is truncated, so it does not reach the orders "
@@ -7223,8 +7155,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "exactly the loss being recovered from (R-0123).")
             log("  damaged region: the venue says it cannot account for what it was holding")
 
-            halted = poll_log_for(me_log, "trading is halted", "a person must lift this",
-                                  timeout=args.failover_timeout, from_byte=region_pos)[0]
+            halted = halt is not None
             if not halted:
                 die("damaged region: the engine did not halt. Admitting it cannot say is the "
                     "last resort and is still better than silence, but only if it stops (R-0123).")
@@ -7233,7 +7164,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # And it must NOT have cancelled. Cancelling the orders it can name would leave
             # every earlier one unmentioned -- the same silence, reached while appearing to
             # have dealt with it.
-            cancelled = me_cancel_on_failover_count(me_log, from_byte=region_pos, timeout=2.0)
+            cancelled_book = engine_event(me_log.stem, "BookCancelled", region_from, 0.0, settle=True)
+            cancelled = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
             if cancelled > 0:
                 die(f"damaged region: the engine cancelled {cancelled} order(s) while unable to "
                     "account for what it held. Cancelling only what it can name leaves every "
@@ -7249,10 +7181,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # halting carries on as though nothing happened, and halting without cancelling leaves
         # the stale orders in place.
         if scenario.assert_absence_halt:
-            me_pos_after_restart = 0  # the log was deleted on restart, so read it whole
+            restarted_from = _TEST_EVENTS.since_introduction(me_log.stem)  # the restarted engine's events
 
-            cancelled = me_cancel_on_failover_count(me_log, from_byte=me_pos_after_restart,
-                                                    timeout=args.failover_timeout)
+            cancelled_book = engine_event(me_log.stem, "BookCancelled", restarted_from, args.failover_timeout)
+            cancelled = cancelled_book.cancel_reports_sent if cancelled_book is not None else -1
             if cancelled <= 0:
                 die("long absence: the engine did not cancel the orders it recovered "
                     f"(count={cancelled}). It was down for longer than the venue says it may be "
@@ -7260,8 +7192,9 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     "members were locked out of them while the market moved (R-0117).")
             log(f"  long absence: {cancelled} order(s) cancelled")
 
-            halted = poll_log_for(me_log, "trading is halted", "a person must lift this",
-                                  timeout=args.failover_timeout, from_byte=me_pos_after_restart)[0]
+            halt = engine_event(me_log.stem, "Halted", restarted_from, args.failover_timeout)
+            engine_events = _TEST_EVENTS.modules["matching_engine_test_events"]
+            halted = halt is not None and halt.reason == engine_events.HaltReason.UnableToMatchTooLong
             if not halted:
                 die("long absence: the engine cancelled the book but did not halt. Carrying on "
                     "as though nothing had happened is what the halt exists to prevent (R-0117); "

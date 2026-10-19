@@ -171,6 +171,10 @@ the arbiter, and four of the sequencer's own.
 
 ## E. Halting, and cancelling on promotion (10)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.7): the matching engine's `BookCancelled`,
+`ResumedAsLeader`, `Halted` and `RegionUnusable`. The counts are of the engine's own book, which no member can see, so
+they are events rather than member checks.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 23 scenarios | `run_scenario` | me_secondary_log | 'me_cancel_on_failover_count' | how many orders the engine cancelled on promotion or after a long absence (or that it cancelled none) | **Member**: the Canceled reports the members receive; the count the engine reports in an event where no member is connected |
@@ -352,8 +356,10 @@ were missed by it:
 | `PeerMayLeadChanged` | D | the library's ReplicatedWal |
 | `StatementRecorded` | D | the arbiter |
 | `CheckingLogForRepeats` | D | the sequencer |
-| `Promoted` | E | the matching engine |
+| `BookCancelled` | E | the matching engine |
+| `ResumedAsLeader` | E | the matching engine |
 | `Halted` | E | the matching engine |
+| `RegionUnusable` | E | the matching engine |
 | `SessionBound` | F | the gateways |
 | `ReportDropped` | F | the sequencer and the gateways |
 | `CancelsSent` | F | the FIX gateway |
@@ -370,5 +376,5 @@ were missed by it:
 | `ThrottleStarted` | I | the gateways |
 | `ThrottleStopped` | I | the gateways |
 
-That is 33 events. Several may merge when they are defined, for instance the session events into one
+That is 35 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

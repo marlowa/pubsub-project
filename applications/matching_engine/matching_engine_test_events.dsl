@@ -72,3 +72,54 @@ message CatchUp (id=171, version=1)
     i64          reports_sent      # the reports the engine sent members in this catch-up, each marked as a possible repeat
     i64          book_size         # the orders on the book at this stage
 end
+
+# ------------------------------------------------------------
+#  172 -- BookCancelled
+#  The engine cancelled every order on its book and sent a cancel
+#  report for each: on promotion, where the venue is configured to
+#  cancel then, or before halting.
+# ------------------------------------------------------------
+message BookCancelled (id=172, version=1)
+    i64 live_orders            # the orders on the book when cancelling began
+    i64 cancel_reports_sent    # the cancel reports sent, one for each order cancelled
+end
+
+# ------------------------------------------------------------
+#  173 -- ResumedAsLeader
+#  A promoted engine finished catching up and serves again, holding
+#  the orders on its book.
+# ------------------------------------------------------------
+message ResumedAsLeader (id=173, version=1)
+    i64 through_seq_no         # the last record it caught up to
+    i64 book_size              # the orders on its book as it resumes
+end
+
+# ------------------------------------------------------------
+#  Why the engine halted trading.
+# ------------------------------------------------------------
+enum HaltReason : i8 {
+    UnableToMatchTooLong = 1   # it could not match for longer than the venue says it may; it cancelled its book first
+    RecordCouldNotBeUsed = 2   # its region could not be used, and the sequencer's record named every order, so it cancelled them first
+    CannotAccountForBook = 3   # its region could not be used, and nothing could name every order it held; it halted without cancelling
+}
+
+# ------------------------------------------------------------
+#  174 -- Halted
+#  The engine halted trading: it refuses every order until a person
+#  lifts the halt (R-0023).
+# ------------------------------------------------------------
+message Halted (id=174, version=1)
+    HaltReason reason
+end
+
+# ------------------------------------------------------------
+#  175 -- RegionUnusable
+#  At startup, the engine's region holding its open orders could not
+#  be used. It was kept aside and a new one started, and what it held
+#  is to be established from the sequencer's record (R-0102, R-0123).
+#  Found before the connection to the test can be made, so it is
+#  reported when the connection is made.
+# ------------------------------------------------------------
+message RegionUnusable (id=175, version=1)
+    string reason              # why it could not be used, as the region's own check states it
+end
