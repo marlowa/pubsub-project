@@ -113,3 +113,15 @@ message ReplayDeclined (id=188, version=1)
     i64    request_id
     string comp_id
 end
+
+# ------------------------------------------------------------
+#  189 -- KeptReportsForwarded
+#  The sequencer took the lead, and forwarded the execution reports it
+#  had kept while it was not leading, each marked as a possible repeat.
+#  It first discarded those the old leader said it had forwarded.
+# ------------------------------------------------------------
+message KeptReportsForwarded (id=189, version=1)
+    i64 discarded_as_forwarded   # kept reports discarded because the old leader said it had forwarded them
+    i64 forwarded                # kept reports forwarded
+    i64 size_in_bytes            # the size of the reports forwarded
+end

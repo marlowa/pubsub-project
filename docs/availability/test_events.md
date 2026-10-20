@@ -831,6 +831,30 @@ From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 fail
 107.6, 107.6 and 107.4 with the build of kind K again. `ProgressReported` is sent with the progress line, not for each
 order, and kind M does not change the round trip.
 
+### 4.15 Step 4: scenario 69, and kind N
+
+**Scenario 69.** Its check of how many kept reports the new leader forwarded was among the reads the first sweep missed.
+`sequencer_test_events.dsl` gains `KeptReportsForwarded` (message id 189), sent when the sequencer takes the lead, with
+how many of the reports it kept while not leading it discarded because the old leader said it had forwarded them, how
+many it forwarded, and their size. The check reads it, and the `TEST CONTRACT` comment on the line the sequencer logs at
+the same moment is gone.
+
+**Kind N stays.** Scenarios 22 and 23 read the sequence number of the Logon the member received from the FIX test
+client's own output. That is the member's record of what it was sent, not a Quill log of the venue.
+
+**How it was shown to work.** In a build of the sequencer that does not send `KeptReportsForwarded`, scenario 69 failed
+because the new leader did not say how many kept reports it forwarded. In one that adds 100 to the count it sends, the
+scenario failed because the new leader said it forwarded 102, more than the 10 the check allows; it had forwarded 2.
+
+From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 107.9,
+107.8, 107.6 and 107.6 microseconds with the build of kind M, 99.5, 99.4, 107.7 and 107.7 with this one, and 107.9,
+108.0, 107.9 and 107.6 with the build of kind M again. The runs settle at about 100 or about 108 microseconds with any
+build, as section 4.10 says. The event is sent once, when a sequencer takes the lead, and it does not change the round
+trip.
+
 ## 5. What phase 6 does not do
 
 - **No behaviour of the venue changes.** Only what the components tell a test, when one asks.

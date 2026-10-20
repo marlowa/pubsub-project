@@ -1091,12 +1091,13 @@ void SequencerThread::forward_kept_reports() {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: taking the lead -- {} kept report(s) discarded because the old leader said it had forwarded them",
                kept_reports_discarded_as_forwarded_);
-    kept_reports_discarded_as_forwarded_ = 0;
     const size_t count = kept_reports_.count();
     const size_t bytes = kept_reports_.bytes_used();
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: taking the lead -- forwarding {} kept report(s) ({} bytes), each marked as a possible repeat", count, bytes);
+    report(pubsub_itc_fw_app::KeptReportsForwarded{static_cast<int64_t>(kept_reports_discarded_as_forwarded_), static_cast<int64_t>(count),
+                                                   static_cast<int64_t>(bytes)});
+    kept_reports_discarded_as_forwarded_ = 0;
     kept_reports_.take_all([this](int64_t er_seq_no, const uint8_t* report, size_t size) {
         forward_report_from_engine(report, size, er_seq_no, ReportSource::kept_while_not_leading);
     });

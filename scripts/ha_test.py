@@ -8890,7 +8890,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Few repeats after a change of leader ──────────────────────────────
         if scenario.assert_few_repeats_after_change:
             log("=== After a change of leader, a member is sent again only the reports the old leader had not forwarded ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("few repeats: sequencer_primary is not leading.")
             if f8proc is not None:
@@ -8939,7 +8938,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             primary = proc_by_name["sequencer_primary"]
             takeover_from = _TEST_EVENTS.mark()
-            secondary_log_from = file_end(secondary_log)
             log(f"  SIGKILL -> sequencer_primary (PID {primary.pid})")
             primary.kill()
             primary.wait()
@@ -8962,19 +8960,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
             member.close()
             marked = [r for r in repeats if r.get(97) == "Y"]
             unmarked = [r for r in repeats if r.get(97) != "Y"]
-            forwarded_line = ""
-            with open(secondary_log, encoding="utf-8", errors="replace") as handle:
-                handle.seek(secondary_log_from)
-                for line in handle:
-                    if "forwarding" in line and "kept report(s)" in line:
-                        forwarded_line = line.strip()
-            match = re.search(r"forwarding (\d+) kept report", forwarded_line)
-            forwarded = int(match.group(1)) if match else -1
+            kept = component_event("sequencer_secondary", "sequencer_test_events", "KeptReportsForwarded", takeover_from, 0.0, settle=True)
+            forwarded = kept.forwarded if kept is not None else -1
             log(f"  the new leader forwarded {forwarded} kept report(s); the member received {len(marked)} repeat(s) marked PossResend")
             if unmarked:
                 die(f"few repeats: the member received {len(unmarked)} report(s) for these orders after the change of leader without PossResend.")
             if forwarded < 0:
-                die("few repeats: the new leader did not log how many kept reports it forwarded.")
+                die("few repeats: the new leader did not say how many kept reports it forwarded.")
             if forwarded > 10 or len(marked) > 10:
                 die(f"few repeats: the new leader forwarded {forwarded} kept report(s) and the member received {len(marked)} repeats. The old "
                     "leader's records said how far it had forwarded, so only the reports it had not forwarded should be sent again (BUG-0116).")

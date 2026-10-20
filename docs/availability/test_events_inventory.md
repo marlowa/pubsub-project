@@ -320,6 +320,9 @@ scenario 51 counts the cancellation reports the member received.
 
 ## N. The FIX test client's own record of what it received (2)
 
+**Stays** ([test_events.md](test_events.md), section 4.15): it is the member's own record, not a Quill log of the
+venue.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 22 | `run_scenario` | client_output | '_client_logon_seq_num' | the sequence number of the Logon the member received | **Stays**: the FIX test client's own record of what it received; not a Quill log of the venue |
@@ -360,7 +363,7 @@ were missed by it:
 | all | `wait_for_fix_logon` | gw_log | the gateway's lines for a logon established, refused, or opened at unconfirmed numbering | I | **Event**: `SessionEstablished`, with whether the numbering was confirmed, or `LogonRefused`, with the reason (moved) |
 | 44, 45 | `run_scenario` | refuser_log | "refusing to start" and "[ha] enabled = false" from a component that refuses to start | to be decided | the operator reads this message, so it may stay as the component's standard error rather than a Quill log |
 | 47 | `run_scenario` | each sequencer's log | "ha_enabled=false", the reason each leads | A | an event, or the role events' epoch, when the remaining kinds are moved |
-| 69 | `run_scenario` | secondary_log | "forwarding ... kept report(s)" | D or G | to be decided with kind G |
+| 69 | `run_scenario` | secondary_log | "forwarding ... kept report(s)" | D | **Event**: the sequencer's `KeptReportsForwarded`, with how many it forwarded (moved) |
 
 
 
@@ -411,6 +414,7 @@ were missed by it:
 | `ThrottleStarted` | I | the FIX gateway |
 | `ThrottleStopped` | I | the FIX gateway |
 | `ProgressReported` | M | the FIX gateway |
+| `KeptReportsForwarded` | D | the sequencer, when it takes the lead and forwards the reports it kept |
 
-That is 45 events. Several may merge when they are defined, for instance the session events into one
+That is 46 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.
