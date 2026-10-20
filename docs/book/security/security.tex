@@ -1,8 +1,42 @@
 \chapter{Security}
 \label{ch:security}
 
-How components authenticate each other and how the traffic between them is
-protected: transport layer security on the links that carry it, and the
-challenge-response exchange by which a member proves who it is.
+Security covers who may administer the venue, how a member proves its identity,
+and which connections protect their traffic. These are separate protections.
+SCRAM protects the COMPID password on the gateway-to-authentication-service
+exchange. FIX sessions may use TLS when the deployment enables the TLS listener.
+The COMPID editor is a separate web application that controls member credentials
+and permissions, so its first-run setup and administrator access must also be
+protected.
 
-It is not yet written.
+\section{The COMPID editor}
+\label{sec:security:compid_editor}
+
+The COMPID editor lets administrators create and disable member identities,
+set their passwords, lock accounts, and change the gateways on which they may
+log on. Its first-run setup therefore grants access to the controls that govern
+member logon.
+
+The editor presents the setup page while its administrator-user store is empty.
+The first account created receives the \texttt{ADMIN} role. Later requests
+require an administrator login; users with the \texttt{VIEWER} role cannot
+submit changes. The current setup route does not require an installation-only
+secret or other proof that the requester has access to the host.
+
+\begin{requirement}{R-0153}{First administrator setup requires proof of installation access}
+  Before the first administrator account is created, setup shall require a
+  one-time secret generated for this installation and available only to an
+  operator with access to the host. Creating the first account shall consume
+  the secret and close first-run setup.
+  \rationale{If reaching the setup page is enough to create the first administrator, any
+  unauthenticated client that can reach the editor may claim control of member
+  credentials and permissions before the operator does. Requiring proof available
+  only from the installed host reserves initial administration for the operator.}
+  \begin{gap}{BUG-0187}
+    The setup page and submission route are public while the administrator-user
+    store is empty. The submission checks only that the passwords match and that
+    the password is at least eight characters long. It requires no
+    installation-specific secret or proof of access to the host.
+  \end{gap}
+  \uncovered{no test verifies that first-run setup rejects a request without a valid one-time secret}
+\end{requirement}
