@@ -156,3 +156,5 @@ R-0150     active    2026-10-02  A command over the limit is refused, and the me
 R-0151     active    2026-10-02  A refused request to cancel is not answered as a rejected order
 R-0152     active    2026-10-02  Both gateways refuse the same commands for the same reasons
 R-0153     active    2026-10-20  First administrator setup requires proof of installation access
+R-0154     active    2026-10-20  Members can choose TLS or plain TCP for FIX sessions
+R-0155     active    2026-10-20  The gateway does not send COMPID passwords in plaintext to the authentication service

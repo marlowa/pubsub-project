@@ -1,27 +1,111 @@
 \chapter{Security}
 \label{ch:security}
 
-Security covers who may administer the venue, how a member proves its identity,
-and which connections protect their traffic. These are separate protections.
-SCRAM protects the COMPID password on the gateway-to-authentication-service
-exchange. FIX sessions may use TLS when the deployment enables the TLS listener.
-The COMPID editor is a separate web application that controls member credentials
-and permissions, so its first-run setup and administrator access must also be
-protected.
+Security depends on which connection is being considered. A FIX member connects
+to a gateway, the gateway authenticates the COMPID with the authentication
+service, and an operator manages COMPIDs through a web application. These links
+do not all have the same protection. In particular, SCRAM keeps a COMPID
+password out of the gateway-to-authentication-service exchange, but it does not
+encrypt a member's connection to the gateway. TLS is available for FIX sessions
+but is optional, and the COMPID editor has its own administrator login and
+first-run setup.
 
-\section{The COMPID editor}
+\section{COMPID authentication}
+\label{sec:security:compid_authentication}
+
+A member sends its COMPID and password in the FIX Logon message. The password
+is in tag 554 and reaches the FIX gateway. The project calls the gateway's
+challenge-response authentication SCRAM-SHA-256. It uses PBKDF2-HMAC-SHA-256,
+HMAC-SHA-256, and SHA-256. RFC 7677 specifies the standardized SCRAM-SHA-256
+and SCRAM-SHA-256-PLUS SASL mechanisms \cite{rfc7677}. This venue carries its
+authentication exchange in project-specific PDU messages, not the RFC's SASL
+wire protocol.
+
+The gateway sends the COMPID and a client nonce. The authentication service
+returns a server nonce, a salt, and an iteration count. The gateway derives a
+client proof from the password and clears the temporary password value
+immediately after deriving the salted password. It then sends the proof.
+The authentication service checks the proof against the stored
+credential and returns a result with a server signature. The gateway verifies
+that signature before accepting a successful result. The authentication
+service stores derived keys, a salt, and the iteration count, not the
+plaintext password.
+
+The connection between the gateway and authentication service is plain TCP,
+not TLS. The password is not sent in plaintext on this link: it remains at the
+gateway and is used to calculate the SCRAM proof. This protection is specific
+to the gateway-to-authentication-service exchange. It does not protect tag 554
+on a plain member-to-gateway FIX connection.
+
+\begin{requirement}{R-0155}{The gateway does not send COMPID passwords in plaintext to the authentication service}
+  The gateway-to-authentication-service authentication exchange shall not
+  transmit a COMPID password in plaintext.
+  \rationale{The gateway must authenticate members without exposing their passwords on the network link to the authentication service.}
+  \uncovered{no test verifies that a COMPID password is absent from the gateway-to-authentication-service wire messages}
+\end{requirement}
+
+\section{Optional TLS for FIX sessions}
+\label{sec:security:fix_tls}
+
+The FIX gateway always registers a plain TCP listener. When TLS is enabled in
+the gateway configuration, it also registers a TLS listener on a separate
+port. A member can therefore connect through TLS or use the plain listener;
+members are not required to use TLS.
+
+Some members classify their venue connection as secure under their own
+controls and choose plain TCP to avoid the performance cost of encryption.
+That is the member's assessment of its connection and risk. It does not mean
+the FIX traffic is encrypted by the venue. On a plain connection, tag 554 and
+the rest of the FIX session cross the network without TLS protection. A
+deployment that enables TLS currently uses TLS 1.2.
+
+\begin{requirement}{R-0154}{Members can choose TLS or plain TCP for FIX sessions}
+  A deployment shall be able to offer a TLS listener for FIX sessions while
+  retaining the plain TCP listener, so that each member can choose which
+  listener to use.
+  \rationale{Members have different security controls and performance
+  requirements. The gateway must support encrypted FIX sessions without
+  requiring every member to use TLS.}
+  \uncovered{no test verifies that the FIX gateway offers both listeners when TLS is enabled}
+\end{requirement}
+
+\section{Authentication service administration}
+\label{sec:security:authentication_service_admin}
+
+The admin service sends credential changes to the authentication service over
+its TLS admin connection. Client-certificate verification can be enabled, but
+it is disabled by default. The gateway-facing authentication connection is a
+separate plain TCP listener and does not use TLS. SCRAM protects the COMPID
+password on that connection, but does not encrypt the rest of its traffic.
+
+\section{COMPID password lifecycle}
+\label{sec:security:compid_password_lifecycle}
+
+The COMPID database stores the derived SCRAM keys, salt, and iteration count.
+It also has fields for the time a password changed and whether a password
+change should be required. The editor can set the change-required flag, and a
+password reset updates the change time. The member authentication flow does
+not enforce password expiry or the change-required flag: the authentication
+service reports that no password change is required. Password expiry and
+forced change during FIX logon are therefore not implemented.
+
+\section{COMPID editor and administrator access}
 \label{sec:security:compid_editor}
 
-The COMPID editor lets administrators create and disable member identities,
-set their passwords, lock accounts, and change the gateways on which they may
-log on. Its first-run setup therefore grants access to the controls that govern
-member logon.
+The COMPID editor controls member credentials, account status, gateway
+permissions, and session limits. Its administrator accounts are stored
+separately from member COMPIDs. Administrator passwords are stored as bcrypt
+hashes. An authenticated \texttt{ADMIN} can make changes; a \texttt{VIEWER}
+can view data but cannot submit changes. The application code starts a web
+server without configuring TLS. Browser-to-editor traffic is therefore not
+encrypted by the application itself; deployments need to account for this
+when deciding which networks may reach the editor.
 
-The editor presents the setup page while its administrator-user store is empty.
-The first account created receives the \texttt{ADMIN} role. Later requests
-require an administrator login; users with the \texttt{VIEWER} role cannot
-submit changes. The current setup route does not require an installation-only
-secret or other proof that the requester has access to the host.
+When the administrator-user store is empty, the setup page is public and the
+first account created receives the \texttt{ADMIN} role. The current setup
+route checks that the password and confirmation match and that the password
+is at least eight characters long. It does not require proof that the
+requester has access to the installed host.
 
 \begin{requirement}{R-0153}{First administrator setup requires proof of installation access}
   Before the first administrator account is created, setup shall require a
