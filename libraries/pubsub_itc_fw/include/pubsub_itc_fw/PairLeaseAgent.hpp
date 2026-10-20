@@ -150,7 +150,6 @@ class PairLeaseAgent {
             // when both start together from cold; it must not cost a leading secondary its lead.
             participant_.stop(now, Clock::duration::zero());
             resuming_lead_until_ = kept->until;
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info,
                        "{}: resuming with the promise recorded before restarting -- this instance was leading, so it asks to lead again at once", owner_name_);
             report(LeaseChange::ResumingLead, Voter::NoVoter, participant_.epoch());
@@ -173,7 +172,6 @@ class PairLeaseAgent {
         report_whether_this_instance_may_lead();
         Change change = Change::Nothing;
         if (participant_.stop_if_lease_ran_out(now)) {
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Warning,
                        "{}: lease ran out -- neither the peer nor {} renewed it in time, so this instance stops leading (epoch={})", owner_name_,
                        third_voter_name_, participant_.epoch());
@@ -311,7 +309,6 @@ class PairLeaseAgent {
             last_renewal_ = now;
             ask_voters(participant_.epoch(), now);
         }
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, pubsub_itc_fw::FwLogLevel::Info, "{}: leading at epoch {} -- granted a lease by {}, which with its own vote is a majority",
                    owner_name_, epoch, voter_name(voter_id));
         report(LeaseChange::Granted, voter_id == peer_id_ ? Voter::Peer : Voter::ThirdVoter, epoch);

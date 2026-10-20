@@ -14,8 +14,8 @@
 #  arrive in the order that thread sent them, and the test keeps each
 #  connection's events apart: there is no order between connections.
 #
-#  Message ids 140 to 199 are set aside for test events: 140 to 169 for
-#  the library's, here, and 170 to 199 for applications' own, in DSL
+#  Message ids 140 to 229 are set aside for test events: 140 to 169 for
+#  the library's, here, and 170 to 229 for applications' own, in DSL
 #  files of their own.
 
 # ------------------------------------------------------------
@@ -204,4 +204,18 @@ message StatementRecorded (id=151, version=1)
     i64 leader                   # the instance that made the statement
     i32 epoch                    # the epoch it was made at
     i64 instance_may_not_lead    # the instance it says may not lead
+end
+
+# ------------------------------------------------------------
+#  152 -- FollowerHandedOver
+#  The leader's reading thread has sent a rejoining follower every
+#  record it lacked, and the leader sends it each new record itself
+#  from now. Sent only where an application gives the leader a reading
+#  thread; a leader that sends the records itself says that the WALs
+#  agree (WalsAgree) once it has sent them.
+# ------------------------------------------------------------
+message FollowerHandedOver (id=152, version=1)
+    string owner      # the pair's owner
+    i64    instance   # the leader's id
+    i64    through    # the last record the reading thread sent
 end

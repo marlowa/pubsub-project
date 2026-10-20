@@ -60,6 +60,7 @@ int main(int argc, char* argv[]) {
     // names. Being present and idle is the failure worth preventing here, not being absent.
     // See docs/bug_list.md, BUG-0061.
     if (!config.ha_enabled) {
+        // TEST CONTRACT -- ha_test.py matches this text (scenarios 44 and 45), because what it checks is that an operator is told why.
         PUBSUB_LOG_STR((*logger), pubsub_itc_fw::FwLogLevel::Error,
                        "Arbiter: refusing to start -- this venue has [ha] enabled = false in its environment, so there is nothing to "
                        "arbitrate. Set [ha] enabled = true and redeploy, or do not start this component.");

@@ -11,8 +11,8 @@
 #  None is sent for each order: each says what happened to a member's
 #  session.
 #
-#  Message ids 190 to 209 are the FIX gateway's, within the ranges 170 to
-#  199 and 200 to 229 set aside for applications' test events.
+#  Message ids 190 to 209 are the FIX gateway's, within the range 170 to
+#  229 set aside for applications' test events.
 # ============================================================
 
 # ------------------------------------------------------------

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -16,6 +17,7 @@
 #include <lease_messages.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorder.hpp>
 #include <pubsub_itc_fw/BackgroundPromiseRecorderInterface.hpp>
+#include <pubsub_itc_fw/BumpAllocator.hpp>
 #include <pubsub_itc_fw/ConnectionID.hpp>
 #include <pubsub_itc_fw/FwLogLevel.hpp>
 #include <pubsub_itc_fw/LeaderStatement.hpp>
@@ -28,6 +30,8 @@
 #include <pubsub_itc_fw/PairLeaseAgent.hpp>
 #include <pubsub_itc_fw/PeerStatementsFlag.hpp>
 #include <pubsub_itc_fw/QuillLogger.hpp>
+#include <pubsub_itc_fw/TestEventChannel.hpp>
+#include <test_events.hpp>
 
 namespace {
 
@@ -77,6 +81,7 @@ struct KeptPromises : public pubsub_itc_fw::LeasePromiseRecorderInterface {
     pubsub_itc_fw::LeaderStatement statement{};
     bool recorded_anything{false};
     bool fail{false};
+    int failed_writes{0};
     std::chrono::milliseconds delay{0};
     std::atomic<int> records_written{0};
 
@@ -85,6 +90,7 @@ struct KeptPromises : public pubsub_itc_fw::LeasePromiseRecorderInterface {
             std::this_thread::sleep_for(delay);
         }
         if (fail) {
+            ++failed_writes;
             return false;
         }
         promised_to = record.promised_to;
@@ -159,6 +165,27 @@ void wait_for_records(const KeptPromises& store, int count, std::chrono::millise
     }
 }
 
+// Keeps every test event a channel sends, as the connection to a test would carry it.
+class RecordingTestEventLinks : public pubsub_itc_fw::TestEventLinksInterface {
+  public:
+    void send_test_event(const pubsub_itc_fw::ConnectionID& /*connection*/, int16_t pdu_id, const uint8_t* bytes, size_t size) override {
+        if (pdu_id == pubsub_itc_fw::LeaseChanged::message_pdu_id) {
+            std::array<uint8_t, 256> arena_storage{};
+            pubsub_itc_fw::BumpAllocator arena(arena_storage.data(), arena_storage.size());
+            pubsub_itc_fw::LeaseChangedView view{};
+            size_t consumed = 0;
+            size_t arena_needed = 0;
+            if (pubsub_itc_fw::decode(view, bytes, size, consumed, arena, arena_needed)) {
+                lease_changes.push_back(view.change);
+                epochs.push_back(view.epoch);
+            }
+        }
+    }
+    // Each lease change the agent reported, in order, with the epoch it gave.
+    std::vector<pubsub_itc_fw::LeaseChange> lease_changes;
+    std::vector<int32_t> epochs;
+};
+
 class PairLeaseAgentTest : public ::testing::Test {
   protected:
     PairLeaseAgentTest()
@@ -166,7 +193,20 @@ class PairLeaseAgentTest : public ::testing::Test {
         for (int i = 0; i < 2; ++i) {
             agents_[i] = std::make_unique<pubsub_itc_fw::PairLeaseAgent>("TestThread", logger_, outboxes_[i], test_pair_id, i + 1, i == 0 ? 2 : 1, arbiter_id,
                                                                          "the arbiter", timing_, start_, 0, peer_statements_);
+            report_test_events(i);
         }
+    }
+
+    // Gives instance i's agent a channel for its test events, connected to a test, as an owner started by a test does.
+    void report_test_events(int i) {
+        channels_[i] = std::make_unique<pubsub_itc_fw::TestEventChannel>(event_links_[i], "sequencer", i + 1, "TestThread");
+        static_cast<void>(channels_[i]->on_connection_established(pubsub_itc_fw::ConnectionID{7, std::string(pubsub_itc_fw::TestEventChannel::service_name)}));
+        agents_[i]->report_test_events_to(*channels_[i]);
+    }
+
+    // How many times instance i's agent reported change.
+    int reported(int i, pubsub_itc_fw::LeaseChange change) const {
+        return static_cast<int>(std::count(event_links_[i].lease_changes.begin(), event_links_[i].lease_changes.end(), change));
     }
 
     // Before the first step: make both instances' leaders say whether their peer may lead, as the sequencer pair's do.
@@ -175,6 +215,7 @@ class PairLeaseAgentTest : public ::testing::Test {
         for (int i = 0; i < 2; ++i) {
             agents_[i] = std::make_unique<pubsub_itc_fw::PairLeaseAgent>("TestThread", logger_, outboxes_[i], test_pair_id, i + 1, i == 0 ? 2 : 1, arbiter_id,
                                                                          "the arbiter", timing_, start_, 0, peer_statements_);
+            report_test_events(i);
         }
     }
 
@@ -263,6 +304,7 @@ class PairLeaseAgentTest : public ::testing::Test {
         agents_[i] =
             std::make_unique<pubsub_itc_fw::PairLeaseAgent>("TestThread", logger_, outboxes_[i], test_pair_id, i + 1, i == 0 ? 2 : 1, arbiter_id, "the arbiter",
                                                             timing_, now_, keep_epoch ? agents_[i]->highest_epoch() : 0, peer_statements_);
+        report_test_events(i);
         if (keep_promises) {
             at_once_[i].forget();
             agents_[i]->keep_promises_in(at_once_[i], kept_[i].as_record(), kept_[i].statement, now_);
@@ -282,22 +324,13 @@ class PairLeaseAgentTest : public ::testing::Test {
         }
     }
 
-    // Flushes first, because the logger delivers records on its own thread after the log macro returns.
-    bool log_contains(const std::string& text) {
-        logger_.flush();
-        for (const auto& line : log_) {
-            if (line.find(text) != std::string::npos) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     pubsub_itc_fw::LeaseTiming timing_{};
     pubsub_itc_fw::PeerStatementsFlag peer_statements_{pubsub_itc_fw::PeerStatementsFlag::PeerAlwaysMayLead};
     const Clock::time_point start_{};
     Clock::time_point now_{};
     std::vector<std::string> log_;
+    RecordingTestEventLinks event_links_[2];
+    std::unique_ptr<pubsub_itc_fw::TestEventChannel> channels_[2];
     pubsub_itc_fw::QuillLogger logger_;
     Outbox outboxes_[2];
     std::unique_ptr<pubsub_itc_fw::PairLeaseAgent> agents_[2];
@@ -329,7 +362,9 @@ TEST_F(PairLeaseAgentTest, ThePrimaryLeadsWhenBothStartTogether) {
     EXPECT_EQ(changes_[0].front(), pubsub_itc_fw::PairLeaseAgent::Change::BecameLeader);
     ASSERT_FALSE(changes_[1].empty());
     EXPECT_EQ(changes_[1].front(), pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads);
-    EXPECT_TRUE(log_contains("TestThread: leading at epoch 1 -- granted a lease by"));
+    ASSERT_EQ(reported(0, pubsub_itc_fw::LeaseChange::Granted), 1);
+    const auto granted = std::find(event_links_[0].lease_changes.begin(), event_links_[0].lease_changes.end(), pubsub_itc_fw::LeaseChange::Granted);
+    EXPECT_EQ(event_links_[0].epochs[static_cast<size_t>(granted - event_links_[0].lease_changes.begin())], 1);
 }
 
 TEST_F(PairLeaseAgentTest, ALeaderKeepsLeadingWhileItRenews) {
@@ -364,7 +399,7 @@ TEST_F(PairLeaseAgentTest, ALeaderCutOffFromBothVotersStopsLeading) {
     }
     EXPECT_FALSE(agents_[0]->acting(now_));
     EXPECT_EQ(changes_[0].back(), pubsub_itc_fw::PairLeaseAgent::Change::StoppedLeading);
-    EXPECT_TRUE(log_contains("TestThread: lease ran out -- neither the peer nor the arbiter renewed it in time"));
+    EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::RanOut), 1);
 }
 
 TEST_F(PairLeaseAgentTest, TheFollowerTakesOverWhenTheLeaderIsCutOff) {
@@ -398,14 +433,10 @@ TEST_F(PairLeaseAgentTest, WithTheArbiterAndTheLeaderGoneTheFollowerReportsThatT
         step();
     }
     EXPECT_FALSE(agents_[1]->acting(now_));
-    EXPECT_TRUE(log_contains("this group has no leader"));
-    int reports = 0;
-    for (const auto& line : log_) {
-        reports += line.find("this group has no leader") != std::string::npos ? 1 : 0;
-    }
     // Once from each instance, not once per attempt: the follower, and the former leader, which is
-    // cut off and asks again too. Both log under the same name here.
-    EXPECT_EQ(reports, 2);
+    // cut off and asks again too.
+    EXPECT_EQ(reported(1, pubsub_itc_fw::LeaseChange::NoLeader), 1);
+    EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::NoLeader), 1);
 }
 
 TEST_F(PairLeaseAgentTest, APromiseIsRecordedBeforeTheGrantIsSent) {
@@ -431,7 +462,10 @@ TEST_F(PairLeaseAgentTest, APromiseThatCannotBeRecordedIsNotMade) {
     // The follower refused rather than making a promise it could not keep across a restart, so the
     // primary leads on the arbiter's grant alone.
     EXPECT_TRUE(agents_[0]->acting(now_));
-    EXPECT_TRUE(log_contains("could not write the lease promise record"));
+    EXPECT_GT(kept_[1].failed_writes, 0);
+    EXPECT_FALSE(kept_[1].recorded_anything);
+    EXPECT_TRUE(std::find(changes_[1].begin(), changes_[1].end(), pubsub_itc_fw::PairLeaseAgent::Change::AgreedPeerLeads) == changes_[1].end())
+        << "the follower granted a lease it could not record";
 }
 
 // In the two tests below the leader's process is down for 1.5 seconds before its supervisor starts it
@@ -452,7 +486,7 @@ TEST_F(PairLeaseAgentTest, ALeaderRestartedWithItsRecordKeepsTheLead) {
         ASSERT_FALSE(agents_[1]->acting(now_)) << "the peer took over at step " << i;
     }
     EXPECT_TRUE(agents_[0]->acting(now_));
-    EXPECT_TRUE(log_contains("this instance was leading, so it asks to lead again at once"));
+    EXPECT_EQ(reported(0, pubsub_itc_fw::LeaseChange::ResumingLead), 1);
 }
 
 TEST_F(PairLeaseAgentTest, ALeaderRestartedWithoutARecordIsOvertaken) {
@@ -718,7 +752,6 @@ TEST_F(PairLeaseAgentTest, AFollowerTheLeaderSaysMayNotLeadDoesNotTakeOverWhenTh
         step();
     }
     EXPECT_EQ(kept_[1].statement.instance_that_may_not_lead(), 2);
-    EXPECT_TRUE(log_contains("says this instance may not lead"));
     crash(0);
     for (int i = 0; i < 200; ++i) {
         step();

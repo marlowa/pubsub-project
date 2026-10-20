@@ -204,7 +204,6 @@ void ReplicatedWal::start_running_alone(const char* reason, Clock::time_point no
     running_alone_since_ = now;
     waiting_since_.reset();
     configuration_.running_alone_gauge.set(1.0);
-    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Warning,
                "{}: the follower is too far behind -- {}. Running as if alone: once a voter confirms that the follower may not lead, records are "
                "committed without waiting for it, so resilience is reduced until the follower catches up. The follower has acknowledged through {} of {}",
@@ -221,7 +220,6 @@ void ReplicatedWal::stop_running_alone(const char* reason, Clock::time_point now
     running_alone_ = false;
     configuration_.running_alone_gauge.set(0.0);
     const auto alone_for = std::chrono::duration_cast<std::chrono::milliseconds>(now - running_alone_since_);
-    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the follower is keeping up again -- {}. Waiting for its acknowledgements again after {} ms running as if alone",
                configuration_.owner_name, reason, alone_for.count());
     report(RunningAloneChanged{configuration_.owner_name, configuration_.instance_id, false, reason, peer_acked_through_, log_epochs_.last_seq_no()});
@@ -232,7 +230,6 @@ void ReplicatedWal::say_follower_may_not_lead(Clock::time_point now) {
         return;
     }
     lease_agent_->begin_running_without_peer(now);
-    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info,
                "{}: saying the follower may not lead -- records it does not hold are not committed until a voter confirms that statement",
                configuration_.owner_name);
@@ -249,7 +246,6 @@ void ReplicatedWal::say_follower_may_lead_if_it_holds_everything(Clock::time_poi
         return;
     }
     lease_agent_->peer_holds_everything(now);
-    // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(logger_, FwLogLevel::Info, "{}: the follower holds every record through {} -- saying it may lead again", configuration_.owner_name,
                peer_acked_through_);
     report(PeerMayLeadChanged{configuration_.owner_name, configuration_.instance_id, true, peer_acked_through_});
@@ -532,6 +528,7 @@ void ReplicatedWal::on_peer_caught_up(int64_t through, Clock::time_point /*now*/
                "{}: the follower has been sent every record through {} -- this instance sends it each new record from now, and waits for it again once "
                "it has acknowledged them all",
                configuration_.owner_name, through);
+    report(FollowerHandedOver{configuration_.owner_name, configuration_.instance_id, through});
 }
 
 void ReplicatedWal::on_peer_catch_up_stopped(Clock::time_point now) {
@@ -580,7 +577,6 @@ void ReplicatedWal::handle_position_reply(const LogPositionReplyView& reply, Clo
         // number follows the last record kept, so that if it leads again it does not number past a gap;
         // taking the lead raises it above every record replicated since.
         next_seq_no_ = keep_through + 1;
-        // TEST CONTRACT -- ReplicatedWalTest matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, FwLogLevel::Warning,
                    "{}: discarded records {} to {} from this instance's log -- the leader does not hold them. They were never committed, so nothing has "
                    "acted on them",

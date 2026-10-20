@@ -13,7 +13,7 @@
 #  handling orders changed.
 #
 #  Message ids 180 to 189 are the sequencer's, within the range 170 to
-#  199 set aside for applications' test events.
+#  229 set aside for applications' test events.
 # ============================================================
 
 # ------------------------------------------------------------

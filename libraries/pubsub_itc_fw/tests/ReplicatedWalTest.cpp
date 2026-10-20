@@ -464,20 +464,13 @@ class Pair {
     // Steps until the leader has said its follower may lead, which a new leadership says only once the
     // follower holds every record. Until then the follower may not take over if the leader dies.
     bool step_until_follower_may_lead(int leader, int limit = 100) {
-        const size_t said_before = count_log("saying it may lead again");
         for (int n = 0; n < limit; ++n) {
-            if (count_log("saying it may lead again") > said_before) {
+            if (up_[leader] && wals_[leader]->says_follower_may_lead()) {
                 return true;
             }
             step();
         }
-        static_cast<void>(leader);
         return false;
-    }
-
-    size_t count_log(const std::string& text) {
-        logger_.flush();
-        return static_cast<size_t>(std::count_if(log_.begin(), log_.end(), [&text](const std::string& line) { return line.find(text) != std::string::npos; }));
     }
 
     // Steps until the follower's WAL agrees with the leader's and every record has been acknowledged.
@@ -502,11 +495,6 @@ class Pair {
 
     void advance(Clock::duration by) {
         now_ += by;
-    }
-
-    bool log_contains(const std::string& text) {
-        logger_.flush();
-        return std::any_of(log_.begin(), log_.end(), [&text](const std::string& line) { return line.find(text) != std::string::npos; });
     }
 
     LeaseTiming timing_{};
@@ -566,6 +554,18 @@ struct RecordingTestEventLinks : public TestEventLinksInterface {
             LeaseChangedView view{};
             ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
             lease_changes.push_back(LeaseEvent{std::string(view.owner), view.instance, view.change, view.granted_by, view.epoch});
+        } else if (pdu_id == WalsAgree::message_pdu_id) {
+            WalsAgreeView view{};
+            ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+            wals_agree.push_back(view.side);
+        } else if (pdu_id == RecordsDiscarded::message_pdu_id) {
+            RecordsDiscardedView view{};
+            ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+            records_discarded.emplace_back(view.first, view.last);
+        } else if (pdu_id == FollowerHandedOver::message_pdu_id) {
+            FollowerHandedOverView view{};
+            ASSERT_TRUE(decode(view, bytes, size, consumed, arena, arena_needed));
+            handed_over_through.push_back(view.through);
         }
     }
     struct Change {
@@ -588,6 +588,20 @@ struct RecordingTestEventLinks : public TestEventLinksInterface {
     std::vector<int16_t> pdu_ids;
     std::vector<bool> running_alone;
     std::vector<bool> peer_may_lead;
+    // Each WalsAgree's side, each RecordsDiscarded's first and last record, and each FollowerHandedOver's last record.
+    std::vector<WalSide> wals_agree;
+    std::vector<std::pair<int64_t, int64_t>> records_discarded;
+    std::vector<int64_t> handed_over_through;
+};
+
+// A channel for one instance's test events, connected to a test, and what it has sent.
+struct ReportedEvents {
+    RecordingTestEventLinks links;
+    TestEventChannel channel{links, "test_component", 1, "TestThread"};
+
+    ReportedEvents() {
+        static_cast<void>(channel.on_connection_established(ConnectionID{3, std::string(TestEventChannel::service_name)}));
+    }
 };
 
 } // un-named namespace
@@ -677,19 +691,23 @@ TEST(ReplicatedWalTest, TheFollowerWritesNothingAfterAMissingRecordUntilTheTwoWa
 }
 
 TEST(ReplicatedWalTest, AFollowerThatStopsAcknowledgingIsLeftBehindOnlyOnceAVoterConfirmsTheStatement) {
+    ReportedEvents leader_events;
     Pair pair("replicated_wal_alone_after_stall");
+    pair.test_events_[0] = &leader_events.channel;
     pair.start_both();
     ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
     ASSERT_TRUE(pair.step_until_follower_may_lead(0));
+    leader_events.links.running_alone.clear();
+    leader_events.links.peer_may_lead.clear();
 
     // The follower stalls: it receives records and acknowledges none.
     pair.held_[1] = true;
     const int64_t seq_no = pair.append(0, 50);
     pair.advance(ReplicatedWal::follower_acknowledgement_timeout);
     pair.wals_[0]->on_acknowledgement_watch(pair.now_);
-    EXPECT_TRUE(pair.log_contains("the follower is too far behind"));
-    EXPECT_TRUE(pair.log_contains("saying the follower may not lead"));
+    EXPECT_EQ(leader_events.links.running_alone, std::vector<bool>{true});
+    EXPECT_EQ(leader_events.links.peer_may_lead, std::vector<bool>{false});
     EXPECT_LT(pair.events_[0].committed, seq_no) << "committed before a voter confirmed that the follower may not lead";
 
     // The statement goes to the arbiter with the leader's next renewal, and the grant confirms it.
@@ -701,11 +719,11 @@ TEST(ReplicatedWalTest, AFollowerThatStopsAcknowledgingIsLeftBehindOnlyOnceAVote
     // The follower recovers: it acknowledges everything, and the leader says it may lead again.
     pair.held_[1] = false;
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
-    EXPECT_TRUE(pair.log_contains("the follower is keeping up again"));
-    for (int n = 0; n < 20 && !pair.log_contains("saying it may lead again"); ++n) {
+    EXPECT_EQ(leader_events.links.running_alone, (std::vector<bool>{true, false}));
+    for (int n = 0; n < 20 && leader_events.links.peer_may_lead.size() < 2; ++n) {
         pair.step();
     }
-    EXPECT_TRUE(pair.log_contains("saying it may lead again"));
+    EXPECT_EQ(leader_events.links.peer_may_lead, (std::vector<bool>{false, true}));
 }
 
 TEST(ReplicatedWalTest, RunningAloneAndWhatTheLeaderSaysOfItsFollowerAreReportedAsTestEvents) {
@@ -740,7 +758,9 @@ TEST(ReplicatedWalTest, RunningAloneAndWhatTheLeaderSaysOfItsFollowerAreReported
 }
 
 TEST(ReplicatedWalTest, ARejoiningFollowerDiscardsTheRecordsOfAnOlderLeadershipAndTakesItsLeaders) {
+    ReportedEvents follower_events;
     Pair pair("replicated_wal_repair");
+    pair.test_events_[1] = &follower_events.channel;
     // Before either starts: both hold records 1 to 3 from epoch 1. Instance 2 also holds 4 and 5 from
     // epoch 1, which its leader never had; instance 1 holds 4 to 6 from epoch 2.
     {
@@ -767,7 +787,7 @@ TEST(ReplicatedWalTest, ARejoiningFollowerDiscardsTheRecordsOfAnOlderLeadershipA
 
     ASSERT_EQ(pair.events_[1].discarded_after_seq_nos.size(), 1U);
     EXPECT_EQ(pair.events_[1].discarded_after_seq_nos[0], 3);
-    EXPECT_TRUE(pair.log_contains("from this instance's log -- the leader does not hold them"));
+    EXPECT_EQ(follower_events.links.records_discarded, (std::vector<std::pair<int64_t, int64_t>>{{4, 5}}));
     const auto follower_records = read_wal(pair.directories_[1]);
     EXPECT_EQ(follower_records, read_wal(pair.directories_[0]));
     EXPECT_EQ(follower_records.at(5).first, 2);
@@ -823,7 +843,9 @@ TEST(ReplicatedWalTest, ARecordTheFollowerWroteButTheLeaderNeverSawAcknowledgedS
 // statement. When the old leader restarts it still holds its own statement, and it must take the new
 // leader's newer one in its place and follow, rather than refusing the new leader for ever (BUG-0152).
 TEST(ReplicatedWalTest, AFormerLeaderHoldingAStatementNoVoterEchoedFollowsTheLeaderThatTookOver) {
+    ReportedEvents leader_events;
     Pair pair("replicated_wal_stale_statement");
+    pair.test_events_[0] = &leader_events.channel;
     pair.start_both();
     ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
@@ -832,7 +854,8 @@ TEST(ReplicatedWalTest, AFormerLeaderHoldingAStatementNoVoterEchoedFollowsTheLea
     pair.arbiter_up_ = false;
     pair.disconnect();
     pair.deliver();
-    ASSERT_TRUE(pair.log_contains("saying the follower may not lead"));
+    ASSERT_FALSE(leader_events.links.peer_may_lead.empty());
+    ASSERT_FALSE(leader_events.links.peer_may_lead.back());
     pair.crash(0);
     pair.arbiter_up_ = true;
     ASSERT_TRUE(pair.step_until(1, ReplicaRole::leader));
@@ -970,7 +993,9 @@ TEST(ReplicatedWalTest, InRandomRunsWithTheCatchUpOnItsOwnThreadNoCommittedRecor
 // The leader has a rejoining follower's missing records sent through the catch-up, not read on its own
 // thread, and then sends it each new record itself.
 TEST(ReplicatedWalTest, ARejoiningFollowerIsSentWhatItLacksThroughTheCatchUpAndThenNewRecords) {
+    ReportedEvents leader_events;
     Pair pair("replicated_wal_catch_up", true);
+    pair.test_events_[0] = &leader_events.channel;
     pair.start_both();
     ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
@@ -985,8 +1010,9 @@ TEST(ReplicatedWalTest, ARejoiningFollowerIsSentWhatItLacksThroughTheCatchUpAndT
     pair.connect();
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
     EXPECT_GE(pair.catch_ups_[0].started, 1);
-    EXPECT_TRUE(pair.log_contains("are being sent to it from the WAL"));
-    EXPECT_TRUE(pair.log_contains("has been sent every record through"));
+    EXPECT_NE(std::find(leader_events.links.wals_agree.begin(), leader_events.links.wals_agree.end(), WalSide::Leader), leader_events.links.wals_agree.end());
+    ASSERT_FALSE(leader_events.links.handed_over_through.empty());
+    EXPECT_EQ(leader_events.links.handed_over_through.back(), pair.wals_[0]->last_seq_no());
     static_cast<void>(pair.append(0, 99));
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
     EXPECT_EQ(read_wal(pair.directories_[0]), read_wal(pair.directories_[1]));
@@ -996,7 +1022,9 @@ TEST(ReplicatedWalTest, ARejoiningFollowerIsSentWhatItLacksThroughTheCatchUpAndT
 // has not yet acknowledged every record up to where it was: they would wait behind the whole catch-up
 // (BUG-0155). Once it has, they wait for it again.
 TEST(ReplicatedWalTest, NewRecordsDoNotWaitForAFollowerUntilItHasAcknowledgedThroughTheHandOver) {
+    ReportedEvents leader_events;
     Pair pair("replicated_wal_hand_over_wait", true);
+    pair.test_events_[0] = &leader_events.channel;
     pair.start_both();
     ASSERT_TRUE(pair.step_until(0, ReplicaRole::leader));
     ASSERT_TRUE(pair.step_until_follower_holds_everything(0));
@@ -1015,7 +1043,7 @@ TEST(ReplicatedWalTest, NewRecordsDoNotWaitForAFollowerUntilItHasAcknowledgedThr
     pair.held_[1] = true; // from here the follower's acknowledgements are held back
     pair.run_catch_ups(); // the follower is sent every record and handed over
     pair.deliver();
-    ASSERT_TRUE(pair.log_contains("has been sent every record through"));
+    ASSERT_FALSE(leader_events.links.handed_over_through.empty());
 
     EXPECT_FALSE(pair.wals_[0]->waits_for_follower());
     const int64_t seq_no = pair.append(0, 50);
@@ -1090,7 +1118,7 @@ TEST(ReplicatedWalTest, ARequestFromANewPositionIsAnsweredOnlyAfterTheRunningCat
     request.last_seq_no -= 1;
     send_request(request);
     EXPECT_FALSE(pair.catch_ups_[0].pending);
-    EXPECT_TRUE(pair.log_contains("it is answered once that has stopped"));
+    EXPECT_TRUE(pair.catch_ups_[0].stopping) << "the running catch-up was not told to stop";
     EXPECT_EQ(pair.catch_ups_[0].started, started_before + 1);
 
     // Asked again before the reading thread has confirmed: still not answered.

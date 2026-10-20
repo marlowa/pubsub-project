@@ -187,6 +187,7 @@ void SequencerThread::on_initial_event() {
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: WAL snapshot timer started (interval={}s)", config_.snapshot_interval_seconds);
 
     if (!config_.ha_enabled) {
+        // TEST CONTRACT -- ha_test.py matches this text (scenario 47), because what it checks is that an operator is told why both instances lead.
         PUBSUB_LOG_STR(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "SequencerThread: ha_enabled=false -- starting as leader immediately");
     } else {
         lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);

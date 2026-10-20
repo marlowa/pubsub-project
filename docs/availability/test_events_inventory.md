@@ -333,6 +333,9 @@ venue.
 Decision 6 brings these into the phase. Each checks a class directly, so each is replaced by checking the class's own
 state, or the event the class sends in step 3, not by a test event connection.
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.16). `ReplicatedWalTest` also waited, in a helper six of
+its tests use, for the line saying the follower may lead again; that helper now reads the WAL's state.
+
 | Test file | Phrase | Proves | Replaced by |
 |---|---|---|---|
 | `PairLeaseAgentTest` | leading at epoch 1 -- granted a lease by | the agent leads at epoch 1 | its state and epoch |
@@ -361,8 +364,8 @@ were missed by it:
 | several | `wait_for_accepted_count` | me_log | "accepted NOS OrderID=ME-ORD-", counted | B | **Member**: New reports at the client, counted (moved) |
 | 50 | `run_scenario` | me_log | "UnknownOrder" and "sent cancel ER" after the member's session is dropped | B | **Event**: `OrderOutcome` (Cancelled, CancelRefusedUnknown): the member has gone (moved) |
 | all | `wait_for_fix_logon` | gw_log | the gateway's lines for a logon established, refused, or opened at unconfirmed numbering | I | **Event**: `SessionEstablished`, with whether the numbering was confirmed, or `LogonRefused`, with the reason (moved) |
-| 44, 45 | `run_scenario` | refuser_log | "refusing to start" and "[ha] enabled = false" from a component that refuses to start | to be decided | the operator reads this message, so it may stay as the component's standard error rather than a Quill log |
-| 47 | `run_scenario` | each sequencer's log | "ha_enabled=false", the reason each leads | A | an event, or the role events' epoch, when the remaining kinds are moved |
+| 44, 45 | `run_scenario` | refuser_log | "refusing to start" and "[ha] enabled = false" from a component that refuses to start | operator message | **Stays** (decision 8, A): what is checked is that an operator is told |
+| 47 | `run_scenario` | each sequencer's log | "ha_enabled=false", the reason each leads | operator message | **Stays** (decision 8, A): what is checked is that an operator is told |
 | 69 | `run_scenario` | secondary_log | "forwarding ... kept report(s)" | D | **Event**: the sequencer's `KeptReportsForwarded`, with how many it forwarded (moved) |
 
 
@@ -415,6 +418,7 @@ were missed by it:
 | `ThrottleStopped` | I | the FIX gateway |
 | `ProgressReported` | M | the FIX gateway |
 | `KeptReportsForwarded` | D | the sequencer, when it takes the lead and forwards the reports it kept |
+| `FollowerHandedOver` | unit tests | the library's ReplicatedWal, when its reading thread has sent a rejoining follower every record it lacked |
 
-That is 46 events. Several may merge when they are defined, for instance the session events into one
+That is 47 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

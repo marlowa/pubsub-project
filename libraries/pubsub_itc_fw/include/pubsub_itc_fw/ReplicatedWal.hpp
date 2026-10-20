@@ -377,6 +377,10 @@ class ReplicatedWal {
     [[nodiscard]] bool alone() const {
         return !configuration_.ha_enabled;
     }
+    /// Whether this instance's lease agent says that its follower may lead, which a leader says once the follower holds every record.
+    [[nodiscard]] bool says_follower_may_lead() const {
+        return lease_agent_.has_value() && lease_agent_->says_peer_may_lead();
+    }
 
   private:
     void write(int64_t seq_no, int32_t leader_epoch, int16_t pdu_id, const uint8_t* bytes, size_t size, int64_t wall_time_ns);

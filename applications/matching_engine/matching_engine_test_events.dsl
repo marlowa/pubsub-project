@@ -16,7 +16,7 @@
 #  exactly once. Every other order is checked through the execution
 #  reports its member receives.
 #
-#  Message ids 170 to 199 are set aside for applications' test events;
+#  Message ids 170 to 229 are set aside for applications' test events;
 #  the library's take 140 to 169.
 # ============================================================
 

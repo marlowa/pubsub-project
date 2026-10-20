@@ -855,6 +855,42 @@ From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 fail
 build, as section 4.10 says. The event is sent once, when a sequencer takes the lead, and it does not change the round
 trip.
 
+### 4.16 Step 4: the unit tests that read a captured Quill log
+
+**The checks moved** (decision 6). `PairLeaseAgentTest` gives each agent a test event channel whose connection records
+what it is sent, as an owner started by a test does, and checks the lease changes the agent reports: granted at epoch 1,
+the lease ran out, no leader (once from each instance), and resuming the lead after a restart. That a promise which
+cannot be recorded is not made is checked by the recorder's own count of failed writes and by the follower granting no
+lease. That the follower holds its leader's statement that it may not lead was already checked by the statement it
+recorded, so that line went.
+
+`ReplicatedWalTest` checks, through the same kind of channel, the leader running as if alone and stopping, what it says of
+its follower, the records a rejoining follower discards, and the WALs agreeing before a catch-up. A request that arrives
+while records are being sent to the follower is held until the catch-up stops; the test checks that the catch-up was told
+to stop. A helper six of its tests use, which steps until the leader says its follower may lead, read the line saying so;
+it now reads `ReplicatedWal::says_follower_may_lead()`, which is new.
+
+**One new library event.** A leader whose application gives it a reading thread sent no event when that thread had sent
+a rejoining follower every record it lacked, although a leader that sends them itself says that the WALs agree.
+`test_events.dsl` gains `FollowerHandedOver` (message id 152), sent then, with the last record sent.
+
+The `TEST CONTRACT` comments on the messages these tests read, three in `PairLeaseAgent` and five in `ReplicatedWal`, are
+gone; nothing reads those messages now.
+
+**How it was shown to work.** Each of these, put in the library one at a time, failed the tests meant to catch it: the
+hand-over not reported (the two tests of a catch-up through the reading thread); the records discarded not reported (the
+test of a rejoining follower that discards records); running as if alone not reported (the test of a follower that stops
+acknowledging, and the test of the events themselves); the lease agent's changes not reported (four of
+`PairLeaseAgentTest`, and the test of the agent's events in `ReplicatedWalTest`); the running catch-up not told to stop
+(the test of a request from a new position); and `says_follower_may_lead()` always false (the five tests that step until
+it is true).
+
+From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182). The order's round trip, with no test events configured, measured as for kind A: the
+medians of four runs were 108.6, 108.2, 107.8 and 107.5 microseconds with the build before this change, 107.9, 107.8,
+107.8 and 107.5 with this one, and 108.6, 109.1, 109.5 and 108.0 with the build before it again. `FollowerHandedOver` is
+sent once for each follower that rejoins, and the change does not alter the round trip.
+
 ## 5. What phase 6 does not do
 
 - **No behaviour of the venue changes.** Only what the components tell a test, when one asks.
@@ -919,3 +955,19 @@ class's state, or the events it sends, instead. Recommended: yes, added to the i
 ### Decision 7. Is the design as a whole right to build, in the order of section 4? (Yes or no.)
 
 Recommended: yes. **Decided: yes** (Andrew, 18 October 2026).
+
+### Decision 8. Do the checks of messages written for an operator keep reading the message? (Choose A, B or C.)
+
+Scenarios 44 and 45 start the arbiter and the witness by hand with high availability off, and check that each refuses to
+start and that its message says "refusing to start" and "[ha] enabled = false". Scenario 47 starts two sequencers with
+high availability off, and checks that each wrote "ha_enabled=false" in its Quill log as the reason it leads. What these
+check is that an operator is told, so the wording is what is under test. The arbiter and the witness refuse before they
+have any connection to a test.
+
+- **A.** All three keep reading the message, as stated exceptions: their `TEST CONTRACT` comments stay, and step 5 leaves
+  those three messages alone.
+- **B.** All three are replaced: scenarios 44 and 45 check only that the process exits with a failure, and scenario 47
+  checks a sequencer event. Nothing then tests that an operator is told.
+- **C.** Scenarios 44 and 45 as in A, and scenario 47 as in B.
+
+Recommended: A. **Decided: A** (Andrew, 20 October 2026).
