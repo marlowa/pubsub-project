@@ -5463,7 +5463,28 @@ def blocked_peer_environment(prefix: Path, flag: Path) -> dict[str, str]:
         die(f"{library} is not installed; it is built with the sequencer and installed by devsetup.sh")
     ports = [installed_toml_section_value(prefix / "etc" / "sequencer" / f"sequencer_{which}.toml", "peer", "listen_port")
              for which in ("primary", "secondary")]
-    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag)}
+    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag),
+            "PUBSUB_TEST_BLOCK_CONFIRMATION": str(block_confirmation(flag))}
+
+
+def block_confirmation(flag: Path) -> Path:
+    """The file libblock_sends_to_ports.so creates when it begins blocking, beside the flag file that tells it to."""
+    return flag.with_suffix(".blocking")
+
+
+def await_blocking(flag: Path, timeout: float) -> bool:
+    """Whether libblock_sends_to_ports.so has begun blocking, waiting up to timeout seconds for its confirmation file.
+
+    The library notices the flag file at the first send after it appears, so the confirmation file appears only once the
+    process has sent something more.
+    """
+    confirmation = block_confirmation(flag)
+    deadline = time.monotonic() + timeout
+    while not confirmation.exists():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(LOG_POLL_INTERVAL)
+    return True
 
 
 def blocked_gateway_environment(prefix: Path, flag: Path) -> dict[str, str]:
@@ -5488,7 +5509,8 @@ def blocked_gateway_environment(prefix: Path, flag: Path) -> dict[str, str]:
             ports.append(match.group(1))
     if not ports:
         die(f"no [[gateway]] ports in {config}, so there is nothing to block")
-    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag)}
+    return {"LD_PRELOAD": str(library), "PUBSUB_TEST_BLOCK_PORTS": ",".join(ports), "PUBSUB_TEST_BLOCK_FLAG": str(flag),
+            "PUBSUB_TEST_BLOCK_CONFIRMATION": str(block_confirmation(flag))}
 
 
 def installed_toml_int(config: Path, key: str) -> int:
@@ -6410,6 +6432,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         log("=== Phase 1: starting all processes ===")
         block_flag = prefix / "var" / "block_sends_to_ports.flag"
         block_flag.unlink(missing_ok=True)
+        block_confirmation(block_flag).unlink(missing_ok=True)
         for name, bin_name, config in launch_table:
             log(f"  Starting {name} ...")
             extra_environment = None
@@ -8025,11 +8048,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # 1. Stop everything the leader sends to its follower from arriving, and confirm the
             #    library says so, rather than assuming the flag file had its effect.
             block_flag.touch()
-            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists",
-                                timeout=_RAW_REPLY_TIMEOUT)[0]:
-                die("unreplicated orders: libblock_sends_to_ports.so never reported that it had begun blocking, so the "
+            if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
+                die("unreplicated orders: libblock_sends_to_ports.so never confirmed that it had begun blocking, so the "
                     "follower may still be receiving the leader's records and nothing below would mean anything.")
-            log("  the leader's sends to its follower are now discarded, and the library has said so -- OK")
+            log("  the leader's sends to its follower are now discarded, and the library has confirmed it -- OK")
 
             # 2. Three orders to the leader in one go, and the leader stopped the moment they are
             #    sent. With nothing reaching the follower, the leader holds them waiting for an
@@ -8167,11 +8189,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             # 3. The leader holds records its follower never received, and dies; as in scenario 59.
             block_flag.touch()
-            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists",
-                                timeout=_RAW_REPLY_TIMEOUT)[0]:
-                die("publishers: libblock_sends_to_ports.so never reported that it had begun blocking, so the follower may still be "
+            if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
+                die("publishers: libblock_sends_to_ports.so never confirmed that it had begun blocking, so the follower may still be "
                     "receiving the leader's records and nothing below would mean anything.")
-            log("  the leader's sends to its follower are now discarded, and the library has said so -- OK")
+            log("  the leader's sends to its follower are now discarded, and the library has confirmed it -- OK")
             primary = proc_by_name["sequencer_primary"]
             unreplicated_base = f"pubunrep-{run_tag}"
             injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", unreplicated_base,
@@ -8415,8 +8436,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
             agreed_through = max(wal_records_after(wal_dirs["secondary"], 0, start_positions["secondary"]) or {0: 0})
 
             block_flag.touch()
-            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists", timeout=_RAW_REPLY_TIMEOUT)[0]:
-                die("old leader rejoins: libblock_sends_to_ports.so never reported that it had begun blocking.")
+            if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
+                die("old leader rejoins: libblock_sends_to_ports.so never confirmed that it had begun blocking.")
             primary = proc_by_name["sequencer_primary"]
             only_old = f"onlyold-{run_tag}"
             injector = subprocess.Popen([str(bin_dir / "inject_order"), "--port", order_ports["primary"], "--cl-ord-id", only_old, "--count", "3"],
@@ -8603,11 +8624,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             # 2. Nothing the leader sends to a gateway arrives from now on, and the library says so.
             block_flag.touch()
-            if not poll_log_for(log_dir / "sequencer_primary.stdout", "block_sends_to_ports: the flag file exists",
-                                timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
                 member.close()
-                die("kept reports: libblock_sends_to_ports.so never reported that it had begun blocking.")
-            log("  the leader's sends to the gateways are now discarded, and the library has said so -- OK")
+                die("kept reports: libblock_sends_to_ports.so never confirmed that it had begun blocking.")
+            log("  the leader's sends to the gateways are now discarded, and the library has confirmed it -- OK")
 
             # 3. Orders the engine accepts, whose reports the leader cannot forward.
             kept = [f"kept-{run_tag}-{number}" for number in (1, 2, 3)]
@@ -8711,11 +8731,10 @@ def run_scenario(scenario: Scenario, args) -> bool:
 
             # 2. Nothing the follower sends to the leader arrives from now on, and the library says so.
             block_flag.touch()
-            if not poll_log_for(log_dir / "sequencer_secondary.stdout", "block_sends_to_ports: the flag file exists",
-                                timeout=_RAW_REPLY_TIMEOUT)[0]:
+            if not await_blocking(block_flag, _RAW_REPLY_TIMEOUT):
                 member.close()
-                die("logged commands: libblock_sends_to_ports.so never reported that it had begun blocking the follower.")
-            log("  the follower's sends to the leader are now discarded, and the library has said so -- OK")
+                die("logged commands: libblock_sends_to_ports.so never confirmed that it had begun blocking the follower.")
+            log("  the follower's sends to the leader are now discarded, and the library has confirmed it -- OK")
 
             # 3. Orders the leader holds, waiting for acknowledgements that cannot arrive. It is stopped
             #    well inside its 100 ms wait, so it cannot run as if alone and send them to the engine.

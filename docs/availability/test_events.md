@@ -772,6 +772,29 @@ From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 fail
 108.0, 107.8 and 107.7 with the build of kind I again. Kind J changes no code on the path of an order, and it does not
 change the round trip.
 
+### 4.13 Step 4, kind K: the fault-injection library confirms that it is blocking
+
+**The library.** `libblock_sends_to_ports.so` takes a third environment variable, `PUBSUB_TEST_BLOCK_CONFIRMATION`, the
+path of a file it creates when blocking begins (decision 5, B). It notices the flag file at the first send after the
+flag appears, so the confirmation file appears then too. It still writes its line to standard error at the same moment,
+for a person reading the process's output; no test reads that line.
+
+**The checks moved.** The five of kind K, in scenarios 59, 62, 65, 66 and 76. `ha_test.py` gives the library the path
+`block_sends_to_ports.blocking` beside the flag file, removes it before each scenario with the flag, and waits for it to
+exist (`await_blocking`) where it waited for the line.
+
+**How it was shown to work.** In a build of the library that never creates the confirmation file, scenario 59, where
+the primary sequencer's sends are blocked, and scenario 66, where the secondary's are, each failed at the wait for it,
+saying that the library never confirmed it had begun blocking.
+
+From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 99.4,
+107.9, 107.8 and 107.5 microseconds with the build of kind J, 108.0, 108.2, 107.8 and 108.0 with this one, and 108.4,
+107.6, 107.5 and 107.6 with the build of kind J again. The library is loaded only by a test, and kind K does not change
+the round trip.
+
 ## 5. What phase 6 does not do
 
 - **No behaviour of the venue changes.** Only what the components tell a test, when one asks.

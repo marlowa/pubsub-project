@@ -14,14 +14,16 @@
 // exists, nothing more the leader sends to its peer arrives, so every order it takes from then on
 // is held by the leader and the engine and by nothing else.
 //
-// It is loaded into one process only, with LD_PRELOAD, and is configured by two environment
-// variables. Without both, it passes every send straight through and does nothing else:
+// It is loaded into one process only, with LD_PRELOAD, and is configured by environment variables.
+// Without the first two, it passes every send straight through and does nothing else:
 //
 //   PUBSUB_TEST_BLOCK_PORTS   the ports to block, separated by commas. A connection is blocked
 //                             if either its local port or its remote port is one of them, so the
 //                             listening port of each side covers both the connection this process
 //                             accepted and the one it opened.
 //   PUBSUB_TEST_BLOCK_FLAG    the path of the flag file. Sends pass through until it exists.
+//   PUBSUB_TEST_BLOCK_CONFIRMATION
+//                             optional: the path of a file the library creates when blocking begins.
 //
 // For example, with everything on one command line:
 //
@@ -33,13 +35,16 @@
 // has been seen, no later send on a blocked connection arrives, so the other end receives a whole
 // number of the frames sent before the flag appeared and nothing after.
 //
-// It writes one line to standard error when blocking begins, which the test reads as evidence
-// that the block really was in force rather than assuming it.
+// When blocking begins, it creates the confirmation file, which the test waits for as evidence that
+// the block really was in force rather than assuming it. The flag is noticed at the first send after
+// it appears, so the confirmation file appears then too. It also writes one line to standard error
+// then, for a person reading the process's output.
 //
 // It is not for use in a live venue.
 
 #include <arpa/inet.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -61,6 +66,7 @@ using SendFunction = ssize_t (*)(int, const void*, size_t, int);
 struct Configuration {
     std::set<uint16_t> blocked_ports;
     std::string flag_path;
+    std::string confirmation_path;
     SendFunction real_send{nullptr};
 };
 
@@ -94,6 +100,8 @@ const Configuration& configuration() {
         result.blocked_ports = parse_ports(std::getenv("PUBSUB_TEST_BLOCK_PORTS"));
         const char* flag = std::getenv("PUBSUB_TEST_BLOCK_FLAG");
         result.flag_path = flag == nullptr ? "" : flag;
+        const char* confirmation = std::getenv("PUBSUB_TEST_BLOCK_CONFIRMATION");
+        result.confirmation_path = confirmation == nullptr ? "" : confirmation;
         result.real_send = reinterpret_cast<SendFunction>(dlsym(RTLD_NEXT, "send"));
         return result;
     }();
@@ -139,6 +147,12 @@ bool blocking_has_begun(const Configuration& config) {
     if (!blocking.exchange(true, std::memory_order_acq_rel)) {
         constexpr std::string_view announcement = "block_sends_to_ports: the flag file exists; sends to the blocked ports are now discarded\n";
         [[maybe_unused]] const ssize_t written = write(STDERR_FILENO, announcement.data(), announcement.size());
+        if (!config.confirmation_path.empty()) {
+            const int confirmation = open(config.confirmation_path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+            if (confirmation >= 0) {
+                close(confirmation);
+            }
+        }
     }
     return true;
 }

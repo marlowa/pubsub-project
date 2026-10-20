@@ -3832,6 +3832,10 @@ the processor 99 per cent idle, it passed five times and failed once, with 30 be
 nothing in the reactor: one comment in `ReplicatedWal.cpp` and the high availability test script.
 [BUG-0094](#bug_0094), dismissed, describes this test and the load it applies, and says that it passes.
 
+It failed the developer loop again two builds later, so it failed two of three full builds that night. Each of the two
+was started soon after a measurement of the order's round trip, and the processors were on the performance governor when
+they were looked at after the second. Whether either matters is not known.
+
 **What is wanted.** The cause found: whether the reactor serves its timers late while it is serving sockets and
 messages from other threads, or whether the test's load or its measurement varies from run to run.
 

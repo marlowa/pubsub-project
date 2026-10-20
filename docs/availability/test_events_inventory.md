@@ -285,6 +285,9 @@ each scenario.
 
 ## K. The test's own fault-injection library (5)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.13): the library creates a confirmation file
+when it begins blocking, and the test waits for the file.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 59 | `run_scenario` | log_dir / "sequencer_primary.stdout" | "block_sends_to_ports: the flag file exists" | the fault-injection library has begun discarding the sequencer's sends | **File (decision 5)**: a confirmation file the library creates |
