@@ -45,11 +45,19 @@
 % Name a chapter here to rebuild only that one.
 % \includeonly{process_restart/process_restart}
 
+\include{introduction}
 \include{library/library}
 \include{applications/applications}
+\include{build_release_deployment}
 \include{security/security}
 \include{high_availability/high_availability}
 \include{metrics/metrics}
 \include{disaster_recovery/disaster_recovery}
+\include{documentation_inconsistencies}
+
+\cleardoublepage
+\addcontentsline{toc}{chapter}{Bibliography}
+\bibliographystyle{plain}
+\bibliography{references}
 
 \end{document}

@@ -1,8 +1,8 @@
-\chapter{Disaster recovery}
+\chapter{Disaster recovery: site switchover}
 \label{ch:disaster_recovery}
 
-The loss of a site rather than of a machine, and the switchover of trading to
-another data centre.
+The loss of a site rather than of a machine, and the transfer of trading
+responsibility to another data centre.
 
 This chapter is not written. What follows is the set of positions settled so far,
 recorded here so that they are not re-derived, and so that the requirements in
@@ -13,8 +13,8 @@ turn them into requirements has not been done.
 \section{Positions settled}
 \label{sec:dr:settled}
 
-\textbf{Switchover is a decision taken by a person, and is never automatic.}
-Across a wide-area link, an unreachable site and a dead site are
+\textbf{A site switchover is a decision taken by a person, and is never
+automatic.} Across a wide-area link, an unreachable site and a dead site are
 indistinguishable, and that ambiguity is the normal failure rather than a rare
 one. A mechanism that decided for itself would produce two data centres trading
 whenever the link between them broke, with no third party either could reach. The
@@ -43,14 +43,14 @@ until further notice.} There is no automatic return. Which site is live becomes 
 decision taken at each start of day, which is part of what
 \reqref{R-0035} is for.
 
-\textbf{Outstanding orders are cancelled on switchover, except those meant to
-outlive the day.} The set of orders present at the second site is a prefix of
-what the first site held, because replication is asynchronous, and it cannot be
-established which orders are missing from it. Cancelling leaves each member with
-a position it can state exactly; carrying an unknown subset across leaves every
-member with a position neither it nor the venue can state. This is the case
-\reqref{R-0020} describes rather than an exception to \reqref{R-0073}: recover
-what can be recovered, and disclaim what cannot.
+\textbf{Outstanding orders are cancelled during a site switchover, except
+those meant to outlive the day.} The set of orders present at the second site
+is a prefix of what the first site held, because replication is asynchronous,
+and it cannot be established which orders are missing from it. Cancelling
+leaves each member with a position it can state exactly; carrying an unknown
+subset across leaves every member with a position neither it nor the venue can
+state. This is the case \reqref{R-0020} describes rather than an exception to
+\reqref{R-0073}: recover what can be recovered, and disclaim what cannot.
 
 \textbf{Orders that outlive the day are held in the database and reach the second
 site by replicating it.} \Cref{sec:ha:disabled:long_lived} requires them to be
@@ -93,9 +93,9 @@ can be reached, and declare the second site live; members must then connect to
 it. The software's part of that is small and the whole is not. A figure that
 counts only the software's part will be quoted and will be wrong.
 
-\textbf{Neither figure means anything until a switchover has been rehearsed.} A
-recovery time derived from how long the steps ought to take is an estimate of a
-procedure nobody has performed.
+\textbf{Neither figure means anything until a site switchover has been
+rehearsed.} A recovery time derived from how long the steps ought to take is an
+estimate of a procedure nobody has performed.
 
 \section{Consequences not yet worked through}
 \label{sec:dr:open}
@@ -140,11 +140,11 @@ for.
 \section{The risk that no mechanism removes}
 \label{sec:dr:residual}
 
-If a switchover is declared while the first site is still trading, both sites
-trade. Nothing in this design prevents it: the two cannot reach a common arbiter,
-and the venue does not remove a site by force. It is the same trade recorded in
-\cref{sec:ha:enabled:partition} at a larger scale, and it is accepted rather than
-solved.
+If a site switchover is declared while the first site is still trading, both
+sites trade. Nothing in this design prevents it: the two cannot reach a common
+arbiter, and the venue does not remove a site by force. It is the same trade
+recorded in \cref{sec:ha:enabled:partition} at a larger scale, and it is
+accepted rather than solved.
 
 What makes it acceptable is not a mechanism but a procedure, and the procedure
 has to be written down and rehearsed rather than assumed:
@@ -162,7 +162,8 @@ has to be written down and rehearsed rather than assumed:
 \end{itemize}
 
 The order of the first two matters more than anything else in this chapter. A
-switchover declared before the first site is shut down is the one sequence that
-produces two trading venues, and it is also the one an operator under pressure is
-most likely to reach for, because declaring the second site live is the step that
-restores service and shutting the first down is the step that does not.
+site switchover declared before the first site is shut down is the one sequence
+that produces two trading venues, and it is also the one an operator under
+pressure is most likely to reach for, because declaring the second site live is
+the step that restores service and shutting the first down is the step that does
+not.

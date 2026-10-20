@@ -30,7 +30,8 @@ while the first is running. When the first fails, the second takes over.
 
 Under \textbf{active-active}, several instances process transactions at the same
 time. They agree on the order of those transactions through a consensus protocol
-such as Raft or Paxos, or through synchronous state machine replication.
+such as Raft or Paxos \cite{ongaro2014raft,lamport2001paxos}, or through
+synchronous state machine replication.
 
 This venue is active-passive. \Cref{subsec:ha_approach} says which components
 that applies to.

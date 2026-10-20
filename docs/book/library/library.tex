@@ -20,9 +20,9 @@ and when one of them becomes ready it dispatches the work for that descriptor
 and returns to waiting. The framework calls that thread the reactor.
 
 The reactor owns all socket input and output, and all timers. Sockets are
-non-blocking, and the reactor waits on them with edge-triggered \texttt{epoll}.
-A descriptor that becomes ready is therefore reported once, and the reactor
-reads from it until it would block.
+non-blocking, and the reactor waits on them with level-triggered
+\texttt{epoll}. A descriptor remains ready while it has work to be read or
+written, so the reactor can return to it on a later event-loop pass.
 
 Application work does not run on the reactor thread. The reactor converts each
 ready descriptor into a message and posts that message to the application
@@ -36,14 +36,16 @@ No hot path in the framework takes a lock. A thread that blocks on a mutex
 waits for a thread the scheduler may not run for milliseconds, and a venue
 cannot answer a member on that timescale.
 
-The framework uses two lock-free structures on its hot paths. Both are stated
-in full in the sections that specify them.
+The production build uses two lock-free structures on its hot paths. Both are
+stated in full in the sections that specify them.
 
 \begin{itemize}[nosep]
-  \item \textbf{A stack of free memory slots}, read and written by any thread,
-        used by the pool allocators.
-  \item \textbf{A queue with many producers and one consumer}, used to carry
-        messages between threads.
+  \item \textbf{A Treiber stack} of free memory slots
+        \cite{treiber1986parallelism}, used by the pool allocators. Its head
+        pairs the pointer with a counter to prevent the ABA problem.
+  \item \textbf{Vyukov's intrusive MPSC queue}
+        \cite{vyukov_mpsc_queue}, a queue with many producers and one
+        consumer, used to carry messages between threads.
 \end{itemize}
 
 Lock-free is not the same as wait-free. A thread that loses a race retries, so
@@ -69,9 +71,10 @@ The framework provides four allocation strategies, matched to different uses.
 \subsection{Message queues}
 \label{sec:fw_message_queues}
 
-Threads pass work to one another through a queue that accepts messages from any
-number of producer threads and is drained by exactly one consumer thread. The
-framework uses the intrusive queue of this shape published by Dmitry Vyukov.
+Threads pass work to one another through Vyukov's intrusive
+multiple-producer, single-consumer (MPSC) queue
+\cite{vyukov_mpsc_queue}. Its name describes the access pattern: any number of
+producer threads may enqueue, and exactly one consumer thread dequeues.
 
 A producer appends to the queue with a single atomic exchange, which is the only
 point at which two producers synchronise with each other. The consumer reads
@@ -86,77 +89,702 @@ back to the reactor.
 \section{The reactor}
 \label{sec:fw_reactor}
 
-The event loop itself: how it waits, what it dispatches, how connections are
-accepted and established, and how it shuts down. The reactor also implements the
-lookup by which a thread finds another thread's queue.
+Each component process has a reactor that coordinates its registered
+application threads. The reactor owns the process's network connections,
+timers, and event loop. Application threads do not perform socket operations
+themselves. They ask the reactor to connect, send, disconnect, start or cancel
+timers, and pause or resume reading. The reactor performs those operations and
+routes resulting events to the application thread responsible for them.
 
-\emph{Not yet specified.}
+\subsection{Starting application threads}
+\label{sec:fw_reactor_startup}
+
+Application threads and inbound listeners are registered before the reactor
+starts. Thread names and identifiers must be unique within the reactor.
+Starting the reactor starts all registered application threads and proceeds
+through a shared readiness sequence. Each thread first receives an
+\texttt{Initial} event. The reactor waits until every thread has finished
+processing it, then sends each thread an \texttt{AppReady} event. It waits
+until every thread is operational before opening the registered inbound
+listeners and marking initialisation complete. A component therefore does not
+accept inbound connections while its application threads are still
+initialising.
+
+\subsection{Dispatching socket and timer events}
+\label{sec:fw_reactor_dispatch}
+
+The reactor waits for readiness from its listening sockets, established
+connections, timers, and internal notification descriptors. It processes
+socket readiness on the reactor thread and sends application work to the
+thread registered for the connection or timer. The application callback runs
+on that application thread, not on the reactor thread; one slow callback
+therefore holds up that thread's later work but does not directly block the
+reactor from serving other descriptors.
+
+An inbound listener is associated with one application thread and one
+protocol: framework PDUs, raw bytes, or raw bytes protected by TLS. A listener
+can accept multiple concurrent peer connections; each connection has its own
+identifier and its events are routed to the associated application thread.
+When a peer connects, the thread receives a connection-established event. It
+then receives either decoded framework-PDU events or raw-byte events,
+according to the selected protocol. When the connection ends, the thread
+receives a connection-lost event.
+
+An application thread requests an outbound connection by naming a service
+registered for the process. The reactor resolves that name and attempts the
+configured connection. It reports when the connection is established and
+when an established connection is lost. Failed outbound connections are
+retried by the reactor; application code does not have to run its own retry
+loop. Connection identifiers distinguish individual connection instances,
+including a new instance created by a later retry.
+
+The reactor also owns one-shot and recurring timers. When a timer expires, it
+sends a timer event to its owning application thread. If several recurring
+expirations accumulate before the reactor handles the timer, they are
+delivered as one event rather than as one event for each missed interval. A
+timer is not delivered to an application thread that is no longer operational.
+
+\subsection{Processing application requests}
+\label{sec:fw_reactor_commands}
+
+Requests from application threads arrive through the reactor's control
+command queue. The reactor processes no more than 64 queued commands before
+returning to check sockets and timers. If commands remain, it checks
+descriptors without sleeping before taking another share. This prevents a
+continuous supply of commands, such as sends, from keeping socket and timer
+events waiting indefinitely.
+
+The reactor preserves order on each connection. If a connection cannot
+currently accept all of a send, the remaining bytes wait for that connection
+to become writable. A slow or blocked peer can therefore delay later sends
+on that same connection, but does not stop the reactor from handling other
+connections. The application can ask to be notified when a connection has
+finished its pending sends and can accept more.
+
+For raw-byte connections, the application reports how many received bytes it
+has consumed. The reactor then advances the buffer and resumes reading when
+the available capacity permits. An application can also pause and resume
+reading explicitly. These controls let a component apply backpressure
+without making the reactor perform application-specific message processing.
+
+\subsection{Finding application threads and shutting down}
+\label{sec:fw_reactor_routing_shutdown}
+
+The reactor keeps a registry of application threads by name and identifier.
+It uses that registry to route connection, timer, and inter-thread events to
+their destination queues. Thread registration is complete before the event
+loop starts; the registry is then used while the reactor is running to find
+the thread responsible for each event.
+
+An explicit shutdown request or a \texttt{SIGINT} or \texttt{SIGTERM} signal
+wakes the reactor if it is waiting for descriptor activity. The event loop
+then stops, the reactor cancels application timers, and it tells the
+registered threads to shut down. It waits for the threads to stop and joins
+them before finishing. If a thread remains running beyond the configured
+shutdown wait, each component performs a final safety check after the reactor
+returns and aborts the process if that thread is still running. This prevents
+the process from destroying data that the abandoned thread may still use.
 
 \section{Threads and processor affinity}
 \label{sec:fw_threads}
 
-Application threads, their lifecycle, and the states they pass through. Each
-thread claims a processor at startup from a registry held in shared memory, and
-runs pinned to it, so that the operating system does not move a thread and
-discard the cache it had filled.
+\subsection{Application-thread lifecycle}
 
-\emph{Not yet specified.}
+Each application thread moves through a defined lifecycle. Its states, in
+order, are \texttt{NotCreated}, \texttt{Created}, \texttt{Started},
+\texttt{InitialProcessed}, \texttt{Operational}, \texttt{ShuttingDown}, and
+\texttt{Terminated}. These states let the reactor coordinate startup and
+shutdown across all registered application threads.
+
+An \texttt{ApplicationThread} is an application's unit for running work. The
+application registers its subclasses with the reactor. Constructing a thread
+sets its state to \texttt{Created}; starting it launches its operating-system
+thread, which enters \texttt{Started}. The reactor starts all registered
+threads and waits until they have all reached \texttt{Started}.
+
+The reactor then sends each thread an \texttt{Initial} event. The thread runs
+its \texttt{on\_initial\_event()} callback and moves to
+\texttt{InitialProcessed} when that callback returns. The reactor waits until
+all threads have completed this step before sending \texttt{AppReady}. Each
+thread runs \texttt{on\_app\_ready\_event()} and then moves to
+\texttt{Operational}. The reactor waits until all threads are operational
+before opening inbound listeners and completing its own initialisation. This
+two-stage barrier lets each thread prepare its resources before any thread
+begins its operational work.
+
+When shutdown is requested, the reactor stops its event loop and asks each
+registered thread to stop. The thread enters \texttt{ShuttingDown}; its queue
+stops accepting messages and a notification wakes it if it is waiting. The
+reactor waits for the thread to exit and joins it. Once the operating-system
+thread has stopped, its lifecycle state becomes \texttt{Terminated}. If it
+does not stop within the configured timeout, the component checks whether it
+is still running and aborts rather than destroy data that the thread might
+still be using.
+
+The framework also defines an \texttt{on\_termination\_event()} callback.
+Whether the ordinary reactor shutdown path invokes it is recorded as an open
+documentation issue in \cref{ch:documentation_inconsistencies}.
+
+\subsection{CPU placement}
+
+Pinning controls which CPUs may run a thread. It reduces migration between
+CPUs and helps keep a hot-path thread's working data in cache. It also makes
+latency measurements more repeatable by reducing competition from unrelated
+application threads. Pinning does not make a CPU exclusive: other processes,
+operating-system work, or interrupts can still affect it.
+
+Some event-driven threads can poll briefly for new work before blocking.
+Blocking gives the CPU to other work but adds wake-up delay; polling can notice
+new work sooner but consumes CPU time while the queue is empty. The
+\texttt{spin\_before\_block} setting bounds this polling period and defaults to
+zero, so a thread blocks without polling unless configured otherwise. On
+x86-64, \texttt{cpu\_relax()} calls \texttt{\_mm\_pause()}, which emits the
+\texttt{PAUSE} instruction. This instruction gives the processor a hint that
+the thread is waiting and can leave more execution resources for a sibling
+hardware thread. It does not make polling free: it still occupies a logical
+CPU, and each pause can delay the next check for work.
+
+The placement of other threads matters when a polling thread is expected to
+have a CPU to itself. Two logical CPUs on one physical core share execution
+resources; a thread running on the sibling can slow the polling thread even
+when each has a different logical CPU identifier. Likewise, if an unrelated
+thread is allowed to run on a hot-path CPU, it can interfere with the
+latency-sensitive thread pinned there. The layout therefore assigns hot-path
+CPUs across all components on a machine and restricts ordinary component
+threads to a shared background set. The operating system can still run its
+own work there; stronger isolation requires operating-system configuration.
+
+This allocation must work when several components run on one host, not only
+when each component has a separate machine. Production commonly places a
+component on its own host, with some paired gateway instances sharing a host.
+Development runs many components on one workstation, so it is the more
+demanding case for avoiding CPU overlap and interference. The deployment tool
+resolves the environment's layout against the target machine and writes the
+resulting CPU identifiers to a layout file. The launcher applies the shared
+background CPU mask before starting a component, and C++ components apply it
+again during startup. Threads created under that mask inherit it.
+
+When the reactor starts, it pins itself to the first CPU allocated to the
+component, then pins each registered \texttt{ApplicationThread} that is not
+configured to stay on the background CPUs to a separate allocated CPU. A
+component not admitted to the layout remains in the background tier. A thread
+configured to stay there may run on any CPU in the shared background mask and
+does not receive a dedicated CPU. Auxiliary threads registered with
+\texttt{register\_extra\_thread()}, such as the FIX capture writer, are not
+promoted. The Quill logging backend is placed separately because it starts
+before the component reads its layout. Metrics workers are created after the
+reactor is pinned, so the reactor temporarily applies the background mask
+while creating them and then restores its own affinity.
+
+\section{The write-ahead log (WAL)}
+\label{sec:fw_wal}
+
+A write-ahead log (WAL) stores ordered records in segmented files. The
+framework's \texttt{WalWriter} appends application-supplied record identifiers
+and opaque payload bytes; it handles the segment files, memory mapping, record
+framing, and checksums. \texttt{WalReader} scans the log and can replay records
+from a supplied position. The framework does not interpret the application
+payload.
+
+Applications that need a richer record format or snapshots can build on these
+primitives. The venue's \texttt{Wal}, used by the sequencer and matching engine
+publisher, stores its sequence number, message identifier, message payload,
+and wall-clock timestamp. Its snapshots provide a position from which replay
+can resume. The particular record contents and recovery guarantees depend on
+the application; not every component uses a WAL.
+
+An application that serves a follower can also register a
+\texttt{WalReadingThread}. This optional \texttt{ApplicationThread} reads the
+older WAL records that the follower lacks, leaving the thread that owns and
+appends to the log free to handle its usual work. The reading thread sends
+records over connections owned by that application thread, in batches paced
+by connection-writable notifications. It stops each catch-up round at the
+follower's current record limit and reports its reading position to the owner.
+After the follower catches up, the owner sends it new records directly.
+
+\texttt{WalReadingThread} is used only by applications that need this
+follower catch-up path. It stays on background CPUs rather than requiring a
+dedicated hot-path CPU. Its commands and reports travel through ITC, described
+in \cref{sec:fw_itc}; the WAL reader itself and the follower's socket
+connection remain separate responsibilities.
 
 \section{Inter-thread communication}
 \label{sec:fw_itc}
 
-The queue described in \cref{sec:fw_message_queues}, the messages it carries,
-and what the framework does when a queue passes a configured depth.
+\subsection{Messages and delivery}
 
-\emph{Not yet specified.}
+Every application thread has its own queue. The reactor uses these queues to
+deliver events such as timer expirations, connection changes, inbound messages,
+and pub/sub records. An application thread can also send an explicit
+inter-thread communication (ITC) message to another thread in the same
+component. The framework wraps each item in an \texttt{EventMessage}; the
+receiving thread dispatches ITC messages to its \texttt{on\_itc\_message()}
+callback.
+
+A thread sends an ITC message with \texttt{post\_message()}, naming the target
+thread's identifier. A message sent to the same thread is placed directly on
+its own queue. A message for another thread is routed by the reactor. The
+reactor delivers it only when the target is registered, running, and
+operational. It also checks that a non-system sender is a registered thread
+that is still running.
+
+The event envelope does not own an ITC payload. The sender and receiver must
+agree on its type and lifetime, and the receiver is responsible for releasing
+any transferred object. The \texttt{carry()} and \texttt{take\_carried()}
+helpers provide one ownership-transfer pattern: the sender gives up a
+\texttt{unique\_ptr}, and the receiver takes ownership when it recognises the
+payload type. The sequencer uses this mechanism to send commands to the
+\texttt{WalReadingThread} described in \cref{sec:fw_wal} and receive its
+reports.
+
+\subsection{Queue depth and overload}
+
+The queue described in \cref{sec:fw_message_queues} accepts messages from
+multiple producers and is drained by its owning application thread. Enqueuing
+a message wakes that thread through its eventfd. The queue has no fixed
+capacity: its node allocator can add another pool when the current pool is
+exhausted. Enqueueing therefore does not automatically block a producer or
+reject a message because the queue has reached a configured size.
+
+\texttt{QueueConfiguration} can set a high and low watermark and provide
+optional callbacks. When an enqueue takes the queue from below the high
+watermark to at or above it, the high-watermark callback runs once on that
+producer thread. It does not run again while the queue remains at or above the
+high watermark. If the queue later drains below the low watermark, the
+low-watermark callback runs once on the consumer thread; it does not run again
+while the queue remains below that watermark. The two thresholds define a
+hysteresis band, which prevents repeated callbacks when the queue size
+fluctuates near either boundary. The callbacks must be installed by the
+component; thresholds alone do not slow producers, shed work, or limit memory
+use. The standard application queue configurations set watermark values but
+do not install watermark callbacks, so their queues do not currently apply
+callback-based backpressure.
+
+The queue's pool-exhaustion callback is separate from its watermarks. It
+reports that the allocator has added another pool; it does not indicate that
+the message was refused, nor does it slow producers. A component that needs
+backpressure must respond to queue depth explicitly.
+
+During shutdown, the queue stops accepting new messages. Messages routed to a
+thread that is no longer running or is shutting down are not delivered. This
+means ITC is for communication within one component process; communication
+between processes uses the reactor's socket connections instead.
 
 \section{Memory and allocation}
 \label{sec:fw_memory}
 
-The four allocation strategies, when each is used, and what each guarantees. In
-outline: a pool of fixed-size slots; a chain of such pools that adds another
-pool when one is exhausted; an allocator that hands out memory in order and
-releases all of it at once; and an allocator for pieces whose size is not known
-in advance.
+\subsection{Fixed-size pools for queue nodes}
 
-\emph{Not yet specified.}
+The framework avoids general-purpose heap allocation on its message paths by
+reusing storage for objects with known sizes and lifetimes. A
+\texttt{FixedSizeMemoryPool<T>} reserves storage for a fixed number of slots
+and maintains a free list. It allocates and returns raw storage; it does not
+construct or destroy objects in that storage. The
+\texttt{ExpandablePoolAllocator<T>} uses the pool to construct a \texttt{T}
+when allocating and destroys it before returning the slot to the free list.
+The pool's free list is a Treiber stack, described in
+\cref{sec:fw_lock_free}. Individual slots are not returned to the operating
+system; the pool releases its mapping when it is destroyed.
+
+\texttt{ExpandablePoolAllocator<T>} chains these fixed-capacity pools. It
+starts with the configured number of pools and adds another when no existing
+pool has a free slot. Pools remain in the chain for the allocator's lifetime,
+so freed slots can be reused and pointers to allocated objects remain valid
+until those objects are returned. The allocator reports when it adds a pool,
+but that notification does not impose a limit or stop further growth.
+
+The message queues use this combination for their nodes. Each message waiting
+in an application-thread queue or the reactor's command queue occupies a node.
+Producers allocate nodes and the queue's single consumer returns them after
+dequeueing. This allows a queue to grow beyond its initial node capacity; queue
+depth watermarks are separate notifications and do not cap its memory use.
+Pool expansion allocates another pool and may therefore require operating
+system memory while handling a message.
+
+\subsection{Variable-size slabs for transport payloads}
+
+\texttt{ExpandableSlabAllocator} serves transport payloads whose sizes vary.
+It allocates aligned byte chunks from memory-mapped slabs of a configured
+size. When the current slab cannot fit a request, the allocator adds another
+slab. A single request must fit within one slab; the allocator does not split a
+chunk across slabs.
+
+The reactor owns an inbound allocator for parsed PDU payloads. Each
+application thread owns an outbound allocator for frames and raw bytes it
+prepares to send. The thread that owns an allocator performs its allocations;
+the reactor or an application thread can return a chunk from another thread.
+The caller returns both the pointer and its slab handle, so the allocator can
+identify the correct slab and reject a stale handle. A slab that is no longer
+current can be reused or destroyed only after all its chunks have been
+returned. The owning thread performs that reclamation when it next allocates;
+there is no background reclamation thread. As with expandable pool chains,
+the allocator has no configured hard limit on the number of slabs.
+
+\subsection{Scratch storage for encoding and decoding}
+
+\texttt{BumpAllocator} allocates aligned objects in order from a byte buffer
+owned by its caller. It does not own the buffer, allocate memory from the
+operating system, or free individual objects. The caller resets it when the
+scratch data is no longer needed. The DSL uses it for temporary views and
+arrays while encoding or decoding variable-length messages.
+
+The allocator can also measure the space a request would need when given no
+buffer, or report the required size when the provided buffer is too small.
+Callers can then allocate suitable backing storage and retry. Where the
+message's maximum list length is known, DSL-generated size bounds can size the
+buffer in advance. Application threads also keep a reusable decode arena for
+inbound messages, avoiding a new backing-buffer allocation for each decode.
+
+\subsection{MirroredBuffer for raw byte streams}
+
+\texttt{MirroredBuffer} is a bounded ring buffer, not a general allocator. It
+is used for raw socket protocols, where the reactor writes received bytes and
+an application thread parses and consumes them. The same physical memory is
+mapped into two adjacent virtual address ranges. This makes bytes contiguous
+to the reader even when they wrap around the end of the ring, avoiding a
+special case for a message split at the wrap point.
+
+The configured capacity is rounded up to a system page boundary, and one byte
+is left unused to distinguish a full ring from an empty one. The reactor is
+the sole producer and the application thread is the sole consumer. An event
+gives the application a view of the available bytes; the event retains the
+buffer's shared ownership so the view's storage remains alive while the event
+is queued. After parsing, the application tells the reactor how many bytes it
+consumed, advancing the ring's tail and making that space writable again.
+
+The raw-byte protocol handler pauses socket reads when the ring is 75\% full.
+It resumes reads only after the application has consumed enough data to bring
+the fill level down to 50\%. This gap between the pause and resume thresholds
+is called hysteresis. Once reads are paused, they stay paused while the fill
+level remains above 50\%; once resumed, they stay resumed until it reaches
+75\% again. The gap prevents reads from repeatedly stopping and starting as
+the fill level fluctuates around a single threshold. The TCP receive window
+then provides backpressure to the peer. The buffer itself does not grow; if it
+fills despite the pause mechanism, the handler treats that as a connection
+error.
+
+\subsection{Memory for long-lived state}
+
+The pool, slab and bump allocators serve message-path or temporary storage.
+Long-lived containers, such as an order book or a session table, may instead
+grow through the standard heap allocator. \texttt{GrowthReportingAllocator}
+can report large container allocations, while \texttt{IncrementalRehashMap}
+spreads hash-table migration across multiple operations instead of moving the
+whole table in one insertion. These facilities report or control the cost of
+growth; they do not make a growing container a fixed-capacity pool.
+
+\section{Serialisation/deserialisation (DSL and PDUs)}
+\label{sec:fw_dsl}
+
+The project defines its own domain-specific language, called DSL, for
+declaring the messages exchanged between application threads, processes and
+pub/sub subscribers. Each declaration describes the message fields and their
+order, along with the message identifier used by the PDU protocol. The DSL
+files are the source of truth: the build validates them and generates the
+language bindings, encoders, decoders and topic registry from those
+declarations. A message may also carry version metadata; neither the
+identifier nor the version is a field in the payload.
+
+\subsection{Schema declarations}
+
+A DSL file can declare enumerations, messages, framing constants, included
+files and pub/sub topics. An enumeration names the allowed symbolic values
+for a field and gives them explicit numeric values. Its underlying type is
+one of the signed integer types or \texttt{char}. A message has a required
+numeric identifier and may have version metadata. Fields appear in
+declaration order; that order is also their order in the encoded payload.
+Fields can use a built-in type, an enumeration, or another message type.
+
+For example, this declaration describes an order request with a required
+side, quantity and symbol, followed by an optional client identifier:
+
+\begin{verbatim}
+enum Side : i8 {
+    Buy = 1
+    Sell = 2
+}
+
+message NewOrder (id=1000, version=1)
+    Side side
+    i64 quantity
+    string symbol
+    optional i32 client_order_id
+end
+\end{verbatim}
+
+The supported scalar types are \texttt{i8}, \texttt{i16}, \texttt{i32},
+\texttt{i64}, \texttt{char}, \texttt{bool} and \texttt{datetime\_ns}.
+The integer types are signed. \texttt{datetime\_ns} carries an integer
+timestamp in nanoseconds since the Unix epoch. \texttt{string} carries UTF-8
+text, and \texttt{bytes} carries uninterpreted binary data.
+
+The DSL also supports three compound field forms:
+\begin{itemize}[nosep]
+  \item \texttt{list<T>} is a variable-length list of values of type
+        \texttt{T}. Lists can contain primitive values, strings, bytes,
+        enumerations, messages or further lists.
+  \item \texttt{T[N]} is a fixed-length array of primitive values. Its length
+        is part of the schema, so the payload carries no array-length field.
+  \item \texttt{optional T} marks a field that can be absent. In C++ the
+        generated message type has a separate \texttt{has\_field} flag for
+        each optional field, so absence is distinct from a value such as zero
+        or an empty string.
+\end{itemize}
+
+An \texttt{include "file.dsl"} declaration brings another file's declarations
+into the schema before validation and generation. The loader resolves nested
+includes, adds each file only once and rejects include cycles. The combined
+schema must have unique enum and message names, and unique message
+identifiers; topic names must be unique among topics. Every referenced type
+and enum value must exist. Arrays must have a positive length and contain
+primitive values. A topic declaration names one or more messages. A message
+may belong to more than one topic, but may not appear twice in the same topic.
+A \texttt{framing} declaration provides named numeric constants used by the
+generated Java framing code.
+
+\subsection{Payload encoding}
+
+The DSL describes the payload that follows a PDU framing header; it does not
+describe that header. The header's multi-byte fields use network byte order,
+while multi-byte values in a DSL payload use little-endian byte order. The
+same payload encoding is used by the generated C++ and Java serializers.
+The wire representation is:
+\begin{itemize}[nosep]
+  \item \texttt{i8} and \texttt{char} occupy one byte. \texttt{i16},
+        \texttt{i32} and \texttt{i64} occupy two, four and eight bytes.
+        \texttt{datetime\_ns} occupies eight bytes. These multi-byte values
+        are little-endian.
+  \item \texttt{bool} occupies one byte. The encoder writes zero for false
+        and one for true; the decoder treats zero as false and any non-zero
+        byte as true.
+  \item An enumeration occupies the number of bytes specified by its
+        underlying type.
+  \item A \texttt{string} or \texttt{bytes} field begins with a four-byte
+        little-endian byte count, followed by that many bytes. Strings are
+        UTF-8; bytes are not interpreted as text.
+  \item A \texttt{list<T>} begins with a four-byte little-endian element
+        count, followed by the encoded elements in order.
+  \item A \texttt{T[N]} array contains its \texttt{N} encoded elements in
+        order, with no count prefix.
+  \item An optional field begins with a one-byte presence value. Zero means
+        absent; non-zero means present and is followed by the encoded value.
+\end{itemize}
+
+Message fields and nested messages are encoded in their declared order, with
+no padding between fields. The length prefixes let the decoder identify the
+end of strings, byte sequences and lists. The payload does not contain field
+names or a separate schema description; sender and receiver must agree on the
+message definition and field order.
+
+\subsection{Generated encoders and decoders}
+
+For each message, the C++ generator creates an encode-side structure and a
+view structure for decoded values. It also generates functions to measure the
+encoded size, encode into a caller-provided buffer, decode from a byte range,
+and skip a message without constructing its fields. A fixed-size message also
+has a fast encoder for callers that already have a sufficiently large output
+buffer. The regular encoder reports the required size if the supplied output
+buffer is too small and does not write a partial message.
+
+The C++ decoder checks that the bytes needed for each field are present. It
+returns failure for truncated or otherwise incomplete payloads. Decoded
+strings and byte sequences refer to the original payload rather than copying
+their contents. Lists of primitive values can also refer directly to the
+payload on little-endian hosts. The decoder uses a caller-provided
+\texttt{BumpAllocator} for list view elements and for primitive-list values
+that need byte-order conversion. That arena and the input payload must remain
+valid while the application uses the decoded view. The generated arena-size
+helpers report the scratch storage required for a caller-specified maximum
+number of elements per list; they do not impose that maximum on the message.
+The DSL encoder represents every list count and string or byte length with a
+four-byte field, while the PDU transport configuration limits the total
+payload size as described in \cref{sec:fw_ipc}.
+
+Successful decoding establishes that the payload can be read according to the
+schema; it does not establish that every value is permitted by the message
+definition. The generated \texttt{first\_invalid\_field()} function identifies
+an enumeration value not declared by its enumeration or an empty required
+string, including those in nested messages and lists. An application can use
+this function when it needs to enforce these value constraints. The decoder
+itself does not reject an unknown enumeration value or an empty required
+string, and it does not validate that string bytes form valid UTF-8.
+
+The Java generator creates message classes with matching field definitions
+and little-endian encode and decode methods. The generated C++ and Java
+bindings therefore share the same payload layout, while the PDU transport
+header remains a separate part of the framing described in
+\cref{sec:fw_ipc}. The generated C++ encode and decode functions use
+caller-provided storage rather than allocating a new payload buffer for each
+message. The generated diagnostic \texttt{to\_string()} function is an
+exception: it creates a string and is intended for logs, not message
+processing.
+
+\subsection{Optional fields and schema changes}
+
+An optional field is represented in the payload by its presence byte and, when
+present, its value. If a decoder reaches the end of a message exactly where
+an optional field begins, it treats that field as absent. This permits an
+optional field to be appended to a message while still reading an older
+payload that ends before the new field. It does not make arbitrary changes
+compatible: inserting a field before existing fields, changing a field's
+type, or changing field order changes how subsequent bytes are interpreted.
+The decoder does not migrate payloads or select a schema by its version
+metadata; components exchanging a changed message must agree on the schema
+and on how older payloads are handled.
+
+The generated decoder requires a presence byte when an optional field is
+followed by more payload data. Therefore, omitting an optional field is
+backwards-compatible only when it and any other newly appended optional
+fields are at the end of the older message layout.
+
+Topic declarations associate messages with named pub/sub streams. The topic
+generator derives both the topic-to-message membership registry and the
+human-readable topic catalog from the same declarations. The registry lets
+components check whether a message identifier belongs to a topic without
+maintaining a separate handwritten list.
 
 \section{Inter-process communication}
 \label{sec:fw_ipc}
 
-Communication between processes over unicast connections: how a message is
-framed, how it is parsed, and how the framework passes a received payload to an
-application thread without copying it. Transport layer security is available on
-these connections, and \cref{ch:security} specifies it.
+\subsection{Connections and routing}
 
-\emph{Not yet specified.}
+The framework uses non-blocking TCP connections to carry messages between
+processes. The reactor owns the sockets and performs all socket input and
+output; application threads do not access socket file descriptors. This lets
+the reactor continue servicing other connections while one peer is slow.
 
-\section{Serialisation}
-\label{sec:fw_serialisation}
+An application can register an inbound listener and choose its protocol type.
+When a connection is accepted, the reactor routes its connection-established
+event and subsequent messages to the application thread configured for that
+listener. A listener can accept multiple concurrent connections. For an
+outbound connection, an application thread requests a connection to a
+registered service. The reactor attempts the service's primary endpoint and
+then its secondary endpoint if needed. It reports success or failure
+asynchronously to the requesting thread. Established connections receive an
+identifier used for subsequent sends and callbacks. If a connection is lost,
+the application is notified; it must request a new connection if it wants to
+reconnect.
 
-Message shapes are defined in the framework's own definition language, and a
-generator produces the C++17 code that encodes and decodes them. The same format
-carries messages between threads, between processes, and between a publisher and
-its subscribers.
+The listener's protocol type determines how the reactor interprets the byte
+stream. Framework PDU connections use the framed protocol described below.
+Raw-byte connections deliver the stream to the application for its own
+framing; their ring buffer and read backpressure are described in
+\cref{sec:fw_memory}. TLS raw-byte connections use TLS for transport
+encryption, as described in \cref{ch:security}.
 
-\emph{Not yet specified.}
+\subsection{Framework PDU framing and delivery}
+
+TCP provides a byte stream, not message boundaries. A PDU can arrive across
+several socket reads, and one read can contain bytes from several PDUs. The
+framework parser therefore retains partial header and payload state and
+dispatches each message only after its full frame has arrived. The frame
+starts with a 24-byte header. It gives the payload length, DSL message
+identifier, version and sequence number; reserved fields are set to zero.
+Multi-byte header fields use network byte order, and a fixed canary is checked
+to detect a corrupted or incorrectly framed stream. A zero-length payload or
+one larger than the reactor's configured inbound slab size is rejected, and
+the connection is closed.
+
+After reading and validating the header, the reactor allocates a payload chunk
+from its inbound slab allocator and reads the payload directly from the socket
+into that chunk. It does not make an intermediate payload copy. When the
+complete PDU is ready, the reactor places an event containing the payload
+pointer, its size, slab handle, connection identifier, message identifier and
+sequence number on the target application thread's queue. The application
+thread handles the message; it must release the payload through
+\texttt{release\_pdu\_payload()} when processing is complete.
+
+For sending, the application thread encodes the message into a chunk from its
+outbound slab allocator, writes the PDU header and payload there, and submits
+the completed frame to the reactor. The reactor retains the chunk until the
+send finishes, then returns it to the allocator. If the socket accepts only
+part of a frame, the reactor resumes the send when the socket becomes
+writable. Pending frames are queued per connection, so a slow peer does not
+stop sends on other connections. Limits on a connection's pending sends and
+bytes prevent an unresponsive peer from retaining unlimited outbound memory;
+exceeding either limit closes that connection and notifies its application
+thread.
+
+The payload layout and generated code are specified in
+\cref{sec:fw_dsl}.
 
 \section{Timers}
 \label{sec:fw_timers}
 
-Timers, and how the reactor waits for them alongside its sockets.
+An application thread can start a one-off timer or a recurring timer with an
+interval in microseconds. Each request receives a new \texttt{TimerID}; the
+framework does not assign timer names or replace a timer by name. The
+application retains the identifier to recognise the timer in its callback or
+to cancel it later. Scheduling and cancellation must be requested from the
+owning application thread, while it is running, normally from one of its
+callbacks. Timer identifiers are allocated by the reactor and are unique
+within that reactor.
 
-\emph{Not yet specified.}
+\subsection{Requests to the reactor}
 
-\section{The write-ahead log}
-\label{sec:fw_wal}
+Application threads do not create or operate timer file descriptors
+themselves. When an application starts a timer, its thread builds an
+\texttt{AddTimer} control command containing the timer identifier, owner thread,
+interval and timer type, and puts the command on the reactor's control-command
+queue. Cancelling a timer sends a \texttt{CancelTimer} command with its
+identifier and owner. The reactor processes these commands on its own thread;
+when it is waiting for work, the command queue's wakeup descriptor alerts it
+to pending commands. This keeps timer state and descriptor registration under
+reactor ownership.
 
-The record a component writes before it acts, the position within that record
-that a reader presents, and how a reader is supplied with what follows that
-position. \Cref{ch:high_availability} states what the venue requires of this
-record.
+For each application timer, the reactor creates a non-blocking Linux
+\texttt{timerfd} driven by \texttt{CLOCK\_MONOTONIC} and registers it with the
+same \texttt{epoll} set used for sockets. The first expiration is after the
+requested interval. A one-off timer is armed for one expiration; a recurring
+timer uses that interval both for its first expiration and for each following
+expiration. Wall-clock changes therefore do not move the timer deadline. The
+reactor's event loop checks timer and socket readiness together, so timer
+handling does not require a separate timer thread.
 
-\emph{Not yet specified.}
+\subsection{Expiry delivery to the application thread}
+
+When \texttt{epoll} reports a timer descriptor as readable, the reactor reads
+its expiration count and sends a timer event containing the \texttt{TimerID}
+to the owning application thread's event queue. Enqueueing the event wakes the
+application thread through its queue notification descriptor. The application
+thread then calls its \texttt{on\_timer\_event()} callback with the identifier.
+The callback runs on the application thread, not on the reactor thread, so it
+can safely update that component's state and use its normal thread-owned
+services.
+
+The timer event communicates that the timer has expired; it does not report
+the scheduled time or promise that the callback runs at that exact time.
+Operating-system scheduling, reactor work and earlier application callbacks
+can delay delivery. If a recurring timer expires more than once before the
+reactor reads its descriptor, the reactor coalesces those expirations into
+one event. It does not enqueue one callback per missed interval. If the owner
+thread is not operational when the reactor handles an expiration, that
+expiration is dropped rather than delivered to a thread that is starting or
+shutting down.
+
+Application-thread event queues may also contain socket messages and other
+work when a timer event arrives. A thread normally handles events in queue
+order. A component that overrides \texttt{prioritise\_data\_over\_timers()} to
+return true defers timer events until it has handled the other events already
+available in that queue drain. This lets a component process data such as a
+WAL acknowledgement before work initiated by a timer, while still delivering
+the timer callback on the same thread.
+
+\subsection{Cancellation and shutdown}
+
+Calling \texttt{cancel\_timer()} puts a cancellation command on the reactor's
+control queue. When the reactor processes it, it removes the timer descriptor
+from \texttt{epoll} and releases the timer handler. Cancelling an unknown or
+already-expired identifier is ignored. Cancellation is asynchronous: a timer
+event that the reactor has already placed on the application thread's queue
+may still be handled, so the callback should check any component state that
+determines whether its work is still appropriate.
+
+The reactor tracks timers by their owning application thread. During shutdown
+it cancels that thread's remaining timers, so timer descriptors do not outlive
+their owner. The reactor also has its own recurring housekeeping timer; it
+runs reactor maintenance such as checking inbound connections for inactivity
+and does not invoke an application timer callback.
 
 \section{Configuration and logging}
 \label{sec:fw_configuration}
@@ -488,16 +1116,16 @@ The semantics specified above are drawn from a system that delivers them over
 reliable multicast with a central broker. This venue provides the same semantics
 over unicast connections and without a broker.
 
-\emph{Not yet written. Each rejection is to name the ground it rests on, and
-that ground is to be one a reader can check.}
+Reliable UDP multicast protocols such as PGM and NORM exist, but have not
+gained broad industry adoption despite decades of availability. The framework
+therefore delivers each subscriber's ordered stream over its own unicast
+connection rather than depending on reliable UDP multicast.
 
-One alternative is named here so that it is not overlooked, and it is not
-assessed. \textbf{A and B channel redundancy} publishes every record on two
-independent channels. A subscriber reads both, takes whichever copy of a record
-reaches it first, and discards the second, so the loss of either channel costs
-it nothing and it never waits for a failover. Exchange market data feeds
-commonly work this way. This venue instead runs a publisher as a pair of which
-one leads, and a subscriber that loses the instance it was reading from
-reconnects and presents its own position, which is \reqref{R-0131} and
-\reqref{R-0138}. Whether the difference is a decision this venue should defend
-or one it should revisit has not been established.
+\textbf{A and B channel redundancy was considered and rejected.} It publishes
+each record over two independent channels; the subscriber takes the first copy
+and discards the duplicate. This venue instead uses a publisher pair with one
+leader. A subscriber that loses its connection reconnects and presents its own
+position, which is \reqref{R-0131} and \reqref{R-0138}. Separate unicast
+connections let the publisher pace each subscriber independently and serve its
+retained history from the WAL. The requirements for delivery, retention, and
+recovery are stated in this section.

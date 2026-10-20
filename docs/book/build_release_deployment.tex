@@ -1,0 +1,90 @@
+\chapter{Building, configuring, releasing and deploying}
+\label{ch:build_release_deployment}
+
+This chapter describes the project's current build and deployment workflow.
+The developer setup script runs the build, release, and deployment steps in
+sequence. They remain separate operations: the build creates staged
+applications, the release packages those files, and deployment installs a
+release with configuration for a selected environment.
+
+\section{Building and releasing}
+\label{sec:build_release_deployment:build_release}
+
+The build script compiles the C++ components and, unless disabled, the Java
+applications. It runs the unit and integration tests unless the caller asks to
+skip tests. The built applications are staged under \texttt{installed/};
+instrumented builds and some target platforms use a separate staging
+directory.
+
+The release script packages the staged applications with the configuration
+templates, database scripts, environment profiles, and deployment and
+developer-environment scripts. The version comes from the project build
+configuration, and the Git revision is included in the release name by
+default. A manifest in the archive identifies its contents. The release is
+therefore a specific package of built files and deployment material, rather
+than a build directory copied directly to a host.
+
+\section{TOML configuration}
+\label{sec:build_release_deployment:toml}
+
+The project uses TOML in two related ways. Component configuration templates
+contain the settings read by individual services. Environment profiles supply
+the values used to prepare those templates for a particular installation.
+This separates the settings a component reads from the host names, addresses,
+paths, and other values that vary between installations.
+
+During deployment, the selected profile is flattened into placeholder names.
+For example, a value in a section named \texttt{arbiter\_primary} with the key
+\texttt{peer\_host} supplies the
+\texttt{\$\{arbiter\_primary\_peer\_host\}} placeholder in a component
+template. Deployment fails and identifies the missing value if a template
+contains an unresolved placeholder. It generates self-signed TLS certificates
+unless \texttt{--skip-certs} is given; \texttt{--force-certs} regenerates
+certificates that already exist. Deployment can create the database and export
+the credentials used by the authentication service; options allow those
+database steps to be skipped when the database is managed separately.
+
+The C++ component loaders read the TOML keys they use while loading a
+configuration. They do not currently reject every unrecognised key. The
+proposed check for unknown keys is documented separately and is not part of
+the current behaviour.
+
+\section{Environment profiles}
+\label{sec:build_release_deployment:profiles}
+
+The profiles under \texttt{environments/} describe development, test,
+pre-production, and production deployments. The development profile is the
+complete working example for a single-machine sandbox. The other committed
+profiles describe full high-availability deployments on dedicated hosts, but
+are examples rather than ready-to-use configurations: they contain placeholder
+hostnames and other values that must be supplied for a real environment.
+Deployment refuses a profile when a required template value is missing.
+
+The profile defines deployment paths, database and TLS settings, component
+instances, host and port values, and the startup order used by the developer
+environment script. For example, \texttt{devenv.py} starts components in the
+order declared in \texttt{[startup\_order]}, and stops them in reverse order.
+The \texttt{dev.toml} profile is also the default when no environment is
+specified for that script.
+
+\section{Deployment and starting services}
+\label{sec:build_release_deployment:deploy}
+
+Deployment unpacks the release into its installation directory, expands the
+component configuration templates from the selected profile, prepares TLS
+certificates when requested, and runs the database setup and credential
+export steps unless those are skipped. The deployment script reports missing
+template values rather than writing configuration that still contains an
+unresolved placeholder.
+
+For a developer sandbox, \texttt{devenv.py} reads the environment profile,
+starts the configured component processes in startup order, and records their
+logs and process identifiers under paths from that profile. It can also stop,
+restart, and report the status of those processes. Production deployment uses
+the deployment script and its profile; the developer environment script is
+not the production process manager.
+
+The exact commands, options, and configuration keys are maintained in the
+project's build, deployment, and framework documentation. This chapter
+describes the workflow and its inputs; it does not specify guarantees for
+installation rollback, release promotion, or unattended process recovery.

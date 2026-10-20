@@ -124,9 +124,13 @@ top level of `docs/`: `roadmap.md`
 Doxygen pages at the top of `docs/`: `architecture_map.dox`, `architecture_map_howto.dox`,
 `dsl_design.dox`, `groups.dox`
 
-The LaTeX book under `docs/book/` (the functional specification, about 4,400 lines in 33 `.tex`
-files): `book.tex`, `glossary.tex`, and the chapters `applications`, `disaster_recovery`,
-`high_availability` (with its `disabled` and `enabled` sections), `library`, `metrics` and
+The LaTeX book under `docs/book/` (the functional specification): `book.tex`, `glossary.tex`,
+`references.bib`, `functional_coverage_map.md`, `introduction.tex` and
+`build_release_deployment.tex` (written, not audited), and the chapters `applications`,
+`disaster_recovery`,
+`high_availability` (with its `disabled` and `enabled` sections), `library` (Reactor, threads,
+write-ahead log, inter-thread communication, memory, DSL, inter-process communication and timer
+sections written, not audited), `metrics` and
 `security`. A requirement in the book states what the venue must do, so a requirement the code does
 not meet is not corrected to match the code: it is reported, as a problem found in the code is.
 Statements of fact in the book (what exists, what a component does, which test covers a
@@ -145,6 +149,35 @@ the requirement identifiers.
 
 `docs/history/` and `docs/superseded/` record earlier releases, sessions and designs on purpose,
 so they are not corrected to describe the current code.
+
+## Documentation inconsistencies
+
+These are disagreements between written descriptions and the implementation, not confirmed code
+bugs. During the documentation audit, record them here without changing code or adding entries to
+`docs/bug_list.md`. A later review can decide whether each item is a code bug, a documentation
+correction, or neither.
+
+- **Epoll trigger mode:** `claude.md` and `docs/framework/README.md` say the reactor uses
+  edge-triggered epoll. The reactor and connection-manager code registers descriptors without
+  `EPOLLET`, and the connection-manager headers describe level-triggered epoll. The implementation
+  is level-triggered; align the architecture guidance and framework index with that behaviour.
+- **Inbound connections per listener:** `Reactor.hpp` and `docs/framework/reactor.md` describe a
+  one-peer limit. `InboundListener.hpp` says a listener accepts multiple concurrent connections,
+  and `InboundConnectionManager` stores each accepted connection independently. Update the
+  conflicting descriptions to state that a listener can accept multiple peers, all routed to its
+  configured application thread.
+- **Extra-thread CPU placement:** `ApplicationThread.hpp` says the reactor claims a dedicated CPU
+  for each thread registered through `register_extra_thread()`. `Reactor.cpp` leaves these threads
+  in the background tier and excludes them from the component's hot-path CPU count. Correct the
+  API comment to match the implementation.
+- **Quill backend CPU placement:** `QuillLogger.cpp` says the reactor pins the Quill backend.
+  `apply_background_affinity()` instead places it on its allocated background CPU before the
+  reactor starts. Correct the design comment to match the implementation.
+- **Application-thread termination callback:** `docs/framework/threading.md` describes
+  `on_termination_event()` as the callback used when the process receives a termination signal.
+  The reactor's ordinary shutdown path requests thread shutdown directly and does not send a
+  `Termination` event. Confirm whether the callback is intended to run during ordinary shutdown,
+  then align the documentation or implementation.
 
 ## Problems found in the code during the audit
 

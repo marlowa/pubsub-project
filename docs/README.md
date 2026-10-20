@@ -30,6 +30,8 @@ project stands, what is wrong with it, and what the design must keep to.
 - **[FIX](fix/README.md)** — the protocol, the codec, and the session layer
 - **[Operations](operations/README.md)** — metrics, secure communications, load profiles, and the
   [filesystem the venue's durable state needs](operations/filesystem_requirements.md)
+- **[Functional specification](book/book.tex)** — the requirements for the framework and the venue; see the
+  [coverage map](book/functional_coverage_map.md) for the areas still to develop
 - **[History](history/README.md)** — the session log and release notes
 - **[Superseded](superseded/README.md)** — working notes kept for provenance only
 
