@@ -31,11 +31,12 @@
 > [BUG-0156](bug_list.md#bug_0156) are fixed). Its step 5 is built: the build refuses any read of the WAL in
 > the sequencer that is not in a named table of permitted reads, each with its reason
 > ([BUG-0133](bug_list.md#bug_0133) is fixed). All five steps are built, and phase 5 awaits Andrew's review.
-> After that review comes phase 6, a channel of test events, so that the high availability tests stop reading
-> the wording of Quill log messages. Its design is agreed, and its first three steps are built: the inventory of every check that reads
-> a Quill log, a generator that writes plain Python from the DSL, and the channel itself, with the first two checks
-> moved onto it. Only then, before phase 7 is designed, does Andrew review whether phases 7
-> and 8 still serve the guarantees the venue is to give.
+> Phase 6, a channel of test events so that the high availability tests stop reading the wording of Quill log
+> messages, is built in all five steps and awaits Andrew's review: every check is moved onto test events, what a
+> member receives, or the WAL files, and with every `TEST CONTRACT` message reworded on purpose, except the three
+> operator messages decision 8 keeps, the scenarios still pass
+> ([test_events.md](availability/test_events.md), section 4.17). Then, before phase 7 is designed, Andrew reviews
+> whether phases 7 and 8 still serve the guarantees the venue is to give.
 
 ## In one page
 

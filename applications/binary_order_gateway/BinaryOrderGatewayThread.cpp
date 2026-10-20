@@ -645,7 +645,6 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
         const std::string backup_text = view.has_backup_gateway_instance ? std::to_string(view.backup_gateway_instance) : std::string("(none)");
 
         if (!provisioned_here) {
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
                        "BinaryOrderGatewayThread: connection {} comp_id='{}' logon refused -- this is gateway instance {}, "
                        "and the session is provisioned for primary={} backup={}",
@@ -663,7 +662,6 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
         // Logged where it succeeded too, naming the numbers: a hop that drops the
         // provisioning leaves every gateway admitting everyone, which is indistinguishable
         // from a correctly unpinned venue unless the values themselves are visible.
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "BinaryOrderGatewayThread: comp_id='{}' provisioned for gateway instances primary={} backup={} -- this is instance {} ({})", session.comp_id,
                    view.primary_gateway_instance, backup_text, config_.instance_id,
@@ -699,7 +697,6 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
     }
     session.throttles = fix_common::SessionThrottles(throttle_limits);
     // Logged for every logon, naming the numbers, for the reason given in the FIX gateway.
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "BinaryOrderGatewayThread: comp_id='{}' throttle limits per second for this session: new orders={} amends={} cancels={} (0 means no limit)",
                session.comp_id, throttle_limits.max_place_per_second, throttle_limits.max_amend_per_second, throttle_limits.max_cancel_per_second);
@@ -716,7 +713,6 @@ void BinaryOrderGatewayThread::handle_authentication_result(const pubsub_itc_fw:
     // Back inside its grace period: the orders this comp id left resting stay resting.
     const size_t reclaimed = reclaim_grace_session(session.comp_id);
     if (reclaimed > 0) {
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "BinaryOrderGatewayThread: comp_id='{}' reconnected within the grace period -- {} order(s) left resting, none cancelled", session.comp_id,
                    reclaimed);
@@ -960,7 +956,6 @@ void BinaryOrderGatewayThread::announce_session_bound(const BinarySession& sessi
     bound.gateway_instance_id = config_.instance_id;
     bound.gateway_session_conn_id = session.conn_id.get_value();
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionBound::message_pdu_id, bound);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",
                session.comp_id, config_.instance_id, session.conn_id.get_value());
 }
@@ -1053,6 +1048,7 @@ void BinaryOrderGatewayThread::handle_execution_report(const pubsub_itc_fw::Even
         // including the acknowledgements of the cancels sent on its behalf.
         ++execution_reports_dropped_;
         report_order_progress();
+        // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those scripts break, silently.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "BinaryOrderGatewayThread: ER seq={} for connection {} -- client already disconnected -- dropping", envelope.seq_no,
                    envelope.gateway_session_conn_id);
@@ -1129,14 +1125,12 @@ bool BinaryOrderGatewayThread::admit_throttled_command(BinarySession& session, f
         case fix_common::ThrottleOutcome::Accepted:
             return true;
         case fix_common::ThrottleOutcome::AcceptedAfterRefusals:
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                        "BinaryOrderGatewayThread: connection {} comp_id='{}' stopped being throttled for kind '{}': accepted again after {} refused",
                        session.conn_id.get_value(), session.comp_id, fix_common::throttled_command_name(command),
                        session.throttles.refusals_in_last_run(command));
             return true;
         case fix_common::ThrottleOutcome::FirstRefusal:
-            // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
             PUBSUB_LOG(
                 get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                 "BinaryOrderGatewayThread: connection {} comp_id='{}' started being throttled for kind '{}': the limit of {} per second for this session "
@@ -1252,6 +1246,9 @@ void BinaryOrderGatewayThread::report_order_progress() {
     if (accounted % order_progress_interval != 0) {
         return;
     }
+    // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those
+    // scripts break, silently. They read a PREFIX of the line, so a field may be appended without breaking them; the existing
+    // ones may not be reordered.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} refused={} refused_cancels={}",
                accounted, execution_reports_sent_, execution_reports_dropped_, orders_received_, orders_refused_, cancels_refused_);
 }
@@ -1327,7 +1324,6 @@ void BinaryOrderGatewayThread::queue_session_for_cleanup(BinarySession& session)
     }
 
     dead.cancel_due = std::chrono::steady_clock::now() + grace_period;
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "BinaryOrderGatewayThread: connection {} (comp_id='{}') disconnected with {} open order(s) -- holding {}s for reconnect before cancelling",
                session.conn_id.get_value(), dead.comp_id, dead.open_orders.size(), grace_period.count());
@@ -1393,7 +1389,6 @@ void BinaryOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch)
     const bool to_primary = true;
     const bool to_secondary = true;
     start_resends(to_primary, to_secondary);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(
         get_logger(), pubsub_itc_fw::FwLogLevel::Info,
         "BinaryOrderGatewayThread: a new sequencer leader at epoch {} -- sending again {} command(s) still unanswered, each marked as sent again, {} at a time",
@@ -1406,7 +1401,6 @@ void BinaryOrderGatewayThread::send_unanswered_commands_on(const pubsub_itc_fw::
     }
     const bool primary = id == sequencer_primary_conn_id_;
     start_resends(primary, !primary);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(
         get_logger(), pubsub_itc_fw::FwLogLevel::Info,
         "BinaryOrderGatewayThread: {} sequencer connection {} established again -- sending again on it {} command(s) still unanswered, each marked as sent "
@@ -1608,7 +1602,6 @@ void BinaryOrderGatewayThread::drain_pending_cancels() {
     // Gating on sent > 0 missed the common case: the final tick usually just pops the last
     // exhausted session, so the completion line went unlogged exactly when a drain finished.
     if (cancels_sent_this_drain_ > 0) {
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: cancel drain complete -- {} cancel(s) sent",
                    cancels_sent_this_drain_);
         cancels_sent_this_drain_ = 0;

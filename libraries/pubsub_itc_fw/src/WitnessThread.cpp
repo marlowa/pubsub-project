@@ -65,7 +65,6 @@ WitnessThread::WitnessThread(pubsub_itc_fw::ApplicationThread::ConstructorToken 
 
 void WitnessThread::on_initial_event() {
     voter_.emplace(config_.lease.period, std::chrono::steady_clock::now(), 0);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "WitnessThread: voting on which arbiter is active (lease period={} ms); no vote is granted during the first period",
                config_.lease.period.count());

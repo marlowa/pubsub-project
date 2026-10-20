@@ -131,7 +131,6 @@ void ArbiterThread::on_initial_event() {
         }
     }
     lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "ArbiterThread: deciding the active arbiter by leases (period={} ms, drift allowance={} ms, renewal every {} ms); no vote is granted or asked "
                "for during the first period",
@@ -274,7 +273,6 @@ void ArbiterThread::adopt_role(ArbiterRole new_role) {
         return;
     }
     const auto transition_level = (role_ == ArbiterRole::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), transition_level, "ArbiterThread: role transition {} -> {} (epoch={})", to_string(role_), to_string(new_role), epoch_);
     if (test_events_.has_value()) {
         test_events_->role_changed("ArbiterThread", static_cast<int64_t>(config_.instance_id), leadership_role(role_), leadership_role(new_role), epoch_);
@@ -283,7 +281,6 @@ void ArbiterThread::adopt_role(ArbiterRole new_role) {
 
     if (new_role == ArbiterRole::leader) {
         component_voters_.became_active(std::chrono::steady_clock::now());
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "ArbiterThread: now ACTIVE -- granting no component a lease for {} ms, because what the previously active arbiter promised is not known",
                    config_.lease.period.count());

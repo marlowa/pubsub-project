@@ -304,7 +304,6 @@ void MatchingEngineThread::on_app_ready_event() {
         lease_agent_->keep_promises_in(*background_promise_recorder_, lease_promise_store_.load(), lease_promise_store_.load_statement(),
                                        std::chrono::steady_clock::now());
         lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "MatchingEngineThread: leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for during the first "
                    "period",
@@ -930,7 +929,6 @@ void MatchingEngineThread::handle_new_order_single(const pubsub_itc_fw_app::NewO
     }
 
     send_er_to_sequencer(er, sequence_number, session);
-    // TEST CONTRACT -- scripts/callgrind_run.py counts this line ("accepted NOS"). The wording is an
     // interface: change it and that script miscounts, silently and elsewhere.
     //
     // At Info, the line costs 226 bytes per order -- 9.5 GB a day at 40 million orders. A load
@@ -2088,8 +2086,6 @@ void MatchingEngineThread::recover_open_orders(bool region_existed) {
     // existing reconciliation path, asked to start here instead of at zero.
     last_replicated_seq_no_ = found.published;
 
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it
-    // and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "MatchingEngineThread: recovered {} open order(s) from the region at seq_no={} in {} ms ({} unfinished record(s) discarded)", found.orders,
                found.published, elapsed_ms, found.discarded);

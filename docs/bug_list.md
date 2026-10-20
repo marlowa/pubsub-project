@@ -3,13 +3,13 @@
 | | |
 |---|---|
 | Bugs recorded | 186 |
-| Open | 79 (58 defects, 21 tasks) |
-| Closed | 107 |
+| Open | 78 (57 defects, 21 tasks) |
+| Closed | 108 |
 | Next id | BUG-0187 |
 
 ## Open bugs by severity
 
-18 high, 50 medium, 11 low.
+18 high, 49 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -77,7 +77,6 @@
 | [BUG-0173](#bug_0173) | medium | task | No scenario withholds a record during a real catch-up, so the matching engine's count check and the sequencer's refusal past a damaged record are shown only by unit and integration tests |
 | [BUG-0174](#bug_0174) | medium | defect | With high availability on and no matching engine connected, the leading sequencer reads its WAL on its own thread to count the orders that are deferred |
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
-| [BUG-0180](#bug_0180) | medium | defect | The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
 | [BUG-0186](#bug_0186) | medium | defect | The reactor's heartbeat sometimes fell far behind under load, failing PollingReactorKeepsServingEverySourceWhileOneIsBusy about one run in six |
@@ -3657,33 +3656,6 @@ that says whether each value is one the definition allows.
 
 **Principles.** None; the DSL compiler.
 
-### BUG-0180: The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes {#bug_0180}
-
-| | |
-|---|---|
-| Severity | medium |
-| Found | 2026-10-18 |
-| Recorded | 2026-10-18 |
-| How | Moving the checks of the matching engine's outcomes onto test events and the member's reports, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): the check's phrase appears nowhere in the code |
-| Impact | Every scenario with recovery orders prints "seq monotonicity check: OK" without having checked anything. A sequencer that took the lead and numbered orders below ones the engine had already been sent would not be caught by it |
-
-**What happens.** After the recovery orders, Phase 5 of `scripts/ha_test.py` calls `check_me_seq_monotonic`, which
-reads the matching engine's Quill log for lines containing "NewOrderSingle seq=N" and fails if a number is not above
-the one before. The engine stopped writing that line when it was given an order book, on 3 June 2026, and nothing has
-written it since. With no line to read, the check finds no numbers, reports no violation, and passes.
-
-The property it was meant to check, that a sequencer which takes the lead goes on numbering above what was numbered
-before, is checked directly from the new leader's WAL in the two scenarios that set `assert_new_leader_numbers_forward`
-(`check_new_leader_numbers_forward`), and nowhere else.
-
-**What is wanted.** A decision: either the check is removed, since it has tested nothing for months and the WAL check
-covers the property where it was asked for; or the property is checked in every scenario with a change of sequencer
-leader, from the WAL as `check_new_leader_numbers_forward` does, or from the sequence numbers the engine reports in its
-test events. The check is left in place until that is decided, so that nothing is taken away unnoticed.
-
-**Principles.** The tests check what they say they check (BUG-0084 was the same failure: an assertion that read
-nothing).
-
 ### BUG-0181: When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were {#bug_0181}
 
 | | |
@@ -3863,6 +3835,35 @@ time before the leader may act on them, and only then stop it.
 **Principles.** None; the tests.
 
 ## Closed
+
+### BUG-0180: The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes {#bug_0180}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| Fixed | 2026-10-20 -- the check is removed (Andrew's decision); the WAL check after every scenario covers the property |
+| How | Moving the checks of the matching engine's outcomes onto test events and the member's reports, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): the check's phrase appears nowhere in the code |
+| Impact | Every scenario with recovery orders prints "seq monotonicity check: OK" without having checked anything. A sequencer that took the lead and numbered orders below ones the engine had already been sent would not be caught by it |
+
+**What happens.** After the recovery orders, Phase 5 of `scripts/ha_test.py` calls `check_me_seq_monotonic`, which
+reads the matching engine's Quill log for lines containing "NewOrderSingle seq=N" and fails if a number is not above
+the one before. The engine stopped writing that line when it was given an order book, on 3 June 2026, and nothing has
+written it since. With no line to read, the check finds no numbers, reports no violation, and passes.
+
+The property it was meant to check, that a sequencer which takes the lead goes on numbering above what was numbered
+before, is checked directly from the new leader's WAL in the two scenarios that set `assert_new_leader_numbers_forward`
+(`check_new_leader_numbers_forward`), and nowhere else.
+
+**What was done.** The check is removed from `ha_test.py`. Since kind J of step 4 of phase 6, `ha_test.py` reads both sequencers'
+WALs after every scenario and fails it if any record's number is not one more than the number of the record before it
+([test_events.md](availability/test_events.md), section 4.12). A sequencer that took the lead and numbered records below
+those already written would leave its WAL out of order, so the property is checked in every scenario, not only in the
+two that set `assert_new_leader_numbers_forward`.
+
+**Principles.** The tests check what they say they check (BUG-0084 was the same failure: an assertion that read
+nothing).
 
 ### BUG-0178: The Java generated from the DSL did not compile for an i64 enum with a value outside the 32-bit range {#bug_0178}
 

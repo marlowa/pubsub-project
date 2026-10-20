@@ -891,6 +891,36 @@ medians of four runs were 108.6, 108.2, 107.8 and 107.5 microseconds with the bu
 107.8 and 107.5 with this one, and 108.6, 109.1, 109.5 and 108.0 with the build before it again. `FollowerHandedOver` is
 sent once for each follower that rejoins, and the change does not alter the round trip.
 
+### 4.17 Step 5: no high availability test reads Quill log wording
+
+**What was removed.** The helpers in `ha_test.py` that read a Quill log (`poll_log_for`, `read_complete_lines`,
+`count_log_marker` and `file_end`), the fields of the scenario steps that named a Quill log and the phrases to look for in
+it, and the code that read them. Every step gives the test events it waits for, or must not see, and a step that gave
+none now fails the scenario at once. The variables left holding a Quill log's name or position, which nothing read, are
+gone. So is `check_me_seq_monotonic`, which read the matching engine's Quill log for a line the engine no longer writes and
+so always passed ([BUG-0180](../bug_list.md#bug_0180), closed by Andrew's decision): the check of the WALs after every
+scenario (section 4.12) covers what it was meant to check.
+
+**What still reads a Quill log, and why.** Scenarios 44, 45 and 47 read the messages an operator is given, by decision 8;
+those three messages carry `TEST CONTRACT` comments naming the scenarios. `perf_run.py` and `callgrind_run.py` are not high availability tests: they read the FIX gateway's line saying
+a session is established, and both gateways' progress lines and the line each writes when it drops a report for a member
+that has gone, and those lines carry `TEST CONTRACT` comments naming them.
+
+**The proof.** Every message marked `TEST CONTRACT` except the three of decision 8, 27 in all, was reworded on purpose:
+a `~` was put after every character of its text outside the `{}` placeholders, so that no phrase of two characters or
+more survived, whether or not it had a space in it. Changing only the spaces is not enough, because a phrase with no
+space in it, such as `ha_enabled=false`, survives it. As a control, the three of decision 8 were reworded too, and
+scenarios 47 and 44 then failed, because neither sequencer said why it was leading and the arbiter exited without saying
+why. With the 27 reworded and those three as they are, every unit and integration test passed, the installed sequencer was
+confirmed to carry the reworded text, and from fresh WALs 73 of the 76 scenarios passed, scenarios 14, 27 and 36 failing
+as expected under [BUG-0182](../bug_list.md#bug_0182). The wording was then restored.
+
+**The comments.** No test reads 25 of the 27 any more, and their `TEST CONTRACT` comments are gone. The FIX gateway's line
+saying a session is established and its progress line keep theirs, now naming both `perf_run.py` and `callgrind_run.py`.
+Three lines those scripts read had no comment, and now have one: the binary gateway's progress line, and the line each
+gateway writes when it drops a report for a member that has gone. Eight `TEST CONTRACT` comments remain, each naming what
+reads its message.
+
 ## 5. What phase 6 does not do
 
 - **No behaviour of the venue changes.** Only what the components tell a test, when one asks.

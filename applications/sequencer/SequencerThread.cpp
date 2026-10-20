@@ -192,7 +192,6 @@ void SequencerThread::on_initial_event() {
     } else {
         lease_tick_timer_id_ = start_recurring_timer(pubsub_itc_fw::LeaseTiming::tick_interval);
         acknowledgement_watch_timer_id_ = start_recurring_timer(pubsub_itc_fw::ReplicatedWal::acknowledgement_watch_interval);
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: ha_enabled=true -- leading only while the peer or the arbiter grants a lease (period={} ms); nothing is asked for "
                    "during the first period",
@@ -1344,7 +1343,6 @@ void SequencerThread::on_role_changed(pubsub_itc_fw_app::Role new_role, int32_t 
     }
 
     const auto transition_level = (role_ == pubsub_itc_fw_app::Role::unknown) ? pubsub_itc_fw::FwLogLevel::Info : pubsub_itc_fw::FwLogLevel::Warning;
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), transition_level, "SequencerThread: role transition {} -> {} (epoch={})", pubsub_itc_fw_app::to_string(role_),
                pubsub_itc_fw_app::to_string(new_role), epoch);
 
@@ -1896,7 +1894,6 @@ void SequencerThread::take_record_of_identifiers_if_built() {
     }
     identifiers_noted_while_building_.clear();
     identifiers_noted_while_building_.shrink_to_fit();
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: the record of command identifiers is complete -- {} MiB reserved in {} ms and {} log record(s) read in {} ms in "
                "the background, holding {} identifier(s) of {} reserved, {} of them noted while it was built",
@@ -2004,7 +2001,6 @@ void SequencerThread::forget_command_connection(const pubsub_itc_fw::ConnectionI
     CommandConnections& connections = command_connections_[gateway];
     --connections.open;
     if (connections.open == 1) {
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: gateway protocol={} instance={} has one connection open again -- {} command(s) that arrived while it had two "
                    "were already in this log and were not sequenced twice; checking only commands marked as sent again from now on",
@@ -2016,7 +2012,6 @@ void SequencerThread::forget_command_connection(const pubsub_itc_fw::ConnectionI
 }
 
 void SequencerThread::discard_log_tail_index(const char* reason) {
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "SequencerThread: commands sent again since the change of leader: {} already in this log and not sequenced twice, {} sequenced as new; "
                "{} log record(s) read to check them -- {}",
@@ -2135,7 +2130,6 @@ void SequencerThread::handle_engine_position(const pubsub_itc_fw::EventMessage& 
 
     awaiting_engine_position_ = false;
     if (view.highest_applied < held_at_takeover_) {
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                    "SequencerThread: the matching engine has acted on orders through {} -- sending it the orders this log holds from {} to {}, which it "
                    "never received",

@@ -225,7 +225,7 @@ STARTUP_DELAY          = 1.0   # seconds between app launches
 # reported as a timeout, which points at the wrong thing entirely. Taking that fallback is
 # still a failure, but the gateway's SessionEstablished event says so, and it is named as itself.
 FIX8_LOGON_WAIT        = 8.0   # seconds for f8test to establish a FIX session
-LOG_POLL_INTERVAL      = 0.05  # seconds between log-file polls
+POLL_INTERVAL          = 0.05  # seconds between polls of a file, a client's output or a condition
 SHUTDOWN_TIMEOUT       = 5.0   # seconds per-process for SIGTERM grace period
 SETTLE_AFTER_FAILOVER  = 2.0   # seconds after failover confirmed (let conns stabilise)
 # The venue's database, for the provisioning statements below. Host and port are passed to
@@ -753,21 +753,11 @@ class RestartStep(NamedTuple):
 
     Kills the named process (if still running), deletes its old Quill log
     (ready_log_name) so that Quill starts a fresh one, relaunches the process, and
-    waits until it is ready: for the test events in ready, or, where readiness is
-    not yet reported as a test event, for a line of ready_log_name containing ALL
-    of ready_markers.  Exactly one of ready and ready_markers is given.
+    waits until it is ready: for the test events in ready.
 
-    resets_me_counter: True when restarting the matching engine.  Phase 5 adjusts
-                       its order-count target and log-read position accordingly.
-
-                       The name is now half true and kept because the adjustment
-                       still is.  The counter used to restart at 0 because the
-                       engine held nothing across a restart; it now carries
-                       forward from the highest order number in the recovered
-                       region, so a successor cannot reissue an ME-ORD-N that
-                       already names a different order.  What Phase 5 needs is
-                       unchanged: the log was deleted, so it reads from the
-                       start of a new one.
+    resets_me_counter: True when restarting the matching engine.  After the steps,
+                       the test then waits for the primary sequencer's order
+                       connection to the restarted engine before Phase 5.
     settle_secs:       how long to wait after readiness is confirmed.
     damage_region:     the file name of a region to corrupt while the process is dead, so
                        that the successor finds a record of what it held that it cannot
@@ -789,7 +779,6 @@ class RestartStep(NamedTuple):
     resets_me_counter: bool
     settle_secs: float
     ready: Expect | None = None
-    ready_markers: tuple = ()
     down_secs: float = 0.0
     damage_region: str = ""
     forget_lease_promises: bool = False
@@ -819,11 +808,10 @@ class SupervisedKillStep(NamedTuple):
 class AssertAbsentStep(NamedTuple):
     """
     Wait, then assert that something did NOT happen: the test events in absent did not
-    arrive from the components' present processes, or, where the thing is not yet reported
-    as a test event, log_name does NOT contain a line with all of markers.
+    arrive from the components' present processes.
 
     For properties that are only expressible as something not having happened. A peer that
-    correctly declines to promote produces no log line saying so -- the evidence is the
+    correctly declines to promote reports nothing saying so -- the evidence is the
     absence of the promotion it would otherwise have made -- and that can only be judged after
     leaving it long enough to have made one.
 
@@ -833,9 +821,6 @@ class AssertAbsentStep(NamedTuple):
     after_secs: float
     description: str
     absent: Expect | None = None
-    log_name: str = ""
-    markers: tuple = ()
-    from_byte: int = 0
 
 
 class InterimOrdersStep(NamedTuple):
@@ -871,37 +856,22 @@ class OneLeaderStep(NamedTuple):
 
 class VerifyStep(NamedTuple):
     """
-    Wait for the test events in expect from the components' present processes, or, where
-    the thing is not yet reported as a test event, for a line of log_name containing ALL
-    of markers.
+    Wait for the test events in expect from the components' present processes.
 
     Used to verify intermediate steps of a change of leader (for example a lease
     request sent and a grant received) without relying solely on the final
     role-transition marker.
 
-    log_name:    base name of the log file in log_dir
-    markers:     tuple of strings that must all appear on the same line
     timeout:     maximum seconds to wait
     description: human-readable label shown in test output
-    from_byte:   byte offset to start reading from (0 = beginning of file)
 
     absent:         test events that must NOT have arrived from the components' present
                     processes, checked once expect has been met.
-    absent_markers: strings that must NOT all appear on any one line, checked once the
-                    positive markers have been seen. Some properties are only expressible
-                    as an absence -- an instance that came back as a follower is proved as
-                    much by never having adopted LEADER as by the follower line itself --
-                    and a restart deletes the log first, so anything present afterwards
-                    happened after the restart and nothing older can produce a false alarm.
     """
     timeout: float
     description: str
     expect: Expect | None = None
     absent: Expect | None = None
-    log_name: str = ""
-    markers: tuple = ()
-    from_byte: int = 0
-    absent_markers: tuple = ()
 
 
 class Scenario(NamedTuple):
@@ -4151,7 +4121,7 @@ def preflight_ports(prefix: Path, timeout: float = PORT_CLEAR_TIMEOUT) -> None:
             log(f"{len(clashes)} of the {len(wanted)} ports the venue binds are still held; "
                 f"waiting up to {timeout:.0f}s for them to clear ...")
             announced = True
-        time.sleep(LOG_POLL_INTERVAL)
+        time.sleep(POLL_INTERVAL)
 
     ours = 0
     for port in sorted(clashes):
@@ -4176,57 +4146,6 @@ def preflight(prefix: Path) -> None:
         if not exe.is_file() or not os.access(exe, os.X_OK):
             die(f"binary not found or not executable: {exe}")
     preflight_ports(prefix)
-
-
-def read_complete_lines(path: Path, from_byte: int) -> tuple[str, int]:
-    """The complete lines of a log written from from_byte on, and the byte offset to read from next.
-
-    A component writes its log in pieces, so a read can end part way through a line. Text after the last
-    newline is left for the next read, rather than taken now: a phrase split across two reads would
-    otherwise never be seen, and a partly written number, ME-ORD-12 read as ME-ORD-1, would match the wrong
-    one. Returns ("", from_byte) if no complete line has been written since."""
-    with open(path, "rb") as handle:
-        handle.seek(from_byte)
-        data = handle.read()
-    end = data.rfind(b"\n")
-    if end < 0:
-        return "", from_byte
-    return data[:end + 1].decode(errors="replace"), from_byte + end + 1
-
-
-def file_end(path: Path) -> int:
-    """Current EOF byte offset; 0 if the file does not exist."""
-    try:
-        return path.stat().st_size
-    except FileNotFoundError:
-        return 0
-
-
-def poll_log_for(log_path: Path, *markers: str,
-                 timeout: float, from_byte: int = 0) -> tuple[bool, float, int]:
-    """
-    Poll log_path for a line containing ALL of the given markers.
-    Only bytes beyond from_byte are examined so stale content is skipped.
-    Returns (found, elapsed_seconds, new_file_position).
-
-    The log is read at least once, whatever the timeout. This was a `while` loop tested before
-    the first read, so a caller passing timeout=0.0 -- meaning "read what is already there" --
-    never opened the file and was told the markers were absent. Both absent-assertions in this
-    script call it that way, so every one of them passed without reading anything, including
-    scenario 35's check that the peer did not also promote itself. BUG-0084.
-    """
-    deadline = time.monotonic() + timeout
-    pos      = from_byte
-    t0       = time.monotonic()
-    while True:
-        if log_path.is_file():
-            chunk, pos = read_complete_lines(log_path, pos)
-            for line in chunk.splitlines():
-                if all(m in line for m in markers):
-                    return True, time.monotonic() - t0, pos
-        if time.monotonic() >= deadline:
-            return False, time.monotonic() - t0, pos
-        time.sleep(LOG_POLL_INTERVAL)
 
 
 def provision_cancel_on_disconnect(comp_id: str, grace_period_seconds: int) -> None:
@@ -4557,7 +4476,7 @@ def await_new_orders_since(f8proc: subprocess.Popen, count: int, since: int, tim
     while reports.new_orders_since(since) < count:
         if time.monotonic() >= deadline:
             return False, time.monotonic() - started
-        time.sleep(LOG_POLL_INTERVAL)
+        time.sleep(POLL_INTERVAL)
     return True, time.monotonic() - started
 
 
@@ -4591,7 +4510,7 @@ def await_new_orders(f8proc: subprocess.Popen, count: int, sent_before: int, tim
     while reports.new_among(sent_before, count) < count:
         if time.monotonic() >= deadline:
             return False, time.monotonic() - started
-        time.sleep(LOG_POLL_INTERVAL)
+        time.sleep(POLL_INTERVAL)
     return True, time.monotonic() - started
 
 
@@ -4733,15 +4652,6 @@ def check_write_ahead_logs_in_order(prefix: Path) -> None:
         log(f"  write-ahead logs: {name}'s {records} records are numbered one after another and undamaged -- OK")
 
 
-def count_log_marker(log_path: Path, marker: str, from_byte: int = 0) -> int:
-    """Count lines containing `marker` in log_path beyond from_byte (0 if absent)."""
-    if not log_path.is_file():
-        return 0
-    with open(log_path, "r", errors="replace") as fh:
-        fh.seek(from_byte)
-        return sum(1 for line in fh.read().splitlines() if marker in line)
-
-
 def wait_for_fix_logon(gateway: str, since: int, timeout: float) -> str:
     """
     Wait for the outcome of a FIX logon attempt at gateway, from its test events at or after since.
@@ -4765,36 +4675,6 @@ def wait_for_fix_logon(gateway: str, since: int, timeout: float) -> str:
     if found.message.reason == events.LogonRefusal.SignatureMismatch:
         return "sig_mismatch"
     return "refused"
-
-
-def check_me_seq_monotonic(me_log: Path) -> tuple[bool, list[tuple[int, int, int]]]:
-    """
-    Scan the ME log for 'NewOrderSingle seq=N' lines and verify seq numbers are
-    monotonically increasing (gaps are permitted; resets are not).
-
-    Returns (ok, violations) where violations is a list of
-    (position, previous_seq, bad_seq) for each non-monotonic step.
-
-    A reset means a seq number arrived that is <= the previous one, which
-    indicates that a sequencer was promoted to leader but had not synced its
-    next_sequence_number_ from the peer (WAL recovery bug).
-    """
-    pattern = re.compile(r"NewOrderSingle seq=(\d+)")
-    seq_numbers: list[int] = []
-    try:
-        with open(me_log, "r", errors="replace") as fh:
-            for line in fh:
-                m = pattern.search(line)
-                if m:
-                    seq_numbers.append(int(m.group(1)))
-    except FileNotFoundError:
-        return True, []
-    violations = [
-        (i, seq_numbers[i - 1], seq_numbers[i])
-        for i in range(1, len(seq_numbers))
-        if seq_numbers[i] <= seq_numbers[i - 1]
-    ]
-    return len(violations) == 0, violations
 
 
 # How many sends gateway a may hold waiting on one connection in scenario 71, and its socket send buffer:
@@ -5319,7 +5199,7 @@ def wait_for_publisher_to_hold(label: str, publisher_dir: Path, seq_no: int, tim
         if time.monotonic() > deadline:
             die(f"{label}: the publisher's log in {publisher_dir} reached record {publisher_last_record(publisher_dir)}, not {seq_no}, "
                 f"within {timeout:.0f}s.")
-        time.sleep(LOG_POLL_INTERVAL)
+        time.sleep(POLL_INTERVAL)
     log(f"  {label}: the publisher holds record {seq_no} ({time.monotonic() - started:.1f}s)")
 
 
@@ -5413,7 +5293,7 @@ def await_blocking(flag: Path, timeout: float) -> bool:
     while not confirmation.exists():
         if time.monotonic() >= deadline:
             return False
-        time.sleep(LOG_POLL_INTERVAL)
+        time.sleep(POLL_INTERVAL)
     return True
 
 
@@ -5946,8 +5826,8 @@ def do_restart_step(
     Updates proc_by_name and app_procs in place.
     Returns elapsed seconds from relaunch to readiness.
     """
-    if (step.ready is None) == (not step.ready_markers):
-        die(f"restart step for {step.proc_name}: give exactly one of ready and ready_markers")
+    if step.ready is None:
+        die(f"restart step for {step.proc_name}: it gives no test events that say the process is ready")
     proc = proc_by_name.get(step.proc_name)
     if proc is not None and proc.poll() is None:
         log(f"  SIGKILL → {step.proc_name} (PID {proc.pid})")
@@ -5986,10 +5866,8 @@ def do_restart_step(
         log(f"  Leaving {step.proc_name} down for {step.down_secs:.0f}s, so that the absence is real")
         time.sleep(step.down_secs)
 
-    # Delete the old log before restarting so Quill writes a fresh file
-    # and we can safely read from byte 0.
-    ready_log = log_dir / step.ready_log_name
-    ready_log.unlink(missing_ok=True)
+    # Delete the old Quill log before restarting, so that Quill writes a fresh file for the new process.
+    (log_dir / step.ready_log_name).unlink(missing_ok=True)
 
     launch_entry = next((e for e in launch_table if e[0] == step.proc_name), None)
     if launch_entry is None:
@@ -6008,13 +5886,8 @@ def do_restart_step(
     else:
         app_procs.append((step.proc_name, new_proc))
 
-    if step.ready is not None:
-        log(f"  Waiting for: {step.ready.what} (timeout {step.ready_timeout:.0f}s) ...")
-        found, elapsed = await_expectation(step.ready, step.ready_timeout, since)
-    else:
-        markers_repr = " + ".join(repr(m) for m in step.ready_markers)
-        log(f"  Waiting for {step.ready_log_name}: {markers_repr} (timeout {step.ready_timeout:.0f}s) ...")
-        found, elapsed, _ = poll_log_for(ready_log, *step.ready_markers, timeout=step.ready_timeout, from_byte=0)
+    log(f"  Waiting for: {step.ready.what} (timeout {step.ready_timeout:.0f}s) ...")
+    found, elapsed = await_expectation(step.ready, step.ready_timeout, since)
     if not found:
         die(
             f"{step.proc_name} did not signal readiness within "
@@ -6603,7 +6476,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 started = client_reports(f8proc).new_orders_since(0)
                 if started >= target:
                     break
-                time.sleep(LOG_POLL_INTERVAL)
+                time.sleep(POLL_INTERVAL)
             if started < target:
                 die(f"in-flight: only {started - before_total} of {_INFLIGHT_BURSTS * 1000} orders "
                     f"reached the venue within {_INFLIGHT_START_TIMEOUT:.0f}s, so the pipeline was "
@@ -6710,20 +6583,13 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 phase4_results.append(("verify", step.description, step.settle_secs))
             elif isinstance(step, AssertAbsentStep):
                 log(f"  VERIFY: {step.description}")
-                if step.absent is not None:
-                    log(f"    waiting {step.after_secs:.0f}s, then requiring that this has NOT happened: {step.absent.what} ...")
-                    time.sleep(step.after_secs)
-                    if expectation_seen(step.absent, since_present_processes(step.absent)):
-                        die(f"Verification failed: {step.description} -- {step.absent.what}")
-                    log("    confirmed absent, up to a checkpoint")
-                else:
-                    markers_repr = " + ".join(repr(m) for m in step.markers)
-                    log(f"    waiting {step.after_secs:.0f}s, then requiring {step.log_name} NOT to contain {markers_repr} ...")
-                    time.sleep(step.after_secs)
-                    seen, _, _ = poll_log_for(log_dir / step.log_name, *step.markers, timeout=0.0, from_byte=step.from_byte)
-                    if seen:
-                        die(f"Verification failed: {step.description} -- {step.log_name} contains {markers_repr}")
-                    log("    confirmed absent")
+                if step.absent is None:
+                    die(f"Verification step '{step.description}' gives no test events that must not arrive")
+                log(f"    waiting {step.after_secs:.0f}s, then requiring that this has NOT happened: {step.absent.what} ...")
+                time.sleep(step.after_secs)
+                if expectation_seen(step.absent, since_present_processes(step.absent)):
+                    die(f"Verification failed: {step.description} -- {step.absent.what}")
+                log("    confirmed absent, up to a checkpoint")
                 phase4_results.append(("verify", step.description, step.after_secs))
             elif isinstance(step, InterimOrdersStep):
                 count = step.count_batches * 1000
@@ -6740,17 +6606,12 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 phase4_results.append(("interim", count))
             elif isinstance(step, VerifyStep):
                 log(f"  VERIFY: {step.description}")
-                if step.expect is not None:
-                    log(f"    waiting for: {step.expect.what} (timeout {step.timeout:.0f}s) ...")
-                    found, elapsed = await_expectation(step.expect, step.timeout, since_present_processes(step.expect))
-                    if not found:
-                        die(f"Verification failed: {step.description} -- not seen within {step.timeout:.0f}s: {step.expect.what}")
-                else:
-                    markers_repr = " + ".join(repr(m) for m in step.markers)
-                    log(f"    watching {step.log_name} for {markers_repr} (timeout {step.timeout:.0f}s) ...")
-                    found, elapsed, _ = poll_log_for(log_dir / step.log_name, *step.markers, timeout=step.timeout, from_byte=step.from_byte)
-                    if not found:
-                        die(f"Verification failed: {step.description} — marker not seen in {step.log_name} within {step.timeout:.0f}s")
+                if step.expect is None:
+                    die(f"Verification step '{step.description}' gives no test events to wait for")
+                log(f"    waiting for: {step.expect.what} (timeout {step.timeout:.0f}s) ...")
+                found, elapsed = await_expectation(step.expect, step.timeout, since_present_processes(step.expect))
+                if not found:
+                    die(f"Verification failed: {step.description} -- not seen within {step.timeout:.0f}s: {step.expect.what}")
                 log(f"    confirmed ({elapsed:.1f}s)")
 
                 if step.absent is not None:
@@ -6758,25 +6619,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     if expectation_seen(step.absent, since_present_processes(step.absent)):
                         die(f"Verification failed: {step.description} — {step.absent.what}, which must not have happened")
                     log("    confirmed absent, up to a checkpoint")
-                if step.absent_markers:
-                    absent_repr = " + ".join(repr(m) for m in step.absent_markers)
-                    log(f"    checking {step.log_name} does NOT contain {absent_repr} ...")
-                    # Zero timeout: this is a one-shot read of what is already there, not a
-                    # wait. The positive markers above have been seen, so the behaviour under
-                    # test has happened; anything the absent markers would match has had its
-                    # chance to appear.
-                    seen, _, _ = poll_log_for(
-                        log_dir / step.log_name, *step.absent_markers,
-                        timeout=0.0,
-                        from_byte=step.from_byte,
-                    )
-                    if seen:
-                        die(
-                            f"Verification failed: {step.description} — "
-                            f"{step.log_name} contains {absent_repr}, which must not be there"
-                        )
-                    log("    confirmed absent")
-
                 phase4_results.append(("verify", step.description, elapsed))
 
         # If ME was restarted, its readiness is met as soon as the first
@@ -6822,8 +6664,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
             for s in effective_steps
         )
         after_total  = orders_after * 1000
-        # The engine whose Quill log the sequence check below reads (BUG-0180): the one matching recovery orders.
-        recovery_log = me_secondary_log if scenario.me_ha and not scenario.recovery_on_primary else me_log
 
         # A scenario that kills the gateway its FIX session runs on has no session
         # left to send through, so there are no recovery orders to send or wait for.
@@ -6883,16 +6723,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
                     f"recovery orders did not appear within {args.recovery_timeout:.0f}s"
                 )
             log(f"  {after_total} recovery orders confirmed ({elapsed:.1f}s)")
-            ok, violations = check_me_seq_monotonic(recovery_log)
-            if not ok:
-                for idx, prev_seq, bad_seq in violations[:3]:
-                    log(f"  seq non-monotonic at position {idx}: {prev_seq} -> {bad_seq}")
-                die(
-                    f"ME log seq numbers not monotonically increasing "
-                    f"({len(violations)} violation(s)) — "
-                    "WAL recovery or peer seq-number sync failure suspected"
-                )
-            log("  seq monotonicity check: OK")
 
         # ── ME-HA: the book a promotion resumes with ──────────────────────────
         # The matching engine does no matching: every accepted NewOrderSingle is added to
@@ -7135,7 +6965,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             member_reports = client_reports(f8proc)
             deadline = time.monotonic() + args.recovery_timeout
             while member_reports.count("4") < cancelled and time.monotonic() < deadline:
-                time.sleep(LOG_POLL_INTERVAL)
+                time.sleep(POLL_INTERVAL)
             told = member_reports.count("4")
             if told < cancelled:
                 die(f"long absence: the member was sent {told} cancellation report(s), but {cancelled} order(s) were cancelled. "
@@ -7153,7 +6983,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
             refused = 0
             while time.monotonic() < deadline and not refused:
                 refused = client_reports(f8proc).count("8", refused_from, ord_rej_reason="2")
-                time.sleep(LOG_POLL_INTERVAL)
+                time.sleep(POLL_INTERVAL)
             if client_reports(f8proc).new_among(halted_sent_before, _ORDERS_PER_COMMAND[b"T"]):
                 die("long absence: the member was sent a New report for an order sent while halted. A halt that still "
                     "takes orders is not a halt (R-0117).")
@@ -7171,7 +7001,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # of each: a cancel report for an order it holds, or a rejection naming it as an
         # order it does not recognise.
         if scenario.assert_open_orders_survive:
-            gw_pos = file_end(gw_log)
             gateway_from = _TEST_EVENTS.mark()
             cancels_from = _TEST_EVENTS.mark()
 
@@ -7218,7 +7047,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # here reads the gateway's own log, because the behaviour under test is entirely
         # the gateway's: what it does with a dead session's resting orders, and when.
         if scenario.assert_cancel_grace:
-            gw_pos = file_end(gw_log)
             gateway_from = _TEST_EVENTS.mark()
 
             log("=== Dropping the client session (gateway stays up) ===")
@@ -7946,7 +7774,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Unreplicated orders ───────────────────────────────────────────────
         if scenario.assert_engine_holds_only_logged_orders:
             log("=== The leading sequencer dies holding orders its follower never received (BUG-0103) ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("unreplicated orders: sequencer_primary is not leading, so stopping what it sends to its peer would "
                     "not test the death of a leader.")
@@ -8058,7 +7885,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Publishers follow only the record ─────────────────────────────────
         if scenario.assert_publishers_follow_only_the_record:
             log("=== A publisher is sent only the records the venue's record holds, each once (BUG-0153) ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("publishers: sequencer_primary is not leading, so the scenario's change of leader would not happen as written.")
             sequencer_etc = prefix / "etc" / "sequencer"
@@ -8348,7 +8174,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Old leader rejoins ────────────────────────────────────────────────
         if scenario.assert_rejoining_old_leader_log_repaired:
             log("=== An old leader that rejoins discards the records its new leader does not have ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("old leader rejoins: sequencer_primary is not leading.")
             sequencer_etc = prefix / "etc" / "sequencer"
@@ -8436,7 +8261,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Rule 11: a follower that is behind does not lead ──────────────────
         if scenario.assert_follower_behind_does_not_lead:
             log("=== A follower that is behind does not take the lead ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("rule 11: sequencer_primary is not leading.")
             sequencer_etc = prefix / "etc" / "sequencer"
@@ -8512,7 +8336,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Kept reports: the new leader forwards what the old one never did ──
         if scenario.assert_kept_reports_forwarded:
             log("=== Reports the leader never forwarded reach the member from the new leader ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("kept reports: sequencer_primary is not leading, so blocking its sends would not stop any report.")
             # The fix8 client logs on with the same comp id, and two sessions cannot share one.
@@ -8611,7 +8434,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Logged commands reach the engine ──────────────────────────────────
         if scenario.assert_logged_commands_reach_engine:
             log("=== Orders the new leader's log holds, and the matching engine never received, are applied ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("logged commands: sequencer_primary is not leading.")
             secondary_config = prefix / "etc" / "sequencer" / "sequencer_secondary.toml"
@@ -8794,7 +8616,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Orders during a change of leader ──────────────────────────────────
         if scenario.assert_orders_during_change_answered:
             log("=== Every order sent while the sequencers change leader is answered, and none twice ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("orders during change: sequencer_primary is not leading.")
             if f8proc is not None:
@@ -9053,7 +8874,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # ── Commands sent again after a reconnection ──────────────────────────
         if scenario.assert_commands_resent_after_reconnection:
             log("=== Commands discarded with a closed connection to the leader are sent again when it reconnects ===")
-            secondary_log = log_dir / "sequencer_secondary.log"
             if not has_led("sequencer_primary", _RAW_REPLY_TIMEOUT):
                 die("reconnection: sequencer_primary is not leading.")
             if f8proc is not None:
@@ -9507,7 +9327,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # Nothing is killed. The member asks for a range it is entitled to ask for, and what
         # comes back is checked against its own record of what it was sent under those numbers.
         if scenario.assert_bounded_resend:
-            gw_pos = file_end(gw_log)
 
             # Let the reports for the baseline settle in the client's output before it is read.
             # The ME accepting an order and the member receiving the report are separate events.
@@ -9647,7 +9466,6 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # position had to be reconstructed and biased high, whereas here the session unbound
         # properly and the figure is exact.
         if scenario.assert_resend_recovery:
-            gw_pos = file_end(gw_log)
             gateway_from = _TEST_EVENTS.mark()
             client_output = log_dir / "f8test_resend_client.txt"
 

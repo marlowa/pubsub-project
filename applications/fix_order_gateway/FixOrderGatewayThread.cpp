@@ -801,6 +801,7 @@ void FixOrderGatewayThread::on_framework_pdu_message(const pubsub_itc_fw::EventM
         // arrive for sessions that are already gone.
         ++execution_reports_dropped_;
         report_order_progress();
+        // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those scripts break, silently.
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
                    "FixOrderGatewayThread: ExecutionReport gateway_session_conn_id={} -- "
                    "client already disconnected -- dropping",
@@ -2458,9 +2459,9 @@ void FixOrderGatewayThread::emit_order_progress(int64_t accounted) {
     // been accounted for already carried that, and was thrown away.
     const int64_t awaiting = orders_received_ - accounted;
 
-    // TEST CONTRACT -- perf_run.py matches this text. The wording is an interface: change it and the test breaks, silently
-    // and elsewhere. It reads a PREFIX of the line, so a field may be appended without breaking it; the existing ones may
-    // not be reordered.
+    // TEST CONTRACT -- perf_run.py and callgrind_run.py match this text. The wording is an interface: change it and those
+    // scripts break, silently. They read a PREFIX of the line, so a field may be appended without breaking them; the existing
+    // ones may not be reordered.
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
                "GW-PROGRESS accounted={} sent={} dropped={} nos_received={} awaiting={} refused={} refused_cancels={}", accounted, execution_reports_sent_,
                execution_reports_dropped_, orders_received_, awaiting, orders_refused_, cancels_refused_);
@@ -2621,7 +2622,6 @@ void FixOrderGatewayThread::send_unanswered_commands_again(int32_t new_epoch) {
     const bool to_primary = true;
     const bool to_secondary = true;
     start_resends(to_primary, to_secondary);
-    // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
     PUBSUB_LOG(
         get_logger(), pubsub_itc_fw::FwLogLevel::Info,
         "FixOrderGatewayThread: a new sequencer leader at epoch {} -- sending again {} command(s) still unanswered, each marked as sent again, {} at a time",
