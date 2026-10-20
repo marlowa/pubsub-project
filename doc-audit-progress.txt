@@ -92,7 +92,7 @@ orientation: `architecture.md`, `building.md`, `running.md`, `testing.md`, `READ
 
 top level: `project_status.md`, `README.md`
 
-pubsub: `pubsub.md`
+pubsub: `README.md`, `pubsub.md`
 
 Doxygen pages: `memory_management_design.dox`, `raw_socket_design.dox`, `dsl_design.dox` (toolchain section)
 
@@ -116,7 +116,7 @@ availability: `design_notes.md` (see question 4)
 (`ha_in_the_library.md` and `ha_library_boundary.md` were written on 11 October 2026 against the
 code as it then stood)
 
-pubsub: `README.md`, `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
+pubsub: `flow_control.md`, `mep_oar.md`, `mep_rewire_and_oar.md`,
 `oar_bus_deduplication.md`, `oar_external_stream.md`
 
 top level of `docs/`: `roadmap.md`
