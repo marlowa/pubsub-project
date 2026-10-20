@@ -3609,6 +3609,19 @@ sequencer's thread away from renewing its lease.
 **When.** Andrew judged on 18 October 2026 that it does not hold up the completion of phase 5, and is dealt
 with later.
 
+**A question for the review of phases 7 and 8: a limit on automatic recovery.** While no matching engine has
+caught up, the venue cannot trade, and a catch-up from far back takes seconds, so members find their orders
+unanswered and may telephone to ask whether the venue is working. That is not a transparent recovery. Andrew and
+Claude agreed on 20 October 2026 that there should be a limit, past which the venue does not recover on its own:
+the venue states the longest recovery it does automatically, as it states the longest absence of an engine
+(R-0117); before an engine that is the only one able to trade resumes, it compares how far behind it is with how
+fast it applies records, and if it cannot be current within that time it halts trading, so that every order is
+refused with the reason, and leaves the decision to a person, as the absence rule does. A follower engine catching
+up while the other leads is not limited, since members do not see it, provided it does not load the leader. To be
+designed with the measurement of the absence rule in phase 7 ([BUG-0146](#bug_0146)). Phases 7 and 8 keep the
+follower engine current, so a catch-up from far back happens only when both engines have lost their state, and never
+from further back than the start of the trading day.
+
 **Principles.** V3, V11, F4.
 
 ### BUG-0177: The C++ generated from the DSL does not compile for a message with a list of enums, nor cleanly for an i64 enum entry at the smallest value {#bug_0177}
