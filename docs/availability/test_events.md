@@ -743,6 +743,35 @@ From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 fail
 107.6, 107.7 and 107.8 with the build of kind H again. The runs settle at about 100 or about 108 microseconds with any
 build, as section 4.10 says. None of kind I's events is sent for each order, and it does not change the round trip.
 
+### 4.12 Step 4, kind J: the WAL in order and undamaged
+
+**The check moved.** After every scenario, `ha_test.py` reads both sequencers' WALs whole, as they stand on disk, and
+fails the scenario if either holds a record out of order or is damaged. A record is out of order when its number is not
+one more than the number of the record before it, whether it repeats a number or leaves a gap; the first record may have
+any number. An entry is damaged when it is not whole or its checksum is wrong, and a valid entry follows it, later in
+its segment or in a later segment. The unfinished entry a process leaves at the end of the WAL when it is killed while
+writing is not damage, because nothing follows it. These are the rules the library's `WalReader` and `ReplicatedWal`
+apply. The check no longer reads the two messages the sequencers log for these conditions, and the `TEST CONTRACT`
+comment on the one in `ReplicatedWal` is gone; the other message, in `WalReader` and `WalCursor`, carried none.
+
+Reading a WAL of 1.7 million records takes about four seconds. A full run's WALs grow as it goes, to about 670,000
+records each by the end, and the full run took 36 minutes 28 seconds, against 35 minutes 48 seconds before the check
+moved.
+
+**How it was shown to work.** The WALs kept from earlier runs that were found damaged were read with the new check.
+Two of them fail it, each for the reason it was kept: in one, the entry at byte 47206 of segment 130 is not valid and a
+valid entry follows it, and three records are out of order; in the other, record 402005 is written twice, one directly
+after the other. Then scenario 1 was run twice with a copy of `ha_test.py` that reads one of those WALs in place of the
+secondary sequencer's: it failed each time, naming the damage in the first and the repeated record in the second.
+
+From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182). The check ran after each of the 73.
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 99.5,
+98.9, 107.5 and 108.0 microseconds with the build of kind I, 98.8, 107.8, 107.7 and 107.9 with this one, and 107.9,
+108.0, 107.8 and 107.7 with the build of kind I again. Kind J changes no code on the path of an order, and it does not
+change the round trip.
+
 ## 5. What phase 6 does not do
 
 - **No behaviour of the venue changes.** Only what the components tell a test, when one asks.

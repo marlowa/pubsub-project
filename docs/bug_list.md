@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 185 |
-| Open | 78 (57 defects, 21 tasks) |
+| Bugs recorded | 186 |
+| Open | 79 (58 defects, 21 tasks) |
 | Closed | 107 |
-| Next id | BUG-0186 |
+| Next id | BUG-0187 |
 
 ## Open bugs by severity
 
-18 high, 49 medium, 11 low.
+18 high, 50 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -80,6 +80,7 @@
 | [BUG-0180](#bug_0180) | medium | defect | The high availability tests' check that the matching engine received orders in ascending sequence number reads a message the engine no longer writes, so it always passes |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
+| [BUG-0186](#bug_0186) | medium | defect | The reactor's heartbeat sometimes fell far behind under load, failing PollingReactorKeepsServingEverySourceWhileOneIsBusy about one run in six |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3813,6 +3814,28 @@ earlier run of the developer loop that day.
 into a buffer before the pause took effect, or whether the test samples the count before the pause has taken effect.
 
 **Principles.** None directly; the reactor's pausing of a connection is what the gateways rely on to hold back a member.
+
+### BUG-0186: The reactor's heartbeat sometimes fell far behind under load, failing PollingReactorKeepsServingEverySourceWhileOneIsBusy about one run in six {#bug_0186}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-20 |
+| Recorded | 2026-10-20 |
+| How | The developer loop stopped at this integration test during step 4 of phase 6 ([test_events.md](availability/test_events.md)); run on its own, it then failed once in six runs |
+| Impact | Unknown until the cause is found. If a busy reactor starves its timers, a component's heartbeats and timeouts run late under load. If the fault is in the test, the developer loop fails at random and its result cannot be trusted |
+
+**What was seen.** `FrameworkPduBurstIntegrationTest.PollingReactorKeepsServingEverySourceWhileOneIsBusy` failed with
+"the heartbeat managed 200 beats while the reactor was idle but only 12 while it was also serving 100000 socket
+message(s), 2517 message(s) from other threads and 2517 command(s)". Run on its own six times on an idle machine, with
+the processor 99 per cent idle, it passed five times and failed once, with 30 beats. The change being built touched
+nothing in the reactor: one comment in `ReplicatedWal.cpp` and the high availability test script.
+[BUG-0094](#bug_0094), dismissed, describes this test and the load it applies, and says that it passes.
+
+**What is wanted.** The cause found: whether the reactor serves its timers late while it is serving sockets and
+messages from other threads, or whether the test's load or its measurement varies from run to run.
+
+**Principles.** None directly; every component's heartbeats and timeouts run on the reactor's timers.
 
 ### BUG-0185: Scenarios 59 and 76 stop the leader the moment inject_order has sent, which can beat the leader to reading the last order {#bug_0185}
 

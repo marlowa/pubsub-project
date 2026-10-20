@@ -125,7 +125,6 @@ void ReplicatedWal::write(int64_t seq_no, int32_t leader_epoch, int16_t pdu_id, 
     if (seq_no != log_epochs_.last_seq_no() + 1) {
         // Records are numbered without a break; one that is not means the table of epochs no longer
         // describes the WAL, and a rejoining follower could be told the WALs agree when they do not.
-        // TEST CONTRACT -- ha_test.py matches this text. The wording is an interface: change it and the test breaks, silently and elsewhere.
         PUBSUB_LOG(logger_, FwLogLevel::Error,
                    "{}: record {} was written after record {} -- the log has a gap, and the table of epochs is not extended past it", configuration_.owner_name,
                    seq_no, log_epochs_.last_seq_no());

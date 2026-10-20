@@ -275,6 +275,9 @@ member cannot see which instances it is provisioned for.
 
 ## J. The WAL written in order and undamaged, over the whole run (2)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.12): the test reads both sequencers' WALs after
+each scenario.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | general | `check_write_ahead_logs_in_order` | sequencer_log | _WAL_OUT_OF_ORDER | no sequencer wrote a record out of order or found its WAL damaged, during the whole run | **WAL files**: the test reads both WALs after the scenario and checks every record is in order and its checksum right |

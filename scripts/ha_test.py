@@ -204,6 +204,7 @@ import signal
 import socket
 import struct
 import urllib.request
+import zlib
 import subprocess
 import sys
 import threading
@@ -4782,22 +4783,24 @@ def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
     return int(last.group(2)), int(last.group(4))
 
 
-# What a sequencer logs when it writes a record out of order, and when it finds its write-ahead log damaged.
-_WAL_OUT_OF_ORDER = "was written after record"
-_WAL_DAMAGED = "write-ahead log is damaged"
+def check_write_ahead_logs_in_order(prefix: Path) -> None:
+    """Fail the scenario if either sequencer's write-ahead log holds a record out of order, or is damaged.
 
-
-def check_write_ahead_logs_in_order(log_dir: Path) -> None:
-    """Fail the scenario if either sequencer wrote a record out of order or found its write-ahead log damaged."""
+    Both logs are read whole, as they stand on disk after the scenario (wal_problems).
+    """
     for name in ("sequencer_primary", "sequencer_secondary"):
-        sequencer_log = log_dir / f"{name}.log"
-        out_of_order = count_log_marker(sequencer_log, _WAL_OUT_OF_ORDER)
-        damaged = count_log_marker(sequencer_log, _WAL_DAMAGED)
-        if out_of_order or damaged:
-            die(f"{name} wrote {out_of_order} record(s) out of order and reported its write-ahead log damaged "
-                f"{damaged} time(s) -- see '{_WAL_OUT_OF_ORDER}' in {sequencer_log}. Its log now holds records "
-                "twice or out of order, and every later scenario starts from it (BUG-0147).")
-    log("  write-ahead logs: neither sequencer wrote a record out of order -- OK")
+        config = prefix / "etc" / "sequencer" / f"{name}.toml"
+        wal_dir = config.parent / installed_toml_section_value(config, "wal", "directory")
+        out_of_order, damage, records = wal_problems(wal_dir)
+        if damage:
+            die(f"{name}'s write-ahead log in {wal_dir} is damaged: {damage}. Records after the damage would be lost, and every "
+                "later scenario starts from it.")
+        if out_of_order:
+            earlier, later = out_of_order[0]
+            die(f"{name}'s write-ahead log in {wal_dir} holds {len(out_of_order)} record(s) out of order, the first record {later} "
+                f"directly after record {earlier}. It holds records twice or with a gap, and every later scenario starts from it "
+                "(BUG-0147).")
+        log(f"  write-ahead logs: {name}'s {records} records are numbered one after another and undamaged -- OK")
 
 
 def count_log_marker(log_path: Path, marker: str, from_byte: int = 0) -> int:
@@ -5307,6 +5310,63 @@ def wal_entries(wal_dir: Path):
             wall_time_ns, _, _ = _WAL_CONTENTS_HEADER.unpack_from(data, payload_at)
             yield record_id, wall_time_ns, data[payload_at + _WAL_CONTENTS_HEADER.size:payload_at + size]
             offset = payload_at + size + 4
+
+
+def wal_entry_size_if_valid(data: bytes, offset: int) -> int:
+    """The size in bytes of the entry at offset, header, payload and checksum together, if it is a whole entry whose
+    checksum is right; otherwise 0. The checksum is the CRC-32 of the header and the payload, as WalWriter computes it."""
+    if offset + _WAL_ENTRY_HEADER.size > len(data):
+        return 0
+    magic, size, _, _ = _WAL_ENTRY_HEADER.unpack_from(data, offset)
+    end = offset + _WAL_ENTRY_HEADER.size + size + 4
+    if magic != _WAL_ENTRY_MAGIC or end > len(data):
+        return 0
+    stored = struct.unpack_from("<I", data, end - 4)[0]
+    return end - offset if zlib.crc32(data[offset:end - 4]) == stored else 0
+
+
+def wal_problems(wal_dir: Path) -> tuple[list[tuple[int, int]], str, int]:
+    """What is wrong with a sequencer's write-ahead log as it stands on disk: (records out of order, damage, records read).
+
+    Read as WalReader reads it. Each segment is read from its start, entry by entry, until an entry that is not whole or
+    whose checksum is wrong. Unwritten space, and the unfinished entry a process that was killed while writing leaves at
+    the end of the log, stop the reading there and are not damage. An entry that is not valid is damage when a valid entry
+    follows it, later in its segment or in a later segment, because the records after it would be lost.
+
+    Records out of order are each place where a record's number is not one more than the number of the record before it,
+    given as (the record before, the record). The first record may have any number, because the start of a log can be
+    deleted once it is no longer needed.
+    """
+    out_of_order: list[tuple[int, int]] = []
+    previous = None
+    records = 0
+    stopped_at = ""  # where the last segment read stopped at bytes that were neither a valid entry nor unwritten space
+    magic_bytes = struct.pack("<I", _WAL_ENTRY_MAGIC)
+    for segment_path in sorted(wal_dir.glob("wal_*.log")):
+        data = segment_path.read_bytes()
+        offset = 0
+        if stopped_at and wal_entry_size_if_valid(data, 0):
+            return out_of_order, f"{stopped_at} is not a valid entry, and {segment_path.name} holds valid entries after it", records
+        stopped_at = ""
+        while True:
+            size = wal_entry_size_if_valid(data, offset)
+            if size == 0:
+                break
+            record_id = _WAL_ENTRY_HEADER.unpack_from(data, offset)[2]
+            if previous is not None and record_id != previous + 1:
+                out_of_order.append((previous, record_id))
+            previous = record_id
+            records += 1
+            offset += size
+        if offset < len(data) and any(data[offset:offset + _WAL_ENTRY_HEADER.size]):
+            later = data.find(magic_bytes, offset + 1)
+            while later != -1 and not wal_entry_size_if_valid(data, later):
+                later = data.find(magic_bytes, later + 1)
+            if later != -1:
+                return out_of_order, (f"the entry at byte {offset} of {segment_path.name} is not valid, and a valid entry follows "
+                                      f"it at byte {later}"), records
+            stopped_at = f"the entry at byte {offset} of {segment_path.name}"
+    return out_of_order, "", records
 
 
 def publisher_wal_directory(prefix: Path, which: str) -> Path:
@@ -10172,7 +10232,7 @@ def run_scenario(scenario: Scenario, args) -> bool:
         # A sequencer that wrote records out of order, or found its write-ahead log damaged, has left
         # a log that holds records twice, or out of order, whatever the member saw. Every later
         # scenario then starts from that log, so it is a failure of this one (BUG-0147).
-        check_write_ahead_logs_in_order(log_dir)
+        check_write_ahead_logs_in_order(prefix)
 
         result_pass = True
         log("")
