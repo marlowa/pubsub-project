@@ -307,6 +307,10 @@ when it begins blocking, and the test waits for the file.
 
 ## M. The gateway's progress counts (4)
 
+**Moved in step 4** ([test_events.md](test_events.md), section 4.14): the checks in scenarios 18 and 42 are about the
+gateway's own reporting, which no member sees, so they read the FIX gateway's `ProgressReported` event; the check in
+scenario 51 counts the cancellation reports the member received.
+
 | Scenarios | Function | Log | Phrase or helper | Proves | Replaced by |
 |---|---|---|---|---|---|
 | 18 | `run_scenario` | gw_b_log | '_gateway_progress_lines' | the gateway's counts of orders sent and answered, from the line it logs every few seconds | **Member**: the test client's own counts of what it sent and what was answered |
@@ -406,6 +410,7 @@ were missed by it:
 | `ThrottleApplied` | I | the FIX gateway |
 | `ThrottleStarted` | I | the FIX gateway |
 | `ThrottleStopped` | I | the FIX gateway |
+| `ProgressReported` | M | the FIX gateway |
 
-That is 44 events. Several may merge when they are defined, for instance the session events into one
+That is 45 events. Several may merge when they are defined, for instance the session events into one
 event with a field saying what happened; step 3 settles that.

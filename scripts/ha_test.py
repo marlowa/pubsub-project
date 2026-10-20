@@ -4625,41 +4625,6 @@ def _client_highest_seq_num(client_output: Path) -> int | None:
     return max(numbers) if numbers else None
 
 
-def _gateway_progress_lines(log_path: Path) -> list[dict[str, int]]:
-    """Every GW-PROGRESS line in a gateway log, as its figures.
-
-    The line is emitted on a timer as well as per N orders accounted, so a gateway serving nobody
-    still writes one every few seconds -- the whole point of BUG-0009's change, and the reason a
-    caller must read what a line SAYS rather than count how many there are.
-    """
-    try:
-        return _progress_figures(log_path.read_text(errors="replace"))
-    except OSError:
-        return []
-
-
-# The trailing fields are optional here, not because the gateway ever omits them, but so that
-# appending the next one does not silently stop every line from matching at all -- a parser that
-# returns nothing looks exactly like a gateway that logged nothing. Fields are appended for the
-# same reason: see the TEST CONTRACT note beside the line in FixOrderGatewayThread.cpp.
-_GW_PROGRESS_PATTERN = re.compile(
-    r"GW-PROGRESS accounted=(\d+) sent=(\d+) dropped=(\d+) nos_received=(\d+)"
-    r"(?: awaiting=(\d+))?(?: refused=(\d+))?(?: refused_cancels=(\d+))?")
-
-
-def _progress_figures(text: str) -> list[dict[str, int]]:
-    """Parse every GW-PROGRESS line in some log text into its figures."""
-    lines: list[dict[str, int]] = []
-    for match in _GW_PROGRESS_PATTERN.finditer(text):
-        figures = {"accounted": int(match.group(1)), "sent": int(match.group(2)),
-                   "dropped": int(match.group(3)), "nos_received": int(match.group(4))}
-        for index, name in ((5, "awaiting"), (6, "refused"), (7, "refused_cancels")):
-            if match.group(index) is not None:
-                figures[name] = int(match.group(index))
-        lines.append(figures)
-    return lines
-
-
 # The venue switch as it appears in a deployed config, which is in two spellings and three
 # sections. `ha_enabled` is unambiguous wherever it appears -- the gateways carry it under
 # [sequencer] and the publishers under their own section -- while a bare `enabled` means the switch
@@ -4746,41 +4711,6 @@ def set_installed_promotion_policy(prefix: Path, policy: str) -> int:
             toml_path.write_text(result)
             changed += 1
     return changed
-
-
-def _gateway_progress_lines_since(log_path: Path, from_byte: int) -> list[dict[str, int]]:
-    """The GW-PROGRESS lines written after from_byte, as their figures.
-
-    Reading from an offset rather than the whole file is what lets a caller ask "did it keep
-    reporting DURING this window", which is a different question from "has it ever reported".
-    The second is answered by a run that was healthy an hour ago.
-    """
-    try:
-        with open(log_path, "r", errors="replace") as handle:
-            handle.seek(from_byte)
-            text = handle.read()
-    except OSError:
-        return []
-    return _progress_figures(text)
-
-
-def gateway_progress_totals(log_path: Path) -> tuple[int | None, int]:
-    """Return (sent, nos_received) from the last GW-PROGRESS line, or (None, 0).
-
-    The gateway logs "GW-PROGRESS accounted=N sent=N dropped=N nos_received=N" once per
-    1000 accounted reports, so the last line carries the run totals. Used to assert that
-    execution reports were actually delivered, rather than merely not complained about.
-    """
-    try:
-        text = log_path.read_text(errors="replace")
-    except FileNotFoundError:
-        return None, 0
-    last = None
-    for match in re.finditer(r"GW-PROGRESS accounted=(\d+) sent=(\d+) dropped=(\d+) nos_received=(\d+)", text):
-        last = match
-    if last is None:
-        return None, 0
-    return int(last.group(2)), int(last.group(4))
 
 
 def check_write_ahead_logs_in_order(prefix: Path) -> None:
@@ -7092,25 +7022,23 @@ def run_scenario(scenario: Scenario, args) -> bool:
                 f"instance 1, first after {elapsed:.1f}s -- not rerouted to b")
 
             # The load-bearing assertion: b was alive throughout, and the question is only whether
-            # anything reached it.
-            #
-            # This used to count GW-PROGRESS lines and require zero. That stopped being a test of
-            # traffic on 2026-08-28, when the line gained a timer so that a stalled venue keeps
-            # reporting -- BUG-0009. A gateway serving nobody now emits one every five seconds, all
-            # of them zeros, so the presence of a line says nothing and its CONTENTS say everything.
-            #
-            # Worth noting for whoever changes that line next: its wording is a declared test
-            # contract, and this scenario shows the wording is not the whole contract. When it is
-            # emitted matters too.
-            b_traffic = [line for line in _gateway_progress_lines(gw_b_log)
-                         if line["accounted"] > 0 or line["nos_received"] > 0]
+            # anything reached it. A gateway reports its progress every five seconds whether or not it
+            # is serving anyone, so the reports' figures say whether it handled traffic, not their
+            # number.
+            gateway_b = "fix_order_gateway_b"
+            if not _TEST_EVENTS.settle(gateway_b):
+                die(f"gateway orphan: {gateway_b} did not answer a checkpoint ({_TEST_EVENTS.failures[-1]}), so what it reported is not known")
+            progress = message_of(_TEST_EVENTS.modules["fix_order_gateway_test_events"].ProgressReported, gateway_b)
+            b_reports = [event.message for event in _TEST_EVENTS.events[_TEST_EVENTS.since_introduction(gateway_b):] if progress(event)]
+            if not b_reports:
+                die(f"gateway orphan: {gateway_b} reported no progress at all, so whether anything reached it is not known.")
+            b_traffic = [figures for figures in b_reports if figures.accounted > 0 or figures.orders_received > 0]
             if b_traffic:
                 die(f"gateway orphan: instance b reported traffic it should never have seen -- "
                     f"{b_traffic[-1]}. It was sent no orders of its own, so either instance a's "
                     "reports were rerouted to it -- which nothing implements -- or session handover "
                     "now exists and this scenario's assertions need inverting, not removing.")
-            log(f"  gateway orphan: instance b reported only idle progress lines "
-                f"({count_log_marker(gw_b_log, 'GW-PROGRESS')} of them, all zeros) -- it inherited "
+            log(f"  gateway orphan: instance b reported only idle progress ({len(b_reports)} reports, all zeros) -- it inherited "
                 "nothing from a -- OK")
 
             # The member is never told: the orders were cancelled in the book, and the
@@ -7203,17 +7131,17 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # The reports have to reach the members. A cancel nobody is told about is the
             # silent loss this whole chapter exists to prevent, and it looks identical from
             # here to a cancel that worked.
-            sent, nos_received = gateway_progress_totals(gw_log)
-            if sent is None:
-                die("long absence: no GW-PROGRESS line in the gateway log -- cannot confirm the "
-                    "cancellation reports were delivered to the member")
-            if sent < nos_received + cancelled:
-                die(f"long absence: the gateway sent {sent} report(s) for {nos_received} order(s), "
-                    f"but {cancelled} cancellation(s) were emitted. Expected at least "
-                    f"{nos_received + cancelled}: a member that is not told its order was "
-                    "cancelled cannot tell that from the venue having lost it (R-0117, R-0020).")
-            log(f"  long absence: {sent} report(s) delivered for {nos_received} order(s) -- "
-                f"includes the {cancelled} cancellation(s)")
+            # Counted at the member, which is where the reports have to arrive.
+            member_reports = client_reports(f8proc)
+            deadline = time.monotonic() + args.recovery_timeout
+            while member_reports.count("4") < cancelled and time.monotonic() < deadline:
+                time.sleep(LOG_POLL_INTERVAL)
+            told = member_reports.count("4")
+            if told < cancelled:
+                die(f"long absence: the member was sent {told} cancellation report(s), but {cancelled} order(s) were cancelled. "
+                    "A member that is not told its order was cancelled cannot tell that from the venue having lost it "
+                    "(R-0117, R-0020).")
+            log(f"  long absence: the member was sent a cancellation report for each of the {cancelled} order(s) -- OK")
 
             # And the halt has to mean something. An order sent now must be refused, in the
             # reply to that order, which is how a member trading into a halt finds out.
@@ -7881,26 +7809,28 @@ def run_scenario(scenario: Scenario, args) -> bool:
             # Before BUG-0009 step 2 this line was emitted once per N orders accounted, so when
             # accounting stalled the reporting stalled with it. It went quiet for 2m19s during the
             # incident. A line driven by progress cannot report the absence of progress.
-            quiet_from = file_end(gw_log)
+            quiet_from = _TEST_EVENTS.mark()
             log(f"  watching the gateway for {_REFUSAL_QUIET_WATCH:.0f}s with nothing in flight ...")
             time.sleep(_REFUSAL_QUIET_WATCH)
-            quiet_lines = _gateway_progress_lines_since(gw_log, quiet_from)
-            if len(quiet_lines) < 2:
-                die(f"order refusal: only {len(quiet_lines)} GW-PROGRESS line(s) in "
-                    f"{_REFUSAL_QUIET_WATCH:.0f}s of a degraded venue. The line has to be driven "
+            if not _TEST_EVENTS.settle("fix_order_gateway_a"):
+                die(f"order refusal: fix_order_gateway_a did not answer a checkpoint ({_TEST_EVENTS.failures[-1]})")
+            progress = message_of(_TEST_EVENTS.modules["fix_order_gateway_test_events"].ProgressReported, "fix_order_gateway_a")
+            quiet_reports = [event.message for event in _TEST_EVENTS.events[quiet_from:] if progress(event)]
+            if len(quiet_reports) < 2:
+                die(f"order refusal: only {len(quiet_reports)} progress report(s) in "
+                    f"{_REFUSAL_QUIET_WATCH:.0f}s of a degraded venue. The report has to be driven "
                     "by a clock, not by progress, or it goes silent exactly when it matters.")
-            latest = quiet_lines[-1]
-            if latest.get("refused", 0) < 1:
-                die(f"order refusal: the progress line reports refused={latest.get('refused')} "
+            latest = quiet_reports[-1]
+            if latest.refused < 1:
+                die(f"order refusal: the progress report says refused={latest.refused} "
                     "after orders were demonstrably refused. The count an operator would watch "
                     "does not reflect what the members were told.")
-            if latest.get("awaiting", 0) < 1:
+            if latest.awaiting < 1:
                 die("order refusal: awaiting=0 while orders deferred before the refusal began are "
-                    "still unprocessed. Deferred and refused are different states and the line "
+                    "still unprocessed. Deferred and refused are different states and the report "
                     "must not fold them together -- only one of them is somebody's problem later.")
-            log(f"  order refusal: {len(quiet_lines)} progress lines while nothing progressed, "
-                f"awaiting={latest.get('awaiting')} refused={latest.get('refused')} "
-                f"refused_cancels={latest.get('refused_cancels')} -- OK")
+            log(f"  order refusal: {len(quiet_reports)} progress reports while nothing progressed, "
+                f"awaiting={latest.awaiting} refused={latest.refused} refused_cancels={latest.refused_cancels} -- OK")
 
             # 5. Acceptance resumes on its own.
             #

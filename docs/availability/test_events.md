@@ -48,7 +48,7 @@ more checks than that.
 | J. The WAL written in order and undamaged, over the whole run | 2 | Not by a member; but the test can read the WAL files themselves |
 | K. The test's own fault-injection library saying it has begun blocking | 5 | Not a Quill log, but the test matches the library's own line on standard error, which phase 6 replaces with a file the library creates (decision 5) |
 | L. The helper that reads complete lines, used by the counts above | 4 | Goes when its callers go |
-| M. The gateway's progress counts, from a line it logs every few seconds | 4 | Yes: the test client counts what it sent and what was answered |
+| M. The gateway's progress counts, from a line it logs every few seconds | 4 | Whether the cancellation reports reached the member, yes. That the gateway reports its progress on a clock, and its figures, no |
 | N. The FIX test client's own record of what it received | 2 | It is what the member received; not a Quill log of the venue, so it stays |
 
 In all, 125 calls become test events, 33 move to what a member receives, 2 to the WAL files, and 5 to the
@@ -794,6 +794,42 @@ From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 fail
 107.9, 107.8 and 107.5 microseconds with the build of kind J, 108.0, 108.2, 107.8 and 108.0 with this one, and 108.4,
 107.6, 107.5 and 107.6 with the build of kind J again. The library is loaded only by a test, and kind K does not change
 the round trip.
+
+### 4.14 Step 4, kind M: the gateway's progress counts
+
+**The event.** `fix_order_gateway_test_events.dsl` gains `ProgressReported` (message id 206), sent each time the FIX
+gateway logs its progress line, every five seconds and after a set number of orders, with the line's figures: orders
+accounted for, reports sent and dropped, orders received, orders awaiting an answer, and orders and cancels refused. It is
+not sent for each order. The line keeps its `TEST CONTRACT` comment, because `perf_run.py` still reads it.
+
+**The checks moved.** The four of kind M. Two of them are about the gateway's own reporting, which no member sees, so they
+read the event rather than the member's counts: in scenario 18, that gateway b, which no member used, reported progress
+and every report it made was all zeros; in scenario 42, that the gateway went on reporting while nothing progressed, at
+least twice in the time watched, with orders refused and orders awaiting an answer. The third, in scenario 51, is whether
+the member was told that its orders were cancelled, and it now counts the cancellation reports the member received, one
+for each order the matching engine cancelled. The helpers that read the progress line from the gateway's Quill log are
+gone.
+
+**How it was shown to work.** The faults were put in four builds of the gateway, each scenario failing at the check
+meant to catch it:
+
+| Fault | Scenarios | Where they failed |
+|---|---|---|
+| No progress reported | 18 | gateway b reporting no progress at all |
+| | 42 | no progress report in the 12 seconds watched |
+| Every progress report claiming one order accounted for | 18 | gateway b reporting traffic it should never have seen |
+| The refused orders always reported as 0 | 42 | the progress report saying none were refused after orders were refused |
+| Cancellation reports not passed on to members | 51 | the member sent none of the 1,000 cancellation reports |
+
+The second shows that the check on gateway b reads figures that would show traffic.
+
+From fresh WALs, 73 of the 76 scenarios passed, and scenarios 14, 27 and 36 failed as expected under
+[BUG-0182](../bug_list.md#bug_0182).
+
+**The order's round trip, with no test events configured,** measured as for kind A: the medians of four runs were 108.0,
+108.1, 108.2 and 108.0 microseconds with the build of kind K, 107.9, 107.7, 107.7 and 107.4 with this one, and 107.9,
+107.6, 107.6 and 107.4 with the build of kind K again. `ProgressReported` is sent with the progress line, not for each
+order, and kind M does not change the round trip.
 
 ## 5. What phase 6 does not do
 

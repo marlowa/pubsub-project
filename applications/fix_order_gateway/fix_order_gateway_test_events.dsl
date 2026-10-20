@@ -215,3 +215,19 @@ message ThrottleStopped (id=205, version=1)
     i64           refused     # how many commands of that kind were refused in the run
     ThrottleEnd   ended_by
 end
+
+# ------------------------------------------------------------
+#  206 -- ProgressReported
+#  The gateway logged its progress line, as it does every five seconds,
+#  and after a set number of orders, carrying the same figures. It is
+#  sent each time the line is logged, not for each order.
+# ------------------------------------------------------------
+message ProgressReported (id=206, version=1)
+    i64 accounted          # orders accounted for: execution reports sent or dropped, and orders refused
+    i64 sent               # execution reports sent to members
+    i64 dropped            # execution reports that could not be delivered
+    i64 orders_received    # new orders taken from members
+    i64 awaiting           # orders taken and not yet accounted for
+    i64 refused            # new orders refused because the venue was not accepting orders
+    i64 refused_cancels    # cancels refused because the venue could not process them
+end
