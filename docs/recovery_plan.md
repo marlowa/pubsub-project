@@ -30,13 +30,16 @@
 > records, once each, by the leading sequencer only ([BUG-0153](bug_list.md#bug_0153) and
 > [BUG-0156](bug_list.md#bug_0156) are fixed). Its step 5 is built: the build refuses any read of the WAL in
 > the sequencer that is not in a named table of permitted reads, each with its reason
-> ([BUG-0133](bug_list.md#bug_0133) is fixed). All five steps are built, and phase 5 awaits Andrew's review.
-> Phase 6, a channel of test events so that the high availability tests stop reading the wording of Quill log
-> messages, is built in all five steps and awaits Andrew's review: every check is moved onto test events, what a
-> member receives, or the WAL files, and with every `TEST CONTRACT` message reworded on purpose, except the three
-> operator messages decision 8 keeps, the scenarios still pass
-> ([test_events.md](availability/test_events.md), section 4.17). Then, before phase 7 is designed, Andrew reviews
-> whether phases 7 and 8 still serve the guarantees the venue is to give.
+> ([BUG-0133](bug_list.md#bug_0133) is fixed). Phase 5 is finished: Andrew reviewed it on 20 October 2026,
+> with [BUG-0176](bug_list.md#bug_0176), a far-back catch-up of the matching engine flooding the leader with
+> repeated reports, left open, and [BUG-0171](bug_list.md#bug_0171) to be taken further by keeping each record's
+> bytes in memory until it is committed. Phase 6 is finished: a channel of test events, so that the high
+> availability tests no longer read the wording of Quill log messages; every check is moved onto test events,
+> what a member receives, or the WAL files, and with every `TEST CONTRACT` message reworded on purpose, except the
+> three operator messages decision 8 keeps, the scenarios still pass
+> ([test_events.md](availability/test_events.md), section 4.17). Andrew reviewed it on 20 October 2026. In the
+> review of phases 7 and 8 the same day, Andrew agreed that phase 7 goes ahead as written; phase 8 is to be
+> discussed before anything about it is designed.
 
 ## In one page
 
@@ -308,9 +311,11 @@ proposal, which Andrew supplied.
 
 ### Phase 7. Make the matching engine deterministic
 
-**Starts only after a review.** Phases 7 and 8 change how the engine pair works and are a substantial
-design project. Once phase 6 is finished, Andrew reviews whether they still serve the guarantees the venue
-is to give, before either is designed; agreed 17 October 2026, and placed after phase 6 on 18 October 2026.
+**Reviewed.** Phases 7 and 8 change how the engine pair works and are a substantial design project, so
+Andrew reviewed whether they still serve the guarantees the venue is to give before either is designed. On
+20 October 2026 he agreed that phase 7 goes ahead as written, and that phase 8 is to be discussed first. The
+question of a limit on automatic recovery, recorded in [BUG-0176](bug_list.md#bug_0176), is designed here with
+the measurement of the absence rule.
 
 **For:** a matching engine that, given the same commands in the same order, always produces the same
 book and the same reports.
@@ -330,6 +335,9 @@ book and the same reports.
 availability scenarios pass.
 
 ### Phase 8. Run the matching engine pair in lockstep
+
+**To be discussed.** Andrew did not agree this phase as written at the review on 20 October 2026; it is
+discussed with him before anything about it is designed.
 
 **For:** losing the leading engine costs a short pause and nothing else, without copying the book from
 one engine to the other.
