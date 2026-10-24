@@ -785,6 +785,17 @@ class SequencerThread : public pubsub_itc_fw::ApplicationThread {
     // is step 6, and it is deliberately not smuggled in here.
     std::unordered_map<fix_common::SessionIdentity, fix_common::SessionDestination, fix_common::SessionIdentityHash> session_destinations_;
 
+    // Every session that has had a report dropped, because it was connected nowhere, since it was
+    // last connected. The first report dropped for a session is logged as a Warning and the rest at
+    // Debug, so that a member left untold shows once in the Quill log rather than once per report.
+    // A session leaves this set when it is connected again.
+    std::unordered_set<fix_common::SessionIdentity, fix_common::SessionIdentityHash> sessions_with_reports_dropped_;
+    // How many reports have been dropped because their session was connected nowhere.
+    int64_t reports_dropped_unbound_{0};
+    pubsub_itc_fw::GaugeHandle reports_dropped_unbound_gauge_;
+    // Counts and logs a report dropped because its session, @p identity, is connected nowhere.
+    void note_report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no);
+
     /**
      * @brief What the venue remembers about a session between connections.
      *

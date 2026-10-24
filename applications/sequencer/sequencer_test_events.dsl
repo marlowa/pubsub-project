@@ -12,8 +12,8 @@
 #  None is sent for each order: each says that the sequencer's way of
 #  handling orders changed.
 #
-#  Message ids 180 to 189 are the sequencer's, within the range 170 to
-#  229 set aside for applications' test events.
+#  Message ids 180 to 189 and 210 to 219 are the sequencer's, within the
+#  range 170 to 229 set aside for applications' test events.
 # ============================================================
 
 # ------------------------------------------------------------
@@ -124,4 +124,33 @@ message KeptReportsForwarded (id=189, version=1)
     i64 discarded_as_forwarded   # kept reports discarded because the old leader said it had forwarded them
     i64 forwarded                # kept reports forwarded
     i64 size_in_bytes            # the size of the reports forwarded
+end
+
+# ------------------------------------------------------------
+#  210 -- SessionAnnouncedAgain
+#  A gateway's link to this sequencer came up, and the gateway said that
+#  a member's session established before is still connected to it. The
+#  sequencer recorded where the session is connected, so that its reports
+#  reach it. A sequencer that has restarted knows of no session until it
+#  is told this.
+# ------------------------------------------------------------
+message SessionAnnouncedAgain (id=210, version=1)
+    string comp_id
+    i16    gateway_protocol    # 1 for FIX, 2 for binary
+    i16    gateway_instance
+    i32    connection          # the gateway's id for the member's connection
+    bool   leading             # whether this sequencer was leading when it was told
+end
+
+# ------------------------------------------------------------
+#  211 -- ReportDroppedSessionNotConnected
+#  An execution report was dropped because the member's session is
+#  connected to no gateway that has told this sequencer so. Sent for the
+#  first report dropped for a session since it was last connected, not
+#  for every report.
+# ------------------------------------------------------------
+message ReportDroppedSessionNotConnected (id=211, version=1)
+    string comp_id
+    i16    gateway_protocol    # 1 for FIX, 2 for binary
+    i64    seq_no              # the report's sequence number
 end

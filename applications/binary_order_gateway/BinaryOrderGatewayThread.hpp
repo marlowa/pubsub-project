@@ -288,6 +288,12 @@ class BinaryOrderGatewayThread : public pubsub_itc_fw::ApplicationThread {
     void announce_session_bound(const BinarySession& session);
     void announce_session_unbound(const BinarySession& session);
 
+    // Announce, down a sequencer link that has just come up, every session logged on here, as still
+    // connected (SessionBound.still_connected). The sequencer keeps where each session is connected
+    // only in memory, so one that has restarted knows of none, and drops every report for a session
+    // it does not know of. Sent down the one link named only. See docs/bug_list.md, BUG-0182.
+    void announce_sessions_on_new_link(const pubsub_itc_fw::ConnectionID& sequencer_conn_id);
+
     /**
      * @brief Records or retires an order in the session's open set from an ER.
      *

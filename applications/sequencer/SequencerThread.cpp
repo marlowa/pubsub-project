@@ -264,6 +264,11 @@ void SequencerThread::on_initial_event() {
         "sequencer_thread", "sequencer_kept_reports_lost",
         "Reports from the matching engine, kept in case this instance takes the lead, that were overwritten while still needed because the store "
         "was full. Expected to be 0");
+    reports_dropped_unbound_gauge_ = get_reactor().metrics().register_gauge(
+        "sequencer_thread", "sequencer_reports_dropped_unbound",
+        "Execution reports dropped because the member's session was connected to no gateway. A member that is away has its reports dropped "
+        "and sent when it logs on again, so this is not always 0; a report dropped for a member that is connected means the member was "
+        "never told");
 }
 
 void SequencerThread::on_app_ready_event() {
@@ -900,12 +905,9 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
                 routing_gateway_id = routing_identity.protocol;
                 routing_gateway_instance = destination->instance;
             } else {
-                // The session is not connected anywhere. Its reports are dropped, as
-                // they always were -- but now for a reason that names the session
-                // rather than a connection id that stopped meaning anything.
-                PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                           "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} -- session not bound to any instance, dropping", er_seq_no,
-                           routing_identity.comp_id_view(), routing_identity.protocol);
+                // The session is not connected anywhere, so the report has nowhere to go. It is
+                // counted as dropped where it would have been sent, below, or when it is taken
+                // from pending_er_; by then the session may be connected again.
             }
         }
     }
@@ -1002,6 +1004,9 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     // With no follower keeping up, a report is forwarded at once, as it always has been; otherwise once
     // the record it depends on is committed.
     if (!replicated_wal_->waits_for_follower()) {
+        if (!has_routing_conn && !routing_identity.empty()) {
+            note_report_dropped_unbound(routing_identity, er_seq_no);
+        }
         send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
         note_report_forwarded(routing_identity);
         if (erase_routing_entry) {
@@ -1010,6 +1015,9 @@ void SequencerThread::forward_report_from_engine(const uint8_t* bytes, size_t si
     } else {
         if (gate_seq_no <= replicated_wal_->committed_through()) {
             // The record this report depends on is committed.
+            if (!has_routing_conn && !routing_identity.empty()) {
+                note_report_dropped_unbound(routing_identity, er_seq_no);
+            }
             send_er_to_origin_gateway(routing_gateway_id, routing_gateway_instance, er_seq_no, envelope, is_new_order_ack);
             note_report_forwarded(routing_identity);
             if (erase_routing_entry) {
@@ -2435,6 +2443,33 @@ void SequencerThread::handle_session_bound(const pubsub_itc_fw::ConnectionID& co
     destination.instance = view.gateway_instance_id;
     destination.conn_id = view.gateway_session_conn_id;
 
+    // Connected again, so the next report dropped for it, if any, is logged as a Warning again.
+    sessions_with_reports_dropped_.erase(identity);
+
+    // A session established before, announced again because the gateway's link to this instance has
+    // come up: this instance may have restarted, and then knows of no session. Only where it is
+    // connected is recorded. Its numbering is settled, so there is nothing to send back; and it is
+    // not a logon, so a binding already held is not a sign that the previous connection died, and
+    // the number the session resumes from is left alone.
+    if (view.still_connected) {
+        const auto existing = session_destinations_.find(identity);
+        if (existing == session_destinations_.end()) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: session comp_id='{}' protocol={} announced again, still connected to instance={} connection={} -- recorded",
+                       identity.comp_id_view(), identity.protocol, destination.instance, destination.conn_id);
+        } else if (existing->second.instance != destination.instance || existing->second.conn_id != destination.conn_id) {
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "SequencerThread: session comp_id='{}' protocol={} announced again, still connected to instance={} connection={} -- "
+                       "it was bound to instance={} connection={}, now replaced",
+                       identity.comp_id_view(), identity.protocol, destination.instance, destination.conn_id, existing->second.instance,
+                       existing->second.conn_id);
+        }
+        session_destinations_[identity] = destination;
+        report(pubsub_itc_fw_app::SessionAnnouncedAgain{identity.comp_id_view(), identity.protocol, destination.instance, destination.conn_id,
+                                                        role_ == pubsub_itc_fw_app::Role::leader});
+        return;
+    }
+
     // A binding still present means the previous session never unbound -- its gateway died
     // without saying so. That is the only signal the sequencer gets that the position it
     // remembers for this session is stale rather than exact, and it is what decides whether
@@ -2764,6 +2799,27 @@ void SequencerThread::note_report_forwarded(const fix_common::SessionIdentity& i
     ++session_sequence_state_[identity].ers_since_report;
 }
 
+void SequencerThread::note_report_dropped_unbound(const fix_common::SessionIdentity& identity, int64_t er_seq_no) {
+    ++reports_dropped_unbound_;
+    reports_dropped_unbound_gauge_.set(static_cast<double>(reports_dropped_unbound_));
+    // A member that is away is told of these reports when it logs on again, so a dropped report is not
+    // always a fault. A member that is connected, and whose gateway has not told this instance so, is
+    // never told of them. The Warning names the session once, on its first report dropped since it was
+    // last connected; the count says how many.
+    if (sessions_with_reports_dropped_.insert(identity).second) {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Warning,
+                   "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} dropped -- the session is connected to no gateway that has "
+                   "told this instance so. Its later reports are dropped too, logged at Debug, until it is connected again; "
+                   "{} report(s) dropped for this reason in all",
+                   er_seq_no, identity.comp_id_view(), identity.protocol, reports_dropped_unbound_);
+        report(pubsub_itc_fw_app::ReportDroppedSessionNotConnected{identity.comp_id_view(), identity.protocol, er_seq_no});
+    } else {
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
+                   "SequencerThread: ER seq_no={} for session comp_id='{}' protocol={} -- session not bound to any instance, dropping", er_seq_no,
+                   identity.comp_id_view(), identity.protocol);
+    }
+}
+
 void SequencerThread::handle_session_sequence_update(const pubsub_itc_fw::EventMessage& message) {
     auto& arena_buf = decode_arena_buffer();
     pubsub_itc_fw::BumpAllocator arena(arena_buf.data(), arena_buf.size());
@@ -3022,9 +3078,7 @@ void SequencerThread::forward_pending_er(const PendingEr& pending) {
     // pending.payload is alive for this call; the envelope's BytesView borrows it.
     const fix_common::SessionDestination* destination = pending.identity.empty() ? nullptr : session_destination(pending.identity);
     if (destination == nullptr && !pending.identity.empty()) {
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Debug,
-                   "SequencerThread: buffered ER seq={} for session comp_id='{}' protocol={} -- session not bound to any instance, dropping", pending.seq_no,
-                   pending.identity.comp_id_view(), pending.identity.protocol);
+        note_report_dropped_unbound(pending.identity, pending.seq_no);
     }
 
     pubsub_itc_fw_app::WalRecord envelope{};

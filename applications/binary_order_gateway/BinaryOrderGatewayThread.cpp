@@ -211,6 +211,7 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
     if (service == "sequencer_primary") {
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: primary sequencer connection {} established", id.get_value());
+        announce_sessions_on_new_link(id);
         if (sequencer_primary_connected_before_) {
             send_unanswered_commands_on(id, "primary");
         }
@@ -220,6 +221,7 @@ void BinaryOrderGatewayThread::on_connection_established(pubsub_itc_fw::Connecti
     if (service == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: secondary sequencer connection {} established", id.get_value());
+        announce_sessions_on_new_link(id);
         if (sequencer_secondary_connected_before_) {
             send_unanswered_commands_on(id, "secondary");
         }
@@ -958,6 +960,27 @@ void BinaryOrderGatewayThread::announce_session_bound(const BinarySession& sessi
     forward_pdu_to_sequencers(pubsub_itc_fw_app::SessionBound::message_pdu_id, bound);
     PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "BinaryOrderGatewayThread: announced session comp_id='{}' bound to instance {} connection {}",
                session.comp_id, config_.instance_id, session.conn_id.get_value());
+}
+
+void BinaryOrderGatewayThread::announce_sessions_on_new_link(const pubsub_itc_fw::ConnectionID& sequencer_conn_id) {
+#ifdef PUBSUB_ITC_FW_THREAD_CHECKS
+    sessions_owner_.check();
+#endif
+    for (const auto& [conn_id, session] : sessions_) {
+        if (!session.logged_on || session.comp_id.empty()) {
+            continue;
+        }
+        pubsub_itc_fw_app::SessionBound bound{};
+        bound.comp_id = session.comp_id;
+        bound.gateway_protocol_id = gateway_ids::binary_order_gateway;
+        bound.gateway_instance_id = config_.instance_id;
+        bound.gateway_session_conn_id = session.conn_id.get_value();
+        bound.still_connected = true;
+        send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionBound::message_pdu_id, 0, bound);
+        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                   "BinaryOrderGatewayThread: sequencer connection {} came up -- announced again that comp_id='{}' is still connected here, connection {}",
+                   sequencer_conn_id.get_value(), session.comp_id, session.conn_id.get_value());
+    }
 }
 
 void BinaryOrderGatewayThread::announce_session_unbound(const BinarySession& session) {

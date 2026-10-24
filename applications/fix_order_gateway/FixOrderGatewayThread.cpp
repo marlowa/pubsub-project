@@ -310,7 +310,7 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
         sequencer_primary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: primary sequencer connection {} ({}) established", id.get_value(),
                    id.service_name());
-        retry_pending_session_binds(id);
+        announce_sessions_on_new_link(id);
         if (sequencer_primary_connected_before_) {
             send_unanswered_commands_on(id, "primary");
         }
@@ -318,7 +318,7 @@ void FixOrderGatewayThread::on_connection_established(pubsub_itc_fw::ConnectionI
     } else if (id.service_name() == "sequencer_secondary") {
         sequencer_secondary_conn_id_ = id;
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info, "FixOrderGatewayThread: secondary sequencer connection {} established", id.get_value());
-        retry_pending_session_binds(id);
+        announce_sessions_on_new_link(id);
         if (sequencer_secondary_connected_before_) {
             send_unanswered_commands_on(id, "secondary");
         }
@@ -2873,22 +2873,30 @@ void FixOrderGatewayThread::GatewayTestEventLinks::send_test_event(const pubsub_
     owner_.send_pdu_payload(connection, pdu_id, 0, bytes, size);
 }
 
-void FixOrderGatewayThread::retry_pending_session_binds(pubsub_itc_fw::ConnectionID sequencer_conn_id) {
+void FixOrderGatewayThread::announce_sessions_on_new_link(pubsub_itc_fw::ConnectionID sequencer_conn_id) {
     for (auto& [conn_id, session] : sessions_) {
-        // Only a session whose numbering is still unsettled is owed anything. One that was
-        // acked already, or that never got as far as an identity, has nothing to re-ask.
-        if (!session.awaiting_sequence_state || session.client_comp_id.empty()) {
-            continue;
+        if (session.client_comp_id.empty()) {
+            continue; // never got as far as an identity, so there is nothing to bind
         }
         pubsub_itc_fw_app::SessionBound bound{};
         bound.comp_id = session.client_comp_id;
         bound.gateway_protocol_id = gateway_ids::fix_order_gateway;
         bound.gateway_instance_id = config_.instance_id;
         bound.gateway_session_conn_id = session.conn_id.get_value();
-        send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionBound::message_pdu_id, 0, bound);
-        PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
-                   "FixOrderGatewayThread: sequencer connection {} came up with comp_id='{}' still awaiting its numbering -- re-announcing the binding",
-                   sequencer_conn_id.get_value(), session.client_comp_id);
+        if (session.awaiting_sequence_state) {
+            // Its numbering is still unsettled, so it is asked for again, as at its logon.
+            send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionBound::message_pdu_id, 0, bound);
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "FixOrderGatewayThread: sequencer connection {} came up with comp_id='{}' still awaiting its numbering -- re-announcing the binding",
+                       sequencer_conn_id.get_value(), session.client_comp_id);
+        } else if (session.session_established) {
+            // Settled already. The sequencer is told only where the session is connected.
+            bound.still_connected = true;
+            send_pdu(sequencer_conn_id, pubsub_itc_fw_app::SessionBound::message_pdu_id, 0, bound);
+            PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Info,
+                       "FixOrderGatewayThread: sequencer connection {} came up -- announced again that comp_id='{}' is still connected here, connection {}",
+                       sequencer_conn_id.get_value(), session.client_comp_id, session.conn_id.get_value());
+        }
     }
 }
 

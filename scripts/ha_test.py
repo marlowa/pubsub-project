@@ -541,6 +541,37 @@ def expect_granted_to(arbiter: str, pair_id: int, instance: int) -> Expect:
                   (Condition(arbiter, lambda m: granted_to(m, arbiter, pair_id, instance)),))
 
 
+def expect_session_announced_again(sequencer: str) -> Expect:
+    """
+    A gateway's link to sequencer came up and the gateway said the member's FIX session is still connected to it
+    (SessionAnnouncedAgain). A sequencer keeps where each session is connected only in memory, so one that has restarted
+    and then leads drops every report for a session it has not been told of (BUG-0182).
+    """
+    return expect_message(sequencer, "told the member's session is still connected", "SessionAnnouncedAgain", "sequencer_test_events",
+                          fields=lambda m: {"comp_id": FIX8_COMP_ID})
+
+
+def log_session_announcement_margins() -> None:
+    """
+    For each sequencer process that was told the member's session is still connected and that took the lead, log how long
+    before taking the lead it was told; negative when it was told after. A report that comes back while the sequencer leads
+    and has not been told is dropped. It is measured, not checked: the venue does not wait for the gateways before a
+    sequencer takes the lead, so either order is correct, and the member-visible checks find any report that was lost.
+    """
+    sequencer_events = _TEST_EVENTS.modules["sequencer_test_events"]
+    for sequencer in ("sequencer_primary", "sequencer_secondary"):
+        since = _TEST_EVENTS.since_introduction(sequencer)
+        announced = message_of(sequencer_events.SessionAnnouncedAgain, sequencer, comp_id=FIX8_COMP_ID)
+        took_lead = leads(_TEST_EVENTS.messages, sequencer)
+        first_announced = next((event for event in _TEST_EVENTS.events[since:] if announced(event)), None)
+        first_led = next((event for event in _TEST_EVENTS.events[since:] if took_lead(event)), None)
+        if first_announced is None or first_led is None:
+            continue
+        margin = first_led.arrived - first_announced.arrived
+        when = "before" if margin >= 0 else "AFTER"
+        log(f"  {sequencer}: told comp_id='{FIX8_COMP_ID}' is still connected {abs(margin):.1f}s {when} it took the lead")
+
+
 def _condition_met(condition: Condition, since: int) -> bool:
     return _TEST_EVENTS.find(condition.matches(_TEST_EVENTS.messages), since=since) is not None
 
@@ -1613,8 +1644,6 @@ _SCENARIOS: list[Scenario] = [
     # insufficient to validate WAL+sync correctness.)
     Scenario(
         number=14,
-        expected_failure=("BUG-0182: after a sequencer restarts and then takes the lead it holds no record of the member's session, so "
-                      "the reports for the recovery orders are dropped and the member is never told of them"),
         short_name="wal_recovery",
         description="WAL recovery: primary sequencer restarts as follower then re-elected leader",
         expected_outcome=(
@@ -1639,6 +1668,11 @@ _SCENARIOS: list[Scenario] = [
                 ready_timeout=_SEQ_FOLLOWER_TIMEOUT,
                 resets_me_counter=False,
                 settle_secs=SETTLE_AFTER_RESTART,
+            ),
+            VerifyStep(
+                expect=expect_session_announced_again("sequencer_primary"),
+                timeout=10.0,
+                description="the restarted sequencer_primary was told the member's session is still connected (BUG-0182)",
             ),
             KillStep(
                 proc_name="sequencer_secondary",
@@ -2246,8 +2280,6 @@ _SCENARIOS: list[Scenario] = [
     # defects came from missing.
     Scenario(
         number=27,
-        expected_failure=("BUG-0182: after a sequencer restarts and then takes the lead it holds no record of the member's session, so "
-                      "the reports for the recovery orders are dropped and the member is never told of them"),
         short_name="supervised_sequencer_restart_beats_election",
         description="Supervised sequencer restart completes before its peer elects itself",
         expected_outcome=(
@@ -2262,6 +2294,11 @@ _SCENARIOS: list[Scenario] = [
                 proc_name="sequencer_primary",
                 restart_timeout=30.0,
                 settle_secs=2.0,
+            ),
+            VerifyStep(
+                expect=expect_session_announced_again("sequencer_primary"),
+                timeout=10.0,
+                description="the restarted sequencer_primary was told the member's session is still connected (BUG-0182)",
             ),
             AssertAbsentStep(
                 absent=expect_leads("sequencer_secondary"),
@@ -2641,8 +2678,6 @@ _SCENARIOS: list[Scenario] = [
     # with the SECONDARY first. Either may lead; exactly one must.
     Scenario(
         number=36,
-        expected_failure=("BUG-0182: after a sequencer restarts and then takes the lead it holds no record of the member's session, so "
-                      "the reports for the recovery orders are dropped and the member is never told of them"),
         short_name="sequencer_cold_start_tiebreak",
         description="Restarting both sequencers secondary-first leaves exactly one leading",
         expected_outcome="with both sequencers restarted, the secondary first, exactly one of them leads",
@@ -2683,6 +2718,16 @@ _SCENARIOS: list[Scenario] = [
                 # The venue needs a moment to knit itself back together, and measuring before
                 # it has is measuring reconnection rather than the property under test.
                 settle_secs=10.0,
+            ),
+            VerifyStep(
+                expect=expect_session_announced_again("sequencer_secondary"),
+                timeout=10.0,
+                description="the restarted sequencer_secondary was told the member's session is still connected (BUG-0182)",
+            ),
+            VerifyStep(
+                expect=expect_session_announced_again("sequencer_primary"),
+                timeout=10.0,
+                description="the restarted sequencer_primary was told the member's session is still connected (BUG-0182)",
             ),
             OneLeaderStep(
                 components=("sequencer_primary", "sequencer_secondary"),
@@ -6620,6 +6665,8 @@ def run_scenario(scenario: Scenario, args) -> bool:
                         die(f"Verification failed: {step.description} — {step.absent.what}, which must not have happened")
                     log("    confirmed absent, up to a checkpoint")
                 phase4_results.append(("verify", step.description, elapsed))
+
+        log_session_announcement_margins()
 
         # If ME was restarted, its readiness is met as soon as the first
         # sequencer (primary or secondary) re-establishes its order connection.

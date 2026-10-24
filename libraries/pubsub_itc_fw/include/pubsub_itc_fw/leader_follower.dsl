@@ -351,6 +351,18 @@ message SessionBound (id=120, version=1)
     # Java test client offers it, and it is the default in the stock fix8 configuration. So this
     # is the ordinary path, not an edge case.
     bool   reset_seq_nums         # the member asked to restart at 1; forget what is remembered
+    # The session was established before, and is still connected here; this is not a logon.
+    #
+    # Sent for every session a gateway holds when one of its links to a sequencer comes up. A
+    # sequencer keeps where each session is connected only in memory, so one that has restarted
+    # knows of no session until it is told, and drops every report for a session it does not
+    # know of. A link can also come up again without the sequencer having restarted.
+    #
+    # The sequencer records where the session is connected and does nothing else: it sends no
+    # SessionBoundAck, since the session's numbering is settled already, and it does not read
+    # the binding as the previous connection having died, which would raise the number the
+    # session resumes from. See docs/availability/session_binding.md.
+    bool   still_connected        # an established session, announced again; not a logon
 end
 
 # ------------------------------------------------------------

@@ -389,6 +389,8 @@ identifier is longer than the book holds; a cancel done; a cancel refused becaus
 identifier too long), whether the engine was catching up, and the sequence number. It is sent through the engine's
 `TestEventChannel` with `send_event`, which applications use for events they define themselves; message ids 170 to
 229 are theirs, and the listener refuses two event modules that define one id.
+Within that range the matching engine has 170 to 179, the sequencer 180 to 189 and 210 to 219, and the FIX gateway
+190 to 209.
 
 The engine sends `OrderOutcome` only for the comp ids its `[test_events]` section lists in `report_orders_of`. The
 test always lists `INJECT-TEST`, the comp id of `inject_order`, whose orders reach no member. It adds the member's
@@ -481,7 +483,12 @@ channel its owner gives it, and by the arbiter:
 the storage for orders waiting for the follower is full (`HeldOrdersFull`); the reading thread sends the matching
 engine orders that waited in the WAL (`EngineServedFromWal`); it has sent them all and hands the engine over
 (`EngineHandedOver`); and the first command that may already be in the WAL arrived, so the sequencer began reading the
-end of the WAL to check such commands (`CheckingLogForRepeats`). None is sent for each order. The listener decodes the
+end of the WAL to check such commands (`CheckingLogForRepeats`). None is sent for each order. Two more, at 210 and 211, concern
+members' sessions: a gateway told the sequencer that a session established before is still connected to it, and
+whether the sequencer was leading when told (`SessionAnnouncedAgain`); and the first report dropped for a session since
+it was last connected, because it is connected to no gateway that has told the sequencer so
+(`ReportDroppedSessionNotConnected`). Scenarios 14, 27 and 36 wait for the first from each sequencer they restart, and
+log how long before taking the lead it was told ([BUG-0182](../bug_list.md#bug_0182)). The listener decodes the
 sequencer's messages as it does the matching engine's, and `expect_message` in `ha_test.py` waits for any message by
 name, with the field values it must have.
 

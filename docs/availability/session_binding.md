@@ -153,6 +153,35 @@ closes with a `ResendRequest` and the venue answers. Too low sends the member a 
 expects, which FIX requires it to treat as fatal — it drops the session, and no amount of replay
 helps.
 
+## When a link to a sequencer comes up
+
+A sequencer keeps where each session is connected only in memory. A sequencer that restarts
+therefore knows of no session, although members are still connected to the gateways, and it would
+drop every report for them if it took the lead
+([BUG-0182](../bug_list.md#bug_0182)). A link between a gateway and a sequencer can also come up
+again without the sequencer having restarted, after a break in the network between them.
+
+So whenever one of its links to a sequencer comes up, each gateway sends `SessionBound` down that
+link for every session it holds:
+
+- **A session established already** is announced with `still_connected` set. The sequencer records
+  where the session is connected, and does nothing else. It sends no `SessionBoundAck`, because the
+  session's numbering is settled and the gateway must not be handed it again. It does not read a
+  binding it already holds as a sign that the previous connection died, because nothing died; so the
+  number the session resumes from is not raised. Both gateways do this.
+- **A FIX session still waiting for its numbering** is announced as at its logon, without
+  `still_connected`, so that the sequencer answers it with `SessionBoundAck`.
+
+It goes down the one link that came up, not to both sequencers, so that a sequencer whose link did
+not break is not sent the announcement a second time.
+
+A report the sequencer still cannot route, because the session is connected to no gateway that has
+told it so, is dropped, as below, and counted in the metric `sequencer_reports_dropped_unbound`. The
+first report dropped for a session since it was last connected is logged as a Warning naming the
+session, and the rest at Debug. A member that is away has its reports dropped in the ordinary way
+and is sent them when it logs on again, so the count is not always 0; a Warning for a member that is
+connected means the member was never told.
+
 ## Reports produced while the session had no connection
 
 A report produced while a session is bound nowhere cannot be delivered, and is dropped at the time.
@@ -192,10 +221,10 @@ that sent the messages. See [Resend provenance](resend_provenance.md).
 | | |
 |---|---|
 | The identity | `applications/fix_common/SessionIdentity.hpp` |
-| Gateway side | `FixOrderGatewayThread::announce_session_bound`, `announce_session_unbound`, `report_session_sequence_numbers`, `handle_session_bound_ack` |
+| Gateway side | `FixOrderGatewayThread::announce_session_bound`, `announce_session_unbound`, `announce_sessions_on_new_link`, `report_session_sequence_numbers`, `handle_session_bound_ack`; `BinaryOrderGatewayThread::announce_session_bound`, `announce_session_unbound`, `announce_sessions_on_new_link` |
 | Sequencer side | `SequencerThread::handle_session_bound`, `handle_session_unbound`, `handle_session_sequence_update`, `handle_session_replay_request`, `handle_undelivered_reports_request` |
 | The remembered state | `SequencerThread::SessionSequenceState` |
-| Tested by | `ha_test.py` scenarios 21, 22, 23 and 40 |
+| Tested by | `ha_test.py` scenarios 21, 22, 23 and 40; and 14, 27 and 36 for a sequencer that restarts |
 
 ## See also
 

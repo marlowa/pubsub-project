@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 189 |
+| Bugs recorded | 190 |
 | Open | 79 (58 defects, 21 tasks) |
-| Closed | 110 |
-| Next id | BUG-0190 |
+| Closed | 111 |
+| Next id | BUG-0191 |
 
 ## Open bugs by severity
 
-21 high, 47 medium, 11 low.
+20 high, 48 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -29,7 +29,6 @@
 | [BUG-0143](#bug_0143) | high | defect | A matching engine whose lease runs out while it is starting is then treated as promoted, and cancels every order it recovered |
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
 | [BUG-0176](#bug_0176) | high | defect | A matching engine catching up from far back sends a report for every order it applies, and the flood keeps the leading sequencer's thread so busy that it loses its lease without noticing |
-| [BUG-0182](#bug_0182) | high | defect | After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts |
 | [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0187](#bug_0187) | high | defect | The follower matching engine's copy of the book loses every change made while the link between the two engines is down, and nothing notices |
 | [BUG-0188](#bug_0188) | high | defect | The book is copied only from the engine configured as primary, so once the secondary leads, the primary's copy is never brought up to date |
@@ -81,6 +80,7 @@
 | [BUG-0175](#bug_0175) | medium | defect | While the disk is slow, the leading sequencer's own thread waits in the file system's journal |
 | [BUG-0181](#bug_0181) | medium | defect | When orders are in flight, the high availability tests confirm that a thousand further orders were accepted after a failure, not that the recovery orders themselves were |
 | [BUG-0184](#bug_0184) | medium | defect | A paused connection sometimes went on delivering, failing PauseReadingIntegrationTest about one run in five |
+| [BUG-0190](#bug_0190) | medium | defect | A sequencer that takes the lead before a gateway has re-announced its sessions drops reports for those sessions in the meantime |
 | [BUG-0005](#bug_0005) | low | defect | fix-test-client reports a dead gateway poorly |
 | [BUG-0014](#bug_0014) | low | defect | Python style warnings across the top-level scripts, and a lint gate that ignores them |
 | [BUG-0058](#bug_0058) | low | task | A member halted by a sequence gap is invisible to monitoring |
@@ -3645,62 +3645,6 @@ shows how long recovery really took.
 
 **Principles.** The tests check what they say they check.
 
-### BUG-0182: After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts {#bug_0182}
-
-| | |
-|---|---|
-| Severity | high |
-| Found | 2026-10-18 |
-| Recorded | 2026-10-18 |
-| How | Moving Phase 5's confirmation of the recovery orders from the matching engine's Quill log to the execution reports the member receives, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): scenarios 14, 27 and 36 then failed, and had passed while the check read the engine's Quill log |
-| Impact | A member's orders are accepted and rest on the book, and the member is never told. It cannot tell them from orders the venue lost, and will send them again or trade as though it had no position |
-
-**What was seen.** In scenario 14 the primary sequencer is killed, the secondary takes the lead, the primary is
-restarted and follows, and then the secondary is killed and the primary takes the lead again. The member then sends
-1,000 orders. The matching engine accepted all of them (its Quill log holds "accepted NOS" for ord2001 to ord3000),
-and the FIX test client received no report for any of them in 30 seconds. Everything the gateway sent the client did
-arrive: 3,001 messages, being the logon, the 1,000 baseline reports, the same 1,000 again marked PossResend after the
-first change of leader, and the 1,000 interim reports. The gateway's progress line said `sent=3000`, counting the
-repeated reports as well, so it looked complete.
-
-The restarted primary's Quill log has no line about the member's session at all: the session was bound to it before
-it was killed, and nothing after its restart records it learning the binding again. Scenarios 27 (a supervised restart
-of a sequencer) and 36 (both sequencers restarted) fail in the same way, at the same check; their files were not kept,
-so that they fail for the same reason is likely rather than shown.
-
-The same failure happens with the binaries from before the change that found it (kind A of step 4), so the defect is
-older than the check. Before that change, Phase 5 confirmed the orders from the engine's Quill log, which says nothing
-about whether the member was told.
-
-**Why.** Each sequencer keeps the binding of every connected session, which gateway instance and connection it can be
-reached on, in a table held only in memory (`session_destinations_`), filled from the `SessionBound` messages the
-gateways send when a member logs on. A report for a session with no binding is dropped, and logged only at Debug. The
-table does not survive a restart, and nothing fills it again: when a link to a sequencer comes up, the FIX gateway
-announces only the sessions still waiting for their numbering (`retry_pending_session_binds`), and the binary gateway
-announces none.
-
-**What is wanted.** Decided with Andrew, 18 October 2026:
-
-- When a link to a sequencer comes up, each gateway announces every session it holds, not only those still waiting
-  for their numbering. The announcement says that the session is still connected there, as a message of its own or a
-  flag on `SessionBound`: a `SessionBound` for a session the sequencer already holds is read as the previous session
-  having died, which raises the number the session resumes from, and a link can come up again without the sequencer
-  having restarted.
-- A report the sequencer cannot route is counted and logged as a Warning, so that a member left untold is visible.
-- Whether a sequencer may take the lead before its gateway links are up and have announced their sessions, since
-  reports that come back in that interval would still be dropped, is decided within this design.
-
-The other ways considered, and why not: the restarted sequencer taking the bindings from its peer fails when both
-sequencers restart (scenario 36); routing a report without a binding, to the gateway instance the order came in
-through, cannot reach a member that has since moved to another instance; recording bindings in the WAL is the largest
-change, and a recorded binding can be stale after a gateway dies while both sequencers are down.
-
-Until it is fixed, scenarios 14, 27 and 36 are marked as expected to fail, naming this bug (`expected_failure` in
-`scripts/ha_test.py`): a run reports them as expected failures, and fails if one of them passes.
-
-**Principles.** V8: every report the matching engine produces reaches the member (G3); and V6: every command a
-gateway accepted is answered (G1).
-
 ### BUG-0183: A sequencer dies with SIGBUS appending to a WAL left by earlier runs {#bug_0183}
 
 | | |
@@ -3845,7 +3789,117 @@ one-time secret or proof that the requester has access to the installed host.
 The first-run route must require a one-time secret generated for the installation and available only to an
 operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
+### BUG-0190: A sequencer that takes the lead before a gateway has re-announced its sessions drops reports for those sessions in the meantime {#bug_0190}
+
+| | |
+|---|---|
+| Severity | medium |
+| Found | 2026-10-24 |
+| Recorded | 2026-10-24 |
+| How | Measuring, for [BUG-0182](#bug_0182), how long before taking the lead a restarted sequencer is told that the member's session is still connected: in scenarios 27 and 36 it was told after, by 0.1 seconds and under 0.05 seconds |
+| Impact | A member is not told of what became of an order the venue took before the restart: a report repeated by a matching engine catching up, or a cancel sent by an engine that cancels its book on promotion. It cannot tell such an order from one the venue lost. The Warning and test event 211 show that it happened |
+
+**What happens.** A sequencer keeps where each session is connected only in memory. One that restarts learns it
+from the gateways, which announce every session they hold when their link to it comes up. A sequencer that
+restarts quickly can take the lead before every gateway's link is up, and a report for a session not yet announced
+is dropped. A report for an order sent on a link that is up is safe, because the gateway sends the announcements
+before any command on that link.
+
+**What is wanted.** Decided with Andrew, 24 October 2026: the sequencer holds, rather than drops, a report for a
+session it does not know of, while some configured gateway instance has not connected to it since it took the
+lead, and sends the report once the session is announced. Nothing waits, and no report is lost when a time limit
+runs out. What happens to a held report for a session that is never announced, because its member really is away,
+is part of the design: it is then the ordinary case of a session with no connection, whose reports are sent when it
+logs on again ([BUG-0088](#bug_0088)).
+
+Also: the Warning and event 211 are given in every scenario for `INJECT-TEST`, the comp id of the test's
+`inject_order`, whose orders reach the sequencer directly and have no session behind them. That false alarm is to
+be removed.
+
+**Principles.** V8: every report the matching engine produces reaches the member (G3).
+
 ## Closed
+
+### BUG-0182: After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts {#bug_0182}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-18 |
+| Recorded | 2026-10-18 |
+| Fixed | 2026-10-24 -- when a link to a sequencer comes up, each gateway announces every session it holds |
+| How | Moving Phase 5's confirmation of the recovery orders from the matching engine's Quill log to the execution reports the member receives, in step 4 of phase 6 ([test_events.md](availability/test_events.md)): scenarios 14, 27 and 36 then failed, and had passed while the check read the engine's Quill log |
+| Impact | A member's orders are accepted and rest on the book, and the member is never told. It cannot tell them from orders the venue lost, and will send them again or trade as though it had no position |
+
+**What was seen.** In scenario 14 the primary sequencer is killed, the secondary takes the lead, the primary is
+restarted and follows, and then the secondary is killed and the primary takes the lead again. The member then sends
+1,000 orders. The matching engine accepted all of them (its Quill log holds "accepted NOS" for ord2001 to ord3000),
+and the FIX test client received no report for any of them in 30 seconds. Everything the gateway sent the client did
+arrive: 3,001 messages, being the logon, the 1,000 baseline reports, the same 1,000 again marked PossResend after the
+first change of leader, and the 1,000 interim reports. The gateway's progress line said `sent=3000`, counting the
+repeated reports as well, so it looked complete.
+
+The restarted primary's Quill log has no line about the member's session at all: the session was bound to it before
+it was killed, and nothing after its restart records it learning the binding again. Scenarios 27 (a supervised restart
+of a sequencer) and 36 (both sequencers restarted) fail in the same way, at the same check; their files were not kept,
+so that they fail for the same reason is likely rather than shown.
+
+The same failure happens with the binaries from before the change that found it (kind A of step 4), so the defect is
+older than the check. Before that change, Phase 5 confirmed the orders from the engine's Quill log, which says nothing
+about whether the member was told.
+
+**Why.** Each sequencer keeps the binding of every connected session, which gateway instance and connection it can be
+reached on, in a table held only in memory (`session_destinations_`), filled from the `SessionBound` messages the
+gateways send when a member logs on. A report for a session with no binding is dropped, and logged only at Debug. The
+table does not survive a restart, and nothing fills it again: when a link to a sequencer comes up, the FIX gateway
+announces only the sessions still waiting for their numbering (`retry_pending_session_binds`), and the binary gateway
+announces none.
+
+**What is wanted.** Decided with Andrew, 18 October 2026:
+
+- When a link to a sequencer comes up, each gateway announces every session it holds, not only those still waiting
+  for their numbering. The announcement says that the session is still connected there, as a message of its own or a
+  flag on `SessionBound`: a `SessionBound` for a session the sequencer already holds is read as the previous session
+  having died, which raises the number the session resumes from, and a link can come up again without the sequencer
+  having restarted.
+- A report the sequencer cannot route is counted and logged as a Warning, so that a member left untold is visible.
+- Whether a sequencer may take the lead before its gateway links are up and have announced their sessions, since
+  reports that come back in that interval would still be dropped, is decided within this design.
+
+The other ways considered, and why not: the restarted sequencer taking the bindings from its peer fails when both
+sequencers restart (scenario 36); routing a report without a binding, to the gateway instance the order came in
+through, cannot reach a member that has since moved to another instance; recording bindings in the WAL is the largest
+change, and a recorded binding can be stale after a gateway dies while both sequencers are down.
+
+**Fixed, 24 October 2026.** `SessionBound` has a field `still_connected`. When one of its links to a sequencer
+comes up, each gateway sends `SessionBound` down that link for every session it holds
+(`announce_sessions_on_new_link` in both gateways): an established session with `still_connected` set, and a FIX
+session still waiting for its numbering as at its logon. For `still_connected` the sequencer records where the
+session is connected and does nothing else: it sends no `SessionBoundAck`, leaves the session's numbering alone,
+and does not read the binding as the previous connection having died. The announcements go before any command the
+gateway sends again on that link, so a report for an order sent on it always finds the session known.
+
+A report the sequencer still cannot route is counted in the metric `sequencer_reports_dropped_unbound`. The first
+for each session since it was last connected is logged as a Warning naming the session, and the rest at Debug
+(Andrew's decision 1A). Two test events say what happened: `SessionAnnouncedAgain` (210) when the sequencer is
+told a session is still connected, with whether it was leading, and `ReportDroppedSessionNotConnected` (211) for
+the first report dropped for a session. A sequencer does not wait for the gateways before it takes the lead
+(decision 2A).
+
+Scenarios 14, 27 and 36 are no longer marked as expected to fail. Each now waits for `SessionAnnouncedAgain` from
+each sequencer it restarts, and logs how long before taking the lead that sequencer was told. Run from fresh WALs,
+the three passed, and then the full set passed, 76 of 76. Made to fail on purpose: with the FIX gateway not
+re-announcing established sessions, scenario 14 failed at the new step; without that step it failed at the
+recovery orders, the restarted primary logged the Warning once for report 5001 of `CLIENT`, and the test received
+event 211 for the same report.
+
+**What the margins showed.** In scenario 14 the restarted primary was told 4.8 seconds before it took the lead. In
+27 it was told 0.1 seconds after, and in 36 under 0.05 seconds after: a sequencer that restarts quickly takes the
+lead almost at once. No report was dropped for the member in any of the three, but in that interval a report for
+an order the venue took before the restart would be. That is [BUG-0190](#bug_0190).
+
+**Principles.** V8: every report the matching engine produces reaches the member (G3); and V6: every command a
+gateway accepted is answered (G1).
 
 ### BUG-0171: Sending committed records to the publishers costs about a fifth of the leading sequencer's time on its own thread, mostly in checking each record's checksum once for each publisher {#bug_0171}
 
