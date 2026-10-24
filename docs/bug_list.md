@@ -3817,6 +3817,9 @@ Also: the Warning and event 211 are given in every scenario for `INJECT-TEST`, t
 `inject_order`, whose orders reach the sequencer directly and have no session behind them. That false alarm is to
 be removed.
 
+**Design:** [reports_held_until_sessions_are_announced.md](availability/reports_held_until_sessions_are_announced.md),
+a draft for review.
+
 **Principles.** V8: every report the matching engine produces reaches the member (G3).
 
 ### BUG-0191: The load and profiling scripts decide what the venue did by reading Quill logs, and callgrind_run.py waits for the configured primary sequencer to lead {#bug_0191}
