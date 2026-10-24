@@ -213,6 +213,19 @@ struct SequencerConfiguration {
     /** @brief Pre-allocation size of each WAL segment file in bytes. */
     size_t wal_segment_size{4 * 1024 * 1024};
 
+    /**
+     * @brief How many records, and how many bytes of records, the leader keeps in memory from when it writes
+     *        each one until it has sent it to the matching engine publishers, so that it sends them the copy
+     *        and does not read the record back from the WAL (docs/availability/publishers_sent_from_memory.md).
+     *
+     * A record that arrives with either limit reached is read back from the WAL when it is sent, as is
+     * every record when either limit is zero. Records are at most about 400 bytes, so 16 MiB holds the
+     * 32,768 records allowed, which is every order the storage for held orders can hold with one execution
+     * report each. Allocated once when the sequencer starts.
+     */
+    size_t records_kept_for_publishers{32768};
+    size_t bytes_kept_for_publishers{16 * 1024 * 1024};
+
     /** @brief How often the WAL snapshot is taken, in seconds. */
     int32_t snapshot_interval_seconds{30};
 

@@ -168,7 +168,8 @@ void SequencerThread::on_initial_event() {
     // The reading thread reads only before the position published here, and sends a follower nothing
     // above the limit published here (docs/availability/following_the_wal.md, section 3.2).
     replicated_wal_->publish_positions_to(wal_positions_);
-    handed_over_publishers_.emplace(replicated_wal_->wal(), config_.wal_directory, make_publisher_converter(64 * 1024), publisher_links_);
+    handed_over_publishers_.emplace(replicated_wal_->wal(), config_.wal_directory, make_publisher_converter(64 * 1024), publisher_links_,
+                                    pubsub_itc_fw::WalKeptRecordsCapacity{config_.records_kept_for_publishers, config_.bytes_kept_for_publishers});
     if (config_.ha_enabled) {
         wal_follower_service_.emplace(get_logger(), replicated_wal_->wal(), wal_positions_, wal_following_, wal_following_);
         replicated_wal_->use_peer_catch_up(wal_following_);
@@ -1728,6 +1729,12 @@ void SequencerThread::append_envelope_to_wal(const pubsub_itc_fw_app::WalRecord&
     // it, sends it to the follower, and commits it when it may.
     const int64_t written_as = replicated_wal_->append(pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), bytes_written,
                                                        envelope.wall_time_ns, std::chrono::steady_clock::now());
+    // A copy for the publishers, so that they are sent it when it is committed without its being read back from
+    // the WAL. A publisher is sent a record's envelope byte for byte as it lies in the WAL (publisher_record_from_wal),
+    // which is these bytes.
+    if (handed_over_publishers_.has_value()) {
+        handed_over_publishers_->written(written_as, pubsub_itc_fw_app::WalRecord::message_pdu_id, wal_encode_buffer_.data(), bytes_written);
+    }
     if (written_as != envelope.seq_no) {
         PUBSUB_LOG(get_logger(), pubsub_itc_fw::FwLogLevel::Error,
                    "SequencerThread: the envelope was stamped seq={} but the replicated WAL wrote the record as {} -- the two numberings differ",

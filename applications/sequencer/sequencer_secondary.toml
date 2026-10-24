@@ -103,6 +103,15 @@ directory                 = "${sequencer_secondary_wal_directory}"
 segment_size              = 4194304
 snapshot_interval_seconds = 30
 
+# How many records, and how many bytes of records, the leader keeps in memory from when it writes each one
+# until it has sent it to the matching engine publishers, so that it sends the copy instead of reading the
+# record back from the write-ahead log. A record that arrives with either limit reached is read back from the
+# log instead, as is every record when either is zero. Records are at most about 400 bytes; 16 MiB holds the
+# 32,768 records, which is every order held while waiting for the follower with one execution report each.
+# Allocated once at start. See docs/availability/publishers_sent_from_memory.md.
+records_kept_for_publishers = 32768
+bytes_kept_for_publishers   = 16777216
+
 [logging]
 applog_level = "info"
 syslog_level = "critical"

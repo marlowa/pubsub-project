@@ -204,6 +204,16 @@ This is a change to what a publisher is guaranteed, and it is decision 1 in sect
    the last follower in step goes. All 1,152 of the library's tests that run pass (one is skipped, as before).
 3. **Use it in the sequencer**, behind the new capacity setting. Run `ha_test.py` in full, from fresh WALs,
    with scenario 76 (publishers follow only the record) among them.
+
+   **Done, 24 October 2026.** The settings are `[wal] records_kept_for_publishers` (32,768) and
+   `[wal] bytes_kept_for_publishers` (16,777,216) in both sequencers' configurations; either may be zero, which
+   keeps nothing. `SequencerThread::append_envelope_to_wal` passes each record's encoded envelope to
+   `WalHandedOverFollowers::written()` as soon as the replicated WAL has written it. Three tests of the
+   configuration loader were added; the one that refuses a negative value was made to fail on purpose by
+   removing the check. `scripts/devsetup.sh` passed every test suite. The full set of high availability
+   scenarios, from fresh WALs: of 76, 73 passed and 3 failed as expected (14, 27 and 36, marked so for
+   [BUG-0182](../bug_list.md#bug_0182)), the same as before the change. That the publishers are in fact sent
+   records from memory is shown by step 4, not by the scenarios, which pass either way.
 4. **Measure before and after** with `tmp/phase5/fill_perf.sh` for the share of the sequencer's thread, and
    the round trip measured as for BUG-0171, on a quiet machine with the load client pinned. Success is the
    share of the thread spent on the publishers falling from about 16 per cent to about the sending half,

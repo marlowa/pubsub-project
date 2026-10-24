@@ -192,6 +192,18 @@ SequencerConfiguration SequencerConfigurationLoader::load(const pubsub_itc_fw::T
         }
         config.wal_segment_size = static_cast<size_t>(segment_size_bytes);
 
+        // Zero is allowed for either: nothing is kept, and every record is read back from the WAL.
+        int64_t records_kept_for_publishers = 0;
+        int64_t bytes_kept_for_publishers = 0;
+        toml.get_required_except("wal.records_kept_for_publishers", records_kept_for_publishers);
+        toml.get_required_except("wal.bytes_kept_for_publishers", bytes_kept_for_publishers);
+        if (records_kept_for_publishers < 0 || bytes_kept_for_publishers < 0) {
+            throw pubsub_itc_fw::ConfigurationException(
+                "SequencerConfigurationLoader: wal.records_kept_for_publishers and wal.bytes_kept_for_publishers must not be negative");
+        }
+        config.records_kept_for_publishers = static_cast<size_t>(records_kept_for_publishers);
+        config.bytes_kept_for_publishers = static_cast<size_t>(bytes_kept_for_publishers);
+
         int32_t snapshot_interval_seconds = 0;
         toml.get_required_except("wal.snapshot_interval_seconds", snapshot_interval_seconds);
         if (snapshot_interval_seconds <= 0) {

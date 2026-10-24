@@ -66,6 +66,8 @@ listen_port = 11030
 directory                 = "var/sequencer_wal"
 segment_size              = 4194304
 snapshot_interval_seconds = 30
+records_kept_for_publishers = 100
+bytes_kept_for_publishers   = 40000
 
 [logging]
 applog_level = "info"
@@ -337,6 +339,32 @@ TEST(SequencerConfigurationLoaderTest, ReadsHowManyCommandIdentifiersToReserve) 
 TEST(SequencerConfigurationLoaderTest, ReadsHowManyOrdersTheLeaderHoldsAtMost) {
     const auto config = load_with_gateways(one_gateway);
     EXPECT_EQ(config.orders_held_at_most, 64U);
+}
+
+TEST(SequencerConfigurationLoaderTest, ReadsHowManyRecordsAreKeptForThePublishers) {
+    const auto config = load_with_gateways(one_gateway);
+    EXPECT_EQ(config.records_kept_for_publishers, 100U);
+    EXPECT_EQ(config.bytes_kept_for_publishers, 40000U);
+}
+
+TEST(SequencerConfigurationLoaderTest, AcceptsKeepingNoRecordsForThePublishers) {
+    std::string sections(required_sections);
+    const std::string kept = "records_kept_for_publishers = 100";
+    sections.replace(sections.find(kept), kept.size(), "records_kept_for_publishers = 0");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_EQ(sequencer::SequencerConfigurationLoader::load(toml).records_kept_for_publishers, 0U);
+}
+
+TEST(SequencerConfigurationLoaderTest, RejectsKeepingANegativeNumberOfBytesForThePublishers) {
+    std::string sections(required_sections);
+    const std::string kept = "bytes_kept_for_publishers   = 40000";
+    sections.replace(sections.find(kept), kept.size(), "bytes_kept_for_publishers   = -1");
+    pubsub_itc_fw::TomlConfiguration toml;
+    const auto [ok, err] = toml.load_string(sections + one_gateway);
+    ASSERT_TRUE(ok) << err;
+    EXPECT_THROW(sequencer::SequencerConfigurationLoader::load(toml), pubsub_itc_fw::ConfigurationException);
 }
 
 TEST(SequencerConfigurationLoaderTest, RejectsHoldingNoOrders) {
