@@ -167,6 +167,22 @@ This is a change to what a publisher is guaranteed, and it is decision 1 in sect
 
 1. **Measure the size of records**, from a WAL written by a fill, to choose the store's default capacity.
    Measure the cost of copying a record of that size.
+
+   **Done, 24 October 2026.** The WAL written by the BUG-0171 fill
+   (`sequencer_wal.p5-bug0171-fillperf-212247`, 120,000 records) was read record by record, taking each
+   record's payload size from its header. Payload sizes were 157 bytes at the smallest, 382 at the median,
+   404 at the 90th percentile and at the largest, and 319 on average. The four commonest sizes were 404,
+   182, 402 and 293 bytes; a record's size depends on its kind and on how many optional fields it carries.
+
+   Copying a record into a store of the shape in section 4.1, with records of those four sizes taken in
+   turn, a byte ring of 16 MiB and an entry ring of 32,768 entries, took 8.5 nanoseconds a record on one
+   pinned core, the same to within 0.1 nanoseconds in three runs of 20 million records each. The byte ring
+   is larger than the core's caches, so the copies miss the cache as they would in the sequencer. That is
+   less than a ten-thousandth of the order's round trip of about 108 microseconds.
+
+   The defaults are therefore 32,768 records and 16 MiB. That is room for every order the storage for held
+   orders can hold (16,384) with one execution report each, at the largest record size, with room to spare;
+   when a follower is further behind than that, the records it lacks are read from the WAL as now.
 2. **Build the store in `WalHandedOverFollowers`, with unit tests**, before the sequencer uses it. The tests
    include, each made to fail on purpose before it is trusted:
    - a record sent from the store is the bytes passed in, and is sent without the WAL being read: the test
