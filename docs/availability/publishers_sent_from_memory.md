@@ -84,7 +84,8 @@ is committed. It does not serve, for four reasons.
 
 `WalHandedOverFollowers` gains a store of the records written but not yet sent to the publishers. The store
 belongs to the library, not to the sequencer, because the problem belongs to any application that hands
-followers over to new records, and phase 8 moves high availability into the library.
+followers over to new records, and the agreed direction is for high availability to live in the library
+([ha_in_the_library.md](ha_in_the_library.md)).
 
 The store is two fixed-capacity rings, both allocated once, when the sequencer starts:
 
