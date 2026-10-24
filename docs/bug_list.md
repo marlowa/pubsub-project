@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Bugs recorded | 186 |
-| Open | 77 (56 defects, 21 tasks) |
+| Bugs recorded | 189 |
+| Open | 80 (59 defects, 21 tasks) |
 | Closed | 109 |
-| Next id | BUG-0189 |
+| Next id | BUG-0190 |
 
 ## Open bugs by severity
 
-18 high, 48 medium, 11 low.
+21 high, 48 medium, 11 low.
 
 | Id | Severity | Kind | Title |
 |---|---|---|---|
@@ -30,9 +30,10 @@
 | [BUG-0146](#bug_0146) | high | defect | A matching engine that restarts after more than five minutes down cancels its book and halts, even when the other engine was trading throughout |
 | [BUG-0176](#bug_0176) | high | defect | A matching engine catching up from far back sends a report for every order it applies, and the flood keeps the leading sequencer's thread so busy that it loses its lease without noticing |
 | [BUG-0182](#bug_0182) | high | defect | After a sequencer restarts and then takes the lead, members are not told of the orders the matching engine accepts |
+| [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
 | [BUG-0187](#bug_0187) | high | defect | The follower matching engine's copy of the book loses every change made while the link between the two engines is down, and nothing notices |
 | [BUG-0188](#bug_0188) | high | defect | The book is copied only from the engine configured as primary, so once the secondary leads, the primary's copy is never brought up to date |
-| [BUG-0183](#bug_0183) | high | defect | A sequencer dies with SIGBUS appending to a WAL left by earlier runs |
+| [BUG-0189](#bug_0189) | high | defect | Anyone who reaches first-run setup can create the COMPID editor's first administrator |
 | [BUG-0006](#bug_0006) | medium | defect | ResendRequest under load |
 | [BUG-0030](#bug_0030) | medium | task | Restart coverage: what ha_test.py exercises, and what it does not |
 | [BUG-0040](#bug_0040) | medium | defect | The order-accounting check reports lost orders when it means it could not count them |
@@ -3880,6 +3881,24 @@ from the configured primary to the configured secondary and never the other way.
 copy, and each engine builds its book from the WAL whichever one leads.
 
 **Principles.** V2.
+
+### BUG-0189: Anyone who reaches first-run setup can create the COMPID editor's first administrator {#bug_0189}
+
+| | |
+|---|---|
+| Severity | high |
+| Found | 2026-10-20 |
+| Recorded | 2026-10-20 |
+| How | Tracing the COMPID editor's first-run setup route while writing security requirement R-0153 in the functional specification |
+| Impact | A client that reaches the editor before the operator can create an administrator account and then manage member credentials and permissions |
+
+`AuthFilter` allows requests to `/setup` without an authenticated session. `SetupHandler` presents the form while
+the administrator-user store is empty and creates the first account as an administrator when the submitted
+password and confirmation match and the password is at least eight characters long. The route requires no
+one-time secret or proof that the requester has access to the installed host.
+
+The first-run route must require a one-time secret generated for the installation and available only to an
+operator with access to the host. Creating the first administrator must consume that secret and close setup.
 
 ## Closed
 
