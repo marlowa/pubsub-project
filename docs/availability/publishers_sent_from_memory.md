@@ -1,7 +1,7 @@
 # Sending the publishers each committed record from memory, not from the WAL {#publishers_sent_from_memory}
 
-This is a design, not built, for [BUG-0171](../bug_list.md#bug_0171). It is waiting for Andrew's review.
-Nothing in it is to be built until he has agreed it.
+This is the design for [BUG-0171](../bug_list.md#bug_0171). Andrew agreed it on 24 October 2026, answering yes to
+all three decisions in section 7. It is being built in the order of section 6.
 
 ## 1. The problem
 
@@ -185,7 +185,7 @@ This is a change to what a publisher is guaranteed, and it is decision 1 in sect
 
 ## 7. Decisions
 
-These are separate yes-or-no questions, not alternatives.
+These were separate yes-or-no questions, not alternatives. All three are decided.
 
 ### Decision 1. May a record sent from memory go to the publisher without its checksum being checked? (Yes or no.)
 
@@ -201,7 +201,7 @@ publisher unchecked. The WAL's copy would still be checked whenever it is read, 
 
 **Recommendation.** Yes.
 
-**Reply wanted.** "Decision 1 yes" or "Decision 1 no".
+**Decided: yes** (Andrew, 24 October 2026).
 
 ### Decision 2. Is one copy of each record on the order path acceptable, if the round trip is measured as unchanged? (Yes or no.)
 
@@ -214,10 +214,10 @@ Reading it back happens at commit, after the order path's work.
 
 **Recommendation.** Yes, provided step 4 shows no change to the round trip.
 
-**Reply wanted.** "Decision 2 yes" or "Decision 2 no".
+**Decided: yes** (Andrew, 24 October 2026).
 
 ### Decision 3. Is the design right to build, in the order of section 6? (Yes or no.)
 
-**Reply wanted.** "Decision 3 yes", or what should change.
+**Decided: yes** (Andrew, 24 October 2026).
 
 Back to the [availability documents](../availability/README.md).
